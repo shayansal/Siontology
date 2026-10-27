@@ -22,11 +22,11 @@
   <article class="doc" id="specification" aria-labelledby="specification-title">
     <div>
       <h2 id="specification-title">The state transition specification</h2>
-      <p class="meta">Normative, version 1.4</p>
+      <p class="meta">Normative, version 1.5</p>
     </div>
     <div class="prose">
       <p>The function a proof stack evaluates for every chunk of every Pulse, and through it the whole state transition: preparing and executing a transaction, every operation, the three phases of a Pulse, the commitments a chunk statement carries, verifying a chunk and folding a Pulse. Proof stack B was written from this document alone.</p>
-      <p>Version 1.3 added validators, stake, epochs, rewards, slashing of equivocation, forced-inclusion obligations and committee rotation. Version 1.4 pays rewards from the fees collected during each epoch, and from nothing else.</p>
+      <p>Version 1.3 added validators, stake, epochs, rewards, slashing of equivocation, forced-inclusion obligations and committee rotation. Version 1.4 pays rewards from the fees collected during each epoch, and from nothing else. Version 1.5 takes their seats from slashed validators at the epoch boundary even when nobody else is eligible.</p>
       <div class="actions">
         <a class="button button--quiet" href="{{REPO}}/blob/main/docs/spec/state-transition.md">Read the specification</a>
       </div>

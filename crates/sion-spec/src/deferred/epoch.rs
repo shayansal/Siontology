@@ -82,7 +82,8 @@ impl DeferredRun<'_> {
         }
 
         // 3. The next active set: the largest stakes (ties by identifier),
-        //    weighted, sorted by identifier; kept if no record is active.
+        //    weighted, sorted by identifier; empty if no record is active
+        //    (the chain halts).
         let mut ranked: Vec<(Amount, ValidatorId)> = set
             .validators
             .iter()
@@ -96,9 +97,7 @@ impl DeferredRun<'_> {
             .map(|(stake, id)| (id, weight(stake)))
             .collect();
         next.sort();
-        if !next.is_empty() {
-            set.active = next;
-        }
+        set.active = next;
 
         // 4. The next epoch.
         set.epoch = set.epoch.saturating_add(1);
@@ -376,5 +375,41 @@ mod tests {
     #[test]
     fn misaligned_epoch_ends_are_skipped() {
         assert!(phase(7, set(1, 10)).is_ok());
+    }
+
+    /// v1.5, step 3: slashed validators lose their seats at the boundary
+    /// even when nobody else is eligible. The next epoch has no active set,
+    /// so the chain halts instead of running on proven equivocators.
+    #[test]
+    fn slashed_validators_leave_the_active_set_even_if_none_remain() {
+        let mut slashed = paying_set(0, 700);
+        for record in slashed.validators.values_mut() {
+            record.status = ValidatorStatus::Slashed { at: Pulse(4) };
+            record.stake = Amount::ZERO;
+        }
+        let outcome = epoch_phase(10, slashed, treasury(1_000, 400)).unwrap();
+        let next = written_set(&outcome);
+        assert_eq!(next.epoch, 1);
+        assert!(next.active.is_empty(), "{:?}", next.active);
+        assert!(
+            next.validators.values().all(|r| r.rewards == Amount::ZERO),
+            "slashed validators are not paid"
+        );
+        assert!(outcome.events.contains(&Event::EpochChanged {
+            epoch: 1,
+            active: 0,
+            rewards: Amount::ZERO
+        }));
+
+        // One validator still Active keeps the seat alone.
+        let mut one_left = paying_set(0, 700);
+        let first = *one_left.validators.keys().next().unwrap();
+        let record = one_left.validators.get_mut(&first).unwrap();
+        record.status = ValidatorStatus::Slashed { at: Pulse(4) };
+        record.stake = Amount::ZERO;
+        let outcome = epoch_phase(10, one_left, treasury(1_000, 400)).unwrap();
+        let next = written_set(&outcome);
+        assert_eq!(next.active.len(), 1);
+        assert_ne!(next.active[0].0, first);
     }
 }

@@ -19,9 +19,19 @@ records for the signer.
 | `Approvals { first, second }` | Two lane approvals by one validator for two transactions that spend the same object version | Same validator, chain, epoch and shard; different transactions sharing an input `(id, version)`; both transactions unexpired at the reporting Pulse; both approvals verify |
 
 An honest validator approves a second spend of an object version only once
-the first transaction can no longer execute (it executed, or it expired).
-So two approvals of live transactions are proof; once either transaction
-has expired, the evidence no longer counts.
+the first transaction can no longer execute: it succeeded or failed, which
+moves every input it names to a new version, or it expired. So two
+approvals of live transactions are proof; once either transaction has
+expired, the evidence no longer counts.
+
+A **rejected** transaction is the case to watch. It wrote nothing, so its
+inputs keep their versions, and it may still execute later. The node
+therefore keeps its locks until it expires, and refuses a second spend of
+its inputs until then. Releasing them at the rejection, as the reference
+node did before an independent review found it, let an owner frame honest
+validators: get a transaction rejected by spending one of its other inputs
+elsewhere, then spend the rest again and report every validator that
+approved both ([Security reviews](../../security/reviews.md)).
 
 ## The penalty
 
@@ -42,7 +52,9 @@ to recover its stake still loses 95 % of it.
 
 The offender **keeps its seat**, and its weight in quorums, until the epoch
 ends; at the boundary it is not Active, so it leaves the active set
-(`impl:slashed-seat`). An Exited validator still waiting out its unbonding
+(`impl:slashed-seat`), even if no other validator is eligible. A chain
+whose every eligible validator was slashed then halts
+([Epochs](epochs.md)). An Exited validator still waiting out its unbonding
 period can be slashed; a Withdrawn one has nothing left to slash.
 
 ## Evidence is not bound to a chain or a time

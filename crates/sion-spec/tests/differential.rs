@@ -5994,6 +5994,25 @@ fn equivocation(chunk_size: usize) -> Harness {
     h.advance_to(16);
     assert_eq!(h.validator_set().active.len(), 1);
 
+    // Pulse 17 (v1.5): slashing the last one leaves nobody eligible. At the
+    // boundary (Pulse 20) the slashed validators lose their seats anyway, so
+    // the next epoch has no active set and the chain halts; both stacks
+    // agree on that state and on Pulses executed after it.
+    let last = h.tx(
+        "dave",
+        report_headers(
+            signed_header(&auth[3], 2, 0, b"r"),
+            signed_header(&auth[3], 2, 0, b"s"),
+        ),
+    );
+    let out = h.pulse(vec![last.clone()]);
+    expect(&out, &last, Outcome::Success);
+    h.advance_to(20);
+    let set = h.validator_set();
+    assert_eq!(set.epoch, 4);
+    assert!(set.active.is_empty(), "{:?}", set.active);
+    h.advance_to(22);
+
     h.assert_covered(&[
         "ReportEquivocation/ok",
         "ReportEquivocation/failed",
@@ -7261,11 +7280,12 @@ fn probe_rotation_window_and_previous_members() {
     h.assert_minimal_witnesses();
 }
 
-/// §5.27 (`staying` counts joining validators), §6.3 EpochEnd step 3 (an
-/// empty next active set keeps the current one) and rotations drawing from
-/// fewer validators than seats.
+/// §5.27 (`staying` counts joining validators), §6.3 EpochEnd step 3
+/// (v1.5: slashed validators lose their seats even if nobody else is
+/// eligible, and the chain halts), rotations drawing from fewer validators
+/// than seats, and a halted chain rotating no shard.
 #[test]
-fn probe_last_validator_cannot_leave_and_an_empty_active_set_is_kept() {
+fn probe_last_validator_cannot_leave_and_slashed_validators_lose_their_seats() {
     let mut h = Harness::with_params(
         &["alice", "bob", "carol"],
         50_000,
@@ -7325,7 +7345,8 @@ fn probe_last_validator_cannot_leave_and_an_empty_active_set_is_kept() {
     );
     // Pulse 9: an intent is posted; Pulse 10: v2 is slashed; Pulse 11: the
     // intent is overdue and the shard rotates with one validator for two
-    // seats; Pulse 12: no record is active, so the active set is kept.
+    // seats; Pulse 12: no record is active, so the next active set is empty
+    // and the chain halts.
     let intent = transfer(&mut h, "alice", "bob", units(1));
     h.settle();
     h.pulse_forced(Vec::new(), vec![intent.clone()]);
@@ -7345,8 +7366,16 @@ fn probe_last_validator_cannot_leave_and_an_empty_active_set_is_kept() {
     assert_eq!(h.validator_set().rotations[&shard].members, vec![v2]);
     let out = h.pulse(Vec::new());
     assert_eq!(count_events(&out, "EpochChanged"), 1);
-    assert_eq!(h.validator_set().active.len(), 1, "the slashed set is kept");
-    h.advance(5);
+    assert!(
+        h.validator_set().active.is_empty(),
+        "slashed validators lose their seats"
+    );
+    // Pulse 13: the intent is overdue again, and a halted chain has no
+    // validator to rotate in.
+    let out = h.pulse(Vec::new());
+    assert_eq!(count_events(&out, "ForcedOverdue"), 1);
+    assert_eq!(count_events(&out, "ShardRotated"), 0);
+    h.advance(4);
     h.assert_minimal_witnesses();
 }
 

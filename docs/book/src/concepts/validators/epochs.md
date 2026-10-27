@@ -19,7 +19,11 @@ reached the treasury:
    record becomes Exited, withdrawable `unbonding` Pulses later.
 3. **The next active set.** The Active records with the most stake, at
    most `max_active`. Slashed validators are not Active, so they lose their
-   seats here.
+   seats here, even when nobody else is eligible. A chain whose every
+   eligible validator was slashed then has no active set: no committee can
+   certify its next Pulse, and it halts rather than run on proven
+   equivocators with nothing at stake (specification v1.5). Since the last
+   validator staying cannot leave, only slashing can empty the set.
 4. **A new epoch.** The epoch number goes up by one; the new epoch starts
    at the next Pulse; the lane-sampling seed becomes this Pulse's beacon;
    shard rotations are cleared; the fee mark moves to the current fee

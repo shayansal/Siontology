@@ -347,6 +347,7 @@ the architecture's own:
 | `impl:in-process-network` | Validators share a machine and a process; network faults are not exercised by the devnet (they are by the consensus simulator). |
 | `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period. |
 | `impl:slashed-seat` | A slashed validator keeps its seat, and its weight in quorums, until the epoch ends. |
+| `impl:active-floor` | Validators can leave until one remains: nothing keeps the active set large enough to tolerate a faulty member, so the operators of the other validators can leave a single validator forming every quorum. |
 | `impl:evidence-scope` | Equivocation evidence is not bound to this chain: a validator's keys must not be used on another network. |
 | `impl:lock-handover` | Certificates are not drained when a lane committee changes: certificate finality for owned transactions holds within one committee's term (an owner who double-signs could get the second spend certified by a fully replaced committee). |
 | `impl:hash-chain-beacon` | The beacon is a hash-chain commit-reveal; the last validator to reveal can bias it by withholding (at the cost of being seen). |
@@ -371,10 +372,10 @@ itself.
 
 ## Reviews and what they found
 
-Two independent reviews, run by agents that had not written the code, read
-the consensus-critical libraries and the node, and confirmed their findings
-with tests. Everything below is fixed, with a regression test, unless
-marked otherwise.
+Three independent reviews, run by agents that had not written the code,
+read the consensus-critical libraries, the node, and the validator
+machinery, and confirmed their findings with tests. Everything below is
+fixed, with a regression test, unless marked otherwise.
 
 - **State machine and libraries.** An unbounded chain of claim references
   made cost-of-corruption and reservation traversals recurse once per link
@@ -393,7 +394,8 @@ marked otherwise.
   - Lane locks kept a copy of the whole request per input and were never
     released, which also froze inputs of lagging, rejected or expired
     transactions (fixed: one shared copy per request; locks are released
-    when the transaction executes or expires; requests from lagging
+    when the transaction succeeds, fails or expires, a rejected one keeping
+    them until it expires; requests from lagging
     validators wait for them to catch up; the gateway accepts resubmission).
   - Lane validation skipped the checks execution makes before charging a
     fee, so zero-fee transactions were published for free (fixed), and
@@ -423,3 +425,19 @@ marked otherwise.
   - **Open:** fee-paying transactions with large bodies can still make
     Pulses slow, since data-availability encoding of the largest allowed
     Pulse takes seconds on one core; an account query scans every object.
+- **Staking, epochs and committees (specification v1.4).**
+  - An honest validator could be slashed: the node released a rejected
+    transaction's lane locks at once, although its inputs kept their
+    versions, and then approved a second spend that the `Approvals`
+    evidence treats as equivocation while the first transaction is
+    unexpired. An owner could frame every validator that approved one of
+    its transactions (fixed: a rejected transaction keeps its locks until
+    it expires; specification v1.5 spells out the rule).
+  - If every active validator was slashed within an epoch, the boundary
+    kept the old active set, so slashed validators with nothing at stake
+    certified the next epoch (fixed in specification v1.5: they lose their
+    seats regardless, and the chain halts).
+  - A simulator default paid reporters 50 % instead of the documented 5 %
+    (fixed).
+  - **Open:** the active set can shrink to a single validator
+    (`impl:active-floor`).

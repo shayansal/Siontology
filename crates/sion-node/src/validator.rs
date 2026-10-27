@@ -257,6 +257,44 @@ fn sync_beacon(beacon: &mut Beacon, set: &StateValidators) {
     }
 }
 
+/// The lane locks to release after a Pulse, as `(shard, transaction)`:
+/// those of transactions that can no longer execute. A transaction that
+/// succeeded or failed moved every input it named to a new version (spec
+/// §4.2, `finalize_inputs`), and one whose `expires_at` is at most `now`
+/// can never run again.
+///
+/// A **rejected** transaction is neither: it wrote nothing, its inputs keep
+/// their versions, and it may still execute later (an input can reach the
+/// version it names, an account can be created or rotate its policy back).
+/// Its locks therefore hold until it expires. Releasing them earlier would
+/// let this validator approve a second spend of a version its first approval
+/// still covers, and the two approvals are valid equivocation evidence
+/// (spec §5.30) until the first transaction expires.
+fn released_locks<'a>(
+    executed: impl IntoIterator<Item = (&'a TxDigest, &'a sion_exec::ExecStatus)>,
+    lock_expiry: &BTreeMap<TxDigest, (ShardId, Pulse)>,
+    now: Pulse,
+) -> Vec<(ShardId, TxDigest)> {
+    let mut released: BTreeMap<TxDigest, ShardId> = BTreeMap::new();
+    for (digest, status) in executed {
+        if matches!(status, sion_exec::ExecStatus::Rejected(_)) {
+            continue;
+        }
+        if let Some((shard, _)) = lock_expiry.get(digest) {
+            released.insert(*digest, *shard);
+        }
+    }
+    for (digest, (shard, expires_at)) in lock_expiry {
+        if *expires_at <= now {
+            released.insert(*digest, *shard);
+        }
+    }
+    released
+        .into_iter()
+        .map(|(digest, shard)| (shard, digest))
+        .collect()
+}
+
 #[derive(Debug)]
 struct Executed {
     output: PulseOutput,
@@ -373,7 +411,12 @@ impl Validator {
             shared.generation,
             shared.config.shards,
         )
-        .expect("a valid state always has committees");
+        .unwrap_or_else(|error| {
+            panic!(
+                "no committees in epoch {}: {error} (a chain whose every eligible validator was slashed has halted)",
+                setup.state.validators().epoch
+            )
+        });
         let core = Core::new(
             committees.consensus.clone(),
             setup.auth.clone(),
@@ -1015,6 +1058,11 @@ impl Validator {
         // Forced inclusion: the state now holds what the shards owe. Keep the
         // signed intents it still holds obligations for.
         let executed_digests: Vec<TxDigest> = output.effects.iter().map(|e| e.digest).collect();
+        let outcomes: Vec<(TxDigest, sion_exec::ExecStatus)> = output
+            .effects
+            .iter()
+            .map(|e| (e.digest, e.status.clone()))
+            .collect();
         for tx in &input.forced {
             self.forced_txs
                 .entry(tx.digest())
@@ -1226,19 +1274,13 @@ impl Validator {
         }
         self.proof_cache = None;
 
-        // Lane locks of transactions that executed (their input versions are
-        // gone) or can no longer execute (expired) are released, so their
-        // inputs never stay frozen.
-        let pulse_now = self.state.pulse;
-        let mut released: Vec<(ShardId, TxDigest)> = executed_digests
-            .iter()
-            .filter_map(|d| self.lock_expiry.get(d).map(|(s, _)| (*s, *d)))
-            .collect();
-        released.extend(
-            self.lock_expiry
-                .iter()
-                .filter(|(_, (_, expires_at))| *expires_at <= pulse_now)
-                .map(|(d, (s, _))| (*s, *d)),
+        // Lane locks are released once their transaction can no longer
+        // execute, so its inputs never stay frozen; a rejected one keeps them
+        // until it expires (see `released_locks`).
+        let released = released_locks(
+            outcomes.iter().map(|(digest, status)| (digest, status)),
+            &self.lock_expiry,
+            self.state.pulse,
         );
         for (shard, digest) in released {
             if let Some(lane) = self.lanes.get_mut(&shard) {
@@ -1246,6 +1288,11 @@ impl Validator {
             }
             self.lock_expiry.remove(&digest);
             self.lane_waiters.remove(&digest);
+        }
+        // Whatever executed, rejected or not, no longer waits for this
+        // validator's approval.
+        for digest in &executed_digests {
+            self.lane_waiters.remove(digest);
         }
         // Requests that waited for this validator to catch up get another try.
         for (shard, request, parked_for) in std::mem::take(&mut self.parked) {
@@ -1287,7 +1334,17 @@ impl Validator {
         ) {
             Ok(next) => next,
             Err(error) => {
-                eprintln!("validator {}: no committees: {error}", self.index);
+                let set = self.state.validators();
+                if set.active.is_empty() {
+                    // Spec §6.3: every validator that could have served was
+                    // slashed, so nobody certifies the next Pulse.
+                    eprintln!(
+                        "validator {}: the chain has halted after Pulse {}: epoch {} has no eligible validator",
+                        self.index, self.state.pulse, set.epoch
+                    );
+                } else {
+                    eprintln!("validator {}: no committees: {error}", self.index);
+                }
                 return actions;
             }
         };
@@ -1852,4 +1909,58 @@ fn store_boundary(dir: &std::path::Path, proof: &EpochProof) -> std::io::Result<
     let temp = dir.join(format!("epoch-{:010}.tmp", proof.epoch));
     std::fs::write(&temp, sion_core::encode::encode(proof))?;
     std::fs::rename(temp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sion_exec::ExecStatus;
+
+    fn digest(name: &[u8]) -> TxDigest {
+        TxDigest::derive(name)
+    }
+
+    #[test]
+    fn a_rejected_transaction_keeps_its_locks_until_it_expires() {
+        let (ok, failed, rejected, stale) = (
+            digest(b"ok"),
+            digest(b"failed"),
+            digest(b"rejected"),
+            digest(b"stale"),
+        );
+        let lock_expiry: BTreeMap<TxDigest, (ShardId, Pulse)> = [
+            (ok, (ShardId(0), Pulse(50))),
+            (failed, (ShardId(1), Pulse(50))),
+            (rejected, (ShardId(0), Pulse(50))),
+            (stale, (ShardId(1), Pulse(9))),
+        ]
+        .into_iter()
+        .collect();
+        let statuses = [
+            (ok, ExecStatus::Success),
+            (failed, ExecStatus::Failed("aborted".into())),
+            (rejected, ExecStatus::Rejected("input consumed".into())),
+        ];
+        let executed = || statuses.iter().map(|(d, s)| (d, s));
+
+        // At Pulse 10: executed transactions moved their inputs, so their
+        // locks go; `stale` expired at 9; the rejected one still holds its
+        // inputs, which keep their versions.
+        let mut released = released_locks(executed(), &lock_expiry, Pulse(10));
+        released.sort();
+        let mut expected = vec![(ShardId(0), ok), (ShardId(1), failed), (ShardId(1), stale)];
+        expected.sort();
+        assert_eq!(released, expected);
+        assert!(!released.iter().any(|(_, d)| *d == rejected));
+
+        // Once it expires, nothing can execute it: its locks go too.
+        let released = released_locks(std::iter::empty(), &lock_expiry, Pulse(50));
+        assert!(released.contains(&(ShardId(0), rejected)));
+        assert_eq!(released.len(), 4);
+
+        // A transaction this validator never locked releases nothing.
+        let unknown = (digest(b"unknown"), ExecStatus::Success);
+        let released = released_locks([(&unknown.0, &unknown.1)], &lock_expiry, Pulse(0));
+        assert!(released.is_empty());
+    }
 }

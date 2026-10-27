@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.4
+# The Siontology state transition — specification v1.5
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -629,7 +629,11 @@ USD, rewards)`. Event `RewardsClaimed { validator, amount: rewards }`.
      an input of the second; and each proof's `verify_signed(tx digest,
      tx.inputs, keys)` passes. The offender is the batch's validator.
      (An honest validator approves a version again only once the first
-     transaction can no longer execute, so two live approvals are proof.)
+     transaction can no longer execute: it succeeded or failed, which
+     moves every input it names to a new version (§3.3), or it expired. A
+     rejected transaction wrote nothing and may still execute later, so
+     its approval holds its inputs until it expires. Two live approvals
+     are therefore proof.)
 2. The offender's record MUST exist and its status MUST NOT be `Slashed` or
    `Withdrawn`.
 3. Take `stake` and `rewards` from the record, set both to 0 and the status
@@ -829,9 +833,9 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   obligation; otherwise set its `deadline` to `min(ctx.pulse + window,
   expires_at)` (saturating), increment `missed` (saturating), and schedule
   `ForcedDeadline { intent }` at the new deadline.
-- **Rotate** a shard `s` (with `window` as above): skip if
-  `rotations[s]` exists and `ctx.pulse < rotations[s].at + window`
-  (saturating). Otherwise `previous` = the shard's **lane members**
+- **Rotate** a shard `s` (with `window` as above): skip if the active set
+  is empty (the chain has halted: EpochEnd step 3), or if `rotations[s]`
+  exists and `ctx.pulse < rotations[s].at + window` (saturating). Otherwise `previous` = the shard's **lane members**
   (`rotations[s].members` if present, else the members of
   `sample_committee(active, seats, seed, Epoch(epoch), s)`); `count =
   rotations[s].count + 1` (or 1; saturating); `rotations[s] = { count,
@@ -853,7 +857,11 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
      (saturating).
   3. The next active set: the `Active` records, sorted by stake descending
      then id ascending, the first `max(max_active, 1)`, as `(id,
-     weight(stake))` sorted by id. If it is empty, the active set is kept.
+     weight(stake))` sorted by id. It may be empty: if every validator that
+     could serve was slashed, the next epoch has no active set, no
+     committee can certify its Pulses, and the chain **halts** rather than
+     run on proven equivocators with nothing at stake. (§5.27 keeps the
+     last validator from leaving, so only slashing empties the set.)
   4. `epoch += 1` (saturating); `epoch_start = ctx.pulse + 1` (an error at
      Pulse `u64::MAX`, which no chain reaches); `seed = ctx.beacon`;
      `rotations` emptied; `fees_mark = collected`.
@@ -881,9 +889,9 @@ missing or malformed, `unallocated += amount` overflows (impossible: what
 is unallocated plus what live allotments hold never exceeds the bounded
 total), the assurance registry's own accounting fails (for example
 `vault −= released` underflowing), or sampling a committee fails while
-rotating a shard (no seats, or an empty active set: genesis refuses zero
-seats, and an epoch with no eligible validator keeps the old active set).
-No state reachable from a valid genesis allows any of these. If one happens anyway, the deferred phase is invalid:
+rotating a shard (no seats, which genesis refuses; a shard is never
+rotated from an empty active set). No state reachable from a valid genesis
+allows any of these. If one happens anyway, the deferred phase is invalid:
 the reference executor refuses the Pulse, and a proof stack rejects the
 chunk, so no World Proof can exist for it.
 
@@ -979,6 +987,19 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.5.** From an independent review of the staking machinery: at an
+  epoch's end, slashed validators lose their seats even if no other
+  validator is eligible (§6.3, EpochEnd step 3). Until v1.4 the old active
+  set was kept when the next one would be empty, so a committee whose every
+  member had been slashed carried on into the next epoch with nothing at
+  stake; now the next active set is empty and the chain halts, and a
+  halted chain rotates no shard (an overdue intent is still recorded). The
+  reasoning behind the `Approvals` evidence is spelled out (§5.30): an
+  approval holds its inputs until its transaction succeeds, fails or
+  expires, and a rejection is none of these (the reference node used to
+  release a rejected transaction's locks, which let an honest validator be
+  slashed; it now keeps them until the transaction expires).
 
 - **v1.4.** Validators are paid from fees only. A transaction's fee is
   deferred as `Fee { asset, amount }` (§3.2, §3.3), which credits the

@@ -98,7 +98,9 @@ pub struct ValidatorParams {
 
 impl ValidatorParams {
     /// Devnet defaults: epochs effectively never end (a devnet's validator
-    /// set is fixed unless it is configured otherwise).
+    /// set is fixed unless it is configured otherwise); 70 % of an epoch's
+    /// fees go to its validators and 5 % of a slashed stake to the reporter,
+    /// as on the node's devnet (`sion-node`'s `devnet.rs`).
     pub fn devnet() -> Self {
         ValidatorParams {
             stake_asset: AssetId::usd(),
@@ -107,8 +109,8 @@ impl ValidatorParams {
             unbonding: 100,
             seats: 4,
             max_active: 100,
-            reward_permille: 500,
-            reporter_permille: 500,
+            reward_permille: 700,
+            reporter_permille: 50,
         }
     }
 

@@ -1327,15 +1327,19 @@ fn still_executable<S: ObjectStore>(
 }
 
 /// Freezes `shard`'s committee out and samples its replacement, unless the
-/// shard already rotated in the last `window` Pulses (the new committee gets
-/// a full window before it can be judged). Returns the shard's rotation
-/// count if it rotated.
+/// chain has halted (no active set to sample from) or the shard already
+/// rotated in the last `window` Pulses (the new committee gets a full window
+/// before it can be judged). Returns the shard's rotation count if it
+/// rotated.
 fn rotate(
     set: &mut ValidatorSet,
     ctx: &PulseContext,
     shard: u16,
     window: u64,
 ) -> Result<Option<u32>, ExecError> {
+    if set.active.is_empty() {
+        return Ok(None);
+    }
     if let Some(last) = set.rotations.get(&shard) {
         if ctx.pulse.0 < last.at.0.saturating_add(window) {
             return Ok(None);
@@ -1372,8 +1376,9 @@ fn rotate(
 /// Ends the current epoch at the end of `ctx.pulse`, given the treasury's
 /// running total of USD fees: pays the epoch's validators their share of
 /// the fees collected during the epoch (nothing else the treasury received),
-/// admits and retires validators, picks the next active set and starts the
-/// next epoch. Returns the rewards paid (to be taken from the treasury).
+/// admits and retires validators, picks the next active set (empty if no
+/// validator is eligible: the chain then halts) and starts the next epoch.
+/// Returns the rewards paid (to be taken from the treasury).
 fn end_epoch(
     set: &mut ValidatorSet,
     ctx: &PulseContext,
@@ -1420,11 +1425,11 @@ fn end_epoch(
         .map(|(stake, id)| (*id, weight(*stake)))
         .collect();
     active.sort();
-    // A chain never runs without validators: if none are eligible, the old
-    // set carries on.
-    if !active.is_empty() {
-        set.active = active;
-    }
+    // Slashed validators lose their seats here even if nobody else is
+    // eligible: a chain whose every eligible validator was slashed halts (no
+    // committee certifies its next Pulse) rather than run on proven
+    // equivocators with nothing at stake.
+    set.active = active;
     set.epoch = set.epoch.saturating_add(1);
     set.epoch_start = ctx.pulse.next();
     set.seed = ctx.beacon;

@@ -5,7 +5,7 @@ repository:
 [`docs/spec/state-transition.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md).
 This page says what it covers and how to read it; it does not copy it.
 
-The current version is **v1.4**.
+The current version is **v1.5**.
 
 ## What it specifies
 
@@ -51,6 +51,7 @@ differential tests exist to find out which. See
 | v1.2 | From two independent reviews: transaction signatures are bound to the chain configuration; at most 256 inputs, 256 allotments and 1,024 orders per batch; bounded claim-reference and formula depth; bounded certificate values; exact reservation splits |
 | v1.3 | Validators, stake, epochs and the censorship response join the state transition: staking, unstaking, withdrawing and rewards (§5.26–5.29); slashing for equivocation (§5.30); forced intents posted as obligations, deadlines and committee rotation (§6.1, §6.3); committees derived from the state and covered by the World Proof (§9) |
 | v1.4 | Validators are paid from fees only: each fee is credited to the treasury as its own deferred item and added to a running total of fees, and an epoch's reward pool is a share of the fees collected since the last epoch end. Slashing remainders and released bond pools stay in the treasury and never become validator income |
+| v1.5 | From an independent review of the validator machinery: slashed validators lose their seats at the epoch boundary even if nobody else is eligible, so a chain whose every eligible validator was slashed halts instead of running on them; the reasoning behind approval evidence is spelled out (an approval holds its inputs until its transaction succeeds, fails or expires; a rejection is none of these) |
 
 The **Changes** section of the document has the full entries.
 

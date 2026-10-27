@@ -237,11 +237,15 @@ impl DeferredRun<'_> {
 
     /// **Rotate** shard `shard` (§6.3): at most once per `window` Pulses,
     /// replaces its lane members by a committee resampled, as far as the
-    /// active set allows, from validators outside them.
+    /// active set allows, from validators outside them. A chain with no
+    /// active set has halted (EpochEnd step 3): nothing rotates.
     fn rotate(&mut self, shard: u16, window: u64) -> Result<(), SpecError> {
         let pulse = self.ctx.pulse;
         let beacon = self.ctx.beacon;
         let set = self.validator_set()?;
+        if set.active.is_empty() {
+            return Ok(());
+        }
         let current = set.rotations.get(&shard).cloned();
         if let Some(rotation) = &current {
             if pulse.0 < rotation.at.0.saturating_add(window) {
@@ -396,18 +400,18 @@ mod tests {
         run_deferred_phase(&ctx, &view, Frontier::default(), &[], &[]).map(|_| ())
     }
 
-    /// §6.3 does not say what happens when a shard's committee cannot be
-    /// sampled (no seats, or an empty active set; neither is reachable from
-    /// a valid genesis). This implementation treats it as a deferred-phase
-    /// error, like the other unreachable failures of §6.3 "Errors".
+    /// §6.3 "Errors": a shard whose committee cannot be sampled (no seats,
+    /// which genesis refuses) invalidates the deferred phase. An empty
+    /// active set is not such a case since v1.5: the chain has halted, and
+    /// Rotate skips the shard.
     #[test]
     fn a_committee_that_cannot_be_sampled_invalidates_the_phase() {
         let validator = ValidatorId::derive(b"v");
         assert!(overdue(vec![(validator, 1)], 2).is_ok());
-        assert!(matches!(
-            overdue(Vec::new(), 2),
-            Err(SpecError::DeferredPhase(_))
-        ));
+        assert!(
+            overdue(Vec::new(), 2).is_ok(),
+            "a halted chain rotates nothing"
+        );
         assert!(matches!(
             overdue(vec![(validator, 1)], 0),
             Err(SpecError::DeferredPhase(_))

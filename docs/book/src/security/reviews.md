@@ -1,8 +1,8 @@
 # Reviews and fixes
 
-The code has had no external security audit. It has had two independent
-internal reviews, run by agents that had not written the code, and its two
-proof stacks test each other. This chapter lists what they found. Every
+The code has had no external security audit. It has had three
+independent internal reviews, run by agents that had not written the code,
+and its two proof stacks test each other. This chapter lists what they found. Every
 item is fixed, with a regression test, unless marked **open**. The source
 is the repository's `docs/implementation-status.md`.
 
@@ -30,7 +30,8 @@ is the repository's `docs/implementation-status.md`.
 - Lane locks kept a copy of the whole request per input and were never
   released, which also froze the inputs of lagging, rejected or expired
   transactions. Fixed: one shared copy per request; locks are released
-  when the transaction executes or expires; requests from lagging
+  when the transaction succeeds, fails or expires (a rejected one keeps
+  them until it expires: see the third review below); requests from lagging
   validators wait for them to catch up; the gateway accepts resubmission.
 - Lane validation skipped the checks execution makes before charging a
   fee, so zero-fee transactions were published for free. Fixed. Pulse data
@@ -61,6 +62,51 @@ is the repository's `docs/implementation-status.md`.
   Pulses slow, since data-availability encoding of the largest allowed
   Pulse takes seconds on one core.
 - **Open:** an account query scans every object.
+
+## Review of staking, epochs and committees
+
+The third review read the validator machinery of specification v1.4
+(staking, rewards, slashing, epoch boundaries, committee sampling and
+rotation) in the executor, the node and the light client, and confirmed
+two defects with tests that failed until they were fixed
+(`crates/sion-exec/tests/staking_review.rs`).
+
+- **An honest validator could be slashed** (high). The `Approvals`
+  evidence treats two approvals by one validator of transactions that
+  share an input version, both unexpired, as proof of equivocation. The
+  node released a transaction's lane locks as soon as it executed,
+  rejected ones included. A rejected transaction writes nothing, so its
+  inputs kept their versions, and the validator then approved a second
+  spend of a version its first approval still covered. An owner could
+  frame every validator that approved one of its transactions: have it
+  rejected by spending one of its other inputs elsewhere, spend the rest
+  again, and report the two approvals. Fixed in the node: a rejected
+  transaction keeps its locks until it expires, which narrows the lane-lock
+  fix of the node review above (such inputs stay locked until the
+  transaction expires, no longer). Specification v1.5 spells out why.
+- **Slashed validators could keep their seats** (medium). If every active
+  validator was slashed within one epoch, the boundary found nobody
+  eligible and kept the old active set, so validators proven to equivocate,
+  with nothing left at stake, certified the next epoch. Fixed in
+  specification v1.5: they lose their seats regardless, the next active
+  set is empty, and the chain halts.
+- **The active set can shrink to one validator** (low, **open**). The last
+  validator staying cannot leave, but nothing keeps more than one, so
+  operators can leave until a single validator forms every quorum. Named
+  as the trust atom `impl:active-floor`; a production network would set a
+  minimum.
+- A simulator default paid a reporter half of a slashed stake, while the
+  devnet and these pages say 5 %. Aligned.
+
+The review found the rest sound: reward and slashing arithmetic is exact
+and cannot overflow, and the treasury never pays out more than it holds;
+stake, slashing and withdrawal conserve value; a slashed or withdrawn
+identity cannot register again; proofs of possession bind the chain, the
+operator and both keys; double slashing, claiming and withdrawing are
+refused; approval evidence lapses with the transactions and stays within
+one lane epoch; and the executor, the node and the light client derive the
+same committees, the light client only from proven state, one boundary at
+a time.
 
 ## Found by the two proof stacks
 

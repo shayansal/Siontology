@@ -94,13 +94,14 @@
     <div class="split split--even">
       <div class="prose">
         <p>The state transition specification is normative: it defines the function a proof stack evaluates for every chunk of every Pulse, and through it the whole state transition, from preparing and executing one transaction to the three phases of a Pulse and the commitments each chunk statement carries. Where the two implementations disagree, one of them is wrong.</p>
-        <p>Since version 1.3 the state transition covers validators, stake, epochs and the response to censorship, so every committee change follows its rules and the World Proof covers it. Version 1.4 pays validators from fees alone.</p>
+        <p>Since version 1.3 the state transition covers validators, stake, epochs and the response to censorship, so every committee change follows its rules and the World Proof covers it. Version 1.4 pays validators from fees alone; version 1.5 takes their seats from slashed validators even when nobody else is eligible.</p>
       </div>
       <ol class="rows">
         <li><h3>v1.1</h3><p>From differential testing of stack B against stack A: saturating deadlines and windows, bounded market periods, specified deferred-phase errors, and what the World Proof binds.</p></li>
         <li><h3>v1.2</h3><p>From independent reviews: transaction signatures bound to the chain, bounded inputs, allotments, batches, formula depth and certificate size.</p></li>
         <li><h3>v1.3</h3><p>Staking with proof of key possession, unbonding, rewards by weight, slashing of equivocation with a share to the reporter, forced-inclusion obligations and committee rotation.</p></li>
         <li><h3>v1.4</h3><p>Rewards from fees only: the state keeps a running total of fees collected, and each epoch pays its validators a share of what was collected during it, so slashed stake and other funds in the treasury never add to rewards.</p></li>
+        <li><h3>v1.5</h3><p>From an independent review: slashed validators lose their seats at the epoch boundary even if nobody else is eligible, so a chain whose every eligible validator was slashed halts instead of running on them.</p></li>
       </ol>
     </div>
   </section>

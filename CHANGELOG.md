@@ -10,6 +10,22 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Review of the validator machinery (specification v1.5)
+
+- An independent review of staking, rewards, slashing and committees
+  found that an honest validator could be slashed: the node released a
+  rejected transaction's lane locks at once, although its inputs kept
+  their versions, and its next approval of those inputs was equivocation
+  evidence until the first transaction expired. A rejected transaction now
+  keeps its locks until it expires.
+- Specification v1.5: slashed validators lose their seats at the epoch
+  boundary even if nobody else is eligible. A chain whose every eligible
+  validator was slashed halts instead of running on them.
+- The simulator's default validator parameters match the devnet: 70 % of
+  fees to validators, 5 % of a slashed stake to the reporter.
+- New trust atom `impl:active-floor`: the active set can shrink to a single
+  validator.
+
 ### Validators, staking and epochs (specification v1.3 and v1.4)
 
 - The validator set is part of the state. A validator joins by staking,

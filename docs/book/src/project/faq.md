@@ -96,7 +96,7 @@ channels inside one process (`impl:in-process-network`).
 ## Where is the specification?
 
 [`docs/spec/state-transition.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md),
-version 1.4. See [The state transition specification](../specification.md).
+version 1.5. See [The state transition specification](../specification.md).
 
 ## How do I report a security problem?
 

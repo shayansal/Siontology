@@ -43,7 +43,9 @@ asset (10⁶ micro-units), at least 1 and at most 10¹². A validator staking
 
 At each boundary the next active set is chosen from the Active records:
 sorted by stake, largest first, ties broken by identifier, the first
-`max_active`. If none is eligible, the old active set is kept.
+`max_active`. If none is eligible, because every validator that could serve
+was slashed, the next active set is empty and the chain halts
+([Epochs](epochs.md)).
 
 ## Leaving: `Unstake`
 
@@ -54,7 +56,9 @@ sorted by stake, largest first, ties broken by identifier, the first
 - An **Active** validator becomes **Leaving**. It keeps its seat, its
   weight and its share of rewards until the epoch ends. At the boundary it
   becomes **Exited**, withdrawable `unbonding` Pulses later (20 on the
-  devnet). The last validator staying cannot leave.
+  devnet). The last validator staying cannot leave, but nothing keeps more
+  than one: operators can leave until a single validator forms every
+  quorum (`impl:active-floor`).
 
 The unbonding period keeps the stake slashable after the validator stops
 serving: equivocation evidence from its last epoch can still be reported.

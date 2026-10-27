@@ -131,6 +131,7 @@
             <tr><th scope="row"><code>impl:in-process-network</code></th><td>Validators share a machine and a process. The devnet does not exercise network faults; the consensus simulator does.</td></tr>
             <tr><th scope="row"><code>impl:reliable-handover</code></th><td>At an epoch boundary each validator starts a new consensus session, relying on the in-process network to deliver every message already sent. A real network needs a drain period.</td></tr>
             <tr><th scope="row"><code>impl:slashed-seat</code></th><td>A slashed validator keeps its seat, and its weight in quorums, until the epoch ends.</td></tr>
+            <tr><th scope="row"><code>impl:active-floor</code></th><td>Validators can leave until one remains: nothing keeps the active set large enough to tolerate a faulty member.</td></tr>
             <tr><th scope="row"><code>impl:evidence-scope</code></th><td>Equivocation evidence is not bound to one chain, so a validator&rsquo;s keys must not be used on another network.</td></tr>
             <tr><th scope="row"><code>impl:lock-handover</code></th><td>Lane certificates are not drained when a shard&rsquo;s committee changes, so certificate finality for owned transactions holds within one committee&rsquo;s term. An owner who signs two spends could get the second certified by a committee that has been fully replaced.</td></tr>
             <tr><th scope="row"><code>impl:hash-chain-beacon</code></th><td>The beacon is a hash-chain commit and reveal; the last validator to reveal can bias it by withholding, at the cost of being seen.</td></tr>
@@ -156,16 +157,18 @@
     <section class="topic" id="reviews" aria-labelledby="reviews-title">
       <h2 id="reviews-title">Reviews</h2>
       <div class="prose">
-        <p>Two independent reviews, run by AI agents that had not written the code, read the consensus-critical libraries and the node and confirmed their findings with tests. Everything they found is fixed with a regression test, except where marked open. Among the fixes:</p>
+        <p>Three independent reviews, run by AI agents that had not written the code, read the consensus-critical libraries, the node and the validator machinery, and confirmed their findings with tests. Everything they found is fixed with a regression test, except where marked open. Among the fixes:</p>
         <ul>
           <li>an unbounded chain of claim references could overflow a validator&rsquo;s stack; claim references and formulas now have bounded depth;</li>
           <li>a signature cache keyed on the transaction body but not its signatures, so a copy with stripped signatures could split replicas;</li>
           <li>lane validation skipped the checks execution makes before charging a fee, so zero-fee transactions were published for free;</li>
           <li>certificate finality did not survive a restart; approvals are now logged before they leave a validator, and locks are restored;</li>
           <li>transactions and validator messages were not bound to a chain; transaction signatures now cover the chain configuration;</li>
-          <li>light-client sampling used a fixed seed, and a missing World Proof did not fail verification.</li>
+          <li>light-client sampling used a fixed seed, and a missing World Proof did not fail verification;</li>
+          <li>an owner could get honest validators slashed: the node released a rejected transaction&rsquo;s lane locks at once, so its next approval of the same inputs counted as equivocation; a rejected transaction now keeps its locks until it expires;</li>
+          <li>if every active validator was slashed within an epoch, they kept their seats into the next one; since specification v1.5 they lose them regardless, and such a chain halts.</li>
         </ul>
-        <p><strong>Open:</strong> fee-paying transactions with large bodies can still make Pulses slow, since data-availability encoding of the largest allowed Pulse takes seconds on one core; an account query scans every object.</p>
+        <p><strong>Open:</strong> fee-paying transactions with large bodies can still make Pulses slow, since data-availability encoding of the largest allowed Pulse takes seconds on one core; an account query scans every object; the active set can shrink to a single validator (<code>impl:active-floor</code>).</p>
         <p>Differential testing of the two proof stacks found two defects in the reference executor, including a market deadline overflow that let any account halt the chain; both were fixed in specification v1.1. The full list is in <a href="https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md#reviews-and-what-they-found">docs/implementation-status.md</a>.</p>
       </div>
     </section>
