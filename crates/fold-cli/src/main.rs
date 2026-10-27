@@ -235,6 +235,18 @@ enum Command {
     },
     /// Serve the Model Context Protocol on stdio (for AI agents).
     Mcp,
+    /// Measure primitives, execution, proving, clearing and a devnet.
+    Bench {
+        /// Smaller sizes.
+        #[arg(long)]
+        quick: bool,
+        /// Skip the end-to-end devnet measurement.
+        #[arg(long)]
+        no_devnet: bool,
+        /// Write the measurements as JSON to this file.
+        #[arg(long)]
+        json: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -525,6 +537,22 @@ fn run(cli: Cli) -> Result<(), CliError> {
             }
         };
     }
+    if let Command::Bench {
+        quick,
+        no_devnet,
+        json,
+    } = &cli.command
+    {
+        let results = fold_cli::bench::run(*quick, !*no_devnet, true)?;
+        if let Some(path) = json {
+            std::fs::write(
+                path,
+                serde_json::to_string_pretty(&results).unwrap_or_default(),
+            )
+            .map_err(|e| CliError::Usage(e.to_string()))?;
+        }
+        return Ok(());
+    }
     if let Command::Demo { name, local: true } = &cli.command {
         let devnet =
             Devnet::start(DevnetConfig::default()).map_err(|e| CliError::Node(e.to_string()))?;
@@ -543,7 +571,9 @@ fn run(cli: Cli) -> Result<(), CliError> {
     }
     let mut session = Session::open(ledger)?;
     match cli.command {
-        Command::Devnet(_) | Command::Keys(_) | Command::Mcp => unreachable!("handled above"),
+        Command::Devnet(_) | Command::Keys(_) | Command::Mcp | Command::Bench { .. } => {
+            unreachable!("handled above")
+        }
         Command::Status => print(&ledger.status()?),
         Command::Balance { account } => {
             let id = session.id(&account);

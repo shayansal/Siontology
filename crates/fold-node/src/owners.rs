@@ -11,7 +11,8 @@ use crate::payload::lane_inputs;
 
 /// Checks lane requests against a validator's executed state: the request
 /// carries the signed transaction; its digest and inputs must match the
-/// request, it must not need consensus, its authorization must satisfy the
+/// request (a contended transaction locks its owned inputs too, before
+/// consensus orders it), its authorization must satisfy the
 /// sender's current policy (or its genesis policy, for a new account), and
 /// every input must exist at the given version, owned by the sender and
 /// unspent.
@@ -31,9 +32,6 @@ impl StateOwners<'_> {
         }
         if canonical_inputs(&lane_inputs(&signed.tx.inputs)) != request.canonical_inputs() {
             return Err("request inputs differ from the transaction's".into());
-        }
-        if signed.tx.domain().is_some() {
-            return Err("the transaction touches a shared object and needs consensus".into());
         }
         if signed.tx.expires_at <= self.state.pulse {
             return Err("the transaction has expired".into());

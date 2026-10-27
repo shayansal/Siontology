@@ -1,11 +1,13 @@
 //! The client gateway: routes transactions by coordination class.
 //!
-//! An owned-path transaction goes to its shard's lane committee; the
-//! gateway collects batch-signed approvals until they form a certificate
-//! (more than two thirds of the committee), at which point the transaction
-//! is final, and hands the certificate to consensus so a Pulse executes it.
-//! A contended transaction goes straight to consensus. The devnet faucet
-//! batches its grants into one transaction per Pulse.
+//! Every transaction goes to its sender's shard committee, which locks its
+//! owned inputs; the gateway collects batch-signed approvals until they form
+//! a certificate (more than two thirds of the committee). An owned-path
+//! transaction is then final, and the certificate goes to consensus only so
+//! a Pulse executes it; a contended transaction is then ordered by
+//! consensus. Because contended transactions lock their owned inputs too, a
+//! consensus-ordered spend can never overtake a certified one. The devnet
+//! faucet batches its grants into one transaction per Pulse.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -93,9 +95,18 @@ pub struct Gateway {
     faucet_queue: Vec<(AccountId, AssetId, Amount)>,
     faucet_inflight: Option<(TxDigest, Vec<Grant>, Instant)>,
     faucet_nonce: u64,
+    verifier: crate::keys::NodeVerifier,
+    certified: Vec<(SignedTransaction, fold_consensus::LaneCertificate)>,
 }
 
 const STATUS_LIMIT: usize = 100_000;
+
+/// Certified transactions are handed to consensus in groups at most this
+/// often, sharing their batch headers.
+const GROUP_INTERVAL_MS: u64 = 20;
+
+/// The largest group.
+const GROUP_LIMIT: usize = 512;
 
 /// One faucet grant: recipient, asset, amount.
 type Grant = (AccountId, AssetId, Amount);
@@ -108,6 +119,7 @@ impl Gateway {
         inbox: Receiver<GatewayInput>,
         faucet: Wallet,
     ) -> Gateway {
+        let verifier = shared.verifier.clone();
         Gateway {
             shared,
             bus,
@@ -120,17 +132,27 @@ impl Gateway {
             faucet_queue: Vec::new(),
             faucet_inflight: None,
             faucet_nonce: 0,
+            verifier,
+            certified: Vec::new(),
         }
     }
 
     /// Runs until shut down.
     pub fn run(mut self) {
         let mut last_tick = Instant::now();
+        let mut last_flush = Instant::now();
         loop {
-            match self.inbox.recv_timeout(Duration::from_millis(50)) {
+            match self
+                .inbox
+                .recv_timeout(Duration::from_millis(GROUP_INTERVAL_MS))
+            {
                 Ok(GatewayInput::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                 Ok(input) => self.handle(input),
                 Err(RecvTimeoutError::Timeout) => {}
+            }
+            if last_flush.elapsed() >= Duration::from_millis(GROUP_INTERVAL_MS) {
+                last_flush = Instant::now();
+                self.flush_certified();
             }
             if last_tick.elapsed() >= Duration::from_millis(100) {
                 last_tick = Instant::now();
@@ -181,21 +203,17 @@ impl Gateway {
         if signed.size() > 256 * 1024 {
             return Err("transaction too large".into());
         }
-        if signed.tx.domain().is_some() {
-            if !self.statuses.contains_key(&digest) {
-                self.send_to_consensus(PayloadItem::Contended { tx: signed });
-                self.set_status(digest, TxStatus::Sequencing);
-            }
-            return Ok(SubmitReceipt {
-                digest,
-                route: "consensus".into(),
-                shard: None,
-            });
-        }
+        // Every transaction locks its owned inputs with a lane certificate
+        // first; a contended one then goes through consensus.
         let shard = ShardId::for_account(&signed.tx.sender, self.shared.config.shards);
         let receipt = SubmitReceipt {
             digest,
-            route: "lane".into(),
+            route: if signed.tx.domain().is_some() {
+                "consensus"
+            } else {
+                "lane"
+            }
+            .into(),
             shard: Some(shard.0),
         };
         if self.pending.contains_key(&digest) || self.statuses.contains_key(&digest) {
@@ -242,6 +260,16 @@ impl Gateway {
         Ok(receipt)
     }
 
+    /// Hands every certificate collected since the last flush to consensus
+    /// as one group sharing its batch headers.
+    fn flush_certified(&mut self) {
+        if self.certified.is_empty() {
+            return;
+        }
+        let group = PayloadItem::group(std::mem::take(&mut self.certified));
+        self.send_to_consensus(group);
+    }
+
     fn send_to_consensus(&mut self, item: PayloadItem) {
         let validators = &self.bus.validators;
         if validators.is_empty() {
@@ -262,14 +290,14 @@ impl Gateway {
         let Some(committee) = self.shared.shard_committees.get(&shard) else {
             return;
         };
-        match pending.builder.add(committee, proof, &self.shared.verifier) {
+        match pending.builder.add(committee, proof, &self.verifier) {
             Ok(Some(certificate)) => {
                 let pending = self.pending.remove(&tx).expect("present");
-                self.send_to_consensus(PayloadItem::Owned {
-                    tx: pending.tx,
-                    certificate,
-                });
+                self.certified.push((pending.tx, certificate));
                 self.set_status(tx, TxStatus::Sequencing);
+                if self.certified.len() >= GROUP_LIMIT {
+                    self.flush_certified();
+                }
             }
             Ok(None) => {
                 pending.approvals += 1;

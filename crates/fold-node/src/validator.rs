@@ -7,15 +7,14 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use borsh::{BorshDeserialize, BorshSerialize};
 use fold_assurance::coc::claim_coc;
 use fold_assurance::{decide, Policy};
 use fold_consensus::lanes::verify_lane_certificate;
+use fold_consensus::LaneCertificate;
 use fold_consensus::{
     Action, ApprovalStatus, Authenticator, Committee, Core, HashChain, LaneRequest, LaneValidator,
     Message, SignatureVerifier, TimerKind,
 };
-use fold_core::encode::encode;
 use fold_core::hash::Hash32;
 use fold_core::ids::{AssetId, Pulse, ShardId, TxDigest, ValidatorId};
 use fold_core::merkle;
@@ -25,15 +24,16 @@ use fold_da::{DaHeader, ExtendedSquare};
 use fold_exec::pulse::{
     effects_leaf, execute_pulse, execute_pulse_traced, ChunkTrace, PulseInput, PulseOutput,
 };
-use fold_exec::{GenesisSpec, ObjectData, Owner, State, Transaction};
+use fold_exec::{GenesisSpec, ObjectData, Owner, State};
 use fold_light::{ClaimProof, ObjectProof, PulseCertificate, PulseHeader, ReceiptProof};
+use fold_prover::PulseData;
 use serde_json::{json, Value};
 
 use crate::config::DevnetConfig;
 use crate::gateway::GatewayInput;
 use crate::keys::{NodeAuthenticator, NodeVerifier};
 use crate::owners::StateOwners;
-use crate::payload::{lane_inputs, PayloadItem};
+use crate::payload::{expand, lane_inputs, PayloadItem};
 use crate::pulses::{ClosedPulse, PulseBuilder};
 use crate::storage::{PulseRecord, Snapshot, Wal};
 use crate::view::{AccountView, EventView, PulseView, Query, StatusView, TxView};
@@ -135,21 +135,10 @@ pub struct ProverJob {
     pub output: PulseOutput,
     /// Chunk traces.
     pub traces: Vec<ChunkTrace>,
-}
-
-/// The data a Pulse publishes: transaction bodies in execution order.
-/// Signatures are verified by validators and the proof stacks, never
-/// published (a dual signature is twenty times larger than a transfer).
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct PulseData {
-    /// The Pulse.
-    pub pulse: Pulse,
-    /// The beacon.
-    pub beacon: Hash32,
-    /// Owned-path transactions, as certified.
-    pub owned: Vec<Transaction>,
-    /// Contended transactions, in consensus order.
-    pub contended: Vec<Transaction>,
+    /// The Pulse's published data.
+    pub data: PulseData,
+    /// Lane certificates of the executed transactions, in execution order.
+    pub certificates: Vec<LaneCertificate>,
 }
 
 #[derive(Debug)]
@@ -201,8 +190,9 @@ pub struct Validator {
     executed: (u64, u64, u64),
     anchors: u64,
     proof_cache: Option<(Pulse, SmtSnapshot)>,
+    verifier: NodeVerifier,
     prover: Option<Sender<ProverJob>>,
-    proven: Arc<std::sync::Mutex<BTreeMap<Pulse, Value>>>,
+    proven: Arc<std::sync::Mutex<BTreeMap<Pulse, crate::prover::Proven>>>,
 }
 
 impl std::fmt::Debug for Validator {
@@ -237,7 +227,7 @@ pub struct ValidatorSetup {
     /// Where to send traces, if this validator feeds the prover.
     pub prover: Option<Sender<ProverJob>>,
     /// Verified World Proofs (written by the prover).
-    pub proven: Arc<std::sync::Mutex<BTreeMap<Pulse, Value>>>,
+    pub proven: Arc<std::sync::Mutex<BTreeMap<Pulse, crate::prover::Proven>>>,
 }
 
 impl Validator {
@@ -285,6 +275,7 @@ impl Validator {
             executed: (0, 0, 0),
             anchors: 0,
             proof_cache: None,
+            verifier: shared.verifier.clone(),
             prover: setup.prover,
             proven: setup.proven,
             shared,
@@ -498,31 +489,43 @@ impl Validator {
         let shards = self.shared.config.shards;
         let mut owned = Vec::new();
         let mut contended = Vec::new();
+        let mut certificates: BTreeMap<TxDigest, LaneCertificate> = BTreeMap::new();
         for item in closed.items {
-            match item {
-                PayloadItem::Owned { tx, certificate } => {
-                    if tx.tx.domain().is_some() {
-                        continue;
-                    }
-                    let shard = ShardId::for_account(&tx.tx.sender, shards);
-                    let Some(committee) = self.shared.shard_committees.get(&shard) else {
-                        continue;
-                    };
-                    let inputs = lane_inputs(&tx.tx.inputs);
-                    if verify_lane_certificate(
-                        committee,
-                        &tx.digest(),
-                        &inputs,
-                        &certificate,
-                        &self.shared.verifier,
-                    )
-                    .is_ok()
-                    {
-                        owned.push(tx);
-                    }
+            let PayloadItem::Certified { batches, txs } = item else {
+                continue;
+            };
+            for grouped in &txs {
+                // The certificate must lock exactly the transaction's owned
+                // inputs, with a quorum of its shard's committee.
+                let Some(certificate) = expand(&batches, grouped) else {
+                    continue;
+                };
+                let tx = &grouped.tx;
+                let shard = ShardId::for_account(&tx.tx.sender, shards);
+                let Some(committee) = self.shared.shard_committees.get(&shard) else {
+                    continue;
+                };
+                let inputs = lane_inputs(&tx.tx.inputs);
+                if verify_lane_certificate(
+                    committee,
+                    &tx.digest(),
+                    &inputs,
+                    &certificate,
+                    &self.verifier,
+                )
+                .is_err()
+                {
+                    continue;
                 }
-                PayloadItem::Contended { tx } => contended.push(tx),
-                PayloadItem::Reveal { .. } => {}
+                if certificates.contains_key(&tx.digest()) {
+                    continue;
+                }
+                certificates.insert(tx.digest(), certificate);
+                if tx.tx.domain().is_some() {
+                    contended.push(tx.clone());
+                } else {
+                    owned.push(tx.clone());
+                }
             }
         }
         let input = PulseInput {
@@ -553,18 +556,30 @@ impl Validator {
             self.executed.2 + r as u64,
         );
 
-        // Data availability: the transaction bodies, without signatures.
+        // Data availability: the transaction bodies in execution order,
+        // without signatures.
+        let bodies: BTreeMap<TxDigest, &fold_exec::Transaction> = input
+            .owned
+            .iter()
+            .chain(&input.contended)
+            .map(|t| (t.digest(), &t.tx))
+            .collect();
         let data = PulseData {
             pulse: input.pulse,
             beacon: input.beacon,
-            owned: input.owned.iter().map(|t| t.tx.clone()).collect(),
-            contended: input.contended.iter().map(|t| t.tx.clone()).collect(),
+            transactions: output
+                .order
+                .iter()
+                .filter_map(|d| bodies.get(d).map(|t| (*t).clone()))
+                .collect(),
         };
-        let blob = encode(&data);
-        let square = ExtendedSquare::encode(&blob).ok().map(|square| {
-            let header = square.header();
-            (square, header)
-        });
+        let ordered_certificates: Vec<LaneCertificate> = output
+            .order
+            .iter()
+            .filter_map(|d| certificates.get(d).cloned())
+            .collect();
+        let blob = data.blob();
+        let square = data.availability().ok();
         let (data_root, data_k) = square
             .as_ref()
             .map(|(_, h)| (h.data_root, h.k))
@@ -640,6 +655,8 @@ impl Validator {
                 header,
                 output: output.clone(),
                 traces,
+                data,
+                certificates: ordered_certificates,
             });
         }
 
@@ -707,7 +724,6 @@ impl Validator {
             return;
         }
         if !self
-            .shared
             .verifier
             .verify(&from, &collector.header.signing_digest().0, &signature)
         {
@@ -948,13 +964,20 @@ impl Validator {
                 "digest": self.shared.genesis_digest,
                 "spec": self.shared.genesis,
             })),
-            Query::World(pulse) => self
-                .proven
-                .lock()
-                .map_err(|_| "prover state poisoned".to_string())?
-                .get(&pulse)
-                .cloned()
-                .ok_or_else(|| "no World Proof for that Pulse (yet)".to_string()),
+            Query::World(pulse) => {
+                let entry = self
+                    .proven
+                    .lock()
+                    .map_err(|_| "prover state poisoned".to_string())?
+                    .get(&pulse)
+                    .cloned()
+                    .ok_or_else(|| "no World Proof for that Pulse (yet)".to_string())?;
+                let mut summary = entry.summary;
+                if let (Some(bytes), Value::Object(map)) = (&entry.bytes, &mut summary) {
+                    map.insert("proof".into(), Value::String(hex::encode(bytes.as_slice())));
+                }
+                Ok(summary)
+            }
         }
     }
 }

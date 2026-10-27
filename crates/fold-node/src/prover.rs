@@ -1,8 +1,10 @@
 //! The devnet's prover: folds every Pulse into a World Proof.
 //!
-//! Validator 0 executes with tracing and hands each Pulse's chunk traces to
-//! this thread, which proves every chunk with every proof stack, folds the
-//! leaves into a World Proof, verifies it and publishes it.
+//! Validator 0 executes with tracing and hands each Pulse's chunk traces,
+//! published data and lane certificates to this thread, which proves every
+//! chunk with every proof stack, folds the leaves into a World Proof that
+//! also binds the data's availability root and the certificates, verifies it
+//! and publishes it.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -39,16 +41,28 @@ impl ProverHandle {
     }
 }
 
+/// A Pulse's World Proof as published: a summary and the Borsh bytes.
+#[derive(Clone, Debug)]
+pub struct Proven {
+    /// What was proven (or the error).
+    pub summary: Value,
+    /// The proof's canonical encoding, if proving succeeded.
+    pub bytes: Option<Arc<Vec<u8>>>,
+}
+
+/// World Proofs kept in memory (they include every witness).
+pub const PROOF_HISTORY: usize = 32;
+
 /// The proof stacks the devnet uses.
 pub fn stacks() -> Vec<Box<dyn ProofStack>> {
     vec![Box::new(ReplayStack)]
 }
 
 /// Starts the prover thread.
-pub fn spawn(shared: Arc<Shared>, proven: Arc<Mutex<BTreeMap<Pulse, Value>>>) -> ProverHandle {
+pub fn spawn(shared: Arc<Shared>, proven: Arc<Mutex<BTreeMap<Pulse, Proven>>>) -> ProverHandle {
     let (jobs, inbox): (Sender<ProverJob>, Receiver<ProverJob>) = mpsc::channel();
     let (stop, stopped) = mpsc::channel::<()>();
-    let history = shared.config.history.max(1);
+    let history = shared.config.history.clamp(1, PROOF_HISTORY);
     let thread = thread::Builder::new()
         .name("prover".into())
         .spawn(move || {
@@ -57,11 +71,24 @@ pub fn spawn(shared: Arc<Shared>, proven: Arc<Mutex<BTreeMap<Pulse, Value>>>) ->
             while stopped.try_recv().is_err() {
                 let Ok(job) = inbox.recv_timeout(std::time::Duration::from_millis(100)) else { continue };
                 let started = std::time::Instant::now();
-                let entry = match prove_pulse(&job.output, &job.traces, &refs)
-                    .and_then(|proof| verify_world_proof(&proof, &refs).map(|report| (proof, report)))
-                {
+                let shard_count = shared.config.shards;
+                let mut bytes: Option<Arc<Vec<u8>>> = None;
+                let entry = match prove_pulse(&job.output, &job.traces, &refs, job.data, job.certificates)
+                    .and_then(|proof| {
+                        fold_prover::verify_certificates(
+                            &proof,
+                            &shared.shard_committees,
+                            shard_count,
+                            &shared.verifier,
+                        )?;
+                        verify_world_proof(&proof, &refs).map(|report| (proof, report))
+                    }) {
                     Ok((proof, report)) => {
-                        if proof.after != job.header.after || proof.before != job.header.before {
+                        bytes = Some(Arc::new(encode(&proof)));
+                        if proof.after != job.header.after
+                            || proof.before != job.header.before
+                            || proof.data_root != job.header.data_root
+                        {
                             json!({ "pulse": job.header.pulse, "error": "proof does not match the header" })
                         } else {
                             json!({
@@ -69,19 +96,27 @@ pub fn spawn(shared: Arc<Shared>, proven: Arc<Mutex<BTreeMap<Pulse, Value>>>) ->
                                 "header": job.header.digest(),
                                 "claim": proof.claim_digest(),
                                 "statements_root": proof.statements_root,
+                                "data_root": proof.data_root,
                                 "leaves": report.leaves,
+                                "transactions": report.transactions,
+                                "certificates": proof.certificates.len(),
                                 "stacks": report.stacks,
                                 "simulated": report.simulated,
                                 "bytes": report.bytes,
                                 "proving_ms": started.elapsed().as_millis() as u64,
-                                "proof": hex::encode(encode(&proof)),
                             })
                         }
                     }
                     Err(error) => json!({ "pulse": job.header.pulse, "error": error.to_string() }),
                 };
                 if let Ok(mut proven) = proven.lock() {
-                    proven.insert(job.header.pulse, entry);
+                    proven.insert(
+                        job.header.pulse,
+                        Proven {
+                            summary: entry,
+                            bytes,
+                        },
+                    );
                     while proven.len() > history {
                         let oldest = *proven.keys().next().expect("non-empty");
                         proven.remove(&oldest);

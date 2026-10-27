@@ -135,13 +135,32 @@ impl Authenticator for NodeAuthenticator {
     }
 }
 
-/// Verifies any validator's signatures.
-#[derive(Clone, Default)]
+/// Verifies any validator's signatures, remembering successful checks.
+///
+/// One lane batch signature covers every approval in the batch, so the same
+/// (validator, digest, signature) triple arrives once per transaction; the
+/// cache makes every check after the first a lookup. Each clone starts with
+/// its own empty cache, as each node would.
+#[derive(Default)]
 pub struct NodeVerifier {
     /// Public keys (dual post-quantum mode).
     pub set: ValidatorSet,
     sim: Option<InsecureSimVerifier>,
+    verified: std::sync::Mutex<std::collections::BTreeSet<fold_core::hash::Hash32>>,
 }
+
+impl Clone for NodeVerifier {
+    fn clone(&self) -> Self {
+        NodeVerifier {
+            set: self.set.clone(),
+            sim: self.sim.clone(),
+            verified: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+        }
+    }
+}
+
+/// Successful verifications remembered before the cache is cleared.
+const VERIFIED_CACHE: usize = 200_000;
 
 impl fmt::Debug for NodeVerifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -168,7 +187,10 @@ impl NodeVerifier {
                     let (lattice, hash) = v.public();
                     set.insert(lattice, hash);
                 }
-                NodeVerifier { set, sim: None }
+                NodeVerifier {
+                    set,
+                    ..NodeVerifier::default()
+                }
             }
             SignatureMode::InsecureFast => {
                 let mut sim = InsecureSimVerifier::default();
@@ -176,8 +198,8 @@ impl NodeVerifier {
                     sim.register(&v.sim);
                 }
                 NodeVerifier {
-                    set: ValidatorSet::default(),
                     sim: Some(sim),
+                    ..NodeVerifier::default()
                 }
             }
         }
@@ -186,10 +208,28 @@ impl NodeVerifier {
 
 impl SignatureVerifier for NodeVerifier {
     fn verify(&self, validator: &ValidatorId, message: &[u8], signature: &[u8]) -> bool {
-        match &self.sim {
-            Some(sim) => sim.verify(validator, message, signature),
-            None => self.set.verify(validator, message, signature),
+        if let Some(sim) = &self.sim {
+            return sim.verify(validator, message, signature);
         }
+        let key = fold_core::hash::hash_parts(
+            "fold/node/verified",
+            &[&validator.0 .0, message, signature],
+        );
+        if let Ok(cache) = self.verified.lock() {
+            if cache.contains(&key) {
+                return true;
+            }
+        }
+        let valid = self.set.verify(validator, message, signature);
+        if valid {
+            if let Ok(mut cache) = self.verified.lock() {
+                if cache.len() >= VERIFIED_CACHE {
+                    cache.clear();
+                }
+                cache.insert(key);
+            }
+        }
+        valid
     }
 }
 

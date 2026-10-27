@@ -38,5 +38,6 @@ pub use error::ProveError;
 pub use replay::ReplayStack;
 pub use stack::{LeafProof, ProofStack};
 pub use world::{
-    prove_pulse, verify_world_proof, verify_world_proof_sampled, WorldProof, WorldReport,
+    prove_pulse, verify_certificates, verify_world_proof, verify_world_proof_sampled, PulseData,
+    WorldProof, WorldReport,
 };

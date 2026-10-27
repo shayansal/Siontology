@@ -560,7 +560,9 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "fold-assurance",
+ "fold-consensus",
  "fold-core",
+ "fold-da",
  "fold-exec",
  "proptest",
  "serde",
@@ -578,6 +580,7 @@ dependencies = [
  "fold-crypto",
  "fold-exec",
  "proptest",
+ "thiserror",
 ]
 
 [[package]]

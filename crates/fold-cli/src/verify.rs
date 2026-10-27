@@ -149,6 +149,7 @@ pub fn verify_pulse(
                 if proof.before != header.before
                     || proof.after != header.after
                     || proof.receipts_root != header.receipts_root
+                    || proof.data_root != header.data_root
                 {
                     return Err(CliError::Verification(
                         "World Proof does not match the certified header".into(),
@@ -158,7 +159,8 @@ pub fn verify_pulse(
                 let world_report = verify_world_proof(&proof, &stacks)
                     .map_err(|e| CliError::Verification(e.to_string()))?;
                 report.push(format!(
-                    "world proof: {} leaves re-verified by stack {:?} ({} KB{}) ✓",
+                    "world proof: {} leaves re-verified by stack {:?}; the published data is what executed and \
+                     encodes to the certified data root ({} KB{}) ✓",
                     world_report.leaves,
                     world_report.stacks,
                     world_report.bytes / 1024,
@@ -168,6 +170,20 @@ pub fn verify_pulse(
                         ""
                     }
                 ));
+                if insecure {
+                    report
+                        .push("lane certificates: SKIPPED — insecure simulation signatures".into());
+                } else {
+                    let shards: std::collections::BTreeMap<fold_core::ids::ShardId, Committee> =
+                        parse(validators["shards"].clone())?;
+                    let shard_count = ledger.chain_config()?.shard_count;
+                    fold_prover::verify_certificates(&proof, &shards, shard_count, &keys)
+                        .map_err(|e| CliError::Verification(e.to_string()))?;
+                    report.push(format!(
+                        "lane certificates: all {} executed transactions locked their inputs with a shard quorum ✓",
+                        proof.certificates.len()
+                    ));
+                }
             }
             Ok(entry) => report.push(format!("world proof: unavailable ({})", entry["error"])),
             Err(e) => report.push(format!("world proof: unavailable ({e})")),

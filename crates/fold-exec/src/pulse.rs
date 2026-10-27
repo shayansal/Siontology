@@ -239,7 +239,12 @@ pub fn chain_effects_leaf(acc: &Hash32, leaf: &Hash32) -> Hash32 {
 /// Digest of an ordered list of transactions.
 pub fn steps_digest(transactions: &[SignedTransaction]) -> Hash32 {
     let digests: Vec<TxDigest> = transactions.iter().map(|t| t.digest()).collect();
-    hash_domain("fold/exec/steps", &encode(&digests))
+    steps_digest_of(&digests)
+}
+
+/// Digest of an ordered list of transaction digests (see [`steps_digest`]).
+pub fn steps_digest_of(digests: &[TxDigest]) -> Hash32 {
+    hash_domain("fold/exec/steps", &encode(&digests.to_vec()))
 }
 
 /// Status counts: (success, failed, rejected).

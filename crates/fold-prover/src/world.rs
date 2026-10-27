@@ -1,15 +1,76 @@
 //! Folding leaf proofs into a World Proof.
+//!
+//! A World Proof for Pulse `t` establishes that the transition from the
+//! world before to the world after is valid, and binds three things a light
+//! client relies on:
+//!
+//! - **Execution**: the chunk statements chain from `before` to `after`, the
+//!   deferred phase consumes exactly the effects the transactions deferred,
+//!   and every leaf verifies under every stack.
+//! - **Data**: the Pulse's published data (transaction bodies in execution
+//!   order) is exactly what the statements executed, and its
+//!   two-dimensional Reed–Solomon encoding has the committed data root — so
+//!   availability sampling against that root samples a *correct* encoding
+//!   (the property ZODA-style designs prove inside the World Proof).
+//! - **Certificates**: every executed transaction carried a lane certificate
+//!   from its shard's committee locking its owned inputs
+//!   ([`verify_certificates`]), so nothing certified final was overtaken.
+
+use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use fold_consensus::lanes::canonical_inputs;
+use fold_consensus::{
+    verify_lane_certificate, Committee, LaneCertificate, ObjectRef as LaneRef, SignatureVerifier,
+};
+use fold_core::encode::encode;
 use fold_core::hash::{hash_parts, Hash32};
-use fold_core::ids::Pulse;
+use fold_core::ids::{Pulse, ShardId, TxDigest};
 use fold_core::merkle;
-use fold_exec::pulse::{chain_effects_leaf, effects_leaf, ChunkStatement, ChunkTrace, PulseOutput};
-use fold_exec::WorldCommitment;
+use fold_da::{DaHeader, ExtendedSquare};
+use fold_exec::pulse::{
+    chain_effects_leaf, effects_leaf, steps_digest_of, ChunkStatement, ChunkTrace, PulseOutput,
+};
+use fold_exec::{Transaction, WorldCommitment};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProveError;
 use crate::stack::{LeafProof, ProofStack};
+
+/// The data a Pulse publishes: transaction bodies in execution order.
+/// Signatures are verified by validators and proven, never published (a
+/// dual post-quantum signature is twenty times larger than a transfer).
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
+pub struct PulseData {
+    /// The Pulse.
+    pub pulse: Pulse,
+    /// The Pulse's beacon.
+    pub beacon: Hash32,
+    /// Executed transactions, in execution order.
+    pub transactions: Vec<Transaction>,
+}
+
+impl PulseData {
+    /// The canonical bytes that are erasure-coded.
+    pub fn blob(&self) -> Vec<u8> {
+        encode(self)
+    }
+
+    /// The extended data square and its header.
+    pub fn availability(&self) -> Result<(ExtendedSquare, DaHeader), ProveError> {
+        let square = ExtendedSquare::encode(&self.blob())
+            .map_err(|e| ProveError::Malformed(format!("data: {e}")))?;
+        let header = square.header();
+        Ok((square, header))
+    }
+
+    /// Digests of the transactions, in order.
+    pub fn digests(&self) -> Vec<TxDigest> {
+        self.transactions.iter().map(Transaction::digest).collect()
+    }
+}
 
 /// The proof that a Pulse's transition is valid.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -30,16 +91,26 @@ pub struct WorldProof {
     pub statements_root: Hash32,
     /// For each statement, one leaf proof per stack.
     pub proofs: Vec<Vec<LeafProof>>,
+    /// The Pulse's published data.
+    pub data: PulseData,
+    /// The data's availability root (2D Reed–Solomon, hash commitments).
+    pub data_root: Hash32,
+    /// Width `k` of the data square.
+    pub data_k: u32,
+    /// Transactions per transaction chunk (the deferred phase has none).
+    pub chunk_sizes: Vec<u32>,
+    /// One lane certificate per executed transaction, in execution order.
+    pub certificates: Vec<LaneCertificate>,
 }
 
 impl WorldProof {
     /// Encoded size in bytes.
     pub fn size(&self) -> usize {
-        fold_core::encode::encode(self).len()
+        encode(self).len()
     }
 
     /// Digest of what the proof establishes: (Pulse, before, after,
-    /// receipts root, statements root).
+    /// receipts root, statements root, data root).
     pub fn claim_digest(&self) -> Hash32 {
         hash_parts(
             "fold/prover/world-claim",
@@ -49,6 +120,7 @@ impl WorldProof {
                 &self.after.digest().0,
                 &self.receipts_root.0,
                 &self.statements_root.0,
+                &self.data_root.0,
             ],
         )
     }
@@ -69,6 +141,8 @@ pub struct WorldReport {
     pub simulated: bool,
     /// Proof size in bytes.
     pub bytes: usize,
+    /// Transactions the Pulse executed.
+    pub transactions: usize,
 }
 
 fn statements_root(statements: &[ChunkStatement]) -> Hash32 {
@@ -79,11 +153,15 @@ fn statements_root(statements: &[ChunkStatement]) -> Hash32 {
     merkle::root(&leaves)
 }
 
-/// Proves a Pulse with every given stack.
+/// Proves a Pulse with every given stack. `data` is the Pulse's published
+/// data and `certificates` the lane certificates of its transactions, both
+/// in execution order.
 pub fn prove_pulse(
     output: &PulseOutput,
     traces: &[ChunkTrace],
     stacks: &[&dyn ProofStack],
+    data: PulseData,
+    certificates: Vec<LaneCertificate>,
 ) -> Result<WorldProof, ProveError> {
     if stacks.is_empty() {
         return Err(ProveError::Malformed("no proof stacks".into()));
@@ -97,6 +175,7 @@ pub fn prove_pulse(
         }
         proofs.push(leaf);
     }
+    let (_, header) = data.availability()?;
     let proof = WorldProof {
         pulse: output.pulse,
         before: output.before,
@@ -106,8 +185,18 @@ pub fn prove_pulse(
         statements_root: statements_root(&statements),
         statements,
         proofs,
+        data,
+        data_root: header.data_root,
+        data_k: header.k,
+        chunk_sizes: traces
+            .iter()
+            .filter(|t| !t.statement.deferred_phase)
+            .map(|t| t.transactions.len() as u32)
+            .collect(),
+        certificates,
     };
     check_structure(&proof)?;
+    check_data(&proof)?;
     Ok(proof)
 }
 
@@ -181,6 +270,104 @@ fn check_structure(proof: &WorldProof) -> Result<(), ProveError> {
     Ok(())
 }
 
+/// Checks that the published data is exactly what the statements executed
+/// and that its encoding has the committed data root.
+fn check_data(proof: &WorldProof) -> Result<(), ProveError> {
+    let data = &proof.data;
+    let first = proof
+        .statements
+        .first()
+        .expect("checked by check_structure");
+    if data.pulse != proof.pulse || data.beacon != first.beacon {
+        return Err(ProveError::Chain("data is for another Pulse".into()));
+    }
+    let digests = data.digests();
+    if digests.len() != proof.receipt_leaves.len() {
+        return Err(ProveError::Chain(
+            "one receipt per published transaction".into(),
+        ));
+    }
+    if proof.chunk_sizes.len() + 1 != proof.statements.len() {
+        return Err(ProveError::Chain("one size per transaction chunk".into()));
+    }
+    let mut offset = 0usize;
+    for (statement, size) in proof.statements.iter().zip(&proof.chunk_sizes) {
+        let end = offset + *size as usize;
+        let chunk = digests
+            .get(offset..end)
+            .ok_or_else(|| ProveError::Chain("chunk sizes exceed the data".into()))?;
+        if steps_digest_of(chunk) != statement.steps {
+            return Err(ProveError::Chain(format!(
+                "chunk {} executed other transactions than the data publishes",
+                statement.index
+            )));
+        }
+        offset = end;
+    }
+    if offset != digests.len() {
+        return Err(ProveError::Chain(
+            "data publishes unexecuted transactions".into(),
+        ));
+    }
+    let (_, header) = data.availability()?;
+    if header.data_root != proof.data_root || header.k != proof.data_k {
+        return Err(ProveError::Chain(
+            "data root does not match the encoding".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Checks that every executed transaction carried a lane certificate from
+/// its shard's committee covering exactly its owned inputs.
+pub fn verify_certificates<V: SignatureVerifier + ?Sized>(
+    proof: &WorldProof,
+    committees: &BTreeMap<ShardId, Committee>,
+    shard_count: u16,
+    verifier: &V,
+) -> Result<(), ProveError> {
+    if proof.certificates.len() != proof.data.transactions.len() {
+        return Err(ProveError::Chain("one certificate per transaction".into()));
+    }
+    for (tx, certificate) in proof.data.transactions.iter().zip(&proof.certificates) {
+        let shard = ShardId::for_account(&tx.sender, shard_count);
+        let committee = committees
+            .get(&shard)
+            .ok_or_else(|| ProveError::Chain(format!("no committee for shard {}", shard.0)))?;
+        let inputs: Vec<LaneRef> = tx
+            .inputs
+            .iter()
+            .map(|r| LaneRef {
+                id: r.id,
+                version: r.version,
+            })
+            .collect();
+        verify_lane_certificate(
+            committee,
+            &tx.digest(),
+            &canonical_inputs(&inputs),
+            certificate,
+            &Verifier(verifier),
+        )
+        .map_err(|e| ProveError::Chain(format!("certificate of {}: {e}", tx.digest())))?;
+    }
+    Ok(())
+}
+
+/// Adapts an unsized verifier to the sized one the lane check expects.
+struct Verifier<'a, V: SignatureVerifier + ?Sized>(&'a V);
+
+impl<V: SignatureVerifier + ?Sized> SignatureVerifier for Verifier<'_, V> {
+    fn verify(
+        &self,
+        validator: &fold_core::ids::ValidatorId,
+        message: &[u8],
+        signature: &[u8],
+    ) -> bool {
+        self.0.verify(validator, message, signature)
+    }
+}
+
 fn verify_leaf(
     proof: &WorldProof,
     index: usize,
@@ -197,21 +384,24 @@ fn verify_leaf(
     Ok(())
 }
 
-/// Verifies a World Proof: its structure, and every leaf under every
-/// required stack.
+/// Verifies a World Proof: its structure, its data binding, and every leaf
+/// under every required stack. (Certificates need the committees:
+/// [`verify_certificates`].)
 pub fn verify_world_proof(
     proof: &WorldProof,
     stacks: &[&dyn ProofStack],
 ) -> Result<WorldReport, ProveError> {
     check_structure(proof)?;
+    check_data(proof)?;
     for index in 0..proof.statements.len() {
         verify_leaf(proof, index, stacks)?;
     }
     Ok(report(proof, stacks, proof.statements.len()))
 }
 
-/// Verifies a World Proof's structure fully and `samples` leaves chosen by
-/// `seed` (always including the deferred phase) under every required stack.
+/// Verifies a World Proof's structure and data binding fully, and `samples`
+/// leaves chosen by `seed` (always including the deferred phase) under
+/// every required stack.
 pub fn verify_world_proof_sampled(
     proof: &WorldProof,
     stacks: &[&dyn ProofStack],
@@ -219,6 +409,7 @@ pub fn verify_world_proof_sampled(
     seed: u64,
 ) -> Result<WorldReport, ProveError> {
     check_structure(proof)?;
+    check_data(proof)?;
     let leaves = proof.statements.len();
     let mut chosen = std::collections::BTreeSet::new();
     chosen.insert(leaves - 1);
@@ -245,6 +436,7 @@ fn report(proof: &WorldProof, stacks: &[&dyn ProofStack], verified: usize) -> Wo
         stacks: stacks.iter().map(|s| s.name().to_string()).collect(),
         simulated: stacks.iter().any(|s| s.simulated()),
         bytes: proof.size(),
+        transactions: proof.data.transactions.len(),
     }
 }
 
@@ -277,12 +469,29 @@ mod tests {
         }
         chain.pulse(txs).unwrap();
         let record = chain.history.last().unwrap().clone();
-        let proof = prove_pulse(&record.output, &record.traces, &[&ReplayStack]).unwrap();
+        let transactions = record
+            .traces
+            .iter()
+            .flat_map(|t| t.transactions.iter().map(|s| s.tx.clone()))
+            .collect();
+        let data = PulseData {
+            pulse: record.output.pulse,
+            beacon: record.output.beacon,
+            transactions,
+        };
+        let proof = prove_pulse(
+            &record.output,
+            &record.traces,
+            &[&ReplayStack],
+            data,
+            Vec::new(),
+        )
+        .unwrap();
         (chain, proof)
     }
 
     #[test]
-    fn world_proofs_verify_and_bind_receipts() {
+    fn world_proofs_verify_and_bind_receipts_and_data() {
         let (_, proof) = proven_chain();
         assert_eq!(
             proof.statements.len(),
@@ -292,6 +501,7 @@ mod tests {
         let report = verify_world_proof(&proof, &[&ReplayStack]).unwrap();
         assert!(report.simulated);
         assert_eq!(report.verified_leaves, 3);
+        assert_eq!(report.transactions, 3);
         let sampled = verify_world_proof_sampled(&proof, &[&ReplayStack], 1, 9).unwrap();
         assert_eq!(sampled.verified_leaves, 1);
     }
@@ -314,5 +524,31 @@ mod tests {
         let mut bad_leaf = proof.clone();
         bad_leaf.proofs[0][0].body.truncate(10);
         assert!(verify_world_proof(&bad_leaf, &[&ReplayStack]).is_err());
+
+        let mut other_data = proof.clone();
+        other_data.data.transactions.swap(0, 1);
+        assert!(
+            verify_world_proof(&other_data, &[&ReplayStack]).is_err(),
+            "published data must match execution"
+        );
+
+        let mut wrong_root = proof.clone();
+        wrong_root.data_root = Hash32::ZERO;
+        assert!(
+            verify_world_proof(&wrong_root, &[&ReplayStack]).is_err(),
+            "data root must match the encoding"
+        );
+
+        let mut no_certificates = proof.clone();
+        no_certificates.certificates.clear();
+        assert!(verify_certificates(&no_certificates, &BTreeMap::new(), 1, &NoKeys).is_err());
+    }
+
+    struct NoKeys;
+
+    impl SignatureVerifier for NoKeys {
+        fn verify(&self, _: &fold_core::ids::ValidatorId, _: &[u8], _: &[u8]) -> bool {
+            false
+        }
     }
 }
