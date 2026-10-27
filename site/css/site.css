@@ -206,7 +206,7 @@ hr {
 
 .skip-link {
   position: absolute;
-  left: var(--gutter);
+  left: calc(var(--gutter) + env(safe-area-inset-left, 0px));
   top: -100px;
   z-index: 100;
   padding: var(--space-2) var(--space-4);
@@ -216,7 +216,7 @@ hr {
 }
 
 .skip-link:focus {
-  top: var(--space-2);
+  top: calc(var(--space-2) + env(safe-area-inset-top, 0px));
 }
 
 .muted {
@@ -247,14 +247,26 @@ hr {
   width: 100%;
   max-width: var(--page-max);
   margin-inline: auto;
-  padding-inline: var(--gutter);
+  /* The gutter also clears a phone's side insets (notch, system bar). */
+  padding-left: max(var(--gutter), env(safe-area-inset-left, 0px));
+  padding-right: max(var(--gutter), env(safe-area-inset-right, 0px));
 }
 
 /* --------------------------------------------------------------- header */
 
+/* Paints the band above the sticky header where a phone's status bar sits. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto;
+  height: env(safe-area-inset-top, 0px);
+  z-index: 51;
+  background: var(--color-bg);
+}
+
 .site-header {
   position: sticky;
-  top: 0;
+  top: env(safe-area-inset-top, 0px);
   z-index: 50;
   background: var(--color-bg);
   border-bottom: var(--rule-hair) solid var(--color-rule);
@@ -420,7 +432,9 @@ html:not(.js) .hero-figure figcaption {
     margin: 0;
     background: var(--color-bg);
     border-bottom: var(--rule-hair) solid var(--color-rule);
-    padding: var(--space-2) var(--gutter) var(--space-5);
+    padding-block: var(--space-2) var(--space-5);
+    padding-left: max(var(--gutter), env(safe-area-inset-left, 0px));
+    padding-right: max(var(--gutter), env(safe-area-inset-right, 0px));
   }
 
   .js .site-nav.is-open {

@@ -16,7 +16,7 @@ git-repository-url = "https://github.com/ColdAI-org/siontology"
 edit-url-template = "https://github.com/ColdAI-org/siontology/edit/main/docs/book/{path}"
 additional-css = ["theme/custom.css"]
 default-theme = "light"
-preferred-dark-theme = "navy"
+preferred-dark-theme = "coal"
 no-section-label = false
 
 [output.html.search]

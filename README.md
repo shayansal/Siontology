@@ -11,9 +11,14 @@ a validity proof folded over every Pulse, and a knowledge layer in which
 every claim states what it would cost to falsify.
 
 This is a devnet-scale reference implementation in Rust. Some parts of the
-architecture are simulated or left out, most importantly succinct proofs.
+architecture are simulated or left out, most importantly succinct proofs
+and networking between machines.
 [`docs/implementation-status.md`](docs/implementation-status.md) lists every
 simplification.
+
+Website: [siontology.org](https://siontology.org) ·
+Documentation: [the Siontology book](docs/book/src/introduction.md) ·
+Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architecture.md)
 
 ## What it does
 
@@ -87,6 +92,7 @@ Or run a devnet and use it from another terminal:
 
 ```bash
 sion devnet                          # 4 validators, 2 shards, API on 127.0.0.1:8730
+                                     # (--standby 1 --epoch-length 24 for staking and epochs)
 sion status
 sion keys new dana                   # a wallet in ~/.sion/wallets (or $SION_HOME/wallets)
 sion faucet dana 100
@@ -153,14 +159,23 @@ availability and proving) and narrates what the ledger established.
 
 ## Documentation
 
+- [The Siontology book](docs/book/src/SUMMARY.md): getting started,
+  concepts, guides, a reference for the CLI, the HTTP API and the MCP tools,
+  the architecture of the code, and the security model. Build it with
+  `mdbook build docs/book`; it is published at
+  [siontology.org/docs](https://siontology.org/docs/).
+- [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architecture.md):
+  the architecture paper.
 - [Implementation status](docs/implementation-status.md): what is built,
   simplified, simulated or missing, and the trust assumptions the
   implementation adds.
-- [State transition specification](docs/spec/state-transition.md): the
-  normative description both proof stacks implement.
-- [Benchmarks](docs/benchmarks.md): measured costs, and what they imply.
+- [State transition specification](docs/spec/state-transition.md) (v1.4):
+  the normative description both proof stacks implement.
+- [Benchmarks](docs/book/src/guides/benchmarks.md): measured costs, and what
+  they imply.
 - [Implementation plan](docs/implementation-plan.md): how the architecture
   maps onto crates.
+- [Brand guidelines](brand/guidelines.md) and the [website](site/) source.
 - [`AGENTS.md`](AGENTS.md): rules for anyone, human or AI, changing the code.
 
 ## Development
@@ -174,5 +189,20 @@ cargo test --workspace
 The test suite includes property tests for the Assurance Algebra, the
 linear-programming certificates and the state machine, a deterministic
 consensus simulator with adversarial network phases, scenario tests for
-every transaction kind, end-to-end devnet tests with dual post-quantum
-signatures, and the demos.
+every transaction kind, differential tests between the two proof stacks,
+end-to-end devnet tests with dual post-quantum signatures, and the demos.
+
+## Contributing and community
+
+- [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) ·
+  [Governance](GOVERNANCE.md) · [Changelog](CHANGELOG.md)
+- Security issues: see [SECURITY.md](SECURITY.md); please do not open public
+  issues for vulnerabilities.
+- The name and marks: [TRADEMARKS.md](TRADEMARKS.md).
+
+## Licence
+
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE)
+or the [MIT licence](LICENSE-MIT), at your option. Unless you state
+otherwise, any contribution you submit for inclusion is licensed as above,
+without any additional terms or conditions.

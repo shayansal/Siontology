@@ -1,6 +1,149 @@
-/* Siontology book: the default mdBook theme, made monochrome and a little
-   easier to read. Colours come from the theme's own variables, so the
-   light and dark themes both keep working. */
+/* Siontology book: the default mdBook theme in the Siontology identity:
+   Archivo and Fragment Mono, black and white, no hue. Colours come from the
+   theme's own variables, so every theme keeps working; Light and Coal carry
+   the brand palette, and Coal is the dark default.
+
+   The fonts are the website's. The book is served at /docs/, so they are
+   two levels up from theme/custom.css; built on its own, the book falls
+   back to system fonts. */
+
+@font-face {
+    font-family: "Archivo";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    font-stretch: 62% 125%;
+    src: url("../../fonts/archivo-latin-wdth-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+    font-family: "Archivo";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    font-stretch: 62% 125%;
+    src: url("../../fonts/archivo-latin-ext-wdth-normal.woff2") format("woff2");
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+    font-family: "Fragment Mono";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 400;
+    src: url("../../fonts/fragment-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "Siontology Symbols";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url("../../fonts/siontology-symbols.woff2") format("woff2");
+}
+
+:root {
+    --mono-font: "Fragment Mono", "Siontology Symbols", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+html {
+    font-family: "Archivo", "Siontology Symbols", ui-sans-serif, system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+
+.menu-title {
+    font-stretch: 112%;
+    font-weight: 560;
+    letter-spacing: -0.01em;
+}
+
+/* The brand palette: white with black ink, and black with near-white ink. */
+.light {
+    --bg: #ffffff;
+    --fg: #000000;
+    --sidebar-bg: #f4f4f4;
+    --sidebar-fg: #3d3d3d;
+    --sidebar-non-existant: #676767;
+    --sidebar-active: #000000;
+    --sidebar-spacer: #dcdcdc;
+    --scrollbar: #a3a3a3;
+    --icons: #676767;
+    --icons-hover: #000000;
+    --links: #000000;
+    --inline-code-color: #000000;
+    --theme-popup-bg: #ffffff;
+    --theme-popup-border: #a3a3a3;
+    --theme-hover: #f4f4f4;
+    --quote-bg: #f4f4f4;
+    --quote-border: #dcdcdc;
+    --warning-border: #000000;
+    --table-border-color: #dcdcdc;
+    --table-header-bg: #f4f4f4;
+    --table-alternate-bg: #f4f4f4;
+    --searchbar-border-color: #a3a3a3;
+    --searchbar-bg: #ffffff;
+    --searchbar-fg: #000000;
+    --searchbar-shadow-color: transparent;
+    --searchresults-header-fg: #3d3d3d;
+    --searchresults-border-color: #dcdcdc;
+    --searchresults-li-bg: #f4f4f4;
+    --search-mark-bg: #dcdcdc;
+}
+
+.coal {
+    --bg: #000000;
+    --fg: #f5f5f5;
+    --sidebar-bg: #0e0e0e;
+    --sidebar-fg: #b8b8b8;
+    --sidebar-non-existant: #848484;
+    --sidebar-active: #ffffff;
+    --sidebar-spacer: #262626;
+    --scrollbar: #4d4d4d;
+    --icons: #848484;
+    --icons-hover: #f5f5f5;
+    --links: #f5f5f5;
+    --inline-code-color: #f5f5f5;
+    --theme-popup-bg: #0e0e0e;
+    --theme-popup-border: #4d4d4d;
+    --theme-hover: #262626;
+    --quote-bg: #0e0e0e;
+    --quote-border: #262626;
+    --warning-border: #f5f5f5;
+    --table-border-color: #262626;
+    --table-header-bg: #0e0e0e;
+    --table-alternate-bg: #0e0e0e;
+    --searchbar-border-color: #4d4d4d;
+    --searchbar-bg: #0e0e0e;
+    --searchbar-fg: #f5f5f5;
+    --searchbar-shadow-color: transparent;
+    --searchresults-header-fg: #b8b8b8;
+    --searchresults-border-color: #262626;
+    --searchresults-li-bg: #0e0e0e;
+    --search-mark-bg: #4d4d4d;
+}
+
+/* Code in one ink, comments fainter: colour is kept for refusals. */
+.content pre code.hljs,
+.content pre code.hljs span {
+    color: var(--fg);
+}
+
+.content pre code.hljs .hljs-comment,
+.content pre code.hljs .hljs-quote,
+.content pre code.hljs .hljs-meta {
+    color: var(--sidebar-non-existant);
+    font-style: normal;
+}
+
+.content pre code.hljs .hljs-keyword,
+.content pre code.hljs .hljs-built_in {
+    font-weight: 600;
+}
+
+.content pre > code.hljs {
+    background: var(--quote-bg);
+}
 
 :root {
     --content-max-width: 820px;
@@ -44,8 +187,19 @@
 .content h3,
 .content h4 {
     color: var(--fg);
-    font-weight: 600;
+    font-stretch: 108%;
+    font-weight: 580;
     letter-spacing: -0.01em;
+}
+
+.content h1 {
+    font-stretch: 112%;
+    line-height: 1.15;
+}
+
+.content h2,
+.content h3 {
+    line-height: 1.25;
 }
 
 .content h1 {

@@ -78,6 +78,7 @@
             <tr><th scope="row"><code>impl:reliable-handover</code></th><td>At an epoch boundary each validator starts a new consensus session, relying on the in-process network to deliver every message already sent. A real network needs a drain period.</td></tr>
             <tr><th scope="row"><code>impl:slashed-seat</code></th><td>A slashed validator keeps its seat, and its weight in quorums, until the epoch ends.</td></tr>
             <tr><th scope="row"><code>impl:evidence-scope</code></th><td>Equivocation evidence is not bound to one chain, so a validator&rsquo;s keys must not be used on another network.</td></tr>
+            <tr><th scope="row"><code>impl:lock-handover</code></th><td>Lane certificates are not drained when a shard&rsquo;s committee changes, so certificate finality for owned transactions holds within one committee&rsquo;s term. An owner who signs two spends could get the second certified by a committee that has been fully replaced.</td></tr>
             <tr><th scope="row"><code>impl:hash-chain-beacon</code></th><td>The beacon is a hash-chain commit and reveal; the last validator to reveal can bias it by withholding, at the cost of being seen.</td></tr>
             <tr><th scope="row"><code>impl:public-amounts</code></th><td>Amounts and balances are visible to everyone.</td></tr>
             <tr><th scope="row"><code>impl:unaudited-pq-crates</code></th><td>The FIPS 203, 204 and 205 implementations are unaudited pure-Rust crates.</td></tr>

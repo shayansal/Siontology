@@ -311,7 +311,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
     <section class="topic" id="staking" aria-labelledby="staking-title">
       <h2 id="staking-title">Validators, stake and epochs</h2>
       <div class="prose">
-        <p>Who certifies is part of the state transition. The validator set is an object in the state: a validator joins by staking with a proof that it holds its keys, takes its seat at the next epoch boundary, and leaves at a boundary, withdrawing its stake after an unbonding period. At each boundary the state pays the epoch&rsquo;s validators a share of the fees by weight, picks the next active set by stake and reseeds the sampling of lane committees with the beacon. Every validator derives the same committees from its own copy of the state; nothing about them is configured.</p>
+        <p>Who certifies is part of the state transition. The validator set is an object in the state: a validator joins by staking with a proof that it holds its keys, takes its seat at the next epoch boundary, and leaves at a boundary, withdrawing its stake after an unbonding period. At each boundary the state pays the epoch&rsquo;s validators a share of the fees collected during the epoch, by weight, picks the next active set by stake and reseeds the sampling of lane committees with the beacon. Every validator derives the same committees from its own copy of the state; nothing about them is configured.</p>
         <p>Equivocation is signed evidence that anyone can submit: two consensus headers for one round, or two lane approvals of one object version. The whole stake is forfeited, the reporter receives a share of it (5 % on the devnet), and the validator loses its seat at the next boundary. A light client that pins the genesis follows the committee from epoch to epoch through boundary proofs.</p>
         <p>On the devnet, validators stake devnet USD, which has no value. Siontology has no token and nothing is on offer. Fees are paid in stablecoins.</p>
       </div>
@@ -351,7 +351,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
           <thead><tr><th scope="col">Parameter</th><th scope="col">Default</th></tr></thead>
           <tbody>
             <tr><th scope="row">Validators and shards</th><td>4 validators, 2 shards, 4 seats per shard committee</td></tr>
-            <tr><th scope="row">Pulse</th><td>About once a second, with 4 consensus rounds per Pulse</td></tr>
+            <tr><th scope="row">Pulse</th><td>4 consensus rounds per Pulse; on two shared cores with dual post-quantum signatures, one Pulse every 3.9 seconds was measured</td></tr>
             <tr><th scope="row">Lane approvals</th><td>Batched and signed every 25 ms</td></tr>
             <tr><th scope="row">Proving</th><td>16 transactions per chunk, replay proofs from two stacks</td></tr>
             <tr><th scope="row">Forced inclusion</th><td>8 Pulses to execute a forced intent</td></tr>

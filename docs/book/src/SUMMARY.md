@@ -95,3 +95,7 @@
 - [FAQ](project/faq.md)
 - [Glossary](project/glossary.md)
 - [Roadmap](project/roadmap.md)
+
+# Papers
+
+- [Neo-Blockchains: The Fold Architecture](papers/architecture.md)
