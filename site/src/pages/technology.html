@@ -1,0 +1,242 @@
+<!--{"file": "technology.html", "title": "Technology | Siontology", "description": "How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, forced inclusion and staking.", "nav": "technology", "scenes": ["two-sorted", "lanes", "dag", "da", "fold", "assurance", "clearing", "charters", "forced", "staking"]}-->
+<header class="page-head wrap">
+  <h1>How Siontology works.</h1>
+  <p class="lede">A neo-blockchain pays for ordering only where the mathematics requires it, prices every assumption a claim rests on, and folds every proof into one. Each mechanism below comes with the demo, specification or code behind it, and with its status in the reference implementation.</p>
+</header>
+
+<div class="wrap with-toc">
+  <aside class="toc" data-toc aria-labelledby="toc-title">
+    <div>
+      <h2 id="toc-title">On this page</h2>
+      <ol>
+        <li><a href="#lifecycle">Lifecycle of a claim</a></li>
+        <li><a href="#two-sorted">Two sorts of state</a></li>
+        <li><a href="#lanes">Linear Lanes</a></li>
+        <li><a href="#escrow">Escrow Lanes</a></li>
+        <li><a href="#consensus">Contention Consensus</a></li>
+        <li><a href="#da">Data availability</a></li>
+        <li><a href="#fold">The Fold</a></li>
+        <li><a href="#finality">Two levels of finality</a></li>
+        <li><a href="#assurance">The Assurance Algebra</a></li>
+        <li><a href="#clearing">Verifiable Clearing</a></li>
+        <li><a href="#charters">Agent Charters</a></li>
+        <li><a href="#forced">Forced inclusion</a></li>
+        <li><a href="#staking">Validators, stake and epochs</a></li>
+        <li><a href="#targets">Targets and the devnet</a></li>
+      </ol>
+    </div>
+  </aside>
+
+  <div>
+    <section class="topic" id="lifecycle" aria-labelledby="lifecycle-title">
+      <h2 id="lifecycle-title">Lifecycle of a claim</h2>
+      <div class="prose">
+        <p>A claim is the network&rsquo;s unit of knowledge: a statement over committed data, with its evidence, its issuer, a formula of the assumptions it rests on, the bonds behind it and a window in which it can be challenged. Every claim goes through the same steps.</p>
+      </div>
+      <ol class="steps">
+        <li><div><strong>Issue</strong><p>A person, device, program or agent creates the claim and signs it under its account or Agent Charter.</p></div></li>
+        <li><div><strong>Check evidence</strong><p>Proofs are verified; attestations are checked and their assumptions written into the claim&rsquo;s trust formula.</p></div></li>
+        <li><div><strong>Publish</strong><p>The payload, or a commitment to it, lands on the data layer and becomes available to sample.</p></div></li>
+        <li><div><strong>Order only if needed</strong><p>A claim that spends or locks a resource, such as a fee, a payment or a bond, takes a lane certificate, or a consensus slot if the resource is contended. Pure knowledge skips this step.</p></div></li>
+        <li><div><strong>Join the knowledge log</strong><p>The claim and its formula are appended to the grow-only knowledge log.</p></div></li>
+        <li><div><strong>Fold</strong><p>The next World Proof covers the claim, its formula and its bonds.</p></div></li>
+        <li><div><strong>Use</strong><p>A consumer checks the claim against the World Proof, computes its cost of corruption under its own policy, and acts or declines.</p></div></li>
+        <li><div><strong>Challenge</strong><p>Until the window closes, anyone can post counter-evidence. A proven falsehood slashes the bonds behind the claim and compensates those who relied on it.</p></div></li>
+      </ol>
+    </section>
+
+    <section class="topic" id="two-sorted" aria-labelledby="two-sorted-title">
+      <h2 id="two-sorted-title">Two sorts of state</h2>
+      <div class="prose">
+        <p>Every operation either adds knowledge or consumes a resource, and only consumption ever needs coordination. Publishing a verified claim never invalidates another claim; spending a coin removes the possibility of a second spend. The CALM theorem says exactly this: a distributed program can run without coordination when it only ever adds. Siontology makes the split part of its state model, and derives each transaction&rsquo;s coordination class from what it touches; the sender never declares it.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <caption>Coordination classes, from the architecture paper. The finality targets are design targets.</caption>
+          <thead><tr><th scope="col">Class</th><th scope="col">Example</th><th scope="col">What must be prevented</th><th scope="col">Mechanism</th><th scope="col">Finality target</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Knowledge</th><td>Issue a claim, attest, publish a proof</td><td>Nothing: claims never conflict</td><td>Availability and a proof check</td><td>One round trip to the data layer</td></tr>
+            <tr><th scope="row">Owned linear</th><td>Pay from your balance</td><td>The owner signing two spends of one version</td><td>Quorum certificate, no consensus</td><td>One round trip to the committee</td></tr>
+            <tr><th scope="row">Shared, bounded</th><td>Ticket inventory, budgets, rate limits</td><td>Overdrawing a shared total</td><td>Single-writer allotments (Escrow Lanes)</td><td>One round trip; rare rebalancing</td></tr>
+            <tr><th scope="row">Shared, contended</th><td>A liquidity pool, an auction</td><td>Conflicting updates to one object</td><td>Consensus per contention domain, batch clearing</td><td>One consensus round and one batch window</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {{fig:two-sorted:1}}
+    </section>
+
+    <section class="topic" id="lanes" aria-labelledby="lanes-title">
+      <h2 id="lanes-title">Linear Lanes</h2>
+      <div class="prose">
+        <p>An owned object can be spent only by its owner, so the only thing to prevent is the owner signing two spends of the same version. Each validator approves a given object version for at most one transaction, and approvals from more than two thirds of the committee&rsquo;s stake form a certificate. Two certificates for one version cannot both exist, because any two such quorums share an honest validator. That certificate is final: no consensus round, no global order, and nothing waits for unrelated traffic.</p>
+        <p>Post-quantum signatures are kilobytes, so validators do not sign each approval. Each one signs a single Merkle root over a batch of approvals; a certificate is a few references into signed batches.</p>
+      </div>
+      {{fig:lanes:2}}
+    </section>
+
+    <section class="topic" id="escrow" aria-labelledby="escrow-title">
+      <h2 id="escrow-title">Escrow Lanes</h2>
+      <div class="prose">
+        <p>A shared total, such as seats, a budget or a supply cap, is split into allotments that add up to it, each with a single writer. Each writer spends its allotment with ordinary lane certificates and never coordinates with the others. Only a rebalance, when an allotment runs low, goes through consensus, and the total is never exceeded. This is the escrow method of distributed databases, applied to a ledger; Agent Charters use it to keep an agent&rsquo;s payments free of consensus.</p>
+      </div>
+    </section>
+
+    <section class="topic" id="consensus" aria-labelledby="consensus-title">
+      <h2 id="consensus-title">Contention Consensus</h2>
+      <div class="prose">
+        <p>Only objects that several parties contend for, such as a market, a shared account or a registry, need a total order. For them, validators run a DAG-based BFT protocol in which every validator proposes in every round, so one honest proposer is enough to get an intent in. Even rounds have a leader; once enough of the next round references it, the leader commits and orders its history. Market batches then clear at one price, so the order inside a batch carries no value.</p>
+        <p>The reference implementation runs a certified DAG in the Bullshark family and tests it in a deterministic simulator with an adversarial network phase. The architecture targets an uncertified DAG of the Mysticeti class, which commits in fewer message delays.</p>
+      </div>
+      {{fig:dag:3}}
+    </section>
+
+    <section class="topic" id="da" aria-labelledby="da-title">
+      <h2 id="da-title">Data availability</h2>
+      <div class="prose">
+        <p>A validity proof shows that a transition was correct; it cannot show that its data was published. So each Pulse&rsquo;s data is erasure-coded in two dimensions and committed with hash-based roots, and every light client samples a few random shares. Withholding enough to prevent reconstruction means withholding more than a quarter of the extended square, which random samples find quickly. In the design, each client also serves the shares it sampled, so capacity grows with the number of clients; on the devnet, validators serve the shares.</p>
+      </div>
+      <p class="formula" aria-label="The probability that one client misses the withholding is at most three quarters to the power s, where s is the number of samples.">Pr[withholding goes undetected by one client] &le; (3/4)<sup>s</sup>      s = 16: about 1%      s = 30: about 0.02%</p>
+      {{fig:da:4}}
+    </section>
+
+    <section class="topic" id="fold" aria-labelledby="fold-title">
+      <h2 id="fold-title">The Fold</h2>
+      <div class="prose">
+        <p>In the design, every Pulse the network folds the proofs produced since the last Pulse into one World Proof that certifies the whole history from genesis. Leaf proofs are made in parallel and aggregated pairwise; a million leaves need about 20 levels, and Pulse t+1 starts aggregating while Pulse t&rsquo;s root finishes. The design aims for checking to cost the same in year ten as on day one, so that a phone can be as certain of the state&rsquo;s validity as a data centre.</p>
+        <p>The World Proof for a Pulse states that a history exists from genesis to its state root in which:</p>
+        <ol>
+          <li>every linear transition followed its object&rsquo;s rules and carried a valid committee certificate;</li>
+          <li>every contended batch cleared under a valid optimality certificate;</li>
+          <li>the knowledge log only grew, and every claim&rsquo;s formula and bond references are correct;</li>
+          <li>every forced-inclusion obligation older than its deadline was met;</li>
+          <li>the data the history depends on was published and correctly encoded;</li>
+          <li>every committee change followed the staking rules, so the chain of signers is valid from genesis.</li>
+        </ol>
+        <p>Two independent proof stacks prove everything, and a World Proof is the pair of their roots. A soundness bug in one stack cannot forge the world. In the reference implementation both stacks verify by replay: the proofs have the bindings of succinct proofs but not their cost, and every report that checks one says so.</p>
+      </div>
+      {{fig:fold:5}}
+    </section>
+
+    <section class="topic" id="finality" aria-labelledby="finality-title">
+      <h2 id="finality-title">Two levels of finality</h2>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <caption>From the architecture paper. Targets are design targets, not measurements.</caption>
+          <thead><tr><th scope="col">Level</th><th scope="col">What it guarantees</th><th scope="col">Who relies on it</th><th scope="col">Target</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Certificate finality</th><td>More than two thirds of the committee approved it and will not approve a conflict, if fewer than a third are faulty</td><td>Users, merchants, agents</td><td class="num">Under one second</td></tr>
+            <tr><th scope="row">Proof finality</th><td>The World Proof covers it; anyone can check validity without trusting the committee</td><td>Light clients, bridges, auditors</td><td class="num">10 to 30 s at launch; a few seconds at maturity</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="topic" id="assurance" aria-labelledby="assurance-title">
+      <h2 id="assurance-title">The Assurance Algebra</h2>
+      <div class="prose">
+        <p>Every claim carries a formula of the assumptions it rests on. Atoms are irreducible assumptions: a hash function&rsquo;s collision resistance, a circuit&rsquo;s correctness, a hardware enclave resisting its own host, a bonded attester&rsquo;s honesty. A claim derived from several inputs takes their &and;; a claim backed by independent routes takes their &or;. From the formula, any consumer computes, under its own policy, the cheapest set of failures that would falsify the claim: its cost of corruption.</p>
+      </div>
+      <p class="formula" aria-label="Cost of corruption rules: an atom costs its cost; an and of two formulas costs the minimum of the two; an or of two formulas costs their sum.">CoC(a) = cost(a)
+CoC(&phi;&#8321; &and; &phi;&#8322;) = min(CoC(&phi;&#8321;), CoC(&phi;&#8322;))
+CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
+      <div class="prose">
+        <p>An agent with value V at stake accepts a claim only when the rule below holds, where &kappa; &ge; 1 is a safety factor, &delta; &le; 1 discounts claims whose falsehood is rarely provable, and the adjudicator term caps trust at the cost of corrupting the dispute process. It then reserves &kappa;&middot;V of the claim&rsquo;s backing, so the value relying on any claim never exceeds what slashing can repay. When alternatives share atoms, the exact cost is a hard problem, and the implementation reports a sound interval instead.</p>
+      </div>
+      <p class="formula" aria-label="The decision rule: the minimum of delta times the lower cost of corruption and the adjudicator's cost of corruption must be at least kappa times V.">min(&delta;&middot;CoC<sub>low</sub>(c), CoC(adjudicator)) &ge; &kappa;&middot;V</p>
+      {{fig:assurance:6}}
+    </section>
+
+    <section class="topic" id="clearing" aria-labelledby="clearing-title">
+      <h2 id="clearing-title">Verifiable Clearing</h2>
+      <div class="prose">
+        <p>Contended markets clear in sealed batches, and the winning solver must submit, with its allocation, a certificate that no better allocation exists. For a linear program, the allocation solves the primal and the prices solve the dual; by weak duality, no feasible allocation can beat it. Checking takes linear time however hard the problem was to solve, so anyone can run a solver and nobody can quietly extract value by controlling the order of transactions.</p>
+      </div>
+      <p class="formula" aria-label="The five checks: A x star is at most b; x star is non-negative; A transpose y star is at least c; y star is non-negative; c transpose x star is at least b transpose y star minus epsilon.">Ax* &le; b      x* &ge; 0      A<sup>T</sup>y* &ge; c      y* &ge; 0      c<sup>T</sup>x* &ge; b<sup>T</sup>y* &minus; &epsilon;</p>
+      <div class="prose">
+        <p>The certificate proves optimality for the orders as submitted; bidders can still misreport, and uniform-price batch auctions are not fully strategy-proof. Ties are broken by a perturbation drawn from the Pulse beacon after the batch seals, so the solver cannot choose the winners.</p>
+      </div>
+      {{fig:clearing:7}}
+    </section>
+
+    <section class="topic" id="charters" aria-labelledby="charters-title">
+      <h2 id="charters-title">Agent Charters</h2>
+      <div class="prose">
+        <p>A charter is the contract between a principal and an AI agent, enforced by the protocol rather than by the agent&rsquo;s code. Validators check every payment against it, so a hijacked or prompt-injected agent cannot exceed its caveats, and the worst case is known in advance. The agent spends from an allotment only it can write, so its payments need no consensus. Delegation can only narrow the caveats, and revoking a charter stops every sub-agent below it.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <caption>Caveats the reference implementation enforces.</caption>
+          <thead><tr><th scope="col">Caveat</th><th scope="col">What it fixes</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Payees</th><td>An allow-list of accounts the agent may pay</td></tr>
+            <tr><th scope="row">Per payment and per window</th><td>The largest single payment, and the most in one window of Pulses</td></tr>
+            <tr><th scope="row">Expiry</th><td>The Pulse after which the charter is dead</td></tr>
+            <tr><th scope="row">Evidence</th><td>Above a threshold, a payment needs a claim that passes the decision rule under a stated policy</td></tr>
+            <tr><th scope="row">Receipts</th><td>Every payment issues a receipt claim, backed by the principal&rsquo;s bond</td></tr>
+            <tr><th scope="row">Delegation</th><td>Whether the agent may delegate, and only under strictly narrower caveats</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {{fig:charters:8}}
+    </section>
+
+    <section class="topic" id="forced" aria-labelledby="forced-title">
+      <h2 id="forced-title">Forced inclusion</h2>
+      <div class="prose">
+        <p>Censorship cannot be attributed the way equivocation can, so it is made visible instead. A user whose transactions are ignored posts them straight to consensus as forced intents. Every validator proposes every round, so one honest proposer is enough to order one. The state then holds the intent as an obligation of the sender&rsquo;s shard, which has 8 Pulses to execute it. Every Pulse header commits to how many intents are pending and how many are overdue, so censorship by more than a third of a committee shows up in certified headers that every light client checks.</p>
+        <p>When a deadline passes and the intent could still execute, the state replaces the shard&rsquo;s committee, drawing from validators outside it first, and the obligation stands for another window. The architecture also freezes the shard until it meets the obligation; the reference implementation keeps it running under its new committee.</p>
+      </div>
+      {{fig:forced:9}}
+    </section>
+
+    <section class="topic" id="staking" aria-labelledby="staking-title">
+      <h2 id="staking-title">Validators, stake and epochs</h2>
+      <div class="prose">
+        <p>Who certifies is part of the state transition. The validator set is an object in the state: a validator joins by staking with a proof that it holds its keys, takes its seat at the next epoch boundary, and leaves at a boundary, withdrawing its stake after an unbonding period. At each boundary the state pays the epoch&rsquo;s validators a share of the fees by weight, picks the next active set by stake and reseeds the sampling of lane committees with the beacon. Every validator derives the same committees from its own copy of the state; nothing about them is configured.</p>
+        <p>Equivocation is signed evidence that anyone can submit: two consensus headers for one round, or two lane approvals of one object version. The whole stake is forfeited, the reporter receives a share of it (5 % on the devnet), and the validator loses its seat at the next boundary. A light client that pins the genesis follows the committee from epoch to epoch through boundary proofs.</p>
+        <p>On the devnet, validators stake devnet USD, which has no value. Siontology has no token and nothing is on offer. Fees are paid in stablecoins.</p>
+      </div>
+      {{fig:staking:10}}
+    </section>
+
+    <section class="topic" id="targets" aria-labelledby="targets-title">
+      <h2 id="targets-title">Targets and the devnet</h2>
+      <div class="prose">
+        <p>The <a href="{{DOCS}}papers/architecture.html">architecture paper</a> sets targets that a public testnet must meet before anything else is built on them. None has been measured at scale.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <caption>Design targets from the architecture paper.</caption>
+          <thead><tr><th scope="col">Quantity</th><th scope="col">Testnet target</th><th scope="col">Maturity target</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Simple operations per second</th><td class="num">100,000</td><td class="num">1.6 million</td></tr>
+            <tr><th scope="row">Owned-lane capacity per shard</th><td class="num">50,000 per second</td><td class="num">50,000 per second</td></tr>
+            <tr><th scope="row">Shards</th><td class="num">2</td><td class="num">32</td></tr>
+            <tr><th scope="row">Owned-lane certificate</th><td class="num" colspan="2" data-label="Testnet and maturity target">0.1 to 0.5 s, plus one batch-vote interval</td></tr>
+            <tr><th scope="row">Contended commit</th><td class="num" colspan="2" data-label="Testnet and maturity target">About 0.5 s, plus one batch window</td></tr>
+            <tr><th scope="row">World Proof cadence</th><td class="num">Every 10 to 30 s</td><td class="num">Every second</td></tr>
+            <tr><th scope="row">Light-client check</th><td class="num" colspan="2" data-label="Testnet and maturity target">Well under 1 s on a phone, still to be measured</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <caption>The devnet, from the repository&rsquo;s defaults.</caption>
+          <thead><tr><th scope="col">Parameter</th><th scope="col">Default</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Validators and shards</th><td>4 validators, 2 shards, 4 seats per shard committee</td></tr>
+            <tr><th scope="row">Pulse</th><td>About once a second, with 4 consensus rounds per Pulse</td></tr>
+            <tr><th scope="row">Lane approvals</th><td>Batched and signed every 25 ms</td></tr>
+            <tr><th scope="row">Proving</th><td>16 transactions per chunk, replay proofs from two stacks</td></tr>
+            <tr><th scope="row">Forced inclusion</th><td>8 Pulses to execute a forced intent</td></tr>
+            <tr><th scope="row">Epochs</th><td>One epoch that never ends; <code>--epoch-length</code> sets Pulses per epoch and <code>--standby</code> adds validators without a seat</td></tr>
+            <tr><th scope="row">Light client</th><td>16 data-availability samples per check</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="prose">
+        <p>To measure the primitives, execution, proving and a live devnet on your own machine, run <code>sion bench</code>. Post-quantum signatures and the trust model are on the <a href="security.html">security page</a>; x402 and the agent interfaces are on the <a href="developers.html">developers page</a>.</p>
+      </div>
+    </section>
+  </div>
+</div>

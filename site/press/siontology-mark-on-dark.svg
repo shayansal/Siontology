@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 69 69" width="276" height="276" role="img" aria-labelledby="title desc">
+  <title id="title">Siontology</title>
+  <desc id="desc">The Siontology mark.</desc>
+  <!-- The Fold mark: a full binary tree drawn as a partition. One World Proof
+       over two, four and eight leaf proofs; each row is about 1/√2 the height
+       of the row above. Master grid 69 x 69 units, gaps 3 units. -->
+  <g fill="#FFFFFF">
+    <rect x="0" y="0" width="69" height="23"/>
+    <rect x="0" y="26" width="33" height="17"/>
+    <rect x="36" y="26" width="33" height="17"/>
+    <rect x="0" y="46" width="15" height="12"/>
+    <rect x="18" y="46" width="15" height="12"/>
+    <rect x="36" y="46" width="15" height="12"/>
+    <rect x="54" y="46" width="15" height="12"/>
+    <rect x="0" y="61" width="6" height="8"/>
+    <rect x="9" y="61" width="6" height="8"/>
+    <rect x="18" y="61" width="6" height="8"/>
+    <rect x="27" y="61" width="6" height="8"/>
+    <rect x="36" y="61" width="6" height="8"/>
+    <rect x="45" y="61" width="6" height="8"/>
+    <rect x="54" y="61" width="6" height="8"/>
+    <rect x="63" y="61" width="6" height="8"/>
+  </g>
+</svg>

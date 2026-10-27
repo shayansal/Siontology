@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Siontology</title>
+  <desc id="desc">The Siontology app icon.</desc>
+  <!-- The Fold mark: a full binary tree drawn as a partition. One World Proof
+       over two, four and eight leaf proofs; each row is about 1/√2 the height
+       of the row above. Master grid 69 x 69 units, gaps 3 units. -->
+  <rect width="512" height="512" fill="#000000"/>
+  <g fill="#FFFFFF">
+    <rect x="112" y="112" width="288" height="96"/>
+    <rect x="112" y="220.522" width="137.739" height="70.957"/>
+    <rect x="262.261" y="220.522" width="137.739" height="70.957"/>
+    <rect x="112" y="304" width="62.609" height="50.087"/>
+    <rect x="187.13" y="304" width="62.609" height="50.087"/>
+    <rect x="262.261" y="304" width="62.609" height="50.087"/>
+    <rect x="337.391" y="304" width="62.609" height="50.087"/>
+    <rect x="112" y="366.609" width="25.043" height="33.391"/>
+    <rect x="149.565" y="366.609" width="25.043" height="33.391"/>
+    <rect x="187.13" y="366.609" width="25.043" height="33.391"/>
+    <rect x="224.696" y="366.609" width="25.043" height="33.391"/>
+    <rect x="262.261" y="366.609" width="25.043" height="33.391"/>
+    <rect x="299.826" y="366.609" width="25.043" height="33.391"/>
+    <rect x="337.391" y="366.609" width="25.043" height="33.391"/>
+    <rect x="374.957" y="366.609" width="25.043" height="33.391"/>
+  </g>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="88" height="88" role="img" aria-labelledby="title desc">
+  <title id="title">Siontology</title>
+  <desc id="desc">The Siontology mark.</desc>
+  <!-- Small Fold mark for 16 to 32 px: three rows (1, 2, 4) on a 22-unit grid,
+       every edge on an even unit so it stays sharp at 16 px. -->
+  <g fill="#000000">
+    <rect x="0" y="0" width="22" height="8"/>
+    <rect x="0" y="10" width="10" height="6"/>
+    <rect x="12" y="10" width="10" height="6"/>
+    <rect x="0" y="18" width="4" height="4"/>
+    <rect x="6" y="18" width="4" height="4"/>
+    <rect x="12" y="18" width="4" height="4"/>
+    <rect x="18" y="18" width="4" height="4"/>
+  </g>
+</svg>

@@ -1,0 +1,102 @@
+<!--{"file": "open-source.html", "title": "Open source | Siontology", "description": "Siontology is open source under Apache-2.0 OR MIT: a Rust reference implementation, a normative specification, and two proof stacks written independently of each other.", "nav": "open-source", "scenes": ["fold"]}-->
+<header class="page-head wrap">
+  <h1>Read it, run it, build another one.</h1>
+  <p class="lede">The reference implementation, the specification it follows and the documentation are public. The project asks for a second implementation of its own state transition, because two implementations that disagree are how a bug in either one gets caught.</p>
+  <div class="actions" style="margin-top: var(--space-6)">
+    <a class="button" href="{{REPO}}">View the repository</a>
+    <a class="button button--quiet" href="{{REPO}}/blob/main/docs/spec/state-transition.md">Read the specification</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="topic" id="licence" aria-labelledby="licence-title">
+    <h2 id="licence-title">Licence</h2>
+    <div class="split split--even">
+      <div class="prose">
+        <p>The code is licensed under either the Apache License, Version 2.0, or the MIT licence, at your option. Use it, change it, ship it and build products on it, commercially or not; keep the copyright and licence notices.</p>
+        <p>The fonts on this site are under the SIL Open Font License and are served from this site. The name and the mark identify the project; the <a href="brand.html">brand page</a> says how to use them.</p>
+      </div>
+      <dl class="facts">
+        <div><dt>Licence</dt><dd><code>Apache-2.0 OR MIT</code></dd></div>
+        <div><dt>Texts</dt><dd><a href="{{REPO}}/blob/main/LICENSE-APACHE">LICENSE-APACHE</a>, <a href="{{REPO}}/blob/main/LICENSE-MIT">LICENSE-MIT</a></dd></div>
+        <div><dt>Repository</dt><dd><a href="{{REPO}}">github.com/ColdAI-org/siontology</a></dd></div>
+        <div><dt>Language</dt><dd>Rust 1.80 or later; unsafe code is forbidden</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="topic" id="stacks" aria-labelledby="stacks-title">
+    <h2 id="stacks-title">Two proof stacks</h2>
+    <div class="prose">
+      <p>A proof system is only as sound as its implementation, so Siontology never trusts one. Proof stack A is the reference executor. Proof stack B is a second implementation of the state transition, written only from the specification. Every chunk of every Pulse goes through both, and a World Proof verifies only if both accept.</p>
+      <p>A script run in CI checks that stack B never calls the reference executor&rsquo;s logic. Differential tests drive thousands of chunks, random workloads, boundary probes and tampered inputs through both stacks. They found two defects in the reference executor and several gaps in the specification, all fixed in version 1.1: a market clearing deadline near the largest 64-bit value overflowed when its batch sealed, which let any account halt the chain, and a charter window near the same value made the reference executor disagree with the specification.</p>
+      <p>Both stacks still share the hashing, Merkle, signature, Assurance Algebra and clearing-certificate code, so a bug there would be common to both. That shared code is named as a separate assumption, <code>impl:shared-primitives</code>, in the trust formula of every World Proof.</p>
+    </div>
+    {{fig:fold}}
+  </section>
+
+  <section class="topic" id="spec" aria-labelledby="spec-title">
+    <h2 id="spec-title">The specification</h2>
+    <div class="split split--even">
+      <div class="prose">
+        <p>The state transition specification is normative: it defines the function a proof stack evaluates for every chunk of every Pulse, and through it the whole state transition, from preparing and executing one transaction to the three phases of a Pulse and the commitments each chunk statement carries. Where the two implementations disagree, one of them is wrong.</p>
+        <p>Version 1.3 brings validators, stake, epochs and the response to censorship into the state transition, so every committee change follows its rules and the World Proof covers it.</p>
+      </div>
+      <ol class="rows">
+        <li><h3>v1.1</h3><p>From differential testing of stack B against stack A: saturating deadlines and windows, bounded market periods, specified deferred-phase errors, and what the World Proof binds.</p></li>
+        <li><h3>v1.2</h3><p>From independent reviews: transaction signatures bound to the chain, bounded inputs, allotments, batches, formula depth and certificate size.</p></li>
+        <li><h3>v1.3</h3><p>Staking with proof of key possession, unbonding, rewards by weight, slashing of equivocation with a share to the reporter, forced-inclusion obligations and committee rotation.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="topic" id="repository" aria-labelledby="repository-title">
+    <h2 id="repository-title">The repository</h2>
+    <div class="prose">
+      <p>A Cargo workspace of focused crates that depend on <code>sion-core</code> rather than on each other where they can.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide">
+        <thead><tr><th scope="col">Crate</th><th scope="col">What it holds</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-core"><code>sion-core</code></a></th><td>Domain-separated SHA3-256, canonical Borsh encoding, typed identifiers, fixed-point money, the RFC 9162 append-only log, the sparse Merkle state tree</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-crypto"><code>sion-crypto</code></a></th><td>ML-DSA-44, SLH-DSA-SHA2-128s and 128f, ML-KEM-768, dual-origin signatures, account policies, sealed envelopes, Shamir sharing</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-assurance"><code>sion-assurance</code></a></th><td>The Assurance Algebra: atoms, formulas, cost of corruption, the decision rule, reservations, challenges, slashing, insurance</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-lp"><code>sion-lp</code></a></th><td>Exact rational simplex and linear-time verification of optimality certificates</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-clearing"><code>sion-clearing</code></a></th><td>Verifiable Clearing: sealed double auctions and assignment markets with certificates</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-da"><code>sion-da</code></a></th><td>Two-dimensional Reed&ndash;Solomon coding over the Goldilocks field, commitments, sampling, reconstruction, fraud proofs</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-consensus"><code>sion-consensus</code></a></th><td>Linear Lanes, certified-DAG BFT, committees and sampling, the beacon, forced inclusion, a deterministic network simulator</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-exec"><code>sion-exec</code></a></th><td>The state machine, proof stack A: objects, accounts, claims, bonds, Agent Charters, escrow, markets and validators; Pulse execution with chunk traces and witnesses</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-spec"><code>sion-spec</code></a></th><td>Proof stack B: an independent implementation of the state transition, written from the specification</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-prover"><code>sion-prover</code></a></th><td>Proof stacks, World Proofs and their verification</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-light"><code>sion-light</code></a></th><td>The light client: chain identity, epoch boundary proofs, header certificates, state and receipt proofs, availability sampling</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-node"><code>sion-node</code></a></th><td>The devnet: validators, gateway, prover, write-ahead log and snapshots, the HTTP API</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-cli"><code>sion-cli</code></a></th><td>The <code>sion</code> command: devnet, wallets, demos, light verification, the MCP server, x402, benchmarks</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="topic" id="contributing" aria-labelledby="contributing-title">
+    <h2 id="contributing-title">Contributing</h2>
+    <div class="prose">
+      <p>The rules in <a href="{{REPO}}/blob/main/AGENTS.md">AGENTS.md</a> apply to everyone who changes the code, people and AI agents alike. Seven of them are not negotiable.</p>
+    </div>
+    <ol class="rows rows--numbered rows--two">
+      <li><h3>One encoding</h3><p>Every consensus-critical value has one canonical Borsh encoding and is hashed with a domain tag.</p></li>
+      <li><h3>Deterministic order</h3><p>Consensus-critical maps are ordered maps; no hash-map iteration order may influence a hash, a root, an ordering or a decision.</p></li>
+      <li><h3>No floating point</h3><p>Money is fixed-point micro-units; exact optimisation uses rationals. Floats are for reporting only.</p></li>
+      <li><h3>Nothing is deleted</h3><p>Consumed objects are tombstoned and claims are appended, so history stays auditable and proofs stay stateless.</p></li>
+      <li><h3>Every assumption named</h3><p>Anything the system relies on that is not proven is an atom in some trust formula, including the implementation&rsquo;s own shortcuts.</p></li>
+      <li><h3>Shortcuts labelled</h3><p>Simulation-only shortcuts, such as fast test signatures and replay proofs, are labelled in the types and never silently replace real cryptography.</p></li>
+      <li><h3>No unsafe Rust</h3><p>The workspace forbids it.</p></li>
+    </ol>
+    <div class="split split--even">
+      <div class="prose">
+        <p>Seed every random number generator, write a property test for every algebraic or adversarial invariant, and document and test public functions. The suite includes property tests for the Assurance Algebra, the linear-programming certificates and the state machine, a deterministic consensus simulator with adversarial network phases, scenario tests for every transaction kind, end-to-end devnet tests with dual post-quantum signatures, and the demos.</p>
+        <p>Found a vulnerability? Report it privately, as the <a href="security.html#disclosure">security page</a> describes, not in a public issue.</p>
+      </div>
+      {{code:develop}}
+    </div>
+  </section>
+</div>

@@ -1,0 +1,49 @@
+<!--{"file": "whitepapers.html", "title": "Papers | Siontology", "description": "The architecture paper behind Siontology, the normative state transition specification, and the implementation status that every claim on the site is held to.", "nav": "papers", "scenes": []}-->
+<header class="page-head wrap">
+  <h1>The documents behind the design.</h1>
+  <p class="lede">The architecture paper makes the case and sets out the design. The specification fixes the state transition precisely enough to build a second implementation from it. The status document says what exists. Where the paper and the status document differ, the status document describes the code.</p>
+</header>
+
+<div class="wrap">
+  <article class="doc" id="architecture" aria-labelledby="architecture-title">
+    <div>
+      <h2 id="architecture-title">Neo-Blockchains: The Fold Architecture</h2>
+      <p class="meta">Technical paper by ColdAI, 27 October 2026</p>
+    </div>
+    <div class="prose">
+      <p>Why blockchains did not move like AI, and a design that sells trust rather than ordering: two-sorted state, Linear Lanes and Contention Consensus, data availability, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, privacy and compliance by proof, the security model, the economics, six applications with their baselines, a phased plan with kill criteria, and open research problems.</p>
+      <p>The paper describes a system to be built. Its capacity and latency figures are design targets, and the reference implementation covers part of the design.</p>
+      <div class="actions">
+        <a class="button button--quiet" href="{{DOCS}}papers/architecture.html">Read the paper</a>
+      </div>
+    </div>
+  </article>
+
+  <article class="doc" id="specification" aria-labelledby="specification-title">
+    <div>
+      <h2 id="specification-title">The state transition specification</h2>
+      <p class="meta">Normative, version 1.3</p>
+    </div>
+    <div class="prose">
+      <p>The function a proof stack evaluates for every chunk of every Pulse, and through it the whole state transition: preparing and executing a transaction, every operation, the three phases of a Pulse, the commitments a chunk statement carries, verifying a chunk and folding a Pulse. Proof stack B was written from this document alone.</p>
+      <p>Version 1.3 adds validators, stake, epochs, rewards, slashing of equivocation, forced-inclusion obligations and committee rotation.</p>
+      <div class="actions">
+        <a class="button button--quiet" href="{{REPO}}/blob/main/docs/spec/state-transition.md">Read the specification</a>
+      </div>
+    </div>
+  </article>
+
+  <article class="doc" id="status" aria-labelledby="status-title">
+    <div>
+      <h2 id="status-title">Implementation status</h2>
+      <p class="meta">Kept in the repository, with the code</p>
+    </div>
+    <div class="prose">
+      <p>What the reference implementation builds, simplifies, simulates or leaves out, section by section of the architecture; the trust assumptions it adds; how a light client is trusted; and what two independent reviews found. Every claim on this site is held to it.</p>
+      <div class="actions">
+        <a class="button button--quiet" href="{{REPO}}/blob/main/docs/implementation-status.md">Read the status</a>
+      </div>
+    </div>
+  </article>
+
+</div>
