@@ -1,5 +1,6 @@
 [package]
 name = "fold-node"
+description = "The Fold devnet node: validators running lanes, certified-DAG consensus, Pulse execution, data availability, persistence and an HTTP API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,23 @@ publish.workspace = true
 
 [dependencies]
 fold-core.workspace = true
+fold-crypto.workspace = true
+fold-assurance.workspace = true
+fold-clearing.workspace = true
+fold-consensus.workspace = true
+fold-exec.workspace = true
+fold-da.workspace = true
+fold-light.workspace = true
+fold-prover.workspace = true
+borsh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tiny_http.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

@@ -205,7 +205,12 @@ pub fn chain_deferred(acc: &Hash32, items: &[Deferred]) -> Hash32 {
 
 /// Extends the receipts accumulator by one transaction's effects.
 pub fn chain_effects(acc: &Hash32, effects: &TxEffects) -> Hash32 {
-    hash_parts("fold/exec/effects-acc", &[&acc.0, &effects_leaf(effects).0])
+    chain_effects_leaf(acc, &effects_leaf(effects))
+}
+
+/// Extends the receipts accumulator by one effects leaf.
+pub fn chain_effects_leaf(acc: &Hash32, leaf: &Hash32) -> Hash32 {
+    hash_parts("fold/exec/effects-acc", &[&acc.0, &leaf.0])
 }
 
 /// Digest of an ordered list of transactions.

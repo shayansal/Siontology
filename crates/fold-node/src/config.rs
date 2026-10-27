@@ -1,0 +1,78 @@
+//! Devnet configuration.
+
+use std::path::PathBuf;
+
+use fold_consensus::CoreConfig;
+use fold_exec::GenesisAccount;
+use serde::{Deserialize, Serialize};
+
+use crate::keys::SignatureMode;
+
+/// How to run a devnet.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DevnetConfig {
+    /// Chain identifier.
+    pub chain_id: String,
+    /// Number of validators.
+    pub validators: usize,
+    /// Number of lane shards (certification committees for owned traffic).
+    pub shards: u16,
+    /// Seats per shard committee, sampled from the validators by the
+    /// genesis beacon (capped at the number of validators).
+    pub shard_seats: usize,
+    /// Consensus rounds per Pulse.
+    pub rounds_per_pulse: u64,
+    /// How often validators seal lane approval batches.
+    pub batch_interval_ms: u64,
+    /// Validator signatures.
+    pub signatures: SignatureMode,
+    /// Where validators keep their logs and snapshots (`None`: memory only).
+    pub data_dir: Option<PathBuf>,
+    /// Take a snapshot every this many Pulses.
+    pub snapshot_every: u64,
+    /// Whether to fsync every log record.
+    pub fsync: bool,
+    /// Extra genesis accounts (the faucet and named demo accounts are added
+    /// automatically).
+    pub accounts: Vec<GenesisAccount>,
+    /// Named demo accounts funded at genesis with `demo_usd` each.
+    pub demo_accounts: Vec<String>,
+    /// USD each demo account starts with.
+    pub demo_usd: u64,
+    /// Consensus parameters.
+    pub core: CoreConfig,
+    /// Transactions per proof chunk; `None` disables proving.
+    pub prove_chunk: Option<usize>,
+    /// Pulses of history (outputs, data squares, traces) kept in memory.
+    pub history: usize,
+}
+
+impl Default for DevnetConfig {
+    fn default() -> Self {
+        DevnetConfig {
+            chain_id: "fold-devnet-1".into(),
+            validators: 4,
+            shards: 2,
+            shard_seats: 4,
+            rounds_per_pulse: 4,
+            batch_interval_ms: 25,
+            signatures: SignatureMode::DualPostQuantum,
+            data_dir: None,
+            snapshot_every: 50,
+            fsync: false,
+            accounts: Vec::new(),
+            demo_accounts: Vec::new(),
+            demo_usd: 100_000,
+            core: CoreConfig {
+                leader_timeout_ms: 400,
+                resend_interval_ms: 600,
+                gc_depth: 50,
+                max_items_per_header: 2_000,
+                repropose_after_rounds: 8,
+                leader_schedule: fold_consensus::LeaderSchedule::RoundRobin,
+            },
+            prove_chunk: Some(16),
+            history: 256,
+        }
+    }
+}
