@@ -63,8 +63,9 @@ num-traits = "0.2"
 num-integer = "0.1"
 
 # Interfaces
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tiny_http = "0.12"
+ureq = { version = "2", default-features = false, features = ["json"] }
 
 # Testing
 proptest = "1"

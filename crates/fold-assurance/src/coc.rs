@@ -51,7 +51,7 @@ impl CocInterval {
 
 /// The cost of breaking one atom under `policy`.
 pub fn atom_cost(registry: &Registry, policy: &Policy, atom: &AtomId) -> Cost {
-    if registry.is_broken(atom) {
+    if registry.is_broken(atom) || policy.assumes_broken(atom) {
         return Cost::ZERO;
     }
     let Some(info) = registry.atom(atom) else {

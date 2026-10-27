@@ -944,6 +944,10 @@ impl Validator {
                 "genesis": self.shared.genesis_digest,
                 "epoch": self.shared.epoch,
             })),
+            Query::Genesis => Ok(json!({
+                "digest": self.shared.genesis_digest,
+                "spec": self.shared.genesis,
+            })),
             Query::World(pulse) => self
                 .proven
                 .lock()

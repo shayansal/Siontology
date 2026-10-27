@@ -149,7 +149,7 @@ macro_rules! number_id {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}", self.0)
+                fmt::Display::fmt(&self.0, f)
             }
         }
 

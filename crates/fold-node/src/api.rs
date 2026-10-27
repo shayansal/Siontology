@@ -4,6 +4,7 @@
 //! |---|---|---|
 //! | GET | `/v1/status` | chain status |
 //! | GET | `/v1/validators` | committees and validator keys (for light clients) |
+//! | GET | `/v1/genesis` | the genesis specification and its digest |
 //! | GET | `/v1/accounts/{id}` | coins, balances, allotments |
 //! | GET | `/v1/objects/{id}` | object with a state proof |
 //! | GET | `/v1/claims/{id}` | claim, status, cost of corruption, inclusion proof |
@@ -163,6 +164,7 @@ fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
     match (method, parts.as_slice()) {
         (Method::Get, ["v1", "status"]) => q(Query::Status),
         (Method::Get, ["v1", "validators"]) => q(Query::Validators),
+        (Method::Get, ["v1", "genesis"]) => q(Query::Genesis),
         (Method::Get, ["v1", "accounts", id]) => q(Query::Account(AccountId::from_hash(hash(id)?))),
         (Method::Get, ["v1", "objects", id]) => q(Query::Object(ObjectId::from_hash(hash(id)?))),
         (Method::Get, ["v1", "claims", id]) => q(Query::Claim(ClaimId::from_hash(hash(id)?))),

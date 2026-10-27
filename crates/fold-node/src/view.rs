@@ -54,6 +54,8 @@ pub enum Query {
     Validators,
     /// The World Proof of a Pulse.
     World(Pulse),
+    /// The genesis specification and its digest.
+    Genesis,
 }
 
 /// Chain status.

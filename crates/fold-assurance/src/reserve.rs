@@ -53,7 +53,7 @@ pub struct Allocation {
 
 /// Capacity of one atom for new reservations under `policy`.
 fn capacity(registry: &Registry, policy: &Policy, atom: &AtomId) -> Cost {
-    if registry.is_broken(atom) {
+    if registry.is_broken(atom) || policy.assumes_broken(atom) {
         return Cost::ZERO;
     }
     let Some(info) = registry.atom(atom) else {

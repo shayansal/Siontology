@@ -83,6 +83,10 @@ pub struct Policy {
     pub trusted_classes: BTreeSet<AtomClass>,
     /// Atoms distrusted even if their class is trusted.
     pub distrusted_atoms: BTreeSet<AtomId>,
+    /// Atoms this consumer assumes are already broken (cost zero), for
+    /// example a TEE after a published physical attack, before any
+    /// governance declaration.
+    pub assumed_broken: BTreeSet<AtomId>,
     /// Safety factor κ ≥ 1: accept only if cost of corruption ≥ κ × value at risk.
     pub kappa: Ratio,
 }
@@ -97,6 +101,7 @@ impl Policy {
                 .into_iter()
                 .collect(),
             distrusted_atoms: BTreeSet::new(),
+            assumed_broken: BTreeSet::new(),
             kappa: Ratio::new(2, 1),
         }
     }
@@ -107,6 +112,7 @@ impl Policy {
             trusted_atoms: BTreeSet::new(),
             trusted_classes: BTreeSet::new(),
             distrusted_atoms: BTreeSet::new(),
+            assumed_broken: BTreeSet::new(),
             kappa: Ratio::new(2, 1),
         }
     }
@@ -123,6 +129,17 @@ impl Policy {
         self
     }
 
+    /// Adds atoms assumed broken.
+    pub fn assuming_broken(mut self, atoms: impl IntoIterator<Item = AtomId>) -> Policy {
+        self.assumed_broken.extend(atoms);
+        self
+    }
+
+    /// Whether the policy treats `atom` as broken.
+    pub fn assumes_broken(&self, atom: &AtomId) -> bool {
+        self.assumed_broken.contains(atom)
+    }
+
     /// Sets κ.
     pub fn with_kappa(mut self, kappa: Ratio) -> Policy {
         self.kappa = kappa;
@@ -132,6 +149,7 @@ impl Policy {
     /// Whether the policy trusts `atom`.
     pub fn trusts(&self, atom: &Atom) -> bool {
         !self.distrusted_atoms.contains(&atom.id)
+            && !self.assumed_broken.contains(&atom.id)
             && (self.trusted_atoms.contains(&atom.id) || self.trusted_classes.contains(&atom.class))
     }
 
