@@ -9,8 +9,9 @@
 //! headers for one round, or two lane approvals spending one object version
 //! while both transactions are live) leaves signed evidence, and anyone who
 //! reports it is paid a share of the offender's slashed stake. At every
-//! epoch boundary, a share of what the treasury gained during the epoch is
-//! paid to that epoch's validators in proportion to their weight.
+//! epoch boundary, a share of the fees the treasury collected during the
+//! epoch is paid to that epoch's validators in proportion to their weight;
+//! nothing else the treasury receives is paid out.
 //!
 //! **Committees.** An epoch's consensus committee is its active set, weighted
 //! by stake; each shard's lane committee is sampled from the active set with
@@ -87,7 +88,7 @@ pub struct ValidatorParams {
     pub seats: u16,
     /// The most validators in the active set (by stake, at least 1).
     pub max_active: u16,
-    /// Share of the treasury's gain during an epoch paid to the epoch's
+    /// Share of the fees collected during an epoch paid to the epoch's
     /// validators, in thousandths.
     pub reward_permille: u16,
     /// Share of slashed stake paid to whoever reported it, in thousandths;
@@ -200,8 +201,9 @@ pub struct ValidatorSet {
     pub validators: BTreeMap<ValidatorId, ValidatorRecord>,
     /// Shards whose committee was rotated this epoch, by shard number.
     pub rotations: BTreeMap<u16, ShardRotation>,
-    /// The treasury's USD balance when the epoch began, after rewards.
-    pub treasury_mark: Amount,
+    /// The treasury's running total of USD fees when the epoch began:
+    /// the epoch's rewards are a share of what it gains.
+    pub fees_mark: Amount,
 }
 
 impl ValidatorSet {

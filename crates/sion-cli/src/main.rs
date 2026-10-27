@@ -276,7 +276,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, market, receipts, censorship, light or all.
+    /// Run a scripted demo: invoice, agents, market, receipts, x402, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -1192,8 +1192,14 @@ fn run(cli: Cli) -> Result<(), CliError> {
             match ledger.tx(TxDigest::from_hash(hex_hash(&digest, "digest")?))? {
                 TxState::Executed(view) => show_tx(&session.names(), &view),
                 TxState::Pending(state) => println!("{state}"),
-                TxState::Rejected(reason) => println!("rejected: {reason}"),
-                TxState::Unknown => println!("unknown transaction"),
+                TxState::Rejected(reason) => {
+                    return Err(CliError::Transaction(format!("rejected: {reason}")))
+                }
+                TxState::Unknown => {
+                    return Err(CliError::Transaction(format!(
+                        "unknown transaction {digest}"
+                    )))
+                }
             }
         }
         Command::Pulse { pulse } => {

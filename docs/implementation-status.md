@@ -145,14 +145,18 @@ committee appears in certified headers that light clients check (`sion
 demo censorship`). Simplified: the architecture also freezes the shard
 until the obligation is met; here the shard keeps running under its new
 committee. With no more validators than seats (the default devnet: 4 and
-4), a rotation can only reshuffle the same members.
+4), a rotation can only reshuffle the same members. The header's
+forced-inclusion summary is certified by the committee and can be checked
+against the obligations in the state, but the World Proof does not
+recompute it.
 
 **Committees, epochs and staking: built (devnet scale).** The validator
 set is an object in the state (specification §2, §5.26–5.30, §6.3). A
 validator joins by staking with a proof that it holds its keys, takes its
 seat at the next epoch boundary, leaves at a boundary and withdraws after
-unbonding. At each epoch's last Pulse the state pays a share of what the
-treasury gained to the epoch's validators by weight, admits and retires
+unbonding. At each epoch's last Pulse the state pays a share of the fees
+collected during the epoch (and nothing else the treasury received) to the
+epoch's validators by weight, admits and retires
 validators, picks the next active set by stake (at most `max_active`) and
 reseeds lane-committee sampling with the beacon. Every validator derives
 the consensus committee (the active set, weighted) and the lane committees
@@ -166,8 +170,18 @@ demo staking` runs the whole cycle: a standby validator stakes and joins,
 a light client follows the committee change, rewards are claimed, and the
 newcomer is slashed for signing two headers for one round and loses its
 seat. Simplified: the consensus committee is the whole active set rather
-than a sample, and a slashed validator keeps its seat until the epoch
-ends.
+than a sample; a slashed validator keeps its seat until the epoch ends;
+validators log equivocation they observe but do not report it themselves
+(any account can submit the evidence); and certificates are not drained at
+a committee change. A lane certificate is checked against the committee in
+force when its transaction executes, so one formed just before a change is
+certified again by the new committee. Members who stay keep their locks;
+new members start without them, so an owner who signs two spends of one
+object version could get the second certified by a fully replaced
+committee, defeating the first certificate's finality (it never executes).
+Proof finality is unaffected. The architecture drains certificates at
+every change; until then certificate finality holds within one
+committee's term (`impl:lock-handover`).
 
 **Two levels of finality: built.** Certificate finality comes from the lane
 certificate (owned paths) and the consensus commit (contended paths); every
@@ -297,7 +311,8 @@ clients, and EVM schemes are out of scope.
 **Built:** fees (a base fee plus a fee per KiB) go to the treasury;
 slashed bonds compensate the parties who relied on the claim and pay a
 share to the challenger, with the rest to the treasury. Validators stake,
-earn a share of each epoch's treasury gain by weight (70 % on the devnet)
+earn a share of the fees collected in each epoch by weight (70 % on the
+devnet; slashing remainders and released pools are never paid out)
 and are slashed on signed evidence of equivocation: two consensus headers
 for one round, or two live lane approvals of one object version. The
 whole stake and unclaimed rewards are forfeited; the reporter receives a
@@ -333,6 +348,7 @@ the architecture's own:
 | `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period. |
 | `impl:slashed-seat` | A slashed validator keeps its seat, and its weight in quorums, until the epoch ends. |
 | `impl:evidence-scope` | Equivocation evidence is not bound to this chain: a validator's keys must not be used on another network. |
+| `impl:lock-handover` | Certificates are not drained when a lane committee changes: certificate finality for owned transactions holds within one committee's term (an owner who double-signs could get the second spend certified by a fully replaced committee). |
 | `impl:hash-chain-beacon` | The beacon is a hash-chain commit-reveal; the last validator to reveal can bias it by withholding (at the cost of being seen). |
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |

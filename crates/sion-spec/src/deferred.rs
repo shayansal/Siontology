@@ -1,6 +1,7 @@
 //! The deferred phase (spec §6.3): the last chunk of a Pulse. It sorts and
 //! applies every transaction's deferred items (atoms, bonds, claims,
-//! orders, returns, treasury credits, supply records, schedule entries),
+//! orders, returns, treasury credits, supply records, schedule entries,
+//! fees),
 //! posts the Pulse's forced intents as obligations of their senders'
 //! shards, then processes the schedule's due events (batch sealing,
 //! clearing deadlines, registry ticks, forced-inclusion deadlines with the
@@ -98,6 +99,7 @@ pub(crate) fn sort_key(item: &Deferred) -> (u8, Vec<u8>, Vec<u8>) {
         Deferred::Treasury { asset, .. } => (5, encode(asset)),
         Deferred::Minted { asset, .. } => (6, encode(asset)),
         Deferred::Schedule { at, event } => (7, encode(&(*at, *event))),
+        Deferred::Fee { asset, .. } => (8, encode(asset)),
     };
     (rank, natural, encode(item))
 }
@@ -353,6 +355,15 @@ impl<'v> DeferredRun<'v> {
             Deferred::Schedule { at, event } => {
                 let at = (*at).max(self.ctx.pulse);
                 self.schedule(at, *event);
+            }
+            // A transaction fee: the treasury's balance and its running
+            // total of fees (what validators are paid from) both grow.
+            Deferred::Fee { asset, amount } => {
+                let treasury = self.treasury()?;
+                let balance = treasury.balances.entry(*asset).or_insert(Amount::ZERO);
+                *balance = balance.saturating_add(*amount);
+                let fees = treasury.fees.entry(*asset).or_insert(Amount::ZERO);
+                *fees = fees.saturating_add(*amount);
             }
         }
         Ok(())
@@ -873,6 +884,56 @@ mod tests {
         ));
     }
 
+    /// §6.3 Fee: a fee credits both the balance and the running total of
+    /// fees, each saturating; a Treasury credit (a slashing remainder)
+    /// leaves the fee total alone.
+    #[test]
+    fn fees_credit_the_balance_and_the_running_total() {
+        let usd = AssetId::usd();
+        let gpu = AssetId::derive(b"gpu");
+        let mut treasury = Treasury::default();
+        treasury.balances.insert(usd, Amount(u128::MAX - 9));
+        treasury.fees.insert(usd, Amount(u128::MAX - 3));
+        let items = [
+            Deferred::Fee {
+                asset: usd,
+                amount: Amount(5),
+            },
+            Deferred::Treasury {
+                asset: usd,
+                amount: Amount(2),
+            },
+            Deferred::Fee {
+                asset: gpu,
+                amount: Amount(7),
+            },
+        ];
+        let objects = vec![
+            schedule(BTreeMap::new()),
+            shared(well_known::treasury(), ObjectData::Treasury(treasury)),
+        ];
+        let outcome = run_deferred_phase(
+            &context(3),
+            &view(objects),
+            Frontier::default(),
+            &items,
+            &[],
+        )
+        .unwrap();
+        let ObjectData::Treasury(after) = &outcome.writes[&well_known::treasury()].data else {
+            panic!("treasury")
+        };
+        assert_eq!(after.balances[&usd], Amount(u128::MAX - 2));
+        assert_eq!(
+            after.fees[&usd],
+            Amount(u128::MAX),
+            "the fee total saturates"
+        );
+        assert_eq!(after.balances[&gpu], Amount(7));
+        assert_eq!(after.fees[&gpu], Amount(7));
+        assert!(after.minted.is_empty());
+    }
+
     #[test]
     fn sealing_times_saturate() {
         // An order at the last Pulses: (index + 1) × length saturates, so
@@ -985,11 +1046,15 @@ mod tests {
             Deferred::RegisterAtom {
                 atom: Atom::new(AtomClass::Code, "z"),
             },
+            Deferred::Fee {
+                asset: usd,
+                amount: Amount(3),
+            },
         ];
         let mut sorted = items.clone();
         sorted.sort_by_key(sort_key);
         let ranks: Vec<u8> = sorted.iter().map(|item| sort_key(item).0).collect();
-        assert_eq!(ranks, vec![0, 5, 5, 6, 7]);
+        assert_eq!(ranks, vec![0, 5, 5, 6, 7, 8], "fees sort last");
         // Equal natural keys fall back to the item encoding.
         assert_eq!(
             sorted[1],

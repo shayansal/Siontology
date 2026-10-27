@@ -16,9 +16,11 @@ Options:
       --json <JSON>  Write the measurements as JSON to this file
 ```
 
-`--only state` includes the hashing measurement, and `--only execution`
-the proving ones. The whole suite took 70 seconds below; the
-devnet group starts its own in-process devnet.
+In the run below, from an earlier version, the hashing measurement is
+labelled `hashing` and the replay-proving ones `proving`; they now appear
+under `state` and `execution`, the groups `--only` selects them by. The
+whole suite took 70 seconds; the devnet group starts its own in-process
+devnet.
 
 ## One run
 

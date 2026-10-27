@@ -55,6 +55,15 @@ fn usd(n: u64) -> Amount {
     Amount::units(n)
 }
 
+/// A transaction's outcome in a few words.
+fn outcome(status: &ExecStatus) -> String {
+    match status {
+        ExecStatus::Success => "accepted".into(),
+        ExecStatus::Failed(reason) => format!("failed ({reason})"),
+        ExecStatus::Rejected(reason) => format!("rejected ({reason})"),
+    }
+}
+
 fn events(view: &TxView) -> &[Event] {
     &view.effects.events
 }
@@ -404,9 +413,9 @@ pub fn agents(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
         _ => None,
     })?;
     out.say(format!(
-        "Pulse {:>3}  agent pays gpu-cloud 80 USD for inference: {:?}; receipt claim {} joins the knowledge log",
+        "Pulse {:>3}  agent pays gpu-cloud 80 USD for inference: {}; receipt claim {} joins the knowledge log",
         view.pulse,
-        view.status,
+        outcome(&view.status),
         receipt.short()
     ));
     for (payee, amount, story) in [
@@ -468,8 +477,9 @@ pub fn agents(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
         "embedding batch",
     )?;
     out.say(format!(
-        "Pulse {:>3}  sub-agent pays gpu-cloud 20 USD: {:?}",
-        view.pulse, view.status
+        "Pulse {:>3}  sub-agent pays gpu-cloud 20 USD: {}",
+        view.pulse,
+        outcome(&view.status)
     ));
     let view = session.must("acme", TxKind::RevokeCharter { charter }, Vec::new())?;
     out.say(format!(
@@ -590,15 +600,19 @@ pub fn market(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
     for ((who, side, quantity, price), digest) in orders.iter().zip(digests) {
         let view = session.wait(digest)?;
         out.say(format!(
-            "Pulse {:>3}  {who} {} {quantity} GPU-hours at ≤ {}.{:02} USD: {:?}",
+            "Pulse {:>3}  {who} {} {quantity} GPU-hours at {} {}.{:02} USD: {}",
             view.pulse,
             match side {
                 Side::Buy => "bids for",
                 Side::Sell => "offers",
             },
+            match side {
+                Side::Buy => "≤",
+                Side::Sell => "≥",
+            },
             price / 100,
             price % 100,
-            view.status
+            outcome(&view.status)
         ));
     }
     session.settle_all();
@@ -751,7 +765,44 @@ pub fn light(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
         "           pinned chain identity {} (genesis, validators, keys and shard layout)",
         pinned.short()
     ));
-    let report = crate::verify::verify_pulse(session.ledger, Some(pinned), None, 16, true)?;
+    // Something to verify, even on a fresh devnet: one transfer, in a Pulse
+    // that is certified and, if the devnet proves, proven.
+    fund_all(session, &[("light-user", AssetId::usd(), usd(10))])?;
+    let alice = session.id("alice");
+    let view = session.must(
+        "light-user",
+        TxKind::Transfer {
+            asset: AssetId::usd(),
+            outputs: vec![(alice, usd(1))],
+        },
+        Vec::new(),
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let proven = loop {
+        let status = session.ledger.status()?;
+        let certified: Pulse = json(&status["certified_pulse"]).unwrap_or_default();
+        let proven: Option<Pulse> = json(&status["proven_pulse"]).unwrap_or(None);
+        if certified >= view.pulse && proven.is_some_and(|p| p >= view.pulse) {
+            break true;
+        }
+        if Instant::now() > deadline {
+            if certified < view.pulse {
+                return Err(CliError::Transaction(format!(
+                    "Pulse {} was not certified in time",
+                    view.pulse
+                )));
+            }
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    if !proven {
+        out.say(
+            "           (this devnet does not prove, or not yet: the World Proof check is skipped)",
+        );
+    }
+    let report =
+        crate::verify::verify_pulse(session.ledger, Some(pinned), Some(view.pulse), 16, proven)?;
     for line in report {
         out.say(format!("           {line}"));
     }

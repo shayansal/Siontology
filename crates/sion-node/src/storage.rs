@@ -1,7 +1,7 @@
 //! Durable storage: a segmented write-ahead log of executed Pulses plus
 //! periodic state snapshots.
 //!
-//! The design follows Hotgraph's event log (`docs/ops/wal-snapshot-recovery.md`):
+//! The design follows the event log of Hotgraph, ColdAI's graph engine:
 //! append-only segments of self-describing records, each with a magic tag,
 //! a sequence number, a length and a checksum; a crash leaves at most one
 //! torn record at the tail, which recovery detects and truncates. Snapshots
@@ -331,8 +331,8 @@ pub fn replay(
 /// approves a conflicting spend, and the original transaction can be
 /// certified again. (Lane committees also change at epoch boundaries and
 /// rotations; a validator that stays on a shard's committee carries its
-/// locks over, while new members start without them; see
-/// `docs/implementation-status.md`.)
+/// locks over, while new members start without them; see `impl:lock-handover`
+/// in `docs/implementation-status.md`.)
 #[derive(Debug)]
 pub struct LaneLog {
     path: PathBuf,

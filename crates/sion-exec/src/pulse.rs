@@ -826,6 +826,7 @@ fn deferred_key(item: &Deferred) -> DeferredKey {
         Deferred::Treasury { asset, .. } => (5, encode(asset)),
         Deferred::Minted { asset, .. } => (6, encode(asset)),
         Deferred::Schedule { at, event } => (7, encode(&(at, event))),
+        Deferred::Fee { asset, .. } => (8, encode(asset)),
     };
     (rank, key, encode(item))
 }
@@ -998,6 +999,13 @@ pub fn apply_deferred<S: ObjectStore>(
             Deferred::Schedule { at, event } => {
                 protocol.schedule_event(Pulse(at.0.max(ctx.pulse.0)), *event);
             }
+            Deferred::Fee { asset, amount } => {
+                let treasury = protocol.treasury(&mut run)?;
+                let entry = treasury.balances.entry(*asset).or_insert(Amount::ZERO);
+                *entry = entry.saturating_add(*amount);
+                let total = treasury.fees.entry(*asset).or_insert(Amount::ZERO);
+                *total = total.saturating_add(*amount);
+            }
         }
     }
 
@@ -1165,14 +1173,14 @@ pub fn apply_deferred<S: ObjectStore>(
                     if ctx.pulse != protocol.validators(&mut run)?.epoch_end() {
                         continue;
                     }
-                    let balance = protocol
-                        .treasury(&mut run)?
-                        .balances
+                    let treasury = protocol.treasury(&mut run)?;
+                    let collected = treasury
+                        .fees
                         .get(&AssetId::usd())
                         .copied()
                         .unwrap_or(Amount::ZERO);
                     let set = protocol.validators(&mut run)?;
-                    let paid = end_epoch(set, ctx, balance)?;
+                    let paid = end_epoch(set, ctx, collected)?;
                     let (epoch, active, next) = (set.epoch, set.active.len(), set.epoch_end());
                     let treasury = protocol.treasury(&mut run)?;
                     let entry = treasury
@@ -1362,16 +1370,16 @@ fn rotate(
 }
 
 /// Ends the current epoch at the end of `ctx.pulse`, given the treasury's
-/// USD balance: pays the epoch's validators their share of what the
-/// treasury gained, admits and retires validators, picks the next active
-/// set and starts the next epoch. Returns the rewards paid (to be taken
-/// from the treasury).
+/// running total of USD fees: pays the epoch's validators their share of
+/// the fees collected during the epoch (nothing else the treasury received),
+/// admits and retires validators, picks the next active set and starts the
+/// next epoch. Returns the rewards paid (to be taken from the treasury).
 fn end_epoch(
     set: &mut ValidatorSet,
     ctx: &PulseContext,
-    balance: Amount,
+    collected: Amount,
 ) -> Result<Amount, ExecError> {
-    let gain = balance.saturating_sub(set.treasury_mark);
+    let gain = collected.saturating_sub(set.fees_mark);
     let pool = crate::validators::permille_of(gain, set.params.reward_permille);
     let total: u64 = set.active.iter().map(|(_, w)| *w).sum();
     let mut paid = Amount::ZERO;
@@ -1421,7 +1429,7 @@ fn end_epoch(
     set.epoch_start = ctx.pulse.next();
     set.seed = ctx.beacon;
     set.rotations.clear();
-    set.treasury_mark = balance.checked_sub(paid)?;
+    set.fees_mark = collected;
     Ok(paid)
 }
 

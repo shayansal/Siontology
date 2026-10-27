@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.3
+# The Siontology state transition — specification v1.4
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -100,9 +100,15 @@ The validator set holds the parameters (`stake_asset`, `epoch_length`,
 `reporter_permille`), the current `epoch`, `epoch_start`, the sampling
 `seed`, the `active` set as (validator, weight) pairs sorted by validator,
 every validator's record, this epoch's shard `rotations`, and the
-`treasury_mark`. `epoch_end = epoch_start + max(epoch_length, 1) − 1`
+`fees_mark`, the treasury's USD fees when the last epoch ended. `epoch_end =
+epoch_start + max(epoch_length, 1) − 1`
 (saturating). At genesis, `epoch = 0`, `epoch_start = 1`, `seed` is the
-genesis digest, and an `EpochEnd` event is scheduled at `epoch_end`.
+genesis digest, `fees_mark = 0`, and an `EpochEnd` event is scheduled at
+`epoch_end`.
+
+The treasury holds, by asset, its `balances`, what was ever `minted`, and
+the `fees` ever credited to it (a running total that only grows; at
+genesis all three are empty).
 
 ### 2.1 Reads and the witness
 
@@ -163,7 +169,7 @@ The transaction keeps:
 3. `need = amount + fee`. If `available < need`: error "insufficient funds".
 4. `consume` every id in `used`, in order.
 5. If `fee > 0`: `fee_paid = true`, `effects.fee = fee`, append
-   `Deferred::Treasury { asset: USD, amount: fee }` to `effects.deferred`.
+   `Deferred::Fee { asset: USD, amount: fee }` to `effects.deferred`.
 6. `mint(tx.sender, asset, available − need)` (the change).
 
 ### 3.3 charge_fee_from_gas and finalize_inputs
@@ -172,7 +178,7 @@ The transaction keeps:
   Otherwise `load(tx.inputs[0].id)`; it is an error if it is a tombstone or
   not a coin; subtract `tx.fee` from its amount (error if insufficient);
   store it; `fee_paid = true`; `effects.fee = tx.fee`; append
-  `Deferred::Treasury { asset: USD, amount: tx.fee }`.
+  `Deferred::Fee { asset: USD, amount: tx.fee }`.
 - **finalize_inputs**: for each input `r`, in order: `load(r.id)`; if its
   current version still equals `r.version` (nothing in this transaction
   stored it), store it unchanged (bumping its version).
@@ -702,6 +708,7 @@ commutes, so their order does not matter):
 | Treasury | 5 | `enc(asset)` |
 | Minted | 6 | `enc(asset)` |
 | Schedule | 7 | `enc((at, event))` |
+| Fee | 8 | `enc(asset)` |
 
 **Items**, in sorted order:
 
@@ -751,6 +758,8 @@ commutes, so their order does not matter):
   amount` (saturating).
 - **Minted { asset, amount }**: obtain the treasury; `minted[asset] +=
   amount` (saturating).
+- **Fee { asset, amount }**: obtain the treasury; `balances[asset] +=
+  amount` and `fees[asset] += amount` (both saturating).
 - **Schedule { at, event }**: schedule `event` at `max(at, ctx.pulse)`.
 
 Scheduling inserts into `schedule.due[at]` (a set); the schedule counts as
@@ -830,8 +839,11 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   rotation_seed(ctx.beacon, s, count), Epoch(epoch), s, previous)>, at:
   ctx.pulse }`; event `ShardRotated { shard: s, rotation: count }`.
 - **EpochEnd**: obtain the validator set; skip unless `ctx.pulse =
-  epoch_end`. Obtain the treasury; `balance = balances[USD]` (or 0).
-  1. `gain = balance − treasury_mark` (0 if negative); `pool =
+  epoch_end`. Obtain the treasury; `balance = balances[USD]` (or 0) and
+  `collected = fees[USD]` (or 0). Validators are paid from fees only: what
+  else reaches the treasury (slashing remainders, released pools) stays
+  there.
+  1. `gain = collected − fees_mark` (0 if negative); `pool =
      permille_of(gain, reward_permille)`; `total` = the sum of the active
      set's weights. For each `(v, w)` of the active set, in order, whose
      record is `Active` or `Leaving`: `share = share_of(pool, w, total)`;
@@ -844,11 +856,15 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
      weight(stake))` sorted by id. If it is empty, the active set is kept.
   4. `epoch += 1` (saturating); `epoch_start = ctx.pulse + 1` (an error at
      Pulse `u64::MAX`, which no chain reaches); `seed = ctx.beacon`;
-     `rotations` emptied; `treasury_mark = balance − paid`.
-  5. Set `balances[USD]` to `balance − paid`: the entry is written even
-     when nothing is paid and the treasury had no USD entry (it then holds
-     0). Schedule `EpochEnd` at the new `epoch_end`; event `EpochChanged {
-     epoch, active: <size of the active set>, rewards: paid }`.
+     `rotations` emptied; `fees_mark = collected`.
+  5. Set `balances[USD]` to `balance − paid` (an error if `paid > balance`,
+     which no reachable state allows: rewards are a share of fees the
+     treasury already holds, and nothing else leaves it). The entry is
+     written even when nothing is paid and the treasury had no USD entry
+     (it then holds 0). `fees` is not written: a treasury that has
+     collected no USD fee keeps no `fees[USD]` entry. Schedule `EpochEnd`
+     at the new `epoch_end`; event `EpochChanged { epoch, active: <size of
+     the active set>, rewards: paid }`.
 
 Lane committees follow from the validator set: shard `s` is served by its
 lane members (above), one seat each, with the committee epoch
@@ -963,6 +979,14 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.4.** Validators are paid from fees only. A transaction's fee is
+  deferred as `Fee { asset, amount }` (§3.2, §3.3), which credits the
+  treasury's balance and its running total of `fees` (§6.3). At an epoch's
+  end the reward pool is `reward_permille` of the fees collected since the
+  last epoch end (`fees_mark`), not of everything the treasury gained, so
+  slashing remainders and released bond pools never become validator
+  income. `ValidatorSet::treasury_mark` becomes `fees_mark`.
 
 - **v1.3.** Validators, stake, epochs and the censorship response join the
   state transition. A validator stakes the stake asset with a proof that

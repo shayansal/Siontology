@@ -221,7 +221,7 @@ pub fn genesis(spec: &GenesisSpec) -> Result<State, ExecError> {
         active,
         validators,
         rotations: BTreeMap::new(),
-        treasury_mark: Amount::ZERO,
+        fees_mark: Amount::ZERO,
     };
     let mut schedule = Schedule::default();
     schedule
@@ -257,6 +257,7 @@ pub fn genesis(spec: &GenesisSpec) -> Result<State, ExecError> {
         data: ObjectData::Treasury(Treasury {
             balances: BTreeMap::new(),
             minted,
+            fees: BTreeMap::new(),
         }),
     });
     Ok(state)

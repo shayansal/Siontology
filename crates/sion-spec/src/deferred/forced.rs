@@ -349,7 +349,7 @@ mod tests {
             active,
             validators: BTreeMap::new(),
             rotations: BTreeMap::new(),
-            treasury_mark: Amount::ZERO,
+            fees_mark: Amount::ZERO,
         };
         let due: BTreeMap<u64, BTreeSet<ScheduledEvent>> =
             [(10, [ScheduledEvent::ForcedDeadline { intent }].into())].into();

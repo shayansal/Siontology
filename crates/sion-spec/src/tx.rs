@@ -202,11 +202,13 @@ impl<'v> TxRun<'v> {
         self.deferred.push(item);
     }
 
-    /// Records the fee as charged.
+    /// Records the fee as charged (§3.2 step 5, §3.3): it is deferred as a
+    /// `Fee`, which the deferred phase credits to the treasury's balance and
+    /// to its running total of fees, from which validators are paid.
     fn record_fee(&mut self, fee: Amount) {
         self.fee_paid = true;
         self.fee = fee;
-        self.defer(Deferred::Treasury {
+        self.defer(Deferred::Fee {
             asset: usd(),
             amount: fee,
         });

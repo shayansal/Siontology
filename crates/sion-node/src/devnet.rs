@@ -184,9 +184,10 @@ pub fn devnet_genesis(config: &DevnetConfig) -> GenesisSpec {
             unbonding: config.unbonding,
             seats: u16::try_from(config.shard_seats.max(1)).unwrap_or(u16::MAX),
             max_active: 100,
-            // As the token design proposes: 70 % of what the treasury gains
-            // in an epoch goes to its validators; a reporter receives 5 % of
-            // a slashed stake, so reporting oneself still forfeits 95 %.
+            // As the token design proposes: 70 % of the fees the treasury
+            // collects in an epoch goes to its validators; a reporter
+            // receives 5 % of a slashed stake, so reporting oneself still
+            // forfeits 95 %.
             reward_permille: 700,
             reporter_permille: 50,
         },

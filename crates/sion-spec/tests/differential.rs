@@ -137,6 +137,7 @@ fn deferred_name(item: &Deferred) -> &'static str {
         Deferred::Treasury { .. } => "Treasury",
         Deferred::Minted { .. } => "Minted",
         Deferred::Schedule { .. } => "Schedule",
+        Deferred::Fee { .. } => "Fee",
     }
 }
 
@@ -264,6 +265,11 @@ struct Harness {
     /// wrote (spec §2.1: an implementation must not read more than the
     /// specification requires).
     unread: Vec<String>,
+    /// The treasury's USD balance after the last epoch end (at genesis, its
+    /// genesis balance), for the epoch-reward oracle.
+    epoch_balance: Amount,
+    /// Epoch ends checked against the v1.4 reward rule.
+    epochs: usize,
 }
 
 impl Harness {
@@ -290,6 +296,14 @@ impl Harness {
 
     fn from_chain(mut chain: Chain, chunk_size: usize) -> Harness {
         chain.chunk_size = chunk_size;
+        let epoch_balance = match &chain.state.objects[&well_known::treasury()].data {
+            ObjectData::Treasury(treasury) => treasury
+                .balances
+                .get(&usd())
+                .copied()
+                .unwrap_or(Amount::ZERO),
+            other => panic!("the treasury object holds {other:?}"),
+        };
         Harness {
             chain,
             verified: 0,
@@ -298,6 +312,8 @@ impl Harness {
             intents: 0,
             coverage: BTreeSet::new(),
             unread: Vec::new(),
+            epoch_balance,
+            epochs: 0,
         }
     }
 
@@ -463,6 +479,27 @@ impl Harness {
                 }
                 if trace.statement.deferred_phase {
                     record_deferred_coverage(trace, &mut self.coverage);
+                    let rewards =
+                        record
+                            .output
+                            .deferred_events
+                            .iter()
+                            .find_map(|event| match event {
+                                Event::EpochChanged { rewards, .. } => Some(*rewards),
+                                _ => None,
+                            });
+                    if let Some(rewards) = rewards {
+                        let check = check_epoch_rewards(trace, rewards, self.epoch_balance);
+                        self.epoch_balance = check.balance_after;
+                        self.epochs += 1;
+                        self.coverage.insert("epoch/rewards-from-fees".into());
+                        if check.gain > Amount::ZERO && rewards > Amount::ZERO {
+                            self.coverage.insert("epoch/fees-paid-out".into());
+                        }
+                        if check.other_income > Amount::ZERO {
+                            self.coverage.insert("epoch/non-fee-income-kept".into());
+                        }
+                    }
                 }
                 self.unread.extend(unread_witness_entries(trace));
             }
@@ -473,11 +510,12 @@ impl Harness {
     /// Prints what was verified (visible with `--nocapture`).
     fn summary(&self, name: &str) {
         eprintln!(
-            "{name}: stack B verified {} chunks of {} Pulses ({} transactions, {} forced intents); coverage: {:?}; unread witness entries: {}",
+            "{name}: stack B verified {} chunks of {} Pulses ({} transactions, {} forced intents, {} epoch ends); coverage: {:?}; unread witness entries: {}",
             self.chunks,
             self.verified,
             self.transactions,
             self.intents,
+            self.epochs,
             self.coverage,
             self.unread.len()
         );
@@ -573,8 +611,9 @@ fn record_deferred_coverage(trace: &ChunkTrace, coverage: &mut BTreeSet<String>)
     if execution.writes.contains_key(&deferred_coin_id(pulse, 0)) {
         coverage.insert("deferred/payout".into());
     }
-    // Treasury growth beyond the phase's own credits came from registry
-    // ticks releasing slashing pools.
+    // Treasury growth beyond the phase's own credits (treasury credits and
+    // fees), net of the epoch rewards it paid, came from registry ticks
+    // releasing slashing pools.
     let usd_balance = |object: Option<&Object>| match object.map(|o| &o.data) {
         Some(ObjectData::Treasury(treasury)) => treasury
             .balances
@@ -594,13 +633,131 @@ fn record_deferred_coverage(trace: &ChunkTrace, coverage: &mut BTreeSet<String>)
             .deferred_items
             .iter()
             .filter_map(|item| match item {
-                Deferred::Treasury { asset, amount } if *asset == usd() => Some(amount.0),
+                Deferred::Treasury { asset, amount } | Deferred::Fee { asset, amount }
+                    if *asset == usd() =>
+                {
+                    Some(amount.0)
+                }
                 _ => None,
             })
             .sum();
-        if usd_balance(Some(after)).0 > usd_balance(before).0 + credited {
+        let paid: u128 = execution
+            .deferred_events
+            .iter()
+            .filter_map(|event| match event {
+                Event::EpochChanged { rewards, .. } => Some(rewards.0),
+                _ => None,
+            })
+            .sum();
+        if usd_balance(Some(after)).0 + paid > usd_balance(before).0 + credited {
             coverage.insert("due/RegistryTick-releases-pools".into());
         }
+    }
+}
+
+/// What an epoch end did with the treasury.
+struct EpochCheck {
+    /// The treasury's USD balance after it.
+    balance_after: Amount,
+    /// The fees collected during the epoch.
+    gain: Amount,
+    /// What else the treasury received during the epoch (slashing
+    /// remainders, released pools).
+    other_income: Amount,
+}
+
+/// The v1.4 rule, checked against stack A's `EpochChanged` from the
+/// deferred phase's witness and items: the rewards are exactly the shares
+/// of `reward_permille` of the fees collected since `fees_mark`, paid to the
+/// active set's Active and Leaving records; the mark moves to the fee
+/// total; the treasury's other income stays in its balance.
+fn check_epoch_rewards(trace: &ChunkTrace, rewards: Amount, last_balance: Amount) -> EpochCheck {
+    let pulse = trace.statement.pulse.0;
+    let witnessed = |id: ObjectId| {
+        trace
+            .witness
+            .objects
+            .iter()
+            .find(|(entry, _, _)| *entry == id)
+            .and_then(|(_, object, _)| object.clone())
+            .map(|object| object.data)
+    };
+    let written = |id: ObjectId| {
+        trace
+            .writes
+            .iter()
+            .find(|object| object.id == id)
+            .map(|object| object.data.clone())
+    };
+    let Some(ObjectData::Validators(set)) = witnessed(well_known::validators()) else {
+        panic!("pulse {pulse}: an epoch end reads the validator set");
+    };
+    let Some(ObjectData::Treasury(treasury)) = witnessed(well_known::treasury()) else {
+        panic!("pulse {pulse}: an epoch end reads the treasury");
+    };
+    let fees_in_phase: u128 = trace
+        .deferred_items
+        .iter()
+        .filter_map(|item| match item {
+            Deferred::Fee { asset, amount } if *asset == usd() => Some(amount.0),
+            _ => None,
+        })
+        .sum();
+    let collected =
+        Amount(treasury.fees.get(&usd()).copied().unwrap_or(Amount::ZERO).0 + fees_in_phase);
+    let gain = Amount(collected.0.saturating_sub(set.fees_mark.0));
+    let pool = sion_exec::validators::permille_of(gain, set.params.reward_permille);
+    let total: u64 = set.active.iter().map(|(_, weight)| *weight).sum();
+    let expected: u128 = set
+        .active
+        .iter()
+        .filter(|(validator, _)| {
+            matches!(
+                set.validators.get(validator).map(|record| record.status),
+                Some(ValidatorStatus::Active | ValidatorStatus::Leaving)
+            )
+        })
+        .map(|(_, weight)| sion_exec::validators::share_of(pool, *weight, total).0)
+        .sum();
+    assert_eq!(
+        rewards,
+        Amount(expected),
+        "pulse {pulse}: the rewards are the shares of {} permille of the {gain} in fees collected",
+        set.params.reward_permille
+    );
+    let Some(ObjectData::Validators(after)) = written(well_known::validators()) else {
+        panic!("pulse {pulse}: an epoch end writes the validator set");
+    };
+    assert_eq!(
+        after.fees_mark, collected,
+        "pulse {pulse}: the mark is the fee total"
+    );
+    let Some(ObjectData::Treasury(after)) = written(well_known::treasury()) else {
+        panic!("pulse {pulse}: an epoch end writes the treasury");
+    };
+    assert_eq!(
+        after.fees.get(&usd()).copied().unwrap_or(Amount::ZERO),
+        collected
+    );
+    let balance_after = *after
+        .balances
+        .get(&usd())
+        .expect("the epoch end writes the USD balance");
+    let income = Amount(
+        (balance_after.0 + rewards.0)
+            .checked_sub(last_balance.0)
+            .unwrap_or_else(|| {
+                panic!("pulse {pulse}: the treasury lost USD other than through rewards")
+            }),
+    );
+    assert!(
+        income >= gain,
+        "pulse {pulse}: the treasury received {income} in the epoch, less than its {gain} in fees"
+    );
+    EpochCheck {
+        balance_after,
+        gain,
+        other_income: Amount(income.0 - gain.0),
     }
 }
 
@@ -932,7 +1089,7 @@ fn coins_accounts_and_outcomes(chunk_size: usize) -> Harness {
         "Transfer/rejected",
         "RotatePolicy/ok",
         "RotatePolicy/failed",
-        "deferred/Treasury",
+        "deferred/Fee",
         "deferred/Minted",
     ]);
     h.assert_minimal_witnesses();
@@ -1228,21 +1385,23 @@ fn knowledge_claims_atoms_bonds_and_expiry() {
 // Scenario: reliance, challenges, slashing and compensation
 // ---------------------------------------------------------------------------
 
+const ASSURANCE_NAMES: [&str; 7] = [
+    "supplier",
+    "shipper",
+    "judge",
+    "financier",
+    "lender",
+    "buyer",
+    "mallory",
+];
+
 fn assurance(chunk_size: usize) -> Harness {
-    let mut h = Harness::new(
-        &[
-            "supplier",
-            "shipper",
-            "judge",
-            "financier",
-            "lender",
-            "buyer",
-            "mallory",
-        ],
-        200_000,
-        4,
-        chunk_size,
-    );
+    assurance_on(Harness::new(&ASSURANCE_NAMES, 200_000, 4, chunk_size))
+}
+
+/// The assurance scenario on `h`, a chain with the `ASSURANCE_NAMES`
+/// accounts.
+fn assurance_on(mut h: Harness) -> Harness {
     let (supplier, shipper, judge) = (h.id("supplier"), h.id("shipper"), h.id("judge"));
     let s_atom = bond_atom(AtomClass::Economic, &supplier, "invoices");
     let w_atom = bond_atom(AtomClass::Economic, &shipper, "logistics");
@@ -1552,6 +1711,32 @@ fn assurance(chunk_size: usize) -> Harness {
 #[test]
 fn assurance_reliance_challenges_slashing_and_compensation() {
     assurance(3).summary("assurance");
+}
+
+/// v1.4: the assurance scenario on a chain whose epochs end every four
+/// Pulses. Its slashings send remainders to the treasury and its registry
+/// ticks release pools into it, in epochs that also collect fees; every
+/// epoch end pays exactly its share of the fees and keeps the rest (the
+/// harness checks each one against the rule).
+#[test]
+fn rewards_come_from_fees_while_slashings_and_released_pools_fill_the_treasury() {
+    let h = assurance_on(Harness::with_params(
+        &ASSURANCE_NAMES,
+        200_000,
+        4,
+        3,
+        validator_params(4),
+        forced_params(3, 8),
+    ));
+    h.assert_covered(&[
+        "deferred/Treasury",
+        "deferred/Fee",
+        "due/RegistryTick-releases-pools",
+        "epoch/rewards-from-fees",
+        "epoch/fees-paid-out",
+        "epoch/non-fee-income-kept",
+    ]);
+    h.summary("assurance with epochs");
 }
 
 // ---------------------------------------------------------------------------
@@ -2724,13 +2909,13 @@ fn altered_deferred_items_are_rejected() {
 
     // Changed amounts break the accumulator; with the accumulator refitted
     // they break the state root.
-    let treasury = phase
+    let fee = phase
         .deferred_items
         .iter()
-        .position(|item| matches!(item, Deferred::Treasury { .. }))
+        .position(|item| matches!(item, Deferred::Fee { .. }))
         .expect("a fee");
     let mut altered = phase.clone();
-    if let Deferred::Treasury { amount, .. } = &mut altered.deferred_items[treasury] {
+    if let Deferred::Fee { amount, .. } = &mut altered.deferred_items[fee] {
         *amount = amount.checked_add(Amount(1)).unwrap();
     }
     assert_eq!(
@@ -2763,6 +2948,29 @@ fn altered_deferred_items_are_rejected() {
     });
     refit(&mut injected);
     rejected(&injected, "an injected item");
+
+    // v1.4: an injected fee, or a fee relabelled as a treasury credit (the
+    // same balance, but not a fee validators are paid from), changes the
+    // treasury.
+    let mut injected = phase.clone();
+    injected.deferred_items.push(Deferred::Fee {
+        asset: usd(),
+        amount: units(1),
+    });
+    refit(&mut injected);
+    assert!(matches!(
+        rejected(&injected, "an injected fee"),
+        SpecError::StateRootMismatch { .. }
+    ));
+    let mut relabelled = phase.clone();
+    if let Deferred::Fee { asset, amount } = relabelled.deferred_items[fee].clone() {
+        relabelled.deferred_items[fee] = Deferred::Treasury { asset, amount };
+    }
+    refit(&mut relabelled);
+    assert!(matches!(
+        rejected(&relabelled, "a fee relabelled as a treasury credit"),
+        SpecError::StateRootMismatch { .. }
+    ));
 
     // The phase sorts its items, so their order only matters to the
     // accumulator, which binds this chunk to the transaction chunks.
@@ -5662,16 +5870,22 @@ fn equivocation(chunk_size: usize) -> Harness {
         before.0 + stake.0 / 2 + rewards.0 / 2 - fee.0,
         "the reporter receives half of the stake and of the rewards"
     );
-    let treasury: Vec<Deferred> = out
+    let deferred: Vec<Deferred> = out
         .effects
         .iter()
         .find(|e| e.digest == real.digest())
         .map(|e| e.deferred.clone())
         .unwrap();
-    assert_eq!(
-        treasury.len(),
-        3,
-        "the rest of the stake, the rest of the rewards and the fee"
+    assert!(
+        matches!(
+            deferred.as_slice(),
+            [
+                Deferred::Treasury { .. },
+                Deferred::Treasury { .. },
+                Deferred::Fee { .. }
+            ]
+        ),
+        "the rest of the stake and of the rewards go to the treasury, then the fee: {deferred:?}"
     );
 
     // Pulse 7: g0 cannot be slashed twice; two live approvals of one coin
@@ -6520,6 +6734,11 @@ fn random_validator_and_forced_workloads_are_verified_chunk_by_chunk() {
         "deferred-event/ForcedOverdue",
         "deferred-event/ShardRotated",
         "deferred-event/EpochChanged",
+        "deferred/Fee",
+        "deferred/Treasury",
+        "epoch/rewards-from-fees",
+        "epoch/fees-paid-out",
+        "epoch/non-fee-income-kept",
     ];
     let missing: Vec<&str> = expected
         .iter()
@@ -7211,17 +7430,28 @@ fn probe_reporter_and_reward_share_extremes() {
             .iter()
             .find(|e| e.digest == report.digest())
             .unwrap();
-        let credited = effects
-            .deferred
-            .iter()
-            .filter(|item| matches!(item, Deferred::Treasury { .. }))
-            .count();
+        let count = |fee: bool| {
+            effects
+                .deferred
+                .iter()
+                .filter(|item| match item {
+                    Deferred::Fee { .. } => fee,
+                    Deferred::Treasury { .. } => !fee,
+                    _ => false,
+                })
+                .count()
+        };
         let paid = |amount: Amount| sion_exec::validators::permille_of(amount, reporter_permille);
         let rests = [record.stake, record.rewards]
             .into_iter()
             .filter(|amount| amount.0 > paid(*amount).0)
             .count();
-        assert_eq!(credited, 1 + rests, "the fee and every positive rest");
+        assert_eq!(
+            count(false),
+            rests,
+            "every positive rest is a treasury credit"
+        );
+        assert_eq!(count(true), 1, "the fee is a fee");
         h.advance(4);
         h.assert_minimal_witnesses();
     }
@@ -7628,5 +7858,167 @@ fn probe_degenerate_forced_and_stake_parameters() {
     h.settle();
     let out = h.pulse_forced(Vec::new(), vec![intent.clone()]);
     assert_eq!(dismissed_events(&out), [intent.digest()].into());
+    h.assert_minimal_witnesses();
+}
+
+// ---------------------------------------------------------------------------
+// Spec v1.4: validators are paid from fees only
+// ---------------------------------------------------------------------------
+
+/// The rewards an epoch end pays for `fees` collected, by the rule of
+/// §6.3 EpochEnd step 1, from the validator set it starts from.
+fn rewards_for(set: &ValidatorSet, fees: Amount) -> Amount {
+    let pool = sion_exec::validators::permille_of(fees, set.params.reward_permille);
+    let total: u64 = set.active.iter().map(|(_, weight)| *weight).sum();
+    Amount(
+        set.active
+            .iter()
+            .filter(|(validator, _)| {
+                matches!(
+                    set.validators[validator].status,
+                    ValidatorStatus::Active | ValidatorStatus::Leaving
+                )
+            })
+            .map(|(_, weight)| sion_exec::validators::share_of(pool, *weight, total).0)
+            .sum(),
+    )
+}
+
+fn fees_of(out: &PulseOutput) -> Amount {
+    Amount(out.effects.iter().map(|effects| effects.fee.0).sum())
+}
+
+fn epoch_rewards(out: &PulseOutput) -> Option<Amount> {
+    out.deferred_events.iter().find_map(|event| match event {
+        Event::EpochChanged { rewards, .. } => Some(*rewards),
+        _ => None,
+    })
+}
+
+fn treasury_fees(h: &Harness) -> Amount {
+    match &h.chain.state.objects[&well_known::treasury()].data {
+        ObjectData::Treasury(treasury) => {
+            treasury.fees.get(&usd()).copied().unwrap_or(Amount::ZERO)
+        }
+        other => panic!("the treasury object holds {other:?}"),
+    }
+}
+
+/// v1.4: a validator slashed during an epoch sends half its stake to the
+/// treasury; the epoch's rewards are still the share of its fees alone,
+/// and the remainder stays in the treasury.
+#[test]
+fn probe_rewards_ignore_slashing_remainders() {
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        50_000,
+        8,
+        2,
+        validator_params(4),
+        forced_params(2, 8),
+    );
+    let genesis = h.genesis_validators();
+    let stake = h.record(&genesis[0].1).stake;
+    let txs = fee_traffic(&mut h, "alice", "bob", 2);
+    let first = h.pulse(txs);
+    let auth = KeyAuth::of(&genesis[0].0);
+    let report = h.tx(
+        "bob",
+        report_headers(
+            signed_header(&auth, 1, 0, b"r"),
+            signed_header(&auth, 1, 0, b"s"),
+        ),
+    );
+    let second = h.pulse(vec![report.clone()]);
+    expect(&second, &report, Outcome::Success);
+    let txs = fee_traffic(&mut h, "alice", "bob", 2);
+    let third = h.pulse(txs);
+    let fees = Amount(fees_of(&first).0 + fees_of(&second).0 + fees_of(&third).0);
+    let remainder = Amount(stake.0 - sion_exec::validators::permille_of(stake, 500).0);
+    let before = treasury_balances(&h)[&usd()];
+    assert_eq!(before, Amount(fees.0 + remainder.0));
+    let set = h.validator_set();
+    // Pulse 4 ends the epoch: g0's weight still counts, unpaid.
+    let out = h.pulse(Vec::new());
+    let paid = epoch_rewards(&out).expect("the epoch ended");
+    assert_eq!(paid, rewards_for(&set, fees));
+    let share = sion_exec::validators::share_of(
+        sion_exec::validators::permille_of(fees, 500),
+        100_000,
+        400_000,
+    );
+    assert_eq!(paid, Amount(3 * share.0), "three of four equal shares");
+    assert_eq!(treasury_balances(&h)[&usd()], Amount(before.0 - paid.0));
+    assert!(
+        treasury_balances(&h)[&usd()] > remainder,
+        "the remainder stays"
+    );
+    assert_eq!(h.validator_set().fees_mark, fees);
+    assert_eq!(treasury_fees(&h), fees);
+    h.advance(5);
+    h.assert_covered(&["epoch/non-fee-income-kept", "epoch/fees-paid-out"]);
+    h.assert_minimal_witnesses();
+}
+
+/// v1.4 across epochs: each epoch's rewards are the share of the fees it
+/// collected (the mark follows the running total); an epoch whose only fee
+/// is a slashing report's pays a share of that fee, not of the forfeited
+/// stake; and an epoch without fees pays nothing, however large the
+/// treasury.
+#[test]
+fn probe_fees_across_epochs() {
+    let mut params = validator_params(3);
+    params.reward_permille = 1000;
+    let mut h = Harness::with_params(&["alice", "bob"], 50_000, 8, 2, params, forced_params(2, 8));
+    let genesis = h.genesis_validators();
+    let mut total = Amount::ZERO;
+    for epoch in 0..6u64 {
+        let mut collected = Amount::ZERO;
+        let mut set = h.validator_set();
+        for step in 0..3 {
+            let txs = match (epoch, step) {
+                // Epoch 2: one slashing report, nothing else.
+                (2, 0) => {
+                    let auth = KeyAuth::of(&genesis[1].0);
+                    vec![h.tx(
+                        "alice",
+                        report_headers(
+                            signed_header(&auth, 9, 1, b"t"),
+                            signed_header(&auth, 9, 1, b"u"),
+                        ),
+                    )]
+                }
+                (2, _) | (4, _) => Vec::new(),
+                _ => fee_traffic(&mut h, "alice", "bob", epoch as usize + 1),
+            };
+            if step == 2 {
+                set = h.validator_set();
+            }
+            let out = h.pulse(txs);
+            collected = Amount(collected.0 + fees_of(&out).0);
+            if step == 2 {
+                let paid = epoch_rewards(&out).expect("the epoch ended");
+                assert_eq!(paid, rewards_for(&set, collected), "epoch {epoch}");
+                match epoch {
+                    2 => assert!(paid <= collected, "a share of the report's fee"),
+                    4 => assert_eq!(paid, Amount::ZERO),
+                    _ => assert!(paid > Amount::ZERO),
+                }
+            }
+        }
+        total = Amount(total.0 + collected.0);
+        assert_eq!(h.validator_set().fees_mark, total, "epoch {epoch}");
+        assert_eq!(treasury_fees(&h), total, "epoch {epoch}");
+        assert_eq!(h.validator_set().epoch, epoch + 1);
+    }
+    assert!(
+        treasury_balances(&h)[&usd()].0 > 40_000_000_000,
+        "the forfeited stake is still in the treasury"
+    );
+    h.assert_covered(&[
+        "epoch/rewards-from-fees",
+        "epoch/fees-paid-out",
+        "epoch/non-fee-income-kept",
+    ]);
     h.assert_minimal_witnesses();
 }

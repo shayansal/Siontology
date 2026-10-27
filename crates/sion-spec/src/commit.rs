@@ -108,6 +108,10 @@ mod tests {
                 at: Pulse(9),
                 event: ScheduledEvent::RegistryTick,
             },
+            Deferred::Fee {
+                asset: AssetId::usd(),
+                amount: Amount(1_234),
+            },
         ]
     }
 

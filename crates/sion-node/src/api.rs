@@ -19,7 +19,7 @@
 //! | GET | `/v1/pulses/{n}/world` | the World Proof |
 //! | GET | `/v1/events?from=&limit=` | events |
 //! | POST | `/v1/forced` | post a forced intent `{tx: hex}`, bypassing the gateway |
-//! | GET | `/v1/forced` | forced-inclusion obligations: pending, overdue, resolved |
+//! | GET | `/v1/forced` | forced-inclusion obligations: the window, a summary (pending and overdue counts, the overdue root), each pending obligation, and this epoch's shard rotations |
 //! | POST | `/v1/devnet/censor` | **adversary simulation**: `{accounts: [hex], gateway, validators}` |
 
 use std::io::Read;

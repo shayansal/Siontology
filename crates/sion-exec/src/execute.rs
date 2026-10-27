@@ -135,6 +135,14 @@ pub enum Deferred {
         /// The event.
         event: ScheduledEvent,
     },
+    /// Credit a transaction fee to the treasury: its balance and its running
+    /// total of fees, from which validators are paid.
+    Fee {
+        /// Asset.
+        asset: AssetId,
+        /// Amount.
+        amount: Amount,
+    },
 }
 
 /// Something that happened, for receipts and the API.
@@ -612,7 +620,7 @@ impl<'r, 'a, S: ObjectStore> Run<'r, 'a, S> {
         if fee > Amount::ZERO {
             self.fee_paid = true;
             self.effects.fee = fee;
-            self.effects.deferred.push(Deferred::Treasury {
+            self.effects.deferred.push(Deferred::Fee {
                 asset: AssetId::usd(),
                 amount: fee,
             });
@@ -644,7 +652,7 @@ impl<'r, 'a, S: ObjectStore> Run<'r, 'a, S> {
         self.store(gas);
         self.fee_paid = true;
         self.effects.fee = self.tx.fee;
-        self.effects.deferred.push(Deferred::Treasury {
+        self.effects.deferred.push(Deferred::Fee {
             asset: AssetId::usd(),
             amount: self.tx.fee,
         });

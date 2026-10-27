@@ -325,15 +325,15 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
         ),
         TxKind::SubmitOrder { market, submission } => match submission {
             Submission::Plain(terms) => format!(
-                "{} {} units at {} {} each in market {}",
+                "{} {} units, {} {} each, in market {}",
                 match terms.side {
                     sion_clearing::Side::Buy => "Bid for",
                     sion_clearing::Side::Sell => "Offer",
                 },
                 terms.quantity,
                 match terms.side {
-                    sion_clearing::Side::Buy => "at most",
-                    sion_clearing::Side::Sell => "at least",
+                    sion_clearing::Side::Buy => "paying at most",
+                    sion_clearing::Side::Sell => "accepting at least",
                 },
                 terms.limit_price,
                 object(market)

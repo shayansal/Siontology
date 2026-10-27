@@ -79,7 +79,7 @@ fn tools() -> Value {
                     "claim": { "type": "string", "description": "Claim ID (hex)" },
                     "value_usd": { "type": "number", "description": "What you stand to lose if the claim is false" },
                     "kappa": { "type": "number", "description": "Safety factor κ (default 2)" },
-                    "distrust_atoms": { "type": "array", "items": { "type": "string" }, "description": "Atom IDs to treat as worthless" }
+                    "distrust_atoms": { "type": "array", "items": { "type": "string" }, "description": "Atom IDs not to trust even if their class is trusted: they count only for what breaking them costs (slashable bonds plus attack cost), not as unbreakable" }
                 },
                 "required": ["claim", "value_usd"]
             }

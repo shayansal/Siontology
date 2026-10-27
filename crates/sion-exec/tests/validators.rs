@@ -549,3 +549,108 @@ fn forced_intents_are_owed_and_censorship_rotates_the_committee() {
     assert!(dismissed.iter().any(|r| r.contains("authorization")));
     assert!(chain.state.forced().pending.is_empty());
 }
+
+/// Specification v1.4: validators are paid from fees only. A slashed stake's
+/// remainder reaches the treasury in the same epoch, but the epoch's rewards
+/// are exactly the reward share of the fees collected during the epoch.
+#[test]
+fn rewards_are_a_share_of_fees_only() {
+    let mut chain = Chain::with_params(&["alice", "bob"], 50_000, 4, params(), forced(8));
+    let keys = std::sync::Arc::new(chain.validator_keys[0].clone());
+    let auth = KeyAuth(keys.clone());
+    let offender = auth.validator();
+    let header = |payload: &[u8]| {
+        let header = Header {
+            author: offender,
+            chain: Hash32([1; 32]),
+            round: Round(3),
+            epoch: Epoch(0),
+            shard: ShardId(0),
+            parents: Vec::new(),
+            payload: vec![payload.to_vec()],
+        };
+        SignedHeader {
+            signature: auth.sign(&Header::signing_digest(&header.digest()).0),
+            header,
+        }
+    };
+    let report = chain
+        .tx(
+            "bob",
+            TxKind::ReportEquivocation {
+                evidence: Box::new(Equivocation::Headers {
+                    first: header(b"a"),
+                    second: header(b"b"),
+                }),
+            },
+        )
+        .unwrap();
+    let out = chain.pulse(vec![report.clone()]).unwrap();
+    assert_eq!(status(&out, &report), ExecStatus::Success);
+    for _ in 0..3 {
+        let pay = chain
+            .tx(
+                "alice",
+                TxKind::Transfer {
+                    asset: AssetId::usd(),
+                    outputs: vec![(chain.id("bob"), usd(1))],
+                },
+            )
+            .unwrap();
+        chain.pulse(vec![pay]).unwrap();
+    }
+    // Every fee paid since genesis, counted from the receipts.
+    let fees_paid = |chain: &Chain| {
+        chain
+            .history
+            .iter()
+            .flat_map(|record| record.output.effects.iter())
+            .fold(Amount::ZERO, |sum, effects| {
+                sum.checked_add(effects.fee).unwrap()
+            })
+    };
+    let fees = fees_paid(&chain);
+    let usd_id = AssetId::usd();
+    let treasury = chain.state.treasury().clone();
+    assert_eq!(treasury.fees.get(&usd_id).copied(), Some(fees));
+    assert!(
+        treasury.balances[&usd_id] > fees,
+        "the slashed stake's remainder is in the treasury too"
+    );
+
+    let active = chain.state.validators().active.clone();
+    chain.advance_to(Pulse(9)).unwrap();
+    let out = chain.pulse(Vec::new()).unwrap();
+    let rewards = events(&out)
+        .into_iter()
+        .find_map(|e| match e {
+            Event::EpochChanged { rewards, .. } => Some(rewards),
+            _ => None,
+        })
+        .expect("the epoch ended");
+    // The pool is half the epoch's fees; the slashed validator's weight
+    // still counts in the total, so its share stays in the treasury.
+    let pool = sion_exec::validators::permille_of(fees, params().reward_permille);
+    let total: u64 = active.iter().map(|(_, w)| *w).sum();
+    let mut expected = Amount::ZERO;
+    for (validator, w) in &active {
+        if *validator != offender {
+            expected = expected
+                .checked_add(sion_exec::validators::share_of(pool, *w, total))
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        rewards, expected,
+        "rewards are the fee pool's shares, nothing more"
+    );
+    assert!(rewards > Amount::ZERO);
+    let set = chain.state.validators();
+    assert_eq!(set.fees_mark, fees, "the next epoch counts fees from here");
+    let after = chain.state.treasury();
+    assert_eq!(
+        after.balances[&usd_id],
+        treasury.balances[&usd_id].checked_sub(rewards).unwrap(),
+        "only the rewards left the treasury"
+    );
+}

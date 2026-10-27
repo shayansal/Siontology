@@ -1,7 +1,13 @@
 //! The end of an epoch in the deferred phase (spec §6.3, EpochEnd): a share
-//! of the treasury's gain paid to the epoch's validators by weight, joining
-//! validators admitted and leaving ones retired, the next active set, and
-//! the next epoch's start, seed and treasury mark.
+//! of the fees the treasury collected during the epoch paid to the epoch's
+//! validators by weight, joining validators admitted and leaving ones
+//! retired, the next active set, and the next epoch's start, seed and fee
+//! mark.
+//!
+//! Validators are paid from fees only (v1.4): the pool is a share of what
+//! the treasury's running total of USD fees gained since the last epoch end
+//! (`fees_mark`). Whatever else the treasury received — slashing
+//! remainders, released bond pools — stays in its balance.
 
 use sion_core::ids::{Pulse, ValidatorId};
 use sion_core::Amount;
@@ -27,19 +33,19 @@ impl DeferredRun<'_> {
         if pulse != last_pulse_of_epoch(self.validator_set()?) {
             return Ok(());
         }
-        let balance = self
-            .treasury()?
+        let treasury = self.treasury()?;
+        let balance = treasury
             .balances
             .get(&usd())
             .copied()
             .unwrap_or(Amount::ZERO);
+        let collected = treasury.fees.get(&usd()).copied().unwrap_or(Amount::ZERO);
         let set = self.validator_set()?;
 
-        // 1. Rewards: a share of the treasury's gain, by weight, to the
-        //    active set's records that are Active or Leaving.
-        let gain = balance
-            .checked_sub(set.treasury_mark)
-            .unwrap_or(Amount::ZERO);
+        // 1. Rewards: a share of the fees collected since the last epoch
+        //    end, by weight, to the active set's records that are Active or
+        //    Leaving.
+        let gain = collected.checked_sub(set.fees_mark).unwrap_or(Amount::ZERO);
         let pool = permille_of(gain, set.params.reward_permille);
         let total = set
             .active
@@ -104,20 +110,18 @@ impl DeferredRun<'_> {
         );
         set.seed = beacon;
         set.rotations.clear();
-        set.treasury_mark = sub(balance, paid, "the treasury mark")?;
+        set.fees_mark = collected;
         let next_end = last_pulse_of_epoch(set);
         let epoch = set.epoch;
         let active = u32::try_from(set.active.len())
             .map_err(|_| broken("the active set does not fit an event"))?;
 
-        // 5. The rewards leave the treasury. `balances[USD] −= paid` writes
-        //    the entry even when nothing is paid and the treasury held no
-        //    USD (read, like the `+=` of treasury credits, as an update of
-        //    the entry, which starts at 0): the reference executor does the
-        //    same, and the state root depends on it.
-        let treasury = self.treasury()?;
-        let balance = treasury.balances.entry(usd()).or_insert(Amount::ZERO);
-        *balance = sub(*balance, paid, "the treasury's USD balance")?;
+        // 5. The rewards leave the treasury: `balances[USD]` is set to
+        //    `balance − paid` (an error if more is paid than the treasury
+        //    holds), written even when nothing is paid and the treasury held
+        //    no USD.
+        let remaining = sub(balance, paid, "the treasury's USD balance")?;
+        self.treasury()?.balances.insert(usd(), remaining);
         self.schedule(next_end, ScheduledEvent::EpochEnd);
         self.events.push(Event::EpochChanged {
             epoch,
@@ -137,11 +141,11 @@ mod tests {
     use sion_core::merkle::Frontier;
     use sion_exec::object::{well_known, Object, ObjectData, Owner, Schedule, Treasury};
     use sion_exec::state::ChainConfig;
-    use sion_exec::validators::ValidatorParams;
+    use sion_exec::validators::{ValidatorParams, ValidatorRecord};
 
     use super::*;
     use crate::context::SpecContext;
-    use crate::deferred::run_deferred_phase;
+    use crate::deferred::{run_deferred_phase, DeferredOutcome};
     use crate::view::ChunkView;
 
     fn set(epoch_start: u64, epoch_length: u64) -> ValidatorSet {
@@ -156,7 +160,7 @@ mod tests {
             active: Vec::new(),
             validators: BTreeMap::new(),
             rotations: BTreeMap::new(),
-            treasury_mark: Amount::ZERO,
+            fees_mark: Amount::ZERO,
         }
     }
 
@@ -213,7 +217,12 @@ mod tests {
         }
     }
 
-    fn phase(pulse: u64, validators: ValidatorSet) -> Result<(), SpecError> {
+    /// The deferred phase of Pulse `pulse` with only an EpochEnd due.
+    fn epoch_phase(
+        pulse: u64,
+        validators: ValidatorSet,
+        treasury: Treasury,
+    ) -> Result<DeferredOutcome, SpecError> {
         let due: BTreeMap<u64, BTreeSet<ScheduledEvent>> =
             [(pulse, [ScheduledEvent::EpochEnd].into())].into();
         let objects = vec![
@@ -225,16 +234,129 @@ mod tests {
                 well_known::validators(),
                 ObjectData::Validators(Box::new(validators)),
             ),
-            shared(
-                well_known::treasury(),
-                ObjectData::Treasury(Treasury {
-                    balances: BTreeMap::new(),
-                    minted: BTreeMap::new(),
-                }),
-            ),
+            shared(well_known::treasury(), ObjectData::Treasury(treasury)),
         ];
         let view = ChunkView::new(objects.into_iter().map(|o| (o.id, Some(o))).collect());
-        run_deferred_phase(&context(pulse), &view, Frontier::default(), &[], &[]).map(|_| ())
+        run_deferred_phase(&context(pulse), &view, Frontier::default(), &[], &[])
+    }
+
+    fn phase(pulse: u64, validators: ValidatorSet) -> Result<(), SpecError> {
+        epoch_phase(pulse, validators, Treasury::default()).map(|_| ())
+    }
+
+    /// A set of two active validators of equal weight, ending its epoch at
+    /// Pulse 10, with `fees_mark` and the given reward share.
+    fn paying_set(fees_mark: u128, reward_permille: u16) -> ValidatorSet {
+        let mut set = set(1, 10);
+        set.params.reward_permille = reward_permille;
+        set.fees_mark = Amount(fees_mark);
+        let keys =
+            sion_crypto::DualKeypair::from_seed(&[9; 32], sion_crypto::Scheme::SlhDsaSha2_128f);
+        for tag in [b"a", b"b"] {
+            let id = ValidatorId::derive(tag);
+            set.active.push((id, 5));
+            set.validators.insert(
+                id,
+                ValidatorRecord {
+                    id,
+                    lattice: keys.lattice.public().clone(),
+                    hash: keys.hash.public().clone(),
+                    operator: sion_core::ids::AccountId::derive(tag),
+                    stake: Amount::units(5),
+                    status: ValidatorStatus::Active,
+                    beacon_tip: Hash32::ZERO,
+                    rewards: Amount::ZERO,
+                    registered_at: Pulse(0),
+                },
+            );
+        }
+        set.active.sort();
+        set
+    }
+
+    fn treasury(balance: u128, fees: u128) -> Treasury {
+        let mut treasury = Treasury::default();
+        treasury.balances.insert(usd(), Amount(balance));
+        treasury.fees.insert(usd(), Amount(fees));
+        treasury
+    }
+
+    fn written_set(outcome: &DeferredOutcome) -> ValidatorSet {
+        match &outcome.writes[&well_known::validators()].data {
+            ObjectData::Validators(set) => (**set).clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn written_treasury(outcome: &DeferredOutcome) -> Treasury {
+        match &outcome.writes[&well_known::treasury()].data {
+            ObjectData::Treasury(treasury) => treasury.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// v1.4: the pool is a share of the fees collected since `fees_mark`,
+    /// however much else the treasury holds; the mark moves to the total.
+    #[test]
+    fn rewards_are_a_share_of_the_fees_collected_in_the_epoch() {
+        // 1,000,000 in the treasury, of which fees grew from 100 to 300.
+        let outcome = epoch_phase(10, paying_set(100, 500), treasury(1_000_000, 300)).unwrap();
+        let set = written_set(&outcome);
+        let rewards: Vec<Amount> = set.validators.values().map(|r| r.rewards).collect();
+        assert_eq!(
+            rewards,
+            vec![Amount(50), Amount(50)],
+            "half of 200, by weight"
+        );
+        assert_eq!(set.fees_mark, Amount(300));
+        let after = written_treasury(&outcome);
+        assert_eq!(after.balances[&usd()], Amount(1_000_000 - 100));
+        assert_eq!(after.fees[&usd()], Amount(300), "the running total stays");
+        assert!(outcome.events.contains(&Event::EpochChanged {
+            epoch: 1,
+            active: 2,
+            rewards: Amount(100)
+        }));
+    }
+
+    /// No fees since the mark: nothing is paid, whatever the treasury holds.
+    #[test]
+    fn non_fee_income_pays_no_rewards() {
+        let outcome = epoch_phase(10, paying_set(300, 1000), treasury(1_000_000, 300)).unwrap();
+        let set = written_set(&outcome);
+        assert!(set.validators.values().all(|r| r.rewards == Amount::ZERO));
+        assert_eq!(
+            written_treasury(&outcome).balances[&usd()],
+            Amount(1_000_000)
+        );
+        // A treasury that never collected a fee: the mark stays 0 and the
+        // USD entry is still written.
+        let outcome = epoch_phase(10, paying_set(0, 1000), Treasury::default()).unwrap();
+        assert_eq!(written_set(&outcome).fees_mark, Amount::ZERO);
+        let after = written_treasury(&outcome);
+        assert_eq!(after.balances.get(&usd()), Some(&Amount::ZERO));
+        assert!(after.fees.is_empty());
+    }
+
+    /// `gain` is 0 if the total is below the mark (unreachable: fees only
+    /// grow), and the mark follows the total down.
+    #[test]
+    fn a_mark_above_the_total_pays_nothing() {
+        let outcome = epoch_phase(10, paying_set(500, 1000), treasury(1_000, 300)).unwrap();
+        let set = written_set(&outcome);
+        assert!(set.validators.values().all(|r| r.rewards == Amount::ZERO));
+        assert_eq!(set.fees_mark, Amount(300));
+    }
+
+    /// Step 5: paying more than the treasury holds is an error (unreachable:
+    /// the fees paid out are in the balance), so the phase is invalid.
+    #[test]
+    fn rewards_beyond_the_balance_invalidate_the_phase() {
+        assert!(epoch_phase(10, paying_set(0, 1000), treasury(400, 400)).is_ok());
+        assert!(matches!(
+            epoch_phase(10, paying_set(0, 1000), treasury(399, 400)),
+            Err(SpecError::DeferredPhase(_))
+        ));
     }
 
     /// Step 4's `epoch_start = ctx.pulse + 1` is not marked saturating: at

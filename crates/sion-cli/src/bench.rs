@@ -108,7 +108,7 @@ fn hashing_and_trees(r: &mut Recorder, quick: bool) {
         h = hash_domain("bench", &h.0);
     }
     r.add(
-        "hashing",
+        "state",
         "SHA3-256, 32-byte input",
         per_op(start.elapsed(), n),
         "µs",
@@ -330,7 +330,7 @@ fn execution(r: &mut Recorder, quick: bool) {
         execute_pulse_traced(&mut state, &input(pulse, txs), true, 64).expect("trace");
     let traced = start.elapsed();
     r.add(
-        "proving",
+        "execution",
         &format!("traced execution of {n} transfers"),
         traced.as_secs_f64() * 1e3,
         "ms",
@@ -343,7 +343,7 @@ fn execution(r: &mut Recorder, quick: bool) {
     let replay = start.elapsed();
     let witness: usize = traces.iter().map(|t| t.witness.size()).sum();
     r.add(
-        "proving",
+        "execution",
         "stateless replay of every chunk (stack A)",
         replay.as_secs_f64() * 1e3,
         "ms",
@@ -355,7 +355,7 @@ fn execution(r: &mut Recorder, quick: bool) {
     }
     let spec = start.elapsed();
     r.add(
-        "proving",
+        "execution",
         "stateless replay of every chunk (stack B)",
         spec.as_secs_f64() * 1e3,
         "ms",

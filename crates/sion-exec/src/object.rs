@@ -97,6 +97,9 @@ pub struct Treasury {
     pub balances: BTreeMap<AssetId, Amount>,
     /// Total ever minted, by asset (the supply invariant's reference).
     pub minted: BTreeMap<AssetId, Amount>,
+    /// Fees ever credited, by asset: a running total that only grows.
+    /// Validators are paid a share of what it gained each epoch.
+    pub fees: BTreeMap<AssetId, Amount>,
 }
 
 /// The data an object holds.
