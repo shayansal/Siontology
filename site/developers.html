@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Developers | Siontology</title>
+<meta name="description" content="Run a Siontology devnet on your machine: the sion CLI, scripted demos, a JSON HTTP API, an MCP server for AI agents, x402 payments and a light client.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="canonical" href="https://siontology.org/developers.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Siontology">
+<meta property="og:title" content="Developers | Siontology">
+<meta property="og:description" content="Run a Siontology devnet on your machine: the sion CLI, scripted demos, a JSON HTTP API, an MCP server for AI agents, x402 payments and a light client.">
+<meta property="og:url" content="https://siontology.org/developers.html">
+<meta property="og:image" content="https://siontology.org/img/siontology-social-1200x630.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Siontology: verified knowledge, not ordered transactions.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/site.css">
+<script>(function(){var d=document.documentElement;d.classList.add('js');try{var t=localStorage.getItem('siontology-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t)}catch(e){}})();</script>
+<script src="js/site.js" defer></script>
+<script src="js/scenes/core.js" defer></script>
+<script src="js/scenes/x402.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Siontology, home"><svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true" focusable="false" fill="currentColor"><rect x="0" y="0" width="22" height="8"/><rect x="0" y="10" width="10" height="6"/><rect x="12" y="10" width="10" height="6"/><rect x="0" y="18" width="4" height="4"/><rect x="6" y="18" width="4" height="4"/><rect x="12" y="18" width="4" height="4"/><rect x="18" y="18" width="4" height="4"/></svg><span class="brand-name">Siontology</span></a>
+    <button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="technology.html">Technology</a></li><li><a href="developers.html" aria-current="page">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
+      </ul>
+    </nav>
+    <div class="header-tools">
+      <button class="icon-button theme-button" type="button" data-theme-toggle aria-label="Switch theme"><svg viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x="1.75" y="1.75" width="14.5" height="14.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 15.5 15.5 2.5V15.5Z" fill="currentColor"/></svg></button>
+    </div>
+  </div>
+</header>
+<main id="main">
+<header class="page-head wrap">
+  <h1>Build on the devnet.</h1>
+  <p class="lede">Everything runs on your machine: a devnet of validators that sign with two post-quantum signature families, the <code>sion</code> command line, a JSON HTTP API and a Model Context Protocol server for AI agents. The reference documentation lives at <a href="https://siontology.org/docs/">siontology.org/docs</a>.</p>
+  <div class="actions" style="margin-top: var(--space-6)">
+    <a class="button" href="https://siontology.org/docs/">Read the documentation</a>
+    <a class="button button--quiet" href="https://github.com/ColdAI-org/siontology">Get the source</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="topic" id="start" aria-labelledby="start-title">
+    <h2 id="start-title">Quick start</h2>
+    <div class="split split--even">
+      <div class="prose">
+        <p>You need Rust 1.80 or later. One command starts an in-process devnet and drives real transactions through the whole protocol: lane certificates, consensus, Pulse execution, signed headers, data availability and proving. Each demo narrates what the ledger established.</p>
+        <p>The devnet is for building and learning. Its validators run in one process, its proofs are checked by replay, and its validator keys are derived from the chain name, so it secures nothing of value.</p>
+      </div>
+      <div class="code">
+  <div class="code-label"><span>Quick start (Rust 1.80 or later)</span><button class="copy-button" type="button" data-copy="code-quickstart">Copy</button></div>
+  <pre id="code-quickstart"><code>git clone https://github.com/ColdAI-org/siontology
+cd siontology
+cargo build --release
+alias sion=./target/release/sion
+
+<span class="c"># Run every scripted demo against an in-process devnet</span>
+sion demo all --local</code></pre>
+</div>
+    </div>
+  </section>
+
+  <section class="topic" id="demos" aria-labelledby="demos-title">
+    <h2 id="demos-title">The demos</h2>
+    <div class="table-scroll">
+      <table class="table table--wide">
+        <thead><tr><th scope="col">Command</th><th scope="col">What it shows</th></tr></thead>
+        <tbody>
+          <tr><td><code>sion demo invoice --local</code></td><td>Trade finance on insured knowledge: a bonded invoice claim is priced with the Assurance Algebra, relied on within its backing, and the financier is compensated from slashed bonds when the claim proves false.</td></tr>
+          <tr><td><code>sion demo agents --local</code></td><td>An AI agent with a budget the ledger enforces: a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent.</td></tr>
+          <tr><td><code>sion demo market --local</code></td><td>A sealed-bid GPU-hour market that clears at one price with an optimality certificate.</td></tr>
+          <tr><td><code>sion demo receipts --local</code></td><td>Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions.</td></tr>
+          <tr><td><code>sion demo x402 --local</code></td><td>An agent pays an HTTP API per request; a replayed payment and an over-limit payment are refused.</td></tr>
+          <tr><td><code>sion demo censorship --local</code></td><td>Forced inclusion: a censored user gets through by posting straight to consensus. When more than a third of a committee censors too, the shard misses its deadline, its committee is replaced, and certified headers count the overdue intent.</td></tr>
+          <tr><td><code>sion demo staking --local</code></td><td>A standby validator stakes and joins the active set at the next epoch boundary, and a light client follows the committee change from genesis. Rewards are claimed; the newcomer signs two headers for one round, is slashed and loses its seat.</td></tr>
+          <tr><td><code>sion demo light --local</code></td><td>A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="topic" id="devnet" aria-labelledby="devnet-title">
+    <h2 id="devnet-title">Run a devnet</h2>
+    <div class="split split--even">
+      <div class="code">
+  <div class="code-label"><span>A devnet and a client, in two terminals</span><button class="copy-button" type="button" data-copy="code-devnet">Copy</button></div>
+  <pre id="code-devnet"><code><span class="c"># Terminal 1: 4 validators, 2 shards, API on port 8730</span>
+sion devnet
+
+<span class="c"># Terminal 2</span>
+sion status
+sion keys new dana    <span class="c"># dual post-quantum keys</span>
+sion faucet dana 100
+sion send dana alice 12.5
+sion balance dana
+sion verify --chain &lt;identity from sion devnet&gt;</code></pre>
+</div>
+      <div class="prose">
+        <p><code>sion devnet</code> prints the chain identity: a digest of the genesis specification, the validators with their stake and keys, and the shard layout. Pin it with <code>--chain</code> or <code>SION_CHAIN</code>, and every light-client check is made against it; without a pin, the node vouches for itself.</p>
+        <p>The client talks to the node at <code>SION_NODE</code>, by default <code>http://127.0.0.1:8730</code>. The demos also run against a live node. The staking demo needs a standby validator and epochs that end: with <code>--local</code> it starts such a devnet itself; for your own, run <code>sion devnet --standby 1 --epoch-length 24</code>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="topic" id="cli" aria-labelledby="cli-title">
+    <h2 id="cli-title">The command line</h2>
+    <div class="table-scroll">
+      <table class="table table--wide">
+        <thead><tr><th scope="col">Command</th><th scope="col">What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>sion devnet</code></td><td>Runs a devnet and serves its API</td></tr>
+          <tr><td><code>sion status</code>, <code>sion pulse</code>, <code>sion events</code></td><td>Chain status; a Pulse&rsquo;s header, certificate and summary; recent events</td></tr>
+          <tr><td><code>sion keys new</code>, <code>sion keys show</code></td><td>Wallets with ML-DSA-44 and SLH-DSA keys</td></tr>
+          <tr><td><code>sion balance</code>, <code>sion faucet</code>, <code>sion send</code></td><td>Balances, the devnet faucet and transfers; <code>send --forced</code> posts straight to consensus</td></tr>
+          <tr><td><code>sion forced</code></td><td>Forced-inclusion obligations: pending and overdue intents</td></tr>
+          <tr><td><code>sion bond</code>, <code>sion claim issue</code>, <code>sion claim show</code>, <code>sion claim decide</code></td><td>Bonds, claims, their cost of corruption and the decision rule</td></tr>
+          <tr><td><code>sion accept</code>, <code>sion challenge</code>, <code>sion rule</code></td><td>Rely on a claim and reserve its backing; challenge a bonded atom; rule as the adjudicator</td></tr>
+          <tr><td><code>sion charter create</code>, <code>sion charter pay</code>, <code>sion charter revoke</code></td><td>Agent Charters</td></tr>
+          <tr><td><code>sion market create</code>, <code>order</code>, <code>clear</code>, <code>show</code></td><td>Markets that clear with a certificate</td></tr>
+          <tr><td><code>sion tx</code>, <code>sion receipt</code></td><td>A transaction&rsquo;s effects; its receipt, verified as a light client would</td></tr>
+          <tr><td><code>sion verify</code></td><td>Verifies a Pulse as a light client</td></tr>
+          <tr><td><code>sion mcp</code></td><td>Serves the Model Context Protocol on stdio</td></tr>
+          <tr><td><code>sion x402 serve</code>, <code>sion x402 fetch</code></td><td>Sells or buys HTTP resources per request</td></tr>
+          <tr><td><code>sion censor</code></td><td>Adversary simulation on a devnet: censor accounts at the gateway or at validators</td></tr>
+          <tr><td><code>sion bench</code></td><td>Measures signatures, hashing, data availability, clearing, the Assurance Algebra, execution, proving and a live devnet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="topic" id="api" aria-labelledby="api-title">
+    <h2 id="api-title">The HTTP API</h2>
+    <div class="prose">
+      <p>JSON over HTTP on the node, by default <code>127.0.0.1:8730</code>. Amounts are in micro-units.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide table--api">
+        <thead><tr><th scope="col">Method</th><th scope="col">Path</th><th scope="col">What it returns or does</th></tr></thead>
+        <tbody>
+          <tr><td>GET</td><td><code>/v1/status</code></td><td>Chain status</td></tr>
+          <tr><td>GET</td><td><code>/v1/validators</code></td><td>The chain identity, the validator set and the current committees</td></tr>
+          <tr><td>GET</td><td><code>/v1/epochs/{e}</code></td><td>The proof linking epoch e &minus; 1 to epoch e, so a light client can follow the committee</td></tr>
+          <tr><td>GET</td><td><code>/v1/genesis</code></td><td>The genesis specification and its digest</td></tr>
+          <tr><td>GET</td><td><code>/v1/accounts/{id}</code></td><td>Coins, balances and allotments</td></tr>
+          <tr><td>GET</td><td><code>/v1/objects/{id}</code></td><td>An object with its state proof</td></tr>
+          <tr><td>GET</td><td><code>/v1/claims/{id}</code></td><td>A claim, its status, cost of corruption and inclusion proof</td></tr>
+          <tr><td>POST</td><td><code>/v1/claims/{id}/decide</code></td><td>The decision rule for <code>{value, policy?}</code></td></tr>
+          <tr><td>POST</td><td><code>/v1/transactions</code></td><td>Submits <code>{tx}</code>: a signed transaction, hex of its canonical encoding</td></tr>
+          <tr><td>GET</td><td><code>/v1/transactions/{digest}</code></td><td>Status, effects and receipt proof</td></tr>
+          <tr><td>POST</td><td><code>/v1/faucet</code></td><td>The devnet faucet: <code>{account, amount, asset?}</code></td></tr>
+          <tr><td>GET</td><td><code>/v1/pulses/latest</code>, <code>/v1/pulses/{n}</code></td><td>A Pulse&rsquo;s header, certificate and summary</td></tr>
+          <tr><td>GET</td><td><code>/v1/pulses/{n}/data</code></td><td>The data-availability header</td></tr>
+          <tr><td>GET</td><td><code>/v1/pulses/{n}/data/{row}/{column}</code></td><td>One data share with its proof</td></tr>
+          <tr><td>GET</td><td><code>/v1/pulses/{n}/world</code></td><td>The World Proof</td></tr>
+          <tr><td>GET</td><td><code>/v1/events?from=&amp;limit=</code></td><td>Events</td></tr>
+          <tr><td>POST</td><td><code>/v1/forced</code></td><td>Posts a forced intent <code>{tx}</code>, bypassing the gateway</td></tr>
+          <tr><td>GET</td><td><code>/v1/forced</code></td><td>Forced-inclusion obligations: pending, overdue, resolved</td></tr>
+          <tr><td>POST</td><td><code>/v1/devnet/censor</code></td><td>Adversary simulation, devnet only</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="code">
+  <div class="code-label"><span>HTTP API</span><button class="copy-button" type="button" data-copy="code-http">Copy</button></div>
+  <pre id="code-http"><code>curl http://127.0.0.1:8730/v1/status
+curl http://127.0.0.1:8730/v1/pulses/latest
+curl http://127.0.0.1:8730/v1/claims/&lt;claim id&gt;
+
+<span class="c"># the decision rule for 25,000 USD at risk (amounts in micro-units)</span>
+curl -X POST http://127.0.0.1:8730/v1/claims/&lt;claim id&gt;/decide \
+     -d '{"value": 25000000000}'</code></pre>
+</div>
+  </section>
+
+  <section class="topic" id="mcp" aria-labelledby="mcp-title">
+    <h2 id="mcp-title">Tools for AI agents</h2>
+    <div class="split split--even">
+      <div class="prose">
+        <p><code>sion mcp</code> serves the Model Context Protocol over stdio, so an agent can pay, issue claims, price a claim before relying on it, pay within an Agent Charter and verify the chain. Every transaction and receipt also comes back as a sentence. The charter&rsquo;s limits are enforced by the ledger, whatever the agent was told.</p>
+      </div>
+      <div class="code">
+  <div class="code-label"><span>MCP client configuration</span><button class="copy-button" type="button" data-copy="code-mcp">Copy</button></div>
+  <pre id="code-mcp"><code>{
+  "mcpServers": {
+    "siontology": {
+      "command": "sion",
+      "args": ["mcp"],
+      "env": { "SION_NODE": "http://127.0.0.1:8730" }
+    }
+  }
+}</code></pre>
+</div>
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide">
+        <thead><tr><th scope="col">Tool</th><th scope="col">What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>sion_status</code>, <code>sion_balance</code>, <code>sion_events</code></td><td>Chain status, balances and recent events</td></tr>
+          <tr><td><code>sion_pay</code></td><td>Pays from a wallet the server holds keys for; final once the lane certificate forms</td></tr>
+          <tr><td><code>sion_issue_claim</code></td><td>Issues a claim with a trust formula, optionally resting on the issuer&rsquo;s bond</td></tr>
+          <tr><td><code>sion_assess_claim</code></td><td>Before relying on a claim: computes its cost of corruption under a policy and applies the decision rule</td></tr>
+          <tr><td><code>sion_agent_pay</code></td><td>Pays from an Agent Charter allotment, within the charter&rsquo;s payees and limits</td></tr>
+          <tr><td><code>sion_submit_intent</code></td><td>Submits a transaction the agent built and signed itself</td></tr>
+          <tr><td><code>sion_fetch_receipt</code>, <code>sion_verify_pulse</code></td><td>Fetches a receipt or a Pulse and verifies it as a light client, against a pinned chain identity</td></tr>
+          <tr><td><code>sion_fetch_paid</code></td><td>Fetches an HTTP resource that charges through x402, paying at most a cap the agent sets</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="topic" id="x402" aria-labelledby="x402-title">
+    <h2 id="x402-title">x402: pay per request</h2>
+    <div class="prose">
+      <p>x402 lets an HTTP server ask for payment with status <code>402 Payment Required</code>, and lets a client, typically an agent, pay and retry without accounts, API keys or checkout pages. The adapter speaks version 2 of the protocol with an <code>exact</code> payment scheme on Siontology. The server answers only after verifying the payment&rsquo;s receipt as a light client would, and an agent paying under a charter cannot exceed its limits.</p>
+    </div>
+    <figure class="plate" aria-labelledby="fig-x402-title">
+  <canvas data-scene="x402" role="img" aria-label="Animation: an agent&#x27;s request gets 402 Payment Required; it pays on Siontology under its charter; the server verifies the receipt as a light client and answers 200 OK." aria-describedby="fig-x402-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-x402-title">x402: paying per request</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-x402-desc">From the x402 demo. The agent asks carol's API for a forecast and gets 402 Payment Required with a quote: 0.25 USD to carol, scheme exact, a fresh nonce. The agent signs a payment under its charter whose purpose names the quote, and retries with it. carol's facilitator submits the payment, waits for it to execute and verifies the receipt the way a light client would: committee certificate, certified order, inclusion proof. Only then does the API answer 200 OK. Replaying the same payment is refused, because each quote pays for one request.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo x402 --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/crates/sion-cli/src/x402.rs">crates/sion-cli/src/x402.rs</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built: x402 version 2, not yet tested against third-party clients</span></dd></div></dl>
+  </figcaption>
+</figure>
+    <div class="code">
+  <div class="code-label"><span>Sell an API per request, and buy from it</span><button class="copy-button" type="button" data-copy="code-x402">Copy</button></div>
+  <pre id="code-x402"><code>sion x402 serve carol --price 0.25
+<span class="c"># serves http://127.0.0.1:8402/v1/resource for 0.25 USD a request</span>
+
+sion x402 fetch http://127.0.0.1:8402/v1/resource --wallet dana --max 1</code></pre>
+</div>
+  </section>
+
+  <section class="topic" id="light" aria-labelledby="light-title">
+    <h2 id="light-title">Verify as a light client</h2>
+    <div class="prose">
+      <p>A light client pins one value, the chain identity, and checks everything else against it: the committee certificate of a Pulse, the certified order of its transactions, receipts and state proofs, random samples of its data and its World Proof. It follows committees from epoch to epoch through boundary proofs. Here is a real run of the check.</p>
+    </div>
+    <div class="code code--wrap">
+  <div class="code-label"><span>sion verify: output from a devnet run (hashes differ on every run)</span><button class="copy-button" type="button" data-copy="code-verify-output">Copy</button></div>
+  <pre id="code-verify-output"><code>chain: 6345655c matches the pinned identity; 4 validators, keys derive their identifiers ✓
+Pulse 14 header d42357fe (state root aafa7aec, knowledge root b3950ae7, 0 claims)
+certificate: 300000 of 400000 stake signed (quorum 266667), each signature ML-DSA-44 + SLH-DSA-SHA2-128f ✓
+forced inclusion: no overdue intents (0 pending within their deadline) ✓
+receipts: 1 of 1 transactions proven against the receipts root, in the certified order ✓
+state: an account object proven against the state root ✓
+availability: 16 of 16 random shares of the 32×32 square verified; a withholding would go unnoticed with probability &lt; 4.7e-3 ✓
+world proof: 2 leaves re-verified by stack ["A", "B"]; the published data is what executed and encodes to the certified data root (113 KB; replay proofs simulate succinct ones) ✓
+lane certificates: all 1 executed transactions locked their inputs with a quorum of their shard's committee, taken from the proven validator set ✓</code></pre>
+</div>
+    <div class="code">
+  <div class="code-label"><span>Measure on your machine</span><button class="copy-button" type="button" data-copy="code-bench">Copy</button></div>
+  <pre id="code-bench"><code>sion bench                 <span class="c"># signatures, hashing, data availability, clearing,</span>
+                           <span class="c"># assurance, execution, proving and a live devnet</span>
+sion bench --quick --only signatures,data</code></pre>
+</div>
+  </section>
+</div>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html" aria-label="Siontology, home"><svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true" focusable="false" fill="currentColor"><rect x="0" y="0" width="22" height="8"/><rect x="0" y="10" width="10" height="6"/><rect x="12" y="10" width="10" height="6"/><rect x="0" y="18" width="4" height="4"/><rect x="6" y="18" width="4" height="4"/><rect x="12" y="18" width="4" height="4"/><rect x="18" y="18" width="4" height="4"/></svg><span class="brand-name">Siontology</span></a>
+        <p>An open-source neo-blockchain whose product is verified knowledge, not ordered transactions.</p>
+      </div>
+      <nav aria-labelledby="footer-project">
+        <h2 id="footer-project">Project</h2>
+        <ul>
+          <li><a href="technology.html">Technology</a></li>
+          <li><a href="developers.html">Developers</a></li>
+          <li><a href="open-source.html">Open source</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="whitepapers.html">Papers</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="footer-resources">
+        <h2 id="footer-resources">Resources</h2>
+        <ul>
+          <li><a href="https://siontology.org/docs/">Documentation</a></li>
+          <li><a href="https://github.com/ColdAI-org/siontology">Source code</a></li>
+          <li><a href="brand.html">Brand and press kit</a></li>
+          <li><a href="legal.html">Imprint and privacy</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer-base">
+      <p>&copy; ColdAI. Code licensed Apache-2.0 OR MIT.</p>
+      <p>Status: a devnet-scale reference implementation. Proofs are simulated; there is no mainnet and no token.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

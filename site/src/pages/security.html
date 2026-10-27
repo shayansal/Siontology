@@ -1,0 +1,136 @@
+<!--{"file": "security.html", "title": "Security | Siontology", "description": "What Siontology's security rests on, what the reference implementation simulates or leaves out, its post-quantum signatures, its reviews, and how to report a vulnerability.", "nav": "security", "scenes": ["pq"]}-->
+<header class="page-head wrap">
+  <h1>Every assumption, named.</h1>
+  <p class="lede">Validity is cryptographic. Ordering, liveness and censorship resistance rest on committee stake. Facts about the world rest on priced assumptions. This page lists what each guarantee rests on, what the reference implementation adds or leaves out, and how to report a flaw.</p>
+  <p class="notice-line"><strong>A devnet secures nothing of value.</strong> Its validator keys are derived from the chain name, so anyone can derive them.</p>
+</header>
+
+<div class="wrap with-toc">
+  <aside class="toc" data-toc aria-labelledby="toc-title">
+    <div>
+      <h2 id="toc-title">On this page</h2>
+      <ol>
+        <li><a href="#model">What each guarantee rests on</a></li>
+        <li><a href="#signatures">Post-quantum signatures</a></li>
+        <li><a href="#stake">Stake and slashing</a></li>
+        <li><a href="#simulated">What is simulated</a></li>
+        <li><a href="#not-claimed">What is not claimed</a></li>
+        <li><a href="#reviews">Reviews</a></li>
+        <li><a href="#disclosure">Reporting a vulnerability</a></li>
+      </ol>
+    </div>
+  </aside>
+
+  <div>
+    <section class="topic" id="model" aria-labelledby="model-title">
+      <h2 id="model-title">What each guarantee rests on</h2>
+      <div class="prose">
+        <p>The architecture paper&rsquo;s security model, with what the reference implementation does today. Equivocation leaves signed evidence and is slashed; censorship is made visible and answered by replacing the committee.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <thead><tr><th scope="col">Guarantee</th><th scope="col">Rests on, in the design</th><th scope="col">If that fails</th><th scope="col">In the reference implementation</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Validity of every transition</th><td>Sound proofs, correct circuits and a correct specification, checked by two independent proof stacks</td><td>Both stacks must fail together, or the specification must be wrong</td><td><span class="status status--simulated">Replay proofs</span> from two stacks that share hashing, Merkle, signature, Assurance Algebra and clearing-certificate code</td></tr>
+            <tr><th scope="row">No double spend</th><td>Less than a third of each committee&rsquo;s stake is Byzantine; partial synchrony</td><td>Conflicting certificates appear, and signed evidence slashes the equivocators</td><td><span class="status status--built">Built</span>; a slashed validator keeps its seat until the epoch ends</td></tr>
+            <tr><th scope="row">Liveness and inclusion</th><td>Less than a third Byzantine stake and partial synchrony; one honest proposer per round, plus forced inclusion</td><td>Progress stalls visibly; a censoring shard is frozen and its committee rotated</td><td><span class="status status--simplified">Simplified</span>: overdue intents appear in certified headers and the committee is rotated; the shard is not frozen</td></tr>
+            <tr><th scope="row">Data availability</th><td>Enough honest samplers whose requests cannot be linked, and a proven-correct encoding</td><td>Withholding is detected and the Pulse is rejected</td><td><span class="status status--built">Built</span>: sampling with fresh randomness; the World Proof checks that the published data encodes to the certified root</td></tr>
+            <tr><th scope="row">Authorization</th><td>Lattice &or; hash: two unrelated signature families</td><td>Both families must break</td><td><span class="status status--built">Built</span> on pure-Rust FIPS 204 and 205 crates that have not been audited</td></tr>
+            <tr><th scope="row">Facts about the world</th><td>Each claim&rsquo;s trust formula and the bonds behind it</td><td>Losses up to the cost of corruption, compensated from slashed bonds</td><td><span class="status status--built">Built</span>: cost of corruption, reservations, challenges, slashing with compensation</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="prose">
+        <p>A light client pins one value, the chain identity: a digest of the genesis specification, the genesis validators with their stake and keys, and the shard layout. Every later committee is in the state, and the client follows it one epoch boundary at a time, so it trusts nothing a node serves. Without a pin, <code>sion verify</code> says that the node is vouching for itself.</p>
+      </div>
+    </section>
+
+    <section class="topic" id="signatures" aria-labelledby="signatures-title">
+      <h2 id="signatures-title">Post-quantum signatures</h2>
+      <div class="prose">
+        <p>Every account and validator signs with two unrelated families at once: ML-DSA-44 (FIPS 204, module lattices) and SLH-DSA (FIPS 205, hash-based). SLH-DSA-SHA2-128f is the default; the smaller and slower SLH-DSA-SHA2-128s suits accounts that sign rarely. Payloads are encrypted to viewing keys with ML-KEM-768 (FIPS 203) and ChaCha20-Poly1305.</p>
+        <p>An account is identified by the hash of its genesis authorization policy, so its keys can rotate without changing the account. The cost is bandwidth: kilobytes per signature, which is why validators sign one Merkle root per batch of approvals rather than each approval.</p>
+      </div>
+      {{fig:pq}}
+    </section>
+
+    <section class="topic" id="stake" aria-labelledby="stake-title">
+      <h2 id="stake-title">Stake and slashing</h2>
+      <div class="prose">
+        <p>Proofs stop invalid state, not equivocation. A validator that signs two consensus headers for one round, or approves two spends of one object version, leaves signed evidence. Anyone can submit it: the whole stake is forfeited, the reporter receives a share of it (5 % on the devnet), and the validator loses its seat at the next epoch boundary. Committees are derived from the validator set in the state, so every change of who certifies is covered by the World Proof. The <a href="technology.html#staking">technology page</a> shows the full cycle from the staking demo.</p>
+        <p>On the devnet, validators stake devnet USD, which has no value. Siontology has no token and nothing is on offer. Fees are paid in stablecoins.</p>
+      </div>
+    </section>
+
+    <section class="topic" id="simulated" aria-labelledby="simulated-title">
+      <h2 id="simulated-title">What is simulated</h2>
+      <div class="prose">
+        <p>The reference implementation adds assumptions of its own. Each one is an atom in the trust formula of anything the devnet reports, and each is labelled in the types and in the output.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <thead><tr><th scope="col">Atom</th><th scope="col">What it means</th></tr></thead>
+          <tbody>
+            <tr><th scope="row"><code>impl:replay-proofs</code></th><td>World Proofs are checked by re-execution, so proof finality costs a verifier as much as executing. Succinctness is assumed, not delivered.</td></tr>
+            <tr><th scope="row"><code>impl:shared-primitives</code></th><td>Both proof stacks use the same hashing, Merkle, signature, Assurance Algebra and clearing-certificate code; a bug there is common to both.</td></tr>
+            <tr><th scope="row"><code>impl:devnet-keys</code></th><td>Devnet validator keys are derived from the chain name, so anyone can derive them.</td></tr>
+            <tr><th scope="row"><code>impl:in-process-network</code></th><td>Validators share a machine and a process. The devnet does not exercise network faults; the consensus simulator does.</td></tr>
+            <tr><th scope="row"><code>impl:reliable-handover</code></th><td>At an epoch boundary each validator starts a new consensus session, relying on the in-process network to deliver every message already sent. A real network needs a drain period.</td></tr>
+            <tr><th scope="row"><code>impl:slashed-seat</code></th><td>A slashed validator keeps its seat, and its weight in quorums, until the epoch ends.</td></tr>
+            <tr><th scope="row"><code>impl:evidence-scope</code></th><td>Equivocation evidence is not bound to one chain, so a validator&rsquo;s keys must not be used on another network.</td></tr>
+            <tr><th scope="row"><code>impl:hash-chain-beacon</code></th><td>The beacon is a hash-chain commit and reveal; the last validator to reveal can bias it by withholding, at the cost of being seen.</td></tr>
+            <tr><th scope="row"><code>impl:public-amounts</code></th><td>Amounts and balances are visible to everyone.</td></tr>
+            <tr><th scope="row"><code>impl:unaudited-pq-crates</code></th><td>The FIPS 203, 204 and 205 implementations are unaudited pure-Rust crates.</td></tr>
+            <tr><th scope="row"><code>impl:insecure-sim-signatures</code></th><td>Only when a devnet is started with <code>--insecure-fast-signatures</code>: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="topic" id="not-claimed" aria-labelledby="not-claimed-title">
+      <h2 id="not-claimed-title">What is not claimed</h2>
+      <ul class="rows">
+        <li><h3>It does not make the world honest.</h3><p>A claim about a physical event is only as strong as the bonds and evidence behind it. The design prices that risk instead of hiding it.</p></li>
+        <li><h3>It does not remove stake from safety.</h3><p>A Byzantine third of a committee can still double-certify, and is slashed for it. Two conflicting World Proofs could then exist, and only stake decides which is canonical.</p></li>
+        <li><h3>It is not proven at scale.</h3><p>The capacity and latency figures are design targets, to be met or missed on a public testnet. There is no testnet and no mainnet.</p></li>
+        <li><h3>It is not private yet.</h3><p>Payloads can be encrypted and orders sealed, but amounts and balances are public. Confidential transfers and compliance by proof need a zero-knowledge stack that is not built.</p></li>
+        <li><h3>Some defences are not built.</h3><p>Personhood, a proving market, payments to provers and a cap on value in flight are missing, and networking between machines is simulated.</p></li>
+      </ul>
+    </section>
+
+    <section class="topic" id="reviews" aria-labelledby="reviews-title">
+      <h2 id="reviews-title">Reviews</h2>
+      <div class="prose">
+        <p>Two independent reviews, run by AI agents that had not written the code, read the consensus-critical libraries and the node and confirmed their findings with tests. Everything they found is fixed with a regression test, except where marked open. Among the fixes:</p>
+        <ul>
+          <li>an unbounded chain of claim references could overflow a validator&rsquo;s stack; claim references and formulas now have bounded depth;</li>
+          <li>a signature cache keyed on the transaction body but not its signatures, so a copy with stripped signatures could split replicas;</li>
+          <li>lane validation skipped the checks execution makes before charging a fee, so zero-fee transactions were published for free;</li>
+          <li>certificate finality did not survive a restart; approvals are now logged before they leave a validator, and locks are restored;</li>
+          <li>transactions and validator messages were not bound to a chain; transaction signatures now cover the chain configuration;</li>
+          <li>light-client sampling used a fixed seed, and a missing World Proof did not fail verification.</li>
+        </ul>
+        <p><strong>Open:</strong> fee-paying transactions with large bodies can still make Pulses slow, since data-availability encoding of the largest allowed Pulse takes seconds on one core; an account query scans every object.</p>
+        <p>Differential testing of the two proof stacks found two defects in the reference executor, including a market deadline overflow that let any account halt the chain; both were fixed in specification v1.1. The full list is in <a href="{{REPO}}/blob/main/docs/implementation-status.md#reviews-and-what-they-found">docs/implementation-status.md</a>.</p>
+      </div>
+    </section>
+
+    <section class="topic" id="disclosure" aria-labelledby="disclosure-title">
+      <h2 id="disclosure-title">Reporting a vulnerability</h2>
+      <div class="split split--even">
+        <div class="prose">
+          <p>If you find a way to break a guarantee that Siontology claims, tell us privately before anyone else. Please do not open a public issue for it.</p>
+          <p>Say which commit you tested, what an attacker gains, and how to reproduce it, ideally as a failing test. A devnet on your own machine is the place to try an attack: the command line includes adversary simulations for exactly that. Do not test against machines you do not own.</p>
+          <p>The simplifications listed on this page are known, and are not vulnerabilities in themselves. A way around a guarantee the implementation does claim is.</p>
+        </div>
+        <dl class="facts">
+          <!-- Placeholder: security@siontology.org is not set up yet. Create the mailbox, or replace the address, before the site is published. -->
+          <div><dt>Email</dt><dd><a href="mailto:security@siontology.org">security@siontology.org</a></dd></div>
+          <div><dt>Include</dt><dd>The commit, the impact, and steps or a test that reproduce it</dd></div>
+          <div><dt>In scope</dt><dd>The reference implementation, the specification and this website</dd></div>
+          <div><dt>Known</dt><dd>The simulated parts and simplifications listed above</dd></div>
+        </dl>
+      </div>
+    </section>
+  </div>
+</div>

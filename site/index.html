@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Siontology: verified knowledge, not ordered transactions</title>
+<meta name="description" content="Siontology is an open-source neo-blockchain. Every claim carries a proof or priced evidence, and every Pulse the proofs fold into one World Proof, designed so that a phone can check it.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="canonical" href="https://siontology.org/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Siontology">
+<meta property="og:title" content="Siontology: verified knowledge, not ordered transactions">
+<meta property="og:description" content="Siontology is an open-source neo-blockchain. Every claim carries a proof or priced evidence, and every Pulse the proofs fold into one World Proof, designed so that a phone can check it.">
+<meta property="og:url" content="https://siontology.org/">
+<meta property="og:image" content="https://siontology.org/img/siontology-social-1200x630.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Siontology: verified knowledge, not ordered transactions.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/site.css">
+<script>(function(){var d=document.documentElement;d.classList.add('js');try{var t=localStorage.getItem('siontology-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t)}catch(e){}})();</script>
+<script src="js/site.js" defer></script>
+<script src="js/scenes/core.js" defer></script>
+<script src="js/scenes/fold-hero.js" defer></script>
+<script src="js/scenes/assurance.js" defer></script>
+<script src="js/scenes/charters.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Siontology, home"><svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true" focusable="false" fill="currentColor"><rect x="0" y="0" width="22" height="8"/><rect x="0" y="10" width="10" height="6"/><rect x="12" y="10" width="10" height="6"/><rect x="0" y="18" width="4" height="4"/><rect x="6" y="18" width="4" height="4"/><rect x="12" y="18" width="4" height="4"/><rect x="18" y="18" width="4" height="4"/></svg><span class="brand-name">Siontology</span></a>
+    <button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="technology.html">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
+      </ul>
+    </nav>
+    <div class="header-tools">
+      <button class="icon-button theme-button" type="button" data-theme-toggle aria-label="Switch theme"><svg viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x="1.75" y="1.75" width="14.5" height="14.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 15.5 15.5 2.5V15.5Z" fill="currentColor"/></svg></button>
+    </div>
+  </div>
+</header>
+<main id="main">
+<section class="hero" aria-labelledby="hero-title">
+  <div class="wrap">
+    <h1 class="display" id="hero-title"><span class="line">Verified knowledge,</span> <span class="line">not ordered transactions.</span></h1>
+    <div class="hero-intro">
+      <p class="lede">Siontology is an open-source neo-blockchain. Every claim, whether about a payment, a computation, an AI output or an event in the world, carries a proof or priced evidence. Every Pulse, the proofs fold into one World Proof, designed so that a phone can check it.</p>
+      <div class="actions">
+        <a class="button" href="technology.html">How it works</a>
+        <a class="button button--quiet" href="developers.html">Run the devnet</a>
+      </div>
+    </div>
+  </div>
+  <figure class="hero-figure" aria-labelledby="hero-fig-title">
+    <canvas data-scene="fold-hero" role="img" aria-label="Animation: leaf proofs fold pairwise, level by level, into one World Proof per Pulse while a Pulse counter ticks once a second." aria-describedby="hero-fig-desc"></canvas>
+    <figcaption>
+      <div class="wrap hero-caption">
+        <div>
+          <p class="visually-hidden" id="hero-fig-title">The Fold</p>
+          <p id="hero-fig-desc">Illustration of the design. Operations stream into leaf batches: solid for owned transfers, outline for claims, hatched for contended batches. Every Pulse, each level folds pairwise into the one above, and the root joins the World Proof, a pair of roots from two independent proof stacks. On today&rsquo;s devnet a Pulse runs about once a second and World Proofs are checked by replay.</p>
+        </div>
+        <button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button>
+      </div>
+    </figcaption>
+  </figure>
+  <div class="wrap">
+    <p class="status-line"><strong>Status</strong><span>A devnet-scale reference implementation in Rust. Succinct proofs are simulated, validators run in one process, and there is no mainnet and no token.</span><a href="#status">What exists today</a></p>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="trust-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="trust-title">The cost of trust, collapsed.</h2>
+      <p>AI collapsed the cost of producing cognition. A neo-blockchain is designed to collapse the cost of trusting it: claims about computations, data, identities, payments and physical events that anyone can check in milliseconds.</p>
+    </div>
+    <div class="cells cells--3">
+      <div>
+        <h3>Generation is becoming free. Verification is not.</h3>
+        <p>Every AI output, agent action, image and data feed raises one question: is this real, and who pays if it is not? The cheaper generation gets, the more the bottleneck moves to checking.</p>
+      </div>
+      <div>
+        <h3>Trust is the economy&rsquo;s largest hidden cost.</h3>
+        <p>Verification, intermediation, compliance and fraud are paid on almost every exchange between strangers. Financial-crime compliance alone costs 206 billion USD a year (LexisNexis, 2023, as cited in the architecture paper).</p>
+      </div>
+      <div>
+        <h3>Blockchains sold trust in the wrong unit.</h3>
+        <p>They made one thing trustworthy, their own token state, by having every node redo every computation. Siontology extends verifiable trust to anything that can carry evidence, with proofs designed to cost about the same to check for one action or a billion.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="fold-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="fold-title">Blockchains chain blocks. <span class="nowrap-md">Neo-blockchains</span> fold claims.</h2>
+      <p>DAGs link transactions. Siontology folds every proof in the network into one World Proof per Pulse, designed to stay the same size however much it covers. Four pieces carry it.</p>
+    </div>
+    <div class="cells cells--4">
+      <div>
+        <h3>Two-sorted state</h3>
+        <p>Knowledge never needs coordination. Only consuming a resource is ordered, and only among the parties contending for it.</p>
+        <a class="cell-link" href="technology.html#two-sorted">More on two-sorted state</a>
+      </div>
+      <div>
+        <h3>The Assurance Algebra</h3>
+        <p>Every claim carries a formula of its assumptions. Any agent computes what an attacker must forfeit to falsify it, and acts only when that exceeds what is at stake.</p>
+        <a class="cell-link" href="technology.html#assurance">More on the Assurance Algebra</a>
+      </div>
+      <div>
+        <h3>Verifiable Clearing</h3>
+        <p>A market batch settles only with a certificate that no better allocation exists, which the ledger checks in linear time.</p>
+        <a class="cell-link" href="technology.html#clearing">More on Verifiable Clearing</a>
+      </div>
+      <div>
+        <h3>The Fold</h3>
+        <p>Every proof folds into one World Proof per Pulse, designed so that a phone can check the whole history without trusting a validator. Today the proofs are checked by replay.</p>
+        <a class="cell-link" href="technology.html#fold">More on the Fold</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="assurance-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="assurance-title">Trust becomes a number.</h2>
+      <p>A claim&rsquo;s formula names the assumptions it rests on: &and; where it needs all of them, &or; where any one route will do. Its cost of corruption is the cheapest set of failures that would make it false. An agent relies on the claim only if that cost covers &kappa; times its value at risk, and reserves that much of the backing, so no claim is relied on beyond what slashing can repay.</p>
+    </div>
+    <figure class="plate" aria-labelledby="fig-assurance-title">
+  <canvas data-scene="assurance" role="img" aria-label="Animation: a claim&#x27;s trust formula evaluates to a cost of corruption of 60,000 USD; relying on 25,000 USD reserves 50,000 USD of backing; a second, equal reliance is refused." aria-describedby="fig-assurance-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-assurance-title">The Assurance Algebra</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-assurance-desc">The worked example from the architecture paper. Invoice #1042 is payable if three inputs all hold (&and;): delivery, confirmed by three independent witnesses bonded at 20,000 USD each (&or;, so their bonds add up to 60,000); the invoice arithmetic, proven by two independent stacks (&infin; under a policy that trusts the cryptography); and the supplier's identity, backed by a bank's 1,000,000 USD bond. The cost of corruption is the minimum over the &and;: 60,000 USD, so delivery is the weak link. A financier with 25,000 USD at risk and safety factor &kappa; = 2 needs 50,000, accepts, and reserves 50,000 down the formula. A second financier asking the same is refused: only 10,000 USD of the delivery route is still unreserved.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo invoice --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-assurance">crates/sion-assurance</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built</span></dd></div></dl>
+  </figcaption>
+</figure>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="charters-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="charters-title">Limits live in the ledger, not in the agent.</h2>
+      <p>An Agent Charter fixes whom an AI agent may pay, how much per payment and per window, and who answers for it. Validators check every payment against the charter, so a hijacked or prompt-injected agent cannot exceed it, and revoking the charter stops every sub-agent at once.</p>
+    </div>
+    <figure class="plate" aria-labelledby="fig-charters-title">
+  <canvas data-scene="charters" role="img" aria-label="Animation: an AI agent pays within its charter; a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent." aria-describedby="fig-charters-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-charters-title">Agent Charters</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-charters-desc">From the agents demo. acme charters its agent: pay only gpu-cloud, at most 100 USD per payment and 250 USD per window, a 1,000 USD budget, receipts on, 500 USD bonded behind the receipts. The agent pays gpu-cloud 80 USD and a receipt claim joins the knowledge log. Prompt-injected, it tries to pay mallory 90 USD: the ledger refuses, payee not allowed. It tries 150 USD: refused, above the per-payment limit. It delegates 100 USD to a sub-agent under narrower caveats, at most 20 USD per payment, and the sub-agent pays 20 USD. Once acme revokes the charter, both the agent and the sub-agent are refused.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo agents --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;5.12 to &sect;5.17</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built</span></dd></div></dl>
+  </figcaption>
+</figure>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="uses-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="uses-title">Where trust is the binding constraint.</h2>
+      <p>The <a href="https://siontology.org/docs/papers/architecture.html">architecture paper</a> names six applications, each with a baseline to beat. Two orders of magnitude are plausible where trust is the bottleneck; elsewhere the effect will be modest.</p>
+    </div>
+    <div class="cells cells--3">
+      <div>
+        <h3>AI receipts</h3>
+        <p>A verifiable receipt per model output, anchored in batches: a registry beside the watermark that machine-readable marking rules ask for.</p>
+      </div>
+      <div>
+        <h3>Agent commerce with bounded risk</h3>
+        <p>Charters, receipts and bonds on any payment rail, so the worst case of an agent&rsquo;s spending is known in advance.</p>
+      </div>
+      <div>
+        <h3>Approvals a deepfake cannot pass</h3>
+        <p>A high-value payment needs a mandate claim whose cost of corruption exceeds the amount, not a familiar face on a call.</p>
+      </div>
+      <div>
+        <h3>Settlement with compliance by proof</h3>
+        <p>Private stablecoin settlement with KYC and sanctions checks proven rather than disclosed. A design goal; the zero-knowledge stack it needs is not built yet.</p>
+      </div>
+      <div>
+        <h3>Certified-optimal marketplaces</h3>
+        <p>Verifiable Clearing in place of a black-box matching engine, starting with GPU compute, with the optimality gap published.</p>
+      </div>
+      <div>
+        <h3>Provenance that survives</h3>
+        <p>Media manifests anchored as claims and found again by content hash after a platform strips the metadata; revocations stay visible.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="inversions-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="inversions-title">Eight assumptions, inverted.</h2>
+      <p>What blockchains take for granted, what a neo-blockchain is designed to do instead, and the mechanism for each.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide">
+        <thead><tr><th scope="col">Blockchains assume</th><th scope="col">A neo-blockchain inverts it</th><th scope="col">Mechanism</th></tr></thead>
+        <tbody>
+          <tr><td data-label="Blockchains assume">Verify by re-executing: every node repeats the work</td><td data-label="A neo-blockchain inverts it">Verify by checking a proof, at near-constant cost</td><td data-label="Mechanism">Proof-carrying state; the Fold</td></tr>
+          <tr><td data-label="Blockchains assume">Totally order every operation</td><td data-label="A neo-blockchain inverts it">Order only operations that conflict</td><td data-label="Mechanism">Two-sorted state; Linear Lanes</td></tr>
+          <tr><td data-label="Blockchains assume">The ledger knows only its own state</td><td data-label="A neo-blockchain inverts it">The ledger records claims about the world, with their assumptions priced</td><td data-label="Mechanism">Claims; the Assurance Algebra</td></tr>
+          <tr><td data-label="Blockchains assume">Transparent by default</td><td data-label="A neo-blockchain inverts it">Private by default, provable on demand</td><td data-label="Mechanism">Compliance-by-proof <span class="faint">(not built yet)</span></td></tr>
+          <tr><td data-label="Blockchains assume">A human signs each action</td><td data-label="A neo-blockchain inverts it">Agents act inside limits the protocol enforces</td><td data-label="Mechanism">Agent Charters</td></tr>
+          <tr><td data-label="Blockchains assume">Market outcomes depend on who orders transactions</td><td data-label="A neo-blockchain inverts it">Market outcomes carry a certificate that no better allocation exists</td><td data-label="Mechanism">Verifiable Clearing</td></tr>
+          <tr><td data-label="Blockchains assume">Fees rise when demand meets fixed capacity</td><td data-label="A neo-blockchain inverts it">The cost per verified claim falls as volume grows</td><td data-label="Mechanism">Batching, folding, sampling</td></tr>
+          <tr><td data-label="Blockchains assume">One cryptographic assumption guards each function</td><td data-label="A neo-blockchain inverts it">Unrelated families guard authorization; independent implementations guard validity</td><td data-label="Mechanism">Dual-origin signatures and proofs</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="run-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="run-title">Don&rsquo;t trust the diagram. Run it.</h2>
+      <p>Every figure on this site names the demo, specification or code behind it. The reference implementation is Rust, licensed Apache-2.0 OR MIT, and the demos drive real transactions through the whole protocol.</p>
+    </div>
+    <div class="split split--even">
+      <div class="code">
+  <div class="code-label"><span>Quick start (Rust 1.80 or later)</span><button class="copy-button" type="button" data-copy="code-quickstart">Copy</button></div>
+  <pre id="code-quickstart"><code>git clone https://github.com/ColdAI-org/siontology
+cd siontology
+cargo build --release
+alias sion=./target/release/sion
+
+<span class="c"># Run every scripted demo against an in-process devnet</span>
+sion demo all --local</code></pre>
+</div>
+      <ul class="rows">
+        <li>
+          <h3>Two implementations of every proof</h3>
+          <p>Stack A is the reference executor. Stack B was written only from the specification. A World Proof verifies only if both accept every chunk, and CI checks that stack B never calls the reference executor&rsquo;s logic.</p>
+        </li>
+        <li>
+          <h3>A normative specification</h3>
+          <p>The state transition, version 1.3, written so that another implementation can be built from the document alone. Version 1.3 adds validators, stake, epochs, rewards, slashing and the response to censorship.</p>
+        </li>
+        <li>
+          <h3>Every shortcut named</h3>
+          <p>What is built, simplified, simulated or missing is listed, and each simplification is an assumption in the trust formula of whatever the devnet reports.</p>
+        </li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="status" aria-labelledby="status-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="status-title">What exists today.</h2>
+      <p>A devnet-scale reference implementation in Rust. Where it falls short of the architecture, it says so. The full account is in <a href="https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md">docs/implementation-status.md</a>.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide">
+        <thead><tr><th scope="col">Part of the architecture</th><th scope="col">Status</th></tr></thead>
+        <tbody>
+          <tr><td>Two-sorted state, with the coordination class derived from what a transaction touches</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>Post-quantum accounts: ML-DSA-44 and SLH-DSA on every authorization; ML-KEM-768 for payloads</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>Linear Lanes and Escrow Lanes</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>Contention Consensus</td><td><span class="status status--simplified">Simplified: a certified DAG</span></td></tr>
+          <tr><td>Data availability: two-dimensional Reed&ndash;Solomon coding, sampling, reconstruction</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>The Assurance Algebra: claims, bonds, reservations, challenges, slashing of bonds</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>Verifiable Clearing and Agent Charters</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>Validator staking, epochs, rewards, slashing and committee rotation</td><td><span class="status status--built">Built (devnet)</span></td></tr>
+          <tr><td>Forced inclusion: obligations in the state, overdue intents counted in certified headers</td><td><span class="status status--simplified">Simplified: the shard is not frozen</span></td></tr>
+          <tr><td>CLI, HTTP API, MCP server and an x402 adapter</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>The Fold: a World Proof per Pulse, from two independent stacks</td><td><span class="status status--simulated">Simulated: replay proofs</span></td></tr>
+          <tr><td>Networking between machines</td><td><span class="status status--simulated">Simulated: one process</span></td></tr>
+          <tr><td>Personhood, a proving market, payments to provers, confidential amounts, compliance proofs</td><td><span class="status status--missing">Not built</span></td></tr>
+          <tr><td>Mainnet</td><td><span class="status status--missing">None</span></td></tr>
+          <tr><td>Token</td><td><span class="status status--missing">Siontology has no token and nothing is on offer. Fees are paid in stablecoins.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html" aria-label="Siontology, home"><svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true" focusable="false" fill="currentColor"><rect x="0" y="0" width="22" height="8"/><rect x="0" y="10" width="10" height="6"/><rect x="12" y="10" width="10" height="6"/><rect x="0" y="18" width="4" height="4"/><rect x="6" y="18" width="4" height="4"/><rect x="12" y="18" width="4" height="4"/><rect x="18" y="18" width="4" height="4"/></svg><span class="brand-name">Siontology</span></a>
+        <p>An open-source neo-blockchain whose product is verified knowledge, not ordered transactions.</p>
+      </div>
+      <nav aria-labelledby="footer-project">
+        <h2 id="footer-project">Project</h2>
+        <ul>
+          <li><a href="technology.html">Technology</a></li>
+          <li><a href="developers.html">Developers</a></li>
+          <li><a href="open-source.html">Open source</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="whitepapers.html">Papers</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="footer-resources">
+        <h2 id="footer-resources">Resources</h2>
+        <ul>
+          <li><a href="https://siontology.org/docs/">Documentation</a></li>
+          <li><a href="https://github.com/ColdAI-org/siontology">Source code</a></li>
+          <li><a href="brand.html">Brand and press kit</a></li>
+          <li><a href="legal.html">Imprint and privacy</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer-base">
+      <p>&copy; ColdAI. Code licensed Apache-2.0 OR MIT.</p>
+      <p>Status: a devnet-scale reference implementation. Proofs are simulated; there is no mainnet and no token.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

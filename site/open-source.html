@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open source | Siontology</title>
+<meta name="description" content="Siontology is open source under Apache-2.0 OR MIT: a Rust reference implementation, a normative specification, and two proof stacks written independently of each other.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="canonical" href="https://siontology.org/open-source.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Siontology">
+<meta property="og:title" content="Open source | Siontology">
+<meta property="og:description" content="Siontology is open source under Apache-2.0 OR MIT: a Rust reference implementation, a normative specification, and two proof stacks written independently of each other.">
+<meta property="og:url" content="https://siontology.org/open-source.html">
+<meta property="og:image" content="https://siontology.org/img/siontology-social-1200x630.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Siontology: verified knowledge, not ordered transactions.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/site.css">
+<script>(function(){var d=document.documentElement;d.classList.add('js');try{var t=localStorage.getItem('siontology-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t)}catch(e){}})();</script>
+<script src="js/site.js" defer></script>
+<script src="js/scenes/core.js" defer></script>
+<script src="js/scenes/fold.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Siontology, home"><svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true" focusable="false" fill="currentColor"><rect x="0" y="0" width="22" height="8"/><rect x="0" y="10" width="10" height="6"/><rect x="12" y="10" width="10" height="6"/><rect x="0" y="18" width="4" height="4"/><rect x="6" y="18" width="4" height="4"/><rect x="12" y="18" width="4" height="4"/><rect x="18" y="18" width="4" height="4"/></svg><span class="brand-name">Siontology</span></a>
+    <button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="technology.html">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html" aria-current="page">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
+      </ul>
+    </nav>
+    <div class="header-tools">
+      <button class="icon-button theme-button" type="button" data-theme-toggle aria-label="Switch theme"><svg viewBox="0 0 18 18" aria-hidden="true" focusable="false"><rect x="1.75" y="1.75" width="14.5" height="14.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 15.5 15.5 2.5V15.5Z" fill="currentColor"/></svg></button>
+    </div>
+  </div>
+</header>
+<main id="main">
+<header class="page-head wrap">
+  <h1>Read it, run it, build another one.</h1>
+  <p class="lede">The reference implementation, the specification it follows and the documentation are public. The project asks for a second implementation of its own state transition, because two implementations that disagree are how a bug in either one gets caught.</p>
+  <div class="actions" style="margin-top: var(--space-6)">
+    <a class="button" href="https://github.com/ColdAI-org/siontology">View the repository</a>
+    <a class="button button--quiet" href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Read the specification</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="topic" id="licence" aria-labelledby="licence-title">
+    <h2 id="licence-title">Licence</h2>
+    <div class="split split--even">
+      <div class="prose">
+        <p>The code is licensed under either the Apache License, Version 2.0, or the MIT licence, at your option. Use it, change it, ship it and build products on it, commercially or not; keep the copyright and licence notices.</p>
+        <p>The fonts on this site are under the SIL Open Font License and are served from this site. The name and the mark identify the project; the <a href="brand.html">brand page</a> says how to use them.</p>
+      </div>
+      <dl class="facts">
+        <div><dt>Licence</dt><dd><code>Apache-2.0 OR MIT</code></dd></div>
+        <div><dt>Texts</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/LICENSE-APACHE">LICENSE-APACHE</a>, <a href="https://github.com/ColdAI-org/siontology/blob/main/LICENSE-MIT">LICENSE-MIT</a></dd></div>
+        <div><dt>Repository</dt><dd><a href="https://github.com/ColdAI-org/siontology">github.com/ColdAI-org/siontology</a></dd></div>
+        <div><dt>Language</dt><dd>Rust 1.80 or later; unsafe code is forbidden</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="topic" id="stacks" aria-labelledby="stacks-title">
+    <h2 id="stacks-title">Two proof stacks</h2>
+    <div class="prose">
+      <p>A proof system is only as sound as its implementation, so Siontology never trusts one. Proof stack A is the reference executor. Proof stack B is a second implementation of the state transition, written only from the specification. Every chunk of every Pulse goes through both, and a World Proof verifies only if both accept.</p>
+      <p>A script run in CI checks that stack B never calls the reference executor&rsquo;s logic. Differential tests drive thousands of chunks, random workloads, boundary probes and tampered inputs through both stacks. They found two defects in the reference executor and several gaps in the specification, all fixed in version 1.1: a market clearing deadline near the largest 64-bit value overflowed when its batch sealed, which let any account halt the chain, and a charter window near the same value made the reference executor disagree with the specification.</p>
+      <p>Both stacks still share the hashing, Merkle, signature, Assurance Algebra and clearing-certificate code, so a bug there would be common to both. That shared code is named as a separate assumption, <code>impl:shared-primitives</code>, in the trust formula of every World Proof.</p>
+    </div>
+    <figure class="plate" aria-labelledby="fig-fold-title">
+  <canvas data-scene="fold" role="img" aria-label="Animation: chunk statements are verified by two independent proof stacks and folded pairwise into two roots; the World Proof stands only if both accept." aria-describedby="fig-fold-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-fold-title">The Fold and two proof stacks</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-fold-desc">A Pulse executes as a chain of chunks, each with a statement binding the world before and after it; the last chunk is the deferred phase. Stack A, the reference executor, and stack B, an independent implementation written only from the specification, each verify every chunk. Their proofs fold pairwise into two roots, and the World Proof is the pair: a client accepts it only if both stacks accept. In the second Pulse shown, stack A has a hypothetical soundness bug and accepts an invalid chunk; stack B rejects it, so no World Proof exists for that Pulse. Today both stacks verify by replay: they bind the same statements a succinct proof would, but checking costs as much as executing.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion verify --chain &lt;identity&gt;</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;8 and &sect;9</a></dd></div><div><dt>Status</dt><dd><span class="status status--simulated">Simulated: replay proofs with real bindings</span></dd></div></dl>
+  </figcaption>
+</figure>
+  </section>
+
+  <section class="topic" id="spec" aria-labelledby="spec-title">
+    <h2 id="spec-title">The specification</h2>
+    <div class="split split--even">
+      <div class="prose">
+        <p>The state transition specification is normative: it defines the function a proof stack evaluates for every chunk of every Pulse, and through it the whole state transition, from preparing and executing one transaction to the three phases of a Pulse and the commitments each chunk statement carries. Where the two implementations disagree, one of them is wrong.</p>
+        <p>Version 1.3 brings validators, stake, epochs and the response to censorship into the state transition, so every committee change follows its rules and the World Proof covers it.</p>
+      </div>
+      <ol class="rows">
+        <li><h3>v1.1</h3><p>From differential testing of stack B against stack A: saturating deadlines and windows, bounded market periods, specified deferred-phase errors, and what the World Proof binds.</p></li>
+        <li><h3>v1.2</h3><p>From independent reviews: transaction signatures bound to the chain, bounded inputs, allotments, batches, formula depth and certificate size.</p></li>
+        <li><h3>v1.3</h3><p>Staking with proof of key possession, unbonding, rewards by weight, slashing of equivocation with a share to the reporter, forced-inclusion obligations and committee rotation.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="topic" id="repository" aria-labelledby="repository-title">
+    <h2 id="repository-title">The repository</h2>
+    <div class="prose">
+      <p>A Cargo workspace of focused crates that depend on <code>sion-core</code> rather than on each other where they can.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide">
+        <thead><tr><th scope="col">Crate</th><th scope="col">What it holds</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-core"><code>sion-core</code></a></th><td>Domain-separated SHA3-256, canonical Borsh encoding, typed identifiers, fixed-point money, the RFC 9162 append-only log, the sparse Merkle state tree</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-crypto"><code>sion-crypto</code></a></th><td>ML-DSA-44, SLH-DSA-SHA2-128s and 128f, ML-KEM-768, dual-origin signatures, account policies, sealed envelopes, Shamir sharing</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-assurance"><code>sion-assurance</code></a></th><td>The Assurance Algebra: atoms, formulas, cost of corruption, the decision rule, reservations, challenges, slashing, insurance</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-lp"><code>sion-lp</code></a></th><td>Exact rational simplex and linear-time verification of optimality certificates</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-clearing"><code>sion-clearing</code></a></th><td>Verifiable Clearing: sealed double auctions and assignment markets with certificates</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-da"><code>sion-da</code></a></th><td>Two-dimensional Reed&ndash;Solomon coding over the Goldilocks field, commitments, sampling, reconstruction, fraud proofs</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-consensus"><code>sion-consensus</code></a></th><td>Linear Lanes, certified-DAG BFT, committees and sampling, the beacon, forced inclusion, a deterministic network simulator</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-exec"><code>sion-exec</code></a></th><td>The state machine, proof stack A: objects, accounts, claims, bonds, Agent Charters, escrow, markets and validators; Pulse execution with chunk traces and witnesses</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-spec"><code>sion-spec</code></a></th><td>Proof stack B: an independent implementation of the state transition, written from the specification</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-prover"><code>sion-prover</code></a></th><td>Proof stacks, World Proofs and their verification</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-light"><code>sion-light</code></a></th><td>The light client: chain identity, epoch boundary proofs, header certificates, state and receipt proofs, availability sampling</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-node"><code>sion-node</code></a></th><td>The devnet: validators, gateway, prover, write-ahead log and snapshots, the HTTP API</td></tr>
+          <tr><th scope="row"><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-cli"><code>sion-cli</code></a></th><td>The <code>sion</code> command: devnet, wallets, demos, light verification, the MCP server, x402, benchmarks</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="topic" id="contributing" aria-labelledby="contributing-title">
+    <h2 id="contributing-title">Contributing</h2>
+    <div class="prose">
+      <p>The rules in <a href="https://github.com/ColdAI-org/siontology/blob/main/AGENTS.md">AGENTS.md</a> apply to everyone who changes the code, people and AI agents alike. Seven of them are not negotiable.</p>
+    </div>
+    <ol class="rows rows--numbered rows--two">
+      <li><h3>One encoding</h3><p>Every consensus-critical value has one canonical Borsh encoding and is hashed with a domain tag.</p></li>
+      <li><h3>Deterministic order</h3><p>Consensus-critical maps are ordered maps; no hash-map iteration order may influence a hash, a root, an ordering or a decision.</p></li>
+      <li><h3>No floating point</h3><p>Money is fixed-point micro-units; exact optimisation uses rationals. Floats are for reporting only.</p></li>
+      <li><h3>Nothing is deleted</h3><p>Consumed objects are tombstoned and claims are appended, so history stays auditable and proofs stay stateless.</p></li>
+      <li><h3>Every assumption named</h3><p>Anything the system relies on that is not proven is an atom in some trust formula, including the implementation&rsquo;s own shortcuts.</p></li>
+      <li><h3>Shortcuts labelled</h3><p>Simulation-only shortcuts, such as fast test signatures and replay proofs, are labelled in the types and never silently replace real cryptography.</p></li>
+      <li><h3>No unsafe Rust</h3><p>The workspace forbids it.</p></li>
+    </ol>
+    <div class="split split--even">
+      <div class="prose">
+        <p>Seed every random number generator, write a property test for every algebraic or adversarial invariant, and document and test public functions. The suite includes property tests for the Assurance Algebra, the linear-programming certificates and the state machine, a deterministic consensus simulator with adversarial network phases, scenario tests for every transaction kind, end-to-end devnet tests with dual post-quantum signatures, and the demos.</p>
+        <p>Found a vulnerability? Report it privately, as the <a href="security.html#disclosure">security page</a> describes, not in a public issue.</p>
+      </div>
+      <div class="code">
+  <div class="code-label"><span>Before every commit</span><button class="copy-button" type="button" data-copy="code-develop">Copy</button></div>
+  <pre id="code-develop"><code>cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace</code></pre>
+</div>
+    </div>
+  </section>
+</div>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html" aria-label="Siontology, home"><svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true" focusable="false" fill="currentColor"><rect x="0" y="0" width="22" height="8"/><rect x="0" y="10" width="10" height="6"/><rect x="12" y="10" width="10" height="6"/><rect x="0" y="18" width="4" height="4"/><rect x="6" y="18" width="4" height="4"/><rect x="12" y="18" width="4" height="4"/><rect x="18" y="18" width="4" height="4"/></svg><span class="brand-name">Siontology</span></a>
+        <p>An open-source neo-blockchain whose product is verified knowledge, not ordered transactions.</p>
+      </div>
+      <nav aria-labelledby="footer-project">
+        <h2 id="footer-project">Project</h2>
+        <ul>
+          <li><a href="technology.html">Technology</a></li>
+          <li><a href="developers.html">Developers</a></li>
+          <li><a href="open-source.html">Open source</a></li>
+          <li><a href="security.html">Security</a></li>
+          <li><a href="whitepapers.html">Papers</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="footer-resources">
+        <h2 id="footer-resources">Resources</h2>
+        <ul>
+          <li><a href="https://siontology.org/docs/">Documentation</a></li>
+          <li><a href="https://github.com/ColdAI-org/siontology">Source code</a></li>
+          <li><a href="brand.html">Brand and press kit</a></li>
+          <li><a href="legal.html">Imprint and privacy</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="footer-base">
+      <p>&copy; ColdAI. Code licensed Apache-2.0 OR MIT.</p>
+      <p>Status: a devnet-scale reference implementation. Proofs are simulated; there is no mainnet and no token.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

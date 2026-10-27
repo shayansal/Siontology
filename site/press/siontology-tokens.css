@@ -1,0 +1,149 @@
+/*
+ * Siontology design tokens.
+ *
+ * Source of truth for colour, type, spacing, radii and motion. The website
+ * uses a copy (site/css/tokens.css); change this file first, then copy it.
+ *
+ * Colour is achromatic on purpose. The one hue, --color-signal, means a
+ * refusal: a conflicting spend, a withheld share, a payment the ledger
+ * refused. It is never decoration.
+ *
+ * :root holds the light values. Dark is the signature look and is used when
+ * the reader's system asks for it or when [data-theme="dark"] is set.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Colour: light */
+  --color-bg: #ffffff;
+  --color-bg-raised: #f4f4f4;
+  --color-ink: #000000;
+  --color-ink-2: #3d3d3d;
+  --color-ink-3: #676767;
+  --color-rule: #dcdcdc;
+  --color-rule-strong: #a3a3a3;
+  --color-signal: #c4271b;
+  --color-focus: #000000;
+  --color-selection: #000000;
+  --color-selection-ink: #ffffff;
+
+  /* Type */
+  --font-sans: "Archivo", "Siontology Symbols", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fragment Mono", "Siontology Symbols", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --width-display: 125%;
+  --width-heading: 112%;
+  --width-text: 100%;
+
+  --weight-display: 480;
+  --weight-heading: 560;
+  --weight-strong: 600;
+  --weight-label: 520;
+  --weight-text: 400;
+
+  --text-xs: 0.75rem;     /* 12 */
+  --text-sm: 0.875rem;    /* 14 */
+  --text-md: 1.0625rem;   /* 17, body */
+  --text-lg: 1.3125rem;   /* 21 */
+  --text-xl: 1.5rem;      /* 24 */
+  --text-2xl: clamp(1.75rem, 1.35rem + 1.6vw, 2.25rem);  /* 28-36 */
+  --text-3xl: clamp(2rem, 1.3rem + 2.8vw, 3rem);         /* 32-48 */
+  --text-4xl: clamp(2.375rem, 1.2rem + 4.8vw, 4.5rem);   /* 38-72 */
+  --text-5xl: clamp(2.625rem, 0.5rem + 5.9vw, 5.75rem);  /* 42-92 */
+
+  --leading-display: 1.02;
+  --leading-heading: 1.1;
+  --leading-text: 1.58;
+  --leading-code: 1.6;
+
+  --tracking-display: -0.022em;
+  --tracking-heading: -0.012em;
+  --tracking-text: 0.004em;
+  --tracking-label: 0.01em;
+
+  --measure: 66ch;
+
+  /* Space: 4 px base */
+  --space-1: 0.25rem;  /* 4 */
+  --space-2: 0.5rem;   /* 8 */
+  --space-3: 0.75rem;  /* 12 */
+  --space-4: 1rem;     /* 16 */
+  --space-5: 1.5rem;   /* 24 */
+  --space-6: 2rem;     /* 32 */
+  --space-7: 3rem;     /* 48 */
+  --space-8: 4rem;     /* 64 */
+  --space-9: 6rem;     /* 96 */
+  --space-10: 8rem;    /* 128 */
+
+  --gutter: 1rem;      /* 16 px side gutter on phones */
+  --page-max: 85rem;   /* 1360 */
+  --header-height: 4rem;
+
+  /* Rules and radii: every element is a cell on the grid, so corners are
+     square. Controls get 2 px; only a drawn device (a phone) is rounded. */
+  --rule-hair: 1px;
+  --rule-strong: 2px;
+  --radius-0: 0;
+  --radius-control: 2px;
+  --radius-device: 10px;
+
+  /* Motion: calm and purposeful. One Pulse is one second. */
+  --duration-instant: 90ms;
+  --duration-fast: 160ms;
+  --duration-base: 240ms;
+  --duration-slow: 480ms;
+  --duration-fold: 720ms;
+  --duration-pulse: 1000ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-fold: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+}
+
+@media (min-width: 48rem) {
+  :root {
+    --gutter: 2rem;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-bg: #000000;
+    --color-bg-raised: #0e0e0e;
+    --color-ink: #f5f5f5;
+    --color-ink-2: #b8b8b8;
+    --color-ink-3: #848484;
+    --color-rule: #262626;
+    --color-rule-strong: #4d4d4d;
+    --color-signal: #ff5a4c;
+    --color-focus: #ffffff;
+    --color-selection: #ffffff;
+    --color-selection-ink: #000000;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg: #000000;
+  --color-bg-raised: #0e0e0e;
+  --color-ink: #f5f5f5;
+  --color-ink-2: #b8b8b8;
+  --color-ink-3: #848484;
+  --color-rule: #262626;
+  --color-rule-strong: #4d4d4d;
+  --color-signal: #ff5a4c;
+  --color-focus: #ffffff;
+  --color-selection: #ffffff;
+  --color-selection-ink: #000000;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-fold: 0ms;
+  }
+}

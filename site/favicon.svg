@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="title desc">
+  <title id="title">Siontology</title>
+  <desc id="desc">The Siontology favicon.</desc>
+  <!-- Small Fold mark for 16 to 32 px: three rows (1, 2, 4) on a 22-unit grid,
+       every edge on an even unit so it stays sharp at 16 px. -->
+  <rect width="32" height="32" fill="#000000"/>
+  <g fill="#FFFFFF">
+    <rect x="5" y="5" width="22" height="8"/>
+    <rect x="5" y="15" width="10" height="6"/>
+    <rect x="17" y="15" width="10" height="6"/>
+    <rect x="5" y="23" width="4" height="4"/>
+    <rect x="11" y="23" width="4" height="4"/>
+    <rect x="17" y="23" width="4" height="4"/>
+    <rect x="23" y="23" width="4" height="4"/>
+  </g>
+</svg>
