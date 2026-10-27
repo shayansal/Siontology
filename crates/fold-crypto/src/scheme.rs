@@ -5,8 +5,18 @@ use serde::{Deserialize, Serialize};
 
 /// A signature scheme.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
-    BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
 )]
 pub enum Scheme {
     /// ML-DSA-44, FIPS 204: module-lattice signatures.
@@ -20,8 +30,18 @@ pub enum Scheme {
 /// The hardness family a scheme's security rests on. Two schemes from
 /// different families fail independently under any known attack.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
-    BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
 )]
 pub enum Family {
     /// Module-LWE / module-SIS hardness.
@@ -32,7 +52,11 @@ pub enum Family {
 
 impl Scheme {
     /// All supported schemes.
-    pub const ALL: [Scheme; 3] = [Scheme::MlDsa44, Scheme::SlhDsaSha2_128s, Scheme::SlhDsaSha2_128f];
+    pub const ALL: [Scheme; 3] = [
+        Scheme::MlDsa44,
+        Scheme::SlhDsaSha2_128s,
+        Scheme::SlhDsaSha2_128f,
+    ];
 
     /// The scheme's family.
     pub fn family(self) -> Family {
@@ -86,6 +110,9 @@ mod tests {
     #[test]
     fn families_are_distinct() {
         assert_ne!(Scheme::MlDsa44.family(), Scheme::SlhDsaSha2_128s.family());
-        assert_eq!(Scheme::SlhDsaSha2_128s.family(), Scheme::SlhDsaSha2_128f.family());
+        assert_eq!(
+            Scheme::SlhDsaSha2_128s.family(),
+            Scheme::SlhDsaSha2_128f.family()
+        );
     }
 }

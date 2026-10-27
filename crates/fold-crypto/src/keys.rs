@@ -20,7 +20,18 @@ use crate::error::CryptoError;
 use crate::scheme::Scheme;
 
 /// A public key tagged with its scheme.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
+)]
 pub struct PublicKey {
     /// The scheme.
     pub scheme: Scheme,
@@ -32,13 +43,21 @@ pub struct PublicKey {
 impl PublicKey {
     /// A digest identifying this key.
     pub fn fingerprint(&self) -> Hash32 {
-        hash_parts("fold/crypto/key-fingerprint", &[self.scheme.name().as_bytes(), &self.bytes])
+        hash_parts(
+            "fold/crypto/key-fingerprint",
+            &[self.scheme.name().as_bytes(), &self.bytes],
+        )
     }
 }
 
 impl fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PublicKey({}, {})", self.scheme.name(), self.fingerprint().short())
+        write!(
+            f,
+            "PublicKey({}, {})",
+            self.scheme.name(),
+            self.fingerprint().short()
+        )
     }
 }
 
@@ -54,7 +73,12 @@ pub struct Signature {
 
 impl fmt::Debug for Signature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Signature({}, {} bytes)", self.scheme.name(), self.bytes.len())
+        write!(
+            f,
+            "Signature({}, {} bytes)",
+            self.scheme.name(),
+            self.bytes.len()
+        )
     }
 }
 
@@ -173,7 +197,11 @@ impl Keypair {
     }
 
     /// Signs deterministically. Used by simulations so runs are reproducible.
-    pub fn sign_deterministic(&self, domain: &str, message: &[u8]) -> Result<Signature, CryptoError> {
+    pub fn sign_deterministic(
+        &self,
+        domain: &str,
+        message: &[u8],
+    ) -> Result<Signature, CryptoError> {
         let ctx = context(domain)?;
         let bytes = match &self.secret {
             SecretKey::MlDsa44(sk) => sk
@@ -237,7 +265,12 @@ fn fixed<const N: usize>(scheme: Scheme, bytes: &[u8]) -> Result<[u8; N], Crypto
 }
 
 /// Verifies `signature` over `message` in `domain` under `key`.
-pub fn verify(key: &PublicKey, domain: &str, message: &[u8], signature: &Signature) -> Result<(), CryptoError> {
+pub fn verify(
+    key: &PublicKey,
+    domain: &str,
+    message: &[u8],
+    signature: &Signature,
+) -> Result<(), CryptoError> {
     if key.scheme != signature.scheme {
         return Err(CryptoError::SchemeMismatch {
             key: key.scheme,
@@ -280,7 +313,9 @@ pub(crate) mod hex_bytes {
         serializer.serialize_str(&hex::encode(bytes))
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
         let text = String::deserialize(deserializer)?;
         hex::decode(text).map_err(serde::de::Error::custom)
     }
@@ -309,7 +344,13 @@ mod tests {
             verify(keypair.public(), DOMAIN, b"pay 25,000", &signature).unwrap();
             // Tampered message, wrong domain and flipped bytes all fail.
             assert!(verify(keypair.public(), DOMAIN, b"pay 26,000", &signature).is_err());
-            assert!(verify(keypair.public(), "fold/test/other", b"pay 25,000", &signature).is_err());
+            assert!(verify(
+                keypair.public(),
+                "fold/test/other",
+                b"pay 25,000",
+                &signature
+            )
+            .is_err());
             let mut flipped = signature.clone();
             flipped.bytes[10] ^= 1;
             assert!(verify(keypair.public(), DOMAIN, b"pay 25,000", &flipped).is_err());
@@ -348,7 +389,9 @@ mod tests {
 
     #[test]
     fn short_keys_are_rejected() {
-        let mut key = Keypair::from_seed(Scheme::MlDsa44, &[5u8; 32]).public().clone();
+        let mut key = Keypair::from_seed(Scheme::MlDsa44, &[5u8; 32])
+            .public()
+            .clone();
         key.bytes.pop();
         let signature = Signature {
             scheme: Scheme::MlDsa44,

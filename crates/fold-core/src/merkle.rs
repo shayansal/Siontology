@@ -119,7 +119,9 @@ pub fn verify_inclusion(
     if snode == 0 && acc == *root_hash {
         Ok(())
     } else {
-        Err(CoreError::InvalidProof("inclusion proof does not match root"))
+        Err(CoreError::InvalidProof(
+            "inclusion proof does not match root",
+        ))
     }
 }
 
@@ -173,7 +175,9 @@ pub fn verify_consistency(
         return if proof.is_empty() {
             Ok(())
         } else {
-            Err(CoreError::InvalidProof("unexpected proof for empty old log"))
+            Err(CoreError::InvalidProof(
+                "unexpected proof for empty old log",
+            ))
         };
     }
     if old_size == new_size {
@@ -222,12 +226,16 @@ pub fn verify_consistency(
     if first == *old_root && second == *new_root && snode == 0 {
         Ok(())
     } else {
-        Err(CoreError::InvalidProof("consistency proof does not match roots"))
+        Err(CoreError::InvalidProof(
+            "consistency proof does not match roots",
+        ))
     }
 }
 
 /// An append-only log of leaf hashes.
-#[derive(Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct AppendLog {
     leaves: Vec<Hash32>,
 }
@@ -289,13 +297,74 @@ impl AppendLog {
     }
 }
 
+/// The right edge of an append-only log: the roots of its perfect subtrees,
+/// largest first. Enough to append leaves and recompute the root without
+/// the leaves themselves, so a stateless verifier can extend the knowledge
+/// log from a witness of at most `log2(n)` hashes.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
+pub struct Frontier {
+    /// Number of leaves.
+    pub size: u64,
+    /// Roots of the perfect subtrees, one per set bit of `size`, largest first.
+    pub peaks: Vec<Hash32>,
+}
+
+impl Frontier {
+    /// The frontier of a list of leaves.
+    pub fn from_leaves(leaves: &[Hash32]) -> Frontier {
+        let mut frontier = Frontier::default();
+        for leaf in leaves {
+            frontier.append(*leaf);
+        }
+        frontier
+    }
+
+    /// Appends a leaf.
+    pub fn append(&mut self, leaf: Hash32) {
+        let mut carry = leaf;
+        let mut size = self.size;
+        while size & 1 == 1 {
+            let left = self.peaks.pop().expect("one peak per set bit");
+            carry = node_hash(&left, &carry);
+            size >>= 1;
+        }
+        self.peaks.push(carry);
+        self.size += 1;
+    }
+
+    /// The log root.
+    pub fn root(&self) -> Hash32 {
+        let mut peaks = self.peaks.iter().rev();
+        match peaks.next() {
+            None => empty_root(),
+            Some(last) => peaks.fold(*last, |acc, peak| node_hash(peak, &acc)),
+        }
+    }
+
+    /// Whether the frontier is well formed (one peak per set bit).
+    pub fn is_well_formed(&self) -> bool {
+        self.peaks.len() == self.size.count_ones() as usize
+    }
+}
+
+impl AppendLog {
+    /// The log's frontier.
+    pub fn frontier(&self) -> Frontier {
+        Frontier::from_leaves(&self.leaves)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
 
     fn leaves(n: usize) -> Vec<Hash32> {
-        (0..n).map(|i| leaf_hash(&(i as u64).to_be_bytes())).collect()
+        (0..n)
+            .map(|i| leaf_hash(&(i as u64).to_be_bytes()))
+            .collect()
     }
 
     #[test]
@@ -364,6 +433,21 @@ mod tests {
             let proof = log.consistency_proof(size as u64).unwrap();
             verify_consistency(expected, size as u64, &log.root(), log.len(), &proof).unwrap();
         }
+    }
+
+    #[test]
+    fn frontier_matches_full_log() {
+        let mut frontier = Frontier::default();
+        assert_eq!(frontier.root(), empty_root());
+        let mut all = Vec::new();
+        for i in 0..130u64 {
+            let leaf = leaf_hash(&i.to_be_bytes());
+            frontier.append(leaf);
+            all.push(leaf);
+            assert_eq!(frontier.root(), root(&all), "size {}", all.len());
+            assert!(frontier.is_well_formed());
+        }
+        assert_eq!(Frontier::from_leaves(&all), frontier);
     }
 
     proptest! {

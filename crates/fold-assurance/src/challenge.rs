@@ -271,9 +271,14 @@ impl Registry {
                     .into(),
             ));
         }
-        if !self.transitive_atoms(&claim).contains(&target) {
+        // Only an atom the claim rests on directly can be challenged through
+        // it: the claim's adjudicator was chosen by the party that put that
+        // atom at stake. To dispute an atom a referenced claim rests on,
+        // challenge that claim, under its own adjudicator.
+        if !record.formula.direct_atoms().contains(&target) {
             return Err(AssuranceError::Challenge(
-                "target is not an assumption of the claim".into(),
+                "target is not a direct assumption of the claim (challenge the claim that rests on it)"
+                    .into(),
             ));
         }
         if self.broken.contains_key(&target) {
@@ -550,6 +555,21 @@ mod tests {
         assert!(registry
             .rule(&challenge, &impostor, true, Pulse(6))
             .is_err());
+    }
+
+    #[test]
+    fn atoms_are_challenged_through_the_claim_that_rests_on_them() {
+        let (mut registry, witnesses, _judge, _delivery, payable) = invoice();
+        // `payable` rests on the witnesses only through `delivery`.
+        let indirect = registry.open_challenge(
+            AccountId::derive(b"c"),
+            payable,
+            witnesses[0],
+            Hash32::ZERO,
+            Amount::ZERO,
+            Pulse(5),
+        );
+        assert!(matches!(indirect, Err(AssuranceError::Challenge(_))));
     }
 
     /// The reservation guarantee: whatever set of atoms breaks, every

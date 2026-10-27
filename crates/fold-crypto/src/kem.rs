@@ -20,7 +20,18 @@ use zeroize::Zeroizing;
 use crate::error::CryptoError;
 
 /// An ML-KEM-768 encapsulation (public) key.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
+)]
 pub struct KemPublicKey {
     /// The 1,184-byte encapsulation key.
     #[serde(with = "crate::keys::hex_bytes")]
@@ -80,17 +91,32 @@ impl KemKeypair {
     }
 
     fn decapsulate(&self, ciphertext: &[u8]) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
-        let array: [u8; ml_kem_768::CT_LEN] = ciphertext.try_into().map_err(|_| CryptoError::Decryption)?;
-        let ct = ml_kem_768::CipherText::try_from_bytes(array).map_err(|_| CryptoError::Decryption)?;
-        let shared = self.secret.try_decaps(&ct).map_err(|_| CryptoError::Decryption)?;
+        let array: [u8; ml_kem_768::CT_LEN] =
+            ciphertext.try_into().map_err(|_| CryptoError::Decryption)?;
+        let ct =
+            ml_kem_768::CipherText::try_from_bytes(array).map_err(|_| CryptoError::Decryption)?;
+        let shared = self
+            .secret
+            .try_decaps(&ct)
+            .map_err(|_| CryptoError::Decryption)?;
         Ok(Zeroizing::new(shared.into_bytes()))
     }
 
     /// Opens an envelope sealed to this key.
-    pub fn open(&self, domain: &str, aad: &[u8], envelope: &SealedEnvelope) -> Result<Vec<u8>, CryptoError> {
+    pub fn open(
+        &self,
+        domain: &str,
+        aad: &[u8],
+        envelope: &SealedEnvelope,
+    ) -> Result<Vec<u8>, CryptoError> {
         let shared = self.decapsulate(&envelope.kem_ciphertext)?;
         let key = derive_key(domain, &shared, &envelope.kem_ciphertext);
-        aead_open(&key, &envelope.nonce, &associated(domain, aad), &envelope.ciphertext)
+        aead_open(
+            &key,
+            &envelope.nonce,
+            &associated(domain, aad),
+            &envelope.ciphertext,
+        )
     }
 }
 
@@ -108,7 +134,13 @@ pub struct SealedEnvelope {
 }
 
 fn derive_key(domain: &str, shared: &[u8; 32], kem_ciphertext: &[u8]) -> Zeroizing<[u8; 32]> {
-    Zeroizing::new(hash_parts("fold/crypto/seal-key", &[domain.as_bytes(), shared, kem_ciphertext]).0)
+    Zeroizing::new(
+        hash_parts(
+            "fold/crypto/seal-key",
+            &[domain.as_bytes(), shared, kem_ciphertext],
+        )
+        .0,
+    )
 }
 
 fn associated(domain: &str, aad: &[u8]) -> Vec<u8> {
@@ -122,14 +154,31 @@ fn associated(domain: &str, aad: &[u8]) -> Vec<u8> {
 pub(crate) fn aead_seal(key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     cipher
-        .encrypt(Nonce::from_slice(nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .expect("encryption into a Vec cannot fail")
 }
 
-pub(crate) fn aead_open(key: &[u8; 32], nonce: &[u8; 12], aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub(crate) fn aead_open(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     cipher
-        .decrypt(Nonce::from_slice(nonce), Payload { msg: ciphertext, aad })
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::Decryption)
 }
 
@@ -169,7 +218,14 @@ mod tests {
     fn seal_and_open() {
         let recipient = KemKeypair::from_seed(&[1; 32]);
         let mut rng = fold_core::rng::seeded(1);
-        let envelope = seal(recipient.public(), "fold/test/seal", b"aad", b"originator: ACME", &mut rng).unwrap();
+        let envelope = seal(
+            recipient.public(),
+            "fold/test/seal",
+            b"aad",
+            b"originator: ACME",
+            &mut rng,
+        )
+        .unwrap();
         assert_eq!(envelope.kem_ciphertext.len(), 1088);
         let opened = recipient.open("fold/test/seal", b"aad", &envelope).unwrap();
         assert_eq!(opened, b"originator: ACME");
@@ -180,9 +236,18 @@ mod tests {
         let recipient = KemKeypair::from_seed(&[1; 32]);
         let other = KemKeypair::from_seed(&[2; 32]);
         let mut rng = fold_core::rng::seeded(2);
-        let envelope = seal(recipient.public(), "fold/test/seal", b"aad", b"secret", &mut rng).unwrap();
+        let envelope = seal(
+            recipient.public(),
+            "fold/test/seal",
+            b"aad",
+            b"secret",
+            &mut rng,
+        )
+        .unwrap();
         assert!(other.open("fold/test/seal", b"aad", &envelope).is_err());
-        assert!(recipient.open("fold/test/other", b"aad", &envelope).is_err());
+        assert!(recipient
+            .open("fold/test/other", b"aad", &envelope)
+            .is_err());
         assert!(recipient.open("fold/test/seal", b"bad", &envelope).is_err());
         let mut tampered = envelope.clone();
         tampered.ciphertext[0] ^= 1;

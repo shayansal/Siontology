@@ -89,7 +89,11 @@ impl DualKeypair {
     }
 
     /// Signs with both keys deterministically.
-    pub fn sign_deterministic(&self, domain: &str, message: &[u8]) -> Result<DualSignature, CryptoError> {
+    pub fn sign_deterministic(
+        &self,
+        domain: &str,
+        message: &[u8],
+    ) -> Result<DualSignature, CryptoError> {
         Ok(DualSignature {
             lattice: self.lattice.sign_deterministic(domain, message)?,
             hash: self.hash.sign_deterministic(domain, message)?,

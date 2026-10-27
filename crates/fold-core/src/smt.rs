@@ -54,7 +54,9 @@ fn flip_bit(key: &Hash32, index: usize) -> Hash32 {
 }
 
 /// What a proof found at the bottom of a key's path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub enum ProofLeaf {
     /// The subtree on the key's path is empty.
     Empty,
@@ -216,7 +218,10 @@ fn subtree_hash(
         1 => {
             let (key, value) = entries[0];
             if let Some(cache) = cache {
-                cache.insert((depth as u16, prefix(&key, depth)), CachedNode::Leaf { key, value });
+                cache.insert(
+                    (depth as u16, prefix(&key, depth)),
+                    CachedNode::Leaf { key, value },
+                );
             }
             leaf_hash(&key, &value)
         }
@@ -343,7 +348,9 @@ impl PartialSmt {
         proof.proven_value(key)?;
         let hashes = proof.path_hashes(key);
         if hashes[0] != self.node.hash() {
-            return Err(CoreError::InvalidProof("proof root does not match partial tree"));
+            return Err(CoreError::InvalidProof(
+                "proof root does not match partial tree",
+            ));
         }
         let bottom = match proof.leaf {
             ProofLeaf::Empty => PNode::Empty,
@@ -364,7 +371,9 @@ impl PartialSmt {
         let mut depth = 0usize;
         loop {
             match node {
-                PNode::Opaque(_) => return Err(CoreError::InvalidProof("key not covered by witness")),
+                PNode::Opaque(_) => {
+                    return Err(CoreError::InvalidProof("key not covered by witness"))
+                }
                 PNode::Empty => return Ok(None),
                 PNode::Leaf(found, value) => {
                     return Ok(if found == key { Some(*value) } else { None })
@@ -437,7 +446,12 @@ fn expand(
     }
 }
 
-fn insert_into(node: &mut PNode, key: Hash32, value: Hash32, depth: usize) -> Result<(), CoreError> {
+fn insert_into(
+    node: &mut PNode,
+    key: Hash32,
+    value: Hash32,
+    depth: usize,
+) -> Result<(), CoreError> {
     match node {
         PNode::Opaque(_) => Err(CoreError::InvalidProof("key not covered by witness")),
         PNode::Empty => {
@@ -546,8 +560,10 @@ mod tests {
         let snap = tree.snapshot();
         // Update ten existing keys and insert ten new ones.
         let touched: Vec<u64> = (0..10).map(|i| i * 7).chain(100..110).collect();
-        let proofs: Vec<(Hash32, SmtProof)> =
-            touched.iter().map(|i| (key(*i), snap.prove(&key(*i)))).collect();
+        let proofs: Vec<(Hash32, SmtProof)> = touched
+            .iter()
+            .map(|i| (key(*i), snap.prove(&key(*i))))
+            .collect();
         let mut partial =
             PartialSmt::from_proofs(snap.root(), proofs.iter().map(|(k, p)| (k, p))).unwrap();
         assert_eq!(partial.root(), snap.root());

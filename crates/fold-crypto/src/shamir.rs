@@ -44,7 +44,9 @@ fn gf_inv(a: u8) -> u8 {
 }
 
 /// One share: the evaluation point `x` (1..=255) and one byte per secret byte.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize, Zeroize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize, Zeroize,
+)]
 pub struct Share {
     /// Evaluation point, never zero.
     pub x: u8,
@@ -53,7 +55,12 @@ pub struct Share {
 }
 
 /// Splits `secret` into `n` shares, any `threshold` of which reconstruct it.
-pub fn split(secret: &[u8], threshold: u8, n: u8, rng: &mut impl CryptoRngCore) -> Result<Vec<Share>, CryptoError> {
+pub fn split(
+    secret: &[u8],
+    threshold: u8,
+    n: u8,
+    rng: &mut impl CryptoRngCore,
+) -> Result<Vec<Share>, CryptoError> {
     if threshold == 0 || threshold > n {
         return Err(CryptoError::InvalidShares("threshold must be in 1..=n"));
     }

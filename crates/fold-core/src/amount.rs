@@ -11,8 +11,18 @@ use crate::error::CoreError;
 
 /// An amount in micro-units (six decimal places), for example micro-USD.
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default,
-    BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
 )]
 #[serde(transparent)]
 pub struct Amount(pub u128);

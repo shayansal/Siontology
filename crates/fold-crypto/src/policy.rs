@@ -38,7 +38,9 @@ pub struct KeySignature {
 }
 
 /// The signatures presented for one action.
-#[derive(Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct Authorization {
     /// Signatures, each over the same domain-separated message.
     pub signatures: Vec<KeySignature>,
@@ -47,7 +49,10 @@ pub struct Authorization {
 impl Authorization {
     /// Total signature bytes, for bandwidth accounting.
     pub fn signature_bytes(&self) -> usize {
-        self.signatures.iter().map(|s| s.signature.bytes.len()).sum()
+        self.signatures
+            .iter()
+            .map(|s| s.signature.bytes.len())
+            .sum()
     }
 }
 
@@ -65,7 +70,9 @@ impl AuthPolicy {
     /// Checks that the policy is satisfiable and meets the dual-origin floor.
     pub fn validate(&self) -> Result<(), CryptoError> {
         if self.keys.is_empty() || self.keys.len() > usize::from(u8::MAX) {
-            return Err(CryptoError::InvalidPolicy("between 1 and 255 keys required"));
+            return Err(CryptoError::InvalidPolicy(
+                "between 1 and 255 keys required",
+            ));
         }
         if self.min_signatures == 0 || usize::from(self.min_signatures) > self.keys.len() {
             return Err(CryptoError::InvalidPolicy("unsatisfiable signature count"));
@@ -99,7 +106,12 @@ impl AuthPolicy {
     /// Verifies an authorization over `message` in `domain`. Every presented
     /// signature must be valid and from a distinct key; the valid set must
     /// meet both thresholds.
-    pub fn verify(&self, domain: &str, message: &[u8], authorization: &Authorization) -> Result<(), CryptoError> {
+    pub fn verify(
+        &self,
+        domain: &str,
+        message: &[u8],
+        authorization: &Authorization,
+    ) -> Result<(), CryptoError> {
         self.validate()?;
         let mut used = BTreeSet::new();
         let mut families = BTreeSet::new();

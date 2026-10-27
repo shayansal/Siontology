@@ -58,7 +58,12 @@ impl CommitteeEnvelope {
     fn header_digest(&self) -> Hash32 {
         hash_parts(
             "fold/crypto/committee-header",
-            &[&[self.threshold], &encode(&self.members), &encode(&self.shares), &self.nonce],
+            &[
+                &[self.threshold],
+                &encode(&self.members),
+                &encode(&self.shares),
+                &self.nonce,
+            ],
         )
     }
 
@@ -76,7 +81,8 @@ impl CommitteeEnvelope {
         plaintext: &[u8],
         rng: &mut impl CryptoRngCore,
     ) -> Result<CommitteeEnvelope, CryptoError> {
-        let n = u8::try_from(members.len()).map_err(|_| CryptoError::InvalidShares("at most 255 members"))?;
+        let n = u8::try_from(members.len())
+            .map_err(|_| CryptoError::InvalidShares("at most 255 members"))?;
         let mut key = Zeroizing::new([0u8; 32]);
         rng.fill_bytes(key.as_mut());
         let shares = split(key.as_ref(), threshold, n, rng)?;
@@ -108,17 +114,29 @@ impl CommitteeEnvelope {
         aad: &[u8],
     ) -> Result<KeyShare, CryptoError> {
         let index = usize::from(member_index);
-        let envelope = self.shares.get(index).ok_or(CryptoError::InvalidShares("no such member"))?;
+        let envelope = self
+            .shares
+            .get(index)
+            .ok_or(CryptoError::InvalidShares("no such member"))?;
         if self.members.get(index) != Some(&keypair.public().fingerprint()) {
             return Err(CryptoError::InvalidShares("key does not match member"));
         }
         let bytes = keypair.open(domain, &share_associated(aad, member_index), envelope)?;
-        let share: Share = fold_core::encode::decode(&bytes).map_err(|_| CryptoError::Decryption)?;
-        Ok(KeyShare { member_index, share })
+        let share: Share =
+            fold_core::encode::decode(&bytes).map_err(|_| CryptoError::Decryption)?;
+        Ok(KeyShare {
+            member_index,
+            share,
+        })
     }
 
     /// Opens the payload from at least `threshold` published shares.
-    pub fn open(&self, shares: &[KeyShare], domain: &str, aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    pub fn open(
+        &self,
+        shares: &[KeyShare],
+        domain: &str,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
         let raw: Vec<Share> = shares.iter().map(|s| s.share.clone()).collect();
         let key_bytes = Zeroizing::new(combine(&raw, self.threshold)?);
         let key: [u8; 32] = key_bytes
@@ -159,7 +177,9 @@ mod tests {
     const DOMAIN: &str = "fold/test/committee";
 
     fn committee(n: u8) -> Vec<KemKeypair> {
-        (0..n).map(|i| KemKeypair::from_seed(&[i + 10; 32])).collect()
+        (0..n)
+            .map(|i| KemKeypair::from_seed(&[i + 10; 32]))
+            .collect()
     }
 
     #[test]
@@ -168,10 +188,15 @@ mod tests {
         let publics: Vec<KemPublicKey> = members.iter().map(|m| m.public().clone()).collect();
         let mut rng = fold_core::rng::seeded(7);
         let intent = b"buy 8 GPU-hours, limit 2.10 USD";
-        let envelope = CommitteeEnvelope::seal(&publics, 3, DOMAIN, b"batch-17", intent, &mut rng).unwrap();
+        let envelope =
+            CommitteeEnvelope::seal(&publics, 3, DOMAIN, b"batch-17", intent, &mut rng).unwrap();
         let shares: Vec<KeyShare> = [0u8, 2, 3]
             .iter()
-            .map(|&i| envelope.open_share(i, &members[usize::from(i)], DOMAIN, b"batch-17").unwrap())
+            .map(|&i| {
+                envelope
+                    .open_share(i, &members[usize::from(i)], DOMAIN, b"batch-17")
+                    .unwrap()
+            })
             .collect();
         assert_eq!(envelope.open(&shares, DOMAIN, b"batch-17").unwrap(), intent);
         // Two shares are not enough.
@@ -185,7 +210,9 @@ mod tests {
         let mut rng = fold_core::rng::seeded(8);
         let envelope = CommitteeEnvelope::seal(&publics, 2, DOMAIN, b"b", b"x", &mut rng).unwrap();
         assert!(envelope.open_share(0, &members[1], DOMAIN, b"b").is_err());
-        assert!(envelope.open_share(0, &members[0], DOMAIN, b"other-batch").is_err());
+        assert!(envelope
+            .open_share(0, &members[0], DOMAIN, b"other-batch")
+            .is_err());
     }
 
     #[test]
@@ -196,7 +223,11 @@ mod tests {
         let first = CommitteeEnvelope::seal(&publics, 2, DOMAIN, b"b", b"one", &mut rng).unwrap();
         let second = CommitteeEnvelope::seal(&publics, 2, DOMAIN, b"b", b"two", &mut rng).unwrap();
         let shares: Vec<KeyShare> = (0..2u8)
-            .map(|i| first.open_share(i, &members[usize::from(i)], DOMAIN, b"b").unwrap())
+            .map(|i| {
+                first
+                    .open_share(i, &members[usize::from(i)], DOMAIN, b"b")
+                    .unwrap()
+            })
             .collect();
         assert!(second.open(&shares, DOMAIN, b"b").is_err());
         assert_eq!(first.open(&shares, DOMAIN, b"b").unwrap(), b"one");

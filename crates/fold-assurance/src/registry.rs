@@ -291,13 +291,15 @@ impl Registry {
         self.bonds.values()
     }
 
-    /// Withdraws the unslashed, unreserved part of a bond after its lock ends.
+    /// Withdraws the unslashed, unreserved part of a bond after its lock
+    /// ends (`now` is the current Pulse).
     pub fn withdraw_bond(
         &mut self,
         atom: &AtomId,
         owner: &AccountId,
+        now: Pulse,
     ) -> Result<Amount, AssuranceError> {
-        let pulse = self.pulse;
+        let pulse = now.max(self.pulse);
         let bond = self
             .bonds
             .get_mut(atom)
@@ -559,10 +561,13 @@ mod tests {
         let derived = claim("derived", Formula::claim(base.id), 200);
         registry.issue_claim(derived).unwrap();
         assert_eq!(registry.bond(&witness.id).unwrap().locked_until, Pulse(214));
-        assert!(registry.withdraw_bond(&witness.id, &account(1)).is_err());
-        registry.advance_to(Pulse(215));
+        assert!(registry
+            .withdraw_bond(&witness.id, &account(1), Pulse(214))
+            .is_err());
         assert_eq!(
-            registry.withdraw_bond(&witness.id, &account(1)).unwrap(),
+            registry
+                .withdraw_bond(&witness.id, &account(1), Pulse(215))
+                .unwrap(),
             Amount::units(20_000)
         );
     }

@@ -38,9 +38,9 @@ impl Hash32 {
     pub fn from_hex(text: &str) -> Result<Self, CoreError> {
         let trimmed = text.strip_prefix("0x").unwrap_or(text);
         let bytes = hex::decode(trimmed).map_err(|e| CoreError::InvalidHex(e.to_string()))?;
-        let array: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| CoreError::InvalidHex(format!("expected 32 bytes, got {}", text.len() / 2)))?;
+        let array: [u8; 32] = bytes.try_into().map_err(|_| {
+            CoreError::InvalidHex(format!("expected 32 bytes, got {}", text.len() / 2))
+        })?;
         Ok(Hash32(array))
     }
 
