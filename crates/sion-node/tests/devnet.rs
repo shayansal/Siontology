@@ -2,7 +2,7 @@
 //! certification, certified-DAG consensus, Pulse execution, header
 //! certificates, data availability, the prover and storage.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -41,6 +41,17 @@ impl StateView for Remote<'_> {
     }
 }
 
+/// The tests run one devnet at a time: each runs four validator threads with
+/// post-quantum signatures, a gateway and a prover, and a restart replays
+/// every log, so two at once starve each other on a small machine.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn config() -> DevnetConfig {
     DevnetConfig {
         demo_accounts: vec!["alice".into(), "bob".into()],
@@ -51,6 +62,7 @@ fn config() -> DevnetConfig {
 
 #[test]
 fn a_transfer_is_certified_ordered_executed_proven_and_light_verified() {
+    let _serial = serial();
     let devnet = Devnet::start(config()).unwrap();
     let remote = Remote {
         devnet: &devnet,
@@ -145,6 +157,7 @@ fn a_transfer_is_certified_ordered_executed_proven_and_light_verified() {
 
 #[test]
 fn contended_and_knowledge_transactions_flow_and_state_survives_restarts() {
+    let _serial = serial();
     let dir = std::env::temp_dir().join(format!("sion-devnet-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let config = DevnetConfig {
