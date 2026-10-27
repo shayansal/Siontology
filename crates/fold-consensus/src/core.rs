@@ -465,6 +465,7 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
         let payload = self.select_items(round);
         let header = Header {
             author: self.me,
+            chain: self.committee.chain(),
             round,
             epoch: self.committee.epoch(),
             shard: self.committee.shard(),
@@ -529,7 +530,8 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
 
     fn on_header(&mut self, from: ValidatorId, signed: SignedHeader, out: &mut Vec<Action>) {
         let header = &signed.header;
-        if header.epoch != self.committee.epoch()
+        if header.chain != self.committee.chain()
+            || header.epoch != self.committee.epoch()
             || header.shard != self.committee.shard()
             || !self.committee.contains(&header.author)
             || header.round == Round(0)

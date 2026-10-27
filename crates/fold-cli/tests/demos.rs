@@ -52,6 +52,25 @@ fn all_demos_run_and_tell_the_truth() {
         "{text}"
     );
     assert!(text.contains("censorship lifted"), "{text}");
+    assert!(
+        text.contains("→ 402 Payment Required: 0.25 USD to carol"),
+        "{text}"
+    );
+    assert!(text.contains(r#"200 OK {"region":"eu-west""#), "{text}");
+    assert!(
+        text.contains(
+            "replaying the same PAYMENT-SIGNATURE → 402: unknown quote, or one already used"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("payment 5 above per-payment limit 1; carol's API answers 402"),
+        "{text}"
+    );
+    assert!(
+        text.contains("pays the same API with a plain transfer → 200 OK"),
+        "{text}"
+    );
     devnet.shutdown();
 }
 
@@ -154,6 +173,51 @@ fn the_mcp_server_serves_an_agent() {
         assert_eq!(receipt["verified"], true, "{fetched}");
         assert_eq!(receipt["chain_pinned"], true);
         assert_eq!(receipt["outcome"], "success");
+
+        // An agent fetches a resource that charges through x402: it pays
+        // within its own cap and gets the body; a resource above the cap is
+        // not paid for.
+        use fold_cli::x402::{Facilitator, PaidRoute, PaidServer};
+        let carol = fold_exec::Wallet::named("carol").id;
+        let facilitator = Facilitator::new(&devnet, devnet.shared.chain_id).unwrap();
+        let server = PaidServer::bind("127.0.0.1:0").unwrap();
+        let routes = [PaidRoute {
+            path: "/quote".into(),
+            price: fold_core::Amount(500_000),
+            description: "a quote".into(),
+            mime_type: "text/plain".into(),
+            body: Box::new(|_| "42".into()),
+        }];
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let url = format!("http://{}/quote", server.address);
+        std::thread::scope(|scope| {
+            let serving = scope.spawn(|| {
+                server.serve(
+                    &facilitator,
+                    carol,
+                    &routes,
+                    std::time::Duration::from_secs(60),
+                    &stop,
+                )
+            });
+            let call = |session: &mut Session<'_>, max: f64| {
+                mcp::handle(
+                    session,
+                    &json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "fold_fetch_paid", "arguments": { "url": url, "wallet": "alice", "max_usd": max, "chain": chain } } }),
+                )
+                .unwrap()
+            };
+            let refused = call(&mut session, 0.25);
+            assert_eq!(refused["result"]["isError"], true, "{refused}");
+            let paid = call(&mut session, 1.0);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            serving.join().unwrap();
+            let result = &paid["result"]["structuredContent"];
+            assert_eq!(paid["result"]["isError"], false, "{paid}");
+            assert_eq!(result["status"], 200, "{result}");
+            assert_eq!(result["body"], "42");
+            assert_eq!(result["paid"], true);
+        });
     }
     devnet.shutdown();
 }

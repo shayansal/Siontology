@@ -16,9 +16,15 @@ use serde::{Deserialize, Serialize};
 use crate::error::ConsensusError;
 
 /// A committee: the validators (with voting weight) that order one shard
-/// during one epoch.
+/// during one epoch of one chain.
+///
+/// Everything a committee member signs (lane batches, DAG headers and,
+/// through the header digest, votes) names the chain, the epoch and the
+/// shard, and verification checks all three, so a signature from one chain
+/// never counts on another chain whose validators reuse the same keys.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Committee {
+    chain: Hash32,
     epoch: Epoch,
     shard: ShardId,
     members: Vec<(ValidatorId, u64)>,
@@ -50,11 +56,24 @@ impl Committee {
                 .ok_or(ConsensusError::StakeOverflow)?;
         }
         Ok(Committee {
+            chain: Hash32::ZERO,
             epoch,
             shard,
             members,
             total,
         })
+    }
+
+    /// The same committee, for the chain with identity `chain` (committees
+    /// start on the all-zero chain, which tests and simulations use).
+    pub fn on_chain(mut self, chain: Hash32) -> Self {
+        self.chain = chain;
+        self
+    }
+
+    /// The chain whose messages this committee signs.
+    pub fn chain(&self) -> Hash32 {
+        self.chain
     }
 
     /// A committee where every member has weight one.

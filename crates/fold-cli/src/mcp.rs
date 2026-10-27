@@ -5,8 +5,9 @@
 //! with the Assurance Algebra before relying on it, pay within an Agent
 //! Charter (the ledger enforces the limits, whatever the agent was told),
 //! submit an intent the agent signed itself, fetch a receipt verified the
-//! way a light client would, and verify a Pulse. Every transaction and
-//! receipt also comes back as a sentence.
+//! way a light client would, verify a Pulse, and fetch HTTP resources that
+//! charge through x402. Every transaction and receipt also comes back as a
+//! sentence.
 
 use std::io::{BufRead, Write};
 
@@ -119,6 +120,22 @@ fn tools() -> Value {
                     "wait": { "type": "boolean", "description": "Wait for execution (default true)" }
                 },
                 "required": ["tx"]
+            }
+        },
+        {
+            "name": "fold_fetch_paid",
+            "description": "Fetch an HTTP resource that may charge through x402 (HTTP 402 Payment Required). If the server asks for payment on this chain of at most max_usd, pay it and retry: under an Agent Charter when charter and allotment are given (the ledger enforces the charter's payees and limits, whatever the agent was told), otherwise by transfer from the wallet. Returns the body and the settlement.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "The resource" },
+                    "wallet": { "type": "string", "description": "The paying wallet (the agent's, when paying under a charter)" },
+                    "charter": { "type": "string", "description": "Charter ID (hex), to pay under a charter" },
+                    "allotment": { "type": "string", "description": "The agent's allotment ID (hex)" },
+                    "max_usd": { "type": "number", "description": "The most this call may pay" },
+                    "chain": { "type": "string", "description": "Pinned chain identity (hex); without it the node vouches for itself" }
+                },
+                "required": ["url", "wallet", "max_usd"]
             }
         },
         {
@@ -332,6 +349,39 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                 "pulse": view.pulse,
                 "status": view.status,
                 "receipt": describe::receipt(&names, &view.effects),
+            }))
+        }
+        "fold_fetch_paid" => {
+            let url = args["url"]
+                .as_str()
+                .ok_or_else(|| CliError::Usage("url required".into()))?;
+            let wallet = args["wallet"]
+                .as_str()
+                .ok_or_else(|| CliError::Usage("wallet required".into()))?
+                .to_string();
+            let max = usd(&args["max_usd"])?;
+            let payer = match (args.get("charter"), args.get("allotment")) {
+                (Some(charter), Some(allotment)) if !charter.is_null() => {
+                    crate::x402::Payer::Charter {
+                        agent: wallet,
+                        charter: ObjectId::from_hash(hex_id(charter, "charter")?),
+                        allotment: ObjectId::from_hash(hex_id(allotment, "allotment")?),
+                    }
+                }
+                _ => crate::x402::Payer::Wallet(wallet),
+            };
+            let chain = match args["chain"].as_str() {
+                Some(hex) => Hash32::from_hex(hex)
+                    .map_err(|_| CliError::Usage("chain must be 64 hex digits".into()))?,
+                None => crate::verify::served_chain(session.ledger)?,
+            };
+            let fetched = crate::x402::fetch(session, &payer, url, &chain, max)?;
+            Ok(json!({
+                "status": fetched.status,
+                "body": fetched.body,
+                "paid": fetched.settlement.as_ref().map(|s| s.success).unwrap_or(false),
+                "quoted": fetched.quoted,
+                "settlement": fetched.settlement,
             }))
         }
         "fold_fetch_receipt" => {

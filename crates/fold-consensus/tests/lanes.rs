@@ -365,3 +365,35 @@ fn a_lock_shares_one_request_across_inputs() {
     assert_eq!(validator.locked_count(), 200);
     assert_eq!(validator.locked_requests().len(), 1);
 }
+
+#[test]
+fn approvals_count_only_on_the_chain_they_were_signed_for() {
+    let (committee, keys, verifier) = setup(4);
+    let chain_a = hash_parts("test/chain", &[b"a"]);
+    let chain_b = hash_parts("test/chain", &[b"b"]);
+    let on_a = committee.clone().on_chain(chain_a);
+    let on_b = committee.on_chain(chain_b);
+    let request = request("tx", &[coin(1)]);
+    // The same validators, with the same keys, approve on chain A.
+    let proofs: Vec<ApprovalProof> = keys
+        .iter()
+        .map(|key| {
+            let mut validator = LaneValidator::new(&on_a, key.clone());
+            approve_and_seal(&mut validator, &request).unwrap()
+        })
+        .collect();
+    assert!(proofs.iter().all(|p| p.batch.chain == chain_a));
+    let certificate = certificate_from(&on_a, &verifier, &request, &proofs).unwrap();
+    verify_lane_certificate(&on_a, &request.tx, &request.inputs, &certificate, &verifier).unwrap();
+    // Replayed on chain B, not one approval counts.
+    assert!(matches!(
+        proofs[0].verify(&on_b, &request.tx, &request.inputs, &verifier),
+        Err(ConsensusError::Mismatch(_))
+    ));
+    assert!(
+        verify_lane_certificate(&on_b, &request.tx, &request.inputs, &certificate, &verifier)
+            .is_err()
+    );
+    let mut builder = CertificateBuilder::new(request.tx, &request.inputs);
+    assert!(builder.add(&on_b, proofs[0].clone(), &verifier).is_err());
+}

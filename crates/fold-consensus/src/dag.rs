@@ -23,6 +23,8 @@ use crate::error::ConsensusError;
 pub struct Header {
     /// The proposer.
     pub author: ValidatorId,
+    /// The chain ([`Committee::chain`]); votes cover it through the digest.
+    pub chain: Hash32,
     /// The round.
     pub round: Round,
     /// The committee epoch.
@@ -126,6 +128,7 @@ impl Certificate {
             .map(|(author, _)| Certificate {
                 header: Header {
                     author: *author,
+                    chain: committee.chain(),
                     round: Round(0),
                     epoch: committee.epoch(),
                     shard: committee.shard(),
@@ -159,7 +162,10 @@ impl Certificate {
         verifier: &V,
     ) -> Result<(), ConsensusError> {
         let header = &self.header;
-        if header.epoch != committee.epoch() || header.shard != committee.shard() {
+        if header.chain != committee.chain()
+            || header.epoch != committee.epoch()
+            || header.shard != committee.shard()
+        {
             return Err(ConsensusError::Mismatch(
                 "certificate is for another committee",
             ));
@@ -249,8 +255,10 @@ impl DagEvidence {
         match self {
             DagEvidence::HeaderEquivocation { first, second } => {
                 // Round numbers restart every epoch: two headers are only an
-                // equivocation within one epoch and shard.
-                first.header.epoch == second.header.epoch
+                // equivocation within one chain, epoch and shard.
+                first.header.chain == second.header.chain
+                    && first.header.chain == committee.chain()
+                    && first.header.epoch == second.header.epoch
                     && first.header.shard == second.header.shard
                     && first.header.epoch == committee.epoch()
                     && first.header.author == second.header.author
@@ -286,5 +294,73 @@ impl DagEvidence {
                 offenders
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fold_core::hash_parts;
+
+    use super::*;
+    use crate::auth::{insecure_sim_keyring, Authenticator};
+
+    /// A round-1 certificate by `keys[0]`, voted by every key, on `committee`'s chain.
+    fn certificate_on(
+        committee: &Committee,
+        keys: &[crate::auth::InsecureSimAuthenticator],
+    ) -> Certificate {
+        let header = Header {
+            author: keys[0].validator(),
+            chain: committee.chain(),
+            round: Round(1),
+            epoch: committee.epoch(),
+            shard: committee.shard(),
+            parents: Certificate::genesis(committee)
+                .iter()
+                .map(Certificate::digest)
+                .collect(),
+            payload: vec![b"item".to_vec()],
+        };
+        let digest = header.digest();
+        Certificate {
+            header_signature: keys[0].sign(&Header::signing_digest(&digest).0),
+            votes: keys
+                .iter()
+                .map(|k| (k.validator(), k.sign(&Vote::signing_digest(&digest).0)))
+                .collect(),
+            header,
+        }
+    }
+
+    #[test]
+    fn certificates_and_evidence_count_only_on_their_chain() {
+        let (keys, verifier) = insecure_sim_keyring(4, 7);
+        let base =
+            Committee::equal_weight(Epoch(0), ShardId(0), keys.iter().map(|k| k.validator()))
+                .unwrap();
+        let on_a = base.clone().on_chain(hash_parts("test/chain", &[b"a"]));
+        let on_b = base.on_chain(hash_parts("test/chain", &[b"b"]));
+        let certificate = certificate_on(&on_a, &keys);
+        certificate.verify(&on_a, &verifier).unwrap();
+        assert_eq!(
+            certificate.verify(&on_b, &verifier),
+            Err(ConsensusError::Mismatch(
+                "certificate is for another committee"
+            ))
+        );
+        // The same author signing two headers for one round equivocates on
+        // chain A, and that evidence says nothing on chain B.
+        let mut other = certificate.header.clone();
+        other.payload = vec![b"other".to_vec()];
+        let signed = |header: Header| SignedHeader {
+            signature: keys[0].sign(&Header::signing_digest(&header.digest()).0),
+            header,
+        };
+        let evidence = DagEvidence::HeaderEquivocation {
+            first: signed(certificate.header.clone()),
+            second: signed(other),
+        };
+        assert!(evidence.verify(&on_a, &verifier));
+        assert!(!evidence.verify(&on_b, &verifier));
     }
 }

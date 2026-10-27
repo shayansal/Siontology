@@ -40,7 +40,7 @@ live.
 | Privacy: encrypted payloads, viewing keys, sealed orders | Built |
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
-| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Not built |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, proving payments | Not built |
 | Networking between machines | Simulated (in-process channels) |
@@ -251,7 +251,21 @@ what happened; the MCP server has `fold_submit_intent` (a transaction the
 agent signed itself) and `fold_fetch_receipt` (a receipt verified as a
 light client would).
 
-**Not built:** adapters for x402, AP2, ERC-8004 and C2PA.
+**x402: built.** `fold_cli::x402` implements x402 version 2 (the
+`PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE` and `PAYMENT-RESPONSE` headers)
+with a Fold `exact` scheme on network `fold:<chain>`: a resource server
+quotes a price with a fresh nonce, the client signs a transfer or a
+charter payment whose purpose names the quote, and the server's
+facilitator submits it and serves only once the receipt verifies as a
+light client would (committee certificate, certified order, inclusion
+proof). Each quote and each transaction pays for one request. `fold x402
+serve` and `fold x402 fetch` use it from the command line, and the MCP
+tool `fold_fetch_paid` lets an agent buy HTTP resources within a cap it
+sets and within its charter's limits. The adapter speaks the protocol's
+headers and JSON; it has not been tested against third-party x402
+clients, and EVM schemes are out of scope.
+
+**Not built:** adapters for AP2, ERC-8004 and C2PA.
 
 ### Economics
 
@@ -290,7 +304,6 @@ the architecture's own:
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
-| `impl:validator-messages-unbound` | Lane approvals and consensus votes are bound to an epoch and shard but not to a chain; they would replay on another chain whose validators reuse the same keys (devnet keys are derived from the chain name, so they never do). |
 
 ## Light-client trust
 
@@ -341,9 +354,10 @@ marked otherwise.
     client did not check the node's transaction list against the certified
     order, or a receipt's position (fixed); a missing World Proof did not
     fail verification (fixed).
-  - Transactions were not bound to a chain (fixed in specification v1.2:
-    signatures cover the chain configuration). Validator messages are not
-    bound to a chain (open, see `impl:validator-messages-unbound`).
+  - Transactions and validator messages were not bound to a chain (fixed:
+    transaction signatures cover the chain configuration, specification
+    v1.2; lane batches and consensus headers name the chain identity, and
+    votes cover it through the header digest).
   - Certified groups went to a single validator (fixed: f + 1 validators);
     far-future headers, header signatures and beacon reveals were retained
     without bound (fixed: windows and caps); equivocation evidence was

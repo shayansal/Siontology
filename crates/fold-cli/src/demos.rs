@@ -899,15 +899,199 @@ pub fn censorship(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), C
     Ok(())
 }
 
-fn session_chain(session: &Session<'_>) -> Result<fold_core::hash::Hash32, CliError> {
-    let validators = session.ledger.query(fold_node::Query::Validators)?;
-    let chain: fold_light::ChainSpec = serde_json::from_value(validators["chain"].clone())
-        .map_err(|e| CliError::Protocol(e.to_string()))?;
-    Ok(chain.id())
+/// x402: an AI agent pays an API per request, inside limits the ledger
+/// enforces.
+pub fn x402(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::x402::{fetch, network, replay, Facilitator, PaidRoute, PaidServer, Payer};
+
+    out.say("== x402: an AI agent pays an API per request, inside limits the ledger enforces ==");
+    fund_all(
+        session,
+        &[
+            ("acme", AssetId::usd(), usd(1_000)),
+            ("acme-agent", AssetId::usd(), usd(10)),
+            ("bob", AssetId::usd(), usd(10)),
+        ],
+    )?;
+    let chain = session_chain(session)?;
+    let (agent, carol) = (session.id("acme-agent"), session.id("carol"));
+    let caveats = Caveats {
+        payees: Some([carol].into_iter().collect()),
+        max_per_payment: usd(1),
+        max_per_window: usd(2),
+        window: 10_000,
+        expires_at: Pulse(1_000_000),
+        evidence_above: None,
+        evidence_policy: Policy::standard(),
+        receipts: true,
+        may_delegate: false,
+    };
+    let view = session.must(
+        "acme",
+        TxKind::CreateCharter {
+            agent,
+            caveats,
+            funding: usd(20),
+            agent_bond: Amount::ZERO,
+        },
+        Vec::new(),
+    )?;
+    let (charter, allotment) = find(&view, |e| match e {
+        Event::CharterCreated { charter, allotment } => Some((*charter, *allotment)),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  acme charters its agent: pay only carol, ≤ 1 USD per payment, ≤ 2 USD per window, 20 USD budget",
+        view.pulse
+    ));
+
+    // carol's API: no accounts and no API keys, just prices.
+    let facilitator = Facilitator::new(session.ledger, chain)?;
+    let server = PaidServer::bind("127.0.0.1:0")?;
+    let base = format!("http://{}", server.address);
+    let routes = vec![
+        PaidRoute {
+            path: "/v1/forecast".into(),
+            price: Amount(250_000),
+            description: "GPU demand forecast, next 24 hours".into(),
+            mime_type: "application/json".into(),
+            body: Box::new(|_| {
+                r#"{"region":"eu-west","gpu_hours":18250,"confidence":0.82}"#.to_string()
+            }),
+        },
+        PaidRoute {
+            path: "/v1/report".into(),
+            price: usd(5),
+            description: "Full market report".into(),
+            mime_type: "text/plain".into(),
+            body: Box::new(|_| "the full report".to_string()),
+        },
+    ];
+    out.say(format!(
+        "           carol serves a forecast API at {base}: 0.25 USD per call, settled on {}",
+        network(&chain)
+    ));
+    let stop = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        let serving = scope.spawn(|| {
+            server.serve(
+                &facilitator,
+                carol,
+                &routes,
+                Duration::from_secs(120),
+                &stop,
+            )
+        });
+        let result = (|| -> Result<(), CliError> {
+            let payer = Payer::Charter {
+                agent: "acme-agent".into(),
+                charter,
+                allotment,
+            };
+            let forecast = format!("{base}/v1/forecast");
+            let fetched = fetch(session, &payer, &forecast, &chain, usd(1))?;
+            let quote = fetched
+                .quoted
+                .as_ref()
+                .and_then(|q| q.accepts.first())
+                .ok_or_else(|| CliError::Protocol("the API did not ask for payment".into()))?;
+            out.say(format!(
+                "           agent: GET /v1/forecast → 402 Payment Required: {} USD to carol (quote {})",
+                Amount(quote.amount.parse().unwrap_or(0)),
+                quote.extra["nonce"].as_str().unwrap_or("?")
+            ));
+            let settlement = fetched
+                .settlement
+                .as_ref()
+                .filter(|s| s.success && fetched.status == 200)
+                .ok_or_else(|| {
+                    CliError::Transaction(format!(
+                        "the paid request failed: {} {:?}",
+                        fetched.status,
+                        fetched
+                            .settlement
+                            .as_ref()
+                            .and_then(|s| s.error_reason.clone())
+                    ))
+                })?;
+            let pulse = settlement
+                .extensions
+                .as_ref()
+                .map(|e| e["fold"]["pulse"].clone());
+            out.say(format!(
+                "Pulse {:>3}  agent pays under its charter (purpose x402:<quote>) and retries → 200 OK {}",
+                pulse.and_then(|p| p.as_u64()).unwrap_or(0),
+                fetched.body
+            ));
+            out.say("           carol's server answered only after verifying the receipt as a light client: committee certificate, certified order, inclusion proof");
+            let replayed = replay(&forecast, fetched.payment.as_deref().unwrap_or_default())?;
+            out.say(format!(
+                "           replaying the same PAYMENT-SIGNATURE → {}: {}",
+                replayed.status,
+                replayed
+                    .quoted
+                    .as_ref()
+                    .and_then(|q| q.error.clone())
+                    .unwrap_or_default()
+            ));
+            let fetched = fetch(
+                session,
+                &payer,
+                &format!("{base}/v1/report"),
+                &chain,
+                usd(10),
+            )?;
+            let refused = fetched
+                .settlement
+                .as_ref()
+                .filter(|s| !s.success)
+                .and_then(|s| s.error_reason.clone())
+                .ok_or_else(|| {
+                    CliError::Protocol("a 5 USD charter payment should have been refused".into())
+                })?;
+            out.say(format!(
+                "           agent: GET /v1/report (5 USD) → pays → {}; carol's API answers {} and serves nothing",
+                refused, fetched.status
+            ));
+            let fetched = fetch(
+                session,
+                &Payer::Wallet("bob".into()),
+                &forecast,
+                &chain,
+                usd(1),
+            )?;
+            let settled = fetched
+                .settlement
+                .as_ref()
+                .filter(|s| s.success && fetched.status == 200)
+                .ok_or_else(|| CliError::Transaction("bob's paid request failed".into()))?;
+            out.say(format!(
+                "Pulse {:>3}  bob, a person without a charter, pays the same API with a plain transfer → 200 OK",
+                settled
+                    .extensions
+                    .as_ref()
+                    .and_then(|e| e["fold"]["pulse"].as_u64())
+                    .unwrap_or(0)
+            ));
+            Ok(())
+        })();
+        stop.store(true, Ordering::Relaxed);
+        let _ = serving.join();
+        result
+    });
+    result?;
+    out.say("Result: no accounts, no API keys; every request is paid and proven before it is served, and the agent's limits live in the ledger, not in its prompt.");
+    Ok(())
 }
 
-/// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `light`,
-/// `censorship`, `all`).
+fn session_chain(session: &Session<'_>) -> Result<fold_core::hash::Hash32, CliError> {
+    crate::verify::served_chain(session.ledger)
+}
+
+/// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `x402`,
+/// `light`, `censorship`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
@@ -916,6 +1100,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
         "receipts" => receipts(session, out),
         "light" => light(session, out),
         "censorship" => censorship(session, out),
+        "x402" => x402(session, out),
         "all" => {
             invoice(session, out)?;
             out.say("");
@@ -925,12 +1110,14 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             out.say("");
             receipts(session, out)?;
             out.say("");
+            x402(session, out)?;
+            out.say("");
             censorship(session, out)?;
             out.say("");
             light(session, out)
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, market, receipts, censorship, light or all"
+            "unknown demo {other:?}; try invoice, agents, market, receipts, x402, censorship, light or all"
         ))),
     }
 }

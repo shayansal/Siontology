@@ -26,8 +26,9 @@ pub enum TxState {
     Unknown,
 }
 
-/// What the CLI needs from a ledger.
-pub trait Ledger {
+/// What the CLI needs from a ledger. Ledgers are shared across threads (an
+/// x402 resource server settles payments while its client keeps working).
+pub trait Ledger: Sync {
     /// Raw query.
     fn query(&self, query: Query) -> Result<Value, CliError>;
     /// Submits a transaction.

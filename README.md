@@ -59,7 +59,10 @@ simplification.
   World Proofs, without running a node.
 - **Agent-native interfaces.** A CLI, a JSON HTTP API and a Model Context
   Protocol server, so AI agents can pay, issue claims, price a claim's
-  trustworthiness before relying on it, and verify the chain.
+  trustworthiness before relying on it, and verify the chain. An x402
+  adapter lets any HTTP API charge per request (`402 Payment Required`)
+  and settle on Fold: the server serves only once the payment's receipt
+  verifies, and an agent paying under a charter cannot exceed its limits.
 
 ## Quickstart
 
@@ -92,6 +95,13 @@ Connect an AI agent over the Model Context Protocol (stdio):
 fold mcp                             # talks to the node at $FOLD_NODE
 ```
 
+Sell an API per request with x402, and buy from it:
+
+```bash
+fold x402 serve carol --price 0.25   # http://127.0.0.1:8402/v1/resource
+fold x402 fetch http://127.0.0.1:8402/v1/resource --wallet dana --max 1
+```
+
 Measure everything on your machine:
 
 ```bash
@@ -111,6 +121,7 @@ availability and proving) and narrates what the ledger established.
 | `agents` | An AI agent with a budget the ledger enforces: a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent. |
 | `market` | A sealed-bid GPU-hour market that clears at one price with an optimality certificate. |
 | `receipts` | Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions (trusting a TEE, distrusting it, or assuming it broken). |
+| `x402` | An AI agent pays an HTTP API per request with x402: the API answers `402`, the agent pays under its charter and retries, and the API serves once the receipt verifies; a replayed payment and an over-limit payment are refused. |
 | `censorship` | Forced inclusion: a user censored by the gateway gets through by posting straight to consensus; when more than a third of a committee censors too, certified headers count the overdue intent and a light client sees it. |
 | `light` | A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys. |
 

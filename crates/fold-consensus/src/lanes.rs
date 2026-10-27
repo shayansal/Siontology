@@ -96,6 +96,8 @@ pub fn approval_leaf(tx: &TxDigest, inputs: &[ObjectRef]) -> Hash32 {
 pub struct BatchHeader {
     /// The approving validator.
     pub validator: ValidatorId,
+    /// The chain ([`Committee::chain`]).
+    pub chain: Hash32,
     /// The committee's epoch.
     pub epoch: Epoch,
     /// The committee's shard.
@@ -151,7 +153,10 @@ impl ApprovalProof {
         verifier: &V,
     ) -> Result<(), ConsensusError> {
         let batch = &self.batch;
-        if batch.epoch != committee.epoch() || batch.shard != committee.shard() {
+        if batch.chain != committee.chain()
+            || batch.epoch != committee.epoch()
+            || batch.shard != committee.shard()
+        {
             return Err(ConsensusError::Mismatch(
                 "approval is for another committee",
             ));
@@ -340,6 +345,7 @@ struct Lock {
 /// One validator's lane state for one committee.
 #[derive(Debug)]
 pub struct LaneValidator<A: Authenticator> {
+    chain: Hash32,
     epoch: Epoch,
     shard: ShardId,
     authenticator: A,
@@ -354,6 +360,7 @@ impl<A: Authenticator> LaneValidator<A> {
     /// Creates lane state for `committee`, signing with `authenticator`.
     pub fn new(committee: &Committee, authenticator: A) -> Self {
         LaneValidator {
+            chain: committee.chain(),
             epoch: committee.epoch(),
             shard: committee.shard(),
             authenticator,
@@ -459,6 +466,7 @@ impl<A: Authenticator> LaneValidator<A> {
             .collect();
         let header = BatchHeader {
             validator: self.authenticator.validator(),
+            chain: self.chain,
             epoch: self.epoch,
             shard: self.shard,
             index: self.next_index,

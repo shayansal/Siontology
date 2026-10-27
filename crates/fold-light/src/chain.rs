@@ -94,12 +94,14 @@ impl ChainSpec {
     /// The consensus committee of an epoch (it certifies Pulse headers).
     pub fn committee(&self, epoch: u64) -> Result<Committee, LightError> {
         Committee::new(Epoch(epoch), ShardId(0), self.validators.clone())
+            .map(|committee| committee.on_chain(self.id()))
             .map_err(|e| LightError::Chain(e.to_string()))
     }
 
     /// The lane committee of each shard in an epoch (they certify inputs).
     pub fn shard_committees(&self, epoch: u64) -> Result<BTreeMap<ShardId, Committee>, LightError> {
         let seats = usize::from(self.seats).clamp(1, self.validators.len());
+        let chain = self.id();
         (0..self.shards.max(1))
             .map(|shard| {
                 sample_committee(
@@ -109,7 +111,7 @@ impl ChainSpec {
                     Epoch(epoch),
                     ShardId(shard),
                 )
-                .map(|committee| (ShardId(shard), committee))
+                .map(|committee| (ShardId(shard), committee.on_chain(chain)))
                 .map_err(|e| LightError::Chain(e.to_string()))
             })
             .collect()

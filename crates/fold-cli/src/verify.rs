@@ -287,6 +287,14 @@ pub struct VerifiedReceipt {
     pub chain: (Hash32, bool),
 }
 
+/// The chain identity the ledger serves, unpinned: the node vouches for
+/// itself.
+pub fn served_chain(ledger: &dyn Ledger) -> Result<Hash32, CliError> {
+    let validators = ledger.query(Query::Validators)?;
+    let chain: ChainSpec = parse(validators["chain"].clone())?;
+    Ok(chain.id())
+}
+
 /// Fetches a transaction's receipt and verifies it the way a light client
 /// would: the chain identity (against `pinned`, if given), the committee
 /// certificate of the Pulse it executed in, then the receipt's inclusion

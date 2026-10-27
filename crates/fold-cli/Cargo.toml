@@ -29,6 +29,8 @@ hex.workspace = true
 thiserror.workspace = true
 clap.workspace = true
 ureq.workspace = true
+tiny_http.workspace = true
+base64.workspace = true
 rand_core.workspace = true
 
 [lints]

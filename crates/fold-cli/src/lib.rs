@@ -7,6 +7,7 @@
 //! - [`demos`]: scripted end-to-end demonstrations.
 //! - [`verify`]: light-client verification of a Pulse.
 //! - [`mcp`]: a Model Context Protocol server for AI agents.
+//! - [`x402`]: HTTP 402 payments settled on Fold, for servers and agents.
 
 pub mod bench;
 pub mod demos;
@@ -16,6 +17,7 @@ pub mod ledger;
 pub mod mcp;
 pub mod session;
 pub mod verify;
+pub mod x402;
 
 pub use error::CliError;
 pub use ledger::{HttpLedger, Ledger, LedgerExt, TxState};

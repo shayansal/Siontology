@@ -267,6 +267,9 @@ enum Command {
     },
     /// Serve the Model Context Protocol on stdio (for AI agents).
     Mcp,
+    /// Sell or buy HTTP resources with x402 (HTTP 402 payments settled on Fold).
+    #[command(subcommand)]
+    X402(X402Command),
     /// Measure primitives, execution, proving, clearing and a devnet.
     Bench {
         /// Smaller sizes.
@@ -282,6 +285,51 @@ enum Command {
         /// Write the measurements as JSON to this file.
         #[arg(long)]
         json: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum X402Command {
+    /// Serve one resource for a price per request, paid to PAY_TO.
+    Serve {
+        /// Who gets paid (wallet name or account ID).
+        pay_to: String,
+        /// Listen address.
+        #[arg(long, default_value = "127.0.0.1:8402")]
+        listen: String,
+        /// The resource's path.
+        #[arg(long, default_value = "/v1/resource")]
+        path: String,
+        /// Price per request (USD).
+        #[arg(long, default_value = "0.25")]
+        price: String,
+        /// What every paid request returns.
+        #[arg(long, default_value = "{\"paid\":true}")]
+        body: String,
+        /// The chain identity receipts must verify against. Without it the
+        /// node vouches for itself.
+        #[arg(long, env = "FOLD_CHAIN")]
+        chain: Option<String>,
+    },
+    /// Fetch a URL, paying through x402 if the server asks.
+    Fetch {
+        /// The URL.
+        url: String,
+        /// The paying wallet (the agent's, when paying under a charter).
+        #[arg(long)]
+        wallet: String,
+        /// Pay under this Agent Charter (ID) instead of by transfer.
+        #[arg(long)]
+        charter: Option<String>,
+        /// The agent's allotment (ID), with --charter.
+        #[arg(long)]
+        allotment: Option<String>,
+        /// The most to pay (USD).
+        #[arg(long, default_value = "1")]
+        max: String,
+        /// The chain identity to pay on. Without it the node vouches for itself.
+        #[arg(long, env = "FOLD_CHAIN")]
+        chain: Option<String>,
     },
 }
 
@@ -621,6 +669,104 @@ fn run(cli: Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Devnet(_) | Command::Keys(_) | Command::Mcp | Command::Bench { .. } => {
             unreachable!("handled above")
+        }
+        Command::X402(X402Command::Serve {
+            pay_to,
+            listen,
+            path,
+            price,
+            body,
+            chain,
+        }) => {
+            use fold_cli::x402::{Facilitator, PaidRoute, PaidServer};
+            let pinned = parse_chain(chain)?;
+            let chain = match pinned {
+                Some(chain) => chain,
+                None => {
+                    let served = verify::served_chain(ledger)?;
+                    eprintln!(
+                        "warning: chain {} is the node's word; pass --chain to pin it",
+                        served.short()
+                    );
+                    served
+                }
+            };
+            let pay_to = session.id(&pay_to);
+            let facilitator = Facilitator::new(ledger, chain)?;
+            let server = PaidServer::bind(&listen)?;
+            let price = parse_amount(&price)?;
+            let routes = [PaidRoute {
+                path: path.clone(),
+                price,
+                description: format!("{path}, {price} USD per request"),
+                mime_type: "application/json".into(),
+                body: Box::new(move |_| body.clone()),
+            }];
+            println!(
+                "selling http://{}{path} at {price} USD per request, paid to {} on {}",
+                server.address,
+                pay_to.short(),
+                facilitator.network()
+            );
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            server.serve(
+                &facilitator,
+                pay_to,
+                &routes,
+                Duration::from_secs(300),
+                &stop,
+            );
+        }
+        Command::X402(X402Command::Fetch {
+            url,
+            wallet,
+            charter,
+            allotment,
+            max,
+            chain,
+        }) => {
+            use fold_cli::x402::{fetch, Payer};
+            let payer = match (charter, allotment) {
+                (Some(charter), Some(allotment)) => Payer::Charter {
+                    agent: wallet,
+                    charter: ObjectId::from_hash(hex_hash(&charter, "charter")?),
+                    allotment: ObjectId::from_hash(hex_hash(&allotment, "allotment")?),
+                },
+                (None, None) => Payer::Wallet(wallet),
+                _ => {
+                    return Err(CliError::Usage(
+                        "--charter and --allotment go together".into(),
+                    ))
+                }
+            };
+            let chain = match parse_chain(chain)? {
+                Some(chain) => chain,
+                None => verify::served_chain(ledger)?,
+            };
+            let fetched = fetch(&mut session, &payer, &url, &chain, parse_amount(&max)?)?;
+            if let Some(quoted) = &fetched.quoted {
+                for accepted in &quoted.accepts {
+                    println!(
+                        "402 Payment Required: {} USD to {} on {}",
+                        Amount(accepted.amount.parse().unwrap_or(0)),
+                        accepted.pay_to,
+                        accepted.network
+                    );
+                }
+            }
+            if let Some(settlement) = &fetched.settlement {
+                match settlement.success {
+                    true => println!(
+                        "paid: transaction {} settled and verified by the server",
+                        settlement.transaction
+                    ),
+                    false => println!(
+                        "payment refused: {}",
+                        settlement.error_reason.clone().unwrap_or_default()
+                    ),
+                }
+            }
+            println!("{} {}", fetched.status, fetched.body);
         }
         Command::Status => print(&ledger.status()?),
         Command::Balance { account } => {
