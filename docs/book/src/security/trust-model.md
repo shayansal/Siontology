@@ -36,6 +36,7 @@ of the architecture's own. The list is copied from the repository's
 | `impl:in-process-network` | Validators share a machine and a process; network faults are not exercised by the devnet (they are by the consensus simulator) |
 | `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period |
 | `impl:slashed-seat` | A slashed validator keeps its seat, and its weight in quorums, until the epoch ends |
+| `impl:active-floor` | Validators can leave until one remains: nothing keeps the active set large enough to tolerate a faulty member, so the operators of the other validators can leave a single validator forming every quorum |
 | `impl:evidence-scope` | Equivocation evidence is not bound to this chain: a validator's keys must not be used on another network |
 | `impl:lock-handover` | Certificates are not drained when a lane committee changes: certificate finality for owned transactions holds within one committee's term (an owner who double-signs could get the second spend certified by a fully replaced committee) |
 | `impl:hash-chain-beacon` | The beacon is a hash-chain commit-reveal; the last validator to reveal can bias it by withholding (at the cost of being seen) |

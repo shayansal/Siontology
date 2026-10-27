@@ -169,7 +169,7 @@ availability and proving) and narrates what the ledger established.
 - [Implementation status](docs/implementation-status.md): what is built,
   simplified, simulated or missing, and the trust assumptions the
   implementation adds.
-- [State transition specification](docs/spec/state-transition.md) (v1.4):
+- [State transition specification](docs/spec/state-transition.md) (v1.5):
   the normative description both proof stacks implement.
 - [Benchmarks](docs/book/src/guides/benchmarks.md): measured costs, and what
   they imply.
