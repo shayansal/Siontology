@@ -1,0 +1,40 @@
+[package]
+name = "sion-cli"
+description = "The sion command: run a devnet, use wallets, issue and judge claims, drive agents and markets, verify as a light client, serve AI agents over MCP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "sion"
+path = "src/main.rs"
+
+[dependencies]
+sion-core.workspace = true
+sion-crypto.workspace = true
+sion-assurance.workspace = true
+sion-clearing.workspace = true
+sion-consensus.workspace = true
+sion-exec.workspace = true
+sion-da.workspace = true
+sion-light.workspace = true
+sion-prover.workspace = true
+sion-spec.workspace = true
+sion-node.workspace = true
+borsh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+ureq.workspace = true
+tiny_http.workspace = true
+base64.workspace = true
+rand_core.workspace = true
+
+[lints]
+workspace = true

@@ -374,224 +374,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "fold-assurance"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-core",
- "num-bigint",
- "num-traits",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "fold-clearing"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-core",
- "fold-lp",
- "num-bigint",
- "num-traits",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "fold-cli"
-version = "0.1.0"
-dependencies = [
- "base64",
- "borsh",
- "clap",
- "fold-assurance",
- "fold-clearing",
- "fold-consensus",
- "fold-core",
- "fold-crypto",
- "fold-da",
- "fold-exec",
- "fold-light",
- "fold-node",
- "fold-prover",
- "fold-spec",
- "hex",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "thiserror",
- "tiny_http",
- "ureq",
-]
-
-[[package]]
-name = "fold-consensus"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-core",
- "proptest",
- "rand_chacha",
- "rand_core 0.6.4",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "fold-core"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "hex",
- "proptest",
- "rand_chacha",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha3",
- "thiserror",
-]
-
-[[package]]
-name = "fold-crypto"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "chacha20poly1305",
- "fips203",
- "fips204",
- "fips205",
- "fold-core",
- "hex",
- "proptest",
- "rand_chacha",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "thiserror",
- "zeroize",
-]
-
-[[package]]
-name = "fold-da"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-core",
- "proptest",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "fold-exec"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-assurance",
- "fold-clearing",
- "fold-consensus",
- "fold-core",
- "fold-crypto",
- "fold-lp",
- "hex",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "fold-light"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-consensus",
- "fold-core",
- "fold-crypto",
- "fold-da",
- "fold-exec",
- "proptest",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "fold-lp"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "num-bigint",
- "num-integer",
- "num-rational",
- "num-traits",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "fold-node"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-assurance",
- "fold-clearing",
- "fold-consensus",
- "fold-core",
- "fold-crypto",
- "fold-da",
- "fold-exec",
- "fold-light",
- "fold-prover",
- "hex",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
- "tiny_http",
-]
-
-[[package]]
-name = "fold-prover"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-assurance",
- "fold-consensus",
- "fold-core",
- "fold-da",
- "fold-exec",
- "fold-spec",
- "proptest",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "fold-spec"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "fold-assurance",
- "fold-clearing",
- "fold-consensus",
- "fold-core",
- "fold-crypto",
- "fold-exec",
- "proptest",
- "thiserror",
-]
-
-[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1120,6 +902,224 @@ dependencies = [
  "digest",
  "keccak",
  "zeroize",
+]
+
+[[package]]
+name = "sion-assurance"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "num-bigint",
+ "num-traits",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sion-core",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-clearing"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "num-bigint",
+ "num-traits",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sion-core",
+ "sion-lp",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-cli"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "borsh",
+ "clap",
+ "hex",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sion-assurance",
+ "sion-clearing",
+ "sion-consensus",
+ "sion-core",
+ "sion-crypto",
+ "sion-da",
+ "sion-exec",
+ "sion-light",
+ "sion-node",
+ "sion-prover",
+ "sion-spec",
+ "thiserror",
+ "tiny_http",
+ "ureq",
+]
+
+[[package]]
+name = "sion-consensus"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "proptest",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "serde",
+ "sion-core",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-core"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "hex",
+ "proptest",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha3",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-crypto"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "chacha20poly1305",
+ "fips203",
+ "fips204",
+ "fips205",
+ "hex",
+ "proptest",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sion-core",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "sion-da"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "proptest",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sion-core",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-exec"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sion-assurance",
+ "sion-clearing",
+ "sion-consensus",
+ "sion-core",
+ "sion-crypto",
+ "sion-lp",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-light"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "proptest",
+ "serde",
+ "sion-consensus",
+ "sion-core",
+ "sion-crypto",
+ "sion-da",
+ "sion-exec",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-lp"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "num-bigint",
+ "num-integer",
+ "num-rational",
+ "num-traits",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-node"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sion-assurance",
+ "sion-clearing",
+ "sion-consensus",
+ "sion-core",
+ "sion-crypto",
+ "sion-da",
+ "sion-exec",
+ "sion-light",
+ "sion-prover",
+ "thiserror",
+ "tiny_http",
+]
+
+[[package]]
+name = "sion-prover"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "proptest",
+ "serde",
+ "sion-assurance",
+ "sion-consensus",
+ "sion-core",
+ "sion-da",
+ "sion-exec",
+ "sion-spec",
+ "thiserror",
+]
+
+[[package]]
+name = "sion-spec"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "proptest",
+ "sion-assurance",
+ "sion-clearing",
+ "sion-consensus",
+ "sion-core",
+ "sion-crypto",
+ "sion-exec",
+ "thiserror",
 ]
 
 [[package]]

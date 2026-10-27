@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/fold-core",
-    "crates/fold-crypto",
-    "crates/fold-assurance",
-    "crates/fold-lp",
-    "crates/fold-clearing",
-    "crates/fold-da",
-    "crates/fold-consensus",
-    "crates/fold-exec",
-    "crates/fold-spec",
-    "crates/fold-prover",
-    "crates/fold-light",
-    "crates/fold-node",
-    "crates/fold-cli",
+    "crates/sion-core",
+    "crates/sion-crypto",
+    "crates/sion-assurance",
+    "crates/sion-lp",
+    "crates/sion-clearing",
+    "crates/sion-da",
+    "crates/sion-consensus",
+    "crates/sion-exec",
+    "crates/sion-spec",
+    "crates/sion-prover",
+    "crates/sion-light",
+    "crates/sion-node",
+    "crates/sion-cli",
 ]
 
 [workspace.package]
@@ -22,22 +22,24 @@ edition = "2021"
 rust-version = "1.80"
 publish = false
 authors = ["ColdAI"]
-repository = "https://github.com/ColdAI-org/fold"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/ColdAI-org/siontology"
+homepage = "https://siontology.org"
 
 [workspace.dependencies]
 # Internal crates
-fold-core = { path = "crates/fold-core" }
-fold-crypto = { path = "crates/fold-crypto" }
-fold-assurance = { path = "crates/fold-assurance" }
-fold-lp = { path = "crates/fold-lp" }
-fold-clearing = { path = "crates/fold-clearing" }
-fold-da = { path = "crates/fold-da" }
-fold-consensus = { path = "crates/fold-consensus" }
-fold-exec = { path = "crates/fold-exec" }
-fold-spec = { path = "crates/fold-spec" }
-fold-prover = { path = "crates/fold-prover" }
-fold-light = { path = "crates/fold-light" }
-fold-node = { path = "crates/fold-node" }
+sion-core = { path = "crates/sion-core" }
+sion-crypto = { path = "crates/sion-crypto" }
+sion-assurance = { path = "crates/sion-assurance" }
+sion-lp = { path = "crates/sion-lp" }
+sion-clearing = { path = "crates/sion-clearing" }
+sion-da = { path = "crates/sion-da" }
+sion-consensus = { path = "crates/sion-consensus" }
+sion-exec = { path = "crates/sion-exec" }
+sion-spec = { path = "crates/sion-spec" }
+sion-prover = { path = "crates/sion-prover" }
+sion-light = { path = "crates/sion-light" }
+sion-node = { path = "crates/sion-node" }
 
 # Hashing, encoding, errors
 sha3 = "0.10"

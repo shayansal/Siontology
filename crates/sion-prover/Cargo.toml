@@ -1,0 +1,27 @@
+[package]
+name = "sion-prover"
+description = "The Fold: per-chunk leaf proofs from independent proof stacks, folded into one World Proof per Pulse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sion-core.workspace = true
+sion-assurance.workspace = true
+sion-exec.workspace = true
+sion-spec.workspace = true
+sion-da.workspace = true
+sion-consensus.workspace = true
+borsh.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

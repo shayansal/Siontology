@@ -1,0 +1,26 @@
+[package]
+name = "sion-light"
+description = "The Siontology light client: committee-signed Pulse headers, state and knowledge proofs, data-availability sampling and World Proof checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sion-core.workspace = true
+sion-crypto.workspace = true
+sion-consensus.workspace = true
+sion-exec.workspace = true
+sion-da.workspace = true
+borsh.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,31 @@
+[package]
+name = "sion-crypto"
+description = "Post-quantum identity for Siontology: ML-DSA, SLH-DSA, ML-KEM, dual-origin authorization policies, sealed envelopes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sion-core.workspace = true
+fips203.workspace = true
+fips204.workspace = true
+fips205.workspace = true
+chacha20poly1305.workspace = true
+zeroize.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
+borsh.workspace = true
+serde.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

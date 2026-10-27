@@ -1,0 +1,24 @@
+[package]
+name = "sion-consensus"
+description = "Ordering for the Siontology neo-blockchain: owned-object lanes, certified-DAG consensus for contention domains, committees, beacon, forced inclusion and a deterministic simulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sion-core.workspace = true
+borsh.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

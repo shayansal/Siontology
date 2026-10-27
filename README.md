@@ -1,6 +1,6 @@
-# Fold
+# Siontology
 
-Fold is a reference implementation of a **neo-blockchain**: a network whose
+Siontology is a reference implementation of a **neo-blockchain**: a network whose
 product is verified knowledge, not ordered transactions. Every claim, whether
 about a payment, a computation, an AI output or a physical event, carries a
 proof or priced evidence, and anyone can check it from a phone.
@@ -68,7 +68,7 @@ simplification.
   Protocol server, so AI agents can pay, issue claims, price a claim's
   trustworthiness before relying on it, and verify the chain. An x402
   adapter lets any HTTP API charge per request (`402 Payment Required`)
-  and settle on Fold: the server serves only once the payment's receipt
+  and settle on Siontology: the server serves only once the payment's receipt
   verifies, and an agent paying under a charter cannot exceed its limits.
 
 ## Quickstart
@@ -77,48 +77,48 @@ Requires Rust 1.80 or later.
 
 ```bash
 cargo build --release
-alias fold=./target/release/fold
+alias sion=./target/release/sion
 
 # Run every scripted demo against an in-process devnet.
-fold demo all --local
+sion demo all --local
 ```
 
 Or run a devnet and use it from another terminal:
 
 ```bash
-fold devnet                          # 4 validators, 2 shards, API on 127.0.0.1:8730
-fold status
-fold keys new dana                   # a wallet in ~/.fold/wallets (or $FOLD_HOME/wallets)
-fold faucet dana 100
-fold send dana alice 12.5
-fold balance dana
-fold verify --chain <identity printed by fold devnet>
-fold demo invoice                    # the demos also run against a live node
+sion devnet                          # 4 validators, 2 shards, API on 127.0.0.1:8730
+sion status
+sion keys new dana                   # a wallet in ~/.sion/wallets (or $SION_HOME/wallets)
+sion faucet dana 100
+sion send dana alice 12.5
+sion balance dana
+sion verify --chain <identity printed by sion devnet>
+sion demo invoice                    # the demos also run against a live node
 ```
 
 Connect an AI agent over the Model Context Protocol (stdio):
 
 ```bash
-fold mcp                             # talks to the node at $FOLD_NODE
+sion mcp                             # talks to the node at $SION_NODE
 ```
 
 Sell an API per request with x402, and buy from it:
 
 ```bash
-fold x402 serve carol --price 0.25   # http://127.0.0.1:8402/v1/resource
-fold x402 fetch http://127.0.0.1:8402/v1/resource --wallet dana --max 1
+sion x402 serve carol --price 0.25   # http://127.0.0.1:8402/v1/resource
+sion x402 fetch http://127.0.0.1:8402/v1/resource --wallet dana --max 1
 ```
 
 Measure everything on your machine:
 
 ```bash
-fold bench                           # signatures, hashing, DA, clearing, assurance,
+sion bench                           # signatures, hashing, DA, clearing, assurance,
                                      # execution, proving and a live devnet
 ```
 
 ## The demos
 
-`fold demo <name>` drives real transactions through the whole protocol
+`sion demo <name>` drives real transactions through the whole protocol
 (lane certificates, consensus, Pulse execution, header certificates, data
 availability and proving) and narrates what the ledger established.
 
@@ -137,19 +137,19 @@ availability and proving) and narrates what the ledger established.
 
 | Crate | What it holds |
 |---|---|
-| [`fold-core`](crates/fold-core) | Domain-separated SHA3-256, canonical Borsh encoding, typed identifiers, fixed-point money, the RFC 9162 append-only log, the sparse Merkle state tree |
-| [`fold-crypto`](crates/fold-crypto) | ML-DSA-44, SLH-DSA-SHA2-128s/128f, ML-KEM-768, dual-origin signatures, account policies, sealed envelopes, Shamir sharing |
-| [`fold-assurance`](crates/fold-assurance) | The Assurance Algebra: atoms, formulas, cost of corruption, decision rule, reservations, challenges, slashing, insurance |
-| [`fold-lp`](crates/fold-lp) | Exact rational simplex and linear-time optimality-certificate verification |
-| [`fold-clearing`](crates/fold-clearing) | Verifiable Clearing: sealed double auctions and assignment markets with certificates |
-| [`fold-da`](crates/fold-da) | 2D Reed–Solomon over the Goldilocks field, commitments, sampling, reconstruction, fraud proofs |
-| [`fold-consensus`](crates/fold-consensus) | Linear Lanes, certified-DAG BFT, committees and sampling, the beacon, forced inclusion, a deterministic network simulator |
-| [`fold-exec`](crates/fold-exec) | The state machine: objects, accounts, claims, bonds, Agent Charters, escrow, markets; Pulse execution with chunk traces and witnesses |
-| [`fold-spec`](crates/fold-spec) | An independent implementation of the state transition written from [the specification](docs/spec/state-transition.md) (proof stack B) |
-| [`fold-prover`](crates/fold-prover) | Proof stacks, World Proofs and their verification |
-| [`fold-light`](crates/fold-light) | The light client: chain identity, header certificates, proofs, availability sampling |
-| [`fold-node`](crates/fold-node) | The devnet: validators, gateway, prover, write-ahead log and snapshots, HTTP API |
-| [`fold-cli`](crates/fold-cli) | The `fold` command: devnet, wallets, demos, light verification, MCP server, benchmarks |
+| [`sion-core`](crates/sion-core) | Domain-separated SHA3-256, canonical Borsh encoding, typed identifiers, fixed-point money, the RFC 9162 append-only log, the sparse Merkle state tree |
+| [`sion-crypto`](crates/sion-crypto) | ML-DSA-44, SLH-DSA-SHA2-128s/128f, ML-KEM-768, dual-origin signatures, account policies, sealed envelopes, Shamir sharing |
+| [`sion-assurance`](crates/sion-assurance) | The Assurance Algebra: atoms, formulas, cost of corruption, decision rule, reservations, challenges, slashing, insurance |
+| [`sion-lp`](crates/sion-lp) | Exact rational simplex and linear-time optimality-certificate verification |
+| [`sion-clearing`](crates/sion-clearing) | Verifiable Clearing: sealed double auctions and assignment markets with certificates |
+| [`sion-da`](crates/sion-da) | 2D Reed–Solomon over the Goldilocks field, commitments, sampling, reconstruction, fraud proofs |
+| [`sion-consensus`](crates/sion-consensus) | Linear Lanes, certified-DAG BFT, committees and sampling, the beacon, forced inclusion, a deterministic network simulator |
+| [`sion-exec`](crates/sion-exec) | The state machine: objects, accounts, claims, bonds, Agent Charters, escrow, markets; Pulse execution with chunk traces and witnesses |
+| [`sion-spec`](crates/sion-spec) | An independent implementation of the state transition written from [the specification](docs/spec/state-transition.md) (proof stack B) |
+| [`sion-prover`](crates/sion-prover) | Proof stacks, World Proofs and their verification |
+| [`sion-light`](crates/sion-light) | The light client: chain identity, header certificates, proofs, availability sampling |
+| [`sion-node`](crates/sion-node) | The devnet: validators, gateway, prover, write-ahead log and snapshots, HTTP API |
+| [`sion-cli`](crates/sion-cli) | The `sion` command: devnet, wallets, demos, light verification, MCP server, benchmarks |
 
 ## Documentation
 

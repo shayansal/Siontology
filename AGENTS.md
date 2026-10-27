@@ -1,12 +1,12 @@
 # AGENTS.md
 
-Working rules for people and agents building Fold, the reference
+Working rules for people and agents building Siontology, the reference
 implementation of the neo-blockchain architecture.
 
 ## Architecture rules (non-negotiable)
 
 1. Every consensus-critical value has one canonical encoding (Borsh) and is
-   hashed with a domain tag (`fold_core::hash`). Never hash ad hoc bytes.
+   hashed with a domain tag (`sion_core::hash`). Never hash ad hoc bytes.
 2. Consensus-critical maps are `BTreeMap`/`BTreeSet`. No `HashMap` iteration
    order may influence a hash, a root, an ordering or a decision.
 3. No floating point in consensus-critical logic. Money is `Amount`
@@ -24,12 +24,12 @@ implementation of the neo-blockchain architecture.
 
 ## Coding style
 
-- Newtype IDs from `fold_core::ids`; explicit domain types; structured errors
+- Newtype IDs from `sion_core::ids`; explicit domain types; structured errors
   with `thiserror`.
-- Deterministic tests: seed every RNG (`fold_core::rng`).
+- Deterministic tests: seed every RNG (`sion_core::rng`).
 - Property tests (`proptest`) for every algebraic or adversarial invariant.
 - Public functions have doc comments and tests.
-- Keep crates focused; depend on `fold-core` rather than on each other where
+- Keep crates focused; depend on `sion-core` rather than on each other where
   possible.
 
 ## Commands

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks that proof stack B (crates/fold-spec) does not call the reference
+# Checks that proof stack B (crates/sion-spec) does not call the reference
 # executor's logic, as docs/spec/state-transition.md §0 requires.
 #
 # This is a lint, not a proof: it searches the library sources (unit-test
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-src="$root/crates/fold-spec/src"
+src="$root/crates/sion-spec/src"
 
 python3 - "$src" <<'EOF'
 import pathlib
@@ -19,16 +19,16 @@ src = pathlib.Path(sys.argv[1])
 
 # Forbidden by spec §0: the reference executor's logic.
 forbidden = [
-    (r"fold_exec::execute::(?!\{|Deferred\b|Event\b|ExecStatus\b|TxEffects\b|bond_atom\b|registered_atom\b|bond_owner\b)\w+",
-     "fold_exec::execute logic (only the types and bond_atom, registered_atom, bond_owner are allowed)"),
-    (r"\bexecute_transaction\b", "fold_exec::execute::execute_transaction"),
-    (r"\bexecute_pulse(_traced)?\b", "fold_exec::pulse::execute_pulse"),
-    (r"\bapply_deferred\b", "fold_exec::pulse::apply_deferred"),
-    (r"\bcanonical_order\b", "fold_exec::pulse::canonical_order"),
-    (r"fold_exec::stateless\b|\breplay_chunk\b|\bWitnessStore\b", "fold_exec::stateless"),
-    (r"fold_exec::wallet\b|\bWallet\b", "fold_exec::wallet"),
-    (r"fold_exec::sim\b", "fold_exec::sim"),
-    (r"fold_exec::genesis\b|\bgenesis\s*\(", "fold_exec::genesis"),
+    (r"sion_exec::execute::(?!\{|Deferred\b|Event\b|ExecStatus\b|TxEffects\b|bond_atom\b|registered_atom\b|bond_owner\b)\w+",
+     "sion_exec::execute logic (only the types and bond_atom, registered_atom, bond_owner are allowed)"),
+    (r"\bexecute_transaction\b", "sion_exec::execute::execute_transaction"),
+    (r"\bexecute_pulse(_traced)?\b", "sion_exec::pulse::execute_pulse"),
+    (r"\bapply_deferred\b", "sion_exec::pulse::apply_deferred"),
+    (r"\bcanonical_order\b", "sion_exec::pulse::canonical_order"),
+    (r"sion_exec::stateless\b|\breplay_chunk\b|\bWitnessStore\b", "sion_exec::stateless"),
+    (r"sion_exec::wallet\b|\bWallet\b", "sion_exec::wallet"),
+    (r"sion_exec::sim\b", "sion_exec::sim"),
+    (r"sion_exec::genesis\b|\bgenesis\s*\(", "sion_exec::genesis"),
     (r"\.spend\s*\(|Allotment::spend\b", "Allotment::spend"),
     (r"\.attenuates\s*\(|Caveats::attenuates\b", "Caveats::attenuates"),
     (r"\.escrow\s*\(|OrderTerms::escrow\b", "OrderTerms::escrow"),
@@ -37,10 +37,10 @@ forbidden = [
     (r"\.offender\s*\(|Equivocation::offender\b", "Equivocation::offender"),
     (r"\.(lane_members|lane_committee|lane_committees|consensus_committee|epoch_end|rotation)\s*\(|ValidatorSet::\w+\s*\(",
      "ValidatorSet methods"),
-    (r"\bposted_intents\b", "fold_exec::pulse::posted_intents"),
+    (r"\bposted_intents\b", "sion_exec::pulse::posted_intents"),
 ]
 
-# The fold_exec::pulse items the library may use: type definitions only
+# The sion_exec::pulse items the library may use: type definitions only
 # (the §7 helpers are reimplemented and cross-checked in unit tests).
 allowed_pulse = {"ChunkStatement", "ChunkTrace", "Witness", "PulseInput"}
 
@@ -59,12 +59,12 @@ for path in sorted(src.rglob("*.rs")):
         for pattern, what in forbidden:
             if re.search(pattern, line):
                 problems.append(f"{path.relative_to(src.parent.parent.parent)}:{number}: uses {what}: {line.strip()}")
-    for match in re.finditer(r"fold_exec::pulse::(\{[^}]*\}|\w+)", text):
+    for match in re.finditer(r"sion_exec::pulse::(\{[^}]*\}|\w+)", text):
         names = re.findall(r"\w+", match.group(1))
         for name in names:
             if name not in allowed_pulse:
                 number = text[: match.start()].count("\n") + 1
-                problems.append(f"{path.relative_to(src.parent.parent.parent)}:{number}: uses fold_exec::pulse::{name}")
+                problems.append(f"{path.relative_to(src.parent.parent.parent)}:{number}: uses sion_exec::pulse::{name}")
 
 if problems:
     print("Proof stack B calls the reference executor:")

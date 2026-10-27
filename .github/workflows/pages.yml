@@ -1,0 +1,60 @@
+name: pages
+
+# Builds siontology.org: the static site at the root and the documentation
+# book under /docs/, and deploys them to GitHub Pages.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "brand/**"
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MDBOOK_VERSION: "0.4.40"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mdBook
+        run: |
+          curl -sSfL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin
+          mdbook --version
+      - name: Build the book
+        run: mdbook build docs/book
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp -r site/. _site/
+          rm -f _site/_harness.html
+          cp -r docs/book/book _site/docs
+          touch _site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

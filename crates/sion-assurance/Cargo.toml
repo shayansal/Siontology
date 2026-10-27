@@ -1,0 +1,25 @@
+[package]
+name = "sion-assurance"
+description = "The Assurance Algebra: trust formulas, policy-relative cost of corruption, reservations, slashing and compensation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sion-core.workspace = true
+borsh.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

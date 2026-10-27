@@ -1,10 +1,10 @@
-# The Fold state transition — specification v1.3
+# The Siontology state transition — specification v1.3
 
 Status: normative for this reference implementation. Two implementations
-exist: the reference executor (`crates/fold-exec`, proof stack A) and an
-independent one written from this document (`crates/fold-spec`, proof stack
+exist: the reference executor (`crates/sion-exec`, proof stack A) and an
+independent one written from this document (`crates/sion-spec`, proof stack
 B). Where they disagree, one of them is wrong, and the differential tests in
-`crates/fold-spec/tests` exist to find out which.
+`crates/sion-spec/tests` exist to find out which.
 
 The key words MUST, MUST NOT and MAY are used as in RFC 2119.
 
@@ -22,34 +22,34 @@ three phases of a Pulse, and the commitments a chunk statement carries.
 
 It does **not** re-specify:
 
-- **Data layouts.** The Rust type definitions in `fold_core`, `fold_crypto`,
-  `fold_assurance`, `fold_clearing` and the *type definitions* in
-  `fold_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
+- **Data layouts.** The Rust type definitions in `sion_core`, `sion_crypto`,
+  `sion_assurance`, `sion_clearing` and the *type definitions* in
+  `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
   `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
   normative; their canonical encoding is Borsh. One rule goes beyond the
   layout: a `Formula` nested deeper than 64 levels
-  (`fold_assurance::formula::MAX_DECODE_DEPTH`, counted as
+  (`sion_assurance::formula::MAX_DECODE_DEPTH`, counted as
   `Formula::depth`) is not a valid encoding, so a transaction carrying one
   fails to decode and never enters a Pulse.
 - **Shared primitives.** Both implementations use, and trust as separate
   atoms of the World Proof's formula: hashing and Merkle structures
-  (`fold_core`), signature verification (`fold_crypto`), the Assurance
-  Algebra (`fold_assurance`: registry operations, cost of corruption,
+  (`sion_core`), signature verification (`sion_crypto`), the Assurance
+  Algebra (`sion_assurance`: registry operations, cost of corruption,
   reservation, decision rule, slashing), clearing-certificate verification
-  (`fold_clearing::verify_clearing`), committee envelopes
-  (`fold_crypto::CommitteeEnvelope::open`), validator identities and
-  signatures (`fold_crypto::{validator_id, verify_validator}`), committee
-  sampling (`fold_consensus::{sample_committee, resample_committee}`) and
-  the consensus message formats (`fold_consensus::{Header::digest,
+  (`sion_clearing::verify_clearing`), committee envelopes
+  (`sion_crypto::CommitteeEnvelope::open`), validator identities and
+  signatures (`sion_crypto::{validator_id, verify_validator}`), committee
+  sampling (`sion_consensus::{sample_committee, resample_committee}`) and
+  the consensus message formats (`sion_consensus::{Header::digest,
   Header::signing_digest, SignedHeader::verify_signature,
   ApprovalProof::verify_signed}`).
 
 An implementation of this document MUST NOT call the reference executor's
-logic: `fold_exec::execute`, `fold_exec::pulse` (other than the type
-definitions and the commitment helpers named in §7), `fold_exec::stateless`,
-`fold_exec::wallet`, `fold_exec::sim`, `fold_exec::genesis`, nor the methods
+logic: `sion_exec::execute`, `sion_exec::pulse` (other than the type
+definitions and the commitment helpers named in §7), `sion_exec::stateless`,
+`sion_exec::wallet`, `sion_exec::sim`, `sion_exec::genesis`, nor the methods
 `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
@@ -65,8 +65,8 @@ rotation_seed}`.
 
 ## 1. Conventions
 
-- `H(domain, bytes)` is `fold_core::hash::hash_domain`; `Hp(domain, parts)`
-  is `fold_core::hash::hash_parts`. `enc(x)` is the Borsh encoding.
+- `H(domain, bytes)` is `sion_core::hash::hash_domain`; `Hp(domain, parts)`
+  is `sion_core::hash::hash_parts`. `enc(x)` is the Borsh encoding.
 - Amounts are `Amount(u128)` micro-units; `units(n) = n × 10⁶`. Any
   arithmetic overflow or underflow in this document is an error of the
   operation in which it occurs (§3.4), unless stated otherwise.
@@ -85,7 +85,7 @@ never deleted; a consumed object is replaced by a tombstone
 version.
 
 The state root is the root of the sparse Merkle tree mapping each object
-id to `Object::digest()` (`fold_core::smt`). The knowledge root is the RFC
+id to `Object::digest()` (`sion_core::smt`). The knowledge root is the RFC
 9162 root of the log's leaves.
 
 Well-known objects (all created at genesis): the assurance domain
@@ -192,7 +192,7 @@ In this order; any failure is a **rejection**:
 
 1. `ctx.pulse > tx.expires_at` → reject (expired).
 2. `tx.inputs` empty, or longer than `MAX_INPUTS` (256,
-   `fold_exec::tx::MAX_INPUTS`) → reject. Duplicate input ids → reject.
+   `sion_exec::tx::MAX_INPUTS`) → reject. Duplicate input ids → reject.
 3. If the kind is `Faucet`, `tx.fee ≠ 0` → reject. Otherwise `tx.fee <
    ctx.config.min_fee(tx.size())` → reject.
 4. Account: `try_load(well_known::account(tx.sender))`.
@@ -206,7 +206,7 @@ In this order; any failure is a **rejection**:
      viewing_key: None, created_at: ctx.pulse, rotations: 0 }) }`.
 5. `policy.verify(signing_context(ctx.config), digest bytes, &signed.auth)`
    MUST succeed, where `signing_context(config)` is `TX_DOMAIN`, a `/`, and
-   `config.digest()` in lowercase hex (`fold_exec::tx::signing_context`).
+   `config.digest()` in lowercase hex (`sion_exec::tx::signing_context`).
    A transaction signed for one chain therefore never verifies on a chain
    with another configuration.
 6. For each input `r` at position `i`, in order: `load(r.id)`; its version
@@ -252,7 +252,7 @@ Notation: "event E" appends E to `effects.events`; "defer D" appends D to
 
 1. `grants` MUST have 1 to 256 entries.
 2. For each `(to, asset, amount)` in order: amount MUST NOT be 0 and MUST
-   NOT exceed `MAX_GRANT` (`fold_exec::tx::MAX_GRANT`, one billion units);
+   NOT exceed `MAX_GRANT` (`sion_exec::tx::MAX_GRANT`, one billion units);
    `mint(to, asset, amount)`; defer `Minted { asset, amount }`; event
    `Minted { to, asset, amount }`.
 
@@ -288,7 +288,7 @@ label), owner: sender, amount }`. No event.
 1. `until > ctx.pulse`.
 2. Load the assurance object (MUST be `Assurance`); work on a copy of its
    domain.
-3. `(decision, reservation) = fold_assurance::accept_and_reserve(&mut
+3. `(decision, reservation) = sion_assurance::accept_and_reserve(&mut
    domain.registry, policy, sender, claim, value_at_risk, until, nonce)`;
    an error is an error; `reservation = None` is an error ("not accepted").
 4. Store the assurance object with the updated domain.
@@ -297,7 +297,7 @@ label), owner: sender, amount }`. No event.
 
 ### 5.8 Release { reservation }
 
-Load the assurance object; `fold_assurance::release(&mut registry,
+Load the assurance object; `sion_assurance::release(&mut registry,
 reservation, sender)`; store it; defer `Schedule { at: ctx.pulse, event:
 RegistryTick }`; event `Released { reservation }`.
 
@@ -369,7 +369,7 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 
 - **Chain check** of charter `c`: follow `c, c.parent, …`, loading each
   (MUST be a charter); any with `revoked_at` set fails ("revoked"). At most
-  `MAX_CHARTER_CHAIN` (16, `fold_exec::charter::MAX_CHARTER_CHAIN`)
+  `MAX_CHARTER_CHAIN` (16, `sion_exec::charter::MAX_CHARTER_CHAIN`)
   charters are loaded: if the last one loaded still has a parent, the check
   fails without loading that parent.
 - **attenuates(child, parent)** holds when: `parent.payees = None`, or both
@@ -421,7 +421,7 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 2. `evidence_ok = None`, unless `evidence = Some(c)` and `k.evidence_above
    = Some(t)` and `amount > t`: then load the assurance object and
    `evidence_ok = Some(b)` where `b` is false if `c` is unknown to the
-   registry or not `Active`, and otherwise `fold_assurance::decide(registry,
+   registry or not `Active`, and otherwise `sion_assurance::decide(registry,
    k.evidence_policy, c, amount, insured = false).accept`.
 3. **spend**; store the allotment; `mint(payee, USD, amount)`.
 4. If `k.receipts`: build `body = ClaimBody { schema:
@@ -456,7 +456,7 @@ Load it (MUST be a charter); `principal` MUST be the sender; if
 
 ### 5.18 CreateBounded { label, asset, total, allotments }
 
-1. At most `MAX_ALLOTMENTS` (256, `fold_exec::escrow::MAX_ALLOTMENTS`)
+1. At most `MAX_ALLOTMENTS` (256, `sion_exec::escrow::MAX_ALLOTMENTS`)
    allotments; `allotted = Σ amounts`; `allotted ≤ total`.
 2. `draw(asset, total)`.
 3. `bounded_id = created_id(digest, next_index)`;
@@ -497,7 +497,7 @@ caveats: None, window_start: ctx.pulse, spent_in_window: 0 })`; event
 ### 5.22 CreateMarket { label, good, numeraire, batch_length, clear_deadline, committee, threshold }
 
 `1 ≤ batch_length ≤ MAX_PERIOD` and `1 ≤ clear_deadline ≤ MAX_PERIOD`
-(`fold_exec::market::MAX_PERIOD`, one million Pulses); if `committee` is
+(`sion_exec::market::MAX_PERIOD`, one million Pulses); if `committee` is
 non-empty,
 `1 ≤ threshold ≤ |committee|`; `good ≠ numeraire`. `market_id =
 created_id(digest, next_index)`; `create(Shared(object_domain("market",
@@ -517,7 +517,7 @@ batches: ∅ })`; event `MarketCreated { market: market_id }`.
    0`; the escrow asset is the numeraire for buys, the good for sells;
    terms unknown.
 3. `draw(escrow_asset, escrow)`.
-4. `order_id = Hp("fold/market/order", [digest bytes])`; defer `AddOrder {
+4. `order_id = Hp("sion/market/order", [digest bytes])`; defer `AddOrder {
    market, order: PendingOrder { id: order_id, owner: sender, escrow_asset,
    escrow, terms, sealed } }`; event `OrderSubmitted { market, order:
    order_id }`.
@@ -544,13 +544,13 @@ batches: ∅ })`; event `MarketCreated { market: market_id }`.
 2. If any order of the batch has unknown terms, `ctx.pulse ≥ at +
    max(clear_deadline, 1) − 1` MUST hold (that is, `at +
    clear_deadline.saturating_sub(1)`, the addition saturating).
-3. Build the clearing batch `fold_clearing::Batch { domain: market.domain,
+3. Build the clearing batch `sion_clearing::Batch { domain: market.domain,
    pulse: at, beacon, orders }` where `orders` are, in batch order, the
    orders with known terms mapped to `Order { id, owner, side, quantity,
    limit_price }`.
-4. `verified = fold_clearing::verify_clearing(&batch, result)` (errors are
+4. `verified = sion_clearing::verify_clearing(&batch, result)` (errors are
    errors; among them, a certificate value whose numerator or denominator
-   is longer than `fold_lp::MAX_VALUE_BITS`, 512 bits); `price = verified.price`; `fills` = `result.fills` as a map
+   is longer than `sion_lp::MAX_VALUE_BITS`, 512 bits); `price = verified.price`; `fills` = `result.fills` as a map
    order id → quantity.
 5. For each order of the batch in order, with `filled = fills[id]` or 0:
    - if its terms are known, `price` is set and `filled > 0`: `value =
@@ -651,9 +651,9 @@ A Pulse executes `PulseInput { pulse, beacon, owned, contended, forced }`
 with `pulse = state.pulse + 1`. `forced` are the forced intents committed
 in the Pulse: they are not executed, they are **posted** in the deferred
 phase (§6.3), each digest once, in commit order
-(`fold_exec::pulse::posted_intents`). The nodes compute a canonical order (owned
+(`sion_exec::pulse::posted_intents`). The nodes compute a canonical order (owned
 transactions by digest, in dependency passes, then contended transactions
-in consensus order; see `fold_exec::pulse::canonical_order`). Proof stacks
+in consensus order; see `sion_exec::pulse::canonical_order`). Proof stacks
 do not recompute it: a chunk statement binds the transactions it executes
 (`steps`), and the order is bound into the certified Pulse header. The
 order decides only which dependent transactions find their inputs, never
@@ -673,7 +673,7 @@ Bookkeeping is as in §3.1 (fresh `originals` and `created`), with a
 counter `k = 0` for payouts: **pay(owner, asset, amount)**: if `amount =
 0` do nothing; otherwise store a new coin with id `ObjectId::derive_parts(
 [b"deferred", pulse as 8 big-endian bytes, k as 8 big-endian bytes])`
-(`fold_exec::pulse::deferred_coin_id`) and increment `k`.
+(`sion_exec::pulse::deferred_coin_id`) and increment `k`.
 
 **Protocol objects.** The schedule object is always loaded first. The
 assurance object, the treasury, the validator set and the forced-inclusion
@@ -729,7 +729,7 @@ commutes, so their order does not matter):
   Active, sequence: 0 }`. (Among its failures: a formula nesting deeper
   than `MAX_FORMULA_DEPTH`, 32, or a chain of claim references longer than
   `MAX_CLAIM_DEPTH`, 16, counting the new claim; both are
-  `fold_assurance::registry` constants.) Otherwise: append the leaf `knowledge_leaf(
+  `sion_assurance::registry` constants.) Otherwise: append the leaf `knowledge_leaf(
   StoredClaim { id, issuer, body, issued_at: ctx.pulse, log_index: <log
   size before appending> })` to the knowledge log; schedule `RegistryTick`
   at `valid_until`; event `ClaimIssued { claim, log_index }`.
@@ -739,7 +739,7 @@ commutes, so their order does not matter):
   1) × max(batch_length, 1) − 1` (the addition and multiplication
   saturating); get or create batch `index` (status
   `Open`, no orders). If its status is not `Open`, or it already holds
-  `MAX_BATCH_ORDERS` (1,024, `fold_exec::market::MAX_BATCH_ORDERS`) orders,
+  `MAX_BATCH_ORDERS` (1,024, `sion_exec::market::MAX_BATCH_ORDERS`) orders,
   pay the escrow back.
   Otherwise insert the order keeping the batch's orders sorted by id; if
   the batch had no orders before, schedule `SealBatch { market, batch:
@@ -875,15 +875,15 @@ chunk, so no World Proof can exist for it.
 
 - **World commitment** `{ pulse, state_root, knowledge_root,
   knowledge_size, config }` with `config = ChainConfig::digest()`.
-- **Effects leaf** (`fold_exec::pulse::effects_leaf`):
+- **Effects leaf** (`sion_exec::pulse::effects_leaf`):
   `merkle::leaf_hash(enc((digest, sender, class, code, fee, created,
   mutated, consumed, events, deferred)))` with `code` 0 for success, 1 for
   failed, 2 for rejected.
 - **Accumulators**: `chain_deferred(acc, items)` folds
-  `acc = Hp("fold/exec/deferred-acc", [acc, enc(item)])` over items;
-  `chain_effects_leaf(acc, leaf) = Hp("fold/exec/effects-acc", [acc,
+  `acc = Hp("sion/exec/deferred-acc", [acc, enc(item)])` over items;
+  `chain_effects_leaf(acc, leaf) = Hp("sion/exec/effects-acc", [acc,
   leaf])`. Both start at `Hash32::ZERO` at the start of a Pulse.
-- **Steps**: `H("fold/exec/steps", enc([tx digests in order]))`.
+- **Steps**: `H("sion/exec/steps", enc([tx digests in order]))`.
 
 ## 8. Verifying a chunk
 
@@ -928,7 +928,7 @@ Pulse's transactions deferred. The World Proof binds them (§9).
 
 ## 9. Folding a Pulse
 
-A World Proof for Pulse `p` (`fold_prover::WorldProof`) is valid if and
+A World Proof for Pulse `p` (`sion_prover::WorldProof`) is valid if and
 only if:
 
 1. It has at least one statement; statement `i` has `index = i` and
@@ -948,7 +948,7 @@ only if:
    published transactions, covering all of them; the deferred phase's
    `steps` are the digests of the published forced intents, which are the
    Pulse's **posted** intents (each digest once, in posting order, §6.1),
-   not the raw committed list; and the data encodes (`fold_da`) to the
+   not the raw committed list; and the data encodes (`sion_da`) to the
    proof's `data_root` and `data_k`. This binding is what pins the
    deferred phase's `T` (§8): within one chunk, a reordered `T` or an
    extra intent dismissed before any read would verify against refitted
@@ -958,7 +958,7 @@ only if:
 Whoever relies on the proof also checks it against the certified Pulse
 header: the same `pulse`, `before`, `after`, `receipts_root`, `data_root`,
 `data_k` and beacon. Lane certificates
-(`fold_prover::verify_certificates`) are checked against the lane
+(`sion_prover::verify_certificates`) are checked against the lane
 committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 

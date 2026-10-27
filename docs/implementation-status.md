@@ -50,14 +50,14 @@ live.
 
 ### Foundations
 
-**Built.** State is two-sorted (`fold-exec`): linear objects with owners
+**Built.** State is two-sorted (`sion-exec`): linear objects with owners
 and versions, tombstoned when consumed and never deleted, and a grow-only
-knowledge log (an RFC 9162 Merkle log in `fold-core`). A transaction's
+knowledge log (an RFC 9162 Merkle log in `sion-core`). A transaction's
 coordination class (knowledge, owned-linear, bounded, contended) is derived
 from what it touches (`Transaction::class`), never declared by the sender.
 Every consensus-critical value has one Borsh encoding and is hashed with a
 domain tag. The state root is a sparse Merkle tree with single-leaf
-subtrees collapsed (`fold_core::smt`).
+subtrees collapsed (`sion_core::smt`).
 
 ### Identity
 
@@ -76,7 +76,7 @@ per-application nullifiers can be expressed today as claims, but there is no
 nullifier scheme and no unlinkability (that needs zero-knowledge proofs).
 
 **Agent Charters: built.** A charter binds an agent to a principal with
-caveats the protocol checks on every payment (`fold_exec::charter`): an
+caveats the protocol checks on every payment (`sion_exec::charter`): an
 allow-list of payees, a per-payment limit, a budget per window, an expiry,
 an evidence requirement above a threshold (a claim that passes the decision
 rule under a stated policy), receipts as claims, and whether the agent may
@@ -92,7 +92,7 @@ act) and a bond behind each agent's receipts beyond the agent atom.
 **Built.** Each Pulse's data (transaction bodies in execution order) is laid
 out as a `k × k` square of Goldilocks field elements, extended with a 2D
 Reed–Solomon code to `2k × 2k`, and committed with row and column Merkle
-roots (`fold-da`). Light clients sample random shares; withholding enough to
+roots (`sion-da`). Light clients sample random shares; withholding enough to
 prevent reconstruction is detected with probability `1 − (3/4)^s` for `s`
 samples. Iterative row/column decoding rebuilds the square from any
 sufficient subset, and bad-encoding fraud proofs exist as a library. The
@@ -120,13 +120,13 @@ is an owned-path operation; only `Rebalance` goes through consensus.
 
 **Contention Consensus: simplified.** A certified-DAG BFT protocol in the
 Bullshark family, partially synchronous, with leader timeouts and
-equivocation evidence (`fold_consensus::core`), tested in a deterministic
+equivocation evidence (`sion_consensus::core`), tested in a deterministic
 network simulator with an adversarial pre-GST phase. The architecture's
 production target is an uncertified DAG (Mysticeti class), which commits
 in fewer message delays.
 
 **Censorship resistance: simplified.** A user posts a transaction
-straight to consensus as a forced intent (`POST /v1/forced`, `fold send
+straight to consensus as a forced intent (`POST /v1/forced`, `sion send
 --forced`); every validator proposes every round, so one honest proposer
 gets it ordered. The Pulse that commits it **posts** it in the state as an
 obligation of the sender's shard (specification §6.3), after checking that
@@ -140,8 +140,8 @@ could still execute; if it could, the shard censored it: the intent is
 from outside it first (at most once per shard per window), and the
 obligation stands for another window. Every Pulse header commits to the
 number of pending and overdue intents and a root over the overdue ones
-(`fold_light::ForcedSummary`), so censorship by more than a third of a
-committee appears in certified headers that light clients check (`fold
+(`sion_light::ForcedSummary`), so censorship by more than a third of a
+committee appears in certified headers that light clients check (`sion
 demo censorship`). Simplified: the architecture also freezes the shard
 until the obligation is met; here the shard keeps running under its new
 committee. With no more validators than seats (the default devnet: 4 and
@@ -161,7 +161,7 @@ Pulse; nothing about committees is configured. Consensus runs one DAG per
 session: a new session begins at every epoch boundary (and every restart);
 what the old session committed after the epoch's last Pulse, or never
 committed, is proposed again in the new one. Standby validators run as
-observers and start proposing once their stake makes them active. `fold
+observers and start proposing once their stake makes them active. `sion
 demo staking` runs the whole cycle: a standby validator stakes and joins,
 a light client follows the committee change, rewards are claimed, and the
 newcomer is slashed for signing two headers for one round and loses its
@@ -180,7 +180,7 @@ the World Proof for that Pulse verifies.
 each chunk carries a statement (world commitments before and after,
 accumulators of effects and deferred items, the steps) and a witness (each
 touched object with a sparse-Merkle proof, plus the knowledge frontier).
-Proof stack A (`fold_prover::ReplayStack`) "proves" a chunk by including
+Proof stack A (`sion_prover::ReplayStack`) "proves" a chunk by including
 everything needed to re-execute it statelessly; verification re-executes
 it and rejects any read outside the witness. This has the interface and
 the binding properties of a succinct proof (stateless, chunk-local,
@@ -190,7 +190,7 @@ Proof says so. A STARK stack would plug into the same `ProofStack` trait.
 
 **N-version proving: built.** The state transition is specified in
 `docs/spec/state-transition.md`. A second implementation written only from
-that document (`crates/fold-spec`, proof stack B) checks every chunk
+that document (`crates/sion-spec`, proof stack B) checks every chunk
 alongside the reference executor (stack A), and a World Proof verifies only
 if both accept every chunk. `scripts/check-independence.sh` (run in CI)
 checks that stack B never calls the reference executor's logic. Its
@@ -214,7 +214,7 @@ built.
 ### The Fold
 
 **Simulated, with real bindings.** For every Pulse the devnet's prover folds
-all chunk proofs into a World Proof (`fold_prover::world`) that checks the
+all chunk proofs into a World Proof (`sion_prover::world`) that checks the
 chain of chunk statements from the Pulse's first commitment to its last,
 the receipts root over every effect, the published data (it is exactly what
 executed, and it encodes to the certified data-availability root), and every
@@ -225,7 +225,7 @@ re-executing every chunk (or a random sample of chunks).
 
 ### Knowledge layer
 
-**Built.** Claims carry formulas over atoms and other claims (`fold-assurance`).
+**Built.** Claims carry formulas over atoms and other claims (`sion-assurance`).
 Cost of corruption is an interval computed per consumer policy: exact for
 formulas whose disjuncts share no atoms, with a lower bound by an exact
 solver when they do. The decision rule, reservations of `κ·V` against a
@@ -244,7 +244,7 @@ per claim objects) for production.
 **Built.** Markets collect sealed orders during a batch window, seal with
 the Pulse's beacon, reveal sealed orders with committee key shares, and
 settle the first submitted clearing whose optimality certificate verifies
-(`fold-lp`, `fold-clearing`): exact rational arithmetic, a linear-time
+(`sion-lp`, `sion-clearing`): exact rational arithmetic, a linear-time
 certificate check, beacon-derived priorities for canonical tie-breaking,
 and a canonical price band. Sealed double auctions and assignment markets
 are implemented; the market demo clears at one price.
@@ -263,29 +263,29 @@ but only as issuer-signed claims.
 
 ### Interfaces
 
-**Built:** the `fold` CLI (devnet, wallets, transfers, claims, bonds,
+**Built:** the `sion` CLI (devnet, wallets, transfers, claims, bonds,
 challenges, charters, markets, light-client verification, demos,
-benchmarks), a JSON HTTP API (`fold_node::api`) and a Model Context
-Protocol server (`fold mcp`) with tools to check balances, pay, issue
+benchmarks), a JSON HTTP API (`sion_node::api`) and a Model Context
+Protocol server (`sion mcp`) with tools to check balances, pay, issue
 claims, price a claim with the Assurance Algebra before relying on it, pay
 under an Agent Charter, verify a Pulse and read events.
 
 **Built as well:** every transaction kind and every event reads as a
-sentence (`fold_cli::describe`); the CLI prints what each command signs and
-what happened; the MCP server has `fold_submit_intent` (a transaction the
-agent signed itself) and `fold_fetch_receipt` (a receipt verified as a
+sentence (`sion_cli::describe`); the CLI prints what each command signs and
+what happened; the MCP server has `sion_submit_intent` (a transaction the
+agent signed itself) and `sion_fetch_receipt` (a receipt verified as a
 light client would).
 
-**x402: built.** `fold_cli::x402` implements x402 version 2 (the
+**x402: built.** `sion_cli::x402` implements x402 version 2 (the
 `PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE` and `PAYMENT-RESPONSE` headers)
-with a Fold `exact` scheme on network `fold:<chain>`: a resource server
+with a Siontology `exact` scheme on network `sion:<chain>`: a resource server
 quotes a price with a fresh nonce, the client signs a transfer or a
 charter payment whose purpose names the quote, and the server's
 facilitator submits it and serves only once the receipt verifies as a
 light client would (committee certificate, certified order, inclusion
-proof). Each quote and each transaction pays for one request. `fold x402
-serve` and `fold x402 fetch` use it from the command line, and the MCP
-tool `fold_fetch_paid` lets an agent buy HTTP resources within a cap it
+proof). Each quote and each transaction pays for one request. `sion x402
+serve` and `sion x402 fetch` use it from the command line, and the MCP
+tool `sion_fetch_paid` lets an agent buy HTTP resources within a cap it
 sets and within its charter's limits. The adapter speaks the protocol's
 headers and JSON; it has not been tested against third-party x402
 clients, and EVM schemes are out of scope.
@@ -340,17 +340,17 @@ the architecture's own:
 
 ## Light-client trust
 
-A light client pins one value: the chain identity (`fold_light::ChainSpec::id`),
+A light client pins one value: the chain identity (`sion_light::ChainSpec::id`),
 a digest of the genesis specification, the genesis validators with their
 stake and public keys, and the shard layout. That fixes epoch 0's
 committee. Every later committee is in the state, and the client follows
-it one boundary at a time (`fold_light::EpochChain`): the certificate of an
+it one boundary at a time (`sion_light::EpochChain`): the certificate of an
 epoch's last Pulse, checked against the committee it already trusts, and a
 state proof of the validator set under that header give it the next
 epoch's committee and keys. World Proofs carry the validator set the Pulse
 began with, proven against its starting state root, so lane certificates
 are checked against committees derived from the state, not from anything a
-node serves. Without a pin, `fold verify` says the node is vouching for
+node serves. Without a pin, `sion verify` says the node is vouching for
 itself.
 
 ## Reviews and what they found
