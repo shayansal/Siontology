@@ -57,8 +57,14 @@ pub fn verify_pulse(
     let pulse = match pulse {
         Some(p) => p,
         None => {
-            // The latest certified Pulse, or a recent one with transactions.
-            let certified: Pulse = parse(status["certified_pulse"].clone())?;
+            // The latest certified Pulse (and proven, if the World Proof is
+            // wanted), or a recent one with transactions.
+            let mut certified: Pulse = parse(status["certified_pulse"].clone())?;
+            if world {
+                let proven: Option<Pulse> =
+                    serde_json::from_value(status["proven_pulse"].clone()).unwrap_or(None);
+                certified = certified.min(proven.unwrap_or(Pulse(0)));
+            }
             let mut chosen = certified;
             for back in 0..32u64 {
                 let Some(candidate) = certified.0.checked_sub(back) else {
@@ -124,17 +130,45 @@ pub fn verify_pulse(
         ));
     }
 
-    // 2. Receipts.
+    // Forced inclusion, as the certified header states it.
+    report.push(if header.forced.overdue > 0 {
+        format!(
+            "forced inclusion: {} intent(s) OVERDUE, censorship detected and certified by the committee ({} pending)",
+            header.forced.overdue, header.forced.pending
+        )
+    } else {
+        format!(
+            "forced inclusion: no overdue intents ({} pending within their deadline) ✓",
+            header.forced.pending
+        )
+    });
+
+    // 2. The executed order, then receipts. The node's list of executed
+    // transactions must be the one the certified header committed to; each
+    // receipt must sit at its transaction's position in a tree of exactly
+    // that many receipts.
+    if fold_exec::pulse::order_digest(header.pulse, &header.beacon, &view.transactions)
+        != header.order_digest
+    {
+        return Err(CliError::Verification(
+            "the node's transaction list is not the certified order".into(),
+        ));
+    }
     let mut checked = 0;
-    for digest in view.transactions.iter().take(3) {
-        if let crate::ledger::TxState::Executed(record) = ledger.tx(*digest)? {
-            verify_receipt(&header, &record.receipt)
-                .map_err(|e| CliError::Verification(e.to_string()))?;
-            checked += 1;
-        }
+    for (index, digest) in view.transactions.iter().enumerate().take(3) {
+        let crate::ledger::TxState::Executed(record) = ledger.tx(*digest)? else {
+            return Err(CliError::Verification(format!(
+                "the node has no receipt for certified transaction {}",
+                digest.short()
+            )));
+        };
+        check_receipt_position(&record.receipt, *digest, index, view.transactions.len())?;
+        verify_receipt(&header, &record.receipt)
+            .map_err(|e| CliError::Verification(e.to_string()))?;
+        checked += 1;
     }
     report.push(format!(
-        "receipts: {checked} of {} transactions proven against the receipts root ✓",
+        "receipts: {checked} of {} transactions proven against the receipts root, in the certified order ✓",
         view.transactions.len()
     ));
 
@@ -152,7 +186,14 @@ pub fn verify_pulse(
 
     // 4. Data availability.
     let da = ledger.data(pulse)?;
-    let sampled = fold_light::availability::sample(&header, &da, samples, 0xF01D, |row, column| {
+    // Sample positions must be unpredictable to the node: fresh randomness
+    // from the operating system, mixed with the data root.
+    let mut fresh = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut fresh);
+    let seed =
+        fold_core::hash::hash_parts("fold/light/sample-seed", &[&header.data_root.0, &fresh]);
+    let seed = u64::from_le_bytes(seed.0[..8].try_into().expect("8 bytes"));
+    let sampled = fold_light::availability::sample(&header, &da, samples, seed, |row, column| {
         ledger.share(pulse, row, column).ok()
     })
     .map_err(|e| CliError::Verification(e.to_string()))?;
@@ -215,8 +256,17 @@ pub fn verify_pulse(
                     ));
                 }
             }
-            Ok(entry) => report.push(format!("world proof: unavailable ({})", entry["error"])),
-            Err(e) => report.push(format!("world proof: unavailable ({e})")),
+            Ok(entry) => {
+                return Err(CliError::Verification(format!(
+                    "World Proof of Pulse {pulse} unavailable: {}",
+                    entry["error"]
+                )))
+            }
+            Err(e) => {
+                return Err(CliError::Verification(format!(
+                    "World Proof of Pulse {pulse} unavailable: {e}"
+                )))
+            }
         }
     }
     Ok(report)
@@ -290,6 +340,21 @@ pub fn verify_receipt_of(
             .map_err(|e| CliError::Verification(e.to_string()))?;
         Some((stake, committee.quorum_threshold()))
     };
+    if fold_exec::pulse::order_digest(header.pulse, &header.beacon, &view.transactions)
+        != header.order_digest
+    {
+        return Err(CliError::Verification(
+            "the node's transaction list is not the certified order".into(),
+        ));
+    }
+    let index = view
+        .transactions
+        .iter()
+        .position(|d| *d == digest)
+        .ok_or_else(|| {
+            CliError::Verification("the transaction is not in the certified order".into())
+        })?;
+    check_receipt_position(&record.receipt, digest, index, view.transactions.len())?;
     verify_receipt(header, &record.receipt).map_err(|e| CliError::Verification(e.to_string()))?;
     Ok(VerifiedReceipt {
         pulse: record.pulse,
@@ -297,4 +362,22 @@ pub fn verify_receipt_of(
         signed,
         chain: (chain_id, pinned.is_some()),
     })
+}
+
+/// Checks that a receipt proof is for `digest` at position `index` in a
+/// Pulse of `count` transactions (the certified order fixes both).
+fn check_receipt_position(
+    proof: &fold_light::ReceiptProof,
+    digest: TxDigest,
+    index: usize,
+    count: usize,
+) -> Result<(), CliError> {
+    if proof.effects.digest != digest || proof.index != index as u64 || proof.count != count as u64
+    {
+        return Err(CliError::Verification(format!(
+            "the receipt for {} is not at its certified position",
+            digest.short()
+        )));
+    }
+    Ok(())
 }

@@ -76,6 +76,15 @@ pub struct CoreConfig {
     pub gc_depth: u64,
     /// Maximum payload items per header.
     pub max_items_per_header: usize,
+    /// Maximum payload bytes per header. Honest validators propose no more
+    /// and vote for no header with more, so certified rounds, and therefore
+    /// Pulses, have bounded size.
+    pub max_payload_bytes: usize,
+    /// Headers for rounds further ahead than this are ignored (they could
+    /// only be retained, never voted for).
+    pub max_rounds_ahead: u64,
+    /// Headers waiting for missing parents, at most.
+    pub max_pending_headers: usize,
     /// Re-propose an item not delivered this many rounds after it was
     /// proposed (its header may have been orphaned).
     pub repropose_after_rounds: u64,
@@ -90,6 +99,9 @@ impl Default for CoreConfig {
             resend_interval_ms: 400,
             gc_depth: 50,
             max_items_per_header: 1_000,
+            max_payload_bytes: 256 * 1024,
+            max_rounds_ahead: 64,
+            max_pending_headers: 4_096,
             repropose_after_rounds: 8,
             leader_schedule: LeaderSchedule::RoundRobin,
         }
@@ -401,6 +413,10 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
     // ----- Payload -----------------------------------------------------
 
     fn submit(&mut self, item: Vec<u8>) {
+        // An item that cannot fit in any header would never be proposed.
+        if item.len() > self.config.max_payload_bytes {
+            return;
+        }
         let hash = item_hash(&item);
         if self.delivered_items.contains(&hash) || self.mempool_index.contains_key(&hash) {
             return;
@@ -413,9 +429,13 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
 
     fn select_items(&mut self, round: Round) -> Vec<Vec<u8>> {
         let mut chosen = Vec::new();
+        let mut bytes = 0usize;
         for item in self.mempool.values() {
             if chosen.len() >= self.config.max_items_per_header {
                 break;
+            }
+            if bytes + item.len() > self.config.max_payload_bytes {
+                continue;
             }
             let hash = item_hash(item);
             if let Some(proposed) = self.in_flight.get(&hash) {
@@ -423,6 +443,7 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
                     continue;
                 }
             }
+            bytes += item.len();
             chosen.push((hash, item.clone()));
         }
         for (hash, _) in &chosen {
@@ -513,7 +534,10 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
             || !self.committee.contains(&header.author)
             || header.round == Round(0)
             || header.round <= self.gc_round
+            || header.round.0 > self.round.0.saturating_add(self.config.max_rounds_ahead)
             || header.author == self.me
+            || header.payload.len() > self.config.max_items_per_header
+            || header.payload.iter().map(Vec::len).sum::<usize>() > self.config.max_payload_bytes
         {
             return;
         }
@@ -555,7 +579,7 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
             .collect();
         if missing.is_empty() {
             self.vote_for(digest, &signed, out);
-        } else {
+        } else if self.pending_headers.len() < self.config.max_pending_headers {
             self.pending_headers.insert(digest, (from, signed.clone()));
             out.push(Action::Send {
                 to: from,

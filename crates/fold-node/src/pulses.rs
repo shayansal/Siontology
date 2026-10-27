@@ -18,6 +18,9 @@ use fold_core::ids::{Pulse, Round, ValidatorId};
 
 use crate::payload::PayloadItem;
 
+/// How many Pulses ahead a beacon reveal is kept.
+pub const REVEAL_WINDOW: u64 = 8;
+
 /// A closed Pulse, ready to execute.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClosedPulse {
@@ -92,11 +95,17 @@ impl PulseBuilder {
                     pulse: target,
                     value,
                 }) => {
-                    if target >= pulse {
-                        self.reveals
-                            .entry(target)
-                            .or_default()
-                            .push((validator, value));
+                    // Only valid reveals are kept, for the next few Pulses,
+                    // one per validator per Pulse (everyone keeps the same
+                    // ones: validity depends only on the beacon's state).
+                    if target >= pulse
+                        && target.0 - pulse.0 <= REVEAL_WINDOW
+                        && self.beacon.check_reveal(validator, target, value)
+                    {
+                        let waiting = self.reveals.entry(target).or_default();
+                        if !waiting.iter().any(|(v, _)| *v == validator) {
+                            waiting.push((validator, value));
+                        }
                     }
                 }
                 Some(item) => items.push(item),

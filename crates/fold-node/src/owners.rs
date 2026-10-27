@@ -4,10 +4,9 @@ use fold_consensus::lanes::canonical_inputs;
 use fold_consensus::{LaneRequest, OwnerAuthorization};
 use fold_core::encode::{decode, encode};
 use fold_core::hash::{hash_parts, Hash32};
-use fold_core::ids::TxDigest;
 use fold_crypto::AuthPolicy;
 use fold_exec::object::well_known;
-use fold_exec::tx::TX_DOMAIN;
+use fold_exec::tx::signing_context;
 use fold_exec::{ObjectData, Owner, SignedTransaction, State};
 
 use crate::payload::lane_inputs;
@@ -25,11 +24,38 @@ pub struct StateOwners<'a> {
     pub state: &'a State,
 }
 
-/// Identifies "this transaction's authorization satisfies this policy", so a
-/// validator that checked it once (when locking the inputs) need not check
-/// it again when executing.
-pub fn authorization_key(tx: &TxDigest, policy: &AuthPolicy) -> Hash32 {
-    hash_parts("fold/node/authorized", &[&tx.0 .0, &encode(policy)])
+/// Whether a logged lock still matters in `state`: its transaction has not
+/// expired and every input it locked still exists, unspent, at the locked
+/// version (otherwise the transaction executed, or never can).
+pub fn lock_is_live(state: &State, request: &LaneRequest) -> bool {
+    let Ok(signed) = decode::<SignedTransaction>(&request.owner_proof) else {
+        return false;
+    };
+    signed.digest() == request.tx
+        && signed.tx.expires_at > state.pulse
+        && request.inputs.iter().all(|input| {
+            state
+                .objects
+                .get(&input.id)
+                .map(|o| o.version == input.version && !o.is_tombstone())
+                .unwrap_or(false)
+        })
+}
+
+/// The most owned inputs a transaction may lock (node policy: lane locks
+/// cost memory per input).
+pub const MAX_INPUTS: usize = 256;
+
+/// Identifies "these exact authorization bytes satisfy this policy for this
+/// transaction", so a validator that checked them once (when locking the
+/// inputs) need not check them again when executing. The key covers the
+/// signatures themselves: the transaction digest does not, and the same
+/// body with other signatures must be checked afresh.
+pub fn authorization_key(tx: &SignedTransaction, policy: &AuthPolicy) -> Hash32 {
+    hash_parts(
+        "fold/node/authorized",
+        &[&tx.digest().0 .0, &encode(policy), &encode(&tx.auth)],
+    )
 }
 
 /// The policy a transaction is checked against in the given state: the
@@ -69,16 +95,65 @@ impl StateOwners<'_> {
         if canonical_inputs(&lane_inputs(&signed.tx.inputs)) != request.canonical_inputs() {
             return Err("request inputs differ from the transaction's".into());
         }
-        if signed.tx.expires_at <= self.state.pulse {
-            return Err("the transaction has expired".into());
-        }
-        let sender = signed.tx.sender;
+        // Cheap checks first; the signature last.
+        self.check_unsigned(&signed)?;
         let policy = policy_for(self.state, &signed)?;
         policy
-            .verify(TX_DOMAIN, &signed.digest().0 .0, &signed.auth)
+            .verify(
+                &signing_context(&self.state.config),
+                &signed.digest().0 .0,
+                &signed.auth,
+            )
             .map_err(|e| format!("authorization: {e}"))?;
-        let key = authorization_key(&signed.digest(), &policy);
-        for input in &signed.tx.inputs {
+        let key = authorization_key(&signed, &policy);
+        Ok((signed, key))
+    }
+
+    /// Everything [`StateOwners::check`] checks except the authorization:
+    /// the checks execution's `prepare` makes before charging anything (not
+    /// expired; one to [`MAX_INPUTS`] distinct inputs; the fee floor; a gas
+    /// coin that covers the fee, or the faucet's own rules), and that every
+    /// input exists at the given version, owned by the sender and unspent.
+    /// A transaction that passes is certified only if it will pay its fee,
+    /// so nobody gets data published for free.
+    pub fn check_unsigned(&self, signed: &SignedTransaction) -> Result<(), String> {
+        let tx = &signed.tx;
+        if tx.expires_at <= self.state.pulse {
+            return Err("the transaction has expired".into());
+        }
+        if tx.inputs.is_empty() || tx.inputs.len() > MAX_INPUTS {
+            return Err(format!("a transaction needs 1 to {MAX_INPUTS} inputs"));
+        }
+        let distinct: std::collections::BTreeSet<_> = tx.inputs.iter().map(|r| r.id).collect();
+        if distinct.len() != tx.inputs.len() {
+            return Err("duplicate inputs".into());
+        }
+        let config = &self.state.config;
+        if matches!(tx.kind, fold_exec::TxKind::Faucet { .. }) {
+            if config.faucet != Some(tx.sender)
+                || tx.fee != fold_core::Amount::ZERO
+                || tx.inputs[0].id != well_known::account(&tx.sender)
+            {
+                return Err("not a valid faucet transaction".into());
+            }
+        } else {
+            let floor = config.min_fee(tx.size());
+            if tx.fee < floor {
+                return Err(format!("fee {} below minimum {floor}", tx.fee));
+            }
+            let gas = self
+                .state
+                .objects
+                .get(&tx.inputs[0].id)
+                .and_then(|o| o.as_coin());
+            match gas {
+                Some(coin)
+                    if coin.asset == fold_core::ids::AssetId::usd() && coin.amount >= tx.fee => {}
+                _ => return Err("the first input must be a USD coin covering the fee".into()),
+            }
+        }
+        let sender = tx.sender;
+        for input in &tx.inputs {
             let object = self
                 .state
                 .objects
@@ -99,7 +174,46 @@ impl StateOwners<'_> {
                 return Err(format!("input {} is spent", input.id.short()));
             }
         }
-        Ok((signed, key))
+        Ok(())
+    }
+
+    /// Whether a request failed only because this validator is behind: an
+    /// input does not exist yet, or exists at an older version than the
+    /// transaction names. Such requests are worth retrying after the next
+    /// Pulse instead of refusing.
+    pub fn is_behind(&self, signed: &SignedTransaction) -> bool {
+        signed
+            .tx
+            .inputs
+            .iter()
+            .any(|input| match self.state.objects.get(&input.id) {
+                None => true,
+                Some(object) => object.version < input.version,
+            })
+    }
+
+    /// Whether a transaction would be approved now: [`StateOwners::check`]
+    /// without its encoding checks, consulting `authorized` before
+    /// verifying a signature (and remembering what verifies).
+    pub fn admissible(
+        &self,
+        signed: &SignedTransaction,
+        authorized: &mut Authorized,
+    ) -> Result<(), String> {
+        self.check_unsigned(signed)?;
+        let policy = policy_for(self.state, signed)?;
+        let key = authorization_key(signed, &policy);
+        if !authorized.contains(&key) {
+            policy
+                .verify(
+                    &signing_context(&self.state.config),
+                    &signed.digest().0 .0,
+                    &signed.auth,
+                )
+                .map_err(|e| format!("authorization: {e}"))?;
+            authorized.insert(key);
+        }
+        Ok(())
     }
 }
 
@@ -163,7 +277,7 @@ impl Authorized {
             let Ok(policy) = policy_for(state, tx) else {
                 return false;
             };
-            let key = authorization_key(&tx.digest(), &policy);
+            let key = authorization_key(tx, &policy);
             if !self.contains(&key) {
                 misses.push((key, policy, tx));
             }
@@ -176,15 +290,15 @@ impl Authorized {
             .unwrap_or(1)
             .clamp(1, misses.len());
         let size = misses.len().div_ceil(threads);
+        let context = signing_context(&state.config);
+        let context = context.as_str();
         let valid = std::thread::scope(|scope| {
             let handles: Vec<_> = misses
                 .chunks(size)
                 .map(|chunk| {
                     scope.spawn(move || {
                         chunk.iter().all(|(_, policy, tx)| {
-                            policy
-                                .verify(TX_DOMAIN, &tx.digest().0 .0, &tx.auth)
-                                .is_ok()
+                            policy.verify(context, &tx.digest().0 .0, &tx.auth).is_ok()
                         })
                     })
                 })
@@ -235,6 +349,38 @@ mod tests {
             .unwrap()
     }
 
+    /// Found by the security review: lane validation did not run the
+    /// checks execution makes before charging a fee, so a zero-fee
+    /// transaction was certified, rejected at execution for free, and its
+    /// body published anyway.
+    #[test]
+    fn lane_checks_refuse_what_would_not_pay() {
+        let mut chain = Chain::new(&["a", "b"], 100, 2);
+        let owners_of =
+            |state: &State, tx: &SignedTransaction| StateOwners { state }.check_unsigned(tx);
+        let good = transfer(&mut chain, "a", "b");
+        assert!(owners_of(&chain.state, &good).is_ok());
+        let mut free = good.clone();
+        free.tx.fee = fold_core::Amount::ZERO;
+        assert!(owners_of(&chain.state, &free)
+            .unwrap_err()
+            .contains("below minimum"));
+        let mut duplicated = good.clone();
+        duplicated.tx.inputs.push(duplicated.tx.inputs[0]);
+        assert!(owners_of(&chain.state, &duplicated)
+            .unwrap_err()
+            .contains("duplicate"));
+        let mut too_many = good.clone();
+        too_many.tx.inputs = vec![good.tx.inputs[0]; MAX_INPUTS + 1];
+        assert!(owners_of(&chain.state, &too_many).is_err());
+        let mut rich = good;
+        rich.tx.fee = fold_core::Amount::units(1_000_000);
+        assert!(
+            owners_of(&chain.state, &rich).is_err(),
+            "the gas coin must cover the fee"
+        );
+    }
+
     #[test]
     fn preverification_matches_what_execution_would_check() {
         let mut chain = Chain::new(&["a", "b"], 100, 4);
@@ -253,6 +399,12 @@ mod tests {
         let mut forged = transfer(&mut chain, "a", "b");
         forged.tx.nonce += 1;
         assert!(!Authorized::default().preverify(&chain.state, &[forged]));
+
+        // Found by the security review: the same body with its signatures
+        // stripped must not ride on the cached check of the original.
+        let mut stripped = txs[0].clone();
+        stripped.auth = Default::default();
+        assert!(!authorized.preverify(&chain.state, &[stripped]));
 
         // A policy rotation in the Pulse changes what later transactions
         // are checked against, so nothing is skipped.

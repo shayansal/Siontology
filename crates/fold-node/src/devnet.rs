@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use fold_consensus::{Beacon, HashChain};
+use fold_consensus::{Beacon, HashChain, LaneRequest};
 use fold_core::hash::{hash_domain, Hash32};
-use fold_core::ids::{AccountId, AssetId, Pulse, TxDigest};
+use fold_core::ids::{AccountId, AssetId, Pulse, ShardId, TxDigest};
 use fold_core::Amount;
 use fold_exec::{
     genesis, ChainConfig, GenesisAccount, GenesisSpec, SignedTransaction, State, Wallet,
@@ -21,10 +21,11 @@ use serde_json::Value;
 
 use crate::config::DevnetConfig;
 use crate::error::NodeError;
+use crate::forced::ForcedIntents;
 use crate::gateway::{Gateway, GatewayInput};
 use crate::keys::{NodeVerifier, SignatureMode, ValidatorKeys};
 use crate::prover::{self, ProverHandle};
-use crate::storage::{replay, Snapshot, Wal};
+use crate::storage::{replay, LaneLog, Snapshot, Wal};
 use crate::validator::{Bus, Input, Shared, Validator, ValidatorSetup};
 use crate::view::{Query, SubmitReceipt, TxStatus, TxView};
 
@@ -81,9 +82,13 @@ pub fn devnet_genesis(config: &DevnetConfig) -> GenesisSpec {
     }
 }
 
+/// A validator's lane log and the live lane locks restored from it.
+type RecoveredLanes = (Option<LaneLog>, Vec<(ShardId, LaneRequest)>);
+
 struct Recovery {
     epoch: u64,
-    states: Vec<(State, Beacon, Option<Wal>)>,
+    states: Vec<(State, Beacon, ForcedIntents, Option<Wal>)>,
+    lanes: Vec<RecoveredLanes>,
 }
 
 fn recover(
@@ -96,8 +101,16 @@ fn recover(
     let Some(dir) = &config.data_dir else {
         return Ok(Recovery {
             epoch: 0,
+            lanes: (0..n).map(|_| (None, Vec::new())).collect(),
             states: (0..n)
-                .map(|_| (genesis_state.clone(), genesis_beacon.clone(), None))
+                .map(|_| {
+                    (
+                        genesis_state.clone(),
+                        genesis_beacon.clone(),
+                        ForcedIntents::new(config.forced_window),
+                        None,
+                    )
+                })
                 .collect(),
         });
     };
@@ -124,32 +137,66 @@ fn recover(
     let mut states = Vec::with_capacity(n);
     for index in 0..n {
         let (wal, recovered) = Wal::open(&dir.join(format!("validator-{index}")), config.fsync)?;
-        let (base, beacon) = match recovered.snapshot {
-            Some(snapshot) => (snapshot.state, snapshot.beacon),
-            None => (genesis_state.clone(), genesis_beacon.clone()),
+        let (base, beacon, forced) = match recovered.snapshot {
+            Some(snapshot) => (snapshot.state, snapshot.beacon, snapshot.forced),
+            None => (
+                genesis_state.clone(),
+                genesis_beacon.clone(),
+                ForcedIntents::new(config.forced_window),
+            ),
         };
-        let (state, beacon) = replay(base, beacon, &recovered.records)?;
-        states.push((state, beacon, Some(wal)));
+        let (state, beacon, forced) = replay(
+            base,
+            beacon,
+            forced,
+            &recovered.records,
+            config.shards.max(1),
+        )?;
+        states.push((state, beacon, forced, Some(wal)));
     }
     // Validators stop together, but a validator may have logged one Pulse
     // more than another; replicas are deterministic, so the laggards adopt
     // the most advanced state (state sync) and snapshot it.
     let best = (0..n).max_by_key(|i| states[*i].0.pulse).unwrap_or(0);
-    let (best_state, best_beacon) = (states[best].0.clone(), states[best].1.clone());
-    for (state, beacon, wal) in states.iter_mut() {
+    let (best_state, best_beacon, best_forced) = (
+        states[best].0.clone(),
+        states[best].1.clone(),
+        states[best].2.clone(),
+    );
+    for (state, beacon, forced, wal) in states.iter_mut() {
         if state.pulse < best_state.pulse {
             *state = best_state.clone();
             *beacon = best_beacon.clone();
+            *forced = best_forced.clone();
             if let Some(wal) = wal {
                 wal.snapshot(&Snapshot {
                     state: state.clone(),
                     beacon: beacon.clone(),
+                    forced: forced.clone(),
                     epoch,
                 })?;
             }
         }
     }
-    Ok(Recovery { epoch, states })
+    // Lane locks survive the restart: each validator restores the locks of
+    // transactions that have neither executed nor expired, and compacts its
+    // log to them.
+    let mut lanes = Vec::with_capacity(n);
+    for (index, (state, _, _, _)) in states.iter().enumerate() {
+        let (mut log, entries) =
+            LaneLog::open(&dir.join(format!("validator-{index}")), config.fsync)?;
+        let live: Vec<(ShardId, LaneRequest)> = entries
+            .into_iter()
+            .filter(|(_, request)| crate::owners::lock_is_live(state, request))
+            .collect();
+        log.compact(&live)?;
+        lanes.push((Some(log), live));
+    }
+    Ok(Recovery {
+        epoch,
+        states,
+        lanes,
+    })
 }
 
 impl Devnet {
@@ -229,11 +276,13 @@ impl Devnet {
             .map(|_| prover::spawn(shared.clone(), proven.clone()));
 
         let mut threads = Vec::new();
-        for (index, ((receiver, (state, beacon, wal)), chain)) in receivers
-            .into_iter()
-            .zip(recovery.states)
-            .zip(chains)
-            .enumerate()
+        for (index, (((receiver, (state, beacon, forced, wal)), chain), (lane_log, lane_locks))) in
+            receivers
+                .into_iter()
+                .zip(recovery.states)
+                .zip(chains)
+                .zip(recovery.lanes)
+                .enumerate()
         {
             let setup = ValidatorSetup {
                 index,
@@ -250,11 +299,15 @@ impl Devnet {
                     None
                 },
                 proven: proven.clone(),
+                forced,
+                lane_log,
+                lane_locks,
             };
             let validator = Validator::new(shared.clone(), setup);
             threads.push(
                 thread::Builder::new()
                     .name(format!("validator-{index}"))
+                    .stack_size(crate::THREAD_STACK_BYTES)
                     .spawn(move || validator.run())?,
             );
         }
@@ -267,6 +320,7 @@ impl Devnet {
         threads.push(
             thread::Builder::new()
                 .name("gateway".into())
+                .stack_size(crate::THREAD_STACK_BYTES)
                 .spawn(move || gateway.run())?,
         );
         Ok(Devnet {
@@ -309,6 +363,45 @@ impl Devnet {
         answer
             .recv_timeout(Duration::from_secs(10))
             .map_err(|_| "gateway did not answer".to_string())?
+    }
+
+    /// Posts a forced intent: the transaction goes straight to every
+    /// validator's proposals, bypassing the gateway (any honest proposer is
+    /// enough). Its shard then has `forced_window` Pulses to execute it or
+    /// show it invalid.
+    pub fn force(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
+        let digest = tx.digest();
+        let shard = fold_core::ids::ShardId::for_account(&tx.tx.sender, self.shared.config.shards);
+        let item = crate::payload::PayloadItem::Forced { tx: Box::new(tx) }.to_bytes();
+        for sender in &self.bus.validators {
+            let _ = sender.send(Input::Submit(item.clone()));
+        }
+        Ok(SubmitReceipt {
+            digest,
+            route: "forced".into(),
+            shard: Some(shard.0),
+        })
+    }
+
+    /// **Adversary simulation (devnet only).** Censors these accounts: the
+    /// gateway drops their transactions silently if `gateway`, and the
+    /// first `validators` validators ignore their lane requests and drop
+    /// their transactions from proposals. An empty list stops censorship.
+    pub fn censor(&self, accounts: Vec<AccountId>, gateway: bool, validators: usize) {
+        let censored: std::collections::BTreeSet<AccountId> = accounts.into_iter().collect();
+        let _ = self.bus.gateway.send(GatewayInput::Censor {
+            accounts: if gateway {
+                censored.clone()
+            } else {
+                Default::default()
+            },
+        });
+        for (index, sender) in self.bus.validators.iter().enumerate() {
+            let _ = sender.send(Input::Adversary {
+                censored: censored.clone(),
+                censor: index < validators,
+            });
+        }
     }
 
     /// Queues faucet grants.

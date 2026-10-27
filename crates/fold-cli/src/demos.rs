@@ -534,7 +534,8 @@ pub fn market(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
             ("lab-b", gpu(), usd(6)),
         ],
     )?;
-    let batch_length = 6;
+    // Long enough that all four orders land in one batch on a slow machine.
+    let batch_length = 12;
     let view = session.must(
         "operator",
         TxKind::CreateMarket {
@@ -778,7 +779,135 @@ pub fn light(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     Ok(())
 }
 
-/// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `light`, `all`).
+/// Censorship resistance: a censored user gets through with a forced
+/// intent; when too many validators censor, certified headers show it.
+pub fn censorship(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    out.say("== Censorship resistance: forced inclusion makes censorship visible ==");
+    fund_all(session, &[("dissident", AssetId::usd(), usd(100))])?;
+    let dissident = session.id("dissident");
+    session.wallet("dissident").validity = 200;
+    let alice = session.id("alice");
+    let names = session.names();
+    let window = session.ledger.query(fold_node::Query::Forced)?["window"]
+        .as_u64()
+        .unwrap_or(8);
+    let build = |session: &mut Session<'_>, amount: u64| {
+        let view = crate::session::RemoteView::new(session.ledger, session.config.clone());
+        session.wallet("dissident").build(
+            &view,
+            TxKind::Transfer {
+                asset: AssetId::usd(),
+                outputs: vec![(alice, usd(amount))],
+            },
+            Vec::new(),
+        )
+    };
+
+    // 1. The gateway censors the dissident.
+    session.ledger.censor(&[dissident], true, 0)?;
+    out.say("           ADVERSARY SIMULATION: the gateway now drops every transaction from dissident, silently");
+    let tx = build(session, 5)?;
+    let receipt = session.ledger.submit(&tx)?;
+    out.say(format!(
+        "           dissident signs: {}",
+        crate::describe::sentence(&names, &tx.tx)
+    ));
+    session.wait_pulses(3)?;
+    let ignored = !matches!(
+        session.ledger.tx(receipt.digest)?,
+        crate::ledger::TxState::Executed(_)
+    );
+    out.say(format!(
+        "           3 Pulses later: {}",
+        if ignored {
+            "not executed; the gateway acknowledged it and did nothing"
+        } else {
+            "executed (the gateway did not censor after all)"
+        }
+    ));
+    // 2. The dissident posts it straight to consensus.
+    session.ledger.force(&tx)?;
+    let view = session.wait(receipt.digest)?;
+    session.wallet("dissident").settle();
+    out.say(format!(
+        "Pulse {:>3}  posted as a forced intent: one honest proposer ordered it, the shard's validators certified it among themselves",
+        view.pulse
+    ));
+    out.say(format!(
+        "           {}",
+        crate::describe::receipt(&names, &view.effects)
+    ));
+
+    // 3. Now more than a third of the committee censors too.
+    session.ledger.censor(&[dissident], true, 2)?;
+    out.say("           ADVERSARY SIMULATION: 2 of the 4 validators now censor dissident as well (a quorum needs 3)");
+    let tx = build(session, 7)?;
+    let receipt = session.ledger.force(&tx)?;
+    let posted = session.ledger.pulse()?;
+    // Wait until the shard is overdue on it, then until a certified header
+    // says so.
+    let deadline = Instant::now() + session.timeout;
+    let overdue_at: Pulse = loop {
+        let forced = session.ledger.query(fold_node::Query::Forced)?;
+        if forced["summary"]["overdue"].as_u64().unwrap_or(0) > 0 {
+            break serde_json::from_value(forced["pulse"].clone())
+                .map_err(|e| CliError::Protocol(e.to_string()))?;
+        }
+        if Instant::now() > deadline {
+            return Err(CliError::Transaction(
+                "the forced intent never fell due".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    out.say(format!(
+        "           forced intent posted around Pulse {posted}; by Pulse {overdue_at} it is OVERDUE (window {window} Pulses): the shard owes it and cannot certify it"
+    ));
+    loop {
+        let certified: Pulse =
+            serde_json::from_value(session.ledger.status()?["certified_pulse"].clone())
+                .map_err(|e| CliError::Protocol(e.to_string()))?;
+        if certified >= overdue_at {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(CliError::Transaction("no certified header".into()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let report = crate::verify::verify_pulse(
+        session.ledger,
+        Some(session_chain(session)?),
+        Some(overdue_at),
+        8,
+        false,
+    )?;
+    if let Some(line) = report.iter().find(|l| l.starts_with("forced inclusion")) {
+        out.say(format!("           light client: {line}"));
+    }
+
+    // 4. The censors stop; the overdue intent executes, late.
+    session.ledger.censor(&[], false, 0)?;
+    let view = session.wait(receipt.digest)?;
+    session.wallet("dissident").settle();
+    out.say(format!(
+        "Pulse {:>3}  censorship lifted: the intent executes late, and the record shows it: {}",
+        view.pulse,
+        crate::describe::receipt(&names, &view.effects)
+    ));
+    out.say("Result: a censoring gateway is routed around; a censoring third of a committee cannot hide, because every certified header counts what it owes.");
+    Ok(())
+}
+
+fn session_chain(session: &Session<'_>) -> Result<fold_core::hash::Hash32, CliError> {
+    let validators = session.ledger.query(fold_node::Query::Validators)?;
+    let chain: fold_light::ChainSpec = serde_json::from_value(validators["chain"].clone())
+        .map_err(|e| CliError::Protocol(e.to_string()))?;
+    Ok(chain.id())
+}
+
+/// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `light`,
+/// `censorship`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
@@ -786,6 +915,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
         "market" => market(session, out),
         "receipts" => receipts(session, out),
         "light" => light(session, out),
+        "censorship" => censorship(session, out),
         "all" => {
             invoice(session, out)?;
             out.say("");
@@ -795,10 +925,12 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             out.say("");
             receipts(session, out)?;
             out.say("");
+            censorship(session, out)?;
+            out.say("");
             light(session, out)
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, market, receipts, light or all"
+            "unknown demo {other:?}; try invoice, agents, market, receipts, censorship, light or all"
         ))),
     }
 }

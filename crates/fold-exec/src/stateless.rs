@@ -88,7 +88,8 @@ pub fn replay_chunk(trace: &ChunkTrace) -> Result<ReplayReport, ExecError> {
         return Err(invalid("configuration does not match the commitment"));
     }
     if after.pulse != statement.pulse
-        || (before.pulse != statement.pulse && before.pulse.next() != statement.pulse)
+        || (before.pulse != statement.pulse
+            && before.pulse.0.checked_add(1) != Some(statement.pulse.0))
     {
         return Err(invalid("commitments are not for this Pulse"));
     }

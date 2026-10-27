@@ -132,6 +132,26 @@ enum Command {
         /// Asset.
         #[arg(long, default_value = "usd")]
         asset: String,
+        /// Post it as a forced intent, straight to consensus, bypassing the
+        /// gateway (for when your transactions are being ignored).
+        #[arg(long)]
+        forced: bool,
+    },
+    /// Forced-inclusion obligations: intents posted directly to consensus
+    /// that their shard has not yet executed, and any that are overdue.
+    Forced,
+    /// ADVERSARY SIMULATION (devnet only): censor accounts at the gateway
+    /// and/or at the first N validators. No accounts: stop censoring.
+    Censor {
+        /// Wallet names or account IDs to censor.
+        accounts: Vec<String>,
+        /// The gateway drops their transactions silently.
+        #[arg(long)]
+        gateway: bool,
+        /// This many validators ignore them too (more than a third of a
+        /// committee can stall certification).
+        #[arg(long, default_value_t = 0)]
+        validators: usize,
     },
     /// Post a bond behind your bonded atom `bond:<you>:<label>`.
     Bond {
@@ -236,7 +256,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, market, receipts, light or all.
+    /// Run a scripted demo: invoice, agents, market, receipts, censorship, light or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -635,17 +655,42 @@ fn run(cli: Cli) -> Result<(), CliError> {
             to,
             amount,
             asset,
+            forced,
         } => {
             let to = session.id(&to);
-            let view = session.send(
-                &from,
-                TxKind::Transfer {
-                    asset: parse_asset(&asset),
-                    outputs: vec![(to, parse_amount(&amount)?)],
-                },
-                Vec::new(),
-            )?;
+            let kind = TxKind::Transfer {
+                asset: parse_asset(&asset),
+                outputs: vec![(to, parse_amount(&amount)?)],
+            };
+            let view = if forced {
+                session.force(&from, kind, Vec::new())?
+            } else {
+                session.send(&from, kind, Vec::new())?
+            };
             show_tx(&session.names(), &view);
+        }
+        Command::Forced => print(&ledger.query(fold_node::Query::Forced)?),
+        Command::Censor {
+            accounts,
+            gateway,
+            validators,
+        } => {
+            let ids: Vec<_> = accounts.iter().map(|a| session.id(a)).collect();
+            ledger.censor(&ids, gateway, validators)?;
+            if ids.is_empty() {
+                println!("censorship stopped");
+            } else {
+                println!(
+                    "ADVERSARY SIMULATION: censoring {} account(s){}{}",
+                    ids.len(),
+                    if gateway { " at the gateway" } else { "" },
+                    if validators > 0 {
+                        format!(" and at {validators} validator(s)")
+                    } else {
+                        String::new()
+                    }
+                );
+            }
         }
         Command::Bond {
             from,

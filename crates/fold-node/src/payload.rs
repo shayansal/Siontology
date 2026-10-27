@@ -71,6 +71,13 @@ pub enum PayloadItem {
         /// The hash-chain preimage.
         value: Hash32,
     },
+    /// A forced intent: a transaction its sender posted directly to
+    /// consensus, which its shard must now execute or show invalid within
+    /// the forced-inclusion window (see [`crate::forced`]).
+    Forced {
+        /// The transaction.
+        tx: Box<SignedTransaction>,
+    },
 }
 
 impl PayloadItem {
@@ -82,6 +89,15 @@ impl PayloadItem {
     /// Parses canonical bytes.
     pub fn from_bytes(bytes: &[u8]) -> Option<PayloadItem> {
         decode(bytes).ok()
+    }
+
+    /// The senders of the transactions this item carries.
+    pub fn senders(&self) -> Vec<fold_core::ids::AccountId> {
+        match self {
+            PayloadItem::Certified { txs, .. } => txs.iter().map(|t| t.tx.tx.sender).collect(),
+            PayloadItem::Forced { tx } => vec![tx.tx.sender],
+            PayloadItem::Reveal { .. } => Vec::new(),
+        }
     }
 
     /// Groups certified transactions, sharing batch headers.
@@ -186,7 +202,7 @@ mod tests {
             expires_at: Pulse(100),
             nonce,
         }
-        .sign(&wallet.keys)
+        .sign(&wallet.keys, &fold_exec::ChainConfig::devnet(None))
         .expect("sign")
     }
 

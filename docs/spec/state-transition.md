@@ -1,4 +1,4 @@
-# The Fold state transition — specification v1.1
+# The Fold state transition — specification v1.2
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/fold-exec`, proof stack A) and an
@@ -27,7 +27,11 @@ It does **not** re-specify:
   `fold_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
   `assurance`, `tx`, `state`, `pulse::{ChunkStatement, ChunkTrace, Witness,
   PulseInput}`, `execute::{Deferred, Event, ExecStatus, TxEffects}`) are
-  normative; their canonical encoding is Borsh.
+  normative; their canonical encoding is Borsh. One rule goes beyond the
+  layout: a `Formula` nested deeper than 64 levels
+  (`fold_assurance::formula::MAX_DECODE_DEPTH`, counted as
+  `Formula::depth`) is not a valid encoding, so a transaction carrying one
+  fails to decode and never enters a Pulse.
 - **Shared primitives.** Both implementations use, and trust as separate
   atoms of the World Proof's formula: hashing and Merkle structures
   (`fold_core`), signature verification (`fold_crypto`), the Assurance
@@ -47,7 +51,7 @@ helpers `Transaction::{digest, domain, class, size}`,
 as_coin}`, `ChainConfig::{min_fee, digest}`, `Payload::size`,
 `WorldCommitment::digest`, `ChunkStatement::digest`, `claim::{claim_id,
 knowledge_leaf, formulas::*}`, `object::{created_id, well_known::*}`,
-`tx::object_domain`, `market::sealing_aad`, and
+`tx::object_domain`, `tx::signing_context`, `market::sealing_aad`, and
 `execute::{bond_atom, registered_atom, bond_owner}`.
 
 ## 1. Conventions
@@ -167,7 +171,8 @@ committed.
 In this order; any failure is a **rejection**:
 
 1. `ctx.pulse > tx.expires_at` → reject (expired).
-2. `tx.inputs` empty → reject. Duplicate input ids → reject.
+2. `tx.inputs` empty, or longer than `MAX_INPUTS` (256,
+   `fold_exec::tx::MAX_INPUTS`) → reject. Duplicate input ids → reject.
 3. If the kind is `Faucet`, `tx.fee ≠ 0` → reject. Otherwise `tx.fee <
    ctx.config.min_fee(tx.size())` → reject.
 4. Account: `try_load(well_known::account(tx.sender))`.
@@ -179,7 +184,11 @@ In this order; any failure is a **rejection**:
      `Object { id: well_known::account(sender), version: 0, owner:
      Account(sender), data: Account(AccountState { id: sender, policy,
      viewing_key: None, created_at: ctx.pulse, rotations: 0 }) }`.
-5. `policy.verify(TX_DOMAIN, digest bytes, &signed.auth)` MUST succeed.
+5. `policy.verify(signing_context(ctx.config), digest bytes, &signed.auth)`
+   MUST succeed, where `signing_context(config)` is `TX_DOMAIN`, a `/`, and
+   `config.digest()` in lowercase hex (`fold_exec::tx::signing_context`).
+   A transaction signed for one chain therefore never verifies on a chain
+   with another configuration.
 6. For each input `r` at position `i`, in order: `load(r.id)`; its version
    MUST equal `r.version`; its owner MUST be `Owner::Account(tx.sender)`; it
    MUST NOT be a tombstone. (An input may be the account object stored in
@@ -427,7 +436,8 @@ Load it (MUST be a charter); `principal` MUST be the sender; if
 
 ### 5.18 CreateBounded { label, asset, total, allotments }
 
-1. `allotted = Σ amounts`; `allotted ≤ total`.
+1. At most `MAX_ALLOTMENTS` (256, `fold_exec::escrow::MAX_ALLOTMENTS`)
+   allotments; `allotted = Σ amounts`; `allotted ≤ total`.
 2. `draw(asset, total)`.
 3. `bounded_id = created_id(digest, next_index)`;
    `create(Shared(object_domain("bounded", bounded_id)), BoundedTotal {
@@ -519,11 +529,12 @@ batches: ∅ })`; event `MarketCreated { market: market_id }`.
    orders with known terms mapped to `Order { id, owner, side, quantity,
    limit_price }`.
 4. `verified = fold_clearing::verify_clearing(&batch, result)` (errors are
-   errors); `price = verified.price`; `fills` = `result.fills` as a map
+   errors; among them, a certificate value whose numerator or denominator
+   is longer than `fold_lp::MAX_VALUE_BITS`, 512 bits); `price = verified.price`; `fills` = `result.fills` as a map
    order id → quantity.
 5. For each order of the batch in order, with `filled = fills[id]` or 0:
    - if its terms are known, `price` is set and `filled > 0`: `value =
-     price × filled`; a buy receives `(good, units(filled))` and refunds
+     price × filled` (an overflow is an error); a buy receives `(good, units(filled))` and refunds
      `escrow − value`; a sell receives `(numeraire, value)` and refunds
      `escrow − units(filled)`;
    - otherwise it receives nothing and refunds its whole escrow;
@@ -611,7 +622,10 @@ commutes, so their order does not matter):
   issuer, formula, adjudicator, detection: Ratio::permille(detection_permille),
   issued_at: ctx.pulse, valid_until: ctx.pulse + valid_for (saturating),
   challenge_until: valid_until + challenge_period (saturating), status:
-  Active, sequence: 0 }`. Otherwise: append the leaf `knowledge_leaf(
+  Active, sequence: 0 }`. (Among its failures: a formula nesting deeper
+  than `MAX_FORMULA_DEPTH`, 32, or a chain of claim references longer than
+  `MAX_CLAIM_DEPTH`, 16, counting the new claim; both are
+  `fold_assurance::registry` constants.) Otherwise: append the leaf `knowledge_leaf(
   StoredClaim { id, issuer, body, issued_at: ctx.pulse, log_index: <log
   size before appending> })` to the knowledge log; schedule `RegistryTick`
   at `valid_until`; event `ClaimIssued { claim, log_index }`.
@@ -620,7 +634,9 @@ commutes, so their order does not matter):
   continue). `index = ctx.pulse / max(batch_length, 1)`; `seal_at = (index +
   1) × max(batch_length, 1) − 1` (the addition and multiplication
   saturating); get or create batch `index` (status
-  `Open`, no orders). If its status is not `Open`, pay the escrow back.
+  `Open`, no orders). If its status is not `Open`, or it already holds
+  `MAX_BATCH_ORDERS` (1,024, `fold_exec::market::MAX_BATCH_ORDERS`) orders,
+  pay the escrow back.
   Otherwise insert the order keeping the batch's orders sorted by id; if
   the batch had no orders before, schedule `SealBatch { market, batch:
   index }` at `seal_at`.
@@ -754,6 +770,20 @@ header: the same `pulse`, `before`, `after`, `receipts_root`, `data_root`,
 committees that the chain identity fixes for the header's epoch.
 
 ## Changes
+
+- **v1.2.** From independent reviews of the node and of the
+  consensus-critical libraries: transaction signatures are bound to the
+  chain configuration (§4.1), so they cannot be replayed on another chain;
+  a transaction names at most 256 inputs (§4.1); a bounded total has at
+  most 256 allotments (§5.18); a batch holds at most 1,024 orders (§6.3);
+  and two limits enforced by the shared libraries are written down: claim
+  references and formulas have bounded depth (the unbounded chain could
+  overflow a validator's stack), and certificate values have bounded size
+  (§5.25, §6.3). Reservation splits are now computed exactly (they
+  overflowed for large capacities). Formulas nested deeper than 64 levels
+  no longer decode (§0): decoding, sizing and evaluating a formula recurse
+  once per level, so a hostile transaction could otherwise overflow the
+  stack of whichever thread decoded it.
 
 - **v1.1.** From the differential testing of stack B against stack A:
   faucet transactions pay no fee and grants are capped (§4.1, §5.2);

@@ -42,6 +42,16 @@ fn all_demos_run_and_tell_the_truth() {
         "{text}"
     );
     assert!(text.contains("world proof:"), "{text}");
+    assert!(
+        text.contains("not executed; the gateway acknowledged it and did nothing"),
+        "{text}"
+    );
+    assert!(text.contains("posted as a forced intent"), "{text}");
+    assert!(
+        text.contains("light client: forced inclusion: 1 intent(s) OVERDUE"),
+        "{text}"
+    );
+    assert!(text.contains("censorship lifted"), "{text}");
     devnet.shutdown();
 }
 

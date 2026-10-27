@@ -252,7 +252,9 @@ fn check_structure(proof: &WorldProof) -> Result<(), ProveError> {
             )));
         }
     }
-    if proof.before.pulse.next() != proof.pulse || proof.after.pulse != proof.pulse {
+    if proof.before.pulse.0.checked_add(1) != Some(proof.pulse.0)
+        || proof.after.pulse != proof.pulse
+    {
         return Err(ProveError::Chain(
             "commitments are not for consecutive Pulses".into(),
         ));
@@ -340,6 +342,9 @@ pub fn verify_certificates<V: SignatureVerifier + ?Sized>(
     shard_count: u16,
     verifier: &V,
 ) -> Result<(), ProveError> {
+    if shard_count == 0 {
+        return Err(ProveError::Chain("the chain has no shards".into()));
+    }
     if proof.certificates.len() != proof.data.transactions.len() {
         return Err(ProveError::Chain("one certificate per transaction".into()));
     }
@@ -556,6 +561,17 @@ mod tests {
         let mut no_certificates = proof.clone();
         no_certificates.certificates.clear();
         assert!(verify_certificates(&no_certificates, &BTreeMap::new(), 1, &NoKeys).is_err());
+    }
+
+    /// Found by the security review: a forged proof for Pulse u64::MAX made
+    /// the structure check overflow instead of failing.
+    #[test]
+    fn forged_pulse_numbers_fail_cleanly() {
+        let (_, mut proof) = proven_chain();
+        proof.before.pulse = Pulse(u64::MAX);
+        assert!(verify_world_proof(&proof, &[&ReplayStack]).is_err());
+        let (_, proof) = proven_chain();
+        assert!(verify_certificates(&proof, &BTreeMap::new(), 0, &NoKeys).is_err());
     }
 
     #[test]

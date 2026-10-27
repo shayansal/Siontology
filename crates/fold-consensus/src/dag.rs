@@ -248,7 +248,12 @@ impl DagEvidence {
     pub fn verify<V: SignatureVerifier>(&self, committee: &Committee, verifier: &V) -> bool {
         match self {
             DagEvidence::HeaderEquivocation { first, second } => {
-                first.header.author == second.header.author
+                // Round numbers restart every epoch: two headers are only an
+                // equivocation within one epoch and shard.
+                first.header.epoch == second.header.epoch
+                    && first.header.shard == second.header.shard
+                    && first.header.epoch == committee.epoch()
+                    && first.header.author == second.header.author
                     && first.header.round == second.header.round
                     && first.header.digest() != second.header.digest()
                     && committee.contains(&first.header.author)

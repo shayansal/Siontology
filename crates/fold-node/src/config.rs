@@ -45,6 +45,8 @@ pub struct DevnetConfig {
     pub prove_chunk: Option<usize>,
     /// Pulses of history (outputs, data squares, traces) kept in memory.
     pub history: usize,
+    /// Pulses a shard has to execute (or show invalid) a forced intent.
+    pub forced_window: u64,
 }
 
 impl Default for DevnetConfig {
@@ -68,11 +70,15 @@ impl Default for DevnetConfig {
                 resend_interval_ms: 600,
                 gc_depth: 50,
                 max_items_per_header: 2_000,
+                max_payload_bytes: 512 * 1024,
+                max_rounds_ahead: 64,
+                max_pending_headers: 4_096,
                 repropose_after_rounds: 8,
                 leader_schedule: fold_consensus::LeaderSchedule::RoundRobin,
             },
             prove_chunk: Some(16),
             history: 256,
+            forced_window: crate::forced::DEFAULT_WINDOW,
         }
     }
 }

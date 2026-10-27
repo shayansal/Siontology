@@ -20,7 +20,8 @@ pub mod proofs;
 pub use chain::ChainSpec;
 pub use error::LightError;
 pub use header::{
-    verify_certificate, verify_header_chain, PulseCertificate, PulseHeader, ValidatorSet,
+    verify_certificate, verify_header_chain, ForcedSummary, PulseCertificate, PulseHeader,
+    ValidatorSet,
 };
 pub use proofs::{
     verify_claim, verify_object, verify_receipt, ClaimProof, ObjectProof, ReceiptProof,

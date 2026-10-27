@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use fold_core::ids::{AccountId, AssetId, ObjectId};
 use fold_core::Amount;
 use fold_exec::charter::Allotment;
-use fold_exec::escrow::BoundedTotal;
+use fold_exec::escrow::{BoundedTotal, MAX_ALLOTMENTS};
 use fold_exec::execute::{Deferred, Event};
 use fold_exec::object::{ObjectData, Owner};
 use fold_exec::tx::object_domain;
@@ -60,6 +60,9 @@ pub(super) fn create_bounded(
     total: Amount,
     allotments: &[(AccountId, Amount)],
 ) -> Step {
+    if allotments.len() > MAX_ALLOTMENTS {
+        return Err(fail(format!("at most {MAX_ALLOTMENTS} allotments")));
+    }
     let allotted = Amount::sum(allotments.iter().map(|(_, amount)| amount))?;
     if allotted > total {
         return Err(fail("allotments exceed the total"));

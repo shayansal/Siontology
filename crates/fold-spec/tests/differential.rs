@@ -267,9 +267,10 @@ impl Harness {
             .unwrap_or_else(|e| panic!("{name} cannot build the transaction: {e}"))
     }
 
-    /// Signs an edited transaction body with `name`'s keys.
+    /// Signs an edited transaction body with `name`'s keys, for this chain.
     fn resign(&self, name: &str, body: Transaction) -> SignedTransaction {
-        body.sign(&self.chain.wallet(name).keys).expect("signing")
+        body.sign(&self.chain.wallet(name).keys, &self.chain.state.config)
+            .expect("signing")
     }
 
     fn reference(&self, id: &ObjectId) -> ObjectRef {
@@ -4686,4 +4687,219 @@ fn stack_a_bounds_scenario_verifies() {
     expect(&out, &deep, Outcome::Failed);
     h.assert_minimal_witnesses();
     h.summary("stack A bounds scenario");
+}
+
+// ---------------------------------------------------------------------------
+// Spec v1.2 boundaries
+// ---------------------------------------------------------------------------
+
+#[test]
+fn probe_signatures_are_bound_to_the_chain() {
+    // §4.1 step 5 (v1.2): signatures verify under `signing_context(config)`,
+    // so a transaction signed for another chain, or under the bare
+    // transaction domain, is rejected; the same body signed for this chain
+    // succeeds.
+    let mut h = Harness::new(&["alice", "bob"], 1_000, 4, 1);
+    let bob = h.id("bob");
+    let body = h
+        .tx(
+            "alice",
+            TxKind::Transfer {
+                asset: usd(),
+                outputs: vec![(bob, units(3))],
+            },
+        )
+        .tx;
+    let mut elsewhere = h.chain.state.config.clone();
+    elsewhere.chain_id = "another-chain".into();
+    let keys = h.chain.wallet("alice").keys.clone();
+    let foreign = body.clone().sign(&keys, &elsewhere).expect("signing");
+    let bare = SignedTransaction {
+        auth: keys
+            .authorize(fold_exec::tx::TX_DOMAIN, &body.digest().0 .0)
+            .expect("signing"),
+        tx: body.clone(),
+    };
+    let out = h.pulse(vec![foreign.clone()]);
+    expect(&out, &foreign, Outcome::Rejected);
+    let out = h.pulse(vec![bare.clone()]);
+    expect(&out, &bare, Outcome::Rejected);
+    let native = h.resign("alice", body);
+    let out = h.pulse(vec![native.clone()]);
+    expect(&out, &native, Outcome::Success);
+    h.assert_minimal_witnesses();
+    h.summary("chain-bound signatures");
+}
+
+#[test]
+fn probe_input_count_limit() {
+    // §4.1 step 2 (v1.2): at most MAX_INPUTS (256) inputs.
+    use fold_exec::tx::MAX_INPUTS;
+    let mut h = Harness::new(&["whale", "bob"], 300_000, 300, 1);
+    let (whale, bob) = (h.id("whale"), h.id("bob"));
+    let coins: Vec<ObjectRef> = h
+        .chain
+        .state
+        .coins_of(&whale)
+        .iter()
+        .map(|coin| coin.reference())
+        .collect();
+    assert!(coins.len() > MAX_INPUTS);
+    let with_inputs = |h: &Harness, inputs: &[ObjectRef], nonce: u64| {
+        let mut body = Transaction {
+            sender: whale,
+            genesis_policy: None,
+            inputs: inputs.to_vec(),
+            fee: Amount::ZERO,
+            kind: TxKind::Transfer {
+                asset: usd(),
+                outputs: vec![(bob, units(1))],
+            },
+            expires_at: Pulse(h.pulse_number() + 10),
+            nonce,
+        };
+        body.fee = h.chain.state.config.min_fee(body.size());
+        h.resign("whale", body)
+    };
+    let too_many = with_inputs(&h, &coins[..=MAX_INPUTS], 1);
+    let out = h.pulse(vec![too_many.clone()]);
+    expect(&out, &too_many, Outcome::Rejected);
+    let most = with_inputs(&h, &coins[..MAX_INPUTS], 2);
+    let out = h.pulse(vec![most.clone()]);
+    expect(&out, &most, Outcome::Success);
+    let consumed = out
+        .effects
+        .iter()
+        .find(|e| e.digest == most.digest())
+        .map(|e| e.consumed.len())
+        .unwrap();
+    assert_eq!(consumed, MAX_INPUTS, "every input coin is drawn");
+    h.assert_minimal_witnesses();
+    h.summary("input limit");
+}
+
+#[test]
+fn probe_allotment_count_limit() {
+    // §5.18 (v1.2): at most MAX_ALLOTMENTS (256) allotments.
+    use fold_exec::escrow::MAX_ALLOTMENTS;
+    let mut h = Harness::new(&["manager", "writer"], 10_000, 4, 1);
+    let writer = h.id("writer");
+    let create = |h: &mut Harness, count: usize| {
+        h.tx(
+            "manager",
+            TxKind::CreateBounded {
+                label: format!("{count} allotments"),
+                asset: usd(),
+                total: units(1_000),
+                allotments: vec![(writer, Amount(1)); count],
+            },
+        )
+    };
+    let most = create(&mut h, MAX_ALLOTMENTS);
+    let too_many = create(&mut h, MAX_ALLOTMENTS + 1);
+    let out = h.pulse(vec![most.clone(), too_many.clone()]);
+    expect(&out, &most, Outcome::Success);
+    expect(&out, &too_many, Outcome::Failed);
+    let created = out
+        .effects
+        .iter()
+        .find(|e| e.digest == most.digest())
+        .map(|e| e.created.len())
+        .unwrap();
+    // The bounded total and its allotments (plus the change coin).
+    assert!(created > MAX_ALLOTMENTS);
+    h.assert_minimal_witnesses();
+    h.summary("allotment limit");
+}
+
+#[test]
+fn probe_batch_order_limit() {
+    // §6.3 AddOrder (v1.2): a batch holds at most MAX_BATCH_ORDERS (1,024)
+    // orders; later orders in its window are refunded at the end of their
+    // Pulse.
+    use fold_exec::market::MAX_BATCH_ORDERS;
+    const TRADERS: [&str; 5] = ["t0", "t1", "t2", "t3", "t4"];
+    let mut names = vec!["operator"];
+    names.extend(TRADERS);
+    let mut h = Harness::new(&names, 10_000, 215, 128);
+    let tx = h.tx(
+        "operator",
+        TxKind::CreateMarket {
+            label: "crowded".into(),
+            good: gpu(),
+            numeraire: usd(),
+            batch_length: 4,
+            clear_deadline: 2,
+            committee: Vec::new(),
+            threshold: 0,
+        },
+    );
+    let out = h.pulse(vec![tx]);
+    let market = all_events(&out)
+        .into_iter()
+        .find_map(|e| match e {
+            Event::MarketCreated { market } => Some(market),
+            _ => None,
+        })
+        .expect("market");
+    align_to_window(&mut h);
+    let tiny = |h: &mut Harness, who: &str| {
+        h.tx(
+            who,
+            TxKind::SubmitOrder {
+                market,
+                submission: Submission::Plain(OrderTerms {
+                    side: Side::Buy,
+                    quantity: 1,
+                    limit_price: Amount(1),
+                }),
+            },
+        )
+    };
+    // One Pulse with MAX_BATCH_ORDERS + 1 orders: the 1,025th in sort order
+    // (by order id) is refunded.
+    let orders: Vec<SignedTransaction> = (0..=MAX_BATCH_ORDERS)
+        .map(|i| tiny(&mut h, TRADERS[i % TRADERS.len()]))
+        .collect();
+    let out = h.pulse(orders.clone());
+    for tx in &orders {
+        expect(&out, tx, Outcome::Success);
+    }
+    let pulse = h.pulse_number();
+    let state = market_state(&h, &market);
+    let index = pulse / state.batch_length;
+    let batch = &state.batches[&index];
+    assert_eq!(batch.orders.len(), MAX_BATCH_ORDERS);
+    let highest = orders
+        .iter()
+        .map(|tx| fold_core::hash::hash_parts("fold/market/order", &[&tx.digest().0 .0]))
+        .max()
+        .unwrap();
+    assert!(batch.orders.iter().all(|order| order.id != highest));
+    assert!(h
+        .chain
+        .state
+        .objects
+        .contains_key(&deferred_coin_id(Pulse(pulse), 0)));
+    // The next Pulse is in the same window: the full batch refunds again.
+    let late = tiny(&mut h, "t0");
+    let out = h.pulse(vec![late.clone()]);
+    expect(&out, &late, Outcome::Success);
+    assert!(h
+        .chain
+        .state
+        .objects
+        .contains_key(&deferred_coin_id(Pulse(pulse + 1), 0)));
+    assert_eq!(
+        market_state(&h, &market).batches[&index].orders.len(),
+        MAX_BATCH_ORDERS
+    );
+    // Nobody clears: the deadline refunds all 1,024 orders in one phase.
+    h.advance(6);
+    assert_eq!(
+        market_state(&h, &market).batches[&index].status,
+        BatchStatus::Refunded
+    );
+    h.assert_minimal_witnesses();
+    h.summary("batch order limit");
 }

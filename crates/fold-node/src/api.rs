@@ -17,6 +17,9 @@
 //! | GET | `/v1/pulses/{n}/data/{row}/{column}` | one data share with its proof |
 //! | GET | `/v1/pulses/{n}/world` | the World Proof |
 //! | GET | `/v1/events?from=&limit=` | events |
+//! | POST | `/v1/forced` | post a forced intent `{tx: hex}`, bypassing the gateway |
+//! | GET | `/v1/forced` | forced-inclusion obligations: pending, overdue, resolved |
+//! | POST | `/v1/devnet/censor` | **adversary simulation**: `{accounts: [hex], gateway, validators}` |
 
 use std::io::Read;
 use std::sync::Arc;
@@ -80,6 +83,7 @@ pub fn serve(devnet: Arc<Devnet>, address: &str) -> Result<ApiHandle, NodeError>
         threads.push(
             thread::Builder::new()
                 .name(format!("api-{worker}"))
+                .stack_size(crate::THREAD_STACK_BYTES)
                 .spawn(move || {
                     while let Ok(request) = server.recv() {
                         handle(&devnet, request);
@@ -125,6 +129,16 @@ fn query_param<'a>(url: &'a str, name: &str) -> Option<&'a str> {
         let (key, value) = pair.split_once('=')?;
         (key == name).then_some(value)
     })
+}
+
+/// Adversary simulation: who censors whom.
+#[derive(Deserialize)]
+struct CensorBody {
+    accounts: Vec<String>,
+    #[serde(default)]
+    gateway: bool,
+    #[serde(default)]
+    validators: usize,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +198,30 @@ fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
                 decode(&bytes).map_err(|_| bad("tx is not a Borsh SignedTransaction"))?;
             let receipt = devnet.submit(tx)?;
             Ok(serde_json::to_value(receipt).unwrap_or(Value::Null))
+        }
+        (Method::Post, ["v1", "forced"]) => {
+            let submit: SubmitBody = body(request)?;
+            let bytes = hex::decode(submit.tx.trim()).map_err(|_| bad("tx must be hex"))?;
+            let tx: SignedTransaction =
+                decode(&bytes).map_err(|_| bad("tx is not a Borsh SignedTransaction"))?;
+            if tx.size() > 256 * 1024 {
+                return Err(bad("transaction too large"));
+            }
+            let receipt = devnet.force(tx)?;
+            Ok(serde_json::to_value(receipt).unwrap_or(Value::Null))
+        }
+        (Method::Get, ["v1", "forced"]) => q(Query::Forced),
+        (Method::Post, ["v1", "devnet", "censor"]) => {
+            let censor: CensorBody = body(request)?;
+            let accounts = censor
+                .accounts
+                .iter()
+                .map(|a| hash(a).map(AccountId::from_hash))
+                .collect::<Result<Vec<_>, _>>()?;
+            devnet.censor(accounts, censor.gateway, censor.validators);
+            Ok(
+                json!({ "censoring": censor.accounts.len(), "gateway": censor.gateway, "validators": censor.validators }),
+            )
         }
         (Method::Get, ["v1", "transactions", digest]) => {
             let digest = TxDigest::from_hash(hash(digest)?);

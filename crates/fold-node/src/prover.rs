@@ -7,7 +7,7 @@
 //! and publishes it.
 
 use std::collections::BTreeMap;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -21,8 +21,9 @@ use crate::validator::{ProverJob, Shared};
 /// A running prover.
 #[derive(Debug)]
 pub struct ProverHandle {
-    /// Where validators send jobs.
-    pub jobs: Sender<ProverJob>,
+    /// Where validators send jobs (bounded: when the prover falls behind,
+    /// Pulses go unproven rather than piling up in memory).
+    pub jobs: SyncSender<ProverJob>,
     stop: Sender<()>,
     thread: Option<JoinHandle<()>>,
 }
@@ -53,6 +54,9 @@ pub struct Proven {
 /// World Proofs kept in memory (they include every witness).
 pub const PROOF_HISTORY: usize = 32;
 
+/// Pulses waiting to be proven at most.
+pub const PROVER_BACKLOG: usize = 16;
+
 /// The proof stacks the devnet uses: the reference executor (A) and the
 /// independent implementation of the specification (B). A World Proof
 /// verifies only if both accept every chunk.
@@ -62,11 +66,13 @@ pub fn stacks() -> Vec<Box<dyn ProofStack>> {
 
 /// Starts the prover thread.
 pub fn spawn(shared: Arc<Shared>, proven: Arc<Mutex<BTreeMap<Pulse, Proven>>>) -> ProverHandle {
-    let (jobs, inbox): (Sender<ProverJob>, Receiver<ProverJob>) = mpsc::channel();
+    let (jobs, inbox): (SyncSender<ProverJob>, Receiver<ProverJob>) =
+        mpsc::sync_channel(PROVER_BACKLOG);
     let (stop, stopped) = mpsc::channel::<()>();
     let history = shared.config.history.clamp(1, PROOF_HISTORY);
     let thread = thread::Builder::new()
         .name("prover".into())
+        .stack_size(crate::THREAD_STACK_BYTES)
         .spawn(move || {
             let stacks = stacks();
             let refs: Vec<&dyn ProofStack> = stacks.iter().map(|s| s.as_ref()).collect();

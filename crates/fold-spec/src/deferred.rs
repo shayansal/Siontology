@@ -26,7 +26,7 @@ use fold_core::Amount;
 use fold_exec::assurance::AssuranceDomain;
 use fold_exec::claim::{claim_id, knowledge_leaf, ClaimBody, StoredClaim};
 use fold_exec::execute::{bond_owner, Deferred, Event};
-use fold_exec::market::{BatchStatus, Market, MarketBatch, PendingOrder};
+use fold_exec::market::{BatchStatus, Market, MarketBatch, PendingOrder, MAX_BATCH_ORDERS};
 use fold_exec::object::{
     well_known, Coin, Object, ObjectData, Owner, Schedule, ScheduledEvent, Treasury,
 };
@@ -406,7 +406,8 @@ impl<'v> DeferredRun<'v> {
             orders: Vec::new(),
             status: BatchStatus::Open,
         });
-        if batch.status != BatchStatus::Open {
+        // A batch that is no longer open, or already full, refunds the order.
+        if batch.status != BatchStatus::Open || batch.orders.len() >= MAX_BATCH_ORDERS {
             return self.pay(order.owner, order.escrow_asset, order.escrow);
         }
         let was_empty = batch.orders.is_empty();

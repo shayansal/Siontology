@@ -17,17 +17,24 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use fold_consensus::Beacon;
+use fold_consensus::{Beacon, LaneRequest};
 use fold_core::encode::{decode, encode};
 use fold_core::hash::hash_domain;
-use fold_core::ids::Pulse;
+use fold_core::ids::{Pulse, ShardId};
 use fold_exec::pulse::{execute_pulse, PulseInput};
-use fold_exec::{State, WorldCommitment};
+use fold_exec::{SignedTransaction, State, WorldCommitment};
 
-/// Magic tag at the start of every record.
-pub const RECORD_MAGIC: &[u8; 8] = b"FOLDWAL1";
-/// Magic tag at the start of every snapshot.
-pub const SNAPSHOT_MAGIC: &[u8; 8] = b"FOLDSNP1";
+use crate::forced::ForcedIntents;
+use crate::owners::Authorized;
+
+/// Magic tag at the start of every record (version 2: records carry the
+/// Pulse's forced intents).
+pub const RECORD_MAGIC: &[u8; 8] = b"FOLDWAL2";
+/// Magic tag at the start of every snapshot (version 2: snapshots carry the
+/// forced-inclusion obligations).
+pub const SNAPSHOT_MAGIC: &[u8; 8] = b"FOLDSNP2";
+/// Magic tag at the start of every lane-lock record.
+pub const LANE_MAGIC: &[u8; 8] = b"FOLDLAN1";
 /// Default segment size before rotation.
 pub const SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -57,6 +64,8 @@ pub enum StorageError {
 pub struct PulseRecord {
     /// What was executed.
     pub input: PulseInput,
+    /// Forced intents committed in this Pulse.
+    pub forced: Vec<SignedTransaction>,
     /// The resulting commitment.
     pub after: WorldCommitment,
     /// The beacon state after the Pulse closed.
@@ -70,6 +79,8 @@ pub struct Snapshot {
     pub state: State,
     /// The beacon state.
     pub beacon: Beacon,
+    /// The forced-inclusion obligations.
+    pub forced: ForcedIntents,
     /// The consensus epoch in progress when the snapshot was taken.
     pub epoch: u64,
 }
@@ -290,8 +301,11 @@ fn latest_snapshot(dir: &Path) -> Result<Option<Snapshot>, StorageError> {
 pub fn replay(
     mut state: State,
     mut beacon: Beacon,
+    mut forced: ForcedIntents,
     records: &[PulseRecord],
-) -> Result<(State, Beacon), StorageError> {
+    shards: u16,
+) -> Result<(State, Beacon, ForcedIntents), StorageError> {
+    let mut authorized = Authorized::default();
     for record in records {
         if record.input.pulse <= state.pulse {
             continue;
@@ -305,9 +319,125 @@ pub fn replay(
                 got: Box::new(output.after),
             });
         }
+        let executed: Vec<_> = output.effects.iter().map(|e| e.digest).collect();
+        forced.after_pulse(
+            record.input.pulse,
+            &record.forced,
+            &executed,
+            &state,
+            shards,
+            &mut authorized,
+        );
         beacon = record.beacon.clone();
     }
-    Ok((state, beacon))
+    Ok((state, beacon, forced))
+}
+
+/// Durable lane locks.
+///
+/// A validator appends every request it approves before the approval leaves
+/// it. A restart starts a new consensus epoch, in which old approvals no
+/// longer count; restoring the locks from this log keeps every input locked
+/// to the transaction it was approved for, so no conflicting spend can be
+/// certified after a restart, and the original transaction can be certified
+/// again. Certificate finality survives restarts.
+#[derive(Debug)]
+pub struct LaneLog {
+    path: PathBuf,
+    file: File,
+    sync: bool,
+}
+
+impl LaneLog {
+    /// Opens (creating) the lane log in `dir`; returns the logged requests,
+    /// truncating a torn tail.
+    pub fn open(
+        dir: &Path,
+        sync: bool,
+    ) -> Result<(LaneLog, Vec<(ShardId, LaneRequest)>), StorageError> {
+        fs::create_dir_all(dir)?;
+        let path = dir.join("lanes.log");
+        let mut bytes = Vec::new();
+        if path.exists() {
+            File::open(&path)?.read_to_end(&mut bytes)?;
+        }
+        let mut entries = Vec::new();
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            match parse_lane_record(&bytes[offset..]) {
+                Some((entry, used)) => {
+                    entries.push(entry);
+                    offset += used;
+                }
+                None => break,
+            }
+        }
+        if offset < bytes.len() {
+            let file = OpenOptions::new().write(true).open(&path)?;
+            file.set_len(offset as u64)?;
+            file.sync_all()?;
+        }
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        Ok((LaneLog { path, file, sync }, entries))
+    }
+
+    /// Appends approved requests.
+    pub fn append(&mut self, entries: &[(ShardId, LaneRequest)]) -> Result<(), StorageError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut frames = Vec::new();
+        for entry in entries {
+            frames.extend_from_slice(&lane_frame(entry));
+        }
+        self.file.write_all(&frames)?;
+        if self.sync {
+            self.file.sync_data()?;
+        }
+        Ok(())
+    }
+
+    /// Rewrites the log with only `entries` (the locks still live).
+    pub fn compact(&mut self, entries: &[(ShardId, LaneRequest)]) -> Result<(), StorageError> {
+        let tmp = self.path.with_extension("log.tmp");
+        {
+            let mut file = File::create(&tmp)?;
+            for entry in entries {
+                file.write_all(&lane_frame(entry))?;
+            }
+            file.sync_all()?;
+        }
+        fs::rename(&tmp, &self.path)?;
+        self.file = OpenOptions::new().append(true).open(&self.path)?;
+        Ok(())
+    }
+}
+
+fn lane_frame(entry: &(ShardId, LaneRequest)) -> Vec<u8> {
+    let payload = encode(entry);
+    let mut frame = Vec::with_capacity(payload.len() + 20);
+    frame.extend_from_slice(LANE_MAGIC);
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&checksum(&payload));
+    frame.extend_from_slice(&payload);
+    frame
+}
+
+fn parse_lane_record(bytes: &[u8]) -> Option<((ShardId, LaneRequest), usize)> {
+    if bytes.len() < 20 || &bytes[..8] != LANE_MAGIC {
+        return None;
+    }
+    let len = u32::from_be_bytes(bytes[8..12].try_into().ok()?) as usize;
+    let end = 20usize.checked_add(len)?;
+    if bytes.len() < end {
+        return None;
+    }
+    let payload = &bytes[20..end];
+    if checksum(payload) != bytes[12..20] {
+        return None;
+    }
+    let entry = decode(payload).ok()?;
+    Some((entry, end))
 }
 
 #[cfg(test)]
@@ -353,6 +483,7 @@ mod tests {
             }
             wal.append(&PulseRecord {
                 input,
+                forced: Vec::new(),
                 after: output.after,
                 beacon: Beacon::new(Hash32::ZERO),
             })
@@ -372,10 +503,12 @@ mod tests {
         assert_eq!(recovered.records.len(), 2);
         assert!(recovered.truncated > 0);
         assert_eq!(wal.len(), 2);
-        let (state, _) = replay(
+        let (state, _, _) = replay(
             genesis.clone(),
             Beacon::new(Hash32::ZERO),
+            ForcedIntents::default(),
             &recovered.records,
+            2,
         )
         .unwrap();
         assert_eq!(state.pulse, Pulse(2));
@@ -383,6 +516,7 @@ mod tests {
         wal.snapshot(&Snapshot {
             state: state.clone(),
             beacon: Beacon::new(Hash32::ZERO),
+            forced: ForcedIntents::default(),
             epoch: 0,
         })
         .unwrap();

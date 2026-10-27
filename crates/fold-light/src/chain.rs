@@ -55,6 +55,11 @@ impl ChainSpec {
         if self.validators.is_empty() {
             return Err(LightError::Chain("the chain has no validators".into()));
         }
+        if self.shards == 0 || self.seats == 0 {
+            return Err(LightError::Chain(
+                "the chain needs at least one shard and one seat".into(),
+            ));
+        }
         let mut seen = BTreeMap::new();
         for (id, stake) in &self.validators {
             if *stake == 0 {

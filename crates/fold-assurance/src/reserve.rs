@@ -33,6 +33,8 @@ use std::collections::BTreeMap;
 
 use fold_core::ids::{AtomId, ClaimId};
 use fold_core::{Amount, Cost};
+use num_bigint::BigUint;
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AssuranceError;
@@ -198,16 +200,26 @@ impl<'a> Context<'a> {
                     .iter()
                     .map(|m| m.finite().map(|a| a.0).unwrap_or(0))
                     .collect();
-                let total: u128 = finite.iter().sum();
-                if total < amount.0 {
+                // Exact arithmetic: the sum of the routes and the products
+                // below may exceed 128 bits even though every share fits.
+                let total: BigUint = finite.iter().map(|cap| BigUint::from(*cap)).sum();
+                if total < BigUint::from(amount.0) {
                     return Err(AssuranceError::Invalid(
                         "alternatives cannot cover the amount".into(),
                     ));
                 }
                 // Proportional split, rounded down, then the remainder to the
                 // routes with the most headroom (deterministic by index).
-                let mut shares: Vec<u128> =
-                    finite.iter().map(|cap| amount.0 * cap / total).collect();
+                // Each share is at most its route's capacity, since the
+                // amount is at most the total.
+                let mut shares: Vec<u128> = finite
+                    .iter()
+                    .map(|cap| {
+                        (BigUint::from(amount.0) * BigUint::from(*cap) / &total)
+                            .to_u128()
+                            .expect("a share never exceeds its route's capacity")
+                    })
+                    .collect();
                 let mut remainder = amount.0 - shares.iter().sum::<u128>();
                 while remainder > 0 {
                     let (index, _) = shares
@@ -317,6 +329,31 @@ mod tests {
             )
             .unwrap();
         id
+    }
+
+    /// Found by the consensus audit: the proportional split multiplied two
+    /// 128-bit amounts before dividing, which overflowed (and panicked) for
+    /// large but legitimate capacities.
+    #[test]
+    fn large_alternatives_split_exactly() {
+        let mut registry = Registry::new();
+        let big = 1u128 << 64;
+        let atoms: Vec<AtomId> = (0..2)
+            .map(|i| {
+                let id = registry
+                    .register_atom(Atom::bonded(AtomClass::Economic, format!("big{i}")))
+                    .unwrap();
+                registry
+                    .post_bond(id, AccountId::derive(&[i]), Amount(big), Pulse(0))
+                    .unwrap();
+                id
+            })
+            .collect();
+        let formula = Formula::or(atoms.iter().map(|a| Formula::atom(*a)));
+        let allocation =
+            allocate(&registry, &Policy::paranoid(), &formula, Amount(2 * big)).unwrap();
+        assert_eq!(allocation.per_atom[&atoms[0]], Amount(big));
+        assert_eq!(allocation.per_atom[&atoms[1]], Amount(big));
     }
 
     #[test]

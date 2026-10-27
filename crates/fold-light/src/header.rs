@@ -24,6 +24,31 @@ use crate::error::LightError;
 /// The signing domain validators use (shared with the node).
 pub const VALIDATOR_DOMAIN: &str = "fold/validator/v1";
 
+/// The forced-inclusion obligations after a Pulse: intents users posted
+/// directly to consensus that their shard has not yet executed or shown
+/// invalid. Every validator derives this from committed data and its
+/// executed state, so a certified header proves it.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
+)]
+pub struct ForcedSummary {
+    /// Intents still within their deadline.
+    pub pending: u32,
+    /// Intents past their deadline: censorship, made visible.
+    pub overdue: u32,
+    /// Merkle root over the overdue intents (digest, shard, posted, deadline).
+    pub overdue_root: Hash32,
+}
+
 /// What a Pulse committed to.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct PulseHeader {
@@ -48,6 +73,8 @@ pub struct PulseHeader {
     pub data_root: Hash32,
     /// Width `k` of the data square (before extension).
     pub data_k: u32,
+    /// Forced-inclusion obligations after this Pulse.
+    pub forced: ForcedSummary,
 }
 
 impl PulseHeader {

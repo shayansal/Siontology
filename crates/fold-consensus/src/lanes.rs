@@ -333,7 +333,8 @@ pub enum ApprovalStatus {
 #[derive(Clone, Debug)]
 struct Lock {
     tx: TxDigest,
-    request: LaneRequest,
+    /// One shared copy per transaction, however many inputs it locks.
+    request: std::sync::Arc<LaneRequest>,
 }
 
 /// One validator's lane state for one committee.
@@ -386,6 +387,13 @@ impl<A: Authenticator> LaneValidator<A> {
         }
         if let Some(existing) = self.approved.get(&request.tx) {
             if *existing == inputs {
+                // A lock restored after a restart has no approval yet in this
+                // epoch: sign it again in the next batch.
+                if !self.proofs.contains_key(&request.tx)
+                    && !self.pending.iter().any(|(tx, _)| *tx == request.tx)
+                {
+                    self.pending.push((request.tx, inputs));
+                }
                 return Ok(self.status(&request.tx));
             }
             return Err(LaneRejection {
@@ -409,19 +417,20 @@ impl<A: Authenticator> LaneValidator<A> {
                         },
                         evidence: Some(Box::new(OwnerEquivocation {
                             input: *input,
-                            first: lock.request.clone(),
+                            first: (*lock.request).clone(),
                             second: request.clone(),
                         })),
                     });
                 }
             }
         }
+        let shared = std::sync::Arc::new(request.clone());
         for input in &inputs {
             self.locks.insert(
                 *input,
                 Lock {
                     tx: request.tx,
-                    request: request.clone(),
+                    request: shared.clone(),
                 },
             );
         }
@@ -475,6 +484,58 @@ impl<A: Authenticator> LaneValidator<A> {
             signature,
             approvals,
         })
+    }
+
+    /// Forgets a transaction: its locks, its approval and its proof. Safe
+    /// once the transaction has executed (its input versions are gone) or
+    /// can no longer execute (it expired), and needed then, or its inputs
+    /// would stay frozen.
+    pub fn release(&mut self, tx: &TxDigest) {
+        if let Some(inputs) = self.approved.remove(tx) {
+            for input in inputs {
+                if self.locks.get(&input).map(|l| l.tx) == Some(*tx) {
+                    self.locks.remove(&input);
+                }
+            }
+        }
+        self.pending.retain(|(pending, _)| pending != tx);
+        self.proofs.remove(tx);
+    }
+
+    /// Re-establishes a lock from durable storage after a restart, without
+    /// signing anything: the inputs stay locked to `request`'s transaction,
+    /// so no conflicting spend can be approved in the new epoch, and the
+    /// same transaction is approved again if it is resubmitted. A lock that
+    /// conflicts with one already held is skipped.
+    pub fn restore(&mut self, request: LaneRequest) {
+        let inputs = request.canonical_inputs();
+        if inputs.is_empty()
+            || self.approved.contains_key(&request.tx)
+            || inputs.iter().any(|i| self.locks.contains_key(i))
+        {
+            return;
+        }
+        let shared = std::sync::Arc::new(request.clone());
+        for input in &inputs {
+            self.locks.insert(
+                *input,
+                Lock {
+                    tx: request.tx,
+                    request: shared.clone(),
+                },
+            );
+        }
+        self.approved.insert(request.tx, inputs);
+    }
+
+    /// The transactions holding locks, with their requests.
+    pub fn locked_requests(&self) -> Vec<LaneRequest> {
+        let mut seen = BTreeSet::new();
+        self.locks
+            .values()
+            .filter(|lock| seen.insert(lock.tx))
+            .map(|lock| (*lock.request).clone())
+            .collect()
     }
 
     /// The sealed approval proof for `tx`, if any.

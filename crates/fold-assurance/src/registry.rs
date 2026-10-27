@@ -14,6 +14,14 @@ use crate::error::AssuranceError;
 use crate::formula::Formula;
 use crate::policy::Ratio;
 
+/// The longest chain of claim references a claim may rest on, itself
+/// included. Every traversal of claim references (cost of corruption,
+/// reservation, falsification) is bounded by it.
+pub const MAX_CLAIM_DEPTH: usize = 16;
+
+/// The deepest nesting of `∧` and `∨` a claim's formula may have.
+pub const MAX_FORMULA_DEPTH: usize = 32;
+
 /// Whether a claim can still be relied on.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum ClaimStatus {
@@ -336,6 +344,19 @@ impl Registry {
         if self.claims.contains_key(&record.id) {
             return Err(AssuranceError::DuplicateClaim(record.id));
         }
+        if record.formula.depth() > MAX_FORMULA_DEPTH {
+            return Err(AssuranceError::Invalid(format!(
+                "the formula nests deeper than {MAX_FORMULA_DEPTH}"
+            )));
+        }
+        match self.reference_depth(&record.formula) {
+            Some(depth) if depth < MAX_CLAIM_DEPTH => {}
+            _ => {
+                return Err(AssuranceError::Invalid(format!(
+                    "claim references nest deeper than {MAX_CLAIM_DEPTH}"
+                )))
+            }
+        }
         for atom in record.formula.direct_atoms() {
             if !self.atoms.contains_key(&atom) {
                 return Err(AssuranceError::UnknownAtom(atom));
@@ -400,6 +421,53 @@ impl Registry {
             self.claims.get(id).map(|c| &c.status),
             Some(ClaimStatus::Active)
         )
+    }
+
+    /// The longest chain of claim references below `formula` (0 if it
+    /// references no claims), or `None` if it exceeds [`MAX_CLAIM_DEPTH`].
+    /// Iterative and memoized, so it costs at most one visit per reachable
+    /// claim and never recurses.
+    pub fn reference_depth(&self, formula: &Formula) -> Option<usize> {
+        let mut memo: BTreeMap<ClaimId, usize> = BTreeMap::new();
+        let mut deepest = 0;
+        for root in formula.claim_refs() {
+            // Depth-first, with an explicit stack of (claim, children left,
+            // deepest child so far).
+            let mut stack: Vec<(ClaimId, Vec<ClaimId>, usize)> = Vec::new();
+            if !memo.contains_key(&root) {
+                stack.push((root, self.children(&root), 0));
+            }
+            while let Some((_, children, best)) = stack.last_mut() {
+                if let Some(child) = children.pop() {
+                    match memo.get(&child) {
+                        Some(depth) => *best = (*best).max(*depth),
+                        None => {
+                            if stack.len() >= MAX_CLAIM_DEPTH {
+                                return None;
+                            }
+                            let grandchildren = self.children(&child);
+                            stack.push((child, grandchildren, 0));
+                        }
+                    }
+                } else {
+                    let (id, _, best) = stack.pop().expect("non-empty");
+                    let depth = best + 1;
+                    memo.insert(id, depth);
+                    if let Some((_, _, parent)) = stack.last_mut() {
+                        *parent = (*parent).max(depth);
+                    }
+                }
+            }
+            deepest = deepest.max(memo.get(&root).copied().unwrap_or(1));
+        }
+        (deepest <= MAX_CLAIM_DEPTH).then_some(deepest)
+    }
+
+    fn children(&self, id: &ClaimId) -> Vec<ClaimId> {
+        self.claims
+            .get(id)
+            .map(|c| c.formula.claim_refs().into_iter().collect())
+            .unwrap_or_default()
     }
 
     /// Every atom a claim rests on, through its references.
@@ -570,6 +638,59 @@ mod tests {
                 .unwrap(),
             Amount::units(20_000)
         );
+    }
+
+    /// Found by the consensus audit: a long chain of claim references made
+    /// every traversal recurse once per link, so a deep enough chain
+    /// overflowed a validator's stack. Depth is now bounded at issuance.
+    #[test]
+    fn claim_chains_and_formulas_have_bounded_depth() {
+        let mut registry = Registry::new();
+        let witness = Atom::bonded(AtomClass::Economic, "w");
+        registry.register_atom(witness.clone()).unwrap();
+        let mut previous = claim("c0", Formula::atom(witness.id), 1_000);
+        registry.issue_claim(previous.clone()).unwrap();
+        for i in 1..MAX_CLAIM_DEPTH {
+            let next = claim(&format!("c{i}"), Formula::claim(previous.id), 1_000);
+            registry.issue_claim(next.clone()).unwrap();
+            previous = next;
+        }
+        assert_eq!(
+            registry.reference_depth(&Formula::claim(previous.id)),
+            Some(MAX_CLAIM_DEPTH)
+        );
+        let too_deep = claim("deep", Formula::claim(previous.id), 1_000);
+        assert!(matches!(
+            registry.issue_claim(too_deep),
+            Err(AssuranceError::Invalid(_))
+        ));
+        // A wide diamond is cheap: every claim is visited once.
+        let mut layer = vec![registry.claim_order[0]];
+        for depth in 1..6 {
+            let mut next = Vec::new();
+            for k in 0..4 {
+                let mut parts: Vec<Formula> = layer.iter().map(|id| Formula::claim(*id)).collect();
+                parts.push(Formula::atom(witness.id));
+                let record = claim(&format!("d{depth}-{k}"), Formula::Or(parts), 1_000);
+                next.push(record.id);
+                registry.issue_claim(record).unwrap();
+            }
+            layer = next;
+        }
+        let parts: Vec<Formula> = layer.iter().map(|id| Formula::claim(*id)).collect();
+        assert_eq!(registry.reference_depth(&Formula::and(parts)), Some(6));
+
+        // Nesting is bounded too (raw, unnormalized nesting, as a
+        // transaction may carry it).
+        let mut nested = Formula::atom(witness.id);
+        for _ in 0..MAX_FORMULA_DEPTH {
+            nested = Formula::And(vec![nested, Formula::atom(witness.id)]);
+        }
+        assert_eq!(nested.depth(), MAX_FORMULA_DEPTH + 1);
+        assert!(matches!(
+            registry.issue_claim(claim("nested", nested, 1_000)),
+            Err(AssuranceError::Invalid(_))
+        ));
     }
 
     #[test]

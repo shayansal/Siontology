@@ -56,6 +56,9 @@ pub enum Query {
     World(Pulse),
     /// The genesis specification and its digest.
     Genesis,
+    /// Forced-inclusion obligations: pending, overdue and recently resolved
+    /// intents.
+    Forced,
 }
 
 /// Chain status.
@@ -97,6 +100,10 @@ pub struct StatusView {
     pub beacon: Hash32,
     /// Last Pulse with a verified World Proof, if proving is on.
     pub proven_pulse: Option<Pulse>,
+    /// Forced intents within their deadline.
+    pub forced_pending: u32,
+    /// Forced intents past their deadline (censorship).
+    pub forced_overdue: u32,
 }
 
 /// One coin.

@@ -185,6 +185,30 @@ impl<'a> Session<'a> {
         result
     }
 
+    /// Posts a forced intent (bypassing the gateway) and waits for it to
+    /// execute.
+    pub fn force(
+        &mut self,
+        name: &str,
+        kind: TxKind,
+        extra: Vec<ObjectRef>,
+    ) -> Result<TxView, CliError> {
+        let config = self.config.clone();
+        let ledger = self.ledger;
+        let view = RemoteView::new(ledger, config);
+        let tx = self.wallet(name).build(&view, kind, extra)?;
+        if self.verbose {
+            println!(
+                "{name} signs (forced): {}",
+                crate::describe::sentence(&self.names(), &tx.tx)
+            );
+        }
+        let receipt = ledger.force(&tx)?;
+        let result = self.wait(receipt.digest);
+        self.wallet(name).settle();
+        result
+    }
+
     /// Submits without waiting; returns the digest.
     pub fn submit(
         &mut self,

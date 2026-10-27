@@ -28,7 +28,7 @@ live.
 | Ordering: Linear Lanes (owned objects) | Built |
 | Ordering: Escrow Lanes (bounded shared totals) | Built |
 | Ordering: Contention Consensus | Simplified (certified DAG, not uncertified) |
-| Ordering: censorship resistance (forced inclusion) | Simplified (library only, not wired into the node) |
+| Ordering: censorship resistance (forced inclusion) | Built (detection; freezing and rotation not built) |
 | Ordering: committees and sharding | Simplified (static validator set) |
 | Ordering: two levels of finality | Built |
 | Execution: prove heavy, execute light | Simulated (replay proofs) |
@@ -124,10 +124,20 @@ network simulator with an adversarial pre-GST phase. The architecture's
 production target is an uncertified DAG (Mysticeti class), which commits
 in fewer message delays.
 
-**Censorship resistance: simplified.** `fold_consensus::forced` tracks
-intents posted directly to the data layer and reports shards that miss the
-inclusion deadline. The devnet does not yet accept forced-inclusion posts,
-so this is a library, not a property of the running node.
+**Censorship resistance: built (detection).** A user posts a transaction
+straight to consensus as a forced intent (`POST /v1/forced`, `fold send
+--forced`); every validator proposes every round, so one honest proposer
+gets it ordered. The sender's shard then has 8 Pulses to execute it or for
+it to become provably invalid. Honest validators of the shard approve
+forced intents themselves and exchange the approvals, so a certificate
+forms without the gateway. Every validator derives the obligations from
+committed data and its executed state alone, and every Pulse header
+commits to the number of pending and overdue intents and a root over the
+overdue ones (`fold_light::ForcedSummary`), so censorship by more than a
+third of a committee appears in certified headers that light clients check
+(`fold demo censorship` shows both cases with a simulated censoring gateway
+and censoring validators). Not built: the architecture's response, which
+freezes the shard in the next World Proof and rotates its committee.
 
 **Committees and sharding: simplified.** Lane committees are sampled per
 shard and per epoch from the validator set with a hash of the genesis and
@@ -235,8 +245,13 @@ Protocol server (`fold mcp`) with tools to check balances, pay, issue
 claims, price a claim with the Assurance Algebra before relying on it, pay
 under an Agent Charter, verify a Pulse and read events.
 
-**Not built:** adapters for x402, AP2, ERC-8004 and C2PA; transactions
-described as sentences; `submit_intent` and `fetch_receipt` MCP tools.
+**Built as well:** every transaction kind and every event reads as a
+sentence (`fold_cli::describe`); the CLI prints what each command signs and
+what happened; the MCP server has `fold_submit_intent` (a transaction the
+agent signed itself) and `fold_fetch_receipt` (a receipt verified as a
+light client would).
+
+**Not built:** adapters for x402, AP2, ERC-8004 and C2PA.
 
 ### Economics
 
@@ -275,6 +290,7 @@ the architecture's own:
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
+| `impl:validator-messages-unbound` | Lane approvals and consensus votes are bound to an epoch and shard but not to a chain; they would replay on another chain whose validators reuse the same keys (devnet keys are derived from the chain name, so they never do). |
 
 ## Light-client trust
 
@@ -285,3 +301,57 @@ from the specification a node serves, after checking the specification
 against the pin and checking that each validator identifier derives from
 its keys. Without a pin, `fold verify` says the node is vouching for
 itself.
+
+## Reviews and what they found
+
+Two independent reviews, run by agents that had not written the code, read
+the consensus-critical libraries and the node, and confirmed their findings
+with tests. Everything below is fixed, with a regression test, unless
+marked otherwise.
+
+- **State machine and libraries.** An unbounded chain of claim references
+  made cost-of-corruption and reservation traversals recurse once per link
+  until a validator's stack overflowed (fixed: depth limits at issuance,
+  64 MiB thread stacks); a reservation split overflowed 128 bits for large
+  capacities (fixed: exact arithmetic); a clearing settlement used an
+  unchecked multiplication; bounded totals and batches had no size limits;
+  certificate values had no size limit (all fixed in specification v1.2).
+- **Node, consensus and light client.**
+  - The signature pre-verification cache keyed on the transaction body but
+    not its signatures, so a stripped-signature copy could split replicas
+    (fixed: the key covers the signatures).
+  - Expanding a certificate group copied attacker-sized signatures per
+    reference before any check (fixed: groups are shape-checked first, and
+    header payloads are bounded).
+  - Lane locks kept a copy of the whole request per input and were never
+    released, which also froze inputs of lagging, rejected or expired
+    transactions (fixed: one shared copy per request; locks are released
+    when the transaction executes or expires; requests from lagging
+    validators wait for them to catch up; the gateway accepts resubmission).
+  - Lane validation skipped the checks execution makes before charging a
+    fee, so zero-fee transactions were published for free (fixed), and
+    Pulse data was unbounded (fixed: header payload limits; validators keep
+    the published data rather than the extended square, and never sign a
+    header without an availability commitment).
+  - Certificate finality did not survive a restart, which starts a new
+    epoch (fixed: approvals are logged before they leave a validator and
+    locks are restored after a restart, so no conflicting spend can be
+    certified and the original can be certified again).
+  - Light-client sampling used a fixed seed (fixed: fresh randomness); the
+    client did not check the node's transaction list against the certified
+    order, or a receipt's position (fixed); a missing World Proof did not
+    fail verification (fixed).
+  - Transactions were not bound to a chain (fixed in specification v1.2:
+    signatures cover the chain configuration). Validator messages are not
+    bound to a chain (open, see `impl:validator-messages-unbound`).
+  - Certified groups went to a single validator (fixed: f + 1 validators);
+    far-future headers, header signatures and beacon reveals were retained
+    without bound (fixed: windows and caps); equivocation evidence was
+    accepted across epochs (fixed); a re-included certificate's later
+    rejection could hide the real receipt (fixed: the first execution is the
+    receipt); forged Pulse numbers could make an unpinned client overflow
+    (fixed); the prover's job queue and the faucet queue were unbounded
+    (fixed).
+  - **Open:** fee-paying transactions with large bodies can still make
+    Pulses slow, since data-availability encoding of the largest allowed
+    Pulse takes seconds on one core; an account query scans every object.

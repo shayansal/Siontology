@@ -36,6 +36,16 @@ pub trait Ledger {
     fn tx(&self, digest: TxDigest) -> Result<TxState, CliError>;
     /// Queues a faucet grant.
     fn faucet(&self, account: AccountId, asset: AssetId, amount: Amount) -> Result<(), CliError>;
+    /// Posts a forced intent, bypassing the gateway.
+    fn force(&self, tx: &SignedTransaction) -> Result<SubmitReceipt, CliError>;
+    /// **Adversary simulation (devnet only):** censor these accounts at the
+    /// gateway and/or at the first `validators` validators.
+    fn censor(
+        &self,
+        accounts: &[AccountId],
+        gateway: bool,
+        validators: usize,
+    ) -> Result<(), CliError>;
     /// A human-readable description of the ledger.
     fn describe(&self) -> String;
 }
@@ -128,6 +138,20 @@ impl Ledger for Devnet {
 
     fn faucet(&self, account: AccountId, asset: AssetId, amount: Amount) -> Result<(), CliError> {
         Devnet::faucet(self, vec![(account, asset, amount)]).map_err(CliError::Node)
+    }
+
+    fn force(&self, tx: &SignedTransaction) -> Result<SubmitReceipt, CliError> {
+        Devnet::force(self, tx.clone()).map_err(CliError::Node)
+    }
+
+    fn censor(
+        &self,
+        accounts: &[AccountId],
+        gateway: bool,
+        validators: usize,
+    ) -> Result<(), CliError> {
+        Devnet::censor(self, accounts.to_vec(), gateway, validators);
+        Ok(())
     }
 
     fn describe(&self) -> String {
@@ -231,6 +255,7 @@ impl Ledger for HttpLedger {
             Query::Validators => self.get("/v1/validators"),
             Query::World(n) => self.get(&format!("/v1/pulses/{n}/world")),
             Query::Genesis => self.get("/v1/genesis"),
+            Query::Forced => self.get("/v1/forced"),
         }
     }
 
@@ -264,6 +289,27 @@ impl Ledger for HttpLedger {
         self.post(
             "/v1/faucet",
             json!({ "account": account, "asset": asset, "amount": amount.0 }),
+        )?;
+        Ok(())
+    }
+
+    fn force(&self, tx: &SignedTransaction) -> Result<SubmitReceipt, CliError> {
+        let value = self.post(
+            "/v1/forced",
+            json!({ "tx": hex::encode(fold_core::encode::encode(tx)) }),
+        )?;
+        parse(value)
+    }
+
+    fn censor(
+        &self,
+        accounts: &[AccountId],
+        gateway: bool,
+        validators: usize,
+    ) -> Result<(), CliError> {
+        self.post(
+            "/v1/devnet/censor",
+            json!({ "accounts": accounts, "gateway": gateway, "validators": validators }),
         )?;
         Ok(())
     }

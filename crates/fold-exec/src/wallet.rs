@@ -242,7 +242,7 @@ impl Wallet {
             };
             let required = config.min_fee(tx.size());
             if required <= fee {
-                let signed = tx.sign(&self.keys)?;
+                let signed = tx.sign(&self.keys, &config)?;
                 for input in &signed.tx.inputs {
                     self.in_flight.insert(*input);
                 }
@@ -273,6 +273,6 @@ impl Wallet {
             nonce: self.nonce,
         };
         self.nonce += 1;
-        Ok(tx.sign(&self.keys)?)
+        Ok(tx.sign(&self.keys, view.config())?)
     }
 }

@@ -82,6 +82,9 @@ all = { level = "warn", priority = -1 }
 [profile.dev]
 # Post-quantum signing is slow unoptimized; optimize dependencies even in debug builds.
 opt-level = 1
+# Line tables keep backtraces readable; full debug info made every test
+# binary several times larger.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3

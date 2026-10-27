@@ -14,6 +14,9 @@ use fold_core::Amount;
 use serde::{Deserialize, Serialize};
 
 /// A bounded total (a shared object).
+/// The most allotments one bounded total may be created with (spec §5.18).
+pub const MAX_ALLOTMENTS: usize = 256;
+
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct BoundedTotal {
     /// What the total counts.

@@ -21,9 +21,21 @@ use crate::charter::Caveats;
 use crate::claim::ClaimBody;
 use crate::market::Submission;
 use crate::object::{well_known, CoordinationClass, ObjectRef};
+use crate::state::ChainConfig;
 
 /// The signing domain for transactions.
 pub const TX_DOMAIN: &str = "fold/tx/v1";
+
+/// The signing context of transactions on the chain with this
+/// configuration: [`TX_DOMAIN`], a slash, and the configuration digest in
+/// lowercase hex. A transaction signed for one chain does not verify on any
+/// chain with another configuration (chain identifiers must differ).
+pub fn signing_context(config: &ChainConfig) -> String {
+    format!("{TX_DOMAIN}/{}", config.digest().to_hex())
+}
+
+/// The most owned inputs a transaction may name.
+pub const MAX_INPUTS: usize = 256;
 
 /// The largest amount one faucet grant may mint. Bounding grants keeps every
 /// supply total far from overflow.
@@ -271,8 +283,13 @@ impl Transaction {
     }
 
     /// Signs with a dual keypair under its default policy.
-    pub fn sign(self, keys: &DualKeypair) -> Result<SignedTransaction, CryptoError> {
-        let auth = keys.authorize(TX_DOMAIN, &self.digest().0 .0)?;
+    /// Signs for the chain with configuration `config`.
+    pub fn sign(
+        self,
+        keys: &DualKeypair,
+        config: &ChainConfig,
+    ) -> Result<SignedTransaction, CryptoError> {
+        let auth = keys.authorize(&signing_context(config), &self.digest().0 .0)?;
         Ok(SignedTransaction { tx: self, auth })
     }
 

@@ -43,6 +43,14 @@ pub enum CertError {
     /// The program itself is malformed.
     #[error("malformed program: {0}")]
     Malformed(#[from] LpError),
+    /// A certificate value's numerator or denominator is longer than
+    /// [`MAX_VALUE_BITS`] (verification cost must not depend on how large a
+    /// submitter makes its numbers).
+    #[error("certificate value {index} is larger than {MAX_VALUE_BITS} bits")]
+    ValueTooLarge {
+        /// Position in `x` followed by `y`.
+        index: usize,
+    },
     /// The tolerance is negative.
     #[error("tolerance must be non-negative")]
     NegativeTolerance,
@@ -108,6 +116,10 @@ pub enum CertError {
     },
 }
 
+/// The longest numerator or denominator a certificate value may have, in
+/// bits. Exact optimal duals of clearing programs are far smaller.
+pub const MAX_VALUE_BITS: u64 = 512;
+
 /// Verifies a certificate in time linear in the number of nonzeros.
 ///
 /// The checks, in order: dimensions, `x ≥ 0`, `y ≥ 0`, `Ax ≤ b`, `Aᵀy ≥ c`,
@@ -134,6 +146,11 @@ pub fn verify_certificate(
             expected: num_rows,
             got: certificate.y.len(),
         });
+    }
+    for (index, value) in certificate.x.iter().chain(&certificate.y).enumerate() {
+        if value.numer().bits() > MAX_VALUE_BITS || value.denom().bits() > MAX_VALUE_BITS {
+            return Err(CertError::ValueTooLarge { index });
+        }
     }
     for (var, value) in certificate.x.iter().enumerate() {
         if value.is_negative() {

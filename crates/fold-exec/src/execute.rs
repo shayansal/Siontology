@@ -37,7 +37,9 @@ use crate::object::{
 };
 use crate::state::ChainConfig;
 use crate::store::{ObjectStore, Overlay};
-use crate::tx::{object_domain, SignedTransaction, Transaction, TxKind, MAX_GRANT, TX_DOMAIN};
+use crate::tx::{
+    object_domain, signing_context, SignedTransaction, Transaction, TxKind, MAX_GRANT, MAX_INPUTS,
+};
 
 /// Context shared by every transaction in a Pulse.
 #[derive(Clone, Debug)]
@@ -605,10 +607,10 @@ fn prepare<S: ObjectStore>(
     if ctx.pulse > tx.expires_at {
         return Err(ExecError::Expired);
     }
-    if tx.inputs.is_empty() {
-        return Err(ExecError::Invalid(
-            "at least one owned input is required".into(),
-        ));
+    if tx.inputs.is_empty() || tx.inputs.len() > MAX_INPUTS {
+        return Err(ExecError::Invalid(format!(
+            "a transaction needs 1 to {MAX_INPUTS} owned inputs"
+        )));
     }
     let unique: BTreeSet<ObjectId> = tx.inputs.iter().map(|r| r.id).collect();
     if unique.len() != tx.inputs.len() {
@@ -663,7 +665,11 @@ fn prepare<S: ObjectStore>(
     };
     if ctx.verify_signatures {
         policy
-            .verify(TX_DOMAIN, &run.digest.0 .0, &signed.auth)
+            .verify(
+                &signing_context(&ctx.config),
+                &run.digest.0 .0,
+                &signed.auth,
+            )
             .map_err(|e| ExecError::Unauthorized(e.to_string()))?;
     }
 
@@ -1294,6 +1300,12 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             total,
             allotments,
         } => {
+            if allotments.len() > crate::escrow::MAX_ALLOTMENTS {
+                return Err(ExecError::Invalid(format!(
+                    "at most {} allotments",
+                    crate::escrow::MAX_ALLOTMENTS
+                )));
+            }
             let allotted = Amount::sum(allotments.iter().map(|(_, a)| a))?;
             if allotted > *total {
                 return Err(ExecError::Invalid("allotments exceed the total".into()));
@@ -1624,7 +1636,10 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 let filled = fills.get(&order.id).copied().unwrap_or(0);
                 let (receive_asset, receive, refund) = match (order.terms, price) {
                     (Some(terms), Some(price)) if filled > 0 => {
-                        let value = Amount(price.0 * u128::from(filled));
+                        let value =
+                            Amount(price.0.checked_mul(u128::from(filled)).ok_or_else(|| {
+                                ExecError::Invalid("clearing value overflows".into())
+                            })?);
                         match terms.side {
                             Side::Buy => (
                                 good,

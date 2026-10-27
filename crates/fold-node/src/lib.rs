@@ -21,10 +21,16 @@
 //!   executed Pulses and periodic snapshots; restarts replay and verify.
 //! - **API** ([`api`]): JSON over HTTP for wallets, the CLI and light clients.
 
+/// Stack size of every node thread. Decoding and checking nested structures
+/// (formulas, claim references) recurses; protocol limits keep that depth
+/// small, and a generous stack is a second line of defence.
+pub const THREAD_STACK_BYTES: usize = 64 * 1024 * 1024;
+
 pub mod api;
 pub mod config;
 pub mod devnet;
 pub mod error;
+pub mod forced;
 pub mod gateway;
 pub mod keys;
 pub mod owners;

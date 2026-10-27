@@ -126,11 +126,15 @@ mod tests {
     use fold_core::Amount;
 
     /// The bounds this crate takes from fold-exec's data layout are the
-    /// values the specification states (§5.2, §5.13, §5.22).
+    /// values the specification states (§4.1, §5.2, §5.13, §5.18, §5.22,
+    /// §6.3).
     #[test]
     fn shared_bounds_are_the_specified_values() {
         assert_eq!(fold_exec::tx::MAX_GRANT, Amount::units(1_000_000_000));
         assert_eq!(fold_exec::market::MAX_PERIOD, 1_000_000);
         assert_eq!(fold_exec::charter::MAX_CHARTER_CHAIN, 16);
+        assert_eq!(fold_exec::tx::MAX_INPUTS, 256);
+        assert_eq!(fold_exec::escrow::MAX_ALLOTMENTS, 256);
+        assert_eq!(fold_exec::market::MAX_BATCH_ORDERS, 1_024);
     }
 }

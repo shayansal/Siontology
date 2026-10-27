@@ -61,6 +61,12 @@ pub enum GatewayInput {
         /// Acknowledgement.
         reply: Sender<Result<(), String>>,
     },
+    /// **Adversary simulation (devnet only).** Silently drop transactions
+    /// from these accounts (empty: censor nobody).
+    Censor {
+        /// Accounts to censor.
+        accounts: std::collections::BTreeSet<AccountId>,
+    },
     /// The gateway's view of a transaction.
     Status {
         /// The transaction.
@@ -97,6 +103,7 @@ pub struct Gateway {
     faucet_nonce: u64,
     verifier: crate::keys::NodeVerifier,
     certified: Vec<(SignedTransaction, fold_consensus::LaneCertificate)>,
+    censored: std::collections::BTreeSet<AccountId>,
 }
 
 const STATUS_LIMIT: usize = 100_000;
@@ -107,6 +114,9 @@ const GROUP_INTERVAL_MS: u64 = 20;
 
 /// The largest group.
 const GROUP_LIMIT: usize = 512;
+
+/// Faucet grants waiting at most.
+const FAUCET_QUEUE_LIMIT: usize = 10_000;
 
 /// One faucet grant: recipient, asset, amount.
 type Grant = (AccountId, AssetId, Amount);
@@ -134,6 +144,7 @@ impl Gateway {
             faucet_nonce: 0,
             verifier,
             certified: Vec::new(),
+            censored: Default::default(),
         }
     }
 
@@ -186,6 +197,8 @@ impl Gateway {
             GatewayInput::Faucet { grants, reply } => {
                 if grants.iter().any(|(_, _, a)| *a == Amount::ZERO) {
                     let _ = reply.send(Err("zero grant".into()));
+                } else if self.faucet_queue.len() + grants.len() > FAUCET_QUEUE_LIMIT {
+                    let _ = reply.send(Err("the faucet is busy; try again shortly".into()));
                 } else {
                     self.faucet_queue.extend(grants);
                     let _ = reply.send(Ok(()));
@@ -194,6 +207,7 @@ impl Gateway {
             GatewayInput::Status { tx, reply } => {
                 let _ = reply.send(self.statuses.get(&tx).cloned());
             }
+            GatewayInput::Censor { accounts } => self.censored = accounts,
             GatewayInput::Shutdown => {}
         }
     }
@@ -216,7 +230,23 @@ impl Gateway {
             .into(),
             shard: Some(shard.0),
         };
+        // A transaction refused before may be submitted again (validators may
+        // have caught up, or its inputs been released).
+        if matches!(self.statuses.get(&digest), Some(TxStatus::Rejected(_))) {
+            self.statuses.remove(&digest);
+        }
         if self.pending.contains_key(&digest) || self.statuses.contains_key(&digest) {
+            return Ok(receipt);
+        }
+        if self.censored.contains(&signed.tx.sender) {
+            // A censoring gateway acknowledges and then does nothing.
+            self.set_status(
+                digest,
+                TxStatus::Certifying {
+                    shard: shard.0,
+                    approvals: 0,
+                },
+            );
             return Ok(receipt);
         }
         let committee = self
@@ -270,14 +300,20 @@ impl Gateway {
         self.send_to_consensus(group);
     }
 
+    /// Hands an item to f + 1 validators, so at least one honest proposer
+    /// includes it (duplicates are executed once).
     fn send_to_consensus(&mut self, item: PayloadItem) {
         let validators = &self.bus.validators;
         if validators.is_empty() {
             return;
         }
-        let index = self.next % validators.len();
+        let copies = (validators.len() - 1) / 3 + 1;
+        let bytes = item.to_bytes();
+        for k in 0..copies.min(validators.len()) {
+            let index = (self.next + k) % validators.len();
+            let _ = validators[index].send(Input::Submit(bytes.clone()));
+        }
         self.next = self.next.wrapping_add(1);
-        let _ = validators[index].send(Input::Submit(item.to_bytes()));
     }
 
     fn on_approval(&mut self, shard: ShardId, tx: TxDigest, proof: ApprovalProof) {
@@ -400,6 +436,7 @@ impl Gateway {
             nonce: self.faucet_nonce,
         };
         self.faucet_nonce += 1;
-        tx.sign(&self.faucet.keys).map_err(|e| e.to_string())
+        tx.sign(&self.faucet.keys, &self.shared.genesis.config)
+            .map_err(|e| e.to_string())
     }
 }

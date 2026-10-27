@@ -187,6 +187,10 @@ pub fn sealing_aad(domain: &DomainId, batch: u64) -> Vec<u8> {
 /// Domain tag for sealed orders.
 pub const SEALED_ORDER_DOMAIN: &str = "fold/market/sealed-order";
 
+/// The most orders one batch holds; later orders in its window are refunded
+/// (spec §6.3). Bounds the clearing certificate a solver must submit.
+pub const MAX_BATCH_ORDERS: usize = 1_024;
+
 /// The longest batch window and clearing deadline a market may set, in
 /// Pulses (about eleven days at one Pulse a second). Bounding them keeps
 /// every Pulse computed from them far from overflow.

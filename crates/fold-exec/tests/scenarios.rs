@@ -195,7 +195,9 @@ fn outputs_can_be_spent_in_the_pulse_that_creates_them() {
         nonce: 0,
     };
     second.fee = config.min_fee(second.size());
-    let second = second.sign(&chain.wallet("bob").keys).unwrap();
+    let second = second
+        .sign(&chain.wallet("bob").keys, &chain.state.config)
+        .unwrap();
     // Order of submission does not matter: the canonical order runs the creator first.
     let out = chain.pulse(vec![second.clone(), first.clone()]).unwrap();
     assert_success(&out, &first);
@@ -1360,7 +1362,7 @@ fn bounds_keep_user_chosen_numbers_far_from_overflow() {
         expires_at: Pulse(chain.state.pulse.0 + 10),
         nonce: 99,
     }
-    .sign(&chain.wallet(FAUCET).keys)
+    .sign(&chain.wallet(FAUCET).keys, &chain.state.config)
     .unwrap();
     let out = chain.pulse(vec![paying.clone()]).unwrap();
     assert!(matches!(status_of(&out, &paying), ExecStatus::Rejected(_)));

@@ -875,7 +875,9 @@ pub fn apply_deferred<S: ObjectStore>(
                             orders: Vec::new(),
                             status: BatchStatus::Open,
                         });
-                        if batch.status == BatchStatus::Open {
+                        if batch.status == BatchStatus::Open
+                            && batch.orders.len() < crate::market::MAX_BATCH_ORDERS
+                        {
                             let first = batch.orders.is_empty();
                             let position = batch.orders.partition_point(|o| o.id < order.id);
                             batch.orders.insert(position, order.clone());

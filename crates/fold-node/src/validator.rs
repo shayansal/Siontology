@@ -12,11 +12,11 @@ use fold_assurance::{decide, Policy};
 use fold_consensus::lanes::verify_lane_certificate;
 use fold_consensus::LaneCertificate;
 use fold_consensus::{
-    Action, ApprovalStatus, Authenticator, Committee, Core, HashChain, LaneRequest, LaneValidator,
-    Message, SignatureVerifier, TimerKind,
+    Action, ApprovalProof, ApprovalStatus, Authenticator, CertificateBuilder, Committee, Core,
+    HashChain, LaneRequest, LaneValidator, Message, SignatureVerifier, TimerKind,
 };
 use fold_core::hash::Hash32;
-use fold_core::ids::{AssetId, Pulse, ShardId, TxDigest, ValidatorId};
+use fold_core::ids::{AccountId, AssetId, Pulse, ShardId, TxDigest, ValidatorId};
 use fold_core::merkle;
 use fold_core::smt::SmtSnapshot;
 use fold_core::Amount;
@@ -30,12 +30,13 @@ use fold_prover::PulseData;
 use serde_json::{json, Value};
 
 use crate::config::DevnetConfig;
+use crate::forced::ForcedIntents;
 use crate::gateway::GatewayInput;
 use crate::keys::{NodeAuthenticator, NodeVerifier};
 use crate::owners::{AlreadyChecked, Authorized, StateOwners};
 use crate::payload::{expand, lane_inputs, PayloadItem};
 use crate::pulses::{ClosedPulse, PulseBuilder};
-use crate::storage::{PulseRecord, Snapshot, Wal};
+use crate::storage::{LaneLog, PulseRecord, Snapshot, Wal};
 use crate::view::{AccountView, EventView, PulseView, Query, StatusView, TxView};
 
 /// Everything validators share, fixed for a run.
@@ -66,6 +67,25 @@ pub struct Shared {
     pub beacon_tips: Vec<Hash32>,
 }
 
+/// Batch headers one certificate group may carry.
+const MAX_GROUP_BATCHES: usize = 4_096;
+
+/// The largest validator signature accepted in a certificate group (a dual
+/// post-quantum signature is about 19.5 KB).
+const MAX_SIGNATURE_BYTES: usize = 32 * 1024;
+
+/// How many Pulses a lane request may wait for this validator to catch up.
+const PARK_PULSES: u64 = 4;
+
+/// How many Pulses ahead a header signature may arrive and wait.
+const EARLY_SIGNATURE_WINDOW: u64 = 8;
+
+/// Extended data squares kept in memory (for serving shares).
+const SQUARE_CACHE: usize = 4;
+
+/// Pulses whose published data is kept for re-deriving shares.
+const DA_HISTORY: u64 = 64;
+
 /// Messages to a validator.
 #[derive(Debug)]
 pub enum Input {
@@ -95,6 +115,25 @@ pub enum Input {
         header: Hash32,
         /// Signature over the header's signing digest.
         signature: Vec<u8>,
+    },
+    /// Another validator's approval of a forced intent (validators collect
+    /// these themselves, without the gateway).
+    ForcedApproval {
+        /// The shard.
+        shard: ShardId,
+        /// The intent.
+        tx: TxDigest,
+        /// The sealed approval.
+        proof: ApprovalProof,
+    },
+    /// **Adversary simulation (devnet only).** Makes this validator censor
+    /// (or stop censoring) these accounts: it ignores their lane requests
+    /// and drops their transactions from its proposals.
+    Adversary {
+        /// Accounts to censor.
+        censored: BTreeSet<AccountId>,
+        /// Whether this validator takes part.
+        censor: bool,
     },
     /// A query.
     Query(Query, Sender<Result<Value, String>>),
@@ -162,7 +201,11 @@ struct Collector {
 #[derive(Debug)]
 struct Executed {
     output: PulseOutput,
-    square: Option<(ExtendedSquare, DaHeader)>,
+    /// The data-availability header (`None` if encoding failed).
+    da: Option<DaHeader>,
+    /// The published data, from which shares are re-derived on demand (the
+    /// extended square itself is large).
+    blob: Option<Arc<Vec<u8>>>,
     anchors: u64,
     revealed: usize,
     data_bytes: usize,
@@ -197,7 +240,18 @@ pub struct Validator {
     proof_cache: Option<(Pulse, SmtSnapshot)>,
     verifier: NodeVerifier,
     authorized: Authorized,
-    prover: Option<Sender<ProverJob>>,
+    squares: VecDeque<(Pulse, ExtendedSquare)>,
+    parked: Vec<(ShardId, LaneRequest, u64)>,
+    lock_expiry: BTreeMap<TxDigest, (ShardId, Pulse)>,
+    lane_log: Option<LaneLog>,
+    lane_log_pending: Vec<(ShardId, LaneRequest)>,
+    forced: ForcedIntents,
+    forced_waiters: BTreeSet<TxDigest>,
+    forced_builders: BTreeMap<TxDigest, CertificateBuilder>,
+    forced_submitted: BTreeSet<TxDigest>,
+    censored: BTreeSet<AccountId>,
+    censoring: bool,
+    prover: Option<std::sync::mpsc::SyncSender<ProverJob>>,
     proven: Arc<std::sync::Mutex<BTreeMap<Pulse, crate::prover::Proven>>>,
 }
 
@@ -231,9 +285,15 @@ pub struct ValidatorSetup {
     /// The network.
     pub bus: Bus,
     /// Where to send traces, if this validator feeds the prover.
-    pub prover: Option<Sender<ProverJob>>,
+    pub prover: Option<std::sync::mpsc::SyncSender<ProverJob>>,
     /// Verified World Proofs (written by the prover).
     pub proven: Arc<std::sync::Mutex<BTreeMap<Pulse, crate::prover::Proven>>>,
+    /// Recovered or empty forced-inclusion obligations.
+    pub forced: ForcedIntents,
+    /// Its durable lane-lock log, if persistent.
+    pub lane_log: Option<LaneLog>,
+    /// Locks to restore (approved before a restart, not yet executed).
+    pub lane_locks: Vec<(ShardId, LaneRequest)>,
 }
 
 impl Validator {
@@ -246,12 +306,23 @@ impl Validator {
             shared.verifier.clone(),
             shared.config.core.clone(),
         );
-        let lanes = shared
+        let mut lanes: BTreeMap<ShardId, LaneValidator<NodeAuthenticator>> = shared
             .shard_committees
             .iter()
             .filter(|(_, c)| c.contains(&id))
             .map(|(shard, c)| (*shard, LaneValidator::new(c, setup.auth.clone())))
             .collect();
+        let mut lock_expiry = BTreeMap::new();
+        for (shard, request) in setup.lane_locks {
+            if let Some(lane) = lanes.get_mut(&shard) {
+                if let Ok(signed) =
+                    fold_core::encode::decode::<fold_exec::SignedTransaction>(&request.owner_proof)
+                {
+                    lock_expiry.insert(request.tx, (shard, signed.tx.expires_at));
+                }
+                lane.restore(request);
+            }
+        }
         let builder = PulseBuilder::new(
             shared.config.rounds_per_pulse,
             setup.state.pulse,
@@ -283,6 +354,17 @@ impl Validator {
             proof_cache: None,
             verifier: shared.verifier.clone(),
             authorized: Authorized::default(),
+            squares: VecDeque::new(),
+            parked: Vec::new(),
+            lock_expiry,
+            lane_log: setup.lane_log,
+            lane_log_pending: Vec::new(),
+            forced: setup.forced,
+            forced_waiters: BTreeSet::new(),
+            forced_builders: BTreeMap::new(),
+            forced_submitted: BTreeSet::new(),
+            censored: BTreeSet::new(),
+            censoring: false,
             prover: setup.prover,
             proven: setup.proven,
             shared,
@@ -333,6 +415,7 @@ impl Validator {
             let _ = wal.snapshot(&Snapshot {
                 state: self.state.clone(),
                 beacon: self.builder.beacon().clone(),
+                forced: self.forced.clone(),
                 epoch: self.shared.epoch,
             });
         }
@@ -371,10 +454,26 @@ impl Validator {
                 self.apply(actions.into());
             }
             Input::Submit(item) => {
+                if self.censoring {
+                    let censored = PayloadItem::from_bytes(&item)
+                        .map(|i| i.senders().iter().any(|s| self.censored.contains(s)))
+                        .unwrap_or(false);
+                    if censored {
+                        return;
+                    }
+                }
                 let actions = self.core.handle(fold_consensus::Event::Submit(item));
                 self.apply(actions.into());
             }
             Input::Lane { shard, request } => self.on_lane_request(shard, request),
+            Input::ForcedApproval { shard, tx, proof } => {
+                let actions = self.on_forced_approval(shard, tx, proof);
+                self.apply(actions.into());
+            }
+            Input::Adversary { censored, censor } => {
+                self.censored = censored;
+                self.censoring = censor;
+            }
             Input::PulseSignature {
                 from,
                 pulse,
@@ -432,6 +531,14 @@ impl Validator {
     // ----- Lanes ----------------------------------------------------------
 
     fn on_lane_request(&mut self, shard: ShardId, request: LaneRequest) {
+        self.handle_lane_request(shard, request, 0);
+    }
+
+    /// Checks a lane request and approves it. A request that fails only
+    /// because this validator is behind (an input it has not seen created
+    /// yet) waits up to [`PARK_PULSES`] Pulses instead of being refused, so
+    /// lagging validators do not split an object's locks.
+    fn handle_lane_request(&mut self, shard: ShardId, request: LaneRequest, parked_for: u64) {
         let tx = request.tx;
         let Some(lane) = self.lanes.get_mut(&shard) else {
             let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
@@ -442,20 +549,38 @@ impl Validator {
             return;
         };
         let owners = StateOwners { state: &self.state };
-        match owners.check(&request) {
-            Ok((_, key)) => self.authorized.insert(key),
-            Err(reason) => {
-                let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
-                    tx,
-                    validator: self.id,
-                    reason,
-                });
+        let expires_at = match owners.check(&request) {
+            Ok((signed, _)) if self.censoring && self.censored.contains(&signed.tx.sender) => {
+                // Censorship is silent: no approval, no rejection.
                 return;
             }
-        }
+            Ok((signed, key)) => {
+                self.authorized.insert(key);
+                signed.tx.expires_at
+            }
+            Err(reason) => {
+                let behind =
+                    fold_core::encode::decode::<fold_exec::SignedTransaction>(&request.owner_proof)
+                        .map(|signed| owners.is_behind(&signed))
+                        .unwrap_or(false);
+                if behind && parked_for < PARK_PULSES {
+                    self.parked.push((shard, request, parked_for + 1));
+                } else {
+                    let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
+                        tx,
+                        validator: self.id,
+                        reason,
+                    });
+                }
+                return;
+            }
+        };
+        self.lock_expiry.insert(tx, (shard, expires_at));
+        let logged = request.clone();
         match lane.approve(request, &AlreadyChecked) {
             Ok(ApprovalStatus::Pending) => {
                 self.lane_waiters.insert(tx);
+                self.lane_log_pending.push((shard, logged));
             }
             Ok(ApprovalStatus::Sealed(proof)) => {
                 let _ = self
@@ -486,6 +611,15 @@ impl Validator {
     }
 
     fn seal_lane_batches(&mut self) {
+        // Approvals leave this validator only once their locks are durable.
+        if let Some(log) = &mut self.lane_log {
+            if let Err(e) = log.append(&self.lane_log_pending) {
+                eprintln!("validator {}: lane log append failed: {e}", self.index);
+                return;
+            }
+        }
+        self.lane_log_pending.clear();
+        let mut forced = Vec::new();
         for (shard, lane) in self.lanes.iter_mut() {
             let Some(batch) = lane.seal_batch() else {
                 continue;
@@ -500,7 +634,114 @@ impl Validator {
                         });
                     }
                 }
+                if self.forced_waiters.remove(tx) {
+                    if let Some(proof) = lane.approval_proof(tx) {
+                        forced.push((*shard, *tx, proof.clone()));
+                    }
+                }
             }
+        }
+        let mut actions = Vec::new();
+        for (shard, tx, proof) in forced {
+            actions.extend(self.share_forced_approval(shard, tx, proof));
+        }
+        self.apply(actions.into());
+    }
+
+    // ----- Forced inclusion ------------------------------------------------
+
+    /// Sends this validator's approval of a forced intent to every
+    /// validator, itself included.
+    fn share_forced_approval(
+        &mut self,
+        shard: ShardId,
+        tx: TxDigest,
+        proof: ApprovalProof,
+    ) -> Vec<Action> {
+        self.bus.broadcast(self.index, || Input::ForcedApproval {
+            shard,
+            tx,
+            proof: proof.clone(),
+        });
+        self.on_forced_approval(shard, tx, proof)
+    }
+
+    /// Approves the pending forced intents of this validator's shards.
+    fn approve_forced(&mut self, pending: Vec<fold_exec::SignedTransaction>) -> Vec<Action> {
+        let shards = self.shared.config.shards;
+        let mut sealed = Vec::new();
+        for tx in pending {
+            let digest = tx.digest();
+            if self.censoring && self.censored.contains(&tx.tx.sender) {
+                continue;
+            }
+            let shard = ShardId::for_account(&tx.tx.sender, shards);
+            let Some(lane) = self.lanes.get_mut(&shard) else {
+                continue;
+            };
+            let request = LaneRequest {
+                tx: digest,
+                inputs: lane_inputs(&tx.tx.inputs),
+                owner_proof: fold_core::encode::encode(&tx),
+            };
+            // `ForcedIntents::after_pulse` just checked admissibility against
+            // this state; a lock held by another transaction still refuses.
+            self.lock_expiry.insert(digest, (shard, tx.tx.expires_at));
+            let logged = request.clone();
+            match lane.approve(request, &AlreadyChecked) {
+                Ok(ApprovalStatus::Pending) => {
+                    self.forced_waiters.insert(digest);
+                    self.lane_log_pending.push((shard, logged));
+                }
+                Ok(ApprovalStatus::Sealed(proof)) => {
+                    if !self.forced_submitted.contains(&digest) {
+                        sealed.push((shard, digest, proof));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        let mut actions = Vec::new();
+        for (shard, tx, proof) in sealed {
+            actions.extend(self.share_forced_approval(shard, tx, proof));
+        }
+        actions
+    }
+
+    /// Collects approvals of a forced intent; once they form a certificate,
+    /// proposes the certified transaction itself. Returns the consensus
+    /// actions to apply.
+    fn on_forced_approval(
+        &mut self,
+        shard: ShardId,
+        tx: TxDigest,
+        proof: ApprovalProof,
+    ) -> Vec<Action> {
+        if self.forced_submitted.contains(&tx) {
+            return Vec::new();
+        }
+        let Some(signed) = self.forced.intent(&tx).cloned() else {
+            return Vec::new();
+        };
+        if self.censoring && self.censored.contains(&signed.tx.sender) {
+            return Vec::new();
+        }
+        let Some(committee) = self.shared.shard_committees.get(&shard) else {
+            return Vec::new();
+        };
+        let builder = self
+            .forced_builders
+            .entry(tx)
+            .or_insert_with(|| CertificateBuilder::new(tx, &lane_inputs(&signed.tx.inputs)));
+        match builder.add(committee, proof, &self.verifier) {
+            Ok(Some(certificate)) => {
+                self.forced_submitted.insert(tx);
+                self.forced_builders.remove(&tx);
+                let group = PayloadItem::group(vec![(signed, certificate)]);
+                self.core
+                    .handle(fold_consensus::Event::Submit(group.to_bytes()))
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -512,10 +753,34 @@ impl Validator {
         let mut owned = Vec::new();
         let mut contended = Vec::new();
         let mut certificates: BTreeMap<TxDigest, LaneCertificate> = BTreeMap::new();
+        let mut posted = Vec::new();
         for item in closed.items {
-            let PayloadItem::Certified { batches, txs } = item else {
-                continue;
+            let (batches, txs) = match item {
+                PayloadItem::Certified { batches, txs } => (batches, txs),
+                PayloadItem::Forced { tx } => {
+                    posted.push(*tx);
+                    continue;
+                }
+                PayloadItem::Reveal { .. } => continue,
             };
+            // Check the group's shape before expanding anything: expansion
+            // copies a batch header per approval, so an oversized signature
+            // or more approvals than a committee has members must be refused
+            // first.
+            let seats = self.shared.config.shard_seats.max(1);
+            if batches.len() > MAX_GROUP_BATCHES
+                || batches
+                    .iter()
+                    .any(|b| b.signature.len() > MAX_SIGNATURE_BYTES)
+                || txs.iter().any(|t| {
+                    t.approvals.len() > seats || t.approvals.iter().any(|a| a.path.len() > 64)
+                })
+            {
+                if self.index == 0 {
+                    eprintln!("validator: dropping a malformed certificate group");
+                }
+                continue;
+            }
             for grouped in &txs {
                 // The certificate must lock exactly the transaction's owned
                 // inputs, with a quorum of its shard's committee.
@@ -585,6 +850,25 @@ impl Validator {
             self.executed.2 + r as u64,
         );
 
+        // Forced inclusion: what the shards now owe, from committed data and
+        // the executed state alone.
+        let executed_digests: Vec<TxDigest> = output.effects.iter().map(|e| e.digest).collect();
+        let still_pending = self.forced.after_pulse(
+            input.pulse,
+            &posted,
+            &executed_digests,
+            &self.state,
+            shards,
+            &mut self.authorized,
+        );
+        let forced_summary = self.forced.summary(input.pulse);
+        if forced_summary.overdue > 0 && self.index == 0 {
+            eprintln!(
+                "validator: Pulse {}: {} forced intent(s) overdue, censorship detected",
+                input.pulse, forced_summary.overdue
+            );
+        }
+
         // Data availability: the transaction bodies in execution order,
         // without signatures.
         let bodies: BTreeMap<TxDigest, &fold_exec::Transaction> = input
@@ -613,6 +897,13 @@ impl Validator {
             .as_ref()
             .map(|(_, h)| (h.data_root, h.k))
             .unwrap_or((Hash32::ZERO, 0));
+        let da = square.as_ref().map(|(_, h)| h.clone());
+        if let Some((square, _)) = square {
+            self.squares.push_back((input.pulse, square));
+            while self.squares.len() > SQUARE_CACHE {
+                self.squares.pop_front();
+            }
+        }
 
         let header = PulseHeader {
             chain: self.shared.chain_id,
@@ -625,11 +916,13 @@ impl Validator {
             receipts_root: output.receipts_root,
             data_root,
             data_k,
+            forced: forced_summary,
         };
 
         if let Some(wal) = &mut self.wal {
             let record = PulseRecord {
                 input: input.clone(),
+                forced: posted.clone(),
                 after: output.after,
                 beacon: self.builder.beacon().clone(),
             };
@@ -641,46 +934,76 @@ impl Validator {
                 if let Err(e) = wal.snapshot(&Snapshot {
                     state: self.state.clone(),
                     beacon: self.builder.beacon().clone(),
+                    forced: self.forced.clone(),
                     epoch: self.shared.epoch,
                 }) {
                     eprintln!("validator {}: snapshot failed: {e}", self.index);
                 }
+                // Keep the lane log to the locks that still matter.
+                if let Some(log) = &mut self.lane_log {
+                    let state = &self.state;
+                    let live: Vec<(ShardId, LaneRequest)> = self
+                        .lanes
+                        .iter()
+                        .flat_map(|(shard, lane)| {
+                            lane.locked_requests().into_iter().map(move |r| (*shard, r))
+                        })
+                        .filter(|(_, request)| crate::owners::lock_is_live(state, request))
+                        .collect();
+                    if let Err(e) = log.compact(&live) {
+                        eprintln!("validator {}: lane log compaction failed: {e}", self.index);
+                    }
+                }
             }
         }
 
+        // A transaction's receipt is its first execution: a certificate
+        // re-included later is rejected (its inputs are gone), and that
+        // later receipt must not hide the real one.
         for (index, effects) in output.effects.iter().enumerate() {
             self.tx_index
-                .insert(effects.digest, (input.pulse, index as u64));
+                .entry(effects.digest)
+                .or_insert((input.pulse, index as u64));
         }
 
-        // Sign the header and share the signature.
-        let signature = self.auth.sign(&header.signing_digest().0);
-        let digest = header.digest();
-        let mut collector = Collector {
-            header: header.clone(),
-            signatures: BTreeMap::new(),
-            certificate: None,
-        };
-        collector.signatures.insert(self.id, signature.clone());
-        self.collectors.insert(input.pulse, collector);
-        let (from, pulse) = (self.id, input.pulse);
-        self.bus.broadcast(self.index, || Input::PulseSignature {
-            from,
-            pulse,
-            header: digest,
-            signature: signature.clone(),
-        });
-        for (from, header, signature) in self
-            .early_signatures
-            .remove(&input.pulse)
-            .unwrap_or_default()
-        {
-            self.on_pulse_signature(from, input.pulse, header, signature);
+        // Sign the header and share the signature, but never certify a Pulse
+        // whose data has no availability commitment.
+        if data_k > 0 {
+            let signature = self.auth.sign(&header.signing_digest().0);
+            let digest = header.digest();
+            let mut collector = Collector {
+                header: header.clone(),
+                signatures: BTreeMap::new(),
+                certificate: None,
+            };
+            collector.signatures.insert(self.id, signature.clone());
+            self.collectors.insert(input.pulse, collector);
+            let (from, pulse) = (self.id, input.pulse);
+            self.bus.broadcast(self.index, || Input::PulseSignature {
+                from,
+                pulse,
+                header: digest,
+                signature: signature.clone(),
+            });
+            for (from, header, signature) in self
+                .early_signatures
+                .remove(&input.pulse)
+                .unwrap_or_default()
+            {
+                self.on_pulse_signature(from, input.pulse, header, signature);
+            }
+            self.try_certify(input.pulse);
+        } else {
+            eprintln!(
+                "validator {}: Pulse {} has no data-availability commitment; not signing it",
+                self.index, input.pulse
+            );
         }
-        self.try_certify(input.pulse);
 
         if let Some(prover) = &self.prover {
-            let _ = prover.send(ProverJob {
+            // A full backlog means the prover is behind: this Pulse goes
+            // unproven rather than queueing without bound.
+            let _ = prover.try_send(ProverJob {
                 header,
                 output: output.clone(),
                 traces,
@@ -693,13 +1016,22 @@ impl Validator {
             input.pulse,
             Executed {
                 output,
-                square,
+                da,
+                data_bytes: blob.len(),
+                blob: Some(Arc::new(blob)),
                 anchors: closed.anchors,
                 revealed: closed.beacon.revealed.len(),
-                data_bytes: blob.len(),
                 execution_ms: started.elapsed().as_millis() as u64,
             },
         );
+        if let Some(old) = input
+            .pulse
+            .0
+            .checked_sub(DA_HISTORY)
+            .and_then(|p| self.history.get_mut(&Pulse(p)))
+        {
+            old.blob = None;
+        }
         while self.history.len() > self.shared.config.history.max(1) {
             let oldest = *self.history.keys().next().expect("non-empty");
             if let Some(old) = self.history.remove(&oldest) {
@@ -711,19 +1043,55 @@ impl Validator {
         }
         self.proof_cache = None;
 
+        // Lane locks of transactions that executed (their input versions are
+        // gone) or can no longer execute (expired) are released, so their
+        // inputs never stay frozen.
+        let pulse_now = self.state.pulse;
+        let mut released: Vec<(ShardId, TxDigest)> = executed_digests
+            .iter()
+            .filter_map(|d| self.lock_expiry.get(d).map(|(s, _)| (*s, *d)))
+            .collect();
+        released.extend(
+            self.lock_expiry
+                .iter()
+                .filter(|(_, (_, expires_at))| *expires_at <= pulse_now)
+                .map(|(d, (s, _))| (*s, *d)),
+        );
+        for (shard, digest) in released {
+            if let Some(lane) = self.lanes.get_mut(&shard) {
+                lane.release(&digest);
+            }
+            self.lock_expiry.remove(&digest);
+            self.lane_waiters.remove(&digest);
+        }
+        // Requests that waited for this validator to catch up get another try.
+        for (shard, request, parked_for) in std::mem::take(&mut self.parked) {
+            self.handle_lane_request(shard, request, parked_for);
+        }
+
+        // Forced intents still owed: approve those of this validator's
+        // shards, and forget bookkeeping for resolved ones.
+        let forced = &self.forced;
+        self.forced_waiters.retain(|d| forced.is_pending(d));
+        self.forced_builders.retain(|d, _| forced.is_pending(d));
+        self.forced_submitted.retain(|d| forced.is_pending(d));
+        let mut actions = self.approve_forced(still_pending);
+
         // Reveal for the next Pulse.
         let next = input.pulse.next();
-        match self.chain.reveal_for(next) {
-            Some(value) => self.core.handle(fold_consensus::Event::Submit(
-                PayloadItem::Reveal {
-                    validator: self.id,
-                    pulse: next,
-                    value,
-                }
-                .to_bytes(),
-            )),
-            None => Vec::new(),
+        if let Some(value) = self.chain.reveal_for(next) {
+            actions.extend(
+                self.core.handle(fold_consensus::Event::Submit(
+                    PayloadItem::Reveal {
+                        validator: self.id,
+                        pulse: next,
+                        value,
+                    }
+                    .to_bytes(),
+                )),
+            );
         }
+        actions
     }
 
     // ----- Header certificates --------------------------------------------
@@ -736,11 +1104,17 @@ impl Validator {
         signature: Vec<u8>,
     ) {
         let Some(collector) = self.collectors.get_mut(&pulse) else {
-            if pulse > self.state.pulse {
-                self.early_signatures
-                    .entry(pulse)
-                    .or_default()
-                    .push((from, header, signature));
+            // Signatures for a Pulse not executed yet wait, but only a few
+            // Pulses ahead and one per committee member.
+            let ahead = pulse.0.saturating_sub(self.state.pulse.0);
+            if pulse > self.state.pulse
+                && ahead <= EARLY_SIGNATURE_WINDOW
+                && self.shared.committee.contains(&from)
+            {
+                let waiting = self.early_signatures.entry(pulse).or_default();
+                if !waiting.iter().any(|(v, _, _)| *v == from) {
+                    waiting.push((from, header, signature));
+                }
             }
             return;
         };
@@ -820,6 +1194,8 @@ impl Validator {
                         .lock()
                         .ok()
                         .and_then(|p| p.keys().next_back().copied()),
+                    forced_pending: self.forced.summary(self.state.pulse).pending,
+                    forced_overdue: self.forced.summary(self.state.pulse).overdue,
                 };
                 Ok(to_json(&status))
             }
@@ -947,12 +1323,24 @@ impl Validator {
             }
             Query::Data(pulse) => {
                 let executed = self.history.get(&pulse).ok_or("unknown or pruned Pulse")?;
-                let (_, header) = executed.square.as_ref().ok_or("no data square")?;
+                let header = executed.da.as_ref().ok_or("no data square")?;
                 Ok(to_json(header))
             }
             Query::Share { pulse, row, column } => {
-                let executed = self.history.get(&pulse).ok_or("unknown or pruned Pulse")?;
-                let (square, _) = executed.square.as_ref().ok_or("no data square")?;
+                if !self.squares.iter().any(|(p, _)| *p == pulse) {
+                    let executed = self.history.get(&pulse).ok_or("unknown or pruned Pulse")?;
+                    let blob = executed.blob.as_ref().ok_or("data pruned")?;
+                    let square = ExtendedSquare::encode(blob).map_err(|e| e.to_string())?;
+                    self.squares.push_back((pulse, square));
+                    while self.squares.len() > SQUARE_CACHE {
+                        self.squares.pop_front();
+                    }
+                }
+                let (_, square) = self
+                    .squares
+                    .iter()
+                    .find(|(p, _)| *p == pulse)
+                    .expect("cached above");
                 let share = square.share(row, column).map_err(|e| e.to_string())?;
                 Ok(to_json(&share))
             }
@@ -996,6 +1384,28 @@ impl Validator {
                 "digest": self.shared.genesis_digest,
                 "spec": self.shared.genesis,
             })),
+            Query::Forced => {
+                let pulse = self.state.pulse;
+                let resolved: Vec<Value> = self
+                    .forced
+                    .resolved()
+                    .iter()
+                    .map(|(digest, (at, included))| {
+                        json!({
+                            "digest": digest,
+                            "pulse": at,
+                            "outcome": if *included { "included" } else { "proven invalid" },
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "pulse": pulse,
+                    "window": self.shared.config.forced_window,
+                    "summary": self.forced.summary(pulse),
+                    "pending": self.forced.pending(pulse),
+                    "resolved": resolved,
+                }))
+            }
             Query::World(pulse) => {
                 let entry = self
                     .proven

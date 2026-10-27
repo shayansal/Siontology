@@ -294,3 +294,74 @@ fn weighted_committees_count_stake_not_heads() {
             .is_err()
     );
 }
+
+/// Found by the security review: a restart starts a new epoch in which old
+/// approvals do not count, and the locks were lost, so a payer could
+/// certify a conflicting spend after a restart. Restored locks keep the
+/// inputs bound to the original transaction, which can be certified again.
+#[test]
+fn restored_locks_keep_certificate_finality_across_epochs() {
+    let (_, keys, verifier) = setup(4);
+    let paid = request("pay-bob", &[coin(7)]);
+    let rival = request("pay-carol", &[coin(7)]);
+
+    // Epoch 1: every validator locks coin 7 to the payment to Bob.
+    let epoch1 =
+        Committee::equal_weight(Epoch(1), ShardId(0), keys.iter().map(|k| k.validator())).unwrap();
+    let mut old: Vec<_> = keys
+        .iter()
+        .map(|k| LaneValidator::new(&epoch1, k.clone()))
+        .collect();
+    for validator in old.iter_mut() {
+        approve_and_seal(validator, &paid).unwrap();
+    }
+    let logged: Vec<Vec<LaneRequest>> = old.iter().map(|v| v.locked_requests()).collect();
+
+    // Restart: epoch 2, locks restored from the log.
+    let epoch2 =
+        Committee::equal_weight(Epoch(2), ShardId(0), keys.iter().map(|k| k.validator())).unwrap();
+    let mut new: Vec<_> = keys
+        .iter()
+        .map(|k| LaneValidator::new(&epoch2, k.clone()))
+        .collect();
+    for (validator, requests) in new.iter_mut().zip(logged) {
+        for request in requests {
+            validator.restore(request);
+        }
+    }
+    // The conflicting spend is refused everywhere...
+    for validator in new.iter_mut() {
+        let refused = validator.approve(rival.clone(), &TestOwners).unwrap_err();
+        assert!(matches!(refused.error, ConsensusError::LockConflict { .. }));
+    }
+    // ...and the original payment certifies again in the new epoch.
+    let proofs: Vec<_> = new
+        .iter_mut()
+        .map(|v| approve_and_seal(v, &paid).unwrap())
+        .collect();
+    let certificate = certificate_from(&epoch2, &verifier, &paid, &proofs).unwrap();
+    verify_lane_certificate(&epoch2, &paid.tx, &paid.inputs, &certificate, &verifier).unwrap();
+
+    // Once it executes (or expires), releasing the lock frees the coin.
+    for validator in new.iter_mut() {
+        validator.release(&paid.tx);
+        assert_eq!(validator.locked_count(), 0);
+        assert!(matches!(
+            validator.approve(rival.clone(), &TestOwners),
+            Ok(ApprovalStatus::Pending)
+        ));
+    }
+}
+
+/// Found by the security review: every input's lock held its own copy of
+/// the whole request, so memory grew with inputs × transaction size.
+#[test]
+fn a_lock_shares_one_request_across_inputs() {
+    let (committee, keys, _) = setup(4);
+    let inputs: Vec<ObjectRef> = (0..200u8).map(coin).collect();
+    let mut validator = LaneValidator::new(&committee, keys[0].clone());
+    let big = request("big", &inputs);
+    validator.approve(big, &TestOwners).unwrap();
+    assert_eq!(validator.locked_count(), 200);
+    assert_eq!(validator.locked_requests().len(), 1);
+}

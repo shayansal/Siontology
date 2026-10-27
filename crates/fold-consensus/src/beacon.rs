@@ -126,6 +126,23 @@ impl Beacon {
         self.previous
     }
 
+    /// Whether `preimage` is `validator`'s valid reveal for `pulse` (a
+    /// current or future Pulse), without recording it.
+    pub fn check_reveal(&self, validator: ValidatorId, pulse: Pulse, preimage: Hash32) -> bool {
+        let Some(commitment) = self.participants.get(&validator) else {
+            return false;
+        };
+        let steps = pulse.0.saturating_sub(commitment.last_pulse.0);
+        if steps == 0 || steps > MAX_SKIPPED_PULSES {
+            return false;
+        }
+        let mut value = preimage;
+        for _ in 0..steps {
+            value = chain_step(&value);
+        }
+        value == commitment.last_value
+    }
+
     /// Accepts a reveal for the current Pulse.
     pub fn submit_reveal(
         &mut self,

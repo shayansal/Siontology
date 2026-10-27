@@ -7,10 +7,18 @@ use fold_core::ids::Version;
 use fold_core::Amount;
 use fold_exec::account::AccountState;
 use fold_exec::object::{well_known, Object, ObjectData, Owner};
-use fold_exec::tx::{TxKind, TX_DOMAIN};
+use fold_exec::state::ChainConfig;
+use fold_exec::tx::{TxKind, MAX_INPUTS, TX_DOMAIN};
 
 use crate::error::{fail, Step};
 use crate::tx::{usd, TxRun};
+
+/// The signing context of transactions on the chain with `config` (§4.1
+/// step 5): `TX_DOMAIN`, a `/`, and the configuration digest in lowercase
+/// hex. A transaction signed for one chain never verifies on another.
+pub(crate) fn signing_context(config: &ChainConfig) -> String {
+    format!("{TX_DOMAIN}/{}", config.digest().to_hex())
+}
 
 /// Runs the checks of §4.1 in order, stopping at the first failure (so a
 /// rejected transaction reads only what its checks needed).
@@ -23,9 +31,12 @@ pub(crate) fn prepare(run: &mut TxRun<'_>) -> Step {
     if ctx.pulse > tx.expires_at {
         return Err(fail("transaction expired"));
     }
-    // 2. Inputs present and distinct.
+    // 2. Between one and MAX_INPUTS inputs, all distinct.
     if tx.inputs.is_empty() {
         return Err(fail("no inputs"));
+    }
+    if tx.inputs.len() > MAX_INPUTS {
+        return Err(fail(format!("more than {MAX_INPUTS} inputs")));
     }
     let distinct: BTreeSet<_> = tx.inputs.iter().map(|input| input.id).collect();
     if distinct.len() != tx.inputs.len() {
@@ -71,7 +82,11 @@ pub(crate) fn prepare(run: &mut TxRun<'_>) -> Step {
         }
     };
     // 5. Authorization.
-    policy.verify(TX_DOMAIN, &run.digest.0 .0, &run.signed.auth)?;
+    policy.verify(
+        &signing_context(&ctx.config),
+        &run.digest.0 .0,
+        &run.signed.auth,
+    )?;
     // 6. Inputs.
     for (position, input) in tx.inputs.iter().enumerate() {
         let object = run.load(&input.id)?;
@@ -104,4 +119,32 @@ pub(crate) fn prepare(run: &mut TxRun<'_>) -> Step {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(chain_id: &str) -> ChainConfig {
+        ChainConfig {
+            chain_id: chain_id.into(),
+            shard_count: 2,
+            base_fee: Amount(1_000),
+            fee_per_kib: Amount(100),
+            faucet: None,
+            max_claim_window: 1_000,
+            max_formula_size: 64,
+            max_payload_bytes: 1_024,
+            challenger_share_permille: 500,
+        }
+    }
+
+    #[test]
+    fn signing_contexts_bind_the_chain_configuration() {
+        let one = config("one");
+        assert_eq!(signing_context(&one), fold_exec::tx::signing_context(&one));
+        assert!(signing_context(&one).starts_with("fold/tx/v1/"));
+        assert_eq!(signing_context(&one).len(), "fold/tx/v1/".len() + 64);
+        assert_ne!(signing_context(&one), signing_context(&config("two")));
+    }
 }

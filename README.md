@@ -47,9 +47,16 @@ simplification.
 - **Post-quantum from the start.** Every account and validator signs with
   two unrelated families at once (ML-DSA-44 and SLH-DSA-SHA2-128f), so a
   forger must break both; payloads are encrypted with ML-KEM-768.
+- **Censorship resistance.** A user whose transactions are ignored posts
+  them straight to consensus as forced intents. One honest proposer is
+  enough to order one, the shard's validators certify it among themselves,
+  and every certified header counts the intents a shard still owes, so
+  censorship by more than a third of a committee is visible to every light
+  client.
 - **Light clients.** A client that pins the chain identity checks the
-  committee certificate, receipts, state and claim proofs, samples data
-  availability and verifies World Proofs, without running a node.
+  committee certificate, the certified order of transactions, receipts,
+  state and claim proofs, samples data availability at random and verifies
+  World Proofs, without running a node.
 - **Agent-native interfaces.** A CLI, a JSON HTTP API and a Model Context
   Protocol server, so AI agents can pay, issue claims, price a claim's
   trustworthiness before relying on it, and verify the chain.
@@ -104,6 +111,7 @@ availability and proving) and narrates what the ledger established.
 | `agents` | An AI agent with a budget the ledger enforces: a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent. |
 | `market` | A sealed-bid GPU-hour market that clears at one price with an optimality certificate. |
 | `receipts` | Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions (trusting a TEE, distrusting it, or assuming it broken). |
+| `censorship` | Forced inclusion: a user censored by the gateway gets through by posting straight to consensus; when more than a third of a committee censors too, certified headers count the overdue intent and a light client sees it. |
 | `light` | A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys. |
 
 ## Repository layout
