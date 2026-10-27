@@ -25,6 +25,10 @@ use crate::object::{well_known, CoordinationClass, ObjectRef};
 /// The signing domain for transactions.
 pub const TX_DOMAIN: &str = "fold/tx/v1";
 
+/// The largest amount one faucet grant may mint. Bounding grants keeps every
+/// supply total far from overflow.
+pub const MAX_GRANT: Amount = Amount::units(1_000_000_000);
+
 /// What a transaction does.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum TxKind {

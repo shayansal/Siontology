@@ -91,3 +91,6 @@ opt-level = 1
 
 [profile.release]
 debug = false
+# Consensus code must never wrap silently: an overflow that escaped review
+# panics in release builds exactly as it does in debug builds.
+overflow-checks = true

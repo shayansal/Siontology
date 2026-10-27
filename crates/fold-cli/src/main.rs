@@ -198,6 +198,14 @@ enum Command {
         /// Digest.
         digest: String,
     },
+    /// A transaction's receipt, verified as a light client would.
+    Receipt {
+        /// Digest.
+        digest: String,
+        /// The chain identity you trust. Without it the node vouches for itself.
+        #[arg(long, env = "FOLD_CHAIN")]
+        chain: Option<String>,
+    },
     /// A Pulse's header, certificate and summary.
     Pulse {
         /// Pulse (default: latest).
@@ -247,6 +255,10 @@ enum Command {
         /// Skip the end-to-end devnet measurement.
         #[arg(long)]
         no_devnet: bool,
+        /// Run only these groups: signatures, state, data, clearing,
+        /// assurance, execution, devnet (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
         /// Write the measurements as JSON to this file.
         #[arg(long)]
         json: Option<std::path::PathBuf>,
@@ -443,6 +455,15 @@ fn parse_asset(text: &str) -> AssetId {
     }
 }
 
+fn parse_chain(chain: Option<String>) -> Result<Option<Hash32>, CliError> {
+    chain
+        .map(|hex| {
+            Hash32::from_hex(hex.trim())
+                .map_err(|_| CliError::Usage("--chain takes 64 hex digits".into()))
+        })
+        .transpose()
+}
+
 fn hex_hash(text: &str, what: &str) -> Result<Hash32, CliError> {
     Hash32::from_hex(text).map_err(|_| CliError::Usage(format!("{what} must be a 64-digit hex ID")))
 }
@@ -458,14 +479,13 @@ fn print(value: &Value) {
     );
 }
 
-fn show_tx(view: &fold_node::TxView) {
+fn show_tx(names: &fold_cli::describe::Names, view: &fold_node::TxView) {
     println!(
-        "Pulse {}  {:?}  fee {} USD  digest {}",
-        view.pulse, view.status, view.effects.fee, view.effects.digest
+        "Pulse {}: {}",
+        view.pulse,
+        fold_cli::describe::receipt(names, &view.effects)
     );
-    for event in &view.effects.events {
-        println!("  {}", serde_json::to_string(event).unwrap_or_default());
-    }
+    println!("  digest {}", view.effects.digest);
 }
 
 fn run_devnet(args: &DevnetArgs) -> Result<(), CliError> {
@@ -545,10 +565,11 @@ fn run(cli: Cli) -> Result<(), CliError> {
     if let Command::Bench {
         quick,
         no_devnet,
+        only,
         json,
     } = &cli.command
     {
-        let results = fold_cli::bench::run(*quick, !*no_devnet, true)?;
+        let results = fold_cli::bench::run(*quick, !*no_devnet, only, true)?;
         if let Some(path) = json {
             std::fs::write(
                 path,
@@ -575,6 +596,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
         return mcp::serve(ledger);
     }
     let mut session = Session::open(ledger)?;
+    // Show what each command signs, as a sentence (demos narrate instead).
+    session.verbose = !matches!(cli.command, Command::Demo { .. });
     match cli.command {
         Command::Devnet(_) | Command::Keys(_) | Command::Mcp | Command::Bench { .. } => {
             unreachable!("handled above")
@@ -622,7 +645,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Bond {
             from,
@@ -646,7 +669,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
             println!("atom {}", bond_atom(class, &id, &label).id);
         }
         Command::Claim(ClaimCommand::Issue {
@@ -678,7 +701,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             };
             let claim = claim_id(&id, &body);
             let view = session.send(&from, TxKind::IssueClaim { claim: body }, Vec::new())?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
             println!(
                 "claim {claim} (joins the knowledge log at the end of Pulse {})",
                 view.pulse
@@ -723,7 +746,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Challenge {
             from,
@@ -745,7 +768,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Rule {
             from,
@@ -760,7 +783,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Charter(CharterCommand::Create {
             principal,
@@ -800,7 +823,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
             for event in &view.effects.events {
                 if let Event::CharterCreated { charter, allotment } = event {
                     println!("charter {charter}\nallotment {allotment}");
@@ -829,7 +852,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 vec![input],
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Charter(CharterCommand::Revoke { principal, charter }) => {
             let view = session.send(
@@ -839,7 +862,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Market(MarketCommand::Create {
             operator,
@@ -861,7 +884,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Market(MarketCommand::Order {
             from,
@@ -891,7 +914,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Market(MarketCommand::Clear { solver, market }) => {
             let market = ObjectId::from_hash(hex_hash(&market, "market")?);
@@ -925,7 +948,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 },
                 Vec::new(),
             )?;
-            show_tx(&view);
+            show_tx(&session.names(), &view);
         }
         Command::Market(MarketCommand::Show { market }) => {
             let object = ledger.object(ObjectId::from_hash(hex_hash(&market, "market")?))?;
@@ -933,7 +956,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         }
         Command::Tx { digest } => {
             match ledger.tx(TxDigest::from_hash(hex_hash(&digest, "digest")?))? {
-                TxState::Executed(view) => show_tx(&view),
+                TxState::Executed(view) => show_tx(&session.names(), &view),
                 TxState::Pending(state) => println!("{state}"),
                 TxState::Rejected(reason) => println!("rejected: {reason}"),
                 TxState::Unknown => println!("unknown transaction"),
@@ -951,19 +974,38 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 );
             }
         }
+        Command::Receipt { digest, chain } => {
+            let digest = TxDigest::from_hash(hex_hash(&digest, "digest")?);
+            let verified = verify::verify_receipt_of(ledger, parse_chain(chain)?, digest)?;
+            println!(
+                "Pulse {}: {}",
+                verified.pulse,
+                fold_cli::describe::receipt(&session.names(), &verified.effects)
+            );
+            match verified.signed {
+                Some((stake, quorum)) => println!(
+                    "  certified by {stake} of the committee's stake (quorum {quorum}), dual post-quantum signatures ✓"
+                ),
+                None => println!("  certificate: SKIPPED (insecure simulation signatures)"),
+            }
+            println!("  receipt proven against the certified header's receipts root ✓");
+            println!(
+                "  chain {} ({})",
+                verified.chain.0.short(),
+                if verified.chain.1 {
+                    "pinned"
+                } else {
+                    "NOT pinned: pass --chain to pin it"
+                }
+            );
+        }
         Command::Verify {
             chain,
             pulse,
             samples,
             no_world,
         } => {
-            let pinned = match chain {
-                Some(hex) => Some(
-                    Hash32::from_hex(hex.trim())
-                        .map_err(|_| CliError::Usage("--chain takes 64 hex digits".into()))?,
-                ),
-                None => None,
-            };
+            let pinned = parse_chain(chain)?;
             for line in verify::verify_pulse(ledger, pinned, pulse.map(Pulse), samples, !no_world)?
             {
                 println!("{line}");

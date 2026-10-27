@@ -13,6 +13,7 @@ fold-assurance.workspace = true
 fold-clearing.workspace = true
 fold-exec.workspace = true
 borsh.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

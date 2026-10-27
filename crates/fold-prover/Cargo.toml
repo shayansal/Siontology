@@ -10,6 +10,7 @@ publish.workspace = true
 fold-core.workspace = true
 fold-assurance.workspace = true
 fold-exec.workspace = true
+fold-spec.workspace = true
 fold-da.workspace = true
 fold-consensus.workspace = true
 borsh.workspace = true

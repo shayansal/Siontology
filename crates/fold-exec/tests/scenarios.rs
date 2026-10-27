@@ -1297,3 +1297,161 @@ fn contended_transactions_cannot_ride_the_owned_path() {
         "a rejected Pulse leaves the state untouched"
     );
 }
+
+/// Found by proof stack B (N-version testing): user-chosen periods, windows
+/// and grants must never reach an arithmetic overflow, and a delegation chain
+/// is read no further than its limit.
+#[test]
+fn bounds_keep_user_chosen_numbers_far_from_overflow() {
+    use fold_exec::charter::MAX_CHARTER_CHAIN;
+    use fold_exec::market::MAX_PERIOD;
+    use fold_exec::object::well_known;
+    use fold_exec::sim::FAUCET;
+    use fold_exec::tx::MAX_GRANT;
+
+    let mut chain = Chain::new(&["operator", "principal", "agent", "vendor"], 10_000, 4);
+    let (agent, vendor) = (chain.id("agent"), chain.id("vendor"));
+
+    // Market periods: a clearing deadline of u64::MAX used to overflow when
+    // the batch sealed (a panic in debug builds, a wrap in release builds).
+    for (deadline, ok) in [
+        (u64::MAX, false),
+        (MAX_PERIOD + 1, false),
+        (MAX_PERIOD, true),
+    ] {
+        let tx = chain
+            .tx(
+                "operator",
+                TxKind::CreateMarket {
+                    label: "periods".into(),
+                    good: gpu(),
+                    numeraire: usd(),
+                    batch_length: 2,
+                    clear_deadline: deadline,
+                    committee: Vec::new(),
+                    threshold: 0,
+                },
+            )
+            .unwrap();
+        let out = chain.pulse(vec![tx.clone()]).unwrap();
+        if ok {
+            assert_success(&out, &tx);
+        } else {
+            assert_failed(&out, &tx, "between 1 and");
+        }
+    }
+
+    // Faucet grants are capped, and faucet transactions pay no fee.
+    let faucet = chain.id(FAUCET);
+    let too_much = chain.fund(&[("vendor", usd(), plus(MAX_GRANT, Amount(1)))]);
+    let out = too_much.unwrap();
+    assert!(matches!(
+        &out.effects[0].status,
+        ExecStatus::Failed(reason) if reason.contains("at most")
+    ));
+    let paying = Transaction {
+        sender: faucet,
+        genesis_policy: None,
+        inputs: vec![reference(&chain, &well_known::account(&faucet))],
+        fee: units(1),
+        kind: TxKind::Faucet {
+            grants: vec![(vendor, usd(), units(1))],
+        },
+        expires_at: Pulse(chain.state.pulse.0 + 10),
+        nonce: 99,
+    }
+    .sign(&chain.wallet(FAUCET).keys)
+    .unwrap();
+    let out = chain.pulse(vec![paying.clone()]).unwrap();
+    assert!(matches!(status_of(&out, &paying), ExecStatus::Rejected(_)));
+
+    // A charter window of u64::MAX never resets (saturating), so its window
+    // limit becomes a lifetime limit.
+    let mut caveats = charter_caveats(vendor);
+    caveats.window = u64::MAX;
+    caveats.max_per_window = units(150);
+    let create = chain
+        .tx(
+            "principal",
+            TxKind::CreateCharter {
+                agent,
+                caveats: caveats.clone(),
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+        .unwrap();
+    let out = chain.pulse(vec![create.clone()]).unwrap();
+    assert_success(&out, &create);
+    let (root, root_allotment) = all_events(&out)
+        .into_iter()
+        .find_map(|e| match e {
+            Event::CharterCreated { charter, allotment } => Some((charter, allotment)),
+            _ => None,
+        })
+        .unwrap();
+    let pay = |chain: &mut Chain, charter: ObjectId, allotment: ObjectId, amount: u64| {
+        let input = reference(chain, &allotment);
+        chain
+            .tx_with(
+                "agent",
+                TxKind::AgentPay {
+                    charter,
+                    payee: vendor,
+                    amount: units(amount),
+                    purpose: "bounds".into(),
+                    evidence: None,
+                },
+                vec![input],
+            )
+            .unwrap()
+    };
+    let first = pay(&mut chain, root, root_allotment, 100);
+    let out = chain.pulse(vec![first.clone()]).unwrap();
+    assert_success(&out, &first);
+    chain.advance_to(Pulse(chain.state.pulse.0 + 50)).unwrap();
+    let second = pay(&mut chain, root, root_allotment, 100);
+    let out = chain.pulse(vec![second.clone()]).unwrap();
+    assert_failed(&out, &second, "window total");
+
+    // Delegation chains: the agent delegates to itself until the chain holds
+    // MAX_CHARTER_CHAIN charters; payments still work at that depth, and one
+    // level deeper they fail without the root being read.
+    let (mut charter, mut allotment) = (root, root_allotment);
+    let mut levels = vec![(charter, allotment)];
+    for level in 1..=MAX_CHARTER_CHAIN as u64 {
+        // Each level keeps 5 USD and passes the rest down.
+        let passed = 5 * (MAX_CHARTER_CHAIN as u64 + 1 - level) + 10;
+        let input = reference(&chain, &allotment);
+        let delegate = chain
+            .tx_with(
+                "agent",
+                TxKind::Delegate {
+                    charter,
+                    sub_agent: agent,
+                    caveats: caveats.clone(),
+                    amount: units(passed),
+                },
+                vec![input],
+            )
+            .unwrap();
+        let out = chain.pulse(vec![delegate.clone()]).unwrap();
+        assert_success(&out, &delegate);
+        (charter, allotment) = all_events(&out)
+            .into_iter()
+            .find_map(|e| match e {
+                Event::CharterCreated { charter, allotment } => Some((charter, allotment)),
+                _ => None,
+            })
+            .unwrap();
+        levels.push((charter, allotment));
+    }
+    let (at_limit, at_limit_allotment) = levels[MAX_CHARTER_CHAIN - 1];
+    let ok = pay(&mut chain, at_limit, at_limit_allotment, 5);
+    let out = chain.pulse(vec![ok.clone()]).unwrap();
+    assert_success(&out, &ok);
+    let (beyond, beyond_allotment) = levels[MAX_CHARTER_CHAIN];
+    let deep = pay(&mut chain, beyond, beyond_allotment, 5);
+    let out = chain.pulse(vec![deep.clone()]).unwrap();
+    assert_failed(&out, &deep, "too deep");
+}

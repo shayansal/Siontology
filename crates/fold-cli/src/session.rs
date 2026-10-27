@@ -125,6 +125,16 @@ impl<'a> Session<'a> {
         })
     }
 
+    /// An address book: the devnet's usual accounts and every wallet this
+    /// session has used.
+    pub fn names(&self) -> crate::describe::Names {
+        let mut names = crate::describe::Names::devnet(["alice", "bob", "carol", "faucet"]);
+        for (name, wallet) in &self.wallets {
+            names.add_account(wallet.id, name);
+        }
+        names
+    }
+
     /// The wallet for `name`.
     pub fn wallet(&mut self, name: &str) -> &mut Wallet {
         self.wallets
@@ -163,6 +173,12 @@ impl<'a> Session<'a> {
         let ledger = self.ledger;
         let view = RemoteView::new(ledger, config);
         let tx = self.wallet(name).build(&view, kind, extra)?;
+        if self.verbose {
+            println!(
+                "{name} signs: {}",
+                crate::describe::sentence(&self.names(), &tx.tx)
+            );
+        }
         let receipt = ledger.submit(&tx)?;
         let result = self.wait(receipt.digest);
         self.wallet(name).settle();

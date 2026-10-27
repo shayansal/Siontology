@@ -20,6 +20,7 @@ fold-exec.workspace = true
 fold-da.workspace = true
 fold-light.workspace = true
 fold-prover.workspace = true
+fold-spec.workspace = true
 fold-node.workspace = true
 borsh.workspace = true
 serde.workspace = true

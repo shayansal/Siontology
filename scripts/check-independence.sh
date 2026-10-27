@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Checks that proof stack B (crates/fold-spec) does not call the reference
+# executor's logic, as docs/spec/state-transition.md §0 requires.
+#
+# This is a lint, not a proof: it searches the library sources (unit-test
+# modules excluded, since they cross-check helpers against the reference on
+# purpose) for paths and method calls §0 forbids. Review still matters.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+src="$root/crates/fold-spec/src"
+
+python3 - "$src" <<'EOF'
+import pathlib
+import re
+import sys
+
+src = pathlib.Path(sys.argv[1])
+
+# Forbidden by spec §0: the reference executor's logic.
+forbidden = [
+    (r"fold_exec::execute::(?!\{|Deferred\b|Event\b|ExecStatus\b|TxEffects\b|bond_atom\b|registered_atom\b|bond_owner\b)\w+",
+     "fold_exec::execute logic (only the types and bond_atom, registered_atom, bond_owner are allowed)"),
+    (r"\bexecute_transaction\b", "fold_exec::execute::execute_transaction"),
+    (r"\bexecute_pulse(_traced)?\b", "fold_exec::pulse::execute_pulse"),
+    (r"\bapply_deferred\b", "fold_exec::pulse::apply_deferred"),
+    (r"\bcanonical_order\b", "fold_exec::pulse::canonical_order"),
+    (r"fold_exec::stateless\b|\breplay_chunk\b|\bWitnessStore\b", "fold_exec::stateless"),
+    (r"fold_exec::wallet\b|\bWallet\b", "fold_exec::wallet"),
+    (r"fold_exec::sim\b", "fold_exec::sim"),
+    (r"fold_exec::genesis\b|\bgenesis\s*\(", "fold_exec::genesis"),
+    (r"\.spend\s*\(|Allotment::spend\b", "Allotment::spend"),
+    (r"\.attenuates\s*\(|Caveats::attenuates\b", "Caveats::attenuates"),
+    (r"\.escrow\s*\(|OrderTerms::escrow\b", "OrderTerms::escrow"),
+    (r"\.clearing_batch\s*\(|Market::clearing_batch\b", "Market::clearing_batch"),
+    (r"\.batch_index\s*\(|Market::batch_index\b", "Market::batch_index"),
+]
+
+# The fold_exec::pulse items the library may use: type definitions only
+# (the §7 helpers are reimplemented and cross-checked in unit tests).
+allowed_pulse = {"ChunkStatement", "ChunkTrace", "Witness", "PulseInput"}
+
+def library_text(path):
+    """The file's code without comments or its trailing #[cfg(test)] module."""
+    text = path.read_text()
+    cut = text.find("#[cfg(test)]")
+    if cut >= 0:
+        text = text[:cut]
+    return "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+
+problems = []
+for path in sorted(src.rglob("*.rs")):
+    text = library_text(path)
+    for number, line in enumerate(text.splitlines(), 1):
+        for pattern, what in forbidden:
+            if re.search(pattern, line):
+                problems.append(f"{path.relative_to(src.parent.parent.parent)}:{number}: uses {what}: {line.strip()}")
+    for match in re.finditer(r"fold_exec::pulse::(\{[^}]*\}|\w+)", text):
+        names = re.findall(r"\w+", match.group(1))
+        for name in names:
+            if name not in allowed_pulse:
+                number = text[: match.start()].count("\n") + 1
+                problems.append(f"{path.relative_to(src.parent.parent.parent)}:{number}: uses fold_exec::pulse::{name}")
+
+if problems:
+    print("Proof stack B calls the reference executor:")
+    for problem in problems:
+        print("  " + problem)
+    sys.exit(1)
+print(f"Proof stack B is independent of the reference executor ({len(list(src.rglob('*.rs')))} files checked).")
+EOF

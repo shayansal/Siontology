@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::account::AccountState;
 use crate::assurance::AssuranceDomain;
-use crate::charter::{Allotment, Caveats, Charter};
+use crate::charter::{Allotment, Caveats, Charter, MAX_CHARTER_CHAIN};
 use crate::claim::{claim_id, formulas, ClaimBody, Payload};
 use crate::error::ExecError;
 use crate::escrow::BoundedTotal;
@@ -37,7 +37,7 @@ use crate::object::{
 };
 use crate::state::ChainConfig;
 use crate::store::{ObjectStore, Overlay};
-use crate::tx::{object_domain, SignedTransaction, Transaction, TxKind, TX_DOMAIN};
+use crate::tx::{object_domain, SignedTransaction, Transaction, TxKind, MAX_GRANT, TX_DOMAIN};
 
 /// Context shared by every transaction in a Pulse.
 #[derive(Clone, Debug)]
@@ -615,7 +615,11 @@ fn prepare<S: ObjectStore>(
         return Err(ExecError::Invalid("duplicate inputs".into()));
     }
     let is_faucet = matches!(tx.kind, TxKind::Faucet { .. });
-    if !is_faucet {
+    if is_faucet {
+        if tx.fee != Amount::ZERO {
+            return Err(ExecError::Invalid("faucet transactions pay no fee".into()));
+        }
+    } else {
         let min = ctx.config.min_fee(tx.size());
         if tx.fee < min {
             return Err(ExecError::Invalid(format!(
@@ -814,6 +818,11 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             for (to, asset, amount) in grants {
                 if *amount == Amount::ZERO {
                     return Err(ExecError::Invalid("zero grant".into()));
+                }
+                if *amount > MAX_GRANT {
+                    return Err(ExecError::Invalid(format!(
+                        "a grant may be at most {MAX_GRANT}"
+                    )));
                 }
                 run.mint_coin(*to, *asset, *amount);
                 run.effects.deferred.push(Deferred::Minted {
@@ -1419,10 +1428,12 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             committee,
             threshold,
         } => {
-            if *batch_length == 0 || *clear_deadline == 0 {
-                return Err(ExecError::Invalid(
-                    "batch length and deadline must be positive".into(),
-                ));
+            let period = 1..=crate::market::MAX_PERIOD;
+            if !period.contains(batch_length) || !period.contains(clear_deadline) {
+                return Err(ExecError::Invalid(format!(
+                    "batch length and deadline must be between 1 and {} Pulses",
+                    crate::market::MAX_PERIOD
+                )));
             }
             if !committee.is_empty()
                 && (*threshold == 0 || usize::from(*threshold) > committee.len())
@@ -1595,7 +1606,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             // clearing may only land in the last Pulse before the deadline,
             // so a solver cannot exclude orders by clearing early.
             let unrevealed = entry.orders.iter().any(|o| o.terms.is_none());
-            if unrevealed && pulse.0 < at.0 + state.clear_deadline.saturating_sub(1) {
+            if unrevealed && pulse.0 < at.0.saturating_add(state.clear_deadline.saturating_sub(1)) {
                 return Err(ExecError::Invalid(
                     "sealed orders are still being revealed".into(),
                 ));
@@ -1735,23 +1746,25 @@ fn load_charter<S: ObjectStore>(
     }
 }
 
-/// A charter and all its ancestors must be unrevoked.
+/// A charter and all its ancestors must be unrevoked. At most
+/// [`MAX_CHARTER_CHAIN`] charters are loaded: if the last of them still has
+/// a parent, the check fails without reading it.
 fn check_charter_chain<S: ObjectStore>(
     run: &mut Run<'_, '_, S>,
     id: &ObjectId,
 ) -> Result<(), ExecError> {
     let mut current = Some(*id);
-    let mut depth = 0;
+    let mut loaded = 0;
     while let Some(charter_id) = current {
+        if loaded == MAX_CHARTER_CHAIN {
+            return Err(ExecError::Invalid("delegation chain too deep".into()));
+        }
         let charter = load_charter(run, &charter_id)?;
+        loaded += 1;
         if charter.revoked_at.is_some() {
             return Err(ExecError::Caveat("charter revoked".into()));
         }
         current = charter.parent;
-        depth += 1;
-        if depth > 16 {
-            return Err(ExecError::Invalid("delegation chain too deep".into()));
-        }
     }
     Ok(())
 }

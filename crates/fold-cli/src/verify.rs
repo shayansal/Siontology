@@ -2,10 +2,11 @@
 
 use fold_core::encode::decode;
 use fold_core::hash::Hash32;
-use fold_core::ids::Pulse;
+use fold_core::ids::{Pulse, TxDigest};
+use fold_exec::TxEffects;
 use fold_light::{verify_certificate, verify_object, verify_receipt, ChainSpec, ObjectProof};
 use fold_node::Query;
-use fold_prover::{verify_world_proof, ProofStack, ReplayStack, WorldProof};
+use fold_prover::{verify_world_proof, ProofStack, ReplayStack, SpecStack, WorldProof};
 use serde_json::Value;
 
 use crate::error::CliError;
@@ -172,16 +173,19 @@ pub fn verify_pulse(
                     .map_err(|e| CliError::Protocol(e.to_string()))?;
                 let proof: WorldProof =
                     decode(&bytes).map_err(|e| CliError::Protocol(e.to_string()))?;
-                if proof.before != header.before
+                if proof.pulse != header.pulse
+                    || proof.before != header.before
                     || proof.after != header.after
                     || proof.receipts_root != header.receipts_root
                     || proof.data_root != header.data_root
+                    || proof.data_k != header.data_k
+                    || proof.beacon() != header.beacon
                 {
                     return Err(CliError::Verification(
                         "World Proof does not match the certified header".into(),
                     ));
                 }
-                let stacks: Vec<&dyn ProofStack> = vec![&ReplayStack];
+                let stacks: Vec<&dyn ProofStack> = vec![&ReplayStack, &SpecStack];
                 let world_report = verify_world_proof(&proof, &stacks)
                     .map_err(|e| CliError::Verification(e.to_string()))?;
                 report.push(format!(
@@ -216,4 +220,81 @@ pub fn verify_pulse(
         }
     }
     Ok(report)
+}
+
+/// A transaction's receipt as a light client established it.
+#[derive(Clone, Debug)]
+pub struct VerifiedReceipt {
+    /// The Pulse it executed in.
+    pub pulse: Pulse,
+    /// The proven effects (the outcome class is proven; a failure's reason
+    /// text is not committed).
+    pub effects: TxEffects,
+    /// Stake that signed the Pulse header, and the quorum it needed
+    /// (`None` if the devnet runs insecure simulation signatures).
+    pub signed: Option<(u64, u64)>,
+    /// The chain identity checked, and whether it was pinned.
+    pub chain: (Hash32, bool),
+}
+
+/// Fetches a transaction's receipt and verifies it the way a light client
+/// would: the chain identity (against `pinned`, if given), the committee
+/// certificate of the Pulse it executed in, then the receipt's inclusion
+/// proof against that certified header.
+pub fn verify_receipt_of(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    digest: TxDigest,
+) -> Result<VerifiedReceipt, CliError> {
+    let record = match ledger.tx(digest)? {
+        crate::ledger::TxState::Executed(record) => record,
+        crate::ledger::TxState::Pending(state) => {
+            return Err(CliError::Verification(format!(
+                "not executed yet ({state})"
+            )))
+        }
+        crate::ledger::TxState::Rejected(reason) => {
+            return Err(CliError::Verification(format!("never certified: {reason}")))
+        }
+        crate::ledger::TxState::Unknown => {
+            return Err(CliError::Verification("unknown transaction".into()))
+        }
+    };
+    if record.receipt.effects.digest != digest {
+        return Err(CliError::Verification(
+            "the node served another transaction's receipt".into(),
+        ));
+    }
+    let validators = ledger.query(Query::Validators)?;
+    let chain: ChainSpec = parse(validators["chain"].clone())?;
+    let chain_id = chain
+        .verify(pinned.as_ref())
+        .map_err(|e| CliError::Verification(e.to_string()))?;
+    let view = ledger.pulse_view(Some(record.pulse))?;
+    let certificate = view.certificate.ok_or_else(|| {
+        CliError::Verification(format!("Pulse {} is not certified yet", record.pulse))
+    })?;
+    let header = &certificate.header;
+    if header.chain != chain_id || header.pulse != record.pulse {
+        return Err(CliError::Verification(
+            "the certificate is for another chain or Pulse".into(),
+        ));
+    }
+    let signed = if chain.insecure_signatures {
+        None
+    } else {
+        let committee = chain
+            .committee(header.epoch)
+            .map_err(|e| CliError::Verification(e.to_string()))?;
+        let stake = verify_certificate(&certificate, &committee, &chain.keys)
+            .map_err(|e| CliError::Verification(e.to_string()))?;
+        Some((stake, committee.quorum_threshold()))
+    };
+    verify_receipt(header, &record.receipt).map_err(|e| CliError::Verification(e.to_string()))?;
+    Ok(VerifiedReceipt {
+        pulse: record.pulse,
+        effects: record.receipt.effects.clone(),
+        signed,
+        chain: (chain_id, pinned.is_some()),
+    })
 }

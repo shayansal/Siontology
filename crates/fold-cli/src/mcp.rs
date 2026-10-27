@@ -4,18 +4,23 @@
 //! to check balances, pay, issue claims, price a claim's trustworthiness
 //! with the Assurance Algebra before relying on it, pay within an Agent
 //! Charter (the ledger enforces the limits, whatever the agent was told),
-//! and verify a Pulse as a light client.
+//! submit an intent the agent signed itself, fetch a receipt verified the
+//! way a light client would, and verify a Pulse. Every transaction and
+//! receipt also comes back as a sentence.
 
 use std::io::{BufRead, Write};
 
 use fold_assurance::{Policy, Ratio};
+use fold_core::encode::decode;
 use fold_core::hash::Hash32;
+use fold_core::ids::TxDigest;
 use fold_core::ids::{AssetId, AtomId, ClaimId, ObjectId, Pulse};
 use fold_core::Amount;
 use fold_exec::claim::{claim_id, formulas, ClaimBody, Payload};
-use fold_exec::{Event, TxKind};
+use fold_exec::{Event, SignedTransaction, TxKind};
 use serde_json::{json, Value};
 
+use crate::describe;
 use crate::error::CliError;
 use crate::ledger::{Ledger, LedgerExt};
 use crate::session::Session;
@@ -103,6 +108,30 @@ fn tools() -> Value {
             "name": "fold_events",
             "description": "Recent events from a Pulse on.",
             "inputSchema": { "type": "object", "properties": { "from": { "type": "integer" }, "limit": { "type": "integer" } } }
+        },
+        {
+            "name": "fold_submit_intent",
+            "description": "Submit a transaction the agent built and signed itself (hex of its canonical encoding). Returns what it asks for as a sentence, then waits for its receipt unless wait is false.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tx": { "type": "string", "description": "Hex-encoded signed transaction" },
+                    "wait": { "type": "boolean", "description": "Wait for execution (default true)" }
+                },
+                "required": ["tx"]
+            }
+        },
+        {
+            "name": "fold_fetch_receipt",
+            "description": "Fetch a transaction's receipt and verify it as a light client: the chain identity, the committee certificate of its Pulse and the receipt's inclusion proof. Pass the chain identity you trust as `chain`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "digest": { "type": "string", "description": "Transaction digest (hex)" },
+                    "chain": { "type": "string", "description": "Pinned chain identity (hex)" }
+                },
+                "required": ["digest"]
+            }
         }
     ])
 }
@@ -160,9 +189,13 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                 },
                 Vec::new(),
             )?;
-            Ok(
-                json!({ "pulse": view.pulse, "status": view.status, "digest": view.effects.digest, "fee": view.effects.fee.to_string() }),
-            )
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "digest": view.effects.digest,
+                "fee": view.effects.fee.to_string(),
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
         }
         "fold_issue_claim" => {
             let issuer = args["issuer"]
@@ -196,9 +229,13 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                 .events
                 .iter()
                 .any(|e| matches!(e, Event::ClaimSubmitted { .. }));
-            Ok(
-                json!({ "claim": claim, "pulse": view.pulse, "status": view.status, "submitted": issued }),
-            )
+            Ok(json!({
+                "claim": claim,
+                "pulse": view.pulse,
+                "status": view.status,
+                "submitted": issued,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
         }
         "fold_assess_claim" => {
             let claim = ClaimId::from_hash(hex_id(&args["claim"], "claim")?);
@@ -243,7 +280,13 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                 },
                 vec![input],
             )?;
-            Ok(json!({ "pulse": view.pulse, "status": view.status, "events": view.effects.events }))
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "digest": view.effects.digest,
+                "events": view.effects.events,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
         }
         "fold_verify_pulse" => {
             let pulse = args["pulse"].as_u64().map(Pulse);
@@ -264,6 +307,58 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                 serde_json::to_value(session.ledger.events(from, limit.min(500))?)
                     .unwrap_or(Value::Null),
             )
+        }
+        "fold_submit_intent" => {
+            let bytes = args["tx"]
+                .as_str()
+                .and_then(|text| hex::decode(text.trim()).ok())
+                .ok_or_else(|| CliError::Usage("tx must be hex".into()))?;
+            let tx: SignedTransaction = decode(&bytes)
+                .map_err(|_| CliError::Usage("tx is not a signed transaction".into()))?;
+            let names = session.names();
+            let sentence = describe::sentence(&names, &tx.tx);
+            let submitted = session.ledger.submit(&tx)?;
+            if !args["wait"].as_bool().unwrap_or(true) {
+                return Ok(json!({
+                    "digest": submitted.digest,
+                    "route": submitted.route,
+                    "intent": sentence,
+                }));
+            }
+            let view = session.wait(submitted.digest)?;
+            Ok(json!({
+                "digest": submitted.digest,
+                "intent": sentence,
+                "pulse": view.pulse,
+                "status": view.status,
+                "receipt": describe::receipt(&names, &view.effects),
+            }))
+        }
+        "fold_fetch_receipt" => {
+            let digest = TxDigest::from_hash(hex_id(&args["digest"], "digest")?);
+            let pinned = match args["chain"].as_str() {
+                Some(hex) => Some(
+                    Hash32::from_hex(hex)
+                        .map_err(|_| CliError::Usage("chain must be 64 hex digits".into()))?,
+                ),
+                None => None,
+            };
+            let verified = crate::verify::verify_receipt_of(session.ledger, pinned, digest)?;
+            Ok(json!({
+                "digest": digest,
+                "pulse": verified.pulse,
+                "receipt": describe::receipt(&session.names(), &verified.effects),
+                "outcome": match verified.effects.status {
+                    fold_exec::ExecStatus::Success => "success",
+                    fold_exec::ExecStatus::Failed(_) => "failed",
+                    fold_exec::ExecStatus::Rejected(_) => "rejected",
+                },
+                "events": verified.effects.events,
+                "certificate": verified.signed.map(|(stake, quorum)| json!({ "signed": stake, "quorum": quorum })),
+                "chain": verified.chain.0,
+                "chain_pinned": verified.chain.1,
+                "verified": true,
+            }))
         }
         other => Err(CliError::Usage(format!("unknown tool {other}"))),
     }

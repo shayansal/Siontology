@@ -33,14 +33,22 @@ pub struct BoundedTotal {
 }
 
 impl BoundedTotal {
-    /// Sum of all allotments ever issued.
+    /// Sum of all allotments ever issued (saturating).
     pub fn allotted(&self) -> Amount {
-        Amount(self.allotments.values().map(|(_, amount)| amount.0).sum())
+        self.allotments
+            .values()
+            .fold(Amount::ZERO, |sum, (_, amount)| sum.saturating_add(*amount))
     }
 
     /// The invariant: issued allotments plus what is unallocated never
     /// exceed the total plus what was returned.
     pub fn invariant_holds(&self) -> bool {
-        self.allotted().0 + self.unallocated.0 <= self.total.0 + self.returned.0
+        let issued = self.allotted().0.checked_add(self.unallocated.0);
+        let bound = self.total.0.checked_add(self.returned.0);
+        match (issued, bound) {
+            (Some(issued), Some(bound)) => issued <= bound,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        }
     }
 }

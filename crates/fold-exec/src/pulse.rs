@@ -807,17 +807,20 @@ pub fn apply_deferred<S: ObjectStore>(
                 amount,
             } => {
                 let domain = protocol.assurance(&mut run)?;
-                let registered = match domain.registry.atom(&atom.id) {
-                    Some(existing) => existing == atom,
-                    None => domain.registry.register_atom(atom.clone()).is_ok(),
-                };
+                // The vault must be able to hold the bond before it is posted.
+                let vault = domain.vault.checked_add(*amount).ok();
+                let registered = vault.is_some()
+                    && match domain.registry.atom(&atom.id) {
+                        Some(existing) => existing == atom,
+                        None => domain.registry.register_atom(atom.clone()).is_ok(),
+                    };
                 let posted = registered
                     && domain
                         .registry
                         .post_bond(atom.id, *owner, *amount, ctx.pulse)
                         .is_ok();
-                if posted {
-                    domain.vault = domain.vault.checked_add(*amount)?;
+                if let (true, Some(vault)) = (posted, vault) {
+                    domain.vault = vault;
                     outcome.events.push(Event::BondPosted {
                         atom: atom.id,
                         owner: *owner,
@@ -863,7 +866,10 @@ pub fn apply_deferred<S: ObjectStore>(
                     None => None,
                     Some(state) => {
                         let index = state.batch_index(pulse);
-                        let seal_at = (index + 1) * state.batch_length.max(1) - 1;
+                        let seal_at = index
+                            .saturating_add(1)
+                            .saturating_mul(state.batch_length.max(1))
+                            - 1;
                         let batch = state.batches.entry(index).or_insert_with(|| MarketBatch {
                             index,
                             orders: Vec::new(),
@@ -894,7 +900,7 @@ pub fn apply_deferred<S: ObjectStore>(
             Deferred::ReturnToBounded { bounded, amount } => {
                 if let Some(mut object) = run.load(bounded)? {
                     if let ObjectData::Bounded(state) = &mut object.data {
-                        state.returned = state.returned.checked_add(*amount)?;
+                        state.returned = state.returned.saturating_add(*amount);
                         state.unallocated = state.unallocated.checked_add(*amount)?;
                         run.store(object);
                     }
@@ -903,12 +909,12 @@ pub fn apply_deferred<S: ObjectStore>(
             Deferred::Treasury { asset, amount } => {
                 let treasury = protocol.treasury(&mut run)?;
                 let entry = treasury.balances.entry(*asset).or_insert(Amount::ZERO);
-                *entry = entry.checked_add(*amount)?;
+                *entry = entry.saturating_add(*amount);
             }
             Deferred::Minted { asset, amount } => {
                 let treasury = protocol.treasury(&mut run)?;
                 let entry = treasury.minted.entry(*asset).or_insert(Amount::ZERO);
-                *entry = entry.checked_add(*amount)?;
+                *entry = entry.saturating_add(*amount);
             }
             Deferred::Schedule { at, event } => {
                 protocol.schedule_event(Pulse(at.0.max(ctx.pulse.0)), *event);
@@ -916,7 +922,9 @@ pub fn apply_deferred<S: ObjectStore>(
         }
     }
 
-    // Scheduled events due now (and any left from earlier Pulses).
+    // Scheduled events due now (and any left from earlier Pulses). Every due
+    // entry is taken out first; whatever processing schedules waits for a
+    // later Pulse.
     let due: Vec<u64> = protocol
         .schedule
         .1
@@ -924,9 +932,12 @@ pub fn apply_deferred<S: ObjectStore>(
         .range(..=ctx.pulse.0)
         .map(|(p, _)| *p)
         .collect();
+    let mut taken = Vec::with_capacity(due.len());
     for at in due {
-        let events = protocol.schedule.1.due.remove(&at).unwrap_or_default();
+        taken.push(protocol.schedule.1.due.remove(&at).unwrap_or_default());
         protocol.schedule.2 = true;
+    }
+    for events in taken {
         for event in events {
             match event {
                 ScheduledEvent::SealBatch { market, batch } => {
@@ -951,7 +962,7 @@ pub fn apply_deferred<S: ObjectStore>(
                         orders,
                     });
                     protocol.schedule_event(
-                        Pulse(ctx.pulse.0 + deadline),
+                        Pulse(ctx.pulse.0.saturating_add(deadline)),
                         ScheduledEvent::BatchDeadline { market, batch },
                     );
                 }
@@ -981,7 +992,9 @@ pub fn apply_deferred<S: ObjectStore>(
                     // Advance to the next Pulse: claims valid through this one
                     // expire now, reservations ending now are released, and
                     // pool funds no longer needed for any liability are freed.
-                    let expiries = domain.registry.advance_to(ctx.pulse.next());
+                    let expiries = domain
+                        .registry
+                        .advance_to(Pulse(ctx.pulse.0.saturating_add(1)));
                     let released = Amount::sum(expiries.released_pools.values())?;
                     if released > Amount::ZERO {
                         domain.vault = domain.vault.checked_sub(released)?;
@@ -990,7 +1003,7 @@ pub fn apply_deferred<S: ObjectStore>(
                             .balances
                             .entry(AssetId::usd())
                             .or_insert(Amount::ZERO);
-                        *entry = entry.checked_add(released)?;
+                        *entry = entry.saturating_add(released);
                     }
                 }
             }

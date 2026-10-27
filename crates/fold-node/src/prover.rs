@@ -13,7 +13,7 @@ use std::thread::{self, JoinHandle};
 
 use fold_core::encode::encode;
 use fold_core::ids::Pulse;
-use fold_prover::{prove_pulse, verify_world_proof, ProofStack, ReplayStack};
+use fold_prover::{prove_pulse, verify_world_proof, ProofStack, ReplayStack, SpecStack};
 use serde_json::{json, Value};
 
 use crate::validator::{ProverJob, Shared};
@@ -53,9 +53,11 @@ pub struct Proven {
 /// World Proofs kept in memory (they include every witness).
 pub const PROOF_HISTORY: usize = 32;
 
-/// The proof stacks the devnet uses.
+/// The proof stacks the devnet uses: the reference executor (A) and the
+/// independent implementation of the specification (B). A World Proof
+/// verifies only if both accept every chunk.
 pub fn stacks() -> Vec<Box<dyn ProofStack>> {
-    vec![Box::new(ReplayStack)]
+    vec![Box::new(ReplayStack), Box::new(SpecStack)]
 }
 
 /// Starts the prover thread.
@@ -87,7 +89,9 @@ pub fn spawn(shared: Arc<Shared>, proven: Arc<Mutex<BTreeMap<Pulse, Proven>>>) -
                         bytes = Some(Arc::new(encode(&proof)));
                         if proof.after != job.header.after
                             || proof.before != job.header.before
+                            || proof.receipts_root != job.header.receipts_root
                             || proof.data_root != job.header.data_root
+                            || proof.beacon() != job.header.beacon
                         {
                             json!({ "pulse": job.header.pulse, "error": "proof does not match the header" })
                         } else {

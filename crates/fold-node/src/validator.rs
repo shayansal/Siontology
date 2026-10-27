@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use crate::config::DevnetConfig;
 use crate::gateway::GatewayInput;
 use crate::keys::{NodeAuthenticator, NodeVerifier};
-use crate::owners::StateOwners;
+use crate::owners::{AlreadyChecked, Authorized, StateOwners};
 use crate::payload::{expand, lane_inputs, PayloadItem};
 use crate::pulses::{ClosedPulse, PulseBuilder};
 use crate::storage::{PulseRecord, Snapshot, Wal};
@@ -196,6 +196,7 @@ pub struct Validator {
     anchors: u64,
     proof_cache: Option<(Pulse, SmtSnapshot)>,
     verifier: NodeVerifier,
+    authorized: Authorized,
     prover: Option<Sender<ProverJob>>,
     proven: Arc<std::sync::Mutex<BTreeMap<Pulse, crate::prover::Proven>>>,
 }
@@ -281,6 +282,7 @@ impl Validator {
             anchors: 0,
             proof_cache: None,
             verifier: shared.verifier.clone(),
+            authorized: Authorized::default(),
             prover: setup.prover,
             proven: setup.proven,
             shared,
@@ -440,15 +442,18 @@ impl Validator {
             return;
         };
         let owners = StateOwners { state: &self.state };
-        if let Err(reason) = owners.check(&request) {
-            let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
-                tx,
-                validator: self.id,
-                reason,
-            });
-            return;
+        match owners.check(&request) {
+            Ok((_, key)) => self.authorized.insert(key),
+            Err(reason) => {
+                let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
+                    tx,
+                    validator: self.id,
+                    reason,
+                });
+                return;
+            }
         }
-        match lane.approve(request, &owners) {
+        match lane.approve(request, &AlreadyChecked) {
             Ok(ApprovalStatus::Pending) => {
                 self.lane_waiters.insert(tx);
             }
@@ -552,10 +557,16 @@ impl Validator {
             owned,
             contended,
         };
+        // Signatures checked when the inputs were locked (or now, in
+        // parallel) need not be checked again during execution; the result
+        // is identical. Proof stacks always check them.
+        let verify = !self
+            .authorized
+            .preverify(&self.state, input.owned.iter().chain(&input.contended));
         let traced = self.prover.is_some();
         let result = match (traced, self.shared.config.prove_chunk) {
-            (true, Some(chunk)) => execute_pulse_traced(&mut self.state, &input, true, chunk),
-            _ => execute_pulse(&mut self.state, &input, true).map(|output| (output, Vec::new())),
+            (true, Some(chunk)) => execute_pulse_traced(&mut self.state, &input, verify, chunk),
+            _ => execute_pulse(&mut self.state, &input, verify).map(|output| (output, Vec::new())),
         };
         let (output, traces) = match result {
             Ok(result) => result,

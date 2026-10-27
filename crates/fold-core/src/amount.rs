@@ -64,6 +64,11 @@ impl Amount {
         Amount(self.0.saturating_sub(other.0))
     }
 
+    /// Saturating addition.
+    pub fn saturating_add(self, other: Amount) -> Amount {
+        Amount(self.0.saturating_add(other.0))
+    }
+
     /// Multiplies by a ratio `numerator / denominator`, rounding down.
     pub fn mul_ratio(self, numerator: u128, denominator: u128) -> Result<Amount, CoreError> {
         if denominator == 0 {

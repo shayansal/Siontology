@@ -15,8 +15,10 @@
 //!
 //! **Simulation of succinct proofs.** The stacks here are *replay* stacks:
 //! a leaf proof is the witness itself, and verifying it means re-executing
-//! the chunk statelessly from that witness (`fold_exec::replay_chunk`) and
-//! comparing every root and accumulator. This is sound — a replay proof of
+//! the chunk statelessly from that witness and comparing every root and
+//! accumulator, once with the reference executor (`fold_exec::replay_chunk`,
+//! stack A) and once with an independent implementation of the
+//! specification (`fold_spec::verify_chunk`, stack B). This is sound — a replay proof of
 //! a false statement does not verify — but not succinct: it is as large as
 //! the witness and as slow to check as execution. Replacing the replay
 //! stacks with STARK provers changes the size and cost of a leaf proof, not
@@ -27,15 +29,19 @@
 //!
 //! - [`stack`]: the [`ProofStack`] interface and leaf proofs.
 //! - [`replay`]: stack A, stateless re-execution with the reference executor.
+//! - [`spec`]: stack B, stateless re-execution with the independent
+//!   implementation of the specification (`fold-spec`).
 //! - [`world`]: aggregation into World Proofs and their verification.
 
 pub mod error;
 pub mod replay;
+pub mod spec;
 pub mod stack;
 pub mod world;
 
 pub use error::ProveError;
 pub use replay::ReplayStack;
+pub use spec::SpecStack;
 pub use stack::{LeafProof, ProofStack};
 pub use world::{
     prove_pulse, verify_certificates, verify_world_proof, verify_world_proof_sampled, PulseData,

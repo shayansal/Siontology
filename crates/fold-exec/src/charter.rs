@@ -19,6 +19,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ExecError;
 
+/// The most charters a delegation chain may hold, root included
+/// (spec §5.13).
+pub const MAX_CHARTER_CHAIN: usize = 16;
+
 /// The limits an agent operates within.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Caveats {

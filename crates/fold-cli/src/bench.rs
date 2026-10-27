@@ -348,6 +348,18 @@ fn execution(r: &mut Recorder, quick: bool) {
         "ms",
         format!("{} KiB of witnesses", witness / 1024),
     );
+    let start = Instant::now();
+    for trace in &traces {
+        fold_spec::verify_chunk(trace).expect("stack B accepts the chunk");
+    }
+    let spec = start.elapsed();
+    r.add(
+        "proving",
+        "stateless replay of every chunk (stack B)",
+        spec.as_secs_f64() * 1e3,
+        "ms",
+        "independent implementation of the specification",
+    );
     let _ = output;
 }
 
@@ -495,8 +507,32 @@ impl fold_exec::StateView for Prefetched {
     }
 }
 
-/// Runs the benchmarks; `quick` uses smaller sizes.
-pub fn run(quick: bool, with_devnet: bool, print: bool) -> Result<Vec<Measurement>, CliError> {
+/// The benchmark groups, in the order they run.
+pub const GROUPS: [&str; 7] = [
+    "signatures",
+    "state",
+    "data",
+    "clearing",
+    "assurance",
+    "execution",
+    "devnet",
+];
+
+/// Runs the benchmarks; `quick` uses smaller sizes. `only` selects groups
+/// from [`GROUPS`] (all when empty).
+pub fn run(
+    quick: bool,
+    with_devnet: bool,
+    only: &[String],
+    print: bool,
+) -> Result<Vec<Measurement>, CliError> {
+    if let Some(unknown) = only.iter().find(|g| !GROUPS.contains(&g.as_str())) {
+        return Err(CliError::Usage(format!(
+            "unknown benchmark group {unknown:?}; groups: {}",
+            GROUPS.join(", ")
+        )));
+    }
+    let wanted = |group: &str| only.is_empty() || only.iter().any(|g| g == group);
     let mut r = Recorder {
         results: Vec::new(),
         print,
@@ -507,13 +543,25 @@ pub fn run(quick: bool, with_devnet: bool, print: bool) -> Result<Vec<Measuremen
             "group", "measurement", "value", "unit"
         );
     }
-    signatures(&mut r, quick);
-    hashing_and_trees(&mut r, quick);
-    availability(&mut r, quick);
-    clearing(&mut r, quick);
-    assurance(&mut r);
-    execution(&mut r, quick);
-    if with_devnet {
+    if wanted("signatures") {
+        signatures(&mut r, quick);
+    }
+    if wanted("state") {
+        hashing_and_trees(&mut r, quick);
+    }
+    if wanted("data") {
+        availability(&mut r, quick);
+    }
+    if wanted("clearing") {
+        clearing(&mut r, quick);
+    }
+    if wanted("assurance") {
+        assurance(&mut r);
+    }
+    if wanted("execution") {
+        execution(&mut r, quick);
+    }
+    if with_devnet && wanted("devnet") {
         devnet(&mut r, quick)?;
     }
     Ok(r.results)

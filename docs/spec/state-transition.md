@@ -1,4 +1,4 @@
-# The Fold state transition — specification v1
+# The Fold state transition — specification v1.1
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/fold-exec`, proof stack A) and an
@@ -86,7 +86,9 @@ Every object an implementation reads while executing a chunk MUST be in the
 chunk's witness; a read of an uncovered id rejects the whole chunk (§8).
 This document therefore names what each step reads. An implementation MUST
 NOT read objects this document does not require it to read. (Reading fewer
-is impossible: every read named here decides an outcome.)
+is impossible: every read named here decides an outcome.) A read of an
+object the chunk has already written is served by that write and needs no
+witness entry.
 
 ## 3. One transaction: bookkeeping
 
@@ -166,8 +168,8 @@ In this order; any failure is a **rejection**:
 
 1. `ctx.pulse > tx.expires_at` → reject (expired).
 2. `tx.inputs` empty → reject. Duplicate input ids → reject.
-3. Unless the kind is `Faucet`: `tx.fee < ctx.config.min_fee(tx.size())` →
-   reject.
+3. If the kind is `Faucet`, `tx.fee ≠ 0` → reject. Otherwise `tx.fee <
+   ctx.config.min_fee(tx.size())` → reject.
 4. Account: `try_load(well_known::account(tx.sender))`.
    - If it exists, it MUST be `ObjectData::Account`; the policy is its
      `policy`.
@@ -180,7 +182,8 @@ In this order; any failure is a **rejection**:
 5. `policy.verify(TX_DOMAIN, digest bytes, &signed.auth)` MUST succeed.
 6. For each input `r` at position `i`, in order: `load(r.id)`; its version
    MUST equal `r.version`; its owner MUST be `Owner::Account(tx.sender)`; it
-   MUST NOT be a tombstone. For `i = 0`:
+   MUST NOT be a tombstone. (An input may be the account object stored in
+   step 4.) For `i = 0`:
    - for `Faucet`: `tx.sender` MUST equal `ctx.config.faucet` and `r.id`
      MUST be the sender's account object;
    - otherwise the object MUST be a USD coin with amount ≥ `tx.fee`.
@@ -198,8 +201,9 @@ In this order; any failure is a **rejection**:
    with fresh bookkeeping: **prepare**, **charge_fee_from_gas**,
    **finalize_inputs**. If these succeed, keep their writes; the effects
    are those of this second run with `events` emptied and status `Failed`.
-   If they fail (impossible for a transaction that prepared once, but
-   specified for completeness), the transaction is rejected as in step 1.
+   If they fail (impossible for a transaction that prepared once: the gas
+   coin covers the fee and a `Faucet` pays none; specified for
+   completeness), the transaction is rejected as in step 1.
 
 `TxEffects.class` is `tx.class()` in every case.
 
@@ -218,7 +222,8 @@ Notation: "event E" appends E to `effects.events`; "defer D" appends D to
 ### 5.2 Faucet { grants }
 
 1. `grants` MUST have 1 to 256 entries.
-2. For each `(to, asset, amount)` in order: amount MUST NOT be 0;
+2. For each `(to, asset, amount)` in order: amount MUST NOT be 0 and MUST
+   NOT exceed `MAX_GRANT` (`fold_exec::tx::MAX_GRANT`, one billion units);
    `mint(to, asset, amount)`; defer `Minted { asset, amount }`; event
    `Minted { to, asset, amount }`.
 
@@ -333,9 +338,11 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 
 ### 5.13 Charter checks
 
-- **Chain check** of charter `c`: follow `c, c.parent, …`; load each (MUST
-  be a charter); any with `revoked_at` set fails ("revoked"); more than 16
-  links fails.
+- **Chain check** of charter `c`: follow `c, c.parent, …`, loading each
+  (MUST be a charter); any with `revoked_at` set fails ("revoked"). At most
+  `MAX_CHARTER_CHAIN` (16, `fold_exec::charter::MAX_CHARTER_CHAIN`)
+  charters are loaded: if the last one loaded still has a parent, the check
+  fails without loading that parent.
 - **attenuates(child, parent)** holds when: `parent.payees = None`, or both
   are sets and `child.payees ⊆ parent.payees`; `parent.evidence_above =
   None`, or both are set and `child ≤ parent`; `child.max_per_payment ≤
@@ -347,8 +354,9 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
   1. `amount > remaining` fails.
   2. If the allotment has caveats `k`: `ctx.pulse > k.expires_at` fails;
      `k.payees` set and `payee ∉ k.payees` fails; `amount >
-     k.max_per_payment` fails; if `ctx.pulse ≥ window_start + k.window`,
-     set `window_start = ctx.pulse` and `spent_in_window = 0`;
+     k.max_per_payment` fails; if `ctx.pulse ≥ window_start + k.window`
+     (saturating, so a window that would end after `u64::MAX` never
+     resets), set `window_start = ctx.pulse` and `spent_in_window = 0`;
      `spent_in_window + amount > k.max_per_window` fails; if
      `k.evidence_above = Some(t)` and `amount > t` and `evidence_ok ≠
      Some(true)` fails; then `spent_in_window += amount`.
@@ -458,7 +466,9 @@ caveats: None, window_start: ctx.pulse, spent_in_window: 0 })`; event
 
 ### 5.22 CreateMarket { label, good, numeraire, batch_length, clear_deadline, committee, threshold }
 
-`batch_length > 0`, `clear_deadline > 0`; if `committee` is non-empty,
+`1 ≤ batch_length ≤ MAX_PERIOD` and `1 ≤ clear_deadline ≤ MAX_PERIOD`
+(`fold_exec::market::MAX_PERIOD`, one million Pulses); if `committee` is
+non-empty,
 `1 ≤ threshold ≤ |committee|`; `good ≠ numeraire`. `market_id =
 created_id(digest, next_index)`; `create(Shared(object_domain("market",
 market_id)), Market { label, domain: object_domain("market", market_id),
@@ -503,7 +513,7 @@ batches: ∅ })`; event `MarketCreated { market: market_id }`.
 1. Load `market`; `batches[batch]` MUST exist and be `Sealed { beacon, at }`.
 2. If any order of the batch has unknown terms, `ctx.pulse ≥ at +
    max(clear_deadline, 1) − 1` MUST hold (that is, `at +
-   clear_deadline.saturating_sub(1)`).
+   clear_deadline.saturating_sub(1)`, the addition saturating).
 3. Build the clearing batch `fold_clearing::Batch { domain: market.domain,
    pulse: at, beacon, orders }` where `orders` are, in batch order, the
    orders with known terms mapped to `Order { id, owner, side, quantity,
@@ -562,7 +572,10 @@ entries, including removing due entries). Write-back order: markets in id
 order, then assurance, then treasury, then schedule. Other objects (bounded
 totals, coins) are stored when changed.
 
-**Sorting.** Items are sorted by the key `(rank, natural, enc(item))`:
+**Sorting.** Items are sorted by the key `(rank, natural, enc(item))`,
+where `natural` and `enc(item)` compare as byte strings (so Schedule items,
+whose `enc(at)` is little-endian, do not sort numerically; scheduling
+commutes, so their order does not matter):
 
 | item | rank | natural key |
 |---|---|---|
@@ -580,15 +593,18 @@ totals, coins) are stored when changed.
 - **RegisterAtom { atom }**: obtain the assurance domain; if the registry
   has no atom with that id and `register_atom(atom)` succeeds, record event
   `AtomRegistered { atom: atom.id }`.
-- **PostBond { atom, owner, amount }**: obtain the assurance domain; the
-  atom is acceptable if the registry has an identical atom, or has none and
-  `register_atom` succeeds; then `post_bond(atom.id, owner, amount,
-  ctx.pulse)`. On success `vault += amount` and event `BondPosted`. On any
-  failure, `pay(owner, USD, amount)`.
+- **PostBond { atom, owner, amount }**: obtain the assurance domain. If
+  `vault + amount` would overflow, `pay(owner, USD, amount)` and continue
+  (nothing is registered or posted). Otherwise the atom is acceptable if
+  the registry has an identical atom, or has none and `register_atom`
+  succeeds; then `post_bond(atom.id, owner, amount, ctx.pulse)`. On success
+  `vault += amount` and event `BondPosted`. On any failure, `pay(owner,
+  USD, amount)`.
 - **IssueClaim { issuer, backer, body }**: obtain the assurance domain;
   `id = claim_id(issuer, body)`. The claim is rejected (event
   `ClaimRejected { claim: id, reason }`, reason free text) if: a direct atom
-  of the formula is not registered; a direct atom is bonded and
+  of the formula is not registered; a direct atom is bonded (its `bonded`
+  flag is set, whether or not a bond has been posted) and
   `bond_owner(atom) ≠ Some(backer)`; a referenced claim is unknown, or was
   issued at a Pulse ≥ `ctx.pulse`, or is not `Active`; or
   `registry.issue_claim(record)` fails for `record = ClaimRecord { id,
@@ -602,42 +618,57 @@ totals, coins) are stored when changed.
 - **AddOrder { market, order }**: obtain the market (if the object is
   missing or not a market, `pay(order.owner, escrow_asset, escrow)` and
   continue). `index = ctx.pulse / max(batch_length, 1)`; `seal_at = (index +
-  1) × max(batch_length, 1) − 1`; get or create batch `index` (status
+  1) × max(batch_length, 1) − 1` (the addition and multiplication
+  saturating); get or create batch `index` (status
   `Open`, no orders). If its status is not `Open`, pay the escrow back.
   Otherwise insert the order keeping the batch's orders sorted by id; if
   the batch had no orders before, schedule `SealBatch { market, batch:
   index }` at `seal_at`.
 - **ReturnToBounded { bounded, amount }**: `try_load(bounded)`; if it is a
-  bounded total, `returned += amount`, `unallocated += amount`, store it.
+  bounded total, `returned += amount` (saturating), `unallocated += amount`,
+  store it.
 - **Treasury { asset, amount }**: obtain the treasury; `balances[asset] +=
-  amount`.
+  amount` (saturating).
 - **Minted { asset, amount }**: obtain the treasury; `minted[asset] +=
-  amount`.
+  amount` (saturating).
 - **Schedule { at, event }**: schedule `event` at `max(at, ctx.pulse)`.
 
 Scheduling inserts into `schedule.due[at]` (a set); the schedule counts as
 changed only if the event was not already there.
 
-**Due events.** Then, for each key `at ≤ ctx.pulse` of `schedule.due` in
-order, remove the entry (the schedule changes) and process its events in
-set order:
+**Due events.** Then remove from `schedule.due` every entry whose key is
+`≤ ctx.pulse` (the schedule changes if there was any) and process their
+events, in ascending key order and, within a key, in set order. Events
+scheduled while processing them are not processed in this Pulse, even if
+scheduled at a key `≤ ctx.pulse` (the only one, `BatchDeadline`, is
+scheduled at least one Pulse ahead unless the Pulse number saturates):
 
 - **SealBatch { market, batch }**: obtain the market (skip if absent); skip
   if the batch is absent or not `Open`; set it `Sealed { beacon:
   ctx.beacon, at: ctx.pulse }`; event `BatchSealed { market, batch, orders:
   <count> }`; schedule `BatchDeadline { market, batch }` at `ctx.pulse +
-  clear_deadline`.
+  clear_deadline` (saturating).
 - **BatchDeadline { market, batch }**: obtain the market (skip if absent);
   skip unless the batch is `Sealed`; set it `Refunded`; for each order in
   order, `pay(owner, escrow_asset, escrow)`; event `BatchRefunded`.
 - **RegistryTick**: obtain the assurance domain; `expiries =
-  registry.advance_to(ctx.pulse + 1)`; `released = Σ
+  registry.advance_to(ctx.pulse + 1)` (saturating); `released = Σ
   expiries.released_pools`; if positive, `vault -= released`, obtain the
-  treasury and `balances[USD] += released`.
+  treasury and `balances[USD] += released` (saturating).
 
 Note that "obtain the market" for a scheduled event of a market not
 otherwise touched marks it used, so it is written back even if the event
 was skipped.
+
+**Errors.** With the bounds of §5.2 and §5.22 and the saturating
+operations above, an item or event can err only if a protocol object is
+missing or malformed, `unallocated += amount` overflows (impossible: what
+is unallocated plus what live allotments hold never exceeds the bounded
+total), or the assurance registry's own accounting fails (for example
+`vault −= released` underflowing). No state reachable from a valid genesis
+allows any of these. If one happens anyway, the deferred phase is invalid:
+the reference executor refuses the Pulse, and a proof stack rejects the
+chunk, so no World Proof can exist for it.
 
 ## 7. Commitments
 
@@ -676,7 +707,8 @@ deferred items `D`):
      effects_leaf(·))` from `S.effects_in`; the results MUST equal
      `S.deferred_out` and `S.effects_out`. The knowledge log is untouched.
    - **Deferred phase** (`S.deferred_phase = true`): `T` MUST be empty;
-     `chain_deferred(ZERO, D)` MUST equal both `S.deferred_in` and
+     `S.steps = steps([])`; `chain_deferred(ZERO, D)` MUST equal both
+     `S.deferred_in` and
      `S.deferred_out`; `S.effects_in = S.effects_out`; run §6.3 on `D`,
      appending claims to a copy of `W.frontier`.
 6. The frontier's root and size MUST equal `S.after.knowledge_root` and
@@ -686,3 +718,52 @@ deferred items `D`):
    `S.after.state_root`.
 
 A chunk is valid if and only if every check passes.
+
+Some statement fields cannot be checked from one chunk: its `index`, its
+`beacon`, which of `S.pulse − 1` and `S.pulse` its `before.pulse` is, and
+whether the deferred phase's `deferred_in` really is everything the
+Pulse's transactions deferred. The World Proof binds them (§9).
+
+## 9. Folding a Pulse
+
+A World Proof for Pulse `p` (`fold_prover::WorldProof`) is valid if and
+only if:
+
+1. It has at least one statement; statement `i` has `index = i` and
+   `pulse = p`; exactly the last one is the deferred phase.
+2. The first statement starts at the proof's `before` and the last ends at
+   its `after`; `before.pulse = p − 1` and `after.pulse = p`.
+3. Consecutive statements chain: each one's `before`, `deferred_in`,
+   `effects_in` and `beacon` equal the previous one's `after`,
+   `deferred_out`, `effects_out` and `beacon`. The first one's
+   `deferred_in` and `effects_in` are `ZERO`. (So the deferred phase
+   consumes exactly what the transaction chunks deferred.)
+4. Folding `chain_effects_leaf` over the published receipt leaves from
+   `ZERO` gives the last statement's `effects_out`, and their Merkle root
+   is the proof's `receipts_root`.
+5. The published data is for Pulse `p` with the statements' beacon; the
+   transaction chunks' `steps` are the digests of consecutive runs of the
+   published transactions, covering all of them; and the data encodes
+   (`fold_da`) to the proof's `data_root` and `data_k`.
+6. Every leaf proof verifies (§8) under every required proof stack.
+
+Whoever relies on the proof also checks it against the certified Pulse
+header: the same `pulse`, `before`, `after`, `receipts_root`, `data_root`,
+`data_k` and beacon. Lane certificates
+(`fold_prover::verify_certificates`) are checked against the shard
+committees that the chain identity fixes for the header's epoch.
+
+## Changes
+
+- **v1.1.** From the differential testing of stack B against stack A:
+  faucet transactions pay no fee and grants are capped (§4.1, §5.2);
+  market periods are bounded (§5.22); charter windows, the clearing
+  check, sealing and deadlines saturate (§5.13, §5.25, §6.3); the chain
+  check reads at most 16 charters (§5.13); a bond the vault cannot hold is
+  refunded (§6.3); treasury totals and returned amounts saturate (§6.3);
+  due events scheduled during due processing wait (§6.3); deferred-phase
+  errors are specified (§6.3); the deferred phase's `steps` is checked
+  (§8); and what the World Proof binds is specified (§9). Before v1.1, a
+  market with a clearing deadline near `u64::MAX` could halt a debug build
+  and split debug from release builds; a charter window near `u64::MAX`
+  made the reference executor diverge from this document.

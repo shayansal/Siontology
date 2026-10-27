@@ -109,6 +109,15 @@ impl WorldProof {
         encode(self).len()
     }
 
+    /// The beacon every statement executed with (consumers check it against
+    /// the certified header's).
+    pub fn beacon(&self) -> Hash32 {
+        self.statements
+            .first()
+            .map(|s| s.beacon)
+            .unwrap_or(Hash32::ZERO)
+    }
+
     /// Digest of what the proof establishes: (Pulse, before, after,
     /// receipts root, statements root, data root).
     pub fn claim_digest(&self) -> Hash32 {
@@ -222,6 +231,11 @@ fn check_structure(proof: &WorldProof) -> Result<(), ProveError> {
         if statement.deferred_phase != (i + 1 == statements.len()) {
             return Err(ProveError::Chain(
                 "exactly the last statement is the deferred phase".into(),
+            ));
+        }
+        if statement.deferred_phase && statement.steps != steps_digest_of(&[]) {
+            return Err(ProveError::Chain(
+                "the deferred phase executes no transactions".into(),
             ));
         }
     }
@@ -542,6 +556,48 @@ mod tests {
         let mut no_certificates = proof.clone();
         no_certificates.certificates.clear();
         assert!(verify_certificates(&no_certificates, &BTreeMap::new(), 1, &NoKeys).is_err());
+    }
+
+    #[test]
+    fn both_stacks_must_accept_every_leaf() {
+        use crate::spec::SpecStack;
+        let (chain, _) = proven_chain();
+        let record = chain.history.last().unwrap().clone();
+        let data = PulseData {
+            pulse: record.output.pulse,
+            beacon: record.output.beacon,
+            transactions: record
+                .traces
+                .iter()
+                .flat_map(|t| t.transactions.iter().map(|s| s.tx.clone()))
+                .collect(),
+        };
+        let both: [&dyn ProofStack; 2] = [&ReplayStack, &SpecStack];
+        let proof = prove_pulse(&record.output, &record.traces, &both, data, Vec::new()).unwrap();
+        let report = verify_world_proof(&proof, &both).unwrap();
+        assert_eq!(report.stacks, vec!["A".to_string(), "B".to_string()]);
+
+        // Without stack B's leaves, a verifier that requires both refuses.
+        let mut only_a = proof.clone();
+        for leaves in &mut only_a.proofs {
+            leaves.retain(|leaf| leaf.stack == "A");
+        }
+        assert!(verify_world_proof(&only_a, &both).is_err());
+
+        // A broken stack-B leaf is caught even though stack A's verifies.
+        let mut bad_b = proof.clone();
+        let leaf = bad_b.proofs[0]
+            .iter_mut()
+            .find(|leaf| leaf.stack == "B")
+            .unwrap();
+        leaf.body.truncate(leaf.body.len() / 2);
+        assert!(verify_world_proof(&bad_b, &[&ReplayStack]).is_ok());
+        assert!(verify_world_proof(&bad_b, &both).is_err());
+
+        // The deferred phase executes no transactions.
+        let mut steps = proof;
+        steps.statements.last_mut().unwrap().steps = Hash32::ZERO;
+        assert!(verify_world_proof(&steps, &both).is_err());
     }
 
     struct NoKeys;

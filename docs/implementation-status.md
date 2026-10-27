@@ -1,0 +1,287 @@
+# Implementation status
+
+What this repository implements of the architecture ("Neo-Blockchains: The
+Fold Architecture"), what it simulates, and what it leaves out. Rule 5 of
+`AGENTS.md` asks that every shortcut be named; this file is where the names
+live.
+
+**Status words**
+
+- **Built**: implemented as the architecture describes, at devnet scale, with
+  tests.
+- **Simplified**: implemented, with a named simplification that changes a
+  guarantee or a cost.
+- **Simulated**: something stands in for a component the architecture
+  requires, and is labeled as a stand-in in the types and in the output.
+- **Not built**: absent.
+
+## At a glance
+
+| Architecture section | Status |
+|---|---|
+| Foundations: two-sorted state, derived coordination class | Built |
+| Identity: post-quantum accounts | Built |
+| Identity: personhood | Not built |
+| Identity: Agent Charters | Built |
+| Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
+| Data availability: retention and archival | Simplified |
+| Ordering: Linear Lanes (owned objects) | Built |
+| Ordering: Escrow Lanes (bounded shared totals) | Built |
+| Ordering: Contention Consensus | Simplified (certified DAG, not uncertified) |
+| Ordering: censorship resistance (forced inclusion) | Simplified (library only, not wired into the node) |
+| Ordering: committees and sharding | Simplified (static validator set) |
+| Ordering: two levels of finality | Built |
+| Execution: prove heavy, execute light | Simulated (replay proofs) |
+| Execution: N-version proving | Built (two independent replay stacks) |
+| Execution: proving market | Not built |
+| The Fold: World Proof per Pulse | Simulated (replay proofs, real bindings) |
+| Knowledge layer: claims and the Assurance Algebra | Built |
+| Verifiable Clearing | Built |
+| Privacy: encrypted payloads, viewing keys, sealed orders | Built |
+| Privacy: confidential amounts, zero-knowledge compliance | Not built |
+| Interfaces: CLI, HTTP API, MCP server for agents | Built |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Not built |
+| Economics: fees, treasury, slashing with compensation | Built |
+| Economics: staking, rewards, proving payments | Not built |
+| Networking between machines | Simulated (in-process channels) |
+
+## By section
+
+### Foundations
+
+**Built.** State is two-sorted (`fold-exec`): linear objects with owners
+and versions, tombstoned when consumed and never deleted, and a grow-only
+knowledge log (an RFC 9162 Merkle log in `fold-core`). A transaction's
+coordination class (knowledge, owned-linear, bounded, contended) is derived
+from what it touches (`Transaction::class`), never declared by the sender.
+Every consensus-critical value has one Borsh encoding and is hashed with a
+domain tag. The state root is a sparse Merkle tree with single-leaf
+subtrees collapsed (`fold_core::smt`).
+
+### Identity
+
+**Accounts: built.** Accounts are identified by the hash of their genesis
+authorization policy, so keys rotate (`RotatePolicy`) without changing the
+identifier. The default policy requires two signatures from unrelated
+families over the same digest: ML-DSA-44 (FIPS 204, lattice) and
+SLH-DSA-SHA2-128f (FIPS 205, hash-based); `SLH-DSA-SHA2-128s` is available
+for accounts that sign rarely. ML-KEM-768 (FIPS 203) with
+ChaCha20-Poly1305 encrypts payloads to viewing keys. The implementations
+are the pure-Rust `fips203`, `fips204` and `fips205` crates; they have not
+been audited for side channels.
+
+**Personhood: not built.** The architecture's issuer-signed credentials with
+per-application nullifiers can be expressed today as claims, but there is no
+nullifier scheme and no unlinkability (that needs zero-knowledge proofs).
+
+**Agent Charters: built.** A charter binds an agent to a principal with
+caveats the protocol checks on every payment (`fold_exec::charter`): an
+allow-list of payees, a per-payment limit, a budget per window, an expiry,
+an evidence requirement above a threshold (a claim that passes the decision
+rule under a stated policy), receipts as claims, and whether the agent may
+delegate. Delegation must attenuate (every caveat strictly narrower).
+Revocation by the principal stops the agent and every sub-agent at once;
+`ReclaimCharter` returns unspent allotments. Payments come from an
+allotment only the agent can write, so they need no consensus.
+Not built: the architecture's model terms (which models and providers may
+act) and a bond behind each agent's receipts beyond the agent atom.
+
+### Data availability
+
+**Built.** Each Pulse's data (transaction bodies in execution order) is laid
+out as a `k × k` square of Goldilocks field elements, extended with a 2D
+Reed–Solomon code to `2k × 2k`, and committed with row and column Merkle
+roots (`fold-da`). Light clients sample random shares; withholding enough to
+prevent reconstruction is detected with probability `1 − (3/4)^s` for `s`
+samples. Iterative row/column decoding rebuilds the square from any
+sufficient subset, and bad-encoding fraud proofs exist as a library. The
+World Proof additionally checks that the published data encodes to the
+certified data root, so the fraud-proof path is a fallback.
+
+**Retention: simplified.** Validators keep a write-ahead log of every
+executed Pulse and periodic snapshots, and serve the last 256 Pulses' data
+from memory. There is no archival tier and no incentive for anyone to keep
+shares.
+
+### Ordering
+
+**Linear Lanes: built.** An owned object version can be locked to one
+transaction digest per validator. A transaction is final when validators
+holding more than two thirds of its shard committee's stake have approved
+it. Approvals are signed per batch (one Merkle root per batch, one dual
+signature per batch), so a certificate is a few references into signed
+batches. Every transaction, contended ones included, locks its owned inputs
+this way before consensus sees it.
+
+**Escrow Lanes: built.** `CreateBounded` splits a shared total (seats, a
+budget, a rate limit) into single-writer allotments; spending an allotment
+is an owned-path operation; only `Rebalance` goes through consensus.
+
+**Contention Consensus: simplified.** A certified-DAG BFT protocol in the
+Bullshark family, partially synchronous, with leader timeouts and
+equivocation evidence (`fold_consensus::core`), tested in a deterministic
+network simulator with an adversarial pre-GST phase. The architecture's
+production target is an uncertified DAG (Mysticeti class), which commits
+in fewer message delays.
+
+**Censorship resistance: simplified.** `fold_consensus::forced` tracks
+intents posted directly to the data layer and reports shards that miss the
+inclusion deadline. The devnet does not yet accept forced-inclusion posts,
+so this is a library, not a property of the running node.
+
+**Committees and sharding: simplified.** Lane committees are sampled per
+shard and per epoch from the validator set with a hash of the genesis and
+the epoch (`sample_committee`). The validator set and stake are fixed at
+genesis: there is no staking, no joining or leaving, and no reconfiguration.
+
+**Two levels of finality: built.** Certificate finality comes from the lane
+certificate (owned paths) and the consensus commit (contended paths); every
+Pulse header is then signed by the committee, and proof finality comes when
+the World Proof for that Pulse verifies.
+
+### Execution and proving
+
+**Prove heavy, execute light: simulated.** Execution is cut into chunks;
+each chunk carries a statement (world commitments before and after,
+accumulators of effects and deferred items, the steps) and a witness (each
+touched object with a sparse-Merkle proof, plus the knowledge frontier).
+Proof stack A (`fold_prover::ReplayStack`) "proves" a chunk by including
+everything needed to re-execute it statelessly; verification re-executes
+it and rejects any read outside the witness. This has the interface and
+the binding properties of a succinct proof (stateless, chunk-local,
+foldable) but not its cost: verifying is as expensive as executing. The
+type is labeled `simulated: true`, and every report that verifies a World
+Proof says so. A STARK stack would plug into the same `ProofStack` trait.
+
+**N-version proving: built.** The state transition is specified in
+`docs/spec/state-transition.md`. A second implementation written only from
+that document (`crates/fold-spec`, proof stack B) checks every chunk
+alongside the reference executor (stack A), and a World Proof verifies only
+if both accept every chunk. `scripts/check-independence.sh` (run in CI)
+checks that stack B never calls the reference executor's logic. Its
+differential tests run thousands of chunks, random workloads, boundary
+probes and tampering through both stacks. They found two defects in the
+reference executor and several gaps in the specification, all fixed in
+specification v1.1: a market clearing deadline near `u64::MAX` overflowed
+when its batch sealed (any account could halt the chain), and a charter
+window near `u64::MAX` made the reference executor disagree with the
+specification. Both stacks share the hashing, Merkle, signature, Assurance
+Algebra and clearing-certificate code (`impl:shared-primitives`).
+
+**Proving market: not built.** The devnet runs one prover thread.
+
+**Verifiable AI inference: built as claims.** The three tiers (proof,
+attestation, bond) are expressed as claims whose formulas name their atoms
+(`receipts` demo): a TEE quote is an unbonded atom with a known attack cost,
+an operator bond is slashable. Zero-knowledge inference proofs are not
+built.
+
+### The Fold
+
+**Simulated, with real bindings.** For every Pulse the devnet's prover folds
+all chunk proofs into a World Proof (`fold_prover::world`) that checks the
+chain of chunk statements from the Pulse's first commitment to its last,
+the receipts root over every effect, the published data (it is exactly what
+executed, and it encodes to the certified data-availability root), and every
+lane certificate against its shard committee. Folding is a Merkle tree over
+leaf statements, not recursive proof composition; the World Proof's size
+grows with the Pulse's witnesses. A light client verifies it today by
+re-executing every chunk (or a random sample of chunks).
+
+### Knowledge layer
+
+**Built.** Claims carry formulas over atoms and other claims (`fold-assurance`).
+Cost of corruption is an interval computed per consumer policy: exact for
+formulas whose disjuncts share no atoms, with a lower bound by an exact
+solver when they do. The decision rule, reservations of `κ·V` against a
+claim's backing, bonds with lock periods, challenges, adjudication,
+slashing with compensation to the parties who relied on the claim, and
+failure probabilities for insurance are implemented and property-tested.
+Policies can trust or distrust atoms and classes, or assume an atom broken.
+
+The assurance registry is a single contended object. Every claim, bond and
+reservation operation touches it, so its witness grows with the registry.
+That is fine at devnet scale and is the first thing to split (per atom and
+per claim objects) for production.
+
+### Verifiable Clearing
+
+**Built.** Markets collect sealed orders during a batch window, seal with
+the Pulse's beacon, reveal sealed orders with committee key shares, and
+settle the first submitted clearing whose optimality certificate verifies
+(`fold-lp`, `fold-clearing`): exact rational arithmetic, a linear-time
+certificate check, beacon-derived priorities for canonical tie-breaking,
+and a canonical price band. Sealed double auctions and assignment markets
+are implemented; the market demo clears at one price.
+
+### Privacy and compliance
+
+**Built:** claim payloads can be public, encrypted to an ML-KEM viewing key,
+or replaced by a commitment; orders can be sealed to a market committee
+(ML-KEM with Shamir t-of-n sharing, practical for small committees).
+
+**Not built:** transfer amounts and balances are public. Confidential
+transfers, private computation and compliance-by-proof (KYC, Travel Rule
+and sanctions checks proven without revealing data) need a succinct
+zero-knowledge stack. The claim model can carry such attestations today,
+but only as issuer-signed claims.
+
+### Interfaces
+
+**Built:** the `fold` CLI (devnet, wallets, transfers, claims, bonds,
+challenges, charters, markets, light-client verification, demos,
+benchmarks), a JSON HTTP API (`fold_node::api`) and a Model Context
+Protocol server (`fold mcp`) with tools to check balances, pay, issue
+claims, price a claim with the Assurance Algebra before relying on it, pay
+under an Agent Charter, verify a Pulse and read events.
+
+**Not built:** adapters for x402, AP2, ERC-8004 and C2PA; transactions
+described as sentences; `submit_intent` and `fetch_receipt` MCP tools.
+
+### Economics
+
+**Built:** fees (a base fee plus a fee per KiB) go to the treasury;
+slashed bonds compensate the parties who relied on the claim and pay a
+share to the challenger, with the rest to the treasury.
+
+**Not built:** staking, validator rewards, payments to provers, a
+value-in-flight cap.
+
+### Node and operations
+
+**Simulated:** a devnet runs every validator in one process, each on its own
+thread with its own state replica, exchanging real signed messages over
+in-memory channels. There is no peer-to-peer networking, and the client
+gateway is a single component that collects lane approvals.
+
+**Built:** a segmented write-ahead log with checksums and torn-tail
+truncation, periodic snapshots, replay that re-checks every commitment,
+restart into a new consensus epoch, and state sync for validators that fell
+behind.
+
+## Trust assumptions this implementation adds
+
+These are atoms in the formula of anything the devnet reports, on top of
+the architecture's own:
+
+| Atom | What it means |
+|---|---|
+| `impl:replay-proofs` | World Proofs are checked by re-execution, so "proof finality" costs a verifier as much as executing; succinctness is assumed, not delivered. |
+| `impl:shared-primitives` | Both proof stacks use the same hashing, Merkle, signature, Assurance Algebra and clearing-certificate code; a bug there is common-mode. |
+| `impl:devnet-keys` | Devnet validator keys are derived from the chain name; anyone can derive them. A devnet secures nothing of value. |
+| `impl:in-process-network` | Validators share a machine and a process; network faults are not exercised by the devnet (they are by the consensus simulator). |
+| `impl:static-committee` | The validator set never changes. |
+| `impl:hash-chain-beacon` | The beacon is a hash-chain commit-reveal; the last validator to reveal can bias it by withholding (at the cost of being seen). |
+| `impl:public-amounts` | Amounts and balances are visible to everyone. |
+| `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
+| `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
+
+## Light-client trust
+
+A light client pins one value: the chain identity (`fold_light::ChainSpec::id`),
+a digest of the genesis specification, the validators with their stake and
+public keys, and the shard layout. It rebuilds every committee it needs
+from the specification a node serves, after checking the specification
+against the pin and checking that each validator identifier derives from
+its keys. Without a pin, `fold verify` says the node is vouching for
+itself.
