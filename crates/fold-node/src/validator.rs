@@ -25,7 +25,7 @@ use fold_exec::pulse::{
     effects_leaf, execute_pulse, execute_pulse_traced, ChunkTrace, PulseInput, PulseOutput,
 };
 use fold_exec::{GenesisSpec, ObjectData, Owner, State};
-use fold_light::{ClaimProof, ObjectProof, PulseCertificate, PulseHeader, ReceiptProof};
+use fold_light::{ChainSpec, ClaimProof, ObjectProof, PulseCertificate, PulseHeader, ReceiptProof};
 use fold_prover::PulseData;
 use serde_json::{json, Value};
 
@@ -45,8 +45,13 @@ pub struct Shared {
     pub config: DevnetConfig,
     /// Genesis.
     pub genesis: GenesisSpec,
-    /// Genesis digest (the chain's identity).
+    /// Genesis digest (of the state specification).
     pub genesis_digest: Hash32,
+    /// What fixes who certifies this chain: genesis, validators, keys, shards.
+    pub chain: ChainSpec,
+    /// The chain identity ([`ChainSpec::id`]) that headers carry and light
+    /// clients pin.
+    pub chain_id: Hash32,
     /// Consensus epoch of this run.
     pub epoch: u64,
     /// The consensus committee (every validator).
@@ -463,6 +468,18 @@ impl Validator {
         }
     }
 
+    /// A consensus-ordered transaction whose lane certificate does not
+    /// verify is not executed. Honest gateways never produce one, so it is
+    /// worth a line in the log (once, from the first validator).
+    fn drop_uncertified(&self, tx: &fold_exec::SignedTransaction, why: &str) {
+        if self.index == 0 {
+            eprintln!(
+                "validator: dropping {} ordered without a valid lane certificate: {why}",
+                tx.digest()
+            );
+        }
+    }
+
     fn seal_lane_batches(&mut self) {
         for (shard, lane) in self.lanes.iter_mut() {
             let Some(batch) = lane.seal_batch() else {
@@ -497,24 +514,25 @@ impl Validator {
             for grouped in &txs {
                 // The certificate must lock exactly the transaction's owned
                 // inputs, with a quorum of its shard's committee.
+                let tx = &grouped.tx;
                 let Some(certificate) = expand(&batches, grouped) else {
+                    self.drop_uncertified(tx, "references a batch the group does not carry");
                     continue;
                 };
-                let tx = &grouped.tx;
                 let shard = ShardId::for_account(&tx.tx.sender, shards);
                 let Some(committee) = self.shared.shard_committees.get(&shard) else {
+                    self.drop_uncertified(tx, "no committee for its shard");
                     continue;
                 };
                 let inputs = lane_inputs(&tx.tx.inputs);
-                if verify_lane_certificate(
+                if let Err(error) = verify_lane_certificate(
                     committee,
                     &tx.digest(),
                     &inputs,
                     &certificate,
                     &self.verifier,
-                )
-                .is_err()
-                {
+                ) {
+                    self.drop_uncertified(tx, &error.to_string());
                     continue;
                 }
                 if certificates.contains_key(&tx.digest()) {
@@ -586,7 +604,7 @@ impl Validator {
             .unwrap_or((Hash32::ZERO, 0));
 
         let header = PulseHeader {
-            chain: self.shared.genesis_digest,
+            chain: self.shared.chain_id,
             epoch: self.shared.epoch,
             pulse: input.pulse,
             beacon: input.beacon,
@@ -770,6 +788,7 @@ impl Validator {
                 let status = StatusView {
                     chain_id: self.shared.config.chain_id.clone(),
                     genesis: self.shared.genesis_digest,
+                    chain: self.shared.chain_id,
                     validator: self.id,
                     epoch: self.shared.epoch,
                     pulse: self.state.pulse,
@@ -953,6 +972,8 @@ impl Validator {
                 Ok(to_json(&events))
             }
             Query::Validators => Ok(json!({
+                "chain": self.shared.chain,
+                "chain_id": self.shared.chain_id,
                 "committee": self.shared.committee,
                 "shards": self.shared.shard_committees,
                 "keys": self.shared.verifier.set,

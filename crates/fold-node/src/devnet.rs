@@ -9,19 +9,20 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use fold_consensus::{sample_committee, Beacon, Committee, HashChain};
+use fold_consensus::{Beacon, HashChain};
 use fold_core::hash::{hash_domain, Hash32};
-use fold_core::ids::{AccountId, AssetId, Epoch, Pulse, ShardId, TxDigest};
+use fold_core::ids::{AccountId, AssetId, Pulse, TxDigest};
 use fold_core::Amount;
 use fold_exec::{
     genesis, ChainConfig, GenesisAccount, GenesisSpec, SignedTransaction, State, Wallet,
 };
+use fold_light::ChainSpec;
 use serde_json::Value;
 
 use crate::config::DevnetConfig;
 use crate::error::NodeError;
 use crate::gateway::{Gateway, GatewayInput};
-use crate::keys::{NodeVerifier, ValidatorKeys};
+use crate::keys::{NodeVerifier, SignatureMode, ValidatorKeys};
 use crate::prover::{self, ProverHandle};
 use crate::storage::{replay, Snapshot, Wal};
 use crate::validator::{Bus, Input, Shared, Validator, ValidatorSetup};
@@ -177,25 +178,34 @@ impl Devnet {
         let recovery = recover(&config, genesis_digest, &genesis_state, &genesis_beacon)?;
         let epoch = recovery.epoch;
 
-        let committee = Committee::equal_weight(Epoch(epoch), ShardId(0), ids.iter().copied())?;
-        let weighted: Vec<_> = ids.iter().map(|id| (*id, 1u64)).collect();
-        let seats = config.shard_seats.clamp(1, n);
-        let mut shard_committees = BTreeMap::new();
-        for shard in 0..config.shards.max(1) {
-            let sampled = sample_committee(
-                &weighted,
-                seats,
-                &genesis_digest,
-                Epoch(epoch),
-                ShardId(shard),
-            )?;
-            shard_committees.insert(ShardId(shard), sampled);
-        }
+        // The chain identity fixes the validators, their keys and the shard
+        // layout; every committee is derived from it, here and in light
+        // clients alike.
+        let chain = ChainSpec {
+            genesis: genesis_digest,
+            validators: ids.iter().map(|id| (*id, 1u64)).collect(),
+            keys: verifier.set.clone(),
+            shards: config.shards.max(1),
+            seats: u16::try_from(config.shard_seats.clamp(1, n)).unwrap_or(u16::MAX),
+            insecure_signatures: mode == SignatureMode::InsecureFast,
+        };
+        chain
+            .check()
+            .map_err(|e| NodeError::Config(e.to_string()))?;
+        let chain_id = chain.id();
+        let committee = chain
+            .committee(epoch)
+            .map_err(|e| NodeError::Config(e.to_string()))?;
+        let shard_committees = chain
+            .shard_committees(epoch)
+            .map_err(|e| NodeError::Config(e.to_string()))?;
 
         let shared = Arc::new(Shared {
             config: config.clone(),
             genesis: genesis_spec,
             genesis_digest,
+            chain,
+            chain_id,
             epoch,
             committee,
             shard_committees,

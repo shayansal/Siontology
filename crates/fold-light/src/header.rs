@@ -27,7 +27,8 @@ pub const VALIDATOR_DOMAIN: &str = "fold/validator/v1";
 /// What a Pulse committed to.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct PulseHeader {
-    /// Digest of the genesis specification (the chain's identity).
+    /// The chain identity ([`crate::ChainSpec::id`]): genesis, validators,
+    /// keys and shard layout.
     pub chain: Hash32,
     /// The consensus epoch.
     pub epoch: u64,

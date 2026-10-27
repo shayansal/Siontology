@@ -214,6 +214,10 @@ enum Command {
     },
     /// Verify a Pulse as a light client.
     Verify {
+        /// The chain identity you trust (from `fold devnet`'s banner or another
+        /// source you trust). Without it the node vouches for itself.
+        #[arg(long, env = "FOLD_CHAIN")]
+        chain: Option<String>,
         /// Pulse (default: latest certified).
         #[arg(long)]
         pulse: Option<u64>,
@@ -476,11 +480,12 @@ fn run_devnet(args: &DevnetArgs) -> Result<(), CliError> {
     let api = fold_node::api::serve(devnet.clone(), &args.api)
         .map_err(|e| CliError::Node(e.to_string()))?;
     println!(
-        "Fold devnet: {} validators, {} shards, API on http://{} (genesis {})",
-        args.validators,
-        args.shards,
-        api.address,
-        devnet.shared.genesis_digest.short()
+        "Fold devnet: {} validators, {} shards, API on http://{}",
+        args.validators, args.shards, api.address,
+    );
+    println!(
+        "chain identity (pin it: fold verify --chain …): {}",
+        devnet.shared.chain_id.to_hex()
     );
     println!("accounts funded at genesis: {}", args.accounts.join(", "));
     let mut last_report = Instant::now();
@@ -947,11 +952,20 @@ fn run(cli: Cli) -> Result<(), CliError> {
             }
         }
         Command::Verify {
+            chain,
             pulse,
             samples,
             no_world,
         } => {
-            for line in verify::verify_pulse(ledger, pulse.map(Pulse), samples, !no_world)? {
+            let pinned = match chain {
+                Some(hex) => Some(
+                    Hash32::from_hex(hex.trim())
+                        .map_err(|_| CliError::Usage("--chain takes 64 hex digits".into()))?,
+                ),
+                None => None,
+            };
+            for line in verify::verify_pulse(ledger, pinned, pulse.map(Pulse), samples, !no_world)?
+            {
                 println!("{line}");
             }
         }

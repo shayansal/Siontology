@@ -96,8 +96,8 @@ fn tools() -> Value {
         },
         {
             "name": "fold_verify_pulse",
-            "description": "Verify a Pulse as a light client: committee certificate, receipts, state proof, data-availability sampling and the World Proof.",
-            "inputSchema": { "type": "object", "properties": { "pulse": { "type": "integer" } } }
+            "description": "Verify a Pulse as a light client: chain identity, committee certificate, receipts, state proof, data-availability sampling, the World Proof and lane certificates. Pass the chain identity you trust as `chain` (64 hex digits); without it the node vouches for itself.",
+            "inputSchema": { "type": "object", "properties": { "pulse": { "type": "integer" }, "chain": { "type": "string", "description": "Pinned chain identity (hex)" } } }
         },
         {
             "name": "fold_events",
@@ -247,8 +247,15 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
         }
         "fold_verify_pulse" => {
             let pulse = args["pulse"].as_u64().map(Pulse);
-            let report = crate::verify::verify_pulse(session.ledger, pulse, 16, true)?;
-            Ok(json!({ "verified": true, "report": report }))
+            let pinned = match args["chain"].as_str() {
+                Some(hex) => Some(
+                    Hash32::from_hex(hex)
+                        .map_err(|_| CliError::Usage("chain must be 64 hex digits".into()))?,
+                ),
+                None => None,
+            };
+            let report = crate::verify::verify_pulse(session.ledger, pinned, pulse, 16, true)?;
+            Ok(json!({ "verified": true, "pinned": pinned.is_some(), "report": report }))
         }
         "fold_events" => {
             let from = Pulse(args["from"].as_u64().unwrap_or(0));

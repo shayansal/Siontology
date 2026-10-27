@@ -65,6 +65,8 @@ pub struct StatusView {
     pub chain_id: String,
     /// Genesis digest.
     pub genesis: Hash32,
+    /// The chain identity that Pulse headers carry and light clients pin.
+    pub chain: Hash32,
     /// The answering validator.
     pub validator: ValidatorId,
     /// Consensus epoch.

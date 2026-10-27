@@ -542,7 +542,8 @@ pub fn market(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
             good: gpu(),
             numeraire: AssetId::usd(),
             batch_length,
-            clear_deadline: 4,
+            // Generous, so a slow machine still clears in time.
+            clear_deadline: 30,
             committee: Vec::new(),
             threshold: 0,
         },
@@ -733,9 +734,46 @@ pub fn receipts(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), Cli
 /// Light-client verification of the latest certified Pulse.
 pub fn light(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     out.say("== Light client: verify without running a node ==");
-    let report = crate::verify::verify_pulse(session.ledger, None, 16, true)?;
+    // A real client pins the chain identity from a source it trusts (a
+    // release, a block explorer, a friend). Here it comes from the devnet's
+    // own status, which is what `fold devnet` prints at startup.
+    let validators = session.ledger.query(fold_node::Query::Validators)?;
+    let chain: fold_light::ChainSpec = serde_json::from_value(validators["chain"].clone())
+        .map_err(|e| CliError::Protocol(e.to_string()))?;
+    let pinned = chain.id();
+    out.say(format!(
+        "           pinned chain identity {} (genesis, validators, keys and shard layout)",
+        pinned.short()
+    ));
+    let report = crate::verify::verify_pulse(session.ledger, Some(pinned), None, 16, true)?;
     for line in report {
         out.say(format!("           {line}"));
+    }
+    if !chain.insecure_signatures {
+        // What a lying node would have to do to fool the client: serve its
+        // own keys under a real validator's identifier. The pin catches it.
+        let mut forged = chain.clone();
+        let attacker =
+            fold_crypto::DualKeypair::from_seed(&[0xBA; 32], fold_crypto::Scheme::SlhDsaSha2_128f);
+        if let Some((victim, _)) = forged.validators.first().copied() {
+            forged.keys.keys.insert(
+                victim,
+                (
+                    attacker.lattice.public().clone(),
+                    attacker.hash.public().clone(),
+                ),
+            );
+        }
+        match forged.verify(Some(&pinned)) {
+            Err(e) => out.say(format!(
+                "           a node serving substituted validator keys is caught: {e} ✗"
+            )),
+            Ok(_) => {
+                return Err(CliError::Verification(
+                    "a forged validator set passed the pin".into(),
+                ))
+            }
+        }
     }
     Ok(())
 }

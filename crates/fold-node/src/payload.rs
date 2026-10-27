@@ -85,14 +85,18 @@ impl PayloadItem {
     }
 
     /// Groups certified transactions, sharing batch headers.
+    ///
+    /// A batch is identified by its whole header (validator, epoch, shard,
+    /// sequence number, root and size): a validator numbers its batches per
+    /// shard, so the same sequence number recurs across shards and epochs.
     pub fn group(certified: Vec<(SignedTransaction, LaneCertificate)>) -> PayloadItem {
-        let mut index: BTreeMap<(ValidatorId, u64), u32> = BTreeMap::new();
+        let mut index: BTreeMap<Hash32, u32> = BTreeMap::new();
         let mut batches = Vec::new();
         let mut txs = Vec::with_capacity(certified.len());
         for (tx, certificate) in certified {
             let mut approvals = Vec::with_capacity(certificate.approvals.len());
             for proof in certificate.approvals {
-                let key = (proof.batch.validator, proof.batch.index);
+                let key = proof.batch.signing_digest();
                 let position = *index.entry(key).or_insert_with(|| {
                     batches.push(SignedBatchHeader {
                         header: proof.batch.clone(),
@@ -144,4 +148,119 @@ pub fn lane_inputs(inputs: &[ObjectRef]) -> Vec<LaneRef> {
             version: r.version,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use fold_consensus::{
+        insecure_sim_keyring, verify_lane_certificate, Authenticator, CertificateBuilder,
+        Committee, LaneRequest, LaneValidator, OwnerAuthorization,
+    };
+    use fold_core::ids::{AssetId, Epoch, ObjectId, ShardId, Version};
+    use fold_core::Amount;
+    use fold_exec::{Transaction, TxKind, Wallet};
+
+    use super::*;
+
+    struct AnyOwner;
+
+    impl OwnerAuthorization for AnyOwner {
+        fn authorizes(&self, _: &LaneRequest) -> bool {
+            true
+        }
+    }
+
+    fn transfer(wallet: &Wallet, coin: &[u8], nonce: u64) -> SignedTransaction {
+        Transaction {
+            sender: wallet.id,
+            genesis_policy: None,
+            inputs: vec![ObjectRef {
+                id: ObjectId::derive(coin),
+                version: Version(0),
+            }],
+            fee: Amount::units(1),
+            kind: TxKind::Transfer {
+                asset: AssetId::usd(),
+                outputs: Vec::new(),
+            },
+            expires_at: Pulse(100),
+            nonce,
+        }
+        .sign(&wallet.keys)
+        .expect("sign")
+    }
+
+    #[test]
+    fn groups_keep_batches_of_different_shards_apart() {
+        // Four validators sit on both shard committees and number their
+        // batches per shard, so each shard's first batch has index 0.
+        let (auths, verifier) = insecure_sim_keyring(4, 7);
+        let ids: Vec<_> = auths.iter().map(|a| a.validator()).collect();
+        let committees: Vec<Committee> = (0..2)
+            .map(|s| Committee::equal_weight(Epoch(0), ShardId(s), ids.iter().copied()).unwrap())
+            .collect();
+        let mut lanes: Vec<Vec<LaneValidator<_>>> = committees
+            .iter()
+            .map(|c| {
+                auths
+                    .iter()
+                    .map(|a| LaneValidator::new(c, a.clone()))
+                    .collect()
+            })
+            .collect();
+
+        let alice = Wallet::named("alice");
+        let txs = [
+            transfer(&alice, b"coin-a", 1),
+            transfer(&alice, b"coin-b", 2),
+        ];
+        let mut certified = Vec::new();
+        for (shard, tx) in txs.iter().enumerate() {
+            let inputs = lane_inputs(&tx.tx.inputs);
+            let request = LaneRequest {
+                tx: tx.digest(),
+                inputs: inputs.clone(),
+                owner_proof: Vec::new(),
+            };
+            let mut builder = CertificateBuilder::new(tx.digest(), &inputs);
+            let mut certificate = None;
+            for lane in lanes[shard].iter_mut() {
+                lane.approve(request.clone(), &AnyOwner).unwrap();
+                let batch = lane.seal_batch().unwrap();
+                assert_eq!(batch.header.index, 0);
+                let proof = lane.approval_proof(&tx.digest()).unwrap().clone();
+                if let Some(done) = builder.add(&committees[shard], proof, &verifier).unwrap() {
+                    certificate.get_or_insert(done);
+                }
+            }
+            certified.push((tx.clone(), certificate.expect("quorum")));
+        }
+
+        let item = PayloadItem::group(certified.clone());
+        let item = PayloadItem::from_bytes(&item.to_bytes()).expect("round trip");
+        let PayloadItem::Certified {
+            batches,
+            txs: grouped,
+        } = item
+        else {
+            panic!("certified group expected");
+        };
+        // Same validators and indices in both shards, yet every approval
+        // keeps its own shard's header.
+        let approvals: usize = certified.iter().map(|(_, c)| c.approvals.len()).sum();
+        assert_eq!(approvals, 6, "a quorum of three per certificate");
+        assert_eq!(batches.len(), approvals);
+        for ((tx, original), (shard, grouped)) in certified.iter().zip(grouped.iter().enumerate()) {
+            let expanded = expand(&batches, grouped).expect("expands");
+            assert_eq!(&expanded.approvals, &original.approvals);
+            verify_lane_certificate(
+                &committees[shard],
+                &tx.digest(),
+                &lane_inputs(&tx.tx.inputs),
+                &expanded,
+                &verifier,
+            )
+            .expect("the expanded certificate verifies");
+        }
+    }
 }

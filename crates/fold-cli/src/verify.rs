@@ -1,10 +1,9 @@
 //! Light-client verification of a Pulse.
 
-use fold_consensus::Committee;
 use fold_core::encode::decode;
 use fold_core::hash::Hash32;
 use fold_core::ids::Pulse;
-use fold_light::{verify_certificate, verify_object, verify_receipt, ObjectProof, ValidatorSet};
+use fold_light::{verify_certificate, verify_object, verify_receipt, ChainSpec, ObjectProof};
 use fold_node::Query;
 use fold_prover::{verify_world_proof, ProofStack, ReplayStack, WorldProof};
 use serde_json::Value;
@@ -17,18 +16,43 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, CliError> {
 }
 
 /// Verifies a Pulse (the latest certified one by default) the way a light
-/// client would: the committee certificate, receipts, a state proof, data
-/// availability sampling and, if `world`, the World Proof. Returns a report.
+/// client would: the chain identity, the committee certificate, receipts, a
+/// state proof, data availability sampling and, if `world`, the World Proof
+/// and lane certificates. Returns a report.
+///
+/// `pinned` is the chain identity the client trusts, obtained out of band.
+/// Without it the client can only check that the node is self-consistent:
+/// it learns the identity from the node it is checking.
 pub fn verify_pulse(
     ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
     pulse: Option<Pulse>,
     samples: usize,
     world: bool,
 ) -> Result<Vec<String>, CliError> {
     let mut report = Vec::new();
+
+    // 0. The chain identity: every committee below is derived from it.
+    let validators = ledger.query(Query::Validators)?;
+    let chain: ChainSpec = parse(validators["chain"].clone())?;
+    let chain_id = chain
+        .verify(pinned.as_ref())
+        .map_err(|e| CliError::Verification(e.to_string()))?;
+    let insecure = chain.insecure_signatures;
+    report.push(match pinned {
+        Some(_) => format!(
+            "chain: {} matches the pinned identity; {} validators, keys derive their identifiers ✓",
+            chain_id.short(),
+            chain.validators.len()
+        ),
+        None => format!(
+            "chain: {} (NOT PINNED: learned from the node itself; pass --chain {} to pin it)",
+            chain_id.short(),
+            chain_id.to_hex()
+        ),
+    });
+
     let status = ledger.status()?;
-    let genesis: Hash32 = parse(status["genesis"].clone())?;
-    let insecure = status["insecure_signatures"].as_bool().unwrap_or(false);
     let pulse = match pulse {
         Some(p) => p,
         None => {
@@ -56,7 +80,7 @@ pub fn verify_pulse(
     }
     let view = ledger.pulse_view(Some(pulse))?;
     let header = view.header.clone();
-    if header.chain != genesis {
+    if header.chain != chain_id {
         return Err(CliError::Verification(
             "the header is for another chain".into(),
         ));
@@ -70,10 +94,12 @@ pub fn verify_pulse(
         header.after.knowledge_size
     ));
 
-    // 1. The committee certificate.
-    let validators = ledger.query(Query::Validators)?;
-    let committee: Committee = parse(validators["committee"].clone())?;
-    let keys: ValidatorSet = parse(validators["keys"].clone())?;
+    // 1. The committee certificate, against the committee the chain
+    // identity fixes for the header's epoch.
+    let committee = chain
+        .committee(header.epoch)
+        .map_err(|e| CliError::Verification(e.to_string()))?;
+    let keys = &chain.keys;
     let certificate = view
         .certificate
         .clone()
@@ -87,7 +113,7 @@ pub fn verify_pulse(
         report
             .push("certificate: SKIPPED — this devnet runs insecure simulation signatures".into());
     } else {
-        let stake = verify_certificate(&certificate, &committee, &keys)
+        let stake = verify_certificate(&certificate, &committee, keys)
             .map_err(|e| CliError::Verification(e.to_string()))?;
         report.push(format!(
             "certificate: {} of {} validators signed (quorum {}), each with ML-DSA-44 + SLH-DSA-SHA2-128f ✓",
@@ -174,10 +200,10 @@ pub fn verify_pulse(
                     report
                         .push("lane certificates: SKIPPED — insecure simulation signatures".into());
                 } else {
-                    let shards: std::collections::BTreeMap<fold_core::ids::ShardId, Committee> =
-                        parse(validators["shards"].clone())?;
-                    let shard_count = ledger.chain_config()?.shard_count;
-                    fold_prover::verify_certificates(&proof, &shards, shard_count, &keys)
+                    let shards = chain
+                        .shard_committees(header.epoch)
+                        .map_err(|e| CliError::Verification(e.to_string()))?;
+                    fold_prover::verify_certificates(&proof, &shards, chain.shards, keys)
                         .map_err(|e| CliError::Verification(e.to_string()))?;
                     report.push(format!(
                         "lane certificates: all {} executed transactions locked their inputs with a shard quorum ✓",
