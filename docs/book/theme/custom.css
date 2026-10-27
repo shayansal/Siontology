@@ -1,0 +1,95 @@
+/* Siontology book: the default mdBook theme, made monochrome and a little
+   easier to read. Colours come from the theme's own variables, so the
+   light and dark themes both keep working. */
+
+:root {
+    --content-max-width: 820px;
+}
+
+.content main {
+    font-size: 1.6rem;
+    line-height: 1.65;
+}
+
+/* Monochrome links: the text colour, underlined. */
+.light,
+.rust {
+    --links: #111111;
+    --sidebar-active: #000000;
+    --inline-code-color: #1a1a1a;
+}
+
+.navy,
+.coal,
+.ayu {
+    --links: #f2f2f2;
+    --sidebar-active: #ffffff;
+}
+
+.content a:link,
+.content a:visited {
+    color: var(--fg);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+
+.content a:hover {
+    text-decoration-thickness: 2px;
+}
+
+/* Headings without colour; a thin rule under chapter titles. */
+.content h1,
+.content h2,
+.content h3,
+.content h4 {
+    color: var(--fg);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.content h1 {
+    border-bottom: 1px solid var(--table-border-color);
+    padding-bottom: 0.3em;
+}
+
+/* Code and terminal output. */
+.content pre {
+    border: 1px solid var(--table-border-color);
+    border-radius: 4px;
+}
+
+.content code {
+    font-size: 0.875em;
+}
+
+/* Tables: full width, light rules, no zebra colour. */
+.content table {
+    width: 100%;
+    display: table;
+}
+
+.content table td,
+.content table th {
+    vertical-align: top;
+    padding: 0.4em 0.7em;
+}
+
+.content table thead tr,
+.content table tbody tr:nth-child(2n) {
+    background: transparent;
+}
+
+.content table thead th {
+    border-bottom: 2px solid var(--fg);
+}
+
+/* Notes: a plain bordered box, used for status and honesty notes. */
+.content blockquote {
+    background: transparent;
+    border-block-start: none;
+    border-block-end: none;
+    border-inline-start: 3px solid var(--fg);
+    margin: 1.2em 0;
+    padding: 0.2em 1em;
+}
