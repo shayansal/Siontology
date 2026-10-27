@@ -1,0 +1,90 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fold-core",
+    "crates/fold-crypto",
+    "crates/fold-assurance",
+    "crates/fold-lp",
+    "crates/fold-clearing",
+    "crates/fold-da",
+    "crates/fold-consensus",
+    "crates/fold-exec",
+    "crates/fold-prover",
+    "crates/fold-light",
+    "crates/fold-node",
+    "crates/fold-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+authors = ["ColdAI"]
+repository = "https://github.com/ColdAI-org/fold"
+
+[workspace.dependencies]
+# Internal crates
+fold-core = { path = "crates/fold-core" }
+fold-crypto = { path = "crates/fold-crypto" }
+fold-assurance = { path = "crates/fold-assurance" }
+fold-lp = { path = "crates/fold-lp" }
+fold-clearing = { path = "crates/fold-clearing" }
+fold-da = { path = "crates/fold-da" }
+fold-consensus = { path = "crates/fold-consensus" }
+fold-exec = { path = "crates/fold-exec" }
+fold-prover = { path = "crates/fold-prover" }
+fold-light = { path = "crates/fold-light" }
+fold-node = { path = "crates/fold-node" }
+
+# Hashing, encoding, errors
+sha3 = "0.10"
+borsh = { version = "1", features = ["derive"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+
+# Post-quantum and symmetric cryptography (pure Rust)
+fips203 = "0.5"
+fips204 = "0.5"
+fips205 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+
+# Randomness (rand_core 0.6 matches the FIPS crates)
+rand_core = { version = "0.6", features = ["getrandom"] }
+rand_chacha = "0.3"
+
+# Exact arithmetic
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
+
+# Interfaces
+clap = { version = "4", features = ["derive"] }
+tiny_http = "0.12"
+
+# Testing
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev]
+# Post-quantum signing is slow unoptimized; optimize dependencies even in debug builds.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 1
+
+[profile.release]
+debug = false
