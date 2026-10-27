@@ -259,6 +259,13 @@ pub enum Event {
         /// Charter.
         charter: ObjectId,
     },
+    /// A dead charter's allotments were returned to its root principal.
+    CharterReclaimed {
+        /// Charter.
+        charter: ObjectId,
+        /// Amount returned.
+        amount: Amount,
+    },
     /// An agent paid.
     AgentPaid {
         /// Charter.
@@ -1155,6 +1162,11 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     spent_in_window: Amount::ZERO,
                 }),
             );
+            let mut child = run.load(&child_id)?;
+            if let ObjectData::Charter(c) = &mut child.data {
+                c.allotments.insert(child_allotment);
+            }
+            run.store(child);
             run.event(Event::CharterCreated {
                 charter: child_id,
                 allotment: child_allotment,
@@ -1237,6 +1249,35 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             }
             run.store(object);
             run.event(Event::CharterRevoked { charter: *charter });
+        }
+        TxKind::ReclaimCharter { charter } => {
+            let state = load_charter(run, charter)?;
+            if tx.sender != state.principal && tx.sender != state.backer {
+                return Err(ExecError::Unauthorized(
+                    "only the principal or the root principal may reclaim".into(),
+                ));
+            }
+            let dead = state.revoked_at.is_some()
+                || pulse > state.caveats.expires_at
+                || check_charter_chain(run, charter).is_err();
+            if !dead {
+                return Err(ExecError::Invalid(
+                    "the charter is still live; revoke it first".into(),
+                ));
+            }
+            let mut total = Amount::ZERO;
+            for allotment_id in &state.allotments {
+                let object = run.load(allotment_id)?;
+                if let ObjectData::Allotment(allotment) = &object.data {
+                    total = total.checked_add(allotment.remaining)?;
+                    run.consume(allotment_id)?;
+                }
+            }
+            run.mint_coin(state.backer, AssetId::usd(), total);
+            run.event(Event::CharterReclaimed {
+                charter: *charter,
+                amount: total,
+            });
         }
         TxKind::CreateBounded {
             label,

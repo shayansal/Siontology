@@ -9,6 +9,7 @@ members = [
     "crates/fold-da",
     "crates/fold-consensus",
     "crates/fold-exec",
+    "crates/fold-spec",
     "crates/fold-prover",
     "crates/fold-light",
     "crates/fold-node",
@@ -33,6 +34,7 @@ fold-clearing = { path = "crates/fold-clearing" }
 fold-da = { path = "crates/fold-da" }
 fold-consensus = { path = "crates/fold-consensus" }
 fold-exec = { path = "crates/fold-exec" }
+fold-spec = { path = "crates/fold-spec" }
 fold-prover = { path = "crates/fold-prover" }
 fold-light = { path = "crates/fold-light" }
 fold-node = { path = "crates/fold-node" }

@@ -1,0 +1,21 @@
+[package]
+name = "fold-spec"
+description = "Proof stack B: an independent implementation of the Fold state transition, written from docs/spec/state-transition.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+fold-core.workspace = true
+fold-crypto.workspace = true
+fold-assurance.workspace = true
+fold-clearing.workspace = true
+fold-exec.workspace = true
+borsh.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

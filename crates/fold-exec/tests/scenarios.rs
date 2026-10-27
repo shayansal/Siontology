@@ -734,6 +734,28 @@ fn agent_charters_enforce_caveats_delegation_and_revocation() {
         chain.balance("vendor", &usd()),
         plus(vendor_start, units(270))
     );
+
+    // What is left goes back to the root principal, whose funds it was:
+    // 1,000 − 250 paid − 100 delegated = 650 at the root, 100 − 20 = 80 below.
+    let principal_before = chain.balance("principal", &usd());
+    let reclaim_root = chain
+        .tx("principal", TxKind::ReclaimCharter { charter })
+        .unwrap();
+    let reclaim_child = chain
+        .tx("principal", TxKind::ReclaimCharter { charter: child })
+        .unwrap();
+    let fees = plus(reclaim_root.tx.fee, reclaim_child.tx.fee);
+    let out = chain
+        .pulse(vec![reclaim_root.clone(), reclaim_child.clone()])
+        .unwrap();
+    assert_success(&out, &reclaim_root);
+    assert_success(&out, &reclaim_child);
+    assert_eq!(
+        chain.balance("principal", &usd()),
+        minus(plus(principal_before, units(730)), fees)
+    );
+    // A live charter cannot be reclaimed.
+    assert!(chain.state.objects[&allotment].is_tombstone());
 }
 
 #[test]

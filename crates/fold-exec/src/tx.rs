@@ -152,6 +152,13 @@ pub enum TxKind {
         /// The charter.
         charter: ObjectId,
     },
+    /// After a charter is revoked or expired (or an ancestor is revoked),
+    /// its principal or root principal returns what is left in its
+    /// allotments to the root principal, whose funds they were.
+    ReclaimCharter {
+        /// The charter.
+        charter: ObjectId,
+    },
     /// Creates a bounded total split into allotments.
     CreateBounded {
         /// Label.
@@ -273,7 +280,9 @@ impl Transaction {
             | TxKind::Challenge { .. }
             | TxKind::Rule { .. }
             | TxKind::WithdrawBond { .. } => Some(well_known::assurance_domain()),
-            TxKind::RevokeCharter { charter } => Some(object_domain("charter", charter)),
+            TxKind::RevokeCharter { charter } | TxKind::ReclaimCharter { charter } => {
+                Some(object_domain("charter", charter))
+            }
             TxKind::Rebalance { bounded, .. } => Some(object_domain("bounded", bounded)),
             TxKind::RevealBatch { market, .. } | TxKind::ClearBatch { market, .. } => {
                 Some(object_domain("market", market))

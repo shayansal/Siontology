@@ -103,9 +103,32 @@ impl PulseOutput {
     }
 }
 
-/// The Merkle leaf for one transaction's effects.
+/// The outcome code committed for a transaction: 0 success, 1 failed,
+/// 2 rejected. The human-readable reason is reported but not committed, so
+/// independent implementations agree on receipts without agreeing on prose.
+pub fn status_code(status: &ExecStatus) -> u8 {
+    match status {
+        ExecStatus::Success => 0,
+        ExecStatus::Failed(_) => 1,
+        ExecStatus::Rejected(_) => 2,
+    }
+}
+
+/// The Merkle leaf for one transaction's effects: every field of the
+/// effects, with the status reduced to its [`status_code`].
 pub fn effects_leaf(effects: &TxEffects) -> Hash32 {
-    merkle::leaf_hash(&encode(effects))
+    merkle::leaf_hash(&encode(&(
+        effects.digest,
+        effects.sender,
+        effects.class,
+        status_code(&effects.status),
+        effects.fee,
+        &effects.created,
+        &effects.mutated,
+        &effects.consumed,
+        &effects.events,
+        &effects.deferred,
+    )))
 }
 
 /// The witness for one chunk: the touched objects as they were before the
