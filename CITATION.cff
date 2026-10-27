@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use Siontology in your work, please cite it as below."
+type: software
+title: Siontology
+abstract: >-
+  The reference implementation of a neo-blockchain, a network whose product
+  is verified knowledge rather than ordered transactions. It runs as a
+  devnet: owned transactions finalize with one committee certificate,
+  contended ones through consensus, two independent proof stacks check
+  every Pulse, and a light client verifies certificates, receipts, state
+  and data availability from a pinned genesis.
+authors:
+  - name: ColdAI
+version: 0.1.0
+license:
+  - Apache-2.0
+  - MIT
+repository-code: "https://github.com/ColdAI-org/siontology"
+url: "https://siontology.org"
+keywords:
+  - neo-blockchain
+  - consensus
+  - light client
+  - post-quantum cryptography
+  - data availability
+  - mechanism design

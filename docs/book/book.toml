@@ -1,0 +1,23 @@
+[book]
+title = "Siontology"
+description = "Documentation for Siontology, an open-source neo-blockchain: a network whose product is verified knowledge."
+authors = ["ColdAI"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+# A chapter listed in SUMMARY.md must exist; never create empty ones.
+create-missing = false
+
+[output.html]
+site-url = "/docs/"
+git-repository-url = "https://github.com/ColdAI-org/siontology"
+edit-url-template = "https://github.com/ColdAI-org/siontology/edit/main/docs/book/{path}"
+additional-css = ["theme/custom.css"]
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = false
+
+[output.html.search]
+enable = true
