@@ -35,7 +35,7 @@ pub use auth::{
     InsecureSimVerifier, SignatureVerifier,
 };
 pub use beacon::{Beacon, BeaconOutput, HashChain};
-pub use committee::{capture_probability, sample_committee, Committee};
+pub use committee::{capture_probability, resample_committee, sample_committee, Committee};
 pub use core::{
     item_hash, Action, CommittedSubDag, Core, CoreConfig, Event, LeaderSchedule, TimerKind,
 };

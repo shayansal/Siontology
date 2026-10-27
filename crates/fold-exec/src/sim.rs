@@ -14,13 +14,20 @@ use fold_core::ids::{AccountId, AssetId, Pulse};
 use fold_core::Amount;
 
 use crate::error::ExecError;
-use crate::genesis::{genesis, GenesisAccount, GenesisSpec};
+use crate::genesis::{genesis, named_validators, GenesisAccount, GenesisSpec};
 use crate::object::{ObjectData, ObjectRef};
 use crate::pulse::{execute_pulse_traced, ChunkTrace, PulseInput, PulseOutput};
 use crate::state::{ChainConfig, State};
 use crate::stateless::replay_chunk;
 use crate::tx::{SignedTransaction, TxKind};
+use crate::validators::{ForcedParams, ValidatorParams};
 use crate::wallet::Wallet;
+
+/// Genesis validators in simulations.
+pub const SIM_VALIDATORS: usize = 4;
+
+/// Each simulated genesis validator's stake, in USD.
+pub const SIM_STAKE: u64 = 100_000;
 
 /// One executed Pulse.
 #[derive(Clone, Debug)]
@@ -49,6 +56,8 @@ pub struct Chain {
     pub replay: bool,
     /// Every executed Pulse.
     pub history: Vec<PulseRecord>,
+    /// The genesis validators' keys, in genesis order.
+    pub validator_keys: Vec<fold_crypto::DualKeypair>,
 }
 
 /// A deterministic beacon for simulations.
@@ -61,6 +70,25 @@ impl Chain {
     /// `coins` coins (so an account can send several transactions per
     /// Pulse). A faucet account holds ten million USD.
     pub fn new(names: &[&str], usd: u64, coins: u32) -> Chain {
+        Self::with_params(
+            names,
+            usd,
+            coins,
+            ValidatorParams::devnet(),
+            ForcedParams::devnet(),
+        )
+    }
+
+    /// Like [`Chain::new`], with these validator and forced-inclusion
+    /// parameters. The [`SIM_VALIDATORS`] genesis validators are operated by
+    /// the faucet account.
+    pub fn with_params(
+        names: &[&str],
+        usd: u64,
+        coins: u32,
+        validator_params: ValidatorParams,
+        forced: ForcedParams,
+    ) -> Chain {
         let mut wallets = BTreeMap::new();
         let faucet = Wallet::named(FAUCET);
         let mut accounts = vec![GenesisAccount {
@@ -85,10 +113,21 @@ impl Chain {
             });
             wallets.insert((*name).to_string(), wallet);
         }
+        let (validators, validator_keys): (Vec<_>, Vec<_>) = named_validators(
+            "fold-sim",
+            SIM_VALIDATORS,
+            Amount::units(SIM_STAKE),
+            faucet.id,
+        )
+        .into_iter()
+        .unzip();
         let spec = GenesisSpec {
             config: ChainConfig::devnet(Some(faucet.id)),
             accounts,
             atoms: Vec::new(),
+            validators,
+            validator_params,
+            forced,
         };
         let state = genesis(&spec).expect("simulation genesis is valid");
         Chain {
@@ -98,6 +137,7 @@ impl Chain {
             chunk_size: 3,
             replay: true,
             history: Vec::new(),
+            validator_keys,
         }
     }
 
@@ -158,12 +198,23 @@ impl Chain {
         owned: Vec<SignedTransaction>,
         contended: Vec<SignedTransaction>,
     ) -> Result<PulseOutput, ExecError> {
+        self.pulse_forced(owned, contended, Vec::new())
+    }
+
+    /// Executes one Pulse that also posts `forced` intents.
+    pub fn pulse_forced(
+        &mut self,
+        owned: Vec<SignedTransaction>,
+        contended: Vec<SignedTransaction>,
+        forced: Vec<SignedTransaction>,
+    ) -> Result<PulseOutput, ExecError> {
         let pulse = self.state.pulse.next();
         let input = PulseInput {
             pulse,
             beacon: sim_beacon(pulse),
             owned,
             contended,
+            forced,
         };
         let (output, traces) =
             execute_pulse_traced(&mut self.state, &input, true, self.chunk_size)?;

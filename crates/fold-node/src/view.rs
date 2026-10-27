@@ -56,9 +56,10 @@ pub enum Query {
     World(Pulse),
     /// The genesis specification and its digest.
     Genesis,
-    /// Forced-inclusion obligations: pending, overdue and recently resolved
-    /// intents.
+    /// Forced-inclusion obligations: pending and overdue intents.
     Forced,
+    /// The proof linking epoch `e − 1` to epoch `e` (for light clients).
+    Epoch(u64),
 }
 
 /// Chain status.
@@ -72,8 +73,16 @@ pub struct StatusView {
     pub chain: Hash32,
     /// The answering validator.
     pub validator: ValidatorId,
-    /// Consensus epoch.
+    /// The epoch of the validator set (committees change at its boundaries).
     pub epoch: u64,
+    /// The last Pulse of the epoch.
+    pub epoch_end: Pulse,
+    /// The consensus session (a new DAG per epoch and per restart).
+    pub session: u64,
+    /// Validators in the active set.
+    pub active_validators: usize,
+    /// Whether the answering validator is in the active set.
+    pub active: bool,
     /// Last executed Pulse.
     pub pulse: Pulse,
     /// Last Pulse with a complete committee certificate.
@@ -100,9 +109,9 @@ pub struct StatusView {
     pub beacon: Hash32,
     /// Last Pulse with a verified World Proof, if proving is on.
     pub proven_pulse: Option<Pulse>,
-    /// Forced intents within their deadline.
+    /// Forced intents waiting for their deadline.
     pub forced_pending: u32,
-    /// Forced intents past their deadline (censorship).
+    /// Forced intents that missed a deadline (censorship).
     pub forced_overdue: u32,
 }
 

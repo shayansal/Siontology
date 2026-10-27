@@ -34,6 +34,10 @@ forbidden = [
     (r"\.escrow\s*\(|OrderTerms::escrow\b", "OrderTerms::escrow"),
     (r"\.clearing_batch\s*\(|Market::clearing_batch\b", "Market::clearing_batch"),
     (r"\.batch_index\s*\(|Market::batch_index\b", "Market::batch_index"),
+    (r"\.offender\s*\(|Equivocation::offender\b", "Equivocation::offender"),
+    (r"\.(lane_members|lane_committee|lane_committees|consensus_committee|epoch_end|rotation)\s*\(|ValidatorSet::\w+\s*\(",
+     "ValidatorSet methods"),
+    (r"\bposted_intents\b", "fold_exec::pulse::posted_intents"),
 ]
 
 # The fold_exec::pulse items the library may use: type definitions only

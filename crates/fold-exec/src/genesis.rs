@@ -7,16 +7,22 @@ use fold_assurance::atom::standard;
 use fold_assurance::{Atom, Registry};
 use fold_core::encode::encode;
 use fold_core::hash::{hash_domain, Hash32};
-use fold_core::ids::{AccountId, AssetId, ObjectId, Pulse, Version};
+use fold_core::ids::{AccountId, AssetId, ObjectId, Pulse, ValidatorId, Version};
 use fold_core::Amount;
-use fold_crypto::AuthPolicy;
+use fold_crypto::{AuthPolicy, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::account::AccountState;
 use crate::assurance::AssuranceDomain;
 use crate::error::ExecError;
-use crate::object::{well_known, Coin, Object, ObjectData, Owner, Schedule, Treasury};
+use crate::object::{
+    well_known, Coin, Object, ObjectData, Owner, Schedule, ScheduledEvent, Treasury,
+};
 use crate::state::{ChainConfig, State};
+use crate::validators::{
+    weight, ForcedObligations, ForcedParams, ValidatorParams, ValidatorRecord, ValidatorSet,
+    ValidatorStatus,
+};
 
 /// An account that exists at genesis.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -34,6 +40,24 @@ impl GenesisAccount {
     }
 }
 
+/// A validator in the genesis active set. Its stake is minted at genesis.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct GenesisValidator {
+    /// Its identifier: the hash of its keys, or for a devnet that signs with
+    /// the insecure simulation scheme, its simulation identity.
+    pub id: ValidatorId,
+    /// ML-DSA-44 public key.
+    pub lattice: PublicKey,
+    /// SLH-DSA public key.
+    pub hash: PublicKey,
+    /// Its operator.
+    pub operator: AccountId,
+    /// Stake in USD.
+    pub stake: Amount,
+    /// Tip of its beacon hash chain.
+    pub beacon_tip: Hash32,
+}
+
 /// Everything genesis depends on.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct GenesisSpec {
@@ -44,6 +68,12 @@ pub struct GenesisSpec {
     /// Atoms registered at genesis beyond the standard set (governance-set
     /// attack costs live here).
     pub atoms: Vec<Atom>,
+    /// The validators of the first epoch.
+    pub validators: Vec<GenesisValidator>,
+    /// Stake, epoch and committee parameters.
+    pub validator_params: ValidatorParams,
+    /// Forced-inclusion parameters.
+    pub forced: ForcedParams,
 }
 
 impl GenesisSpec {
@@ -94,13 +124,6 @@ pub fn genesis(spec: &GenesisSpec) -> Result<State, ExecError> {
             deposits: BTreeMap::new(),
         })),
     });
-    state.put_object(Object {
-        id: well_known::schedule(),
-        version: Version(0),
-        owner: Owner::Shared(well_known::schedule_domain()),
-        data: ObjectData::Schedule(Schedule::default()),
-    });
-
     let mut minted: BTreeMap<AssetId, Amount> = BTreeMap::new();
     let mut seen = BTreeMap::new();
     for account in &spec.accounts {
@@ -147,6 +170,86 @@ pub fn genesis(spec: &GenesisSpec) -> Result<State, ExecError> {
             ));
         }
     }
+    // The first epoch's validators, their stake minted here; the first
+    // epoch's committees are sampled with the genesis digest.
+    spec.validator_params.check().map_err(ExecError::Invalid)?;
+    if spec.validators.is_empty() {
+        return Err(ExecError::Invalid("genesis needs a validator".into()));
+    }
+    if spec.forced.window == 0 {
+        return Err(ExecError::Invalid(
+            "the forced-inclusion window must be positive".into(),
+        ));
+    }
+    let mut validators = BTreeMap::new();
+    for validator in &spec.validators {
+        if validator.stake == Amount::ZERO {
+            return Err(ExecError::Invalid("a genesis validator needs stake".into()));
+        }
+        let entry = minted
+            .entry(spec.validator_params.stake_asset)
+            .or_insert(Amount::ZERO);
+        *entry = entry.checked_add(validator.stake)?;
+        let record = ValidatorRecord {
+            id: validator.id,
+            lattice: validator.lattice.clone(),
+            hash: validator.hash.clone(),
+            operator: validator.operator,
+            stake: validator.stake,
+            status: ValidatorStatus::Active,
+            beacon_tip: validator.beacon_tip,
+            rewards: Amount::ZERO,
+            registered_at: Pulse(0),
+        };
+        if validators.insert(validator.id, record).is_some() {
+            return Err(ExecError::Invalid(format!(
+                "genesis validator {} listed twice",
+                validator.id.short()
+            )));
+        }
+    }
+    let mut active: Vec<(ValidatorId, u64)> = validators
+        .values()
+        .map(|r| (r.id, weight(r.stake)))
+        .collect();
+    active.sort();
+    let set = ValidatorSet {
+        params: spec.validator_params.clone(),
+        epoch: 0,
+        epoch_start: Pulse(1),
+        seed: spec.digest(),
+        active,
+        validators,
+        rotations: BTreeMap::new(),
+        treasury_mark: Amount::ZERO,
+    };
+    let mut schedule = Schedule::default();
+    schedule
+        .due
+        .entry(set.epoch_end().0)
+        .or_default()
+        .insert(ScheduledEvent::EpochEnd);
+    state.put_object(Object {
+        id: well_known::schedule(),
+        version: Version(0),
+        owner: Owner::Shared(well_known::schedule_domain()),
+        data: ObjectData::Schedule(schedule),
+    });
+    state.put_object(Object {
+        id: well_known::validators(),
+        version: Version(0),
+        owner: Owner::Shared(well_known::validators_domain()),
+        data: ObjectData::Validators(Box::new(set)),
+    });
+    state.put_object(Object {
+        id: well_known::forced(),
+        version: Version(0),
+        owner: Owner::Shared(well_known::forced_domain()),
+        data: ObjectData::Forced(Box::new(ForcedObligations {
+            params: spec.forced.clone(),
+            pending: BTreeMap::new(),
+        })),
+    });
     state.put_object(Object {
         id: well_known::treasury(),
         version: Version(0),
@@ -157,4 +260,35 @@ pub fn genesis(spec: &GenesisSpec) -> Result<State, ExecError> {
         }),
     });
     Ok(state)
+}
+
+/// Deterministic genesis validators for simulations and devnets: `count`
+/// validators with keys derived from `name`, each staking `stake` USD and
+/// operated by `operator`. Returns them with their keypairs.
+pub fn named_validators(
+    name: &str,
+    count: usize,
+    stake: Amount,
+    operator: AccountId,
+) -> Vec<(GenesisValidator, fold_crypto::DualKeypair)> {
+    (0..count)
+        .map(|index| {
+            let seed = hash_domain(
+                "fold/genesis/validator-seed",
+                format!("{name}/{index}").as_bytes(),
+            );
+            let keys =
+                fold_crypto::DualKeypair::from_seed(&seed.0, fold_crypto::Scheme::SlhDsaSha2_128f);
+            let (lattice, hash) = (keys.lattice.public().clone(), keys.hash.public().clone());
+            let validator = GenesisValidator {
+                id: fold_crypto::validator_id(&lattice, &hash),
+                lattice,
+                hash,
+                operator,
+                stake,
+                beacon_tip: hash_domain("fold/genesis/beacon-tip", &seed.0),
+            };
+            (validator, keys)
+        })
+        .collect()
 }

@@ -50,20 +50,19 @@ impl fmt::Debug for ValidatorKeys {
 
 impl ValidatorKeys {
     /// Deterministic devnet keys for validator `index` of chain `chain`.
-    pub fn devnet(chain: &str, index: usize, mode: SignatureMode) -> Self {
+    pub fn devnet(chain: &str, index: usize) -> Self {
         let seed = hash_domain(
             "fold/devnet/validator-seed",
             format!("{chain}/{index}").as_bytes(),
         );
         let keys = DualKeypair::from_seed(&seed.0, Scheme::SlhDsaSha2_128f);
-        let sim =
-            InsecureSimAuthenticator::from_secret(hash_domain("fold/devnet/sim-secret", &seed.0).0);
-        let id = match mode {
-            SignatureMode::DualPostQuantum => {
-                validator_id(keys.lattice.public(), keys.hash.public())
-            }
-            SignatureMode::InsecureFast => sim.validator(),
-        };
+        // The identifier is always the hash of the public keys, as the state
+        // registers it; only the signatures differ between the modes.
+        let id = validator_id(keys.lattice.public(), keys.hash.public());
+        let sim = InsecureSimAuthenticator::with_identity(
+            id,
+            hash_domain("fold/devnet/sim-secret", &seed.0).0,
+        );
         ValidatorKeys {
             id,
             keys: Arc::new(keys),
@@ -76,6 +75,18 @@ impl ValidatorKeys {
         (
             self.keys.lattice.public().clone(),
             self.keys.hash.public().clone(),
+        )
+    }
+
+    /// A dual post-quantum validator signature over `message`, whatever the
+    /// devnet's signature mode: proofs of key possession and equivocation
+    /// evidence are checked by the state against the registered keys.
+    pub fn sign_dual(&self, message: &[u8]) -> Vec<u8> {
+        encode(
+            &self
+                .keys
+                .sign_deterministic(VALIDATOR_DOMAIN, message)
+                .expect("signing a digest cannot fail"),
         )
     }
 
@@ -206,6 +217,45 @@ impl NodeVerifier {
     }
 }
 
+impl NodeVerifier {
+    /// Adds the keys of every validator the state registers (dual
+    /// post-quantum mode; the simulation scheme knows every devnet key from
+    /// the start). Identifiers that do not derive from their keys are
+    /// skipped.
+    pub fn extend_from(&mut self, set: &fold_exec::validators::ValidatorSet) {
+        if self.sim.is_some() {
+            return;
+        }
+        for record in set.validators.values() {
+            if !self.set.keys.contains_key(&record.id)
+                && validator_id(&record.lattice, &record.hash) == record.id
+            {
+                self.set.insert(record.lattice.clone(), record.hash.clone());
+            }
+        }
+    }
+
+    /// Adds keys from a key set (the committee view's).
+    pub fn extend_keys(&mut self, keys: &ValidatorSet) {
+        if self.sim.is_some() {
+            return;
+        }
+        for (id, (lattice, hash)) in &keys.keys {
+            if !self.set.keys.contains_key(id) && validator_id(lattice, hash) == *id {
+                self.set.insert(lattice.clone(), hash.clone());
+            }
+        }
+    }
+
+    /// Whether signatures by `validator` can be checked.
+    pub fn knows(&self, validator: &ValidatorId) -> bool {
+        match &self.sim {
+            Some(sim) => sim.knows(validator),
+            None => self.set.keys.contains_key(validator),
+        }
+    }
+}
+
 impl SignatureVerifier for NodeVerifier {
     fn verify(&self, validator: &ValidatorId, message: &[u8], signature: &[u8]) -> bool {
         if let Some(sim) = &self.sim {
@@ -239,9 +289,7 @@ mod tests {
 
     #[test]
     fn dual_signatures_need_both_halves() {
-        let keys: Vec<ValidatorKeys> = (0..2)
-            .map(|i| ValidatorKeys::devnet("test", i, SignatureMode::DualPostQuantum))
-            .collect();
+        let keys: Vec<ValidatorKeys> = (0..2).map(|i| ValidatorKeys::devnet("test", i)).collect();
         let verifier = NodeVerifier::new(&keys, SignatureMode::DualPostQuantum);
         let auth = keys[0].authenticator(SignatureMode::DualPostQuantum);
         let message = [9u8; 32];

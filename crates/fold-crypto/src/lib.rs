@@ -15,6 +15,8 @@
 //! - [`kem`]: ML-KEM-768 (FIPS 203) key encapsulation and single-recipient
 //!   sealed envelopes (ML-KEM + ChaCha20-Poly1305), used for viewing keys and
 //!   Travel Rule payloads.
+//! - [`validator`]: validator identifiers and signatures (the same dual
+//!   scheme under the validator domain).
 //! - [`shamir`] and [`committee`]: sealing to a committee with t-of-n Shamir
 //!   sharing of the payload key, used for sealed intent batches. Decryption
 //!   needs `t` members, so the committee threshold is itself an atom in any
@@ -28,6 +30,7 @@ pub mod keys;
 pub mod policy;
 pub mod scheme;
 pub mod shamir;
+pub mod validator;
 
 pub use committee::{CommitteeEnvelope, KeyShare};
 pub use dual::{DualKeypair, DualSignature};
@@ -36,3 +39,4 @@ pub use kem::{KemKeypair, KemPublicKey, SealedEnvelope};
 pub use keys::{verify, Keypair, PublicKey, Signature};
 pub use policy::{AuthPolicy, Authorization, KeySignature};
 pub use scheme::{Family, Scheme};
+pub use validator::{validator_id, verify_validator, VALIDATOR_DOMAIN};

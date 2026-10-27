@@ -157,7 +157,7 @@ impl Ledger for Devnet {
 
     fn describe(&self) -> String {
         format!(
-            "in-process devnet ({} validators)",
+            "in-process devnet ({} validator threads)",
             self.shared.validators.len()
         )
     }
@@ -257,6 +257,7 @@ impl Ledger for HttpLedger {
             Query::World(n) => self.get(&format!("/v1/pulses/{n}/world")),
             Query::Genesis => self.get("/v1/genesis"),
             Query::Forced => self.get("/v1/forced"),
+            Query::Epoch(epoch) => self.get(&format!("/v1/epochs/{epoch}")),
         }
     }
 

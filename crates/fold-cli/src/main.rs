@@ -38,9 +38,25 @@ struct Cli {
 
 #[derive(Args, Clone)]
 struct DevnetArgs {
-    /// Validators.
+    /// Genesis validators (the first active set).
     #[arg(long, default_value_t = 4)]
     validators: usize,
+    /// Standby validators: they run from the start, follow the chain without
+    /// a seat, and join the active set when their operator stakes for them
+    /// (`operator-<index>`).
+    #[arg(long, default_value_t = 0)]
+    standby: usize,
+    /// Pulses per epoch: committees change at epoch boundaries (0: one epoch
+    /// that never ends).
+    #[arg(long, default_value_t = 0)]
+    epoch_length: u64,
+    /// Pulses between leaving the active set and withdrawing stake.
+    #[arg(long, default_value_t = 20)]
+    unbonding: u64,
+    /// Pulses a shard has to execute a forced intent before its committee is
+    /// replaced.
+    #[arg(long, default_value_t = 8)]
+    forced_window: u64,
     /// Lane shards.
     #[arg(long, default_value_t = 2)]
     shards: u16,
@@ -81,6 +97,10 @@ impl DevnetArgs {
     fn config(&self) -> DevnetConfig {
         DevnetConfig {
             validators: self.validators,
+            standby: self.standby,
+            epoch_length: self.epoch_length,
+            unbonding: self.unbonding,
+            forced_window: self.forced_window,
             shards: self.shards,
             shard_seats: self.seats,
             rounds_per_pulse: self.rounds_per_pulse,
@@ -648,15 +668,38 @@ fn run(cli: Cli) -> Result<(), CliError> {
         return Ok(());
     }
     if let Command::Demo { name, local: true } = &cli.command {
-        let devnet =
-            Devnet::start(DevnetConfig::default()).map_err(|e| CliError::Node(e.to_string()))?;
-        let result = {
-            let mut session = Session::open(&devnet)?;
-            let mut out = Narrator::printing();
-            demos::run(name, &mut session, &mut out)
+        // Each demo runs on the devnet it needs; consecutive demos that need
+        // the same one share it (the staking demo needs epochs that end).
+        let names: Vec<&str> = if name == "all" {
+            demos::ALL.to_vec()
+        } else {
+            vec![name.as_str()]
         };
-        devnet.shutdown();
-        return result;
+        let mut out = Narrator::printing();
+        let mut index = 0;
+        while index < names.len() {
+            let staking = demos::needs_epochs(names[index]);
+            let devnet = Devnet::start(demos::local_config(names[index]))
+                .map_err(|e| CliError::Node(e.to_string()))?;
+            let result = {
+                let mut session = Session::open(&devnet)?;
+                let mut result = Ok(());
+                while index < names.len() && demos::needs_epochs(names[index]) == staking {
+                    if index > 0 {
+                        out.say("");
+                    }
+                    result = demos::run(names[index], &mut session, &mut out);
+                    index += 1;
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                result
+            };
+            devnet.shutdown();
+            result?;
+        }
+        return Ok(());
     }
     let http = HttpLedger::new(&cli.node);
     let ledger: &dyn Ledger = &http;

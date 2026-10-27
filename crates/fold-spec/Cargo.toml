@@ -11,6 +11,7 @@ fold-core.workspace = true
 fold-crypto.workspace = true
 fold-assurance.workspace = true
 fold-clearing.workspace = true
+fold-consensus.workspace = true
 fold-exec.workspace = true
 borsh.workspace = true
 thiserror.workspace = true

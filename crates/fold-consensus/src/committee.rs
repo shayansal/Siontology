@@ -171,29 +171,24 @@ impl Committee {
     }
 }
 
-/// Samples a shard committee of `seats` validators from `validators`
-/// (identity, stake), stake-weighted and without replacement, using the
-/// beacon value. Each sampled validator gets one seat (weight one), so the
-/// committee's quorum math counts seats, and the chance that a sampled
-/// committee is captured is given by [`capture_probability`].
-pub fn sample_committee(
-    validators: &[(ValidatorId, u64)],
-    seats: usize,
+/// Draws `count` validators from `pool` (identity, stake), stake-weighted and
+/// without replacement, from the hash of `domain`, the beacon, the epoch,
+/// the shard and the draw number.
+fn draw(
+    mut pool: Vec<(ValidatorId, u64)>,
+    count: usize,
+    domain: &str,
     beacon: &Hash32,
     epoch: Epoch,
     shard: ShardId,
-) -> Result<Committee, ConsensusError> {
-    let mut pool: Vec<(ValidatorId, u64)> = validators
-        .iter()
-        .copied()
-        .filter(|(_, stake)| *stake > 0)
-        .collect();
+) -> Vec<ValidatorId> {
+    pool.retain(|(_, stake)| *stake > 0);
     pool.sort();
     let mut chosen = Vec::new();
-    for draw in 0..seats.min(pool.len()) {
+    for draw in 0..count.min(pool.len()) {
         let remaining: u128 = pool.iter().map(|(_, s)| u128::from(*s)).sum();
         let digest = hash_parts(
-            "fold/committee/sample",
+            domain,
             &[
                 &beacon.0,
                 &epoch.0.to_be_bytes(),
@@ -213,8 +208,76 @@ pub fn sample_committee(
             }
             target -= stake;
         }
-        chosen.push((pool.remove(pick).0, 1));
+        chosen.push(pool.remove(pick).0);
     }
+    chosen
+}
+
+/// Samples a shard committee of `seats` validators from `validators`
+/// (identity, stake), stake-weighted and without replacement, using the
+/// beacon value. Each sampled validator gets one seat (weight one), so the
+/// committee's quorum math counts seats, and the chance that a sampled
+/// committee is captured is given by [`capture_probability`].
+pub fn sample_committee(
+    validators: &[(ValidatorId, u64)],
+    seats: usize,
+    beacon: &Hash32,
+    epoch: Epoch,
+    shard: ShardId,
+) -> Result<Committee, ConsensusError> {
+    let mut chosen: Vec<(ValidatorId, u64)> = draw(
+        validators.to_vec(),
+        seats,
+        "fold/committee/sample",
+        beacon,
+        epoch,
+        shard,
+    )
+    .into_iter()
+    .map(|v| (v, 1))
+    .collect();
+    chosen.sort();
+    Committee::new(epoch, shard, chosen)
+}
+
+/// Samples a replacement for a shard committee that failed (a forced
+/// intent passed its deadline). Seats are drawn, stake-weighted, first from
+/// validators outside `previous` and, only if too few remain, from
+/// `previous`. Censorship cannot be attributed to particular members, but a
+/// committee captured by censors is replaced by as many fresh members as the
+/// validator set allows: an adversary that captured it has, by doing so,
+/// spent its presence there and is rarer outside it.
+pub fn resample_committee(
+    validators: &[(ValidatorId, u64)],
+    seats: usize,
+    beacon: &Hash32,
+    epoch: Epoch,
+    shard: ShardId,
+    previous: &[ValidatorId],
+) -> Result<Committee, ConsensusError> {
+    let (inside, outside): (Vec<_>, Vec<_>) = validators
+        .iter()
+        .copied()
+        .partition(|(v, _)| previous.contains(v));
+    let mut chosen = draw(
+        outside,
+        seats,
+        "fold/committee/resample-outside",
+        beacon,
+        epoch,
+        shard,
+    );
+    if chosen.len() < seats {
+        chosen.extend(draw(
+            inside,
+            seats - chosen.len(),
+            "fold/committee/resample-inside",
+            beacon,
+            epoch,
+            shard,
+        ));
+    }
+    let mut chosen: Vec<(ValidatorId, u64)> = chosen.into_iter().map(|v| (v, 1)).collect();
     chosen.sort();
     Committee::new(epoch, shard, chosen)
 }
@@ -263,6 +326,55 @@ mod tests {
         (0..n)
             .map(|i| ValidatorId::derive(&(i as u64).to_be_bytes()))
             .collect()
+    }
+
+    #[test]
+    fn resampling_replaces_a_failed_committee_with_fresh_members() {
+        let validators: Vec<(ValidatorId, u64)> = ids(7).into_iter().map(|v| (v, 10)).collect();
+        let beacon = Hash32([9; 32]);
+        let first = sample_committee(&validators, 4, &beacon, Epoch(2), ShardId(1)).unwrap();
+        let previous: Vec<ValidatorId> = first.members().iter().map(|(v, _)| *v).collect();
+        let next = resample_committee(
+            &validators,
+            4,
+            &Hash32([10; 32]),
+            Epoch(2),
+            ShardId(1),
+            &previous,
+        )
+        .unwrap();
+        let kept: Vec<ValidatorId> = next
+            .members()
+            .iter()
+            .map(|(v, _)| *v)
+            .filter(|v| previous.contains(v))
+            .collect();
+        assert_eq!(next.members().len(), 4);
+        assert_eq!(
+            kept.len(),
+            1,
+            "all three outsiders join, one seat is refilled from inside"
+        );
+        assert_eq!(
+            next,
+            resample_committee(
+                &validators,
+                4,
+                &Hash32([10; 32]),
+                Epoch(2),
+                ShardId(1),
+                &previous
+            )
+            .unwrap(),
+            "resampling is deterministic"
+        );
+        // With no one outside the committee, it stays as it was.
+        let everyone =
+            sample_committee(&validators[..4], 4, &beacon, Epoch(2), ShardId(1)).unwrap();
+        let all: Vec<ValidatorId> = everyone.members().iter().map(|(v, _)| *v).collect();
+        let same =
+            resample_committee(&validators[..4], 4, &beacon, Epoch(2), ShardId(1), &all).unwrap();
+        assert_eq!(same.members(), everyone.members());
     }
 
     #[test]

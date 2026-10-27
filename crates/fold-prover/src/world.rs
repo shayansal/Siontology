@@ -15,22 +15,29 @@
 //! - **Certificates**: every executed transaction carried a lane certificate
 //!   from its shard's committee locking its owned inputs
 //!   ([`verify_certificates`]), so nothing certified final was overtaken.
+//!   The committees come from the validator set in force when the Pulse
+//!   began, which the proof carries with a state proof against its
+//!   starting state root: every committee change follows the staking rules.
 
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use fold_consensus::lanes::canonical_inputs;
 use fold_consensus::{
-    verify_lane_certificate, Committee, LaneCertificate, ObjectRef as LaneRef, SignatureVerifier,
+    verify_lane_certificate, LaneCertificate, ObjectRef as LaneRef, SignatureVerifier,
 };
 use fold_core::encode::encode;
 use fold_core::hash::{hash_parts, Hash32};
 use fold_core::ids::{Pulse, ShardId, TxDigest};
 use fold_core::merkle;
+use fold_core::smt::{verify_proof, SmtProof};
 use fold_da::{DaHeader, ExtendedSquare};
+use fold_exec::object::well_known;
 use fold_exec::pulse::{
     chain_effects_leaf, effects_leaf, steps_digest_of, ChunkStatement, ChunkTrace, PulseOutput,
 };
+use fold_exec::validators::ValidatorSet;
+use fold_exec::{Object, ObjectData};
 use fold_exec::{Transaction, WorldCommitment};
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +57,9 @@ pub struct PulseData {
     pub beacon: Hash32,
     /// Executed transactions, in execution order.
     pub transactions: Vec<Transaction>,
+    /// Forced intents posted in the Pulse, in posting order (not executed:
+    /// each became an obligation of its sender's shard).
+    pub forced: Vec<Transaction>,
 }
 
 impl PulseData {
@@ -69,6 +79,50 @@ impl PulseData {
     /// Digests of the transactions, in order.
     pub fn digests(&self) -> Vec<TxDigest> {
         self.transactions.iter().map(Transaction::digest).collect()
+    }
+
+    /// Digests of the posted forced intents, in order.
+    pub fn forced_digests(&self) -> Vec<TxDigest> {
+        self.forced.iter().map(Transaction::digest).collect()
+    }
+}
+
+/// The validator set in force when a Pulse began, with its state proof.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ValidatorsWitness {
+    /// The validator-set object.
+    pub object: Object,
+    /// Its proof against the Pulse's starting state root.
+    pub proof: SmtProof,
+}
+
+impl ValidatorsWitness {
+    /// The witness for the validator set of `state` (taken before the
+    /// Pulse executes).
+    pub fn of(state: &fold_exec::State) -> Option<ValidatorsWitness> {
+        let id = well_known::validators();
+        Some(ValidatorsWitness {
+            object: state.objects.get(&id)?.clone(),
+            proof: state.tree.snapshot().prove(&id.0),
+        })
+    }
+
+    /// The validator set, checked against `state_root`.
+    pub fn verify(&self, state_root: &Hash32) -> Result<ValidatorSet, ProveError> {
+        let id = well_known::validators();
+        if self.object.id != id {
+            return Err(ProveError::Chain(
+                "the witness is not the validator set".into(),
+            ));
+        }
+        verify_proof(state_root, &id.0, Some(&self.object.digest()), &self.proof)
+            .map_err(|e| ProveError::Chain(format!("validator set: {e}")))?;
+        match &self.object.data {
+            ObjectData::Validators(set) => Ok((**set).clone()),
+            _ => Err(ProveError::Chain(
+                "the validator-set object holds something else".into(),
+            )),
+        }
     }
 }
 
@@ -101,6 +155,9 @@ pub struct WorldProof {
     pub chunk_sizes: Vec<u32>,
     /// One lane certificate per executed transaction, in execution order.
     pub certificates: Vec<LaneCertificate>,
+    /// The validator set when the Pulse began (the committees that had to
+    /// sign the certificates).
+    pub validators: ValidatorsWitness,
 }
 
 impl WorldProof {
@@ -164,13 +221,14 @@ fn statements_root(statements: &[ChunkStatement]) -> Hash32 {
 
 /// Proves a Pulse with every given stack. `data` is the Pulse's published
 /// data and `certificates` the lane certificates of its transactions, both
-/// in execution order.
+/// in execution order; `validators` is the validator set when it began.
 pub fn prove_pulse(
     output: &PulseOutput,
     traces: &[ChunkTrace],
     stacks: &[&dyn ProofStack],
     data: PulseData,
     certificates: Vec<LaneCertificate>,
+    validators: ValidatorsWitness,
 ) -> Result<WorldProof, ProveError> {
     if stacks.is_empty() {
         return Err(ProveError::Malformed("no proof stacks".into()));
@@ -203,6 +261,7 @@ pub fn prove_pulse(
             .map(|t| t.transactions.len() as u32)
             .collect(),
         certificates,
+        validators,
     };
     check_structure(&proof)?;
     check_data(&proof)?;
@@ -231,11 +290,6 @@ fn check_structure(proof: &WorldProof) -> Result<(), ProveError> {
         if statement.deferred_phase != (i + 1 == statements.len()) {
             return Err(ProveError::Chain(
                 "exactly the last statement is the deferred phase".into(),
-            ));
-        }
-        if statement.deferred_phase && statement.steps != steps_digest_of(&[]) {
-            return Err(ProveError::Chain(
-                "the deferred phase executes no transactions".into(),
             ));
         }
     }
@@ -325,6 +379,13 @@ fn check_data(proof: &WorldProof) -> Result<(), ProveError> {
             "data publishes unexecuted transactions".into(),
         ));
     }
+    // The deferred phase posts exactly the published forced intents.
+    let last = proof.statements.last().expect("checked by check_structure");
+    if steps_digest_of(&data.forced_digests()) != last.steps {
+        return Err(ProveError::Chain(
+            "the deferred phase posted other intents than the data publishes".into(),
+        ));
+    }
     let (_, header) = data.availability()?;
     if header.data_root != proof.data_root || header.k != proof.data_k {
         return Err(ProveError::Chain(
@@ -335,12 +396,16 @@ fn check_data(proof: &WorldProof) -> Result<(), ProveError> {
 }
 
 /// Checks that every executed transaction carried a lane certificate from
-/// its shard's committee covering exactly its owned inputs.
-pub fn verify_certificates<V: SignatureVerifier + ?Sized>(
+/// its shard's committee covering exactly its owned inputs. The committees
+/// are those of the validator set the proof carries, checked against its
+/// starting state root, on chain `chain`; signatures are checked with the
+/// keys the set registers, or with `verifier` if given (a devnet that signs
+/// with the insecure simulation scheme).
+pub fn verify_certificates(
     proof: &WorldProof,
-    committees: &BTreeMap<ShardId, Committee>,
+    chain: Hash32,
     shard_count: u16,
-    verifier: &V,
+    verifier: Option<&dyn SignatureVerifier>,
 ) -> Result<(), ProveError> {
     if shard_count == 0 {
         return Err(ProveError::Chain("the chain has no shards".into()));
@@ -348,6 +413,15 @@ pub fn verify_certificates<V: SignatureVerifier + ?Sized>(
     if proof.certificates.len() != proof.data.transactions.len() {
         return Err(ProveError::Chain("one certificate per transaction".into()));
     }
+    let set = proof.validators.verify(&proof.before.state_root)?;
+    let committees: BTreeMap<ShardId, fold_consensus::Committee> = set
+        .lane_committees(chain, shard_count)
+        .map_err(|e| ProveError::Chain(format!("committees: {e}")))?;
+    let registered = set.verifier();
+    let verifier: &dyn SignatureVerifier = match verifier {
+        Some(verifier) => verifier,
+        None => &registered,
+    };
     for (tx, certificate) in proof.data.transactions.iter().zip(&proof.certificates) {
         let shard = ShardId::for_account(&tx.sender, shard_count);
         let committee = committees
@@ -468,7 +542,7 @@ mod tests {
     use fold_exec::sim::Chain;
     use fold_exec::TxKind;
 
-    fn proven_chain() -> (Chain, WorldProof) {
+    fn proven_chain() -> (Chain, fold_exec::State, WorldProof) {
         let mut chain = Chain::new(&["a", "b", "c"], 1_000, 3);
         chain.chunk_size = 2;
         let (b, c) = (chain.id("b"), chain.id("c"));
@@ -486,32 +560,43 @@ mod tests {
                     .unwrap(),
             );
         }
+        let before = chain.state.clone();
         chain.pulse(txs).unwrap();
         let record = chain.history.last().unwrap().clone();
-        let transactions = record
-            .traces
-            .iter()
-            .flat_map(|t| t.transactions.iter().map(|s| s.tx.clone()))
-            .collect();
-        let data = PulseData {
-            pulse: record.output.pulse,
-            beacon: record.output.beacon,
-            transactions,
-        };
         let proof = prove_pulse(
             &record.output,
             &record.traces,
             &[&ReplayStack],
-            data,
+            data_of(&record),
             Vec::new(),
+            ValidatorsWitness::of(&before).unwrap(),
         )
         .unwrap();
-        (chain, proof)
+        (chain, before, proof)
+    }
+
+    /// The data a sim Pulse publishes: the transaction chunks' bodies and
+    /// the forced intents the deferred phase posted.
+    fn data_of(record: &fold_exec::sim::PulseRecord) -> PulseData {
+        let bodies = |deferred: bool| -> Vec<Transaction> {
+            record
+                .traces
+                .iter()
+                .filter(|t| t.statement.deferred_phase == deferred)
+                .flat_map(|t| t.transactions.iter().map(|s| s.tx.clone()))
+                .collect()
+        };
+        PulseData {
+            pulse: record.output.pulse,
+            beacon: record.output.beacon,
+            transactions: bodies(false),
+            forced: bodies(true),
+        }
     }
 
     #[test]
     fn world_proofs_verify_and_bind_receipts_and_data() {
-        let (_, proof) = proven_chain();
+        let (_, _, proof) = proven_chain();
         assert_eq!(
             proof.statements.len(),
             3,
@@ -527,7 +612,7 @@ mod tests {
 
     #[test]
     fn tampering_is_detected() {
-        let (_, proof) = proven_chain();
+        let (_, _, proof) = proven_chain();
         let mut forged = proof.clone();
         forged.after.state_root = Hash32::ZERO;
         assert!(verify_world_proof(&forged, &[&ReplayStack]).is_err());
@@ -560,36 +645,97 @@ mod tests {
 
         let mut no_certificates = proof.clone();
         no_certificates.certificates.clear();
-        assert!(verify_certificates(&no_certificates, &BTreeMap::new(), 1, &NoKeys).is_err());
+        assert!(
+            verify_certificates(&no_certificates, Hash32::ZERO, 1, Some(&NoKeys)).is_err(),
+            "every transaction needs a certificate"
+        );
+
+        // The validator set is bound to the state the Pulse started from.
+        assert!(proof.validators.verify(&proof.before.state_root).is_ok());
+        assert!(proof.validators.verify(&proof.after.state_root).is_err());
+        let mut other_set = proof.clone();
+        if let ObjectData::Validators(set) = &mut other_set.validators.object.data {
+            set.active.clear();
+        }
+        assert!(
+            verify_certificates(&other_set, Hash32::ZERO, 1, Some(&NoKeys)).is_err(),
+            "a substituted validator set fails its state proof"
+        );
+    }
+
+    #[test]
+    fn the_deferred_phase_posts_exactly_the_published_intents() {
+        let (mut chain, _, _) = proven_chain();
+        // A transfer the gateway never saw, posted straight to consensus.
+        let c = chain.id("c");
+        let intent = chain
+            .tx(
+                "b",
+                TxKind::Transfer {
+                    asset: AssetId::usd(),
+                    outputs: vec![(c, Amount::units(1))],
+                },
+            )
+            .unwrap();
+        let before = chain.state.clone();
+        chain
+            .pulse_forced(Vec::new(), Vec::new(), vec![intent.clone()])
+            .unwrap();
+        let record = chain.history.last().unwrap().clone();
+        let data = data_of(&record);
+        assert_eq!(data.forced, vec![intent.tx.clone()]);
+        let witness = ValidatorsWitness::of(&before).unwrap();
+        let proof = prove_pulse(
+            &record.output,
+            &record.traces,
+            &[&ReplayStack],
+            data.clone(),
+            Vec::new(),
+            witness.clone(),
+        )
+        .unwrap();
+        assert!(verify_world_proof(&proof, &[&ReplayStack]).is_ok());
+
+        // Hiding the intent from the published data is caught.
+        let mut hidden = data;
+        hidden.forced.clear();
+        assert!(prove_pulse(
+            &record.output,
+            &record.traces,
+            &[&ReplayStack],
+            hidden,
+            Vec::new(),
+            witness,
+        )
+        .is_err());
     }
 
     /// Found by the security review: a forged proof for Pulse u64::MAX made
     /// the structure check overflow instead of failing.
     #[test]
     fn forged_pulse_numbers_fail_cleanly() {
-        let (_, mut proof) = proven_chain();
+        let (_, _, mut proof) = proven_chain();
         proof.before.pulse = Pulse(u64::MAX);
         assert!(verify_world_proof(&proof, &[&ReplayStack]).is_err());
-        let (_, proof) = proven_chain();
-        assert!(verify_certificates(&proof, &BTreeMap::new(), 0, &NoKeys).is_err());
+        let (_, _, proof) = proven_chain();
+        assert!(verify_certificates(&proof, Hash32::ZERO, 0, Some(&NoKeys)).is_err());
     }
 
     #[test]
     fn both_stacks_must_accept_every_leaf() {
         use crate::spec::SpecStack;
-        let (chain, _) = proven_chain();
+        let (chain, before, _) = proven_chain();
         let record = chain.history.last().unwrap().clone();
-        let data = PulseData {
-            pulse: record.output.pulse,
-            beacon: record.output.beacon,
-            transactions: record
-                .traces
-                .iter()
-                .flat_map(|t| t.transactions.iter().map(|s| s.tx.clone()))
-                .collect(),
-        };
         let both: [&dyn ProofStack; 2] = [&ReplayStack, &SpecStack];
-        let proof = prove_pulse(&record.output, &record.traces, &both, data, Vec::new()).unwrap();
+        let proof = prove_pulse(
+            &record.output,
+            &record.traces,
+            &both,
+            data_of(&record),
+            Vec::new(),
+            ValidatorsWitness::of(&before).unwrap(),
+        )
+        .unwrap();
         let report = verify_world_proof(&proof, &both).unwrap();
         assert_eq!(report.stacks, vec!["A".to_string(), "B".to_string()]);
 
@@ -610,7 +756,8 @@ mod tests {
         assert!(verify_world_proof(&bad_b, &[&ReplayStack]).is_ok());
         assert!(verify_world_proof(&bad_b, &both).is_err());
 
-        // The deferred phase executes no transactions.
+        // The deferred phase posts exactly the published forced intents
+        // (none here).
         let mut steps = proof;
         steps.statements.last_mut().unwrap().steps = Hash32::ZERO;
         assert!(verify_world_proof(&steps, &both).is_err());

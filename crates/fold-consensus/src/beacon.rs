@@ -64,6 +64,13 @@ impl HashChain {
         }
         Some(self.values[last - pulse])
     }
+
+    /// The reveal for Pulse `pulse` of a chain registered with the beacon
+    /// when it was collecting Pulse `base + 1` (see [`Beacon::base_of`]): the
+    /// first reveal hashes one step to the tip.
+    pub fn reveal_after(&self, base: Pulse, pulse: Pulse) -> Option<Hash32> {
+        self.reveal_for(Pulse(pulse.0.checked_sub(base.0)?))
+    }
 }
 
 /// The beacon's output for one Pulse.
@@ -83,6 +90,8 @@ pub struct BeaconOutput {
 struct Commitment {
     last_value: Hash32,
     last_pulse: Pulse,
+    /// `last_pulse` at registration: reveals are indexed from it.
+    base: Pulse,
 }
 
 /// The beacon state machine.
@@ -105,15 +114,33 @@ impl Beacon {
         }
     }
 
-    /// Registers a validator's hash-chain tip, effective from the current Pulse.
+    /// Registers a validator's hash-chain tip, effective from the current
+    /// Pulse. Re-registering a participant keeps its commitment.
     pub fn register(&mut self, validator: ValidatorId, tip: Hash32) {
-        self.participants.insert(
-            validator,
-            Commitment {
-                last_value: tip,
-                last_pulse: Pulse(self.pulse.0 - 1),
-            },
-        );
+        let base = Pulse(self.pulse.0 - 1);
+        self.participants.entry(validator).or_insert(Commitment {
+            last_value: tip,
+            last_pulse: base,
+            base,
+        });
+    }
+
+    /// Removes a participant (a validator that left the active set).
+    pub fn deregister(&mut self, validator: &ValidatorId) {
+        self.participants.remove(validator);
+        self.reveals.remove(validator);
+    }
+
+    /// The registered participants.
+    pub fn participants(&self) -> Vec<ValidatorId> {
+        self.participants.keys().copied().collect()
+    }
+
+    /// The Pulse a participant's reveals are indexed from: its reveal for
+    /// Pulse `t` is the one its hash chain gives for `t − base`
+    /// ([`HashChain::reveal_after`]).
+    pub fn base_of(&self, validator: &ValidatorId) -> Option<Pulse> {
+        self.participants.get(validator).map(|c| c.base)
     }
 
     /// The Pulse whose reveals are being collected.
@@ -252,6 +279,45 @@ mod tests {
         );
         let values: std::collections::BTreeSet<Hash32> = outputs.iter().map(|o| o.value).collect();
         assert_eq!(values.len(), 5);
+    }
+
+    #[test]
+    fn late_participants_reveal_from_their_registration() {
+        let early = HashChain::new(hash_domain("seed", b"early"), 50);
+        let late = HashChain::new(hash_domain("seed", b"late"), 50);
+        let mut beacon = Beacon::new(Hash32::ZERO);
+        beacon.register(validator(1), early.tip());
+        for pulse in 1..=5u64 {
+            beacon
+                .submit_reveal(
+                    validator(1),
+                    Pulse(pulse),
+                    early.reveal_for(Pulse(pulse)).unwrap(),
+                )
+                .unwrap();
+            beacon.finalize();
+        }
+        // Joining while Pulse 6 is collected: its first reveal is one step
+        // from its tip.
+        beacon.register(validator(2), late.tip());
+        let base = beacon.base_of(&validator(2)).unwrap();
+        assert_eq!(base, Pulse(5));
+        for pulse in 6..=8u64 {
+            for (v, chain, from) in [(1u8, &early, Pulse(0)), (2, &late, base)] {
+                beacon
+                    .submit_reveal(
+                        validator(v),
+                        Pulse(pulse),
+                        chain.reveal_after(from, Pulse(pulse)).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let output = beacon.finalize();
+            assert_eq!(output.revealed.len(), 2);
+        }
+        beacon.deregister(&validator(1));
+        assert_eq!(beacon.participants(), vec![validator(2)]);
+        assert!(beacon.finalize().missing.contains(&validator(2)));
     }
 
     #[test]

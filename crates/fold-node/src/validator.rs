@@ -3,8 +3,9 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use fold_assurance::coc::claim_coc;
@@ -12,8 +13,8 @@ use fold_assurance::{decide, Policy};
 use fold_consensus::lanes::verify_lane_certificate;
 use fold_consensus::LaneCertificate;
 use fold_consensus::{
-    Action, ApprovalProof, ApprovalStatus, Authenticator, CertificateBuilder, Committee, Core,
-    HashChain, LaneRequest, LaneValidator, Message, SignatureVerifier, TimerKind,
+    Action, ApprovalProof, ApprovalStatus, Authenticator, Beacon, CertificateBuilder, Committee,
+    Core, HashChain, LaneRequest, LaneValidator, Message, SignatureVerifier, TimerKind,
 };
 use fold_core::hash::Hash32;
 use fold_core::ids::{AccountId, AssetId, Pulse, ShardId, TxDigest, ValidatorId};
@@ -21,16 +22,21 @@ use fold_core::merkle;
 use fold_core::smt::SmtSnapshot;
 use fold_core::Amount;
 use fold_da::{DaHeader, ExtendedSquare};
+use fold_exec::object::well_known;
 use fold_exec::pulse::{
-    effects_leaf, execute_pulse, execute_pulse_traced, ChunkTrace, PulseInput, PulseOutput,
+    effects_leaf, execute_pulse, execute_pulse_traced, posted_intents, ChunkTrace, PulseInput,
+    PulseOutput,
 };
-use fold_exec::{GenesisSpec, ObjectData, Owner, State};
-use fold_light::{ChainSpec, ClaimProof, ObjectProof, PulseCertificate, PulseHeader, ReceiptProof};
-use fold_prover::PulseData;
+use fold_exec::validators::ValidatorSet as StateValidators;
+use fold_exec::{GenesisSpec, ObjectData, Owner, SignedTransaction, State};
+use fold_light::{
+    ChainSpec, ClaimProof, EpochProof, ObjectProof, PulseCertificate, PulseHeader, ReceiptProof,
+};
+use fold_prover::{PulseData, ValidatorsWitness};
 use serde_json::{json, Value};
 
+use crate::committees::{CommitteeView, Committees};
 use crate::config::DevnetConfig;
-use crate::forced::ForcedIntents;
 use crate::gateway::GatewayInput;
 use crate::keys::{NodeAuthenticator, NodeVerifier};
 use crate::owners::{AlreadyChecked, Authorized, StateOwners};
@@ -53,18 +59,27 @@ pub struct Shared {
     /// The chain identity ([`ChainSpec::id`]) that headers carry and light
     /// clients pin.
     pub chain_id: Hash32,
-    /// Consensus epoch of this run.
-    pub epoch: u64,
-    /// The consensus committee (every validator).
-    pub committee: Committee,
-    /// Lane committees by shard.
-    pub shard_committees: BTreeMap<ShardId, Committee>,
-    /// Signature verification for every validator.
+    /// How many times this devnet has been restarted (consensus sessions
+    /// never repeat across restarts).
+    pub generation: u64,
+    /// Signature verification for every devnet validator, genesis and
+    /// standby (validators also learn keys registered in the state).
     pub verifier: NodeVerifier,
-    /// Validators in index order.
+    /// Validator threads in index order (genesis validators, then standby
+    /// validators that can join by staking).
     pub validators: Vec<ValidatorId>,
-    /// Each validator's beacon hash-chain tip.
-    pub beacon_tips: Vec<Hash32>,
+    /// The latest committees and keys, for the gateway and the API.
+    pub view: RwLock<CommitteeView>,
+}
+
+impl Shared {
+    /// The latest committees any validator derived.
+    pub fn committees(&self) -> Option<Committees> {
+        self.view
+            .read()
+            .ok()
+            .and_then(|view| view.committees.clone())
+    }
 }
 
 /// Batch headers one certificate group may carry.
@@ -85,6 +100,10 @@ const SQUARE_CACHE: usize = 4;
 
 /// Pulses whose published data is kept for re-deriving shares.
 const DA_HISTORY: u64 = 64;
+
+/// Consensus messages for a session this validator has not reached yet,
+/// kept until it gets there (at most).
+const MAX_FUTURE_MESSAGES: usize = 20_000;
 
 /// Messages to a validator.
 #[derive(Debug)]
@@ -183,19 +202,59 @@ pub struct ProverJob {
     pub data: PulseData,
     /// Lane certificates of the executed transactions, in execution order.
     pub certificates: Vec<LaneCertificate>,
+    /// The validator set when the Pulse began, with its state proof.
+    pub validators: ValidatorsWitness,
 }
 
 #[derive(Debug)]
 enum Timer {
-    Core(TimerKind),
+    /// A consensus timer of a session.
+    Core(u64, TimerKind),
     LaneBatch,
 }
 
 #[derive(Debug)]
 struct Collector {
     header: PulseHeader,
+    /// Who signs it: the active set of the header's epoch.
+    committee: Committee,
     signatures: BTreeMap<ValidatorId, Vec<u8>>,
     certificate: Option<PulseCertificate>,
+}
+
+/// An epoch boundary: its last Pulse, the validator set after it and, once
+/// the Pulse is certified, the certificate.
+#[derive(Clone, Debug)]
+struct Boundary {
+    pulse: Pulse,
+    validators: ObjectProof,
+    certificate: Option<PulseCertificate>,
+}
+
+/// The session a consensus message belongs to, if it says.
+fn message_session(message: &Message) -> Option<u64> {
+    match message {
+        Message::Header(signed) => Some(signed.header.epoch.0),
+        Message::Certificate(certificate) => Some(certificate.header.epoch.0),
+        Message::Vote(_) | Message::SyncRequest(_) => None,
+    }
+}
+
+/// Makes the beacon's participants the active set: departed validators stop
+/// counting, newly active ones reveal from the next Pulse (their registered
+/// tip is the first commitment).
+fn sync_beacon(beacon: &mut Beacon, set: &StateValidators) {
+    let active: BTreeSet<ValidatorId> = set.active.iter().map(|(v, _)| *v).collect();
+    for participant in beacon.participants() {
+        if !active.contains(&participant) {
+            beacon.deregister(&participant);
+        }
+    }
+    for (validator, _) in &set.active {
+        if let Some(record) = set.validators.get(validator) {
+            beacon.register(*validator, record.beacon_tip);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -245,7 +304,11 @@ pub struct Validator {
     lock_expiry: BTreeMap<TxDigest, (ShardId, Pulse)>,
     lane_log: Option<LaneLog>,
     lane_log_pending: Vec<(ShardId, LaneRequest)>,
-    forced: ForcedIntents,
+    committees: Committees,
+    future: Vec<(ValidatorId, Message)>,
+    boundaries: BTreeMap<u64, Boundary>,
+    boundary_dir: Option<PathBuf>,
+    forced_txs: BTreeMap<TxDigest, SignedTransaction>,
     forced_waiters: BTreeSet<TxDigest>,
     forced_builders: BTreeMap<TxDigest, CertificateBuilder>,
     forced_submitted: BTreeSet<TxDigest>,
@@ -288,8 +351,10 @@ pub struct ValidatorSetup {
     pub prover: Option<std::sync::mpsc::SyncSender<ProverJob>>,
     /// Verified World Proofs (written by the prover).
     pub proven: Arc<std::sync::Mutex<BTreeMap<Pulse, crate::prover::Proven>>>,
-    /// Recovered or empty forced-inclusion obligations.
-    pub forced: ForcedIntents,
+    /// Signed forced intents its state still holds obligations for.
+    pub forced_txs: Vec<SignedTransaction>,
+    /// Where it keeps epoch-boundary proofs, if persistent.
+    pub boundary_dir: Option<PathBuf>,
     /// Its durable lane-lock log, if persistent.
     pub lane_log: Option<LaneLog>,
     /// Locks to restore (approved before a restart, not yet executed).
@@ -300,14 +365,23 @@ impl Validator {
     /// Builds a validator.
     pub fn new(shared: Arc<Shared>, setup: ValidatorSetup) -> Validator {
         let id = setup.auth.validator();
+        let mut verifier = shared.verifier.clone();
+        verifier.extend_from(setup.state.validators());
+        let committees = Committees::derive(
+            &setup.state,
+            shared.chain_id,
+            shared.generation,
+            shared.config.shards,
+        )
+        .expect("a valid state always has committees");
         let core = Core::new(
-            shared.committee.clone(),
+            committees.consensus.clone(),
             setup.auth.clone(),
-            shared.verifier.clone(),
+            verifier.clone(),
             shared.config.core.clone(),
         );
-        let mut lanes: BTreeMap<ShardId, LaneValidator<NodeAuthenticator>> = shared
-            .shard_committees
+        let mut lanes: BTreeMap<ShardId, LaneValidator<NodeAuthenticator>> = committees
+            .lanes
             .iter()
             .filter(|(_, c)| c.contains(&id))
             .map(|(shard, c)| (*shard, LaneValidator::new(c, setup.auth.clone())))
@@ -323,11 +397,26 @@ impl Validator {
                 lane.restore(request);
             }
         }
-        let builder = PulseBuilder::new(
-            shared.config.rounds_per_pulse,
-            setup.state.pulse,
-            setup.beacon,
-        );
+        // The beacon follows the active set (a restart may come right after
+        // an epoch boundary).
+        let mut beacon = setup.beacon;
+        sync_beacon(&mut beacon, setup.state.validators());
+        let mut builder =
+            PulseBuilder::new(shared.config.rounds_per_pulse, setup.state.pulse, beacon);
+        builder.end_after(setup.state.validators().epoch_end());
+        let boundaries = setup
+            .boundary_dir
+            .as_deref()
+            .map(load_boundaries)
+            .unwrap_or_default();
+        if let Ok(mut view) = shared.view.write() {
+            view.update(setup.state.pulse, &committees, &setup.state);
+        }
+        let forced_txs = setup
+            .forced_txs
+            .into_iter()
+            .map(|tx| (tx.digest(), tx))
+            .collect();
         Validator {
             index: setup.index,
             id,
@@ -352,14 +441,18 @@ impl Validator {
             executed: (0, 0, 0),
             anchors: 0,
             proof_cache: None,
-            verifier: shared.verifier.clone(),
+            verifier,
             authorized: Authorized::default(),
             squares: VecDeque::new(),
             parked: Vec::new(),
             lock_expiry,
             lane_log: setup.lane_log,
             lane_log_pending: Vec::new(),
-            forced: setup.forced,
+            committees,
+            future: Vec::new(),
+            boundaries,
+            boundary_dir: setup.boundary_dir,
+            forced_txs,
             forced_waiters: BTreeSet::new(),
             forced_builders: BTreeMap::new(),
             forced_submitted: BTreeSet::new(),
@@ -378,21 +471,33 @@ impl Validator {
         self.timer_kinds.insert(seq, timer);
     }
 
+    /// This validator's beacon reveal for `pulse`, if it is a beacon
+    /// participant (its hash chain is indexed from its registration).
+    fn reveal(&self, pulse: Pulse) -> Option<Hash32> {
+        let base = self.builder.beacon().base_of(&self.id)?;
+        self.chain.reveal_after(base, pulse)
+    }
+
+    /// Proposes this validator's reveal for the next Pulse.
+    fn submit_reveal(&mut self) -> Vec<Action> {
+        let next = self.builder.next_pulse();
+        match self.reveal(next) {
+            Some(value) => self.core.handle(fold_consensus::Event::Submit(
+                PayloadItem::Reveal {
+                    validator: self.id,
+                    pulse: next,
+                    value,
+                }
+                .to_bytes(),
+            )),
+            None => Vec::new(),
+        }
+    }
+
     /// Runs until shut down.
     pub fn run(mut self) {
         let mut actions: VecDeque<Action> = self.core.handle(fold_consensus::Event::Start).into();
-        let first = self.builder.next_pulse();
-        if let Some(value) = self.chain.reveal_for(first) {
-            let reveal = PayloadItem::Reveal {
-                validator: self.id,
-                pulse: first,
-                value,
-            };
-            actions.extend(
-                self.core
-                    .handle(fold_consensus::Event::Submit(reveal.to_bytes())),
-            );
-        }
+        actions.extend(self.submit_reveal());
         self.apply(actions);
         self.schedule(
             Duration::from_millis(self.shared.config.batch_interval_ms),
@@ -412,12 +517,16 @@ impl Validator {
             self.fire_timers();
         }
         if let Some(wal) = &self.wal {
-            let _ = wal.snapshot(&Snapshot {
-                state: self.state.clone(),
-                beacon: self.builder.beacon().clone(),
-                forced: self.forced.clone(),
-                epoch: self.shared.epoch,
-            });
+            let _ = wal.snapshot(&self.snapshot_record());
+        }
+    }
+
+    fn snapshot_record(&self) -> Snapshot {
+        Snapshot {
+            state: self.state.clone(),
+            beacon: self.builder.beacon().clone(),
+            generation: self.shared.generation,
+            forced: self.forced_txs.values().cloned().collect(),
         }
     }
 
@@ -429,9 +538,12 @@ impl Validator {
             }
             self.timers.pop();
             match self.timer_kinds.remove(&seq) {
-                Some(Timer::Core(kind)) => {
-                    let actions = self.core.handle(fold_consensus::Event::Timer(kind));
-                    self.apply(actions.into());
+                Some(Timer::Core(session, kind)) => {
+                    // Timers of an earlier session's DAG are stale.
+                    if session == self.committees.session {
+                        let actions = self.core.handle(fold_consensus::Event::Timer(kind));
+                        self.apply(actions.into());
+                    }
                 }
                 Some(Timer::LaneBatch) => {
                     self.seal_lane_batches();
@@ -448,19 +560,26 @@ impl Validator {
     fn handle(&mut self, input: Input) {
         match input {
             Input::Consensus { from, message } => {
+                match message_session(&message) {
+                    Some(session) if session > self.committees.session => {
+                        // From a session this validator reaches at its next
+                        // epoch boundary: keep it until then.
+                        if self.future.len() < MAX_FUTURE_MESSAGES {
+                            self.future.push((from, message));
+                        }
+                        return;
+                    }
+                    Some(session) if session < self.committees.session => return,
+                    _ => {}
+                }
                 let actions = self
                     .core
                     .handle(fold_consensus::Event::Message { from, message });
                 self.apply(actions.into());
             }
             Input::Submit(item) => {
-                if self.censoring {
-                    let censored = PayloadItem::from_bytes(&item)
-                        .map(|i| i.senders().iter().any(|s| self.censored.contains(s)))
-                        .unwrap_or(false);
-                    if censored {
-                        return;
-                    }
+                if self.censors(&item) {
+                    return;
                 }
                 let actions = self.core.handle(fold_consensus::Event::Submit(item));
                 self.apply(actions.into());
@@ -504,13 +623,34 @@ impl Validator {
                         message,
                     },
                 ),
-                Action::SetTimer { timer, after_ms } => {
-                    self.schedule(Duration::from_millis(after_ms), Timer::Core(timer))
-                }
+                Action::SetTimer { timer, after_ms } => self.schedule(
+                    Duration::from_millis(after_ms),
+                    Timer::Core(self.committees.session, timer),
+                ),
                 Action::Commit(commit) => {
                     self.anchors += 1;
+                    let session = self.committees.session;
                     for closed in self.builder.on_commit(&commit) {
-                        actions.extend(self.execute(closed));
+                        let next = self.execute(closed);
+                        if self.committees.session != session {
+                            // The epoch's last Pulse executed and a new
+                            // consensus session began. What the old session's
+                            // core still asked for is stale: its later commits
+                            // are proposed again in the new session, and its
+                            // timers are dropped. Its messages still go out,
+                            // for validators that have not reached the
+                            // boundary yet.
+                            let mut carried = Vec::new();
+                            for action in std::mem::take(&mut actions) {
+                                match action {
+                                    Action::Commit(late) => carried.extend(late.items),
+                                    Action::SetTimer { .. } => {}
+                                    other => actions.push_back(other),
+                                }
+                            }
+                            actions.extend(self.propose_again(carried));
+                        }
+                        actions.extend(next);
                     }
                 }
                 Action::Evidence(evidence) => {
@@ -666,16 +806,31 @@ impl Validator {
         self.on_forced_approval(shard, tx, proof)
     }
 
-    /// Approves the pending forced intents of this validator's shards.
-    fn approve_forced(&mut self, pending: Vec<fold_exec::SignedTransaction>) -> Vec<Action> {
-        let shards = self.shared.config.shards;
+    /// Approves the forced intents the state says this validator's shards
+    /// owe, if they can still execute.
+    fn approve_forced(&mut self) -> Vec<Action> {
+        let owed: Vec<(TxDigest, ShardId)> = self
+            .state
+            .forced()
+            .pending
+            .iter()
+            .map(|(digest, o)| (*digest, ShardId(o.shard)))
+            .collect();
         let mut sealed = Vec::new();
-        for tx in pending {
-            let digest = tx.digest();
+        for (digest, shard) in owed {
+            let Some(tx) = self.forced_txs.get(&digest).cloned() else {
+                continue;
+            };
             if self.censoring && self.censored.contains(&tx.tx.sender) {
                 continue;
             }
-            let shard = ShardId::for_account(&tx.tx.sender, shards);
+            if !self.lanes.contains_key(&shard)
+                || (StateOwners { state: &self.state })
+                    .admissible(&tx, &mut self.authorized)
+                    .is_err()
+            {
+                continue;
+            }
             let Some(lane) = self.lanes.get_mut(&shard) else {
                 continue;
             };
@@ -684,8 +839,8 @@ impl Validator {
                 inputs: lane_inputs(&tx.tx.inputs),
                 owner_proof: fold_core::encode::encode(&tx),
             };
-            // `ForcedIntents::after_pulse` just checked admissibility against
-            // this state; a lock held by another transaction still refuses.
+            // Admissible in this state; a lock held by another transaction
+            // still refuses.
             self.lock_expiry.insert(digest, (shard, tx.tx.expires_at));
             let logged = request.clone();
             match lane.approve(request, &AlreadyChecked) {
@@ -720,13 +875,13 @@ impl Validator {
         if self.forced_submitted.contains(&tx) {
             return Vec::new();
         }
-        let Some(signed) = self.forced.intent(&tx).cloned() else {
+        let Some(signed) = self.forced_txs.get(&tx).cloned() else {
             return Vec::new();
         };
         if self.censoring && self.censored.contains(&signed.tx.sender) {
             return Vec::new();
         }
-        let Some(committee) = self.shared.shard_committees.get(&shard) else {
+        let Some(committee) = self.committees.lanes.get(&shard) else {
             return Vec::new();
         };
         let builder = self
@@ -790,7 +945,7 @@ impl Validator {
                     continue;
                 };
                 let shard = ShardId::for_account(&tx.tx.sender, shards);
-                let Some(committee) = self.shared.shard_committees.get(&shard) else {
+                let Some(committee) = self.committees.lanes.get(&shard) else {
                     self.drop_uncertified(tx, "no committee for its shard");
                     continue;
                 };
@@ -821,7 +976,14 @@ impl Validator {
             beacon: closed.beacon.value,
             owned,
             contended,
+            forced: posted,
         };
+        // The validator set the certificates had to come from, for the prover.
+        let validators_witness = self
+            .prover
+            .as_ref()
+            .and_then(|_| ValidatorsWitness::of(&self.state));
+        let epoch = self.committees.epoch;
         // Signatures checked when the inputs were locked (or now, in
         // parallel) need not be checked again during execution; the result
         // is identical. Proof stacks always check them.
@@ -850,23 +1012,34 @@ impl Validator {
             self.executed.2 + r as u64,
         );
 
-        // Forced inclusion: what the shards now owe, from committed data and
-        // the executed state alone.
+        // Forced inclusion: the state now holds what the shards owe. Keep the
+        // signed intents it still holds obligations for.
         let executed_digests: Vec<TxDigest> = output.effects.iter().map(|e| e.digest).collect();
-        let still_pending = self.forced.after_pulse(
-            input.pulse,
-            &posted,
-            &executed_digests,
-            &self.state,
-            shards,
-            &mut self.authorized,
-        );
-        let forced_summary = self.forced.summary(input.pulse);
-        if forced_summary.overdue > 0 && self.index == 0 {
-            eprintln!(
-                "validator: Pulse {}: {} forced intent(s) overdue, censorship detected",
-                input.pulse, forced_summary.overdue
-            );
+        for tx in &input.forced {
+            self.forced_txs
+                .entry(tx.digest())
+                .or_insert_with(|| tx.clone());
+        }
+        let owed = &self.state.forced().pending;
+        self.forced_txs
+            .retain(|digest, _| owed.contains_key(digest));
+        let forced_summary = crate::forced::summary(self.state.forced());
+        if self.index == 0 {
+            for event in &output.deferred_events {
+                if let fold_exec::Event::ForcedOverdue { intent, shard } = event {
+                    eprintln!(
+                        "validator: Pulse {}: forced intent {} overdue in shard {shard}: censorship detected",
+                        input.pulse,
+                        intent.short()
+                    );
+                }
+                if let fold_exec::Event::ShardRotated { shard, rotation } = event {
+                    eprintln!(
+                        "validator: Pulse {}: shard {shard}'s committee rotated (rotation {rotation})",
+                        input.pulse
+                    );
+                }
+            }
         }
 
         // Data availability: the transaction bodies in execution order,
@@ -884,6 +1057,10 @@ impl Validator {
                 .order
                 .iter()
                 .filter_map(|d| bodies.get(d).map(|t| (*t).clone()))
+                .collect(),
+            forced: posted_intents(&input.forced)
+                .into_iter()
+                .map(|t| t.tx)
                 .collect(),
         };
         let ordered_certificates: Vec<LaneCertificate> = output
@@ -907,7 +1084,7 @@ impl Validator {
 
         let header = PulseHeader {
             chain: self.shared.chain_id,
-            epoch: self.shared.epoch,
+            epoch,
             pulse: input.pulse,
             beacon: input.beacon,
             before: output.before,
@@ -919,24 +1096,22 @@ impl Validator {
             forced: forced_summary,
         };
 
-        if let Some(wal) = &mut self.wal {
+        if self.wal.is_some() {
             let record = PulseRecord {
                 input: input.clone(),
-                forced: posted.clone(),
                 after: output.after,
                 beacon: self.builder.beacon().clone(),
+            };
+            let snapshot = (input.pulse.0 % self.shared.config.snapshot_every.max(1) == 0)
+                .then(|| self.snapshot_record());
+            let Some(wal) = self.wal.as_mut() else {
+                unreachable!("checked above")
             };
             if let Err(e) = wal.append(&record) {
                 eprintln!("validator {}: log append failed: {e}", self.index);
             }
-            let every = self.shared.config.snapshot_every.max(1);
-            if input.pulse.0 % every == 0 {
-                if let Err(e) = wal.snapshot(&Snapshot {
-                    state: self.state.clone(),
-                    beacon: self.builder.beacon().clone(),
-                    forced: self.forced.clone(),
-                    epoch: self.shared.epoch,
-                }) {
+            if let Some(snapshot) = snapshot {
+                if let Err(e) = wal.snapshot(&snapshot) {
                     eprintln!("validator {}: snapshot failed: {e}", self.index);
                 }
                 // Keep the lane log to the locks that still matter.
@@ -973,6 +1148,7 @@ impl Validator {
             let digest = header.digest();
             let mut collector = Collector {
                 header: header.clone(),
+                committee: self.committees.signers.clone(),
                 signatures: BTreeMap::new(),
                 certificate: None,
             };
@@ -1000,7 +1176,7 @@ impl Validator {
             );
         }
 
-        if let Some(prover) = &self.prover {
+        if let (Some(prover), Some(validators)) = (&self.prover, validators_witness) {
             // A full backlog means the prover is behind: this Pulse goes
             // unproven rather than queueing without bound.
             let _ = prover.try_send(ProverJob {
@@ -1009,6 +1185,13 @@ impl Validator {
                 traces,
                 data,
                 certificates: ordered_certificates,
+                validators,
+            });
+        }
+        if self.index == 0 {
+            let _ = self.bus.gateway.send(GatewayInput::Executed {
+                pulse: input.pulse,
+                digests: executed_digests.clone(),
             });
         }
 
@@ -1069,29 +1252,196 @@ impl Validator {
             self.handle_lane_request(shard, request, parked_for);
         }
 
+        // Committees follow the state: lane committees may have rotated, and
+        // at an epoch boundary consensus starts a new session.
+        let mut actions = self.reconfigure();
+
         // Forced intents still owed: approve those of this validator's
         // shards, and forget bookkeeping for resolved ones.
-        let forced = &self.forced;
-        self.forced_waiters.retain(|d| forced.is_pending(d));
-        self.forced_builders.retain(|d, _| forced.is_pending(d));
-        self.forced_submitted.retain(|d| forced.is_pending(d));
-        let mut actions = self.approve_forced(still_pending);
+        let owed = &self.state.forced().pending;
+        self.forced_waiters.retain(|d| owed.contains_key(d));
+        self.forced_builders.retain(|d, _| owed.contains_key(d));
+        self.forced_submitted.retain(|d| owed.contains_key(d));
+        actions.extend(self.approve_forced());
 
         // Reveal for the next Pulse.
-        let next = input.pulse.next();
-        if let Some(value) = self.chain.reveal_for(next) {
-            actions.extend(
-                self.core.handle(fold_consensus::Event::Submit(
-                    PayloadItem::Reveal {
-                        validator: self.id,
-                        pulse: next,
-                        value,
+        actions.extend(self.submit_reveal());
+        actions
+    }
+
+    // ----- Committees and epochs ---------------------------------------------
+
+    /// Derives the committees from the state after a Pulse and adopts them:
+    /// lane validators for shards whose committee changed are rebuilt
+    /// (keeping this validator's locks, so it never approves a conflicting
+    /// spend), and at an epoch boundary consensus starts a new session with
+    /// the new active set (this validator observes if it is not in it).
+    fn reconfigure(&mut self) -> Vec<Action> {
+        let mut actions = Vec::new();
+        self.verifier.extend_from(self.state.validators());
+        let next = match Committees::derive(
+            &self.state,
+            self.shared.chain_id,
+            self.shared.generation,
+            self.shared.config.shards,
+        ) {
+            Ok(next) => next,
+            Err(error) => {
+                eprintln!("validator {}: no committees: {error}", self.index);
+                return actions;
+            }
+        };
+        for (shard, committee) in &next.lanes {
+            if self.committees.lanes.get(shard) == Some(committee) {
+                continue;
+            }
+            let old = self.lanes.remove(shard);
+            if committee.contains(&self.id) {
+                let mut lane = LaneValidator::new(committee, self.auth.clone());
+                if let Some(old) = &old {
+                    for request in old.locked_requests() {
+                        lane.restore(request);
                     }
-                    .to_bytes(),
-                )),
+                }
+                self.lanes.insert(*shard, lane);
+            }
+            // Approvals of forced intents under the old committee no longer
+            // count: collect them again.
+            let owed = &self.state.forced().pending;
+            let stale: Vec<TxDigest> = owed
+                .iter()
+                .filter(|(_, o)| o.shard == shard.0)
+                .map(|(d, _)| *d)
+                .collect();
+            for digest in stale {
+                self.forced_builders.remove(&digest);
+                self.forced_submitted.remove(&digest);
+                self.forced_waiters.remove(&digest);
+            }
+        }
+        if next.epoch != self.committees.epoch {
+            if self.index == 0 {
+                eprintln!(
+                    "validator: Pulse {}: epoch {} begins with {} validators (session {})",
+                    self.state.pulse,
+                    next.epoch,
+                    next.consensus.members().len(),
+                    next.session
+                );
+            }
+            let mut beacon = self.builder.beacon().clone();
+            sync_beacon(&mut beacon, self.state.validators());
+            let mut builder = self.builder.next_session(self.state.pulse, beacon);
+            builder.end_after(self.state.validators().epoch_end());
+            let mut old_builder = std::mem::replace(&mut self.builder, builder);
+            let mut old_core = std::mem::replace(
+                &mut self.core,
+                Core::new(
+                    next.consensus.clone(),
+                    self.auth.clone(),
+                    self.verifier.clone(),
+                    self.shared.config.core.clone(),
+                ),
             );
+            self.committees = next.clone();
+            actions.extend(self.core.handle(fold_consensus::Event::Start));
+            // Nothing is lost at the boundary: what the old session committed
+            // after its last Pulse, and what it never committed, is proposed
+            // again in the new one.
+            let mut carried = old_builder.take_leftover();
+            carried.extend(old_core.take_mempool());
+            actions.extend(self.propose_again(carried));
+            for (from, message) in std::mem::take(&mut self.future) {
+                match message_session(&message) {
+                    Some(session) if session == self.committees.session => actions.extend(
+                        self.core
+                            .handle(fold_consensus::Event::Message { from, message }),
+                    ),
+                    Some(session) if session > self.committees.session => {
+                        self.future.push((from, message))
+                    }
+                    _ => {}
+                }
+            }
+            // Light clients cross the boundary with the certificate of this
+            // Pulse and the validator set after it.
+            let pulse = self.state.pulse;
+            let object = self.state.objects.get(&well_known::validators()).cloned();
+            let proof = self.snapshot().prove(&well_known::validators().0);
+            self.boundaries.insert(
+                next.epoch,
+                Boundary {
+                    pulse,
+                    validators: ObjectProof {
+                        id: well_known::validators(),
+                        object,
+                        proof,
+                    },
+                    certificate: None,
+                },
+            );
+            self.attach_boundary_certificate(pulse);
+        }
+        self.committees = next;
+        if let Ok(mut view) = self.shared.view.write() {
+            view.update(self.state.pulse, &self.committees, &self.state);
         }
         actions
+    }
+
+    /// Whether this validator, as an adversary simulation, drops `item`.
+    fn censors(&self, item: &[u8]) -> bool {
+        self.censoring
+            && PayloadItem::from_bytes(item)
+                .map(|i| i.senders().iter().any(|s| self.censored.contains(s)))
+                .unwrap_or(false)
+    }
+
+    /// Submits items an earlier session did not execute to the current
+    /// core. Beacon reveals are not carried: each validator reveals afresh
+    /// for the Pulses ahead.
+    fn propose_again(&mut self, items: Vec<Vec<u8>>) -> Vec<Action> {
+        let mut actions = Vec::new();
+        for item in items {
+            if self.censors(&item)
+                || matches!(
+                    PayloadItem::from_bytes(&item),
+                    Some(PayloadItem::Reveal { .. })
+                )
+            {
+                continue;
+            }
+            actions.extend(self.core.handle(fold_consensus::Event::Submit(item)));
+        }
+        actions
+    }
+
+    /// Records the certificate of an epoch's last Pulse, once there is one,
+    /// with the proof that crosses into the next epoch.
+    fn attach_boundary_certificate(&mut self, pulse: Pulse) {
+        let Some(certificate) = self
+            .collectors
+            .get(&pulse)
+            .and_then(|c| c.certificate.clone())
+        else {
+            return;
+        };
+        let dir = self.boundary_dir.clone();
+        for (epoch, boundary) in self.boundaries.iter_mut() {
+            if boundary.pulse == pulse && boundary.certificate.is_none() {
+                boundary.certificate = Some(certificate.clone());
+                if let Some(dir) = &dir {
+                    let proof = EpochProof {
+                        epoch: *epoch,
+                        boundary: certificate.clone(),
+                        validators: boundary.validators.clone(),
+                    };
+                    if let Err(e) = store_boundary(dir, &proof) {
+                        eprintln!("validator {}: epoch proof not stored: {e}", self.index);
+                    }
+                }
+            }
+        }
     }
 
     // ----- Header certificates --------------------------------------------
@@ -1109,7 +1459,7 @@ impl Validator {
             let ahead = pulse.0.saturating_sub(self.state.pulse.0);
             if pulse > self.state.pulse
                 && ahead <= EARLY_SIGNATURE_WINDOW
-                && self.shared.committee.contains(&from)
+                && self.verifier.knows(&from)
             {
                 let waiting = self.early_signatures.entry(pulse).or_default();
                 if !waiting.iter().any(|(v, _, _)| *v == from) {
@@ -1137,13 +1487,20 @@ impl Validator {
     }
 
     fn try_certify(&mut self, pulse: Pulse) {
-        let committee = &self.shared.committee;
         let Some(collector) = self.collectors.get_mut(&pulse) else {
             return;
         };
         if collector.certificate.is_some() {
             return;
         }
+        let committee = &collector.committee;
+        let signed: BTreeMap<ValidatorId, Vec<u8>> = collector
+            .signatures
+            .iter()
+            .filter(|(v, _)| committee.contains(v))
+            .map(|(v, s)| (*v, s.clone()))
+            .collect();
+        collector.signatures = signed;
         if committee.is_quorum(committee.stake_of_set(collector.signatures.keys())) {
             collector.certificate = Some(PulseCertificate {
                 header: collector.header.clone(),
@@ -1154,6 +1511,7 @@ impl Validator {
                     .collect(),
             });
             self.certified = self.certified.max(pulse);
+            self.attach_boundary_certificate(pulse);
         }
     }
 
@@ -1170,12 +1528,18 @@ impl Validator {
     fn answer(&mut self, query: Query) -> Result<Value, String> {
         match query {
             Query::Status => {
+                let set = self.state.validators();
+                let summary = crate::forced::summary(self.state.forced());
                 let status = StatusView {
                     chain_id: self.shared.config.chain_id.clone(),
                     genesis: self.shared.genesis_digest,
                     chain: self.shared.chain_id,
                     validator: self.id,
-                    epoch: self.shared.epoch,
+                    epoch: set.epoch,
+                    epoch_end: set.epoch_end(),
+                    session: self.committees.session,
+                    active_validators: set.active.len(),
+                    active: set.active.iter().any(|(v, _)| *v == self.id),
                     pulse: self.state.pulse,
                     certified_pulse: self.certified,
                     commitment: self.state.commitment(),
@@ -1194,8 +1558,8 @@ impl Validator {
                         .lock()
                         .ok()
                         .and_then(|p| p.keys().next_back().copied()),
-                    forced_pending: self.forced.summary(self.state.pulse).pending,
-                    forced_overdue: self.forced.summary(self.state.pulse).overdue,
+                    forced_pending: summary.pending,
+                    forced_overdue: summary.overdue,
                 };
                 Ok(to_json(&status))
             }
@@ -1370,40 +1734,68 @@ impl Validator {
                 events.truncate(limit);
                 Ok(to_json(&events))
             }
-            Query::Validators => Ok(json!({
-                "chain": self.shared.chain,
-                "chain_id": self.shared.chain_id,
-                "committee": self.shared.committee,
-                "shards": self.shared.shard_committees,
-                "keys": self.shared.verifier.set,
-                "insecure_signatures": self.shared.config.signatures == crate::keys::SignatureMode::InsecureFast,
-                "genesis": self.shared.genesis_digest,
-                "epoch": self.shared.epoch,
-            })),
+            Query::Validators => {
+                let set = self.state.validators();
+                let records: Vec<Value> = set
+                    .validators
+                    .values()
+                    .map(|r| {
+                        json!({
+                            "validator": r.id,
+                            "operator": r.operator,
+                            "stake": r.stake,
+                            "rewards": r.rewards,
+                            "status": r.status,
+                            "registered_at": r.registered_at,
+                            "active": set.active.iter().any(|(v, _)| *v == r.id),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "chain": self.shared.chain,
+                    "chain_id": self.shared.chain_id,
+                    "genesis": self.shared.genesis_digest,
+                    "insecure_signatures": self.shared.config.signatures == crate::keys::SignatureMode::InsecureFast,
+                    "pulse": self.state.pulse,
+                    "epoch": set.epoch,
+                    "epoch_start": set.epoch_start,
+                    "epoch_end": set.epoch_end(),
+                    "session": self.committees.session,
+                    "params": set.params,
+                    "committee": self.committees.signers,
+                    "keys": crate::committees::registered_keys(set),
+                    "shards": self.committees.lanes,
+                    "rotations": set.rotations,
+                    "validators": records,
+                }))
+            }
+            Query::Epoch(epoch) => {
+                let boundary = self
+                    .boundaries
+                    .get(&epoch)
+                    .ok_or("no proof for that epoch (it has not begun, or began before this validator kept proofs)")?;
+                let certificate = boundary
+                    .certificate
+                    .clone()
+                    .ok_or("the epoch's boundary Pulse is not certified yet")?;
+                Ok(to_json(&EpochProof {
+                    epoch,
+                    boundary: certificate,
+                    validators: boundary.validators.clone(),
+                }))
+            }
             Query::Genesis => Ok(json!({
                 "digest": self.shared.genesis_digest,
                 "spec": self.shared.genesis,
             })),
             Query::Forced => {
-                let pulse = self.state.pulse;
-                let resolved: Vec<Value> = self
-                    .forced
-                    .resolved()
-                    .iter()
-                    .map(|(digest, (at, included))| {
-                        json!({
-                            "digest": digest,
-                            "pulse": at,
-                            "outcome": if *included { "included" } else { "proven invalid" },
-                        })
-                    })
-                    .collect();
+                let obligations = self.state.forced();
                 Ok(json!({
-                    "pulse": pulse,
-                    "window": self.shared.config.forced_window,
-                    "summary": self.forced.summary(pulse),
-                    "pending": self.forced.pending(pulse),
-                    "resolved": resolved,
+                    "pulse": self.state.pulse,
+                    "window": obligations.params.window,
+                    "summary": crate::forced::summary(obligations),
+                    "pending": crate::forced::pending(obligations),
+                    "rotations": self.state.validators().rotations,
                 }))
             }
             Query::World(pulse) => {
@@ -1426,4 +1818,38 @@ impl Validator {
 
 fn to_json<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+/// Loads the epoch-boundary proofs a validator stored.
+fn load_boundaries(dir: &std::path::Path) -> BTreeMap<u64, Boundary> {
+    let mut out = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        if let Ok(proof) = fold_core::encode::decode::<EpochProof>(&bytes) {
+            out.insert(
+                proof.epoch,
+                Boundary {
+                    pulse: proof.boundary.header.pulse,
+                    validators: proof.validators,
+                    certificate: Some(proof.boundary),
+                },
+            );
+        }
+    }
+    out
+}
+
+/// Stores one epoch-boundary proof (write and rename, so it is whole or
+/// absent).
+fn store_boundary(dir: &std::path::Path, proof: &EpochProof) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("epoch-{:010}.bin", proof.epoch));
+    let temp = dir.join(format!("epoch-{:010}.tmp", proof.epoch));
+    std::fs::write(&temp, fold_core::encode::encode(proof))?;
+    std::fs::rename(temp, path)
 }

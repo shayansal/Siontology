@@ -6,6 +6,16 @@ use fold_cli::{mcp, Session};
 use fold_node::{Devnet, DevnetConfig};
 use serde_json::{json, Value};
 
+/// The tests run one devnet at a time: each runs several validator threads
+/// and a prover, and small machines run out of cores.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn devnet() -> Devnet {
     Devnet::start(DevnetConfig {
         rounds_per_pulse: 2,
@@ -15,15 +25,27 @@ fn devnet() -> Devnet {
     .unwrap()
 }
 
+/// Runs a demo; on failure, shows what it had narrated so far.
+fn run(devnet: &Devnet, name: &str) -> String {
+    let mut out = Narrator::default();
+    let result = {
+        let mut session = Session::open(devnet).unwrap();
+        demos::run(name, &mut session, &mut out)
+    };
+    let text = out.lines.join("\n");
+    if let Err(error) = result {
+        panic!("demo {name} failed: {error}\n{text}");
+    }
+    // Shown with `cargo test -- --nocapture`.
+    println!("{text}");
+    text
+}
+
 #[test]
 fn all_demos_run_and_tell_the_truth() {
+    let _serial = serial();
     let devnet = devnet();
-    let mut out = Narrator::default();
-    {
-        let mut session = Session::open(&devnet).unwrap();
-        demos::run("all", &mut session, &mut out).unwrap();
-    }
-    let text = out.lines.join("\n");
+    let text = run(&devnet, "all");
     assert!(
         text.contains("cost of corruption (standard policy): 50,000 USD, exact"),
         "{text}"
@@ -51,6 +73,10 @@ fn all_demos_run_and_tell_the_truth() {
         text.contains("light client: forced inclusion: 1 intent(s) OVERDUE"),
         "{text}"
     );
+    assert!(
+        text.contains("the state replaces shard"),
+        "a missed deadline rotates the committee: {text}"
+    );
     assert!(text.contains("censorship lifted"), "{text}");
     assert!(
         text.contains("→ 402 Payment Required: 0.25 USD to carol"),
@@ -71,11 +97,43 @@ fn all_demos_run_and_tell_the_truth() {
         text.contains("pays the same API with a plain transfer → 200 OK"),
         "{text}"
     );
+    assert!(
+        text.contains("this devnet has no standby validator"),
+        "the staking demo explains what it needs: {text}"
+    );
+    devnet.shutdown();
+}
+
+#[test]
+fn validators_join_earn_get_slashed_and_light_clients_follow() {
+    let _serial = serial();
+    let devnet = Devnet::start(DevnetConfig {
+        rounds_per_pulse: 2,
+        prove_chunk: Some(8),
+        standby: 1,
+        epoch_length: 24,
+        unbonding: 8,
+        ..DevnetConfig::default()
+    })
+    .unwrap();
+    let text = run(&devnet, "staking");
+    for expected in [
+        "validator",
+        "registered by operator-4 with 50,000 USD at stake",
+        "5 validators hold seats, the newcomer among them",
+        "light client: followed the committee from genesis through",
+        "slashed: 50,000 USD forfeited, 2,500 USD of it to watchdog",
+        "the slashed validator lost its seat",
+        "light client: still following",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+    }
     devnet.shutdown();
 }
 
 #[test]
 fn the_mcp_server_serves_an_agent() {
+    let _serial = serial();
     let devnet = devnet();
     {
         let mut session = Session::open(&devnet).unwrap();

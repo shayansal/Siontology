@@ -84,6 +84,13 @@ impl InsecureSimAuthenticator {
         }
     }
 
+    /// A simulated signer for a validator whose identifier comes from
+    /// elsewhere (its registered public keys), so that a devnet's validator
+    /// identities do not depend on the signature mode.
+    pub fn with_identity(validator: ValidatorId, secret: [u8; 32]) -> Self {
+        InsecureSimAuthenticator { validator, secret }
+    }
+
     fn mac(secret: &[u8; 32], message: &[u8]) -> Vec<u8> {
         let mut hasher = Hasher::new(SIM_MAC_DOMAIN);
         hasher.update(secret).update_part(message);
@@ -119,6 +126,11 @@ impl InsecureSimVerifier {
     pub fn register(&mut self, authenticator: &InsecureSimAuthenticator) {
         self.secrets
             .insert(authenticator.validator, authenticator.secret);
+    }
+
+    /// Whether `validator` is registered.
+    pub fn knows(&self, validator: &ValidatorId) -> bool {
+        self.secrets.contains_key(validator)
     }
 }
 

@@ -629,7 +629,12 @@ pub fn market(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
         batch.orders.len()
     ));
     let result = fold_clearing::clear(&batch).map_err(|e| CliError::Build(e.to_string()))?;
-    let band = result.band.expect("trade happens");
+    let Some(band) = result.band else {
+        return Err(CliError::Transaction(format!(
+            "batch {index} sealed with {} of the 4 orders and nothing crosses (the orders straddled a batch boundary)",
+            batch.orders.len()
+        )));
+    };
     out.say(format!(
         "           solver computes the welfare-maximizing allocation: {} GPU-hours at one price {} USD (supporting band {}–{}), \
          welfare {} USD, with an LP optimality certificate",
@@ -863,6 +868,31 @@ pub fn censorship(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), C
     out.say(format!(
         "           forced intent posted around Pulse {posted}; by Pulse {overdue_at} it is OVERDUE (window {window} Pulses): the shard owes it and cannot certify it"
     ));
+    // The state's response: the shard's committee is replaced.
+    let rotated = session
+        .ledger
+        .events(posted, 10_000)?
+        .into_iter()
+        .find_map(|view| match view.event {
+            Event::ShardRotated { shard, rotation } => Some((view.pulse, shard, rotation)),
+            _ => None,
+        });
+    if let Some((pulse, shard, rotation)) = rotated {
+        let validators = session.ledger.query(fold_node::Query::Validators)?;
+        let active = validators["committee"]["members"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0);
+        let seats = validators["params"]["seats"].as_u64().unwrap_or(0) as usize;
+        out.say(format!(
+            "Pulse {pulse:>3}  the state replaces shard {shard}'s committee (rotation {rotation}), drawing from validators outside it first{}",
+            if active <= seats {
+                format!("; this devnet has {active} validators for {seats} seats, so the same members return and the intent stays owed")
+            } else {
+                String::new()
+            }
+        ));
+    }
     loop {
         let certified: Pulse =
             serde_json::from_value(session.ledger.status()?["certified_pulse"].clone())
@@ -1086,12 +1116,311 @@ pub fn x402(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErro
     Ok(())
 }
 
+fn json<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, CliError> {
+    serde_json::from_value(value.clone()).map_err(|e| CliError::Protocol(e.to_string()))
+}
+
+/// Waits until the state reaches `epoch`; returns the validator set then.
+fn wait_for_epoch(session: &Session<'_>, epoch: u64) -> Result<Value, CliError> {
+    let deadline = Instant::now() + session.timeout;
+    loop {
+        let validators = session.ledger.query(fold_node::Query::Validators)?;
+        if validators["epoch"].as_u64().unwrap_or(0) >= epoch {
+            return Ok(validators);
+        }
+        if Instant::now() > deadline {
+            return Err(CliError::Transaction(format!(
+                "epoch {epoch} did not begin in time"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The `EpochChanged` event that began `epoch`, with its Pulse.
+fn epoch_event(
+    session: &Session<'_>,
+    from: Pulse,
+    epoch: u64,
+) -> Result<(Pulse, u32, Amount), CliError> {
+    for view in session.ledger.events(from, 10_000)? {
+        if let Event::EpochChanged {
+            epoch: e,
+            active,
+            rewards,
+        } = view.event
+        {
+            if e == epoch {
+                return Ok((view.pulse, active, rewards));
+            }
+        }
+    }
+    Err(CliError::Protocol(format!("no event began epoch {epoch}")))
+}
+
+/// The first certified Pulse at or after `from`.
+fn certified_from(
+    session: &Session<'_>,
+    from: Pulse,
+) -> Result<fold_light::PulseCertificate, CliError> {
+    let deadline = Instant::now() + session.timeout;
+    let mut pulse = from;
+    loop {
+        if let Ok(view) = session.ledger.pulse_view(Some(pulse)) {
+            if let Some(certificate) = view.certificate {
+                return Ok(certificate);
+            }
+        }
+        if session.ledger.pulse()? > pulse.next() {
+            // Certificates complete in order; try the next one.
+            pulse = pulse.next();
+        }
+        if Instant::now() > deadline {
+            return Err(CliError::Transaction(format!(
+                "no certified Pulse from {from} on"
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Staking: a standby validator stakes and joins the active set at the next
+/// epoch boundary, every validator derives the new committees from the
+/// state, rewards are paid by stake, an equivocating validator is slashed
+/// and loses its seat, and a light client follows the committee from the
+/// pinned genesis through every change.
+pub fn staking(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    out.say("== Staking: committees come from the state, epoch by epoch ==");
+    let threads = session.ledger.status()?["validators"].as_u64().unwrap_or(0) as usize;
+    let validators = session.ledger.query(fold_node::Query::Validators)?;
+    let params: fold_exec::validators::ValidatorParams = json(&validators["params"])?;
+    let chain_id = session.config.chain_id.clone();
+    let registered: Vec<fold_core::ids::ValidatorId> = validators["validators"]
+        .as_array()
+        .map(|records| {
+            records
+                .iter()
+                .filter_map(|r| json(&r["validator"]).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let standby = (0..threads)
+        .find(|index| !registered.contains(&fold_node::devnet::validator_id(&chain_id, *index)));
+    let Some(index) = standby.filter(|_| params.epoch_length <= 10_000) else {
+        out.say(
+            "           this devnet has no standby validator, or runs one epoch that never ends;",
+        );
+        out.say("           start one with `fold devnet --standby 1 --epoch-length 24` to watch validators join and leave");
+        return Ok(());
+    };
+    let spec: fold_light::ChainSpec = json(&validators["chain"])?;
+    let epoch = validators["epoch"].as_u64().unwrap_or(0);
+    let epoch_end: Pulse = json(&validators["epoch_end"])?;
+    let active = validators["committee"]["members"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let operator = fold_node::devnet::operator_name(index);
+    let newcomer = fold_node::devnet::validator_id(&chain_id, index);
+    let genesis_stake: Amount = json(&validators["validators"][0]["stake"])?;
+    out.say(format!(
+        "           epoch {epoch}: {active} validators hold seats, each staking {genesis_stake} USD; validator {} runs on standby, following the chain without a seat",
+        newcomer.short()
+    ));
+    out.say(format!(
+        "           epochs last {} Pulses; this one ends after Pulse {epoch_end}",
+        params.epoch_length
+    ));
+
+    // 1. The standby validator's operator stakes for it.
+    let stake = usd(50_000);
+    fund_all(
+        session,
+        &[
+            (operator.as_str(), AssetId::usd(), usd(50_010)),
+            ("watchdog", AssetId::usd(), usd(10)),
+        ],
+    )?;
+    let operator_id = session.id(&operator);
+    let kind = fold_node::devnet::registration(&session.config, index, &operator_id, stake);
+    let view = session.must(&operator, kind, Vec::new())?;
+    let names = session.names();
+    out.say(format!(
+        "Pulse {:>3}  {operator} stakes {} USD for validator {}, with a proof that it holds the validator's keys",
+        view.pulse,
+        stake,
+        newcomer.short()
+    ));
+    out.say(format!(
+        "           {}",
+        crate::describe::receipt(&names, &view.effects)
+    ));
+
+    // 2. The boundary: rewards, the new active set, new committees.
+    let mut next = wait_for_epoch(session, epoch + 1)?;
+    let mut current = next["epoch"].as_u64().unwrap_or(epoch + 1);
+    // If the registration landed after the boundary, it joins at the next.
+    if !next["committee"]["members"].as_array().is_some_and(|m| {
+        m.iter()
+            .any(|v| json::<fold_core::ids::ValidatorId>(&v[0]).ok() == Some(newcomer))
+    }) {
+        next = wait_for_epoch(session, current + 1)?;
+        current = next["epoch"].as_u64().unwrap_or(current + 1);
+    }
+    let (boundary, seats, rewards) =
+        epoch_event(session, Pulse(epoch_end.0.saturating_sub(1)), current)?;
+    out.say(format!(
+        "Pulse {:>3}  epoch {current} begins: {seats} validators hold seats, the newcomer among them; {} USD of fees paid as rewards, split by stake",
+        boundary, rewards
+    ));
+    let lanes = next["shards"].as_object().map(|m| m.len()).unwrap_or(0);
+    out.say(format!(
+        "           every validator derived the same committees from the state: consensus (weighted by stake) and {lanes} lane committees sampled with the beacon"
+    ));
+
+    // 3. A light client follows the change from the pinned genesis.
+    let certificate = certified_from(session, boundary.next())?;
+    let followed = crate::verify::epoch_chain(session.ledger, &spec, certificate.header.epoch)?;
+    let signers = certificate.signers();
+    let committee = followed
+        .committee(certificate.header.epoch)
+        .ok_or_else(|| CliError::Verification("the client lost the epoch".into()))?;
+    match followed
+        .verify_header(&certificate)
+        .map_err(|e| CliError::Verification(e.to_string()))?
+    {
+        Some((signed, quorum)) => out.say(format!(
+            "           light client: followed the committee from genesis through {} boundary proof(s); Pulse {}'s certificate has {} of {} validators, {signed} of {} stake (quorum {quorum}) ✓",
+            followed.latest(),
+            certificate.header.pulse,
+            signers.len(),
+            committee.size(),
+            committee.total_stake()
+        )),
+        None => out.say(format!(
+            "           light client: followed the committee through {} boundary proof(s) (insecure simulation signatures: not checked)",
+            followed.latest()
+        )),
+    }
+
+    // 4. Rewards are claimed by the operator.
+    let rewarded = next["validators"].as_array().and_then(|records| {
+        records.iter().position(|r| {
+            json::<Amount>(&r["rewards"]).is_ok_and(|a| a > Amount::ZERO)
+                && json::<fold_core::ids::ValidatorId>(&r["validator"]).ok() != Some(newcomer)
+        })
+    });
+    if let Some(position) = rewarded {
+        let record = &next["validators"][position];
+        let validator: fold_core::ids::ValidatorId = json(&record["validator"])?;
+        let owner: fold_core::ids::AccountId = json(&record["operator"])?;
+        let owner_name = (0..threads)
+            .map(fold_node::devnet::operator_name)
+            .find(|name| fold_exec::Wallet::named(name).id == owner);
+        if let Some(owner_name) = owner_name {
+            fund_all(session, &[(owner_name.as_str(), AssetId::usd(), usd(1))])?;
+            let view = session.must(&owner_name, TxKind::ClaimRewards { validator }, Vec::new())?;
+            out.say(format!(
+                "Pulse {:>3}  {owner_name} collects: {}",
+                view.pulse,
+                crate::describe::receipt(&session.names(), &view.effects)
+            ));
+        }
+    }
+
+    // 5. The newcomer equivocates and is slashed.
+    let session_number = next["session"].as_u64().unwrap_or(0);
+    let evidence = fold_node::devnet::equivocation(
+        &chain_id,
+        spec.id(),
+        index,
+        session_number,
+        1_000_000 + current,
+    );
+    out.say(format!(
+        "           ADVERSARY SIMULATION: validator {} signs two different consensus headers for the same round",
+        newcomer.short()
+    ));
+    let view = session.must(
+        "watchdog",
+        TxKind::ReportEquivocation {
+            evidence: Box::new(evidence),
+        },
+        Vec::new(),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  watchdog reports both signed headers: {}",
+        view.pulse,
+        crate::describe::receipt(&session.names(), &view.effects)
+    ));
+    let after = wait_for_epoch(session, current + 1)?;
+    let still = after["committee"]["members"].as_array().is_some_and(|m| {
+        m.iter()
+            .any(|v| json::<fold_core::ids::ValidatorId>(&v[0]).ok() == Some(newcomer))
+    });
+    let seats = after["committee"]["members"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    out.say(format!(
+        "           epoch {} begins with {seats} validators: the slashed validator {} its seat",
+        after["epoch"],
+        if still { "kept" } else { "lost" }
+    ));
+    if still {
+        return Err(CliError::Verification(
+            "a slashed validator kept its seat".into(),
+        ));
+    }
+    let followed =
+        crate::verify::epoch_chain(session.ledger, &spec, after["epoch"].as_u64().unwrap_or(0))?;
+    out.say(format!(
+        "           light client: still following, {} boundary proof(s) from the pinned genesis ✓",
+        followed.latest()
+    ));
+    out.say("Result: who certifies is part of the state transition, proven like any balance; stake buys seats, misbehaviour is evidence anyone can submit, and a client needs nothing but the genesis it pinned.");
+    Ok(())
+}
+
 fn session_chain(session: &Session<'_>) -> Result<fold_core::hash::Hash32, CliError> {
     crate::verify::served_chain(session.ledger)
 }
 
+/// Whether a demo needs a devnet with a standby validator and epochs that
+/// end.
+pub fn needs_epochs(name: &str) -> bool {
+    name == "staking"
+}
+
+/// The in-process devnet `demo --local` starts for a demo.
+pub fn local_config(name: &str) -> fold_node::DevnetConfig {
+    let base = fold_node::DevnetConfig::default();
+    if needs_epochs(name) {
+        fold_node::DevnetConfig {
+            standby: 1,
+            epoch_length: 24,
+            unbonding: 8,
+            ..base
+        }
+    } else {
+        base
+    }
+}
+
+/// Every demo, in the order `all` runs them.
+pub const ALL: [&str; 8] = [
+    "invoice",
+    "agents",
+    "market",
+    "receipts",
+    "x402",
+    "censorship",
+    "light",
+    "staking",
+];
+
 /// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `x402`,
-/// `light`, `censorship`, `all`).
+/// `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
@@ -1101,23 +1430,18 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
         "light" => light(session, out),
         "censorship" => censorship(session, out),
         "x402" => x402(session, out),
+        "staking" => staking(session, out),
         "all" => {
-            invoice(session, out)?;
-            out.say("");
-            agents(session, out)?;
-            out.say("");
-            market(session, out)?;
-            out.say("");
-            receipts(session, out)?;
-            out.say("");
-            x402(session, out)?;
-            out.say("");
-            censorship(session, out)?;
-            out.say("");
-            light(session, out)
+            for (index, demo) in ALL.iter().enumerate() {
+                if index > 0 {
+                    out.say("");
+                }
+                run(demo, session, out)?;
+            }
+            Ok(())
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, market, receipts, x402, censorship, light or all"
+            "unknown demo {other:?}; try invoice, agents, market, receipts, x402, censorship, light, staking or all"
         ))),
     }
 }

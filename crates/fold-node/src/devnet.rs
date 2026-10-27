@@ -11,23 +11,32 @@ use std::time::{Duration, Instant};
 
 use fold_consensus::{Beacon, HashChain, LaneRequest};
 use fold_core::hash::{hash_domain, Hash32};
-use fold_core::ids::{AccountId, AssetId, Pulse, ShardId, TxDigest};
+use fold_core::ids::{AccountId, AssetId, Pulse, ShardId, TxDigest, ValidatorId};
 use fold_core::Amount;
+use fold_exec::genesis::GenesisValidator;
+use fold_exec::validators::{
+    possession_digest, weight, Equivocation, ForcedParams, ValidatorParams,
+};
 use fold_exec::{
-    genesis, ChainConfig, GenesisAccount, GenesisSpec, SignedTransaction, State, Wallet,
+    genesis, ChainConfig, GenesisAccount, GenesisSpec, SignedTransaction, State, TxKind, Wallet,
 };
 use fold_light::ChainSpec;
 use serde_json::Value;
 
+use crate::committees::CommitteeView;
 use crate::config::DevnetConfig;
 use crate::error::NodeError;
-use crate::forced::ForcedIntents;
 use crate::gateway::{Gateway, GatewayInput};
 use crate::keys::{NodeVerifier, SignatureMode, ValidatorKeys};
 use crate::prover::{self, ProverHandle};
 use crate::storage::{replay, LaneLog, Snapshot, Wal};
 use crate::validator::{Bus, Input, Shared, Validator, ValidatorSetup};
 use crate::view::{Query, SubmitReceipt, TxStatus, TxView};
+
+/// How long a devnet API call waits for a validator or the gateway. Long
+/// enough for a loaded machine: validators answer between protocol
+/// messages, and a busy one can take seconds.
+pub const API_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Length of each validator's beacon hash chain (Pulses it can reveal for).
 pub const BEACON_CHAIN_LENGTH: usize = 1 << 17;
@@ -45,7 +54,8 @@ pub struct Devnet {
     prover: Option<ProverHandle>,
 }
 
-fn beacon_chain(chain_id: &str, index: usize) -> HashChain {
+/// Validator `index`'s beacon hash chain.
+pub fn beacon_chain(chain_id: &str, index: usize) -> HashChain {
     let seed = hash_domain(
         "fold/devnet/beacon-seed",
         format!("{chain_id}/{index}").as_bytes(),
@@ -53,7 +63,76 @@ fn beacon_chain(chain_id: &str, index: usize) -> HashChain {
     HashChain::new(seed, BEACON_CHAIN_LENGTH)
 }
 
-/// The genesis specification a devnet configuration produces.
+/// The wallet that operates devnet validator `index` (stakes for it,
+/// receives its rewards).
+pub fn operator_name(index: usize) -> String {
+    format!("operator-{index}")
+}
+
+/// What devnet validator `index`'s operator signs to stake `stake` for it
+/// on the chain `config` describes: the validator's public keys, the tip of
+/// its beacon hash chain and a proof that it holds both keys. On a network
+/// the operator builds this on its own machine from its validator's keys; a
+/// devnet derives every validator's keys from the chain identifier, so
+/// anyone can.
+pub fn registration(
+    config: &ChainConfig,
+    index: usize,
+    operator: &AccountId,
+    stake: Amount,
+) -> TxKind {
+    let keys = ValidatorKeys::devnet(&config.chain_id, index);
+    let (lattice, hash) = keys.public();
+    let message = possession_digest(config, operator, &keys.id);
+    TxKind::RegisterValidator {
+        lattice,
+        hash,
+        beacon_tip: beacon_chain(&config.chain_id, index).tip(),
+        stake,
+        possession: keys.sign_dual(&message.0),
+    }
+}
+
+/// The identifier of devnet validator `index` of the chain `chain_id`.
+pub fn validator_id(chain_id: &str, index: usize) -> ValidatorId {
+    ValidatorKeys::devnet(chain_id, index).id
+}
+
+/// ADVERSARY SIMULATION: what devnet validator `index` leaves behind when
+/// it equivocates — two different consensus headers for the same round of
+/// consensus session `session` on chain `chain`, both signed with its
+/// keys. Anyone who sees both can report them.
+pub fn equivocation(
+    chain_id: &str,
+    chain: Hash32,
+    index: usize,
+    session: u64,
+    round: u64,
+) -> Equivocation {
+    let keys = ValidatorKeys::devnet(chain_id, index);
+    let signed = |payload: &[u8]| {
+        let header = fold_consensus::Header {
+            author: keys.id,
+            chain,
+            round: fold_core::ids::Round(round),
+            epoch: fold_core::ids::Epoch(session),
+            shard: ShardId(0),
+            parents: Vec::new(),
+            payload: vec![payload.to_vec()],
+        };
+        let signature = keys.sign_dual(&fold_consensus::Header::signing_digest(&header.digest()).0);
+        fold_consensus::SignedHeader { header, signature }
+    };
+    Equivocation::Headers {
+        first: signed(b"one history"),
+        second: signed(b"another history"),
+    }
+}
+
+/// The genesis specification a devnet configuration produces: its genesis
+/// validators (the first `validators` devnet validators, each staking
+/// `validator_stake` USD, operated by `operator-<index>`), accounts and
+/// parameters.
 pub fn devnet_genesis(config: &DevnetConfig) -> GenesisSpec {
     let faucet = Wallet::named(FAUCET);
     let mut accounts = vec![GenesisAccount {
@@ -75,19 +154,58 @@ pub fn devnet_genesis(config: &DevnetConfig) -> GenesisSpec {
     let mut chain = ChainConfig::devnet(Some(faucet.id));
     chain.chain_id = config.chain_id.clone();
     chain.shard_count = config.shards.max(1);
+    let validators = (0..config.validators)
+        .map(|index| {
+            let keys = ValidatorKeys::devnet(&config.chain_id, index);
+            let (lattice, hash) = keys.public();
+            GenesisValidator {
+                id: keys.id,
+                lattice,
+                hash,
+                operator: Wallet::named(&operator_name(index)).id,
+                stake: Amount::units(config.validator_stake),
+                beacon_tip: beacon_chain(&config.chain_id, index).tip(),
+            }
+        })
+        .collect();
     GenesisSpec {
         config: chain,
         accounts,
         atoms: Vec::new(),
+        validators,
+        validator_params: ValidatorParams {
+            stake_asset: AssetId::usd(),
+            epoch_length: if config.epoch_length == 0 {
+                u64::MAX / 2
+            } else {
+                config.epoch_length
+            },
+            min_stake: Amount::units(config.min_stake),
+            unbonding: config.unbonding,
+            seats: u16::try_from(config.shard_seats.max(1)).unwrap_or(u16::MAX),
+            max_active: 100,
+            // As the token design proposes: 70 % of what the treasury gains
+            // in an epoch goes to its validators; a reporter receives 5 % of
+            // a slashed stake, so reporting oneself still forfeits 95 %.
+            reward_permille: 700,
+            reporter_permille: 50,
+        },
+        forced: ForcedParams {
+            window: config.forced_window.max(1),
+            max_pending: 4_096,
+        },
     }
 }
 
 /// A validator's lane log and the live lane locks restored from it.
 type RecoveredLanes = (Option<LaneLog>, Vec<(ShardId, LaneRequest)>);
 
+/// A validator's recovered state, beacon, owed forced intents and log.
+type RecoveredState = (State, Beacon, Vec<SignedTransaction>, Option<Wal>);
+
 struct Recovery {
-    epoch: u64,
-    states: Vec<(State, Beacon, ForcedIntents, Option<Wal>)>,
+    generation: u64,
+    states: Vec<RecoveredState>,
     lanes: Vec<RecoveredLanes>,
 }
 
@@ -97,17 +215,17 @@ fn recover(
     genesis_state: &State,
     genesis_beacon: &Beacon,
 ) -> Result<Recovery, NodeError> {
-    let n = config.validators;
+    let n = config.validators + config.standby;
     let Some(dir) = &config.data_dir else {
         return Ok(Recovery {
-            epoch: 0,
+            generation: 0,
             lanes: (0..n).map(|_| (None, Vec::new())).collect(),
             states: (0..n)
                 .map(|_| {
                     (
                         genesis_state.clone(),
                         genesis_beacon.clone(),
-                        ForcedIntents::new(config.forced_window),
+                        Vec::new(),
                         None,
                     )
                 })
@@ -127,31 +245,23 @@ fn recover(
         Ok(_) => {}
         Err(_) => fs::write(&marker, genesis_digest.to_hex())?,
     }
-    let epoch_file = dir.join("epoch");
-    let epoch = match fs::read_to_string(&epoch_file) {
+    // Every restart is a new generation, so consensus sessions never
+    // repeat.
+    let generation_file = dir.join("generation");
+    let generation = match fs::read_to_string(&generation_file) {
         Ok(text) => text.trim().parse::<u64>().map(|e| e + 1).unwrap_or(0),
         Err(_) => 0,
     };
-    fs::write(&epoch_file, epoch.to_string())?;
+    fs::write(&generation_file, generation.to_string())?;
 
     let mut states = Vec::with_capacity(n);
     for index in 0..n {
         let (wal, recovered) = Wal::open(&dir.join(format!("validator-{index}")), config.fsync)?;
         let (base, beacon, forced) = match recovered.snapshot {
             Some(snapshot) => (snapshot.state, snapshot.beacon, snapshot.forced),
-            None => (
-                genesis_state.clone(),
-                genesis_beacon.clone(),
-                ForcedIntents::new(config.forced_window),
-            ),
+            None => (genesis_state.clone(), genesis_beacon.clone(), Vec::new()),
         };
-        let (state, beacon, forced) = replay(
-            base,
-            beacon,
-            forced,
-            &recovered.records,
-            config.shards.max(1),
-        )?;
+        let (state, beacon, forced) = replay(base, beacon, forced, &recovered.records)?;
         states.push((state, beacon, forced, Some(wal)));
     }
     // Validators stop together, but a validator may have logged one Pulse
@@ -172,8 +282,8 @@ fn recover(
                 wal.snapshot(&Snapshot {
                     state: state.clone(),
                     beacon: beacon.clone(),
+                    generation,
                     forced: forced.clone(),
-                    epoch,
                 })?;
             }
         }
@@ -193,7 +303,7 @@ fn recover(
         lanes.push((Some(log), live));
     }
     Ok(Recovery {
-        epoch,
+        generation,
         states,
         lanes,
     })
@@ -202,13 +312,15 @@ fn recover(
 impl Devnet {
     /// Starts a devnet.
     pub fn start(config: DevnetConfig) -> Result<Devnet, NodeError> {
-        let n = config.validators;
-        if n == 0 {
+        if config.validators == 0 {
             return Err(NodeError::Config("at least one validator".into()));
         }
+        // Genesis validators first, then standby validators that run from
+        // the start, observe, and can join by staking.
+        let n = config.validators + config.standby;
         let mode = config.signatures;
         let keys: Vec<ValidatorKeys> = (0..n)
-            .map(|i| ValidatorKeys::devnet(&config.chain_id, i, mode))
+            .map(|i| ValidatorKeys::devnet(&config.chain_id, i))
             .collect();
         let verifier = NodeVerifier::new(&keys, mode);
         let ids: Vec<_> = keys.iter().map(|k| k.id).collect();
@@ -217,35 +329,39 @@ impl Devnet {
         let genesis_digest = genesis_spec.digest();
         let genesis_state = genesis(&genesis_spec)?;
         let chains: Vec<HashChain> = (0..n).map(|i| beacon_chain(&config.chain_id, i)).collect();
-        let tips: Vec<Hash32> = chains.iter().map(HashChain::tip).collect();
         let mut genesis_beacon = Beacon::new(genesis_digest);
-        for (id, tip) in ids.iter().zip(&tips) {
-            genesis_beacon.register(*id, *tip);
+        for validator in &genesis_spec.validators {
+            genesis_beacon.register(validator.id, validator.beacon_tip);
         }
         let recovery = recover(&config, genesis_digest, &genesis_state, &genesis_beacon)?;
-        let epoch = recovery.epoch;
 
-        // The chain identity fixes the validators, their keys and the shard
-        // layout; every committee is derived from it, here and in light
-        // clients alike.
+        // The chain identity fixes the genesis validators, their keys and
+        // the shard layout. Committees after that are in the state: light
+        // clients follow them from epoch to epoch.
+        let mut genesis_keys = fold_light::ValidatorSet::default();
+        for validator in &genesis_spec.validators {
+            genesis_keys.keys.insert(
+                validator.id,
+                (validator.lattice.clone(), validator.hash.clone()),
+            );
+        }
         let chain = ChainSpec {
             genesis: genesis_digest,
-            validators: ids.iter().map(|id| (*id, 1u64)).collect(),
-            keys: verifier.set.clone(),
+            validators: genesis_spec
+                .validators
+                .iter()
+                .map(|v| (v.id, weight(v.stake)))
+                .collect(),
+            keys: genesis_keys,
             shards: config.shards.max(1),
-            seats: u16::try_from(config.shard_seats.clamp(1, n)).unwrap_or(u16::MAX),
+            seats: u16::try_from(config.shard_seats.clamp(1, config.validators))
+                .unwrap_or(u16::MAX),
             insecure_signatures: mode == SignatureMode::InsecureFast,
         };
         chain
             .check()
             .map_err(|e| NodeError::Config(e.to_string()))?;
         let chain_id = chain.id();
-        let committee = chain
-            .committee(epoch)
-            .map_err(|e| NodeError::Config(e.to_string()))?;
-        let shard_committees = chain
-            .shard_committees(epoch)
-            .map_err(|e| NodeError::Config(e.to_string()))?;
 
         let shared = Arc::new(Shared {
             config: config.clone(),
@@ -253,12 +369,10 @@ impl Devnet {
             genesis_digest,
             chain,
             chain_id,
-            epoch,
-            committee,
-            shard_committees,
+            generation: recovery.generation,
             verifier,
             validators: ids.clone(),
-            beacon_tips: tips,
+            view: std::sync::RwLock::new(CommitteeView::default()),
         });
 
         let (senders, receivers): (Vec<Sender<Input>>, Vec<_>) =
@@ -276,13 +390,15 @@ impl Devnet {
             .map(|_| prover::spawn(shared.clone(), proven.clone()));
 
         let mut threads = Vec::new();
-        for (index, (((receiver, (state, beacon, forced, wal)), chain), (lane_log, lane_locks))) in
-            receivers
-                .into_iter()
-                .zip(recovery.states)
-                .zip(chains)
-                .zip(recovery.lanes)
-                .enumerate()
+        for (
+            index,
+            (((receiver, (state, beacon, forced_txs, wal)), chain), (lane_log, lane_locks)),
+        ) in receivers
+            .into_iter()
+            .zip(recovery.states)
+            .zip(chains)
+            .zip(recovery.lanes)
+            .enumerate()
         {
             let setup = ValidatorSetup {
                 index,
@@ -299,7 +415,11 @@ impl Devnet {
                     None
                 },
                 proven: proven.clone(),
-                forced,
+                forced_txs,
+                boundary_dir: config
+                    .data_dir
+                    .as_ref()
+                    .map(|dir| dir.join(format!("validator-{index}")).join("epochs")),
                 lane_log,
                 lane_locks,
             };
@@ -341,7 +461,7 @@ impl Devnet {
             .send(Input::Query(query, reply))
             .map_err(|_| "validator stopped".to_string())?;
         answer
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(API_TIMEOUT)
             .map_err(|_| "validator did not answer in time".to_string())?
     }
 
@@ -361,14 +481,15 @@ impl Devnet {
             })
             .map_err(|_| "gateway stopped".to_string())?;
         answer
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(API_TIMEOUT)
             .map_err(|_| "gateway did not answer".to_string())?
     }
 
     /// Posts a forced intent: the transaction goes straight to every
     /// validator's proposals, bypassing the gateway (any honest proposer is
-    /// enough). Its shard then has `forced_window` Pulses to execute it or
-    /// show it invalid.
+    /// enough). The Pulse that commits it posts it as an obligation of its
+    /// sender's shard, which then has `forced_window` Pulses before the
+    /// state checks whether it could still execute.
     pub fn force(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
         let digest = tx.digest();
         let shard = fold_core::ids::ShardId::for_account(&tx.tx.sender, self.shared.config.shards);
@@ -412,7 +533,7 @@ impl Devnet {
             .send(GatewayInput::Faucet { grants, reply })
             .map_err(|_| "gateway stopped".to_string())?;
         answer
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(API_TIMEOUT)
             .map_err(|_| "gateway did not answer".to_string())?
     }
 
@@ -429,7 +550,7 @@ impl Devnet {
             .send(GatewayInput::Status { tx: digest, reply })
             .map_err(|_| "gateway stopped".to_string())?;
         answer
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(API_TIMEOUT)
             .map_err(|_| "gateway did not answer".to_string())
     }
 
@@ -481,7 +602,11 @@ impl Devnet {
     }
 
     /// Stops every thread (validators write a final snapshot).
-    pub fn shutdown(self) {
+    pub fn shutdown(mut self) {
+        self.stop();
+    }
+
+    fn stop(&mut self) {
         for sender in &self.bus.validators {
             let _ = sender.send(Input::Shutdown);
         }
@@ -489,11 +614,19 @@ impl Devnet {
         if let Some(prover) = &self.prover {
             prover.stop();
         }
-        for thread in self.threads {
+        for thread in std::mem::take(&mut self.threads) {
             let _ = thread.join();
         }
-        if let Some(prover) = self.prover {
+        if let Some(prover) = self.prover.take() {
             prover.join();
         }
+    }
+}
+
+/// A devnet that goes out of scope stops its threads (a test that fails
+/// half-way does not leave validators running).
+impl Drop for Devnet {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

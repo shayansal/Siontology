@@ -1290,6 +1290,7 @@ fn contended_transactions_cannot_ride_the_owned_path() {
         beacon: sim_beacon(pulse),
         owned: vec![release],
         contended: Vec::new(),
+        forced: Vec::new(),
     };
     let before = chain.state.commitment();
     assert!(execute_pulse(&mut chain.state, &input, true).is_err());

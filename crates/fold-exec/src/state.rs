@@ -259,10 +259,36 @@ impl State {
                 ObjectData::Treasury(treasury) => {
                     total += treasury.balances.get(asset).map(|a| a.0).unwrap_or(0);
                 }
+                ObjectData::Validators(set) => {
+                    for record in set.validators.values() {
+                        if set.params.stake_asset == *asset {
+                            total += record.stake.0;
+                        }
+                        if *asset == AssetId::usd() {
+                            total += record.rewards.0;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
         Amount(total)
+    }
+
+    /// The validator set.
+    pub fn validators(&self) -> &crate::validators::ValidatorSet {
+        match self.objects.get(&well_known::validators()).map(|o| &o.data) {
+            Some(ObjectData::Validators(set)) => set,
+            _ => panic!("genesis always creates the validator set"),
+        }
+    }
+
+    /// The forced-inclusion obligations.
+    pub fn forced(&self) -> &crate::validators::ForcedObligations {
+        match self.objects.get(&well_known::forced()).map(|o| &o.data) {
+            Some(ObjectData::Forced(obligations)) => obligations,
+            _ => panic!("genesis always creates the forced-inclusion obligations"),
+        }
     }
 
     /// The minted supply of `asset`.

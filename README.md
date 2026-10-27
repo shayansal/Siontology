@@ -49,11 +49,18 @@ simplification.
   forger must break both; payloads are encrypted with ML-KEM-768.
 - **Censorship resistance.** A user whose transactions are ignored posts
   them straight to consensus as forced intents. One honest proposer is
-  enough to order one, the shard's validators certify it among themselves,
-  and every certified header counts the intents a shard still owes, so
-  censorship by more than a third of a committee is visible to every light
-  client.
-- **Light clients.** A client that pins the chain identity checks the
+  enough to order one; the state then holds it as an obligation of the
+  sender's shard. If the shard lets the deadline pass while the intent
+  could still execute, its committee is replaced, and every certified
+  header counts the intents a shard owes, so censorship by more than a
+  third of a committee is visible to every light client.
+- **Staking and epochs.** Validators join by staking, earn a share of fees
+  by stake, are slashed on signed evidence of equivocation, and leave after
+  unbonding. Who certifies is part of the state transition: every
+  committee is derived from the validator set in the state, epoch by
+  epoch, and the World Proof covers every change.
+- **Light clients.** A client that pins the genesis chain identity follows
+  the committee from epoch to epoch with boundary proofs, then checks the
   committee certificate, the certified order of transactions, receipts,
   state and claim proofs, samples data availability at random and verifies
   World Proofs, without running a node.
@@ -122,8 +129,9 @@ availability and proving) and narrates what the ledger established.
 | `market` | A sealed-bid GPU-hour market that clears at one price with an optimality certificate. |
 | `receipts` | Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions (trusting a TEE, distrusting it, or assuming it broken). |
 | `x402` | An AI agent pays an HTTP API per request with x402: the API answers `402`, the agent pays under its charter and retries, and the API serves once the receipt verifies; a replayed payment and an over-limit payment are refused. |
-| `censorship` | Forced inclusion: a user censored by the gateway gets through by posting straight to consensus; when more than a third of a committee censors too, certified headers count the overdue intent and a light client sees it. |
+| `censorship` | Forced inclusion: a user censored by the gateway gets through by posting straight to consensus; when more than a third of a committee censors too, the shard misses its deadline, its committee is replaced, certified headers count the overdue intent and a light client sees it. |
 | `light` | A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys. |
+| `staking` | A standby validator stakes and joins the active set at the next epoch boundary, a light client follows the committee change from genesis, rewards are claimed, and the newcomer is slashed for signing two headers for one round and loses its seat. `--local` starts a devnet with a standby validator and 24-Pulse epochs; against your own devnet, start it with `--standby 1 --epoch-length 24`. |
 
 ## Repository layout
 

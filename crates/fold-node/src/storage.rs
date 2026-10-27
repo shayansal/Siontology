@@ -24,15 +24,12 @@ use fold_core::ids::{Pulse, ShardId};
 use fold_exec::pulse::{execute_pulse, PulseInput};
 use fold_exec::{SignedTransaction, State, WorldCommitment};
 
-use crate::forced::ForcedIntents;
-use crate::owners::Authorized;
-
-/// Magic tag at the start of every record (version 2: records carry the
-/// Pulse's forced intents).
-pub const RECORD_MAGIC: &[u8; 8] = b"FOLDWAL2";
-/// Magic tag at the start of every snapshot (version 2: snapshots carry the
-/// forced-inclusion obligations).
-pub const SNAPSHOT_MAGIC: &[u8; 8] = b"FOLDSNP2";
+/// Magic tag at the start of every record (version 3: forced intents are
+/// part of the Pulse input; obligations live in the state).
+pub const RECORD_MAGIC: &[u8; 8] = b"FOLDWAL3";
+/// Magic tag at the start of every snapshot (version 3: snapshots carry the
+/// restart generation and the signed forced intents still owed).
+pub const SNAPSHOT_MAGIC: &[u8; 8] = b"FOLDSNP3";
 /// Magic tag at the start of every lane-lock record.
 pub const LANE_MAGIC: &[u8; 8] = b"FOLDLAN1";
 /// Default segment size before rotation.
@@ -62,10 +59,8 @@ pub enum StorageError {
 /// One executed Pulse, as logged.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct PulseRecord {
-    /// What was executed.
+    /// What was executed (forced intents included).
     pub input: PulseInput,
-    /// Forced intents committed in this Pulse.
-    pub forced: Vec<SignedTransaction>,
     /// The resulting commitment.
     pub after: WorldCommitment,
     /// The beacon state after the Pulse closed.
@@ -79,10 +74,12 @@ pub struct Snapshot {
     pub state: State,
     /// The beacon state.
     pub beacon: Beacon,
-    /// The forced-inclusion obligations.
-    pub forced: ForcedIntents,
-    /// The consensus epoch in progress when the snapshot was taken.
-    pub epoch: u64,
+    /// The restart generation in progress when the snapshot was taken.
+    pub generation: u64,
+    /// Signed forced intents the state still holds obligations for (the
+    /// state keeps only what the obligation needs; honest validators need
+    /// the signed transaction to approve it).
+    pub forced: Vec<SignedTransaction>,
 }
 
 fn checksum(bytes: &[u8]) -> [u8; 8] {
@@ -301,11 +298,9 @@ fn latest_snapshot(dir: &Path) -> Result<Option<Snapshot>, StorageError> {
 pub fn replay(
     mut state: State,
     mut beacon: Beacon,
-    mut forced: ForcedIntents,
+    mut forced: Vec<SignedTransaction>,
     records: &[PulseRecord],
-    shards: u16,
-) -> Result<(State, Beacon, ForcedIntents), StorageError> {
-    let mut authorized = Authorized::default();
+) -> Result<(State, Beacon, Vec<SignedTransaction>), StorageError> {
     for record in records {
         if record.input.pulse <= state.pulse {
             continue;
@@ -319,28 +314,25 @@ pub fn replay(
                 got: Box::new(output.after),
             });
         }
-        let executed: Vec<_> = output.effects.iter().map(|e| e.digest).collect();
-        forced.after_pulse(
-            record.input.pulse,
-            &record.forced,
-            &executed,
-            &state,
-            shards,
-            &mut authorized,
-        );
+        forced.extend(record.input.forced.iter().cloned());
         beacon = record.beacon.clone();
     }
+    let owed = &state.forced().pending;
+    let mut seen = std::collections::BTreeSet::new();
+    forced.retain(|tx| owed.contains_key(&tx.digest()) && seen.insert(tx.digest()));
     Ok((state, beacon, forced))
 }
 
 /// Durable lane locks.
 ///
 /// A validator appends every request it approves before the approval leaves
-/// it. A restart starts a new consensus epoch, in which old approvals no
-/// longer count; restoring the locks from this log keeps every input locked
-/// to the transaction it was approved for, so no conflicting spend can be
-/// certified after a restart, and the original transaction can be certified
-/// again. Certificate finality survives restarts.
+/// it. Restoring the locks from this log after a restart keeps every input
+/// locked to the transaction it was approved for, so this validator never
+/// approves a conflicting spend, and the original transaction can be
+/// certified again. (Lane committees also change at epoch boundaries and
+/// rotations; a validator that stays on a shard's committee carries its
+/// locks over, while new members start without them; see
+/// `docs/implementation-status.md`.)
 #[derive(Debug)]
 pub struct LaneLog {
     path: PathBuf,
@@ -476,6 +468,7 @@ mod tests {
                 beacon: sim_beacon(pulse),
                 owned: vec![tx],
                 contended: Vec::new(),
+                forced: Vec::new(),
             };
             let output = execute_pulse(&mut chain.state, &input, true).unwrap();
             for w in chain.wallets.values_mut() {
@@ -483,7 +476,6 @@ mod tests {
             }
             wal.append(&PulseRecord {
                 input,
-                forced: Vec::new(),
                 after: output.after,
                 beacon: Beacon::new(Hash32::ZERO),
             })
@@ -506,9 +498,8 @@ mod tests {
         let (state, _, _) = replay(
             genesis.clone(),
             Beacon::new(Hash32::ZERO),
-            ForcedIntents::default(),
+            Vec::new(),
             &recovered.records,
-            2,
         )
         .unwrap();
         assert_eq!(state.pulse, Pulse(2));
@@ -516,8 +507,8 @@ mod tests {
         wal.snapshot(&Snapshot {
             state: state.clone(),
             beacon: Beacon::new(Hash32::ZERO),
-            forced: ForcedIntents::default(),
-            epoch: 0,
+            generation: 0,
+            forced: Vec::new(),
         })
         .unwrap();
         let (_, again) = Wal::open(&dir, false).unwrap();

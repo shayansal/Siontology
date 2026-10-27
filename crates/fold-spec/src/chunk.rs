@@ -30,7 +30,8 @@ use crate::view::ChunkView;
 pub struct ChunkExecution {
     /// The context the chunk executed in.
     pub context: SpecContext,
-    /// Effects of each transaction, in order (empty for the deferred phase).
+    /// Effects of each transaction, in order (empty for the deferred phase,
+    /// whose forced intents are posted, not executed).
     pub effects: Vec<TxEffects>,
     /// The deferred-effects accumulator after the chunk.
     pub deferred_out: Hash32,
@@ -67,7 +68,7 @@ pub struct ChunkReport {
     pub read: usize,
     /// Objects written.
     pub written: usize,
-    /// Transactions executed.
+    /// Transactions executed (0 for the deferred phase).
     pub transactions: usize,
     /// Transactions that succeeded.
     pub succeeded: usize,
@@ -77,6 +78,8 @@ pub struct ChunkReport {
     pub rejected: usize,
     /// Deferred items consumed (deferred phase only).
     pub deferred_items: usize,
+    /// Forced intents posted (deferred phase only).
+    pub intents: usize,
     /// Claims appended to the knowledge log.
     pub claims_appended: u64,
 }
@@ -186,6 +189,7 @@ pub fn execute_chunk(trace: &ChunkTrace) -> Result<ChunkExecution, SpecError> {
             &view,
             trace.witness.frontier.clone(),
             &trace.deferred_items,
+            &trace.transactions,
         )?;
         view.note_reads(outcome.reads);
         view.keep(outcome.writes);
@@ -232,14 +236,12 @@ pub fn execute_chunk(trace: &ChunkTrace) -> Result<ChunkExecution, SpecError> {
 /// the first check that failed.
 pub fn verify_chunk(trace: &ChunkTrace) -> Result<ChunkReport, SpecError> {
     let statement = &trace.statement;
-    // Step 5's shape checks.
+    // Step 5's shape checks: `S.steps = steps(T)` for both kinds of chunk
+    // (for the deferred phase, `T` are the posted forced intents).
+    if steps_digest(&trace.transactions) != statement.steps {
+        return Err(SpecError::StepsMismatch);
+    }
     if statement.deferred_phase {
-        if !trace.transactions.is_empty() {
-            return Err(SpecError::UnexpectedTransactions(trace.transactions.len()));
-        }
-        if statement.steps != steps_digest(&[]) {
-            return Err(SpecError::StepsMismatch);
-        }
         let consumed = chain_deferred(&Hash32::ZERO, &trace.deferred_items);
         if consumed != statement.deferred_in || consumed != statement.deferred_out {
             return Err(SpecError::DeferredMismatch);
@@ -247,15 +249,10 @@ pub fn verify_chunk(trace: &ChunkTrace) -> Result<ChunkReport, SpecError> {
         if statement.effects_in != statement.effects_out {
             return Err(SpecError::EffectsMismatch);
         }
-    } else {
-        if !trace.deferred_items.is_empty() {
-            return Err(SpecError::UnexpectedDeferredItems(
-                trace.deferred_items.len(),
-            ));
-        }
-        if steps_digest(&trace.transactions) != statement.steps {
-            return Err(SpecError::StepsMismatch);
-        }
+    } else if !trace.deferred_items.is_empty() {
+        return Err(SpecError::UnexpectedDeferredItems(
+            trace.deferred_items.len(),
+        ));
     }
 
     let execution = execute_chunk(trace)?;
@@ -300,11 +297,16 @@ pub fn verify_chunk(trace: &ChunkTrace) -> Result<ChunkReport, SpecError> {
         witnessed: trace.witness.objects.len(),
         read: execution.reads.len(),
         written: execution.writes.len(),
-        transactions: trace.transactions.len(),
+        transactions: execution.effects.len(),
         succeeded: count(|status| matches!(status, ExecStatus::Success)),
         failed: count(|status| matches!(status, ExecStatus::Failed(_))),
         rejected: count(|status| matches!(status, ExecStatus::Rejected(_))),
         deferred_items: trace.deferred_items.len(),
+        intents: if statement.deferred_phase {
+            trace.transactions.len()
+        } else {
+            0
+        },
         claims_appended: execution
             .frontier
             .size

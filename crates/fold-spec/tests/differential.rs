@@ -13,20 +13,37 @@
 //! writes stack A recorded, transaction by transaction and object by object.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, OnceLock};
 
 use fold_assurance::{AtomClass, Formula, Policy};
 use fold_clearing::Side;
+use fold_consensus::{
+    sample_committee, Authenticator, Committee, Header, LaneRequest, LaneValidator,
+    OwnerAuthorization, SignedHeader,
+};
+use fold_core::encode::encode;
 use fold_core::hash::{hash_domain, Hash32};
-use fold_core::ids::{AccountId, AssetId, ClaimId, ObjectId, Pulse, Version};
+use fold_core::ids::{
+    AccountId, AssetId, ClaimId, Epoch, ObjectId, Pulse, Round, ShardId, TxDigest, ValidatorId,
+    Version,
+};
 use fold_core::Amount;
-use fold_crypto::{CommitteeEnvelope, KemKeypair};
+use fold_crypto::{
+    validator_id, CommitteeEnvelope, DualKeypair, KemKeypair, Scheme, VALIDATOR_DOMAIN,
+};
 use fold_exec::charter::Caveats;
 use fold_exec::claim::{claim_id, formulas, ClaimBody, Payload};
 use fold_exec::execute::{bond_atom, registered_atom, Deferred, Event, ExecStatus};
 use fold_exec::market::{BatchStatus, Market, OrderTerms, Submission, SEALED_ORDER_DOMAIN};
-use fold_exec::object::{created_id, well_known, Object, ObjectData, ObjectRef, ScheduledEvent};
+use fold_exec::object::{
+    created_id, well_known, CoordinationClass, Object, ObjectData, ObjectRef, Owner, ScheduledEvent,
+};
 use fold_exec::pulse::ChunkTrace;
 use fold_exec::sim::Chain;
+use fold_exec::validators::{
+    possession_digest, Equivocation, EvidenceApproval, ForcedObligations, ForcedParams,
+    ValidatorParams, ValidatorRecord, ValidatorSet, ValidatorStatus,
+};
 use fold_exec::{PulseOutput, SignedTransaction, Transaction, TxKind};
 use fold_spec::commit::{chain_deferred, deferred_coin_id, effects_leaf};
 use fold_spec::{execute_chunk, verify_chunk, ChunkReport, SpecError};
@@ -94,6 +111,11 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::SubmitOrder { .. } => "SubmitOrder",
         TxKind::RevealBatch { .. } => "RevealBatch",
         TxKind::ClearBatch { .. } => "ClearBatch",
+        TxKind::RegisterValidator { .. } => "RegisterValidator",
+        TxKind::Unstake { .. } => "Unstake",
+        TxKind::WithdrawStake { .. } => "WithdrawStake",
+        TxKind::ClaimRewards { .. } => "ClaimRewards",
+        TxKind::ReportEquivocation { .. } => "ReportEquivocation",
     }
 }
 
@@ -128,6 +150,8 @@ fn scheduled_name(event: &ScheduledEvent) -> &'static str {
         ScheduledEvent::SealBatch { .. } => "SealBatch",
         ScheduledEvent::BatchDeadline { .. } => "BatchDeadline",
         ScheduledEvent::RegistryTick => "RegistryTick",
+        ScheduledEvent::ForcedDeadline { .. } => "ForcedDeadline",
+        ScheduledEvent::EpochEnd => "EpochEnd",
     }
 }
 
@@ -212,7 +236,10 @@ fn describe(object: &Object) -> String {
 fn accept(trace: &ChunkTrace) -> ChunkReport {
     match verify_chunk(trace) {
         Ok(report) => {
-            assert_eq!(report.transactions, trace.transactions.len());
+            assert_eq!(
+                report.transactions + report.intents,
+                trace.transactions.len()
+            );
             assert_eq!(report.statement_digest, trace.statement.digest());
             report
         }
@@ -229,6 +256,8 @@ struct Harness {
     chunks: usize,
     /// Transactions verified.
     transactions: usize,
+    /// Forced intents posted in verified deferred phases.
+    intents: usize,
     /// What the verified chunks exercised.
     coverage: BTreeSet<String>,
     /// Witness entries stack A included that stack B neither read nor
@@ -239,13 +268,34 @@ struct Harness {
 
 impl Harness {
     fn new(names: &[&str], usd: u64, coins: u32, chunk_size: usize) -> Harness {
-        let mut chain = Chain::new(names, usd, coins);
+        Harness::from_chain(Chain::new(names, usd, coins), chunk_size)
+    }
+
+    /// A chain with these validator and forced-inclusion parameters (spec
+    /// v1.3); its genesis has the simulation's four validators, operated by
+    /// the faucet account.
+    fn with_params(
+        names: &[&str],
+        usd: u64,
+        coins: u32,
+        chunk_size: usize,
+        validators: ValidatorParams,
+        forced: ForcedParams,
+    ) -> Harness {
+        Harness::from_chain(
+            Chain::with_params(names, usd, coins, validators, forced),
+            chunk_size,
+        )
+    }
+
+    fn from_chain(mut chain: Chain, chunk_size: usize) -> Harness {
         chain.chunk_size = chunk_size;
         Harness {
             chain,
             verified: 0,
             chunks: 0,
             transactions: 0,
+            intents: 0,
             coverage: BTreeSet::new(),
             unread: Vec::new(),
         }
@@ -310,6 +360,89 @@ impl Harness {
         self.chain.balance(name, asset)
     }
 
+    /// Executes one Pulse that also posts `forced` intents; the transactions
+    /// are split by coordination class, as consensus would order them.
+    fn pulse_forced(
+        &mut self,
+        txs: Vec<SignedTransaction>,
+        forced: Vec<SignedTransaction>,
+    ) -> PulseOutput {
+        let (contended, owned): (Vec<_>, Vec<_>) = txs
+            .into_iter()
+            .partition(|tx| tx.tx.class() == CoordinationClass::Contended);
+        let out = self
+            .chain
+            .pulse_forced(owned, contended, forced)
+            .expect("the reference executes the Pulse");
+        self.verify_new();
+        out
+    }
+
+    /// Releases every wallet's in-flight coins (after building intents that
+    /// are posted rather than executed).
+    fn settle(&mut self) {
+        for wallet in self.chain.wallets.values_mut() {
+            wallet.settle();
+        }
+    }
+
+    /// The validator set as the reference chain holds it.
+    fn validator_set(&self) -> ValidatorSet {
+        match &self.chain.state.objects[&well_known::validators()].data {
+            ObjectData::Validators(set) => (**set).clone(),
+            other => panic!("the validator set object holds {other:?}"),
+        }
+    }
+
+    fn record(&self, validator: &ValidatorId) -> ValidatorRecord {
+        self.validator_set().validators[validator].clone()
+    }
+
+    /// The forced-inclusion obligations as the reference chain holds them.
+    fn obligations(&self) -> ForcedObligations {
+        match &self.chain.state.objects[&well_known::forced()].data {
+            ObjectData::Forced(obligations) => (**obligations).clone(),
+            other => panic!("the obligations object holds {other:?}"),
+        }
+    }
+
+    /// The genesis validators (keys and identifiers), operated by the
+    /// faucet account.
+    fn genesis_validators(&self) -> Vec<(DualKeypair, ValidatorId)> {
+        self.chain
+            .validator_keys
+            .iter()
+            .map(|keys| (keys.clone(), key_id(keys)))
+            .collect()
+    }
+
+    /// The shard that owes `name`'s forced intents.
+    fn shard_of(&self, name: &str) -> u16 {
+        ShardId::for_account(&self.id(name), self.chain.state.config.shard_count).0
+    }
+
+    /// The forced intents the last Pulse's deferred phase posted.
+    fn last_posted(&self) -> Vec<SignedTransaction> {
+        let record = self.chain.history.last().expect("a Pulse");
+        let phase = record.traces.last().expect("a deferred phase");
+        assert!(phase.statement.deferred_phase);
+        phase.transactions.clone()
+    }
+
+    /// The coins `name` holds of `asset`, as references at their current
+    /// versions.
+    fn coins(&self, name: &str, asset: &AssetId) -> Vec<ObjectRef> {
+        let owner = Owner::Account(self.id(name));
+        self.chain
+            .state
+            .objects
+            .values()
+            .filter(|object| object.owner == owner)
+            .filter(|object| object.as_coin().is_some_and(|coin| coin.asset == *asset))
+            .map(Object::reference)
+            .collect()
+    }
+
     /// Verifies every chunk of every Pulse not yet verified.
     fn verify_new(&mut self) {
         let records = &self.chain.history[self.verified..];
@@ -320,6 +453,7 @@ impl Harness {
                 let report = accept(trace);
                 self.chunks += 1;
                 self.transactions += report.transactions;
+                self.intents += report.intents;
                 for (signed, effects) in trace.transactions.iter().zip(&trace.effects) {
                     self.coverage.insert(format!(
                         "{}/{}",
@@ -339,10 +473,11 @@ impl Harness {
     /// Prints what was verified (visible with `--nocapture`).
     fn summary(&self, name: &str) {
         eprintln!(
-            "{name}: stack B verified {} chunks of {} Pulses ({} transactions); coverage: {:?}; unread witness entries: {}",
+            "{name}: stack B verified {} chunks of {} Pulses ({} transactions, {} forced intents); coverage: {:?}; unread witness entries: {}",
             self.chunks,
             self.verified,
             self.transactions,
+            self.intents,
             self.coverage,
             self.unread.len()
         );
@@ -2719,12 +2854,14 @@ fn misplaced_payloads_frontiers_and_configurations_are_rejected() {
         rejected(&with_items, "deferred items in a transaction chunk"),
         SpecError::UnexpectedDeferredItems(_)
     ));
+    // v1.3: the deferred phase's transactions are its posted forced
+    // intents, bound by its steps.
     let mut with_transactions = phase.clone();
     with_transactions.transactions = chunk.transactions.clone();
-    assert!(matches!(
-        rejected(&with_transactions, "transactions in the deferred phase"),
-        SpecError::UnexpectedTransactions(_)
-    ));
+    assert_eq!(
+        rejected(&with_transactions, "unbound intents in the deferred phase"),
+        SpecError::StepsMismatch
+    );
 
     for trace in [chunk, phase] {
         let mut bigger = trace.clone();
@@ -4902,4 +5039,2594 @@ fn probe_batch_order_limit() {
     );
     h.assert_minimal_witnesses();
     h.summary("batch order limit");
+}
+
+// ---------------------------------------------------------------------------
+// Spec v1.3: validators, stake, epochs and forced inclusion — helpers
+// ---------------------------------------------------------------------------
+
+/// Validator parameters for the v1.3 tests: epochs of `epoch_length`
+/// Pulses and two seats per shard, so that with the four genesis
+/// validators a rotation replaces a shard's whole committee.
+fn validator_params(epoch_length: u64) -> ValidatorParams {
+    ValidatorParams {
+        stake_asset: usd(),
+        epoch_length,
+        min_stake: units(1_000),
+        unbonding: 3,
+        seats: 2,
+        max_active: 10,
+        reward_permille: 500,
+        reporter_permille: 500,
+    }
+}
+
+/// The faucet's wallet, which also operates the genesis validators.
+const FAUCET_NAME: &str = fold_exec::sim::FAUCET;
+
+fn forced_params(window: u64, max_pending: u32) -> ForcedParams {
+    ForcedParams {
+        window,
+        max_pending,
+    }
+}
+
+/// The identifier of the validator holding `keys`.
+fn key_id(keys: &DualKeypair) -> ValidatorId {
+    validator_id(keys.lattice.public(), keys.hash.public())
+}
+
+/// Deterministic validator keys for the validators the tests register (key
+/// generation and signing are slow, so they are made once).
+fn pool_keys(index: usize) -> &'static DualKeypair {
+    static POOL: OnceLock<Vec<DualKeypair>> = OnceLock::new();
+    &POOL.get_or_init(|| {
+        (0..8u8)
+            .map(|i| DualKeypair::from_seed(&[0xb0 + i; 32], Scheme::SlhDsaSha2_128f))
+            .collect()
+    })[index]
+}
+
+/// A RegisterValidator kind for `keys`, with a proof of possession that
+/// names `operator` and this chain.
+fn registration(h: &Harness, operator: &str, keys: &DualKeypair, stake: Amount) -> TxKind {
+    let (lattice, hash) = (keys.lattice.public().clone(), keys.hash.public().clone());
+    let id = validator_id(&lattice, &hash);
+    let message = possession_digest(&h.chain.state.config, &h.id(operator), &id);
+    let possession = encode(
+        &keys
+            .sign_deterministic(VALIDATOR_DOMAIN, &message.0)
+            .expect("signing"),
+    );
+    TxKind::RegisterValidator {
+        lattice,
+        hash,
+        beacon_tip: hash_domain("test/beacon", &id.0 .0),
+        stake,
+        possession,
+    }
+}
+
+/// Signs as the validator holding `keys`; with `claims`, it claims to be
+/// another validator (forged evidence).
+#[derive(Clone)]
+struct KeyAuth {
+    keys: Arc<DualKeypair>,
+    claims: Option<ValidatorId>,
+}
+
+impl KeyAuth {
+    fn of(keys: &DualKeypair) -> KeyAuth {
+        KeyAuth {
+            keys: Arc::new(keys.clone()),
+            claims: None,
+        }
+    }
+
+    fn claiming(keys: &DualKeypair, claims: ValidatorId) -> KeyAuth {
+        KeyAuth {
+            keys: Arc::new(keys.clone()),
+            claims: Some(claims),
+        }
+    }
+}
+
+impl Authenticator for KeyAuth {
+    fn validator(&self) -> ValidatorId {
+        self.claims.unwrap_or_else(|| key_id(&self.keys))
+    }
+
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
+        encode(
+            &self
+                .keys
+                .sign_deterministic(VALIDATOR_DOMAIN, message)
+                .expect("signing"),
+        )
+    }
+}
+
+/// A consensus header signed by `auth`.
+fn signed_header(auth: &KeyAuth, round: u64, shard: u16, payload: &[u8]) -> SignedHeader {
+    let header = Header {
+        author: auth.validator(),
+        chain: Hash32([1; 32]),
+        round: Round(round),
+        epoch: Epoch(0),
+        shard: ShardId(shard),
+        parents: Vec::new(),
+        payload: vec![payload.to_vec()],
+    };
+    SignedHeader {
+        signature: auth.sign(&Header::signing_digest(&header.digest()).0),
+        header,
+    }
+}
+
+fn report_headers(first: SignedHeader, second: SignedHeader) -> TxKind {
+    TxKind::ReportEquivocation {
+        evidence: Box::new(Equivocation::Headers { first, second }),
+    }
+}
+
+/// Lane owners for evidence: every request is authorized.
+struct AnyOwner;
+
+impl OwnerAuthorization for AnyOwner {
+    fn authorizes(&self, _: &LaneRequest) -> bool {
+        true
+    }
+}
+
+/// `auth`'s signed lane approval of `tx`.
+fn approval(auth: &KeyAuth, tx: &Transaction) -> EvidenceApproval {
+    let committee = Committee::equal_weight(Epoch(0), ShardId(0), [auth.validator()])
+        .expect("a one-member committee");
+    let mut lane = LaneValidator::new(&committee, auth.clone());
+    let digest = tx.digest();
+    let request = LaneRequest {
+        tx: digest,
+        inputs: tx
+            .inputs
+            .iter()
+            .map(|input| fold_consensus::ObjectRef {
+                id: input.id,
+                version: input.version,
+            })
+            .collect(),
+        owner_proof: Vec::new(),
+    };
+    lane.approve(request, &AnyOwner).expect("approved");
+    lane.seal_batch();
+    EvidenceApproval {
+        tx: tx.clone(),
+        proof: lane.approval_proof(&digest).expect("sealed").clone(),
+    }
+}
+
+fn report_approvals(first: EvidenceApproval, second: EvidenceApproval) -> TxKind {
+    TxKind::ReportEquivocation {
+        evidence: Box::new(Equivocation::Approvals {
+            first: Box::new(first),
+            second: Box::new(second),
+        }),
+    }
+}
+
+/// Two transfers by `name` that spend the same coin (bodies only: they
+/// serve as approved transactions in evidence).
+fn double_spend(h: &mut Harness, name: &str) -> (Transaction, Transaction) {
+    let to = h.id(name);
+    let one = h.tx(
+        name,
+        TxKind::Transfer {
+            asset: usd(),
+            outputs: vec![(to, units(1))],
+        },
+    );
+    h.settle();
+    let two = h.tx(
+        name,
+        TxKind::Transfer {
+            asset: usd(),
+            outputs: vec![(to, units(2))],
+        },
+    );
+    h.settle();
+    assert_eq!(one.tx.inputs, two.tx.inputs, "both spend the same coin");
+    (one.tx, two.tx)
+}
+
+fn transfer(h: &mut Harness, from: &str, to: &str, amount: Amount) -> SignedTransaction {
+    let to = h.id(to);
+    h.tx(
+        from,
+        TxKind::Transfer {
+            asset: usd(),
+            outputs: vec![(to, amount)],
+        },
+    )
+}
+
+/// Transfers whose fees flow into the treasury.
+fn fee_traffic(h: &mut Harness, from: &str, to: &str, count: usize) -> Vec<SignedTransaction> {
+    (0..count)
+        .map(|n| transfer(h, from, to, units(n as u64 + 1)))
+        .collect()
+}
+
+/// Re-signs `name`'s transaction after `edit` changes its body.
+fn edited(
+    h: &Harness,
+    name: &str,
+    signed: &SignedTransaction,
+    edit: impl FnOnce(&mut Transaction),
+) -> SignedTransaction {
+    let mut body = signed.tx.clone();
+    edit(&mut body);
+    h.resign(name, body)
+}
+
+fn count_events(out: &PulseOutput, name: &str) -> usize {
+    all_events(out)
+        .iter()
+        .filter(|event| event_name(event) == name)
+        .count()
+}
+
+fn posted_events(out: &PulseOutput) -> BTreeSet<TxDigest> {
+    all_events(out)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::ForcedPosted { intent, .. } => Some(intent),
+            _ => None,
+        })
+        .collect()
+}
+
+fn dismissed_events(out: &PulseOutput) -> BTreeSet<TxDigest> {
+    all_events(out)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::ForcedDismissed { intent, .. } => Some(intent),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The members `sample_committee` gives shard `shard` under the set's
+/// current seed (a shard's lane members before any rotation).
+fn sampled_members(set: &ValidatorSet, shard: u16) -> BTreeSet<ValidatorId> {
+    sample_committee(
+        &set.active,
+        usize::from(set.params.seats),
+        &set.seed,
+        Epoch(set.epoch),
+        ShardId(shard),
+    )
+    .expect("a committee")
+    .members()
+    .iter()
+    .map(|(validator, _)| *validator)
+    .collect()
+}
+
+/// Names of fresh wallets (not yet on chain) whose account falls on
+/// `shard`, or off it.
+fn wallet_name_on(h: &Harness, prefix: &str, shard: u16, on: bool) -> String {
+    (0..64)
+        .map(|n| format!("{prefix}{n}"))
+        .find(|name| {
+            let account = fold_exec::Wallet::named(name).policy.account_id();
+            let lands = ShardId::for_account(&account, h.chain.state.config.shard_count).0 == shard;
+            lands == on && !h.chain.wallets.contains_key(name)
+        })
+        .expect("a wallet name on the shard")
+}
+
+// ---------------------------------------------------------------------------
+// Scenario (v1.3): validators register, earn, leave and withdraw by epoch
+// ---------------------------------------------------------------------------
+
+fn validator_lifecycle(chunk_size: usize) -> Harness {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol", "dave"],
+        50_000,
+        8,
+        chunk_size,
+        validator_params(4),
+        forced_params(3, 8),
+    );
+    let (k1, k2, k3) = (pool_keys(0), pool_keys(1), pool_keys(2));
+    let (v1, v2, v3) = (key_id(k1), key_id(k2), key_id(k3));
+    let genesis: Vec<ValidatorId> = h.genesis_validators().iter().map(|(_, id)| *id).collect();
+    let (g0, g3) = (genesis[0], genesis[3]);
+
+    // Pulse 1: the faucet, which operates the genesis validators, gets gas.
+    h.fund(&[
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+    ]);
+
+    // Pulse 2: one registration succeeds; a replayed proof of possession, a
+    // stake below the minimum, an unaffordable stake and a second
+    // registration of the same keys fail.
+    let kind = registration(&h, "alice", k1, units(2_000));
+    let register = h.tx("alice", kind.clone());
+    let again = h.tx("alice", kind.clone());
+    let stolen = h.tx("bob", kind);
+    let low = {
+        let kind = registration(&h, "carol", k2, Amount(units(1_000).0 - 1));
+        h.tx("carol", kind)
+    };
+    let rich = {
+        let affordable = registration(&h, "dave", k3, units(1_000));
+        let signed = h.tx("dave", affordable);
+        edited(&h, "dave", &signed, |body| {
+            if let TxKind::RegisterValidator { stake, .. } = &mut body.kind {
+                *stake = units(10_000_000);
+            }
+        })
+    };
+    let out = h.pulse(vec![
+        register.clone(),
+        again.clone(),
+        stolen.clone(),
+        low.clone(),
+        rich.clone(),
+    ]);
+    let succeeded = [&register, &again]
+        .iter()
+        .filter(|tx| status_of(&out, tx) == ExecStatus::Success)
+        .count();
+    assert_eq!(succeeded, 1, "one of two identical registrations succeeds");
+    expect(&out, &stolen, Outcome::Failed);
+    expect(&out, &low, Outcome::Failed);
+    expect(&out, &rich, Outcome::Failed);
+    assert_eq!(h.record(&v1).status, ValidatorStatus::Joining);
+    assert!(!h.validator_set().validators.contains_key(&v2));
+
+    // Pulse 3: fees.
+    let txs = fee_traffic(&mut h, "bob", "alice", 2);
+    h.pulse(txs);
+
+    // Pulse 4, epoch 0's last: carol registers at exactly the minimum, and
+    // the epoch ends in the same Pulse. Both new validators become active;
+    // neither is paid for epoch 0.
+    let late = {
+        let kind = registration(&h, "carol", k2, units(1_000));
+        h.tx("carol", kind)
+    };
+    let mut txs = fee_traffic(&mut h, "bob", "alice", 2);
+    txs.push(late.clone());
+    let out = h.pulse(txs);
+    expect(&out, &late, Outcome::Success);
+    assert_eq!(count_events(&out, "EpochChanged"), 1);
+    let set = h.validator_set();
+    assert_eq!((set.epoch, set.epoch_start), (1, Pulse(5)));
+    for v in [v1, v2] {
+        assert_eq!(set.validators[&v].status, ValidatorStatus::Active);
+        assert_eq!(set.validators[&v].rewards, Amount::ZERO);
+    }
+    assert!(set.validators[&g0].rewards > Amount::ZERO);
+    assert_eq!(set.active.len(), 6);
+
+    // Pulses 5–7: dave registers, unstakes while still joining (he exits at
+    // once) and withdraws.
+    let join = {
+        let kind = registration(&h, "dave", k3, units(1_500));
+        h.tx("dave", kind)
+    };
+    let out = h.pulse(vec![join.clone()]);
+    expect(&out, &join, Outcome::Success);
+    let quit = h.tx("dave", TxKind::Unstake { validator: v3 });
+    let out = h.pulse(vec![quit.clone()]);
+    expect(&out, &quit, Outcome::Success);
+    assert_eq!(
+        h.record(&v3).status,
+        ValidatorStatus::Exited {
+            withdrawable_at: Pulse(6)
+        }
+    );
+    let back = h.tx("dave", TxKind::WithdrawStake { validator: v3 });
+    let mut txs = fee_traffic(&mut h, "bob", "carol", 2);
+    txs.push(back.clone());
+    let out = h.pulse(txs);
+    expect(&out, &back, Outcome::Success);
+    assert_eq!(h.record(&v3).status, ValidatorStatus::Withdrawn);
+
+    // Pulse 8, epoch 1's last: the new validators are paid by weight.
+    let txs = fee_traffic(&mut h, "bob", "alice", 2);
+    h.pulse(txs);
+    let earned = h.record(&v1).rewards;
+    assert!(earned > Amount::ZERO);
+    assert!(h.record(&v2).rewards > Amount::ZERO);
+
+    // Pulse 9: only the operator claims.
+    let theft = h.tx("bob", TxKind::ClaimRewards { validator: v1 });
+    let claim = h.tx("alice", TxKind::ClaimRewards { validator: v1 });
+    let out = h.pulse(vec![theft.clone(), claim.clone()]);
+    expect(&out, &theft, Outcome::Failed);
+    expect(&out, &claim, Outcome::Success);
+    assert!(all_events(&out).contains(&Event::RewardsClaimed {
+        validator: v1,
+        amount: earned
+    }));
+
+    // Pulse 10: nothing left to claim; alice takes v1 out, bob cannot.
+    let empty = h.tx("alice", TxKind::ClaimRewards { validator: v1 });
+    let leave = h.tx("alice", TxKind::Unstake { validator: v1 });
+    let not_yours = h.tx("bob", TxKind::Unstake { validator: v1 });
+    let out = h.pulse(vec![empty.clone(), leave.clone(), not_yours.clone()]);
+    expect(&out, &empty, Outcome::Failed);
+    expect(&out, &leave, Outcome::Success);
+    expect(&out, &not_yours, Outcome::Failed);
+    assert_eq!(h.record(&v1).status, ValidatorStatus::Leaving);
+
+    // Pulse 11: leaving twice or withdrawing while leaving fails; the
+    // faucet claims a genesis validator's rewards and takes another out.
+    let twice = h.tx("alice", TxKind::Unstake { validator: v1 });
+    let early = h.tx("alice", TxKind::WithdrawStake { validator: v1 });
+    let genesis_claim = h.tx(FAUCET_NAME, TxKind::ClaimRewards { validator: g0 });
+    let genesis_leave = h.tx(FAUCET_NAME, TxKind::Unstake { validator: g3 });
+    let out = h.pulse(vec![
+        twice.clone(),
+        early.clone(),
+        genesis_claim.clone(),
+        genesis_leave.clone(),
+    ]);
+    expect(&out, &twice, Outcome::Failed);
+    expect(&out, &early, Outcome::Failed);
+    expect(&out, &genesis_claim, Outcome::Success);
+    expect(&out, &genesis_leave, Outcome::Success);
+
+    // Pulse 12, epoch 2's last: leaving validators are paid once more and
+    // exit; they can withdraw after the unbonding period.
+    let txs = fee_traffic(&mut h, "bob", "alice", 2);
+    h.pulse(txs);
+    let exited = ValidatorStatus::Exited {
+        withdrawable_at: Pulse(15),
+    };
+    assert_eq!(h.record(&v1).status, exited);
+    assert_eq!(h.record(&g3).status, exited);
+    assert!(h.record(&v1).rewards > Amount::ZERO);
+    assert!(!h.validator_set().active.iter().any(|(v, _)| *v == v1));
+
+    // Pulses 13–14: too early.
+    for _ in 0..2 {
+        let early = h.tx("alice", TxKind::WithdrawStake { validator: v1 });
+        let out = h.pulse(vec![early.clone()]);
+        expect(&out, &early, Outcome::Failed);
+    }
+    // Pulse 15: exactly at withdrawable_at.
+    let before = h.balance("alice", &usd());
+    let stake = h.record(&v1).stake;
+    let rewards = h.record(&v1).rewards;
+    let withdraw = h.tx("alice", TxKind::WithdrawStake { validator: v1 });
+    let genesis_withdraw = h.tx(FAUCET_NAME, TxKind::WithdrawStake { validator: g3 });
+    let out = h.pulse(vec![withdraw.clone(), genesis_withdraw.clone()]);
+    expect(&out, &withdraw, Outcome::Success);
+    expect(&out, &genesis_withdraw, Outcome::Success);
+    let fee = out
+        .effects
+        .iter()
+        .find(|e| e.digest == withdraw.digest())
+        .map(|e| e.fee)
+        .unwrap();
+    assert_eq!(
+        h.balance("alice", &usd()).0,
+        before.0 + stake.0 + rewards.0 - fee.0,
+        "stake and unclaimed rewards return"
+    );
+
+    // Pulse 16: a withdrawn validator has nothing left.
+    let again = h.tx("alice", TxKind::WithdrawStake { validator: v1 });
+    let leave = h.tx("alice", TxKind::Unstake { validator: v1 });
+    let claim = h.tx("alice", TxKind::ClaimRewards { validator: v1 });
+    let out = h.pulse(vec![again.clone(), leave.clone(), claim.clone()]);
+    for tx in [&again, &leave, &claim] {
+        expect(&out, tx, Outcome::Failed);
+    }
+
+    // More epochs, with and without fees.
+    let txs = fee_traffic(&mut h, "carol", "bob", 3);
+    h.pulse(txs);
+    h.advance_to(25);
+    assert_eq!(h.validator_set().epoch, 6);
+
+    h.assert_covered(&[
+        "RegisterValidator/ok",
+        "RegisterValidator/failed",
+        "Unstake/ok",
+        "Unstake/failed",
+        "WithdrawStake/ok",
+        "WithdrawStake/failed",
+        "ClaimRewards/ok",
+        "ClaimRewards/failed",
+        "due/EpochEnd",
+        "deferred-event/EpochChanged",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn validators_register_earn_leave_and_withdraw_one_per_chunk() {
+    validator_lifecycle(1).summary("validator lifecycle (1 per chunk)");
+}
+
+#[test]
+fn validators_register_earn_leave_and_withdraw_many_per_chunk() {
+    validator_lifecycle(4).summary("validator lifecycle (4 per chunk)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario (v1.3): equivocation evidence and slashing
+// ---------------------------------------------------------------------------
+
+fn equivocation(chunk_size: usize) -> Harness {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol", "dave"],
+        50_000,
+        8,
+        chunk_size,
+        validator_params(5),
+        forced_params(3, 8),
+    );
+    let genesis = h.genesis_validators();
+    let auth: Vec<KeyAuth> = genesis.iter().map(|(keys, _)| KeyAuth::of(keys)).collect();
+    let ids: Vec<ValidatorId> = genesis.iter().map(|(_, id)| *id).collect();
+
+    // Pulses 1–5 (epoch 0): fees, so the genesis validators earn rewards.
+    for _ in 0..4 {
+        let txs = fee_traffic(&mut h, "dave", "alice", 2);
+        h.pulse(txs);
+    }
+    h.advance_to(5);
+    let rewards = h.record(&ids[0]).rewards;
+    assert!(rewards > Amount::ZERO);
+    let stake = h.record(&ids[0]).stake;
+
+    // Pulse 6: two headers for one round slash g0. The same header twice,
+    // headers of different rounds or shards, a signer claiming another's
+    // identity and an unregistered author are not evidence.
+    let real = h.tx(
+        "bob",
+        report_headers(
+            signed_header(&auth[0], 7, 0, b"a"),
+            signed_header(&auth[0], 7, 0, b"b"),
+        ),
+    );
+    let same = h.tx(
+        "carol",
+        report_headers(
+            signed_header(&auth[1], 7, 0, b"a"),
+            signed_header(&auth[1], 7, 0, b"a"),
+        ),
+    );
+    let rounds = h.tx(
+        "carol",
+        report_headers(
+            signed_header(&auth[1], 7, 0, b"a"),
+            signed_header(&auth[1], 8, 0, b"b"),
+        ),
+    );
+    let shards = h.tx(
+        "dave",
+        report_headers(
+            signed_header(&auth[1], 7, 0, b"a"),
+            signed_header(&auth[1], 7, 1, b"b"),
+        ),
+    );
+    let impostor = KeyAuth::claiming(&genesis[2].0, ids[1]);
+    let forged = h.tx(
+        "dave",
+        report_headers(
+            signed_header(&impostor, 7, 0, b"a"),
+            signed_header(&impostor, 7, 0, b"b"),
+        ),
+    );
+    let outsider = KeyAuth::of(pool_keys(7));
+    let stranger = h.tx(
+        "alice",
+        report_headers(
+            signed_header(&outsider, 7, 0, b"a"),
+            signed_header(&outsider, 7, 0, b"b"),
+        ),
+    );
+    let before = h.balance("bob", &usd());
+    let out = h.pulse(vec![
+        real.clone(),
+        same.clone(),
+        rounds.clone(),
+        shards.clone(),
+        forged.clone(),
+        stranger.clone(),
+    ]);
+    expect(&out, &real, Outcome::Success);
+    for tx in [&same, &rounds, &shards, &forged, &stranger] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    let record = h.record(&ids[0]);
+    assert_eq!(record.status, ValidatorStatus::Slashed { at: Pulse(6) });
+    assert_eq!((record.stake, record.rewards), (Amount::ZERO, Amount::ZERO));
+    let fee = out
+        .effects
+        .iter()
+        .find(|e| e.digest == real.digest())
+        .map(|e| e.fee)
+        .unwrap();
+    assert_eq!(
+        h.balance("bob", &usd()).0,
+        before.0 + stake.0 / 2 + rewards.0 / 2 - fee.0,
+        "the reporter receives half of the stake and of the rewards"
+    );
+    let treasury: Vec<Deferred> = out
+        .effects
+        .iter()
+        .find(|e| e.digest == real.digest())
+        .map(|e| e.deferred.clone())
+        .unwrap();
+    assert_eq!(
+        treasury.len(),
+        3,
+        "the rest of the stake, the rest of the rewards and the fee"
+    );
+
+    // Pulse 7: g0 cannot be slashed twice; two live approvals of one coin
+    // version slash g1; alice registers a validator.
+    let (one, two) = double_spend(&mut h, "carol");
+    let again = h.tx(
+        "alice",
+        report_headers(
+            signed_header(&auth[0], 9, 0, b"c"),
+            signed_header(&auth[0], 9, 0, b"d"),
+        ),
+    );
+    let approvals = h.tx(
+        "bob",
+        report_approvals(approval(&auth[1], &one), approval(&auth[1], &two)),
+    );
+    let k1 = pool_keys(0);
+    let join = {
+        let kind = registration(&h, "alice", k1, units(3_000));
+        h.tx("alice", kind)
+    };
+    let out = h.pulse(vec![again.clone(), approvals.clone(), join.clone()]);
+    expect(&out, &again, Outcome::Failed);
+    expect(&out, &approvals, Outcome::Success);
+    expect(&out, &join, Outcome::Success);
+    assert!(matches!(
+        h.record(&ids[1]).status,
+        ValidatorStatus::Slashed { .. }
+    ));
+
+    // Pulse 8: approvals that expired, of the same transaction, without a
+    // common input, or signed by an impostor are not evidence; a joining
+    // validator's double header is.
+    let mut old_one = one.clone();
+    old_one.expires_at = Pulse(7);
+    let mut old_two = two.clone();
+    old_two.expires_at = Pulse(7);
+    let expired = h.tx(
+        "dave",
+        report_approvals(approval(&auth[2], &old_one), approval(&auth[2], &old_two)),
+    );
+    let same_tx = h.tx(
+        "dave",
+        report_approvals(approval(&auth[2], &one), approval(&auth[2], &one)),
+    );
+    let mut other = two.clone();
+    other.inputs = vec![h.coins("dave", &usd())[0]];
+    let disjoint = h.tx(
+        "carol",
+        report_approvals(approval(&auth[2], &one), approval(&auth[2], &other)),
+    );
+    let impostor = KeyAuth::claiming(&genesis[3].0, ids[2]);
+    let forged = h.tx(
+        "carol",
+        report_approvals(approval(&impostor, &one), approval(&impostor, &two)),
+    );
+    let joining = KeyAuth::of(k1);
+    let newcomer = h.tx(
+        "bob",
+        report_headers(
+            signed_header(&joining, 3, 1, b"x"),
+            signed_header(&joining, 3, 1, b"y"),
+        ),
+    );
+    let out = h.pulse(vec![
+        expired.clone(),
+        same_tx.clone(),
+        disjoint.clone(),
+        forged.clone(),
+        newcomer.clone(),
+    ]);
+    for tx in [&expired, &same_tx, &disjoint, &forged] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    expect(&out, &newcomer, Outcome::Success);
+    assert!(matches!(
+        h.record(&key_id(k1)).status,
+        ValidatorStatus::Slashed { .. }
+    ));
+
+    // Pulse 10, epoch 1's last: the slashed validators' weight still counts,
+    // but they are not paid, and they leave the active set.
+    let txs = fee_traffic(&mut h, "dave", "alice", 2);
+    h.pulse(txs);
+    h.advance_to(10);
+    let set = h.validator_set();
+    let mut expected = vec![ids[2], ids[3]];
+    expected.sort();
+    assert_eq!(
+        set.active.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(set.validators[&ids[0]].rewards, Amount::ZERO);
+    assert!(set.validators[&ids[2]].rewards > Amount::ZERO);
+
+    // Pulse 11: slashing a third leaves one validator for the next epoch.
+    let third = h.tx(
+        "carol",
+        report_headers(
+            signed_header(&auth[2], 1, 0, b"p"),
+            signed_header(&auth[2], 1, 0, b"q"),
+        ),
+    );
+    let out = h.pulse(vec![third.clone()]);
+    expect(&out, &third, Outcome::Success);
+    h.advance_to(16);
+    assert_eq!(h.validator_set().active.len(), 1);
+
+    h.assert_covered(&[
+        "ReportEquivocation/ok",
+        "ReportEquivocation/failed",
+        "RegisterValidator/ok",
+        "due/EpochEnd",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn equivocation_is_slashed_on_valid_evidence_only_one_per_chunk() {
+    equivocation(1).summary("equivocation (1 per chunk)");
+}
+
+#[test]
+fn equivocation_is_slashed_on_valid_evidence_many_per_chunk() {
+    equivocation(3).summary("equivocation (3 per chunk)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario (v1.3): forced intents are posted, resolved, overdue, rotated
+// ---------------------------------------------------------------------------
+
+fn forced_inclusion(chunk_size: usize) -> Harness {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol", "dave"],
+        50_000,
+        8,
+        chunk_size,
+        validator_params(8),
+        forced_params(3, 4),
+    );
+    let window = 3;
+    let bob_shard = h.shard_of("bob");
+    // A new account on bob's shard (its intents are owed by the same
+    // committee) and one on the other shard.
+    let fresh = wallet_name_on(&h, "fresh", bob_shard, true);
+    let erin = wallet_name_on(&h, "erin", bob_shard, false);
+    h.chain.add_wallet(&fresh);
+    h.chain.add_wallet(&erin);
+
+    // Pulse 1: funds for the new accounts, and a non-USD coin for carol.
+    h.fund(&[
+        (&fresh, usd(), units(100)),
+        (&erin, usd(), units(100)),
+        ("carol", gpu(), units(5)),
+        (FAUCET_NAME, usd(), units(100)),
+    ]);
+
+    // Pulse 2: two admissible intents (one listed twice: it is posted once),
+    // a faucet intent and an intent that expires in this very Pulse.
+    let p2 = h.pulse_number() + 1;
+    let resolved = transfer(&mut h, "alice", "bob", units(5));
+    let censored = transfer(&mut h, "bob", "alice", units(5));
+    let faucet = {
+        let grants = vec![(h.id("bob"), usd(), units(1))];
+        let wallet = h.chain.wallets.get_mut(FAUCET_NAME).expect("faucet");
+        wallet
+            .faucet(&h.chain.state, grants)
+            .expect("a faucet intent")
+    };
+    let expiring = {
+        let signed = transfer(&mut h, "carol", "alice", units(1));
+        edited(&h, "carol", &signed, |body| body.expires_at = Pulse(p2))
+    };
+    h.settle();
+    let out = h.pulse_forced(
+        Vec::new(),
+        vec![
+            resolved.clone(),
+            censored.clone(),
+            resolved.clone(),
+            faucet.clone(),
+            expiring.clone(),
+        ],
+    );
+    assert_eq!(h.last_posted().len(), 4, "a digest is posted once");
+    assert_eq!(
+        posted_events(&out),
+        [resolved.digest(), censored.digest()].into()
+    );
+    assert_eq!(
+        dismissed_events(&out),
+        [faucet.digest(), expiring.digest()].into()
+    );
+    let pending = h.obligations().pending;
+    assert_eq!(pending[&censored.digest()].deadline, Pulse(p2 + window));
+    assert_eq!(pending[&censored.digest()].shard, bob_shard);
+
+    // Pulse 3: alice's intent executes (her shard did its job); bob's is
+    // already pending; malformed intents are dismissed; an intent spending
+    // a coin a transaction of the same Pulse spends is stale by the time
+    // intents are posted.
+    let base = transfer(&mut h, "carol", "alice", units(1));
+    let carol_pay = transfer(&mut h, "carol", "bob", units(2));
+    let conflict = edited(&h, "carol", &carol_pay, |body| body.nonce += 1);
+    let original_auth = base.auth.clone();
+    let malformed = [
+        edited(&h, "carol", &base, |body| body.fee = Amount::ZERO),
+        edited(&h, "carol", &base, |body| body.inputs.clear()),
+        edited(&h, "carol", &base, |body| {
+            let first = body.inputs[0];
+            body.inputs.push(first);
+        }),
+        edited(&h, "carol", &base, |body| {
+            body.inputs = (0..=fold_exec::tx::MAX_INPUTS as u32)
+                .map(|n| ObjectRef {
+                    id: ObjectId::derive(&n.to_be_bytes()),
+                    version: Version(0),
+                })
+                .collect();
+        }),
+        {
+            let mut forged = base.clone();
+            forged.tx.nonce += 1;
+            forged.auth = original_auth;
+            forged
+        },
+    ];
+    let mut forced = vec![censored.clone(), conflict.clone()];
+    forced.extend(malformed.iter().cloned());
+    let out = h.pulse_forced(vec![resolved.clone(), carol_pay.clone()], forced);
+    expect(&out, &resolved, Outcome::Success);
+    expect(&out, &carol_pay, Outcome::Success);
+    assert!(posted_events(&out).is_empty());
+    assert_eq!(dismissed_events(&out).len(), 7);
+
+    // Pulse 4: intents whose sender or inputs disqualify them, and one from
+    // an account that does not exist yet (its genesis policy admits it).
+    let fresh_intent = transfer(&mut h, &fresh, "alice", units(1));
+    assert!(fresh_intent.tx.genesis_policy.is_some());
+    let no_policy = edited(&h, &fresh, &fresh_intent, |body| {
+        body.genesis_policy = None;
+        body.nonce += 1;
+    });
+    let alice_policy = h.chain.wallet("alice").policy.clone();
+    let wrong_policy = edited(&h, &fresh, &fresh_intent, |body| {
+        body.genesis_policy = Some(alice_policy);
+        body.nonce += 2;
+    });
+    let base = transfer(&mut h, "carol", "alice", units(1));
+    let gas = base.tx.inputs[0];
+    let gas_amount = h.chain.state.objects[&gas.id]
+        .as_coin()
+        .expect("a coin")
+        .amount;
+    let tombstone = h.reference(&carol_pay.tx.inputs[0].id);
+    assert!(h.chain.state.objects[&tombstone.id].is_tombstone());
+    let foreign = h.coins("bob", &usd())[0];
+    let goods = h.coins("carol", &gpu())[0];
+    let with_first = |first: ObjectRef| {
+        move |body: &mut Transaction| {
+            body.inputs[0] = first;
+        }
+    };
+    let disqualified = [
+        no_policy,
+        wrong_policy,
+        edited(
+            &h,
+            "carol",
+            &base,
+            with_first(ObjectRef {
+                id: ObjectId::derive(b"nowhere"),
+                version: Version(0),
+            }),
+        ),
+        edited(
+            &h,
+            "carol",
+            &base,
+            with_first(ObjectRef {
+                id: gas.id,
+                version: Version(gas.version.0 + 1),
+            }),
+        ),
+        edited(&h, "carol", &base, with_first(tombstone)),
+        edited(&h, "carol", &base, with_first(foreign)),
+        edited(&h, "carol", &base, with_first(goods)),
+        edited(&h, "carol", &base, |body| {
+            body.fee = Amount(gas_amount.0 + 1);
+        }),
+    ];
+    let mut forced = vec![fresh_intent.clone()];
+    forced.extend(disqualified.iter().cloned());
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), forced);
+    assert_eq!(posted_events(&out), [fresh_intent.digest()].into());
+    assert_eq!(dismissed_events(&out).len(), disqualified.len());
+
+    // Pulse 5, the first deadline: alice's intent can no longer execute
+    // (resolved); bob's still can (overdue), and bob's shard is rotated to
+    // the two validators outside its committee. Intents posted in this
+    // Pulse see the obligations due in it still pending: dave's is the
+    // fourth, so carol's is dismissed.
+    let dave_intent = transfer(&mut h, "dave", "alice", units(1));
+    let dave_policy = h.chain.wallet("dave").policy.clone();
+    let dave_rotate = h.tx(
+        "dave",
+        TxKind::RotatePolicy {
+            policy: dave_policy,
+            viewing_key: None,
+        },
+    );
+    assert_ne!(dave_rotate.tx.inputs[0], dave_intent.tx.inputs[0]);
+    let carol_intent = transfer(&mut h, "carol", "dave", units(1));
+    let previous = sampled_members(&h.validator_set(), bob_shard);
+    let out = h.pulse_forced(Vec::new(), vec![dave_intent.clone(), carol_intent.clone()]);
+    assert_eq!(posted_events(&out), [dave_intent.digest()].into());
+    assert_eq!(dismissed_events(&out), [carol_intent.digest()].into());
+    let events = all_events(&out);
+    assert!(events.contains(&Event::ForcedResolved {
+        intent: resolved.digest()
+    }));
+    assert!(events.contains(&Event::ForcedOverdue {
+        intent: censored.digest(),
+        shard: bob_shard
+    }));
+    assert!(events.contains(&Event::ShardRotated {
+        shard: bob_shard,
+        rotation: 1
+    }));
+    let rotation = h.validator_set().rotations[&bob_shard].clone();
+    let members: BTreeSet<ValidatorId> = rotation.members.iter().copied().collect();
+    assert_eq!(members.len(), 2);
+    assert!(
+        members.is_disjoint(&previous),
+        "an entirely fresh committee"
+    );
+    let obligation = h.obligations().pending[&censored.digest()].clone();
+    assert_eq!(
+        (obligation.missed, obligation.deadline),
+        (1, Pulse(p2 + 2 * window))
+    );
+
+    // Pulse 6: dave rotates his policy (to the same keys), so his intent
+    // can no longer execute although its coin is untouched; erin's intent
+    // expires before its window ends, so its deadline is its expiry.
+    let p6 = h.pulse_number() + 1;
+    let erin_intent = {
+        let signed = transfer(&mut h, &erin, "alice", units(1));
+        edited(&h, &erin, &signed, |body| body.expires_at = Pulse(p6 + 1))
+    };
+    let out = h.pulse_forced(vec![dave_rotate.clone()], vec![erin_intent.clone()]);
+    expect(&out, &dave_rotate, Outcome::Success);
+    assert_eq!(posted_events(&out), [erin_intent.digest()].into());
+    assert_eq!(
+        h.obligations().pending[&erin_intent.digest()].deadline,
+        Pulse(p6 + 1)
+    );
+
+    // Pulse 7: the new account's intent is overdue, but bob's shard rotated
+    // less than a window ago (no rotation); erin's is overdue at its expiry:
+    // the other shard rotates and the obligation ends.
+    let out = h.pulse(Vec::new());
+    let events = all_events(&out);
+    assert!(events.contains(&Event::ForcedOverdue {
+        intent: fresh_intent.digest(),
+        shard: bob_shard
+    }));
+    let erin_shard = 1 - bob_shard;
+    assert!(events.contains(&Event::ForcedOverdue {
+        intent: erin_intent.digest(),
+        shard: erin_shard
+    }));
+    assert_eq!(count_events(&out, "ShardRotated"), 1);
+    assert!(events.contains(&Event::ShardRotated {
+        shard: erin_shard,
+        rotation: 1
+    }));
+    let pending = h.obligations().pending;
+    assert!(!pending.contains_key(&erin_intent.digest()));
+    assert_eq!(pending[&fresh_intent.digest()].missed, 1);
+
+    // Pulse 8, epoch 0's last: bob's intent is overdue again a window after
+    // the rotation (rotation 2, from the members now serving); dave's is
+    // resolved by his policy rotation; then the epoch ends and the
+    // rotations are cleared.
+    let out = h.pulse(Vec::new());
+    let events = all_events(&out);
+    assert!(events.contains(&Event::ShardRotated {
+        shard: bob_shard,
+        rotation: 2
+    }));
+    assert!(events.contains(&Event::ForcedResolved {
+        intent: dave_intent.digest()
+    }));
+    assert_eq!(count_events(&out, "EpochChanged"), 1);
+    assert!(h.validator_set().rotations.is_empty());
+
+    // Pulse 9: bob's intent finally executes.
+    let out = h.pulse(vec![censored.clone()]);
+    expect(&out, &censored, Outcome::Success);
+    // Pulse 10: the new account's intent is overdue again; in the new epoch
+    // bob's shard rotates afresh (rotation 1).
+    let out = h.pulse(Vec::new());
+    assert!(all_events(&out).contains(&Event::ShardRotated {
+        shard: bob_shard,
+        rotation: 1
+    }));
+    // Pulse 11: bob's obligation is resolved; the new account's intent
+    // executes, creating its account.
+    let out = h.pulse(vec![fresh_intent.clone()]);
+    expect(&out, &fresh_intent, Outcome::Success);
+    assert!(all_events(&out).contains(&Event::ForcedResolved {
+        intent: censored.digest()
+    }));
+    h.advance_to(17);
+    assert!(h.obligations().pending.is_empty());
+
+    h.assert_covered(&[
+        "due/ForcedDeadline",
+        "due/EpochEnd",
+        "deferred-event/ForcedPosted",
+        "deferred-event/ForcedDismissed",
+        "deferred-event/ForcedResolved",
+        "deferred-event/ForcedOverdue",
+        "deferred-event/ShardRotated",
+        "RotatePolicy/ok",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn forced_intents_post_resolve_and_rotate_one_per_chunk() {
+    forced_inclusion(1).summary("forced inclusion (1 per chunk)");
+}
+
+#[test]
+fn forced_intents_post_resolve_and_rotate_many_per_chunk() {
+    forced_inclusion(4).summary("forced inclusion (4 per chunk)");
+}
+
+// ---------------------------------------------------------------------------
+// Property test (v1.3): random validator, epoch and forced-intent workloads
+// ---------------------------------------------------------------------------
+
+/// The accounts of the random workloads; index 4 is the faucet, which
+/// operates the genesis validators.
+const ACTORS: [&str; 5] = ["a", "b", "c", "d", FAUCET_NAME];
+
+#[derive(Clone, Copy, Debug)]
+enum StakeKind {
+    Valid,
+    Minimum,
+    Low,
+    Replayed,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EvidenceKind {
+    Headers,
+    SameHeader,
+    WrongSigner,
+    Approvals,
+    StaleApprovals,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IntentKind {
+    Transfer,
+    Faucet,
+    Expired,
+    BadAuth,
+    Stale,
+    Twice,
+}
+
+/// One step of a random workload. Validator targets 0–3 are the genesis
+/// validators, 4–7 the pool keys; `as_operator` sends the transaction from
+/// the target's operator when it has one.
+#[derive(Clone, Debug)]
+enum ChainOp {
+    Pay {
+        from: usize,
+        to: usize,
+    },
+    Register {
+        who: usize,
+        key: usize,
+        stake: StakeKind,
+    },
+    Unstake {
+        who: usize,
+        target: usize,
+        as_operator: bool,
+    },
+    Withdraw {
+        who: usize,
+        target: usize,
+        as_operator: bool,
+    },
+    Claim {
+        who: usize,
+        target: usize,
+        as_operator: bool,
+    },
+    Report {
+        who: usize,
+        target: usize,
+        evidence: EvidenceKind,
+    },
+    Force {
+        who: usize,
+        intent: IntentKind,
+    },
+    Execute {
+        which: usize,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct ChainParams {
+    chunk_size: usize,
+    epoch_length: u64,
+    unbonding: u64,
+    max_active: u16,
+    reward_permille: u16,
+    reporter_permille: u16,
+    window: u64,
+    max_pending: u32,
+}
+
+fn chain_params() -> impl Strategy<Value = ChainParams> {
+    (
+        1usize..5,
+        1u64..7,
+        0u64..5,
+        2u16..7,
+        prop_oneof![Just(0u16), Just(333), Just(500), Just(1000)],
+        prop_oneof![Just(0u16), Just(250), Just(500), Just(1000)],
+        1u64..5,
+        1u32..6,
+    )
+        .prop_map(
+            |(
+                chunk_size,
+                epoch_length,
+                unbonding,
+                max_active,
+                reward_permille,
+                reporter_permille,
+                window,
+                max_pending,
+            )| ChainParams {
+                chunk_size,
+                epoch_length,
+                unbonding,
+                max_active,
+                reward_permille,
+                reporter_permille,
+                window,
+                max_pending,
+            },
+        )
+}
+
+fn chain_op() -> impl Strategy<Value = ChainOp> {
+    let stake = prop_oneof![
+        3 => Just(StakeKind::Valid),
+        1 => Just(StakeKind::Minimum),
+        1 => Just(StakeKind::Low),
+        1 => Just(StakeKind::Replayed),
+    ];
+    let evidence = prop_oneof![
+        2 => Just(EvidenceKind::Headers),
+        1 => Just(EvidenceKind::SameHeader),
+        1 => Just(EvidenceKind::WrongSigner),
+        2 => Just(EvidenceKind::Approvals),
+        1 => Just(EvidenceKind::StaleApprovals),
+    ];
+    let intent = prop_oneof![
+        4 => Just(IntentKind::Transfer),
+        1 => Just(IntentKind::Faucet),
+        1 => Just(IntentKind::Expired),
+        1 => Just(IntentKind::BadAuth),
+        1 => Just(IntentKind::Stale),
+        1 => Just(IntentKind::Twice),
+    ];
+    prop_oneof![
+        3 => (0..4usize, 0..4usize).prop_map(|(from, to)| ChainOp::Pay { from, to }),
+        3 => (0..4usize, 0..4usize, stake)
+            .prop_map(|(who, key, stake)| ChainOp::Register { who, key, stake }),
+        2 => (0..5usize, 0..8usize, any::<bool>())
+            .prop_map(|(who, target, as_operator)| ChainOp::Unstake { who, target, as_operator }),
+        2 => (0..5usize, 0..8usize, any::<bool>())
+            .prop_map(|(who, target, as_operator)| ChainOp::Withdraw { who, target, as_operator }),
+        2 => (0..5usize, 0..8usize, any::<bool>())
+            .prop_map(|(who, target, as_operator)| ChainOp::Claim { who, target, as_operator }),
+        2 => (0..4usize, 0..8usize, evidence)
+            .prop_map(|(who, target, evidence)| ChainOp::Report { who, target, evidence }),
+        4 => (0..4usize, intent).prop_map(|(who, intent)| ChainOp::Force { who, intent }),
+        2 => (0..16usize).prop_map(|which| ChainOp::Execute { which }),
+    ]
+}
+
+/// The keys and identifier of validator target `target`.
+fn target_keys(
+    genesis: &[(DualKeypair, ValidatorId)],
+    target: usize,
+) -> (DualKeypair, ValidatorId) {
+    if target < 4 {
+        genesis[target].clone()
+    } else {
+        let keys = pool_keys(target - 4);
+        (keys.clone(), key_id(keys))
+    }
+}
+
+/// The workload account that operates `validator`, if any.
+fn operator_of(h: &Harness, validator: &ValidatorId) -> Option<&'static str> {
+    let operator = h.validator_set().validators.get(validator)?.operator;
+    ACTORS.iter().copied().find(|name| h.id(name) == operator)
+}
+
+/// Runs one random workload; returns what it exercised.
+fn run_chain_workload(params: &ChainParams, pulses: &[Vec<ChainOp>]) -> BTreeSet<String> {
+    let mut validators = validator_params(params.epoch_length);
+    validators.unbonding = params.unbonding;
+    validators.max_active = params.max_active;
+    validators.reward_permille = params.reward_permille;
+    validators.reporter_permille = params.reporter_permille;
+    let mut h = Harness::with_params(
+        &ACTORS[..4],
+        20_000,
+        6,
+        params.chunk_size,
+        validators,
+        forced_params(params.window, params.max_pending),
+    );
+    h.fund(&[
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+    ]);
+    let genesis = h.genesis_validators();
+    let mut posted: Vec<SignedTransaction> = Vec::new();
+    let mut round = 0u64;
+    let payment = |h: &Harness, to: usize| TxKind::Transfer {
+        asset: usd(),
+        outputs: vec![(h.id(ACTORS[to]), units(1))],
+    };
+    for ops in pulses {
+        let mut txs: Vec<SignedTransaction> = Vec::new();
+        let mut forced: Vec<SignedTransaction> = Vec::new();
+        let now = h.pulse_number() + 1;
+        for op in ops {
+            match *op {
+                ChainOp::Pay { from, to } => {
+                    let kind = payment(&h, to);
+                    txs.extend(h.chain.tx(ACTORS[from], kind).ok());
+                }
+                ChainOp::Register { who, key, stake } => {
+                    let keys = pool_keys(key);
+                    let minimum = units(1_000);
+                    let kind = match stake {
+                        StakeKind::Valid => {
+                            registration(&h, ACTORS[who], keys, units(1_000 + 250 * key as u64))
+                        }
+                        StakeKind::Minimum => registration(&h, ACTORS[who], keys, minimum),
+                        StakeKind::Low => {
+                            registration(&h, ACTORS[who], keys, Amount(minimum.0 - 1))
+                        }
+                        StakeKind::Replayed => {
+                            registration(&h, ACTORS[(who + 1) % 4], keys, units(1_500))
+                        }
+                    };
+                    txs.extend(h.chain.tx(ACTORS[who], kind).ok());
+                }
+                ChainOp::Unstake {
+                    who,
+                    target,
+                    as_operator,
+                }
+                | ChainOp::Withdraw {
+                    who,
+                    target,
+                    as_operator,
+                }
+                | ChainOp::Claim {
+                    who,
+                    target,
+                    as_operator,
+                } => {
+                    let validator = target_keys(&genesis, target).1;
+                    let actor = if as_operator {
+                        operator_of(&h, &validator).unwrap_or(ACTORS[who])
+                    } else {
+                        ACTORS[who]
+                    };
+                    let kind = match op {
+                        ChainOp::Unstake { .. } => TxKind::Unstake { validator },
+                        ChainOp::Withdraw { .. } => TxKind::WithdrawStake { validator },
+                        _ => TxKind::ClaimRewards { validator },
+                    };
+                    txs.extend(h.chain.tx(actor, kind).ok());
+                }
+                ChainOp::Report {
+                    who,
+                    target,
+                    evidence,
+                } => {
+                    let (keys, id) = target_keys(&genesis, target);
+                    let auth = KeyAuth::of(&keys);
+                    round += 1;
+                    let kind = match evidence {
+                        EvidenceKind::Headers => report_headers(
+                            signed_header(&auth, round, 0, b"x"),
+                            signed_header(&auth, round, 0, b"y"),
+                        ),
+                        EvidenceKind::SameHeader => {
+                            let header = signed_header(&auth, round, 1, b"x");
+                            report_headers(header.clone(), header)
+                        }
+                        EvidenceKind::WrongSigner => {
+                            let other = target_keys(&genesis, (target + 1) % 8).0;
+                            let impostor = KeyAuth::claiming(&other, id);
+                            report_headers(
+                                signed_header(&impostor, round, 0, b"x"),
+                                signed_header(&impostor, round, 0, b"y"),
+                            )
+                        }
+                        EvidenceKind::Approvals | EvidenceKind::StaleApprovals => {
+                            let kind = payment(&h, who);
+                            let Ok(base) = h.chain.tx(ACTORS[who], kind) else {
+                                continue;
+                            };
+                            let mut one = base.tx;
+                            if matches!(evidence, EvidenceKind::StaleApprovals) {
+                                one.expires_at = Pulse(now - 1);
+                            }
+                            let mut two = one.clone();
+                            two.nonce += 1;
+                            report_approvals(approval(&auth, &one), approval(&auth, &two))
+                        }
+                    };
+                    txs.extend(h.chain.tx(ACTORS[who], kind).ok());
+                }
+                ChainOp::Force { who, intent } => {
+                    let name = ACTORS[who];
+                    if let IntentKind::Faucet = intent {
+                        let grants = vec![(h.id(name), usd(), units(1))];
+                        let wallet = h.chain.wallets.get_mut(FAUCET_NAME).expect("faucet");
+                        forced.extend(wallet.faucet(&h.chain.state, grants).ok());
+                        continue;
+                    }
+                    let kind = payment(&h, (who + 1) % 4);
+                    let Ok(signed) = h.chain.tx(name, kind) else {
+                        continue;
+                    };
+                    match intent {
+                        IntentKind::Transfer => {
+                            posted.push(signed.clone());
+                            forced.push(signed);
+                        }
+                        IntentKind::Twice => {
+                            posted.push(signed.clone());
+                            forced.push(signed.clone());
+                            forced.push(signed);
+                        }
+                        IntentKind::Expired => forced.push(edited(&h, name, &signed, |body| {
+                            body.expires_at = Pulse(now)
+                        })),
+                        IntentKind::BadAuth => {
+                            let mut forged = signed;
+                            forged.tx.nonce += 1;
+                            forced.push(forged);
+                        }
+                        IntentKind::Stale => forced.push(edited(&h, name, &signed, |body| {
+                            body.inputs[0].version = Version(body.inputs[0].version.0 + 1)
+                        })),
+                        IntentKind::Faucet => unreachable!(),
+                    }
+                }
+                ChainOp::Execute { which } => {
+                    if let Some(intent) = posted.get(which % posted.len().max(1)) {
+                        if !txs.iter().any(|tx| tx.digest() == intent.digest()) {
+                            txs.push(intent.clone());
+                        }
+                    }
+                }
+            }
+        }
+        h.pulse_forced(txs, forced);
+    }
+    // Let deadlines pass and epochs end.
+    h.advance(2 * params.window + params.epoch_length + 1);
+    assert!(
+        h.unread.is_empty(),
+        "witness entries stack B never touched:\n{}",
+        h.unread.join("\n")
+    );
+    h.summary(&format!("random chain workload {params:?}"));
+    h.coverage
+}
+
+#[test]
+fn random_validator_and_forced_workloads_are_verified_chunk_by_chunk() {
+    use proptest::test_runner::{Config, RngSeed, TestRunner};
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: None,
+        // Deterministic, as AGENTS.md asks of every RNG.
+        rng_seed: RngSeed::Fixed(0x5eed_0013),
+        ..Config::default()
+    });
+    let coverage = std::cell::RefCell::new(BTreeSet::new());
+    let strategy = (
+        chain_params(),
+        proptest::collection::vec(proptest::collection::vec(chain_op(), 0..7), 3..10),
+    );
+    runner
+        .run(&strategy, |(params, pulses)| {
+            let covered = run_chain_workload(&params, &pulses);
+            coverage.borrow_mut().extend(covered);
+            Ok(())
+        })
+        .unwrap();
+    let coverage = coverage.into_inner();
+    let expected = [
+        "RegisterValidator/ok",
+        "RegisterValidator/failed",
+        "Unstake/ok",
+        "Unstake/failed",
+        "WithdrawStake/ok",
+        "WithdrawStake/failed",
+        "ClaimRewards/ok",
+        "ClaimRewards/failed",
+        "ReportEquivocation/ok",
+        "ReportEquivocation/failed",
+        "due/ForcedDeadline",
+        "due/EpochEnd",
+        "deferred-event/ForcedPosted",
+        "deferred-event/ForcedDismissed",
+        "deferred-event/ForcedResolved",
+        "deferred-event/ForcedOverdue",
+        "deferred-event/ShardRotated",
+        "deferred-event/EpochChanged",
+    ];
+    let missing: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|key| !coverage.contains(*key))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "random workloads never exercised {missing:?}; covered {coverage:?}"
+    );
+    eprintln!("random chain workloads covered: {coverage:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Negative tests (v1.3): tampered intents, beacons, witnesses and evidence
+// ---------------------------------------------------------------------------
+
+/// Honest v1.3 traces to tamper with.
+struct V13Traces {
+    h: Harness,
+    /// A deferred phase posting two admissible intents and a faucet intent.
+    posting: ChunkTrace,
+    /// The intents it posted, in order.
+    intents: Vec<SignedTransaction>,
+    /// A deferred phase where both intents are overdue (rotating both
+    /// shards) and the epoch ends.
+    rotation: ChunkTrace,
+    /// A transaction chunk whose only transaction slashes a validator.
+    report: ChunkTrace,
+}
+
+fn v13_honest_traces() -> V13Traces {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol"],
+        50_000,
+        8,
+        2,
+        validator_params(4),
+        forced_params(2, 8),
+    );
+    // Intents from both shards: alice's, and a new account's on the other.
+    let other = wallet_name_on(&h, "other", h.shard_of("alice"), false);
+    h.chain.add_wallet(&other);
+    // Pulse 1: funds.
+    h.fund(&[(&other, usd(), units(500))]);
+    // Pulse 2: two admissible intents and a faucet intent.
+    let alice = transfer(&mut h, "alice", "carol", units(3));
+    let bob = transfer(&mut h, &other, "carol", units(4));
+    let faucet = {
+        let grants = vec![(h.id("bob"), usd(), units(1))];
+        let wallet = h.chain.wallets.get_mut(FAUCET_NAME).expect("faucet");
+        wallet
+            .faucet(&h.chain.state, grants)
+            .expect("a faucet intent")
+    };
+    h.settle();
+    let intents = vec![alice, bob, faucet];
+    let out = h.pulse_forced(Vec::new(), intents.clone());
+    assert_eq!(count_events(&out, "ForcedPosted"), 2);
+    let posting = h
+        .chain
+        .history
+        .last()
+        .unwrap()
+        .traces
+        .last()
+        .unwrap()
+        .clone();
+    // Pulse 3: fees; Pulse 4: both deadlines, both shards rotate, the epoch
+    // ends.
+    let txs = fee_traffic(&mut h, "carol", "bob", 2);
+    h.pulse(txs);
+    let out = h.pulse(Vec::new());
+    assert_eq!(count_events(&out, "ShardRotated"), 2);
+    assert_eq!(count_events(&out, "EpochChanged"), 1);
+    let rotation = h
+        .chain
+        .history
+        .last()
+        .unwrap()
+        .traces
+        .last()
+        .unwrap()
+        .clone();
+    // Pulse 5: carol reports genesis validator 0.
+    let auth = KeyAuth::of(&h.chain.validator_keys[0].clone());
+    let report = h.tx(
+        "carol",
+        report_headers(
+            signed_header(&auth, 2, 0, b"m"),
+            signed_header(&auth, 2, 0, b"n"),
+        ),
+    );
+    let out = h.pulse(vec![report.clone()]);
+    expect(&out, &report, Outcome::Success);
+    let report = h.chain.history.last().unwrap().traces[0].clone();
+    assert_eq!(report.transactions.len(), 1);
+    V13Traces {
+        h,
+        posting,
+        intents,
+        rotation,
+        report,
+    }
+}
+
+/// Fits `S.steps` to the trace's transactions (or posted intents).
+fn refit_steps(trace: &mut ChunkTrace) {
+    trace.statement.steps = fold_spec::commit::steps_digest(&trace.transactions);
+}
+
+#[test]
+fn tampered_posted_intents_are_rejected() {
+    let V13Traces {
+        h,
+        posting,
+        intents,
+        ..
+    } = v13_honest_traces();
+    accept(&posting);
+    assert_eq!(posting.transactions, intents);
+    assert_eq!(
+        posting.statement.steps,
+        fold_spec::commit::steps_digest(&intents),
+        "the deferred phase binds the posted intents"
+    );
+
+    // Any change to the list breaks the steps.
+    let mut dropped = posting.clone();
+    dropped.transactions.remove(0);
+    assert_eq!(
+        rejected(&dropped, "a dropped intent"),
+        SpecError::StepsMismatch
+    );
+    // With the steps refitted, the obligations differ.
+    refit_steps(&mut dropped);
+    assert!(matches!(
+        rejected(&dropped, "a dropped, refitted intent"),
+        SpecError::StateRootMismatch { .. }
+    ));
+    let mut none = posting.clone();
+    none.transactions.clear();
+    refit_steps(&mut none);
+    assert!(matches!(
+        rejected(&none, "no intents"),
+        SpecError::StateRootMismatch { .. }
+    ));
+    let mut altered = posting.clone();
+    altered.transactions[0] = edited(&h, "alice", &intents[0], |body| body.nonce += 1);
+    refit_steps(&mut altered);
+    assert!(matches!(
+        rejected(&altered, "an altered, re-signed intent"),
+        SpecError::StateRootMismatch { .. }
+    ));
+    let mut forged = posting.clone();
+    forged.transactions[0].tx.nonce += 1;
+    refit_steps(&mut forged);
+    assert!(matches!(
+        rejected(&forged, "an intent whose signature no longer verifies"),
+        SpecError::StateRootMismatch { .. }
+    ));
+    let mut extra = posting.clone();
+    extra
+        .transactions
+        .push(edited(&h, "alice", &intents[0], |body| body.nonce += 2));
+    refit_steps(&mut extra);
+    assert!(matches!(
+        rejected(&extra, "an extra admissible intent"),
+        SpecError::StateRootMismatch { .. }
+    ));
+
+    // The list itself is bound only by the steps (§8.5) and, through the
+    // World Proof, by the published intents (§9.5): with the steps
+    // refitted, an order that changes nothing, or an extra intent dismissed
+    // before anything is read, executes to the same state.
+    let mut reordered = posting.clone();
+    reordered.transactions.swap(0, 1);
+    assert_eq!(
+        rejected(&reordered, "reordered intents"),
+        SpecError::StepsMismatch
+    );
+    refit_steps(&mut reordered);
+    accept(&reordered);
+    let mut padded = posting.clone();
+    let duplicate_faucet = edited(&h, FAUCET_NAME, &intents[2], |body| body.nonce += 1);
+    padded.transactions.push(duplicate_faucet);
+    refit_steps(&mut padded);
+    accept(&padded);
+}
+
+#[test]
+fn tampered_beacons_change_rotations_and_epochs() {
+    let V13Traces {
+        posting, rotation, ..
+    } = v13_honest_traces();
+    accept(&rotation);
+    let mut tampered = rotation.clone();
+    flip(&mut tampered.statement.beacon);
+    assert!(matches!(
+        rejected(&tampered, "another beacon for rotations and the epoch seed"),
+        SpecError::StateRootMismatch { .. }
+    ));
+    // Where nothing draws on the beacon, the chunk cannot tell (§8: the
+    // World Proof binds the beacon).
+    let mut unused = posting.clone();
+    flip(&mut unused.statement.beacon);
+    accept(&unused);
+}
+
+#[test]
+fn forged_validator_and_obligation_witnesses_are_rejected() {
+    let V13Traces {
+        h,
+        posting,
+        rotation,
+        intents,
+        ..
+    } = v13_honest_traces();
+    let position = |trace: &ChunkTrace, id: &ObjectId| {
+        trace
+            .witness
+            .objects
+            .iter()
+            .position(|(entry, _, _)| entry == id)
+            .unwrap_or_else(|| panic!("{id} is witnessed"))
+    };
+
+    // Altered protocol objects fail their proofs.
+    let mut richer = rotation.clone();
+    let at = position(&richer, &well_known::validators());
+    if let Some(Object {
+        data: ObjectData::Validators(set),
+        ..
+    }) = &mut richer.witness.objects[at].1
+    {
+        let record = set.validators.values_mut().next().expect("a validator");
+        record.stake = units(1);
+    }
+    assert!(matches!(
+        rejected(&richer, "a forged validator set"),
+        SpecError::WitnessProof { .. }
+    ));
+    let mut forgiven = rotation.clone();
+    let at = position(&forgiven, &well_known::forced());
+    if let Some(Object {
+        data: ObjectData::Forced(obligations),
+        ..
+    }) = &mut forgiven.witness.objects[at].1
+    {
+        obligations.pending.clear();
+    }
+    assert!(matches!(
+        rejected(&forgiven, "forged obligations"),
+        SpecError::WitnessProof { .. }
+    ));
+
+    // Every object the new steps read must be witnessed.
+    let gas = intents[0].tx.inputs[0].id;
+    let account = well_known::account(&h.id("alice"));
+    for (trace, id, what) in [
+        (&rotation, well_known::validators(), "the validator set"),
+        (&rotation, well_known::forced(), "the obligations"),
+        (
+            &rotation,
+            well_known::treasury(),
+            "the treasury at the epoch's end",
+        ),
+        (&rotation, gas, "an overdue intent's input"),
+        (&rotation, account, "an overdue intent's sender"),
+        (
+            &posting,
+            well_known::forced(),
+            "the obligations when posting",
+        ),
+        (&posting, gas, "a posted intent's input"),
+        (&posting, account, "a posted intent's sender"),
+    ] {
+        let mut dropped = trace.clone();
+        let at = position(&dropped, &id);
+        dropped.witness.objects.remove(at);
+        assert_eq!(
+            rejected(&dropped, &format!("without {what}")),
+            SpecError::Unwitnessed(id),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn altered_equivocation_reports_are_rejected() {
+    let V13Traces { h, report, .. } = v13_honest_traces();
+    accept(&report);
+    let signed = report.transactions[0].clone();
+    let TxKind::ReportEquivocation { evidence } = &signed.tx.kind else {
+        panic!("a report");
+    };
+    let Equivocation::Headers { first, second } = (**evidence).clone() else {
+        panic!("header evidence");
+    };
+
+    // The same evidence, swapped: still valid, but another transaction.
+    let mut swapped = report.clone();
+    swapped.transactions[0] = edited(&h, "carol", &signed, |body| {
+        body.kind = report_headers(second.clone(), first.clone());
+    });
+    assert_eq!(
+        rejected(&swapped, "swapped evidence"),
+        SpecError::StepsMismatch
+    );
+    refit_steps(&mut swapped);
+    // The reporter's reward coins get identifiers derived from the new
+    // digest, which the witness does not cover.
+    assert!(matches!(
+        rejected(&swapped, "swapped, refitted evidence"),
+        SpecError::UncoveredWrite { .. } | SpecError::EffectsMismatch
+    ));
+
+    // Evidence that is no longer evidence: the report fails instead.
+    let mut same = report.clone();
+    same.transactions[0] = edited(&h, "carol", &signed, |body| {
+        body.kind = report_headers(first.clone(), first.clone());
+    });
+    refit_steps(&mut same);
+    rejected(&same, "the same header twice");
+
+    // A corrupted signature inside the evidence (the report re-signed).
+    let mut corrupted = report.clone();
+    corrupted.transactions[0] = edited(&h, "carol", &signed, |body| {
+        let mut broken = second.clone();
+        broken.signature[10] ^= 1;
+        body.kind = report_headers(first.clone(), broken);
+    });
+    refit_steps(&mut corrupted);
+    rejected(&corrupted, "a corrupted evidence signature");
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case probes (v1.3)
+// ---------------------------------------------------------------------------
+
+fn treasury_balances(h: &Harness) -> BTreeMap<AssetId, Amount> {
+    match &h.chain.state.objects[&well_known::treasury()].data {
+        ObjectData::Treasury(treasury) => treasury.balances.clone(),
+        other => panic!("the treasury object holds {other:?}"),
+    }
+}
+
+/// §6.3 EpochEnd step 5, `balances[USD] −= paid`, when the treasury never
+/// held USD: the entry is written (as 0) even though nothing is paid.
+#[test]
+fn probe_epoch_end_writes_the_usd_entry_even_when_nothing_is_paid() {
+    let mut h = Harness::with_params(
+        &["alice"],
+        1_000,
+        2,
+        1,
+        validator_params(1),
+        forced_params(2, 4),
+    );
+    assert_eq!(treasury_balances(&h).get(&usd()), None);
+    // Pulse 1 carries no fee and is epoch 0's last.
+    let out = h.pulse(Vec::new());
+    assert!(all_events(&out).contains(&Event::EpochChanged {
+        epoch: 1,
+        active: 4,
+        rewards: Amount::ZERO
+    }));
+    assert_eq!(
+        treasury_balances(&h).get(&usd()),
+        Some(&Amount::ZERO),
+        "stack A writes balances[USD] = 0"
+    );
+    // Epochs of one Pulse, with and without fees.
+    let txs = fee_traffic(&mut h, "alice", "alice", 2);
+    h.pulse(txs);
+    h.advance(3);
+    assert_eq!(h.validator_set().epoch, 5);
+    h.assert_minimal_witnesses();
+}
+
+/// §6.3 posting: `ctx.pulse < tx.expires_at` is strict, and the deadline is
+/// `min(ctx.pulse + window, expires_at)`; an intent that can still execute
+/// at its deadline is overdue even in its last executable Pulse.
+#[test]
+fn probe_posting_expiry_and_deadline_boundaries() {
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        50_000,
+        8,
+        1,
+        validator_params(50),
+        forced_params(4, 8),
+    );
+    let p = h.pulse_number() + 1;
+    let base_a = transfer(&mut h, "alice", "bob", units(1));
+    let base_b = transfer(&mut h, "bob", "alice", units(1));
+    let now = edited(&h, "alice", &base_a, |body| body.expires_at = Pulse(p));
+    let next = edited(&h, "bob", &base_b, |body| body.expires_at = Pulse(p + 1));
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), vec![now.clone(), next.clone()]);
+    assert_eq!(dismissed_events(&out), [now.digest()].into());
+    assert_eq!(posted_events(&out), [next.digest()].into());
+    assert_eq!(
+        h.obligations().pending[&next.digest()].deadline,
+        Pulse(p + 1)
+    );
+    let out = h.pulse(Vec::new());
+    assert!(all_events(&out).contains(&Event::ForcedOverdue {
+        intent: next.digest(),
+        shard: h.shard_of("bob")
+    }));
+    assert_eq!(count_events(&out, "ShardRotated"), 1);
+    assert!(
+        h.obligations().pending.is_empty(),
+        "it ends with its expiry"
+    );
+
+    // Executed in its deadline Pulse (transactions run before the deferred
+    // phase): resolved.
+    let p = h.pulse_number() + 1;
+    let base = transfer(&mut h, "alice", "bob", units(2));
+    let soon = edited(&h, "alice", &base, |body| body.expires_at = Pulse(p + 1));
+    h.settle();
+    h.pulse_forced(Vec::new(), vec![soon.clone()]);
+    let out = h.pulse(vec![soon.clone()]);
+    expect(&out, &soon, Outcome::Success);
+    assert!(all_events(&out).contains(&Event::ForcedResolved {
+        intent: soon.digest()
+    }));
+    h.assert_minimal_witnesses();
+}
+
+/// §6.3: intents are posted before due events, so an obligation resolved
+/// in this Pulse still counts toward `max_pending`.
+#[test]
+fn probe_max_pending_counts_obligations_due_in_the_same_pulse() {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol"],
+        50_000,
+        8,
+        1,
+        validator_params(50),
+        forced_params(2, 1),
+    );
+    let first = transfer(&mut h, "alice", "bob", units(1));
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), vec![first.clone()]);
+    assert_eq!(posted_events(&out), [first.digest()].into());
+    let second = transfer(&mut h, "bob", "carol", units(1));
+    let out = h.pulse_forced(vec![first.clone()], vec![second.clone()]);
+    expect(&out, &first, Outcome::Success);
+    assert_eq!(dismissed_events(&out), [second.digest()].into());
+    let third = transfer(&mut h, "carol", "alice", units(1));
+    let out = h.pulse_forced(Vec::new(), vec![third.clone()]);
+    assert_eq!(dismissed_events(&out), [third.digest()].into());
+    assert!(all_events(&out).contains(&Event::ForcedResolved {
+        intent: first.digest()
+    }));
+    let fourth = transfer(&mut h, "carol", "alice", units(2));
+    let out = h.pulse_forced(Vec::new(), vec![fourth.clone()]);
+    assert_eq!(posted_events(&out), [fourth.digest()].into());
+    h.assert_minimal_witnesses();
+}
+
+/// §6.3 Rotate: at most once per window per shard; a later rotation
+/// replaces the members now serving (rotation 1's), not the sampled ones.
+#[test]
+fn probe_rotation_window_and_previous_members() {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol", "dave"],
+        50_000,
+        8,
+        2,
+        validator_params(100),
+        forced_params(3, 8),
+    );
+    let shard = h.shard_of("alice");
+    let same: Vec<&str> = ["bob", "carol", "dave"]
+        .into_iter()
+        .filter(|name| h.shard_of(name) == shard)
+        .collect();
+    assert!(same.len() >= 2, "three accounts on one shard");
+    let original = sampled_members(&h.validator_set(), shard);
+    let i1 = transfer(&mut h, "alice", "bob", units(1));
+    h.settle();
+    h.pulse_forced(Vec::new(), vec![i1.clone()]); // Pulse 1, deadline 4
+    let i2 = transfer(&mut h, same[0], "alice", units(1));
+    h.settle();
+    h.pulse_forced(Vec::new(), vec![i2.clone()]); // Pulse 2, deadline 5
+    h.pulse(Vec::new()); // Pulse 3
+    let i3 = transfer(&mut h, same[1], "alice", units(1));
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), vec![i3.clone()]); // Pulse 4, deadline 7
+    assert!(all_events(&out).contains(&Event::ShardRotated { shard, rotation: 1 }));
+    let first: BTreeSet<ValidatorId> = h.validator_set().rotations[&shard]
+        .members
+        .iter()
+        .copied()
+        .collect();
+    assert!(first.is_disjoint(&original));
+    let out = h.pulse(Vec::new()); // Pulse 5: i2 overdue within the window
+    assert!(all_events(&out).contains(&Event::ForcedOverdue {
+        intent: i2.digest(),
+        shard
+    }));
+    assert_eq!(count_events(&out, "ShardRotated"), 0);
+    h.pulse(Vec::new()); // Pulse 6
+    let out = h.pulse(Vec::new()); // Pulse 7: i1 and i3 overdue; one rotation
+    assert_eq!(count_events(&out, "ForcedOverdue"), 2);
+    assert_eq!(count_events(&out, "ShardRotated"), 1);
+    let rotation = h.validator_set().rotations[&shard].clone();
+    assert_eq!((rotation.count, rotation.at), (2, Pulse(7)));
+    let second: BTreeSet<ValidatorId> = rotation.members.iter().copied().collect();
+    assert!(
+        second.is_disjoint(&first),
+        "replaces the members now serving"
+    );
+    assert_eq!(second, original);
+    h.advance(6);
+    h.assert_minimal_witnesses();
+}
+
+/// §5.27 (`staying` counts joining validators), §6.3 EpochEnd step 3 (an
+/// empty next active set keeps the current one) and rotations drawing from
+/// fewer validators than seats.
+#[test]
+fn probe_last_validator_cannot_leave_and_an_empty_active_set_is_kept() {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol"],
+        50_000,
+        8,
+        2,
+        validator_params(4),
+        forced_params(2, 8),
+    );
+    let genesis = h.genesis_validators();
+    let (k1, k2) = (pool_keys(3), pool_keys(4));
+    let (v1, v2) = (key_id(k1), key_id(k2));
+    let join = {
+        let kind = registration(&h, "alice", k1, units(2_000));
+        h.tx("alice", kind)
+    };
+    let out = h.pulse(vec![join.clone()]);
+    expect(&out, &join, Outcome::Success);
+    h.advance_to(4);
+    assert_eq!(h.record(&v1).status, ValidatorStatus::Active);
+    // Pulse 5: every genesis validator is slashed.
+    let reports: Vec<SignedTransaction> = genesis
+        .iter()
+        .enumerate()
+        .map(|(n, (keys, _))| {
+            let auth = KeyAuth::of(keys);
+            h.tx(
+                "bob",
+                report_headers(
+                    signed_header(&auth, n as u64, 0, b"1"),
+                    signed_header(&auth, n as u64, 0, b"2"),
+                ),
+            )
+        })
+        .collect();
+    let out = h.pulse(reports.clone());
+    for report in &reports {
+        expect(&out, report, Outcome::Success);
+    }
+    // Pulse 6: v1 is the last validator active or joining.
+    let leave = h.tx("alice", TxKind::Unstake { validator: v1 });
+    let out = h.pulse(vec![leave.clone()]);
+    expect(&out, &leave, Outcome::Failed);
+    // Pulse 7: with carol's validator joining, v1 may leave.
+    let join = {
+        let kind = registration(&h, "carol", k2, units(1_000));
+        h.tx("carol", kind)
+    };
+    let leave = h.tx("alice", TxKind::Unstake { validator: v1 });
+    let out = h.pulse(vec![join.clone(), leave.clone()]);
+    expect(&out, &join, Outcome::Success);
+    expect(&out, &leave, Outcome::Success);
+    // Pulse 8: the epoch ends; v2 is the whole active set.
+    h.advance_to(8);
+    assert_eq!(
+        h.validator_set().active,
+        vec![(v2, fold_exec::validators::weight(units(1_000)))]
+    );
+    // Pulse 9: an intent is posted; Pulse 10: v2 is slashed; Pulse 11: the
+    // intent is overdue and the shard rotates with one validator for two
+    // seats; Pulse 12: no record is active, so the active set is kept.
+    let intent = transfer(&mut h, "alice", "bob", units(1));
+    h.settle();
+    h.pulse_forced(Vec::new(), vec![intent.clone()]);
+    let auth = KeyAuth::of(k2);
+    let report = h.tx(
+        "bob",
+        report_headers(
+            signed_header(&auth, 1, 1, b"3"),
+            signed_header(&auth, 1, 1, b"4"),
+        ),
+    );
+    let out = h.pulse(vec![report.clone()]);
+    expect(&out, &report, Outcome::Success);
+    let out = h.pulse(Vec::new());
+    assert_eq!(count_events(&out, "ShardRotated"), 1);
+    let shard = h.shard_of("alice");
+    assert_eq!(h.validator_set().rotations[&shard].members, vec![v2]);
+    let out = h.pulse(Vec::new());
+    assert_eq!(count_events(&out, "EpochChanged"), 1);
+    assert_eq!(h.validator_set().active.len(), 1, "the slashed set is kept");
+    h.advance(5);
+    h.assert_minimal_witnesses();
+}
+
+/// §6.3 EpochEnd step 3: the largest stakes, ties broken by identifier,
+/// at most `max_active`.
+#[test]
+fn probe_active_set_ranking_ties_and_cap() {
+    let mut params = validator_params(3);
+    params.max_active = 4;
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        400_000,
+        8,
+        2,
+        params,
+        forced_params(2, 8),
+    );
+    let genesis = h.genesis_validators();
+    let stake = h.record(&genesis[0].1).stake;
+    let (tie, top) = (pool_keys(5), pool_keys(6));
+    let txs = vec![
+        {
+            let kind = registration(&h, "alice", tie, stake);
+            h.tx("alice", kind)
+        },
+        {
+            let kind = registration(&h, "bob", top, stake.checked_add(units(1)).unwrap());
+            h.tx("bob", kind)
+        },
+    ];
+    let out = h.pulse(txs.clone());
+    for tx in &txs {
+        expect(&out, tx, Outcome::Success);
+    }
+    h.advance_to(3);
+    let set = h.validator_set();
+    let mut tied: Vec<ValidatorId> = genesis.iter().map(|(_, id)| *id).collect();
+    tied.push(key_id(tie));
+    tied.sort();
+    let mut expected: Vec<ValidatorId> = tied[..3].to_vec();
+    expected.push(key_id(top));
+    expected.sort();
+    assert_eq!(
+        set.active.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+        expected,
+        "the tied validator with the largest identifier is left out"
+    );
+    assert!(set.active.iter().all(|(_, w)| *w >= 100_000));
+    h.advance(4);
+    h.assert_minimal_witnesses();
+}
+
+/// §5.30 step 4 and §6.3 EpochEnd step 1 at the extremes of the shares.
+#[test]
+fn probe_reporter_and_reward_share_extremes() {
+    for (reporter_permille, reward_permille) in [(1000, 1000), (0, 0), (1, 999)] {
+        let mut params = validator_params(3);
+        params.reporter_permille = reporter_permille;
+        params.reward_permille = reward_permille;
+        let mut h =
+            Harness::with_params(&["alice", "bob"], 50_000, 8, 2, params, forced_params(2, 8));
+        let genesis = h.genesis_validators();
+        for _ in 0..3 {
+            let txs = fee_traffic(&mut h, "alice", "bob", 2);
+            h.pulse(txs);
+        }
+        let record = h.record(&genesis[0].1);
+        assert_eq!(record.rewards == Amount::ZERO, reward_permille == 0);
+        let auth = KeyAuth::of(&genesis[0].0);
+        let report = h.tx(
+            "bob",
+            report_headers(
+                signed_header(&auth, 4, 0, b"e"),
+                signed_header(&auth, 4, 0, b"f"),
+            ),
+        );
+        let out = h.pulse(vec![report.clone()]);
+        expect(&out, &report, Outcome::Success);
+        let effects = out
+            .effects
+            .iter()
+            .find(|e| e.digest == report.digest())
+            .unwrap();
+        let credited = effects
+            .deferred
+            .iter()
+            .filter(|item| matches!(item, Deferred::Treasury { .. }))
+            .count();
+        let paid = |amount: Amount| fold_exec::validators::permille_of(amount, reporter_permille);
+        let rests = [record.stake, record.rewards]
+            .into_iter()
+            .filter(|amount| amount.0 > paid(*amount).0)
+            .count();
+        assert_eq!(credited, 1 + rests, "the fee and every positive rest");
+        h.advance(4);
+        h.assert_minimal_witnesses();
+    }
+}
+
+/// §5.30 Approvals: `ctx.pulse` at most both expiries.
+#[test]
+fn probe_approvals_count_until_their_expiry() {
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        50_000,
+        8,
+        1,
+        validator_params(50),
+        forced_params(2, 8),
+    );
+    let genesis = h.genesis_validators();
+    h.pulse(Vec::new());
+    let (one, two) = double_spend(&mut h, "alice");
+    let p = h.pulse_number() + 1;
+    let with_expiry = |tx: &Transaction, at: u64| {
+        let mut tx = tx.clone();
+        tx.expires_at = Pulse(at);
+        tx
+    };
+    let auth = |n: usize| KeyAuth::of(&genesis[n].0);
+    let live = h.tx(
+        "bob",
+        report_approvals(
+            approval(&auth(0), &with_expiry(&one, p)),
+            approval(&auth(0), &with_expiry(&two, p)),
+        ),
+    );
+    let dead = h.tx(
+        "bob",
+        report_approvals(
+            approval(&auth(1), &with_expiry(&one, p - 1)),
+            approval(&auth(1), &with_expiry(&two, p - 1)),
+        ),
+    );
+    let mixed = h.tx(
+        "alice",
+        report_approvals(
+            approval(&auth(2), &with_expiry(&one, p)),
+            approval(&auth(2), &with_expiry(&two, p - 1)),
+        ),
+    );
+    // The same coin at another version is not a common input.
+    let mut shifted = with_expiry(&two, p);
+    shifted.inputs[0].version = Version(shifted.inputs[0].version.0 + 1);
+    let versions = h.tx(
+        "alice",
+        report_approvals(
+            approval(&auth(3), &with_expiry(&one, p)),
+            approval(&auth(3), &shifted),
+        ),
+    );
+    let out = h.pulse(vec![
+        live.clone(),
+        dead.clone(),
+        mixed.clone(),
+        versions.clone(),
+    ]);
+    expect(&out, &live, Outcome::Success);
+    expect(&out, &dead, Outcome::Failed);
+    expect(&out, &mixed, Outcome::Failed);
+    expect(&out, &versions, Outcome::Failed);
+    h.assert_minimal_witnesses();
+}
+
+/// `name`'s transaction of `kind`, spending a USD gas coin and then
+/// `extra`, built by hand (for stakes the wallet cannot fund).
+fn by_hand(h: &mut Harness, name: &str, kind: TxKind, extra: Vec<ObjectRef>) -> SignedTransaction {
+    let template = transfer(h, name, name, units(1));
+    let mut body = template.tx;
+    body.kind = kind;
+    body.inputs.truncate(1);
+    body.inputs.extend(extra);
+    body.fee = h
+        .chain
+        .state
+        .config
+        .min_fee(body.size())
+        .checked_add(Amount(1_000))
+        .unwrap();
+    h.resign(name, body)
+}
+
+/// §5.26–§5.30 with a stake asset other than USD: stake is drawn, returned
+/// and forfeited in that asset, the fee still in USD, rewards in USD.
+#[test]
+fn probe_stake_in_another_asset() {
+    let mut params = validator_params(3);
+    params.stake_asset = gpu();
+    let mut h = Harness::with_params(&["alice", "bob"], 50_000, 8, 2, params, forced_params(2, 8));
+    h.fund(&[("alice", gpu(), units(5_000)), ("bob", gpu(), units(5_000))]);
+    let (k1, k2) = (pool_keys(1), pool_keys(2));
+    let (v1, v2) = (key_id(k1), key_id(k2));
+    // The wallet funds stakes in USD only, so these are built by hand: a
+    // USD gas coin, then the goods.
+    let alice_goods = h.coins("alice", &gpu());
+    let bob_goods = h.coins("bob", &gpu());
+    let usd_only = {
+        let kind = registration(&h, "alice", k1, units(2_000));
+        by_hand(&mut h, "alice", kind, Vec::new())
+    };
+    let a = {
+        let kind = registration(&h, "alice", k1, units(2_000));
+        by_hand(&mut h, "alice", kind, alice_goods)
+    };
+    let b = {
+        let kind = registration(&h, "bob", k2, units(2_000));
+        by_hand(&mut h, "bob", kind, bob_goods)
+    };
+    let out = h.pulse(vec![usd_only.clone(), a.clone(), b.clone()]);
+    expect(&out, &usd_only, Outcome::Failed);
+    expect(&out, &a, Outcome::Success);
+    expect(&out, &b, Outcome::Success);
+    // Pulse 3: bob leaves while joining and withdraws his goods next Pulse;
+    // the epoch ends with alice's validator active.
+    let leave = h.tx("bob", TxKind::Unstake { validator: v2 });
+    let txs = vec![leave.clone(), transfer(&mut h, "alice", "bob", units(1))];
+    let out = h.pulse(txs);
+    expect(&out, &leave, Outcome::Success);
+    let before = h.balance("bob", &gpu());
+    let withdraw = h.tx("bob", TxKind::WithdrawStake { validator: v2 });
+    let out = h.pulse(vec![withdraw.clone()]);
+    expect(&out, &withdraw, Outcome::Success);
+    assert_eq!(
+        h.balance("bob", &gpu()),
+        before.checked_add(units(2_000)).unwrap()
+    );
+    // Slashing alice's validator pays the reporter in goods and credits the
+    // treasury in goods.
+    let auth = KeyAuth::of(k1);
+    let report = h.tx(
+        "bob",
+        report_headers(
+            signed_header(&auth, 5, 1, b"g"),
+            signed_header(&auth, 5, 1, b"h"),
+        ),
+    );
+    let out = h.pulse(vec![report.clone()]);
+    expect(&out, &report, Outcome::Success);
+    assert!(matches!(
+        h.record(&v1).status,
+        ValidatorStatus::Slashed { .. }
+    ));
+    assert!(treasury_balances(&h)
+        .get(&gpu())
+        .is_some_and(|a| *a > Amount::ZERO));
+    h.advance(4);
+    h.assert_minimal_witnesses();
+}
+
+/// §5.27/§5.28: a joining validator exits at once, so it can withdraw in
+/// the same Pulse if the withdrawal is ordered after the unstake.
+#[test]
+fn probe_unstake_then_withdraw_in_one_pulse() {
+    let mut h = Harness::with_params(
+        &["alice"],
+        50_000,
+        8,
+        1,
+        validator_params(10),
+        forced_params(2, 8),
+    );
+    let k = pool_keys(3);
+    let v = key_id(k);
+    let join = {
+        let kind = registration(&h, "alice", k, units(1_000));
+        h.tx("alice", kind)
+    };
+    h.pulse(vec![join]);
+    let leave = h.tx("alice", TxKind::Unstake { validator: v });
+    let withdraw = h.tx("alice", TxKind::WithdrawStake { validator: v });
+    let out = h.pulse(vec![leave.clone(), withdraw.clone()]);
+    expect(&out, &leave, Outcome::Success);
+    let order: Vec<TxDigest> = out.effects.iter().map(|e| e.digest).collect();
+    let after = order.iter().position(|d| *d == withdraw.digest())
+        > order.iter().position(|d| *d == leave.digest());
+    let expected = if after {
+        Outcome::Success
+    } else {
+        Outcome::Failed
+    };
+    expect(&out, &withdraw, expected);
+    h.assert_minimal_witnesses();
+}
+
+/// §5.30 step 2: leaving and exited validators can still be slashed; a
+/// slashed validator neither exits nor withdraws.
+#[test]
+fn probe_slashing_leaving_and_exited_validators() {
+    let mut params = validator_params(3);
+    params.unbonding = 5;
+    let mut h = Harness::with_params(&["alice", "bob"], 50_000, 8, 2, params, forced_params(2, 8));
+    let genesis = h.genesis_validators();
+    h.fund(&[
+        (FAUCET_NAME, usd(), units(100)),
+        (FAUCET_NAME, usd(), units(100)),
+    ]);
+    // Pulse 2: g1, g2 and g3 leave.
+    let leaving: Vec<SignedTransaction> = genesis[1..]
+        .iter()
+        .map(|(_, validator)| {
+            h.tx(
+                FAUCET_NAME,
+                TxKind::Unstake {
+                    validator: *validator,
+                },
+            )
+        })
+        .collect();
+    let out = h.pulse(leaving.clone());
+    for leave in &leaving {
+        expect(&out, leave, Outcome::Success);
+    }
+    // Pulse 3, epoch 0's last: g1 is slashed while leaving; g2 exits.
+    let auth1 = KeyAuth::of(&genesis[1].0);
+    let report = h.tx(
+        "bob",
+        report_headers(
+            signed_header(&auth1, 1, 0, b"i"),
+            signed_header(&auth1, 1, 0, b"j"),
+        ),
+    );
+    let out = h.pulse(vec![report.clone()]);
+    expect(&out, &report, Outcome::Success);
+    assert_eq!(
+        h.record(&genesis[1].1).status,
+        ValidatorStatus::Slashed { at: Pulse(3) }
+    );
+    assert_eq!(
+        h.record(&genesis[2].1).status,
+        ValidatorStatus::Exited {
+            withdrawable_at: Pulse(8)
+        }
+    );
+    // Pulse 4: the exited g2 is slashed too; it can never withdraw.
+    let auth2 = KeyAuth::of(&genesis[2].0);
+    let report = h.tx(
+        "alice",
+        report_headers(
+            signed_header(&auth2, 1, 0, b"k"),
+            signed_header(&auth2, 1, 0, b"l"),
+        ),
+    );
+    let out = h.pulse(vec![report.clone()]);
+    expect(&out, &report, Outcome::Success);
+    h.advance_to(8);
+    let withdraw = h.tx(
+        FAUCET_NAME,
+        TxKind::WithdrawStake {
+            validator: genesis[2].1,
+        },
+    );
+    let honest = h.tx(
+        FAUCET_NAME,
+        TxKind::WithdrawStake {
+            validator: genesis[3].1,
+        },
+    );
+    let out = h.pulse(vec![withdraw.clone(), honest.clone()]);
+    expect(&out, &withdraw, Outcome::Failed);
+    expect(&out, &honest, Outcome::Success);
+    // Pulse 10: a withdrawn validator cannot be slashed.
+    let auth3 = KeyAuth::of(&genesis[3].0);
+    let report = h.tx(
+        "bob",
+        report_headers(
+            signed_header(&auth3, 1, 0, b"m"),
+            signed_header(&auth3, 1, 0, b"n"),
+        ),
+    );
+    let out = h.pulse(vec![report.clone()]);
+    expect(&out, &report, Outcome::Failed);
+    h.assert_minimal_witnesses();
+}
+
+/// §6.3: an intent may spend its sender's account object; it stays
+/// executable until the account's version or rotations change.
+#[test]
+fn probe_intent_spending_its_senders_account_object() {
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        50_000,
+        8,
+        1,
+        validator_params(50),
+        forced_params(2, 8),
+    );
+    let account = well_known::account(&h.id("alice"));
+    let policy = h.chain.wallet("alice").policy.clone();
+    let intent = h.tx(
+        "alice",
+        TxKind::RotatePolicy {
+            policy,
+            viewing_key: None,
+        },
+    );
+    assert!(intent.tx.inputs.iter().any(|input| input.id == account));
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), vec![intent.clone()]);
+    assert_eq!(posted_events(&out), [intent.digest()].into());
+    h.pulse(Vec::new());
+    let out = h.pulse(Vec::new());
+    assert!(all_events(&out).contains(&Event::ForcedOverdue {
+        intent: intent.digest(),
+        shard: h.shard_of("alice")
+    }));
+    let out = h.pulse(vec![intent.clone()]);
+    expect(&out, &intent, Outcome::Success);
+    let out = h.pulse(Vec::new());
+    assert!(all_events(&out).contains(&Event::ForcedResolved {
+        intent: intent.digest()
+    }));
+    h.assert_minimal_witnesses();
+}
+
+/// Degenerate parameters the specification allows: with a window of 1 a
+/// shard may rotate every Pulse, a zero stake weighs one (and forfeits
+/// nothing), and with `max_pending` 0 every intent is dismissed. Intents of
+/// contended kinds are owed like any other. (A zero window, which §6.3
+/// clamps to 1, is refused at genesis.)
+#[test]
+fn probe_degenerate_forced_and_stake_parameters() {
+    let mut params = validator_params(4);
+    params.min_stake = Amount::ZERO;
+    let mut h = Harness::with_params(&["alice", "bob"], 50_000, 8, 1, params, forced_params(1, 4));
+    let shard = h.shard_of("alice");
+    let p = h.pulse_number() + 1;
+    let intent = transfer(&mut h, "alice", "bob", units(1));
+    let claim = h.tx(
+        FAUCET_NAME,
+        TxKind::ClaimRewards {
+            validator: h.genesis_validators()[0].1,
+        },
+    );
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), vec![intent.clone(), claim.clone()]);
+    assert_eq!(
+        posted_events(&out),
+        [intent.digest(), claim.digest()].into(),
+        "a contended kind is owed by its sender's shard too"
+    );
+    assert_eq!(
+        h.obligations().pending[&intent.digest()].deadline,
+        Pulse(p + 1)
+    );
+    // A validator with nothing staked.
+    let k = pool_keys(6);
+    let zero = {
+        let kind = registration(&h, "bob", k, Amount::ZERO);
+        h.tx("bob", kind)
+    };
+    let out = h.pulse(vec![zero.clone()]);
+    expect(&out, &zero, Outcome::Success);
+    assert!(all_events(&out).contains(&Event::ShardRotated { shard, rotation: 1 }));
+    let out = h.pulse(Vec::new());
+    assert!(
+        all_events(&out).contains(&Event::ShardRotated { shard, rotation: 2 }),
+        "one rotation per Pulse with a window of 1"
+    );
+    h.advance_to(4);
+    let v = key_id(k);
+    assert_eq!(
+        h.validator_set()
+            .active
+            .iter()
+            .find(|(id, _)| *id == v)
+            .map(|(_, weight)| *weight),
+        Some(1)
+    );
+    let auth = KeyAuth::of(k);
+    let report = h.tx(
+        "alice",
+        report_headers(
+            signed_header(&auth, 6, 0, b"o"),
+            signed_header(&auth, 6, 0, b"p"),
+        ),
+    );
+    let out = h.pulse(vec![report.clone()]);
+    expect(&out, &report, Outcome::Success);
+    assert!(all_events(&out).contains(&Event::ValidatorSlashed {
+        validator: v,
+        amount: Amount::ZERO,
+        reporter: h.id("alice"),
+        reward: Amount::ZERO
+    }));
+    h.advance(4);
+    h.assert_minimal_witnesses();
+
+    // No obligation may be pending.
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        50_000,
+        8,
+        1,
+        validator_params(4),
+        forced_params(2, 0),
+    );
+    let intent = transfer(&mut h, "alice", "bob", units(1));
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), vec![intent.clone()]);
+    assert_eq!(dismissed_events(&out), [intent.digest()].into());
+    h.assert_minimal_witnesses();
 }

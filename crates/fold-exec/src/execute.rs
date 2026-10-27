@@ -18,7 +18,9 @@ use fold_assurance::{
 use fold_clearing::{verify_clearing, Side};
 use fold_core::encode::{decode, encode};
 use fold_core::hash::{hash_parts, Hash32};
-use fold_core::ids::{AccountId, AssetId, AtomId, ClaimId, ObjectId, Pulse, TxDigest, Version};
+use fold_core::ids::{
+    AccountId, AssetId, AtomId, ClaimId, ObjectId, Pulse, TxDigest, ValidatorId, Version,
+};
 use fold_core::Amount;
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +41,9 @@ use crate::state::ChainConfig;
 use crate::store::{ObjectStore, Overlay};
 use crate::tx::{
     object_domain, signing_context, SignedTransaction, Transaction, TxKind, MAX_GRANT, MAX_INPUTS,
+};
+use crate::validators::{
+    permille_of, possession_digest, ValidatorRecord, ValidatorSet, ValidatorStatus,
 };
 
 /// Context shared by every transaction in a Pulse.
@@ -343,6 +348,94 @@ pub enum Event {
         /// Batch.
         batch: u64,
     },
+    /// A validator staked; it joins the active set at the next epoch.
+    ValidatorRegistered {
+        /// The validator.
+        validator: ValidatorId,
+        /// Its operator.
+        operator: AccountId,
+        /// Stake.
+        stake: Amount,
+    },
+    /// A validator leaves the active set at the next epoch boundary (or
+    /// left at once, if it had not joined yet).
+    ValidatorLeaving {
+        /// The validator.
+        validator: ValidatorId,
+    },
+    /// Stake (and any unclaimed rewards) were withdrawn.
+    StakeWithdrawn {
+        /// The validator.
+        validator: ValidatorId,
+        /// Stake returned to the operator (in the stake asset).
+        amount: Amount,
+    },
+    /// Rewards were claimed.
+    RewardsClaimed {
+        /// The validator.
+        validator: ValidatorId,
+        /// Amount paid to the operator.
+        amount: Amount,
+    },
+    /// A validator was slashed for equivocation: its stake and unclaimed
+    /// rewards are forfeited, the reporter receives its share of each and
+    /// the treasury the rest.
+    ValidatorSlashed {
+        /// The offender.
+        validator: ValidatorId,
+        /// Stake forfeited (in the stake asset).
+        amount: Amount,
+        /// Who reported it.
+        reporter: AccountId,
+        /// The reporter's share of the stake.
+        reward: Amount,
+    },
+    /// An epoch began: rewards paid, validators admitted and retired,
+    /// committees sampled afresh.
+    EpochChanged {
+        /// The new epoch.
+        epoch: u64,
+        /// Validators in its active set.
+        active: u32,
+        /// Rewards paid for the epoch that ended.
+        rewards: Amount,
+    },
+    /// A forced intent became an obligation of its sender's shard.
+    ForcedPosted {
+        /// The intent.
+        intent: TxDigest,
+        /// The shard.
+        shard: u16,
+        /// The Pulse at whose end it is checked.
+        deadline: Pulse,
+    },
+    /// A posted intent created no obligation.
+    ForcedDismissed {
+        /// The intent.
+        intent: TxDigest,
+        /// Why (free text, not committed).
+        reason: String,
+    },
+    /// An obligation was met: the intent can no longer execute.
+    ForcedResolved {
+        /// The intent.
+        intent: TxDigest,
+    },
+    /// A shard missed a forced-inclusion deadline: the intent could still
+    /// execute and its shard did not execute it.
+    ForcedOverdue {
+        /// The intent.
+        intent: TxDigest,
+        /// The shard.
+        shard: u16,
+    },
+    /// A shard's committee was frozen out and replaced.
+    ShardRotated {
+        /// The shard.
+        shard: u16,
+        /// Rotations of this shard in the epoch so far.
+        rotation: u32,
+    },
 }
 
 /// The effects of one transaction.
@@ -588,6 +681,20 @@ impl<'r, 'a, S: ObjectStore> Run<'r, 'a, S> {
 
     fn store_assurance(&mut self, mut object: Object, domain: AssuranceDomain) {
         object.data = ObjectData::Assurance(Box::new(domain));
+        self.store(object);
+    }
+
+    fn validators(&mut self) -> Result<(Object, ValidatorSet), ExecError> {
+        let object = self.load(&well_known::validators())?;
+        let ObjectData::Validators(set) = &object.data else {
+            return Err(ExecError::Invalid("validator set corrupted".into()));
+        };
+        let set = (**set).clone();
+        Ok((object, set))
+    }
+
+    fn store_validators(&mut self, mut object: Object, set: ValidatorSet) {
+        object.data = ObjectData::Validators(Box::new(set));
         self.store(object);
     }
 
@@ -1675,8 +1782,196 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 welfare: verified.welfare,
             });
         }
+        TxKind::RegisterValidator {
+            lattice,
+            hash,
+            beacon_tip,
+            stake,
+            possession,
+        } => {
+            let id = fold_crypto::validator_id(lattice, hash);
+            let (object, mut set) = run.validators()?;
+            if set.validators.contains_key(&id) {
+                return Err(ExecError::Invalid("validator already registered".into()));
+            }
+            if *stake < set.params.min_stake {
+                return Err(ExecError::Invalid(format!(
+                    "stake {stake} below the minimum {}",
+                    set.params.min_stake
+                )));
+            }
+            let message = possession_digest(&run.ctx.config, &tx.sender, &id);
+            if !fold_crypto::verify_validator(lattice, hash, &message.0, possession) {
+                return Err(ExecError::Unauthorized(
+                    "no proof of possession of the validator keys".into(),
+                ));
+            }
+            run.draw(set.params.stake_asset, *stake)?;
+            set.validators.insert(
+                id,
+                ValidatorRecord {
+                    id,
+                    lattice: lattice.clone(),
+                    hash: hash.clone(),
+                    operator: tx.sender,
+                    stake: *stake,
+                    status: ValidatorStatus::Joining,
+                    beacon_tip: *beacon_tip,
+                    rewards: Amount::ZERO,
+                    registered_at: pulse,
+                },
+            );
+            run.store_validators(object, set);
+            run.event(Event::ValidatorRegistered {
+                validator: id,
+                operator: tx.sender,
+                stake: *stake,
+            });
+        }
+        TxKind::Unstake { validator } => {
+            let (object, mut set) = run.validators()?;
+            let staying = set
+                .validators
+                .values()
+                .filter(|r| {
+                    r.id != *validator
+                        && matches!(r.status, ValidatorStatus::Active | ValidatorStatus::Joining)
+                })
+                .count();
+            let record = operated(&mut set, validator, &tx.sender)?;
+            match record.status {
+                ValidatorStatus::Joining => {
+                    record.status = ValidatorStatus::Exited {
+                        withdrawable_at: pulse,
+                    }
+                }
+                ValidatorStatus::Active => {
+                    if staying == 0 {
+                        return Err(ExecError::Invalid("the last validator cannot leave".into()));
+                    }
+                    record.status = ValidatorStatus::Leaving;
+                }
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "the validator is neither active nor joining".into(),
+                    ))
+                }
+            }
+            run.store_validators(object, set);
+            run.event(Event::ValidatorLeaving {
+                validator: *validator,
+            });
+        }
+        TxKind::WithdrawStake { validator } => {
+            let (object, mut set) = run.validators()?;
+            let record = operated(&mut set, validator, &tx.sender)?;
+            match record.status {
+                ValidatorStatus::Exited { withdrawable_at } if withdrawable_at <= pulse => {}
+                ValidatorStatus::Exited { withdrawable_at } => {
+                    return Err(ExecError::Invalid(format!(
+                        "stake is withdrawable from Pulse {withdrawable_at}"
+                    )))
+                }
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "only an exited validator's stake can be withdrawn".into(),
+                    ))
+                }
+            }
+            let (stake, rewards) = (record.stake, record.rewards);
+            record.stake = Amount::ZERO;
+            record.rewards = Amount::ZERO;
+            record.status = ValidatorStatus::Withdrawn;
+            let asset = set.params.stake_asset;
+            run.store_validators(object, set);
+            run.mint_coin(tx.sender, asset, stake);
+            run.mint_coin(tx.sender, AssetId::usd(), rewards);
+            run.event(Event::StakeWithdrawn {
+                validator: *validator,
+                amount: stake,
+            });
+        }
+        TxKind::ClaimRewards { validator } => {
+            let (object, mut set) = run.validators()?;
+            let record = operated(&mut set, validator, &tx.sender)?;
+            let amount = record.rewards;
+            if amount == Amount::ZERO {
+                return Err(ExecError::Invalid("no rewards to claim".into()));
+            }
+            record.rewards = Amount::ZERO;
+            run.store_validators(object, set);
+            run.mint_coin(tx.sender, AssetId::usd(), amount);
+            run.event(Event::RewardsClaimed {
+                validator: *validator,
+                amount,
+            });
+        }
+        TxKind::ReportEquivocation { evidence } => {
+            let (object, mut set) = run.validators()?;
+            let offender = evidence.offender(&set, pulse).map_err(ExecError::Invalid)?;
+            let share = set.params.reporter_permille;
+            let asset = set.params.stake_asset;
+            let record = set
+                .validators
+                .get_mut(&offender)
+                .ok_or_else(|| ExecError::Invalid("unknown validator".into()))?;
+            if matches!(
+                record.status,
+                ValidatorStatus::Slashed { .. } | ValidatorStatus::Withdrawn
+            ) {
+                return Err(ExecError::Invalid(
+                    "the validator was already slashed or has withdrawn".into(),
+                ));
+            }
+            // Stake and unclaimed rewards are forfeited; the reporter gets
+            // its share of each, the treasury the rest.
+            let (stake, rewards) = (record.stake, record.rewards);
+            record.stake = Amount::ZERO;
+            record.rewards = Amount::ZERO;
+            record.status = ValidatorStatus::Slashed { at: pulse };
+            run.store_validators(object, set);
+            let mut paid = [Amount::ZERO; 2];
+            for (index, (asset, forfeited)) in [(asset, stake), (AssetId::usd(), rewards)]
+                .into_iter()
+                .enumerate()
+            {
+                paid[index] = permille_of(forfeited, share);
+                run.mint_coin(tx.sender, asset, paid[index]);
+                let rest = forfeited.checked_sub(paid[index])?;
+                if rest > Amount::ZERO {
+                    run.effects.deferred.push(Deferred::Treasury {
+                        asset,
+                        amount: rest,
+                    });
+                }
+            }
+            run.event(Event::ValidatorSlashed {
+                validator: offender,
+                amount: stake,
+                reporter: tx.sender,
+                reward: paid[0],
+            });
+        }
     }
     Ok(())
+}
+
+/// The record of `validator`, which `operator` must operate.
+fn operated<'s>(
+    set: &'s mut ValidatorSet,
+    validator: &ValidatorId,
+    operator: &AccountId,
+) -> Result<&'s mut ValidatorRecord, ExecError> {
+    let record = set
+        .validators
+        .get_mut(validator)
+        .ok_or_else(|| ExecError::Invalid("unknown validator".into()))?;
+    if record.operator != *operator {
+        return Err(ExecError::Unauthorized(
+            "only the validator's operator may do this".into(),
+        ));
+    }
+    Ok(record)
 }
 
 /// The atom `registrant` registers as `label`.

@@ -73,10 +73,8 @@ pub enum SpecError {
     /// §8.5: a transaction chunk carries deferred items.
     #[error("a transaction chunk carries {0} deferred items")]
     UnexpectedDeferredItems(usize),
-    /// §8.5: the deferred phase carries transactions.
-    #[error("the deferred phase carries {0} transactions")]
-    UnexpectedTransactions(usize),
-    /// §8.5: `steps(T) ≠ S.steps` (for the deferred phase, `T` is empty).
+    /// §8.5: `steps(T) ≠ S.steps` (for the deferred phase, `T` are the
+    /// posted forced intents).
     #[error("steps digest mismatch")]
     StepsMismatch,
     /// §8.5: the deferred-effects accumulator differs.
@@ -89,7 +87,8 @@ pub enum SpecError {
     #[error("read of object {0} outside the witness")]
     Unwitnessed(ObjectId),
     /// §6.3: the deferred phase could not run (a protocol object is missing
-    /// or malformed, or its arithmetic overflowed).
+    /// or malformed, its arithmetic overflowed, or a committee could not be
+    /// sampled).
     #[error("deferred phase: {0}")]
     DeferredPhase(String),
     /// §8.6: the knowledge log after the chunk differs from `S.after`.

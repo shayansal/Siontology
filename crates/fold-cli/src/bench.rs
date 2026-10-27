@@ -302,6 +302,7 @@ fn execution(r: &mut Recorder, quick: bool) {
         beacon: sim_beacon(pulse),
         owned: txs,
         contended: Vec::new(),
+        forced: Vec::new(),
     };
     for (label, verify) in [
         ("with signature checks", true),

@@ -45,5 +45,5 @@ pub use spec::SpecStack;
 pub use stack::{LeafProof, ProofStack};
 pub use world::{
     prove_pulse, verify_certificates, verify_world_proof, verify_world_proof_sampled, PulseData,
-    WorldProof, WorldReport,
+    ValidatorsWitness, WorldProof, WorldReport,
 };

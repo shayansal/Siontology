@@ -33,8 +33,9 @@ pub struct ChainSpec {
     pub keys: ValidatorSet,
     /// Number of lane shards.
     pub shards: u16,
-    /// Seats per shard committee. Shard committees are sampled again every
-    /// consensus epoch, from the validators, the genesis digest and the epoch.
+    /// Seats per shard committee (lane committees are in the state from
+    /// then on: sampled from each epoch's active set, rotated when a shard
+    /// misses a forced-inclusion deadline).
     pub seats: u16,
     /// INSECURE: validators sign with a simulation MAC instead of dual
     /// post-quantum signatures (load experiments only). Part of the
@@ -91,14 +92,18 @@ impl ChainSpec {
         Ok(())
     }
 
-    /// The consensus committee of an epoch (it certifies Pulse headers).
+    /// The consensus committee of the first epoch (it certifies Pulse
+    /// headers); later epochs' committees are proven from the state
+    /// ([`crate::epochs`]).
     pub fn committee(&self, epoch: u64) -> Result<Committee, LightError> {
         Committee::new(Epoch(epoch), ShardId(0), self.validators.clone())
             .map(|committee| committee.on_chain(self.id()))
             .map_err(|e| LightError::Chain(e.to_string()))
     }
 
-    /// The lane committee of each shard in an epoch (they certify inputs).
+    /// The lane committee of each shard in the first epoch, before any
+    /// rotation (they certify inputs; equal to what the genesis state
+    /// samples).
     pub fn shard_committees(&self, epoch: u64) -> Result<BTreeMap<ShardId, Committee>, LightError> {
         let seats = usize::from(self.seats).clamp(1, self.validators.len());
         let chain = self.id();

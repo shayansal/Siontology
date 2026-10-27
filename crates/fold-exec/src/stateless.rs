@@ -130,8 +130,10 @@ pub fn replay_chunk(trace: &ChunkTrace) -> Result<ReplayReport, ExecError> {
     let mut overlay = Overlay::new(&store);
     let mut effects: Vec<TxEffects> = Vec::new();
     if statement.deferred_phase {
-        if !trace.transactions.is_empty() {
-            return Err(invalid("the deferred phase executes no transactions"));
+        // The deferred phase's transactions are the Pulse's posted forced
+        // intents, which it records as obligations without executing them.
+        if steps_digest(&trace.transactions) != statement.steps {
+            return Err(invalid("forced intents differ from the statement"));
         }
         let consumed = chain_deferred(&Hash32::ZERO, &trace.deferred_items);
         if consumed != statement.deferred_in || consumed != statement.deferred_out {
@@ -142,7 +144,13 @@ pub fn replay_chunk(trace: &ChunkTrace) -> Result<ReplayReport, ExecError> {
         if statement.effects_in != statement.effects_out {
             return Err(invalid("the deferred phase produces no receipts"));
         }
-        apply_deferred(&mut overlay, &ctx, &trace.deferred_items, &mut frontier)?;
+        apply_deferred(
+            &mut overlay,
+            &ctx,
+            &trace.deferred_items,
+            &trace.transactions,
+            &mut frontier,
+        )?;
     } else {
         if !trace.deferred_items.is_empty() {
             return Err(invalid("transaction chunks carry no deferred items"));

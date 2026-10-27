@@ -1,4 +1,4 @@
-# The Fold state transition — specification v1.2
+# The Fold state transition — specification v1.3
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/fold-exec`, proof stack A) and an
@@ -25,8 +25,9 @@ It does **not** re-specify:
 - **Data layouts.** The Rust type definitions in `fold_core`, `fold_crypto`,
   `fold_assurance`, `fold_clearing` and the *type definitions* in
   `fold_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
-  `assurance`, `tx`, `state`, `pulse::{ChunkStatement, ChunkTrace, Witness,
-  PulseInput}`, `execute::{Deferred, Event, ExecStatus, TxEffects}`) are
+  `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
+  ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
+  TxEffects}`) are
   normative; their canonical encoding is Borsh. One rule goes beyond the
   layout: a `Formula` nested deeper than 64 levels
   (`fold_assurance::formula::MAX_DECODE_DEPTH`, counted as
@@ -37,22 +38,30 @@ It does **not** re-specify:
   (`fold_core`), signature verification (`fold_crypto`), the Assurance
   Algebra (`fold_assurance`: registry operations, cost of corruption,
   reservation, decision rule, slashing), clearing-certificate verification
-  (`fold_clearing::verify_clearing`) and committee envelopes
-  (`fold_crypto::CommitteeEnvelope::open`).
+  (`fold_clearing::verify_clearing`), committee envelopes
+  (`fold_crypto::CommitteeEnvelope::open`), validator identities and
+  signatures (`fold_crypto::{validator_id, verify_validator}`), committee
+  sampling (`fold_consensus::{sample_committee, resample_committee}`) and
+  the consensus message formats (`fold_consensus::{Header::digest,
+  Header::signing_digest, SignedHeader::verify_signature,
+  ApprovalProof::verify_signed}`).
 
 An implementation of this document MUST NOT call the reference executor's
 logic: `fold_exec::execute`, `fold_exec::pulse` (other than the type
 definitions and the commitment helpers named in §7), `fold_exec::stateless`,
 `fold_exec::wallet`, `fold_exec::sim`, `fold_exec::genesis`, nor the methods
 `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
-`Market::clearing_batch` and `Market::batch_index`. It MAY call the type
+`Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
+and the `ValidatorSet` methods. It MAY call the type
 helpers `Transaction::{digest, domain, class, size}`,
 `SignedTransaction::digest`, `Object::{digest, is_tombstone, reference,
 as_coin}`, `ChainConfig::{min_fee, digest}`, `Payload::size`,
 `WorldCommitment::digest`, `ChunkStatement::digest`, `claim::{claim_id,
 knowledge_leaf, formulas::*}`, `object::{created_id, well_known::*}`,
-`tx::object_domain`, `tx::signing_context`, `market::sealing_aad`, and
-`execute::{bond_atom, registered_atom, bond_owner}`.
+`tx::object_domain`, `tx::signing_context`, `market::sealing_aad`,
+`execute::{bond_atom, registered_atom, bond_owner}`, and
+`validators::{weight, permille_of, share_of, possession_digest,
+rotation_seed}`.
 
 ## 1. Conventions
 
@@ -81,8 +90,19 @@ id to `Object::digest()` (`fold_core::smt`). The knowledge root is the RFC
 
 Well-known objects (all created at genesis): the assurance domain
 `well_known::registry()` (`ObjectData::Assurance`), the treasury
-`well_known::treasury()`, the schedule `well_known::schedule()`. The account
-object of account `a` is `well_known::account(a)`.
+`well_known::treasury()`, the schedule `well_known::schedule()`, the
+validator set `well_known::validators()` (`ObjectData::Validators`) and the
+forced-inclusion obligations `well_known::forced()` (`ObjectData::Forced`).
+The account object of account `a` is `well_known::account(a)`.
+
+The validator set holds the parameters (`stake_asset`, `epoch_length`,
+`min_stake`, `unbonding`, `seats`, `max_active`, `reward_permille`,
+`reporter_permille`), the current `epoch`, `epoch_start`, the sampling
+`seed`, the `active` set as (validator, weight) pairs sorted by validator,
+every validator's record, this epoch's shard `rotations`, and the
+`treasury_mark`. `epoch_end = epoch_start + max(epoch_length, 1) − 1`
+(saturating). At genesis, `epoch = 0`, `epoch_start = 1`, `seed` is the
+genesis digest, and an `EpochEnd` event is scheduled at `epoch_end`.
 
 ### 2.1 Reads and the witness
 
@@ -544,12 +564,94 @@ batches: ∅ })`; event `MarketCreated { market: market_id }`.
    verified.welfare, solver: sender }`; store the market; event
    `BatchCleared { market, batch, price, volume, welfare }`.
 
+### 5.26 RegisterValidator { lattice, hash, beacon_tip, stake, possession }
+
+1. `id = validator_id(lattice, hash)`. Load the validator set.
+2. `id` MUST NOT be a registered validator; `stake ≥ params.min_stake`.
+3. `verify_validator(lattice, hash, possession_digest(ctx.config, sender,
+   id) bytes, possession)` MUST hold (a proof that the sender's validator
+   holds both keys, bound to this chain and this operator).
+4. `draw(params.stake_asset, stake)`.
+5. Insert the record `{ id, lattice, hash, operator: sender, stake, status:
+   Joining, beacon_tip, rewards: 0, registered_at: ctx.pulse }`; store the
+   set. Event `ValidatorRegistered { validator: id, operator: sender,
+   stake }`.
+
+A validator is **operated** by `sender` if its record exists and its
+`operator` is `sender`; the operations below require it (an error
+otherwise).
+
+### 5.27 Unstake { validator }
+
+1. Load the validator set. `staying` = the number of records other than
+   `validator` whose status is `Active` or `Joining`. `validator` MUST be
+   operated by the sender.
+2. If its status is `Joining`: set it `Exited { withdrawable_at:
+   ctx.pulse }`. If `Active`: `staying` MUST be positive (the last
+   validator cannot leave); set it `Leaving`. Any other status is an error.
+3. Store the set. Event `ValidatorLeaving { validator }`.
+
+### 5.28 WithdrawStake { validator }
+
+1. Load the validator set; `validator` MUST be operated by the sender, with
+   status `Exited { withdrawable_at }` and `withdrawable_at ≤ ctx.pulse`.
+2. Take `stake` and `rewards` from the record, set both to 0 and the
+   status to `Withdrawn`; store the set.
+3. `mint(sender, params.stake_asset, stake)`, then `mint(sender, USD,
+   rewards)`. Event `StakeWithdrawn { validator, amount: stake }`.
+
+### 5.29 ClaimRewards { validator }
+
+Load the validator set; `validator` MUST be operated by the sender and its
+`rewards` MUST be positive. Set `rewards` to 0; store the set; `mint(sender,
+USD, rewards)`. Event `RewardsClaimed { validator, amount: rewards }`.
+
+### 5.30 ReportEquivocation { evidence }
+
+1. Load the validator set. The evidence names an **offender**, under these
+   rules (any failure is an error); signatures are checked with the keys
+   the set records for the signer (`verify_validator(record.lattice,
+   record.hash, message, signature)`; an unknown signer fails):
+   - `Headers { first, second }`: the two headers have the same `author`,
+     `chain`, `epoch`, `shard` and `round` and different digests, and both
+     `SignedHeader::verify_signature` checks pass. The offender is the
+     author.
+   - `Approvals { first, second }`: the two approvals' batch headers have
+     the same `validator`, `chain`, `epoch` and `shard`; the two
+     transactions have different digests; `ctx.pulse` is at most both
+     transactions' `expires_at`; some input `(id, version)` of the first is
+     an input of the second; and each proof's `verify_signed(tx digest,
+     tx.inputs, keys)` passes. The offender is the batch's validator.
+     (An honest validator approves a version again only once the first
+     transaction can no longer execute, so two live approvals are proof.)
+2. The offender's record MUST exist and its status MUST NOT be `Slashed` or
+   `Withdrawn`.
+3. Take `stake` and `rewards` from the record, set both to 0 and the status
+   to `Slashed { at: ctx.pulse }`; store the set.
+4. For `(asset, forfeited)` in `[(params.stake_asset, stake), (USD,
+   rewards)]`, in that order: `paid = permille_of(forfeited,
+   params.reporter_permille)`; `mint(sender, asset, paid)`; if `forfeited −
+   paid > 0`, defer `Treasury { asset, amount: forfeited − paid }`.
+5. Event `ValidatorSlashed { validator: offender, amount: stake, reporter:
+   sender, reward: <paid of the stake> }`.
+
+Evidence is checked against itself, not against this chain or a time: the
+two messages must agree on `chain`, but nothing requires it to be this
+chain's identity, and header evidence does not expire (approvals evidence
+lapses with the transactions' `expires_at`). An offence is an offence
+wherever it was signed, so an operator MUST NOT use a validator's keys on
+more than one network. A validator that has withdrawn has nothing left to
+slash (step 2).
+
 ## 6. The Pulse
 
 ### 6.1 Order
 
-A Pulse executes `PulseInput { pulse, beacon, owned, contended }` with
-`pulse = state.pulse + 1`. The nodes compute a canonical order (owned
+A Pulse executes `PulseInput { pulse, beacon, owned, contended, forced }`
+with `pulse = state.pulse + 1`. `forced` are the forced intents committed
+in the Pulse: they are not executed, they are **posted** in the deferred
+phase (§6.3), each digest once, in commit order
+(`fold_exec::pulse::posted_intents`). The nodes compute a canonical order (owned
 transactions by digest, in dependency passes, then contended transactions
 in consensus order; see `fold_exec::pulse::canonical_order`). Proof stacks
 do not recompute it: a chunk statement binds the transactions it executes
@@ -574,14 +676,16 @@ counter `k = 0` for payouts: **pay(owner, asset, amount)**: if `amount =
 (`fold_exec::pulse::deferred_coin_id`) and increment `k`.
 
 **Protocol objects.** The schedule object is always loaded first. The
-assurance object and the treasury are loaded the first time an item needs
-them (and only then); a market is loaded the first time an item or event
-needs it. Each of these is written back at the end **only if** something
-used it mutably (assurance, treasury: any item or event that obtained it;
-markets: any item or event that obtained it; schedule: any change to its
-entries, including removing due entries). Write-back order: markets in id
-order, then assurance, then treasury, then schedule. Other objects (bounded
-totals, coins) are stored when changed.
+assurance object, the treasury, the validator set and the forced-inclusion
+obligations are loaded the first time something needs them (and only
+then); a market is loaded the first time an item or event needs it. Each of
+these is written back at the end **only if** something used it mutably
+(assurance, treasury, validator set, obligations, markets: anything that
+obtained it; schedule: any change to its entries, including removing due
+entries). Write-back order: markets in id order, then assurance, treasury,
+validator set, obligations, schedule. Other objects (bounded totals, coins)
+are stored when changed. Reads of other objects in this phase are
+`try_load`s.
 
 **Sorting.** Items are sorted by the key `(rank, natural, enc(item))`,
 where `natural` and `enc(item)` compare as byte strings (so Schedule items,
@@ -652,6 +756,38 @@ commutes, so their order does not matter):
 Scheduling inserts into `schedule.due[at]` (a set); the schedule counts as
 changed only if the event was not already there.
 
+**Posting forced intents.** After the items, for each posted intent `t`
+with digest `d`, in order: obtain the obligations. If `d` is already
+pending, or `max_pending` obligations are pending, `t` is **dismissed**.
+Otherwise `t` is dismissed unless it is **admissible**, checked in this
+order (stop at the first failure):
+
+1. its kind is not `Faucet`; `ctx.pulse < tx.expires_at`; it has 1 to
+   `MAX_INPUTS` inputs with distinct ids; `tx.fee ≥
+   ctx.config.min_fee(tx.size())`;
+2. `try_load(well_known::account(sender))`: if present it MUST be an
+   `Account`, giving `policy` and `rotations`; if absent,
+   `tx.genesis_policy` MUST be present, pass `validate`, and hash to the
+   sender, giving that policy and `rotations = 0`;
+3. `policy.verify(signing_context(ctx.config), d bytes, t.auth)` passes
+   (always checked);
+4. for each input, in order: `try_load` it; it MUST exist, be at
+   `r.version`, not be a tombstone and be owned by `Account(sender)`; the
+   first MUST be a USD coin with amount ≥ `tx.fee`.
+
+Intents are posted before due events are processed, so an obligation
+resolved in this Pulse still counts toward `max_pending` while this
+Pulse's intents are posted; its slot frees one Pulse later.
+
+A dismissed intent records event `ForcedDismissed { intent: d, reason }`
+(reason free text). An admissible one becomes an obligation: `shard =
+ShardId::for_account(sender, max(ctx.config.shard_count, 1))`, `deadline =
+min(ctx.pulse + window, tx.expires_at)` (the addition saturating, `window =
+max(params.window, 1)`); insert `pending[d] = { shard, sender, inputs:
+tx.inputs, expires_at: tx.expires_at, rotations, posted_at: ctx.pulse,
+deadline, missed: 0 }`; schedule `ForcedDeadline { intent: d }` at
+`deadline`; event `ForcedPosted { intent: d, shard, deadline }`.
+
 **Due events.** Then remove from `schedule.due` every entry whose key is
 `≤ ctx.pulse` (the schedule changes if there was any) and process their
 events, in ascending key order and, within a key, in set order. Events
@@ -671,6 +807,53 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   registry.advance_to(ctx.pulse + 1)` (saturating); `released = Σ
   expiries.released_pools`; if positive, `vault -= released`, obtain the
   treasury and `balances[USD] += released` (saturating).
+- **ForcedDeadline { intent }**: obtain the obligations; skip if `intent`
+  is not pending. The intent is **still executable** if every input of the
+  obligation, in order, still exists at its version, is not a tombstone and
+  is owned by `Account(sender)` (stop reading at the first that fails), and
+  then `try_load(well_known::account(sender))` gives the same `rotations`
+  (absent counts as 0; present but not an `Account` counts as not
+  executable). If it is not, remove it from pending; event
+  `ForcedResolved { intent }`. If it is, the shard censored it: event
+  `ForcedOverdue { intent, shard }`; obtain the validator set and
+  **rotate** the shard; then, if `ctx.pulse ≥ expires_at`, remove the
+  obligation; otherwise set its `deadline` to `min(ctx.pulse + window,
+  expires_at)` (saturating), increment `missed` (saturating), and schedule
+  `ForcedDeadline { intent }` at the new deadline.
+- **Rotate** a shard `s` (with `window` as above): skip if
+  `rotations[s]` exists and `ctx.pulse < rotations[s].at + window`
+  (saturating). Otherwise `previous` = the shard's **lane members**
+  (`rotations[s].members` if present, else the members of
+  `sample_committee(active, seats, seed, Epoch(epoch), s)`); `count =
+  rotations[s].count + 1` (or 1; saturating); `rotations[s] = { count,
+  members: <members of resample_committee(active, seats,
+  rotation_seed(ctx.beacon, s, count), Epoch(epoch), s, previous)>, at:
+  ctx.pulse }`; event `ShardRotated { shard: s, rotation: count }`.
+- **EpochEnd**: obtain the validator set; skip unless `ctx.pulse =
+  epoch_end`. Obtain the treasury; `balance = balances[USD]` (or 0).
+  1. `gain = balance − treasury_mark` (0 if negative); `pool =
+     permille_of(gain, reward_permille)`; `total` = the sum of the active
+     set's weights. For each `(v, w)` of the active set, in order, whose
+     record is `Active` or `Leaving`: `share = share_of(pool, w, total)`;
+     `rewards += share`; `paid += share`.
+  2. Every record, in id order: `Joining` becomes `Active`; `Leaving`
+     becomes `Exited { withdrawable_at: ctx.pulse + unbonding }`
+     (saturating).
+  3. The next active set: the `Active` records, sorted by stake descending
+     then id ascending, the first `max(max_active, 1)`, as `(id,
+     weight(stake))` sorted by id. If it is empty, the active set is kept.
+  4. `epoch += 1` (saturating); `epoch_start = ctx.pulse + 1` (an error at
+     Pulse `u64::MAX`, which no chain reaches); `seed = ctx.beacon`;
+     `rotations` emptied; `treasury_mark = balance − paid`.
+  5. Set `balances[USD]` to `balance − paid`: the entry is written even
+     when nothing is paid and the treasury had no USD entry (it then holds
+     0). Schedule `EpochEnd` at the new `epoch_end`; event `EpochChanged {
+     epoch, active: <size of the active set>, rewards: paid }`.
+
+Lane committees follow from the validator set: shard `s` is served by its
+lane members (above), one seat each, with the committee epoch
+`lane_epoch(epoch, rotations[s].count or 0)` (`ValidatorSet::lane_epoch`);
+the consensus committee of an epoch is its active set, weighted.
 
 Note that "obtain the market" for a scheduled event of a market not
 otherwise touched marks it used, so it is written back even if the event
@@ -680,9 +863,11 @@ was skipped.
 operations above, an item or event can err only if a protocol object is
 missing or malformed, `unallocated += amount` overflows (impossible: what
 is unallocated plus what live allotments hold never exceeds the bounded
-total), or the assurance registry's own accounting fails (for example
-`vault −= released` underflowing). No state reachable from a valid genesis
-allows any of these. If one happens anyway, the deferred phase is invalid:
+total), the assurance registry's own accounting fails (for example
+`vault −= released` underflowing), or sampling a committee fails while
+rotating a shard (no seats, or an empty active set: genesis refuses zero
+seats, and an epoch with no eligible validator keeps the old active set).
+No state reachable from a valid genesis allows any of these. If one happens anyway, the deferred phase is invalid:
 the reference executor refuses the Pulse, and a proof stack rejects the
 chunk, so no World Proof can exist for it.
 
@@ -722,8 +907,9 @@ deferred items `D`):
      `S.deferred_in` and `effects = chain_effects_leaf(effects,
      effects_leaf(·))` from `S.effects_in`; the results MUST equal
      `S.deferred_out` and `S.effects_out`. The knowledge log is untouched.
-   - **Deferred phase** (`S.deferred_phase = true`): `T` MUST be empty;
-     `S.steps = steps([])`; `chain_deferred(ZERO, D)` MUST equal both
+   - **Deferred phase** (`S.deferred_phase = true`): `T` are the Pulse's
+     posted forced intents, with `S.steps = steps(T)`, posted in that
+     order; `chain_deferred(ZERO, D)` MUST equal both
      `S.deferred_in` and
      `S.deferred_out`; `S.effects_in = S.effects_out`; run §6.3 on `D`,
      appending claims to a copy of `W.frontier`.
@@ -759,17 +945,47 @@ only if:
    is the proof's `receipts_root`.
 5. The published data is for Pulse `p` with the statements' beacon; the
    transaction chunks' `steps` are the digests of consecutive runs of the
-   published transactions, covering all of them; and the data encodes
-   (`fold_da`) to the proof's `data_root` and `data_k`.
+   published transactions, covering all of them; the deferred phase's
+   `steps` are the digests of the published forced intents, which are the
+   Pulse's **posted** intents (each digest once, in posting order, §6.1),
+   not the raw committed list; and the data encodes (`fold_da`) to the
+   proof's `data_root` and `data_k`. This binding is what pins the
+   deferred phase's `T` (§8): within one chunk, a reordered `T` or an
+   extra intent dismissed before any read would verify against refitted
+   `steps`.
 6. Every leaf proof verifies (§8) under every required proof stack.
 
 Whoever relies on the proof also checks it against the certified Pulse
 header: the same `pulse`, `before`, `after`, `receipts_root`, `data_root`,
 `data_k` and beacon. Lane certificates
-(`fold_prover::verify_certificates`) are checked against the shard
-committees that the chain identity fixes for the header's epoch.
+(`fold_prover::verify_certificates`) are checked against the lane
+committees of the validator set in force when the Pulse began: the proof
+carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.3.** Validators, stake, epochs and the censorship response join the
+  state transition. A validator stakes the stake asset with a proof that
+  it holds its keys (§5.26), leaves and withdraws after unbonding (§5.27,
+  §5.28), and collects rewards: at each epoch's end, a share of what the
+  treasury gained is paid to the epoch's validators by weight (§5.29,
+  §6.3). Equivocation, two consensus headers for one round or two live
+  approvals of one object version, is slashed on signed evidence, with a
+  share to the reporter (§5.30). Forced intents committed in a Pulse are
+  posted as obligations of their sender's shard (§6.1, §6.3); at the
+  deadline an intent that could still execute is overdue and the shard's
+  committee is replaced by validators outside it (rotation). Committees are
+  derived from the state, so every committee change follows these rules
+  and the World Proof covers it (§9).
+
+  Clarified after proof stack B implemented v1.3 (no behaviour change; the
+  differential tests agree): the epoch end always writes the treasury's
+  USD entry (it found the one divergence, now resolved in favour of the
+  reference executor); the deferred phase's `steps` cover the posted,
+  deduplicated intents; committee sampling joins the deferred phase's
+  possible errors; evidence is not bound to this chain or to a time, so
+  validator keys must not be shared between networks; an obligation
+  resolved in a Pulse frees its slot one Pulse later.
 
 - **v1.2.** From independent reviews of the node and of the
   consensus-critical libraries: transaction signatures are bound to the

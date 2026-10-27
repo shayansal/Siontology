@@ -360,6 +360,28 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             "Settle batch {batch} of market {} with a certified-optimal clearing",
             object(market)
         ),
+        TxKind::RegisterValidator { stake, .. } => format!(
+            "Register a validator staking {}; it joins the active set at the next epoch boundary",
+            names.usd(*stake)
+        ),
+        TxKind::Unstake { validator } => format!(
+            "Take validator {} out of the active set at the next epoch boundary",
+            validator.short()
+        ),
+        TxKind::WithdrawStake { validator } => format!(
+            "Withdraw validator {}'s stake and unclaimed rewards after unbonding",
+            validator.short()
+        ),
+        TxKind::ClaimRewards { validator } => {
+            format!("Collect validator {}'s rewards", validator.short())
+        }
+        TxKind::ReportEquivocation { evidence } => format!(
+            "Report that a validator signed two conflicting {}; its stake is slashed and you receive a share",
+            match evidence.as_ref() {
+                fold_exec::validators::Equivocation::Headers { .. } => "consensus headers",
+                fold_exec::validators::Equivocation::Approvals { .. } => "lane approvals",
+            }
+        ),
     };
     format!(
         "{body}. Fee {}; valid until Pulse {}.",
@@ -485,6 +507,70 @@ pub fn event(names: &Names, event: &Event) -> String {
             None => format!("batch {batch} cleared with no trade"),
         },
         Event::BatchRefunded { batch, .. } => format!("batch {batch} refunded"),
+        Event::ValidatorRegistered {
+            validator,
+            operator,
+            stake,
+        } => format!(
+            "validator {} registered by {} with {} at stake",
+            validator.short(),
+            names.account(operator),
+            names.usd(*stake)
+        ),
+        Event::ValidatorLeaving { validator } => {
+            format!("validator {} is leaving the active set", validator.short())
+        }
+        Event::StakeWithdrawn { validator, amount } => format!(
+            "{} of stake withdrawn from validator {}",
+            names.usd(*amount),
+            validator.short()
+        ),
+        Event::RewardsClaimed { validator, amount } => format!(
+            "{} of rewards claimed for validator {}",
+            names.usd(*amount),
+            validator.short()
+        ),
+        Event::ValidatorSlashed {
+            validator,
+            amount,
+            reporter,
+            reward,
+        } => format!(
+            "validator {} slashed: {} forfeited, {} of it to {} for the report",
+            validator.short(),
+            names.usd(*amount),
+            names.usd(*reward),
+            names.account(reporter)
+        ),
+        Event::EpochChanged {
+            epoch,
+            active,
+            rewards,
+        } => format!(
+            "epoch {epoch} began with {active} active validators; {} paid in rewards",
+            names.usd(*rewards)
+        ),
+        Event::ForcedPosted {
+            intent,
+            shard,
+            deadline,
+        } => format!(
+            "forced intent {} is now owed by shard {shard}, due by Pulse {deadline}",
+            intent.short()
+        ),
+        Event::ForcedDismissed { intent, reason } => {
+            format!("forced intent {} dismissed: {reason}", intent.short())
+        }
+        Event::ForcedResolved { intent } => {
+            format!("forced intent {} settled", intent.short())
+        }
+        Event::ForcedOverdue { intent, shard } => format!(
+            "shard {shard} missed its deadline for forced intent {}",
+            intent.short()
+        ),
+        Event::ShardRotated { shard, rotation } => {
+            format!("shard {shard}'s committee was replaced (rotation {rotation} this epoch)")
+        }
     }
 }
 

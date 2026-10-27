@@ -122,6 +122,10 @@ pub enum ObjectData {
     Schedule(Schedule),
     /// A consumed object.
     Tombstone(Tombstone),
+    /// The validator set: stake, epochs and committees.
+    Validators(Box<crate::validators::ValidatorSet>),
+    /// Forced-inclusion obligations.
+    Forced(Box<crate::validators::ForcedObligations>),
 }
 
 /// Something the protocol must do at a given Pulse.
@@ -158,6 +162,14 @@ pub enum ScheduledEvent {
     /// no longer needed. Scheduled only for Pulses where something is due,
     /// so quiet Pulses never touch the registry.
     RegistryTick,
+    /// Check that a forced intent's shard made it unexecutable in time.
+    ForcedDeadline {
+        /// The intent.
+        intent: fold_core::ids::TxDigest,
+    },
+    /// End the current epoch: pay rewards, admit and retire validators, and
+    /// sample the next epoch's committees.
+    EpochEnd,
 }
 
 /// The protocol's schedule (a shared object). Every time-driven protocol
@@ -276,6 +288,26 @@ pub mod well_known {
     /// The schedule's domain.
     pub fn schedule_domain() -> DomainId {
         DomainId::derive(b"schedule")
+    }
+
+    /// The validator set.
+    pub fn validators() -> ObjectId {
+        ObjectId::derive(b"well-known/validators")
+    }
+
+    /// The validator set's contention domain.
+    pub fn validators_domain() -> DomainId {
+        DomainId::derive(b"validators")
+    }
+
+    /// The forced-inclusion obligations.
+    pub fn forced() -> ObjectId {
+        ObjectId::derive(b"well-known/forced")
+    }
+
+    /// The obligations' domain.
+    pub fn forced_domain() -> DomainId {
+        DomainId::derive(b"forced")
     }
 
     /// The account object for `account`.

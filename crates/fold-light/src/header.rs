@@ -12,17 +12,15 @@ use std::fmt;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use fold_consensus::{signing_digest, Committee, SignatureVerifier};
-use fold_core::encode::{decode, encode};
+use fold_core::encode::encode;
 use fold_core::hash::{hash_domain, Hash32};
 use fold_core::ids::{Pulse, ValidatorId};
-use fold_crypto::{verify, DualSignature, PublicKey};
+pub use fold_crypto::{validator_id, VALIDATOR_DOMAIN};
+use fold_crypto::{verify_validator, PublicKey};
 use fold_exec::WorldCommitment;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LightError;
-
-/// The signing domain validators use (shared with the node).
-pub const VALIDATOR_DOMAIN: &str = "fold/validator/v1";
 
 /// The forced-inclusion obligations after a Pulse: intents users posted
 /// directly to consensus that their shard has not yet executed or shown
@@ -160,11 +158,6 @@ impl fmt::Debug for ValidatorSet {
     }
 }
 
-/// The identifier of a validator with these public keys.
-pub fn validator_id(lattice: &PublicKey, hash: &PublicKey) -> ValidatorId {
-    ValidatorId::derive_parts(&[&lattice.bytes, &hash.bytes])
-}
-
 impl ValidatorSet {
     /// Adds a validator; its identifier is derived from its keys.
     pub fn insert(&mut self, lattice: PublicKey, hash: PublicKey) -> ValidatorId {
@@ -179,11 +172,7 @@ impl SignatureVerifier for ValidatorSet {
         let Some((lattice, hash)) = self.keys.get(validator) else {
             return false;
         };
-        let Ok(signature) = decode::<DualSignature>(signature) else {
-            return false;
-        };
-        verify(lattice, VALIDATOR_DOMAIN, message, &signature.lattice).is_ok()
-            && verify(hash, VALIDATOR_DOMAIN, message, &signature.hash).is_ok()
+        verify_validator(lattice, hash, message, signature)
     }
 }
 

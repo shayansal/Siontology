@@ -8,15 +8,23 @@
 //! consensus. Because contended transactions lock their owned inputs too, a
 //! consensus-ordered spend can never overtake a certified one. The devnet
 //! faucet batches its grants into one transaction per Pulse.
+//!
+//! Committees come from the state and change: lane committees at epoch
+//! boundaries and rotations, the consensus committee (and its session) at
+//! epoch boundaries. The gateway follows the latest committees: approvals
+//! from a lane committee that has been replaced no longer count, so it
+//! certifies those transactions again with the new committee; and
+//! certified transactions that a new session dropped before ordering are
+//! handed to consensus again, until they execute.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fold_consensus::{ApprovalProof, CertificateBuilder, LaneRequest};
+use fold_consensus::{ApprovalProof, CertificateBuilder, Committee, LaneCertificate, LaneRequest};
 use fold_core::encode::encode;
-use fold_core::ids::{AccountId, AssetId, Pulse, ShardId, TxDigest, ValidatorId};
+use fold_core::ids::{AccountId, AssetId, Epoch, Pulse, ShardId, TxDigest, ValidatorId};
 use fold_core::Amount;
 use fold_exec::object::well_known;
 use fold_exec::{ObjectData, SignedTransaction, Transaction, TxKind, Wallet};
@@ -74,6 +82,13 @@ pub enum GatewayInput {
         /// Where to answer.
         reply: Sender<Option<TxStatus>>,
     },
+    /// A validator executed a Pulse (sent by validator 0).
+    Executed {
+        /// The Pulse.
+        pulse: Pulse,
+        /// The transactions it executed.
+        digests: Vec<TxDigest>,
+    },
     /// Stop.
     Shutdown,
 }
@@ -85,6 +100,18 @@ struct Pending {
     builder: CertificateBuilder,
     approvals: usize,
     rejections: BTreeMap<ValidatorId, String>,
+    /// The lane committee it is being certified by.
+    lane_epoch: Epoch,
+}
+
+/// A certified transaction handed to consensus, kept until it executes.
+#[derive(Debug)]
+struct Sequenced {
+    tx: SignedTransaction,
+    certificate: LaneCertificate,
+    shard: ShardId,
+    lane_epoch: Epoch,
+    sent: Instant,
 }
 
 /// The gateway's runtime.
@@ -104,7 +131,14 @@ pub struct Gateway {
     verifier: crate::keys::NodeVerifier,
     certified: Vec<(SignedTransaction, fold_consensus::LaneCertificate)>,
     censored: std::collections::BTreeSet<AccountId>,
+    sequencing: BTreeMap<TxDigest, Sequenced>,
+    session: u64,
+    lane_epochs: BTreeMap<ShardId, Epoch>,
 }
+
+/// A certified transaction not executed after this long is handed to
+/// consensus again (duplicates execute once).
+const RESEND_AFTER: Duration = Duration::from_secs(4);
 
 const STATUS_LIMIT: usize = 100_000;
 
@@ -145,6 +179,81 @@ impl Gateway {
             verifier,
             certified: Vec::new(),
             censored: Default::default(),
+            sequencing: BTreeMap::new(),
+            session: 0,
+            lane_epochs: BTreeMap::new(),
+        }
+    }
+
+    /// The latest committees (validators publish them after every Pulse).
+    fn committees(&mut self) -> Option<crate::committees::Committees> {
+        let view = self.shared.view.read().ok()?;
+        self.verifier.extend_keys(&view.keys);
+        view.committees.clone()
+    }
+
+    fn lane_committee(&mut self, shard: ShardId) -> Option<Committee> {
+        self.committees()?.lanes.get(&shard).cloned()
+    }
+
+    /// Follows committee changes: re-certifies transactions whose lane
+    /// committee was replaced, and re-sends certified ones a new session
+    /// dropped or that are taking too long.
+    fn follow_committees(&mut self) {
+        let Some(committees) = self.committees() else {
+            return;
+        };
+        let lanes: BTreeMap<ShardId, Epoch> = committees
+            .lanes
+            .iter()
+            .map(|(s, c)| (*s, c.epoch()))
+            .collect();
+        let new_session = committees.session != self.session;
+        if lanes != self.lane_epochs {
+            // Certified under a replaced committee: certify again.
+            let stale: Vec<TxDigest> = self
+                .sequencing
+                .iter()
+                .filter(|(_, s)| lanes.get(&s.shard) != Some(&s.lane_epoch))
+                .map(|(d, _)| *d)
+                .collect();
+            for digest in stale {
+                if let Some(sequenced) = self.sequencing.remove(&digest) {
+                    self.statuses.remove(&digest);
+                    let _ = self.submit(sequenced.tx);
+                }
+            }
+            let restart: Vec<TxDigest> = self
+                .pending
+                .iter()
+                .filter(|(_, p)| lanes.get(&p.shard) != Some(&p.lane_epoch))
+                .map(|(d, _)| *d)
+                .collect();
+            for digest in restart {
+                if let Some(pending) = self.pending.remove(&digest) {
+                    self.statuses.remove(&digest);
+                    let _ = self.submit(pending.tx);
+                }
+            }
+            self.lane_epochs = lanes;
+        }
+        let now = Instant::now();
+        let resend: Vec<TxDigest> = self
+            .sequencing
+            .iter()
+            .filter(|(_, s)| new_session || now.duration_since(s.sent) > RESEND_AFTER)
+            .map(|(d, _)| *d)
+            .collect();
+        self.session = committees.session;
+        let mut again = Vec::new();
+        for digest in resend {
+            if let Some(sequenced) = self.sequencing.get_mut(&digest) {
+                sequenced.sent = now;
+                again.push((sequenced.tx.clone(), sequenced.certificate.clone()));
+            }
+        }
+        for chunk in again.chunks(GROUP_LIMIT) {
+            self.send_to_consensus(PayloadItem::group(chunk.to_vec()));
         }
     }
 
@@ -167,6 +276,7 @@ impl Gateway {
             }
             if last_tick.elapsed() >= Duration::from_millis(100) {
                 last_tick = Instant::now();
+                self.follow_committees();
                 self.tick_faucet();
             }
         }
@@ -208,6 +318,11 @@ impl Gateway {
                 let _ = reply.send(self.statuses.get(&tx).cloned());
             }
             GatewayInput::Censor { accounts } => self.censored = accounts,
+            GatewayInput::Executed { digests, .. } => {
+                for digest in digests {
+                    self.sequencing.remove(&digest);
+                }
+            }
             GatewayInput::Shutdown => {}
         }
     }
@@ -250,11 +365,8 @@ impl Gateway {
             return Ok(receipt);
         }
         let committee = self
-            .shared
-            .shard_committees
-            .get(&shard)
-            .ok_or("no committee for the shard")?
-            .clone();
+            .lane_committee(shard)
+            .ok_or("no committee for the shard yet")?;
         let inputs = lane_inputs(&signed.tx.inputs);
         let request = LaneRequest {
             tx: digest,
@@ -278,6 +390,7 @@ impl Gateway {
                 builder: CertificateBuilder::new(digest, &inputs),
                 approvals: 0,
                 rejections: BTreeMap::new(),
+                lane_epoch: committee.epoch(),
             },
         );
         self.set_status(
@@ -291,27 +404,56 @@ impl Gateway {
     }
 
     /// Hands every certificate collected since the last flush to consensus
-    /// as one group sharing its batch headers.
+    /// as one group sharing its batch headers, and keeps them until they
+    /// execute.
     fn flush_certified(&mut self) {
         if self.certified.is_empty() {
             return;
         }
-        let group = PayloadItem::group(std::mem::take(&mut self.certified));
-        self.send_to_consensus(group);
+        let certified = std::mem::take(&mut self.certified);
+        let now = Instant::now();
+        for (tx, certificate) in &certified {
+            let shard = ShardId::for_account(&tx.tx.sender, self.shared.config.shards.max(1));
+            let lane_epoch = self.lane_epochs.get(&shard).copied().unwrap_or_default();
+            self.sequencing.insert(
+                tx.digest(),
+                Sequenced {
+                    tx: tx.clone(),
+                    certificate: certificate.clone(),
+                    shard,
+                    lane_epoch: certificate
+                        .approvals
+                        .first()
+                        .map(|a| a.batch.epoch)
+                        .unwrap_or(lane_epoch),
+                    sent: now,
+                },
+            );
+        }
+        self.send_to_consensus(PayloadItem::group(certified));
     }
 
-    /// Hands an item to f + 1 validators, so at least one honest proposer
-    /// includes it (duplicates are executed once).
+    /// Hands an item to f + 1 members of the consensus committee, so at
+    /// least one honest proposer includes it (duplicates are executed once).
+    /// Validators outside the active set only observe, so they are skipped.
     fn send_to_consensus(&mut self, item: PayloadItem) {
-        let validators = &self.bus.validators;
-        if validators.is_empty() {
+        let members: Vec<usize> = match self.committees() {
+            Some(committees) => committees
+                .consensus
+                .members()
+                .iter()
+                .filter_map(|(v, _)| self.bus.index.get(v).copied())
+                .collect(),
+            None => (0..self.bus.validators.len()).collect(),
+        };
+        if members.is_empty() {
             return;
         }
-        let copies = (validators.len() - 1) / 3 + 1;
+        let copies = (members.len() - 1) / 3 + 1;
         let bytes = item.to_bytes();
-        for k in 0..copies.min(validators.len()) {
-            let index = (self.next + k) % validators.len();
-            let _ = validators[index].send(Input::Submit(bytes.clone()));
+        for k in 0..copies.min(members.len()) {
+            let index = members[(self.next + k) % members.len()];
+            let _ = self.bus.validators[index].send(Input::Submit(bytes.clone()));
         }
         self.next = self.next.wrapping_add(1);
     }
@@ -320,13 +462,20 @@ impl Gateway {
         let Some(pending) = self.pending.get_mut(&tx) else {
             return;
         };
-        if pending.shard != shard {
+        if pending.shard != shard || proof.batch.epoch != pending.lane_epoch {
             return;
         }
-        let Some(committee) = self.shared.shard_committees.get(&shard) else {
+        let Some(committee) = self
+            .shared
+            .committees()
+            .and_then(|c| c.lanes.get(&shard).cloned())
+        else {
             return;
         };
-        match pending.builder.add(committee, proof, &self.verifier) {
+        let Some(pending) = self.pending.get_mut(&tx) else {
+            return;
+        };
+        match pending.builder.add(&committee, proof, &self.verifier) {
             Ok(Some(certificate)) => {
                 let pending = self.pending.remove(&tx).expect("present");
                 self.certified.push((pending.tx, certificate));
@@ -355,7 +504,15 @@ impl Gateway {
             return;
         };
         pending.rejections.insert(validator, reason.clone());
-        let Some(committee) = self.shared.shard_committees.get(&pending.shard) else {
+        let shard = pending.shard;
+        let Some(committee) = self
+            .shared
+            .committees()
+            .and_then(|c| c.lanes.get(&shard).cloned())
+        else {
+            return;
+        };
+        let Some(pending) = self.pending.get_mut(&tx) else {
             return;
         };
         let rejected = committee.stake_of_set(pending.rejections.keys());
@@ -371,7 +528,7 @@ impl Gateway {
             .send(Input::Query(query, reply))
             .map_err(|_| "validator stopped".to_string())?;
         answer
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(15))
             .map_err(|_| "validator did not answer".to_string())?
     }
 

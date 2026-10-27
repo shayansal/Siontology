@@ -13,12 +13,23 @@ use crate::keys::SignatureMode;
 pub struct DevnetConfig {
     /// Chain identifier.
     pub chain_id: String,
-    /// Number of validators.
+    /// Validators in the genesis active set.
     pub validators: usize,
+    /// Standby validators: they run from the start and follow the chain as
+    /// observers, and can join the active set by staking.
+    pub standby: usize,
+    /// Each genesis validator's stake, in USD.
+    pub validator_stake: u64,
+    /// The least stake a validator may register with, in USD.
+    pub min_stake: u64,
+    /// Pulses per epoch (0: one epoch that never ends).
+    pub epoch_length: u64,
+    /// Pulses between leaving the active set and withdrawing stake.
+    pub unbonding: u64,
     /// Number of lane shards (certification committees for owned traffic).
     pub shards: u16,
-    /// Seats per shard committee, sampled from the validators by the
-    /// genesis beacon (capped at the number of validators).
+    /// Seats per shard committee, sampled from each epoch's active set
+    /// (capped at its size).
     pub shard_seats: usize,
     /// Consensus rounds per Pulse.
     pub rounds_per_pulse: u64,
@@ -54,6 +65,11 @@ impl Default for DevnetConfig {
         DevnetConfig {
             chain_id: "fold-devnet-1".into(),
             validators: 4,
+            standby: 0,
+            validator_stake: 100_000,
+            min_stake: 10_000,
+            epoch_length: 0,
+            unbonding: 20,
             shards: 2,
             shard_seats: 4,
             rounds_per_pulse: 4,
@@ -78,7 +94,7 @@ impl Default for DevnetConfig {
             },
             prove_chunk: Some(16),
             history: 256,
-            forced_window: crate::forced::DEFAULT_WINDOW,
+            forced_window: 8,
         }
     }
 }

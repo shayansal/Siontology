@@ -217,17 +217,20 @@ fn contended_and_knowledge_transactions_flow_and_state_survives_restarts() {
     let status: Value = devnet.query(Query::Status).unwrap();
     let before: fold_exec::WorldCommitment =
         serde_json::from_value(status["commitment"].clone()).unwrap();
+    let (epoch, session) = (status["epoch"].clone(), status["session"].as_u64().unwrap());
     let devnet = Arc::try_unwrap(devnet).unwrap();
     devnet.shutdown();
 
     // Restart: the state is recovered and verified by replay, and the chain
-    // continues in a new consensus epoch.
+    // continues in the same state epoch with a new consensus session (round
+    // numbers start again, so they must not collide with the old DAG's).
     let devnet = Devnet::start(config).unwrap();
     let status: Value = devnet.query(Query::Status).unwrap();
     let after: fold_exec::WorldCommitment =
         serde_json::from_value(status["commitment"].clone()).unwrap();
     assert!(after.pulse >= before.pulse);
-    assert_eq!(status["epoch"], Value::from(1u64));
+    assert_eq!(status["epoch"], epoch);
+    assert!(status["session"].as_u64().unwrap() > session);
     let view: AccountView =
         serde_json::from_value(devnet.query(Query::Account(carol.id)).unwrap()).unwrap();
     assert_eq!(view.balances, vec![(AssetId::usd(), Amount::units(42))]);

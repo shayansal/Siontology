@@ -4,7 +4,9 @@ use fold_core::encode::decode;
 use fold_core::hash::Hash32;
 use fold_core::ids::{Pulse, TxDigest};
 use fold_exec::TxEffects;
-use fold_light::{verify_certificate, verify_object, verify_receipt, ChainSpec, ObjectProof};
+use fold_light::{
+    verify_object, verify_receipt, ChainSpec, EpochChain, EpochProof, ObjectProof, PulseCertificate,
+};
 use fold_node::Query;
 use fold_prover::{verify_world_proof, ProofStack, ReplayStack, SpecStack, WorldProof};
 use serde_json::Value;
@@ -14,6 +16,47 @@ use crate::ledger::{Ledger, LedgerExt};
 
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, CliError> {
     serde_json::from_value(value).map_err(|e| CliError::Protocol(e.to_string()))
+}
+
+/// Verifies the committees from the pinned epoch 0 up to `epoch`, one
+/// boundary at a time, with proofs fetched from the ledger.
+pub fn epoch_chain(
+    ledger: &dyn Ledger,
+    chain: &ChainSpec,
+    epoch: u64,
+) -> Result<EpochChain, CliError> {
+    let mut epochs = EpochChain::new(chain).map_err(|e| CliError::Verification(e.to_string()))?;
+    while epochs.latest() < epoch {
+        let next = epochs.latest() + 1;
+        // A boundary's certificate can complete after those of the Pulses
+        // that follow it: give it a moment before giving up.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let proof: EpochProof = loop {
+            match ledger.query(Query::Epoch(next)) {
+                Ok(value) => break parse(value)?,
+                Err(error) if std::time::Instant::now() > deadline => return Err(error),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        };
+        epochs
+            .extend(&proof)
+            .map_err(|e| CliError::Verification(format!("epoch {next}: {e}")))?;
+    }
+    Ok(epochs)
+}
+
+/// Checks a Pulse certificate against the committee of its epoch, following
+/// the committees from the pinned identity; returns (signing stake, quorum),
+/// or `None` for a devnet with insecure simulation signatures.
+pub fn verify_header_certificate(
+    ledger: &dyn Ledger,
+    chain: &ChainSpec,
+    certificate: &PulseCertificate,
+) -> Result<Option<(u64, u64)>, CliError> {
+    let epochs = epoch_chain(ledger, chain, certificate.header.epoch)?;
+    epochs
+        .verify_header(certificate)
+        .map_err(|e| CliError::Verification(e.to_string()))
 }
 
 /// Verifies a Pulse (the latest certified one by default) the way a light
@@ -101,12 +144,9 @@ pub fn verify_pulse(
         header.after.knowledge_size
     ));
 
-    // 1. The committee certificate, against the committee the chain
-    // identity fixes for the header's epoch.
-    let committee = chain
-        .committee(header.epoch)
-        .map_err(|e| CliError::Verification(e.to_string()))?;
-    let keys = &chain.keys;
+    // 1. The committee certificate, against the committee of the header's
+    // epoch: epoch 0's is fixed by the chain identity, each later one is
+    // proven from the validator set at the end of the epoch before.
     let certificate = view
         .certificate
         .clone()
@@ -116,18 +156,30 @@ pub fn verify_pulse(
             "certificate is for another header".into(),
         ));
     }
-    if insecure {
-        report
-            .push("certificate: SKIPPED — this devnet runs insecure simulation signatures".into());
-    } else {
-        let stake = verify_certificate(&certificate, &committee, keys)
-            .map_err(|e| CliError::Verification(e.to_string()))?;
+    let epochs = epoch_chain(ledger, &chain, header.epoch)?;
+    if header.epoch > 0 {
         report.push(format!(
-            "certificate: {} of {} validators signed (quorum {}), each with ML-DSA-44 + SLH-DSA-SHA2-128f ✓",
-            stake,
-            committee.total_stake(),
-            committee.quorum_threshold()
+            "committees: followed from the pinned epoch 0 to epoch {} through {} certified boundaries and validator-set proofs ✓",
+            header.epoch, header.epoch
         ));
+    }
+    match epochs
+        .verify_header(&certificate)
+        .map_err(|e| CliError::Verification(e.to_string()))?
+    {
+        None => report
+            .push("certificate: SKIPPED — this devnet runs insecure simulation signatures".into()),
+        Some((stake, quorum)) => {
+            let committee = epochs.committee(header.epoch).expect("verified above");
+            report.push(format!(
+                "certificate: {} of {} validators signed, {} of {} stake (quorum {}), each signature ML-DSA-44 + SLH-DSA-SHA2-128f ✓",
+                certificate.signers().len(),
+                committee.size(),
+                stake,
+                committee.total_stake(),
+                quorum
+            ));
+        }
     }
 
     // Forced inclusion, as the certified header states it.
@@ -245,13 +297,12 @@ pub fn verify_pulse(
                     report
                         .push("lane certificates: SKIPPED — insecure simulation signatures".into());
                 } else {
-                    let shards = chain
-                        .shard_committees(header.epoch)
-                        .map_err(|e| CliError::Verification(e.to_string()))?;
-                    fold_prover::verify_certificates(&proof, &shards, chain.shards, keys)
+                    // The committees come from the validator set the proof
+                    // carries, proven against the Pulse's starting state.
+                    fold_prover::verify_certificates(&proof, chain_id, chain.shards, None)
                         .map_err(|e| CliError::Verification(e.to_string()))?;
                     report.push(format!(
-                        "lane certificates: all {} executed transactions locked their inputs with a shard quorum ✓",
+                        "lane certificates: all {} executed transactions locked their inputs with a quorum of their shard's committee, taken from the proven validator set ✓",
                         proof.certificates.len()
                     ));
                 }
@@ -338,16 +389,7 @@ pub fn verify_receipt_of(
             "the certificate is for another chain or Pulse".into(),
         ));
     }
-    let signed = if chain.insecure_signatures {
-        None
-    } else {
-        let committee = chain
-            .committee(header.epoch)
-            .map_err(|e| CliError::Verification(e.to_string()))?;
-        let stake = verify_certificate(&certificate, &committee, &chain.keys)
-            .map_err(|e| CliError::Verification(e.to_string()))?;
-        Some((stake, committee.quorum_threshold()))
-    };
+    let signed = verify_header_certificate(ledger, &chain, &certificate)?;
     if fold_exec::pulse::order_digest(header.pulse, &header.beacon, &view.transactions)
         != header.order_digest
     {

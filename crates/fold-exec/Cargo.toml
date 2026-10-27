@@ -12,6 +12,7 @@ fold-crypto.workspace = true
 fold-assurance.workspace = true
 fold-clearing.workspace = true
 fold-lp.workspace = true
+fold-consensus.workspace = true
 borsh.workspace = true
 serde.workspace = true
 serde_json.workspace = true

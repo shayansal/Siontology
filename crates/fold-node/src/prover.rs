@@ -81,16 +81,23 @@ pub fn spawn(shared: Arc<Shared>, proven: Arc<Mutex<BTreeMap<Pulse, Proven>>>) -
                 let started = std::time::Instant::now();
                 let shard_count = shared.config.shards;
                 let mut bytes: Option<Arc<Vec<u8>>> = None;
-                let entry = match prove_pulse(&job.output, &job.traces, &refs, job.data, job.certificates)
-                    .and_then(|proof| {
-                        fold_prover::verify_certificates(
-                            &proof,
-                            &shared.shard_committees,
-                            shard_count,
-                            &shared.verifier,
-                        )?;
-                        verify_world_proof(&proof, &refs).map(|report| (proof, report))
-                    }) {
+                // With the insecure simulation scheme, certificates carry MACs
+                // only the devnet's own verifier can check.
+                let insecure = shared.config.signatures == crate::keys::SignatureMode::InsecureFast;
+                let sim: Option<&dyn fold_consensus::SignatureVerifier> =
+                    insecure.then_some(&shared.verifier as &dyn fold_consensus::SignatureVerifier);
+                let entry = match prove_pulse(
+                    &job.output,
+                    &job.traces,
+                    &refs,
+                    job.data,
+                    job.certificates,
+                    job.validators,
+                )
+                .and_then(|proof| {
+                    fold_prover::verify_certificates(&proof, shared.chain_id, shard_count, sim)?;
+                    verify_world_proof(&proof, &refs).map(|report| (proof, report))
+                }) {
                     Ok((proof, report)) => {
                         bytes = Some(Arc::new(encode(&proof)));
                         if proof.after != job.header.after

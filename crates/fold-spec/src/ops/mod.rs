@@ -10,6 +10,7 @@ mod charter;
 mod coins;
 mod knowledge;
 mod market;
+mod validators;
 
 use fold_exec::tx::TxKind;
 
@@ -118,6 +119,17 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
             batch,
             result,
         } => market::clear_batch(run, *market, *batch, result),
+        TxKind::RegisterValidator {
+            lattice,
+            hash,
+            beacon_tip,
+            stake,
+            possession,
+        } => validators::register_validator(run, lattice, hash, *beacon_tip, *stake, possession),
+        TxKind::Unstake { validator } => validators::unstake(run, validator),
+        TxKind::WithdrawStake { validator } => validators::withdraw_stake(run, validator),
+        TxKind::ClaimRewards { validator } => validators::claim_rewards(run, validator),
+        TxKind::ReportEquivocation { evidence } => validators::report_equivocation(run, evidence),
     }
 }
 

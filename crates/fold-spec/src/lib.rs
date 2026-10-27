@@ -1,5 +1,5 @@
 //! Proof stack B: an independent implementation of the Fold state
-//! transition, written from `docs/spec/state-transition.md` (v1.1) alone.
+//! transition, written from `docs/spec/state-transition.md` (v1.3) alone.
 //!
 //! The Fold checks every chunk of every Pulse twice, with two independent
 //! implementations of the same specification (N-version programming): the
@@ -7,10 +7,11 @@
 //! must accept every honest chunk and reject every invalid one; where they
 //! disagree, one of them is wrong. This crate shares only the separately
 //! trusted primitives with stack A — hashing and Merkle structures
-//! (`fold-core`), signatures and envelopes (`fold-crypto`), the Assurance
-//! Algebra (`fold-assurance`), clearing certificates (`fold-clearing`) — and
-//! the data layouts and type helpers spec §0 allows. It never calls the
-//! reference executor's logic.
+//! (`fold-core`), signatures, envelopes and validator identities
+//! (`fold-crypto`), the Assurance Algebra (`fold-assurance`), clearing
+//! certificates (`fold-clearing`), committee sampling and the consensus
+//! message formats (`fold-consensus`) — and the data layouts and type
+//! helpers spec §0 allows. It never calls the reference executor's logic.
 //!
 //! Modules follow the specification:
 //!
@@ -23,7 +24,7 @@
 //! | `prepare` | §4.1 | preparation (failures reject) |
 //! | `outcome` | §4.2 | success, failure with fee, rejection |
 //! | `ops` | §5 | one function per transaction kind |
-//! | `deferred` | §6.3 | the deferred phase |
+//! | `deferred` | §6.3 | the deferred phase: items, forced intents, due events, epochs |
 //! | [`commit`] | §7 | effects leaves, accumulators, steps |
 //! | [`chunk`] | §8 | verifying a chunk |
 //!

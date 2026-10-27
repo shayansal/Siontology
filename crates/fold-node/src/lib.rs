@@ -7,6 +7,10 @@
 //! - **Lanes** ([`fold_consensus::LaneValidator`]): owned-path transactions
 //!   are certified by their shard's committee, approvals batch-signed with
 //!   dual post-quantum signatures ([`keys`]).
+//! - **Committees** ([`committees`]): derived from the validator set in the
+//!   state after every Pulse; they change at epoch boundaries (stake,
+//!   joins, exits, slashing) and when a shard misses a forced-inclusion
+//!   deadline ([`forced`]).
 //! - **Consensus** ([`fold_consensus::Core`]): a certified-DAG BFT protocol
 //!   orders contended transactions, lane certificates and beacon reveals.
 //! - **Pulses** ([`pulses`]): the commit sequence is cut into Pulses on
@@ -27,6 +31,7 @@
 pub const THREAD_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 pub mod api;
+pub mod committees;
 pub mod config;
 pub mod devnet;
 pub mod error;

@@ -28,8 +28,8 @@ live.
 | Ordering: Linear Lanes (owned objects) | Built |
 | Ordering: Escrow Lanes (bounded shared totals) | Built |
 | Ordering: Contention Consensus | Simplified (certified DAG, not uncertified) |
-| Ordering: censorship resistance (forced inclusion) | Built (detection; freezing and rotation not built) |
-| Ordering: committees and sharding | Simplified (static validator set) |
+| Ordering: censorship resistance (forced inclusion) | Simplified (obligations and committee rotation; the shard is not frozen) |
+| Ordering: committees, epochs and staking | Built (devnet scale) |
 | Ordering: two levels of finality | Built |
 | Execution: prove heavy, execute light | Simulated (replay proofs) |
 | Execution: N-version proving | Built (two independent replay stacks) |
@@ -42,7 +42,8 @@ live.
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
 | Economics: fees, treasury, slashing with compensation | Built |
-| Economics: staking, rewards, proving payments | Not built |
+| Economics: staking, rewards, equivocation slashing | Built |
+| Economics: payments to provers, value-in-flight cap | Not built |
 | Networking between machines | Simulated (in-process channels) |
 
 ## By section
@@ -124,25 +125,49 @@ network simulator with an adversarial pre-GST phase. The architecture's
 production target is an uncertified DAG (Mysticeti class), which commits
 in fewer message delays.
 
-**Censorship resistance: built (detection).** A user posts a transaction
+**Censorship resistance: simplified.** A user posts a transaction
 straight to consensus as a forced intent (`POST /v1/forced`, `fold send
 --forced`); every validator proposes every round, so one honest proposer
-gets it ordered. The sender's shard then has 8 Pulses to execute it or for
-it to become provably invalid. Honest validators of the shard approve
-forced intents themselves and exchange the approvals, so a certificate
-forms without the gateway. Every validator derives the obligations from
-committed data and its executed state alone, and every Pulse header
-commits to the number of pending and overdue intents and a root over the
-overdue ones (`fold_light::ForcedSummary`), so censorship by more than a
-third of a committee appears in certified headers that light clients check
-(`fold demo censorship` shows both cases with a simulated censoring gateway
-and censoring validators). Not built: the architecture's response, which
-freezes the shard in the next World Proof and rotates its committee.
+gets it ordered. The Pulse that commits it **posts** it in the state as an
+obligation of the sender's shard (specification §6.3), after checking that
+it could execute at all (signature, fee, inputs owned at their versions).
+The shard then has a window (8 Pulses by default) to execute it or for it
+to become unexecutable. Honest validators of the shard approve forced
+intents themselves and exchange the approvals, so a certificate forms
+without the gateway. At the deadline, the state checks whether the intent
+could still execute; if it could, the shard censored it: the intent is
+**overdue** and the shard's lane committee is replaced by validators drawn
+from outside it first (at most once per shard per window), and the
+obligation stands for another window. Every Pulse header commits to the
+number of pending and overdue intents and a root over the overdue ones
+(`fold_light::ForcedSummary`), so censorship by more than a third of a
+committee appears in certified headers that light clients check (`fold
+demo censorship`). Simplified: the architecture also freezes the shard
+until the obligation is met; here the shard keeps running under its new
+committee. With no more validators than seats (the default devnet: 4 and
+4), a rotation can only reshuffle the same members.
 
-**Committees and sharding: simplified.** Lane committees are sampled per
-shard and per epoch from the validator set with a hash of the genesis and
-the epoch (`sample_committee`). The validator set and stake are fixed at
-genesis: there is no staking, no joining or leaving, and no reconfiguration.
+**Committees, epochs and staking: built (devnet scale).** The validator
+set is an object in the state (specification §2, §5.26–5.30, §6.3). A
+validator joins by staking with a proof that it holds its keys, takes its
+seat at the next epoch boundary, leaves at a boundary and withdraws after
+unbonding. At each epoch's last Pulse the state pays a share of what the
+treasury gained to the epoch's validators by weight, admits and retires
+validators, picks the next active set by stake (at most `max_active`) and
+reseeds lane-committee sampling with the beacon. Every validator derives
+the consensus committee (the active set, weighted) and the lane committees
+(`sample_committee` per shard, with rotations) from its state after every
+Pulse; nothing about committees is configured. Consensus runs one DAG per
+session: a new session begins at every epoch boundary (and every restart);
+what the old session committed after the epoch's last Pulse, or never
+committed, is proposed again in the new one. Standby validators run as
+observers and start proposing once their stake makes them active. `fold
+demo staking` runs the whole cycle: a standby validator stakes and joins,
+a light client follows the committee change, rewards are claimed, and the
+newcomer is slashed for signing two headers for one round and loses its
+seat. Simplified: the consensus committee is the whole active set rather
+than a sample, and a slashed validator keeps its seat until the epoch
+ends.
 
 **Two levels of finality: built.** Certificate finality comes from the lane
 certificate (owned paths) and the consensus commit (contended paths); every
@@ -271,10 +296,15 @@ clients, and EVM schemes are out of scope.
 
 **Built:** fees (a base fee plus a fee per KiB) go to the treasury;
 slashed bonds compensate the parties who relied on the claim and pay a
-share to the challenger, with the rest to the treasury.
+share to the challenger, with the rest to the treasury. Validators stake,
+earn a share of each epoch's treasury gain by weight (70 % on the devnet)
+and are slashed on signed evidence of equivocation: two consensus headers
+for one round, or two live lane approvals of one object version. The
+whole stake and unclaimed rewards are forfeited; the reporter receives a
+share (5 % on the devnet, so reporting oneself still costs 95 %) and the
+treasury the rest.
 
-**Not built:** staking, validator rewards, payments to provers, a
-value-in-flight cap.
+**Not built:** payments to provers, a value-in-flight cap.
 
 ### Node and operations
 
@@ -285,8 +315,9 @@ gateway is a single component that collects lane approvals.
 
 **Built:** a segmented write-ahead log with checksums and torn-tail
 truncation, periodic snapshots, replay that re-checks every commitment,
-restart into a new consensus epoch, and state sync for validators that fell
-behind.
+restart into a new consensus session, state sync for validators that fell
+behind, and epoch boundary proofs kept on disk for light clients
+(`GET /v1/epochs/{e}`).
 
 ## Trust assumptions this implementation adds
 
@@ -299,7 +330,9 @@ the architecture's own:
 | `impl:shared-primitives` | Both proof stacks use the same hashing, Merkle, signature, Assurance Algebra and clearing-certificate code; a bug there is common-mode. |
 | `impl:devnet-keys` | Devnet validator keys are derived from the chain name; anyone can derive them. A devnet secures nothing of value. |
 | `impl:in-process-network` | Validators share a machine and a process; network faults are not exercised by the devnet (they are by the consensus simulator). |
-| `impl:static-committee` | The validator set never changes. |
+| `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period. |
+| `impl:slashed-seat` | A slashed validator keeps its seat, and its weight in quorums, until the epoch ends. |
+| `impl:evidence-scope` | Equivocation evidence is not bound to this chain: a validator's keys must not be used on another network. |
 | `impl:hash-chain-beacon` | The beacon is a hash-chain commit-reveal; the last validator to reveal can bias it by withholding (at the cost of being seen). |
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
@@ -308,11 +341,16 @@ the architecture's own:
 ## Light-client trust
 
 A light client pins one value: the chain identity (`fold_light::ChainSpec::id`),
-a digest of the genesis specification, the validators with their stake and
-public keys, and the shard layout. It rebuilds every committee it needs
-from the specification a node serves, after checking the specification
-against the pin and checking that each validator identifier derives from
-its keys. Without a pin, `fold verify` says the node is vouching for
+a digest of the genesis specification, the genesis validators with their
+stake and public keys, and the shard layout. That fixes epoch 0's
+committee. Every later committee is in the state, and the client follows
+it one boundary at a time (`fold_light::EpochChain`): the certificate of an
+epoch's last Pulse, checked against the committee it already trusts, and a
+state proof of the validator set under that header give it the next
+epoch's committee and keys. World Proofs carry the validator set the Pulse
+began with, proven against its starting state root, so lane certificates
+are checked against committees derived from the state, not from anything a
+node serves. Without a pin, `fold verify` says the node is vouching for
 itself.
 
 ## Reviews and what they found

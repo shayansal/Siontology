@@ -44,10 +44,11 @@ pub struct PulseBuilder {
     anchors: u64,
     beacon: Beacon,
     reveals: BTreeMap<Pulse, Vec<(ValidatorId, Hash32)>>,
+    last: Option<Pulse>,
 }
 
 impl PulseBuilder {
-    /// A builder for a consensus epoch that starts after Pulse `base`.
+    /// A builder for a consensus session that starts after Pulse `base`.
     pub fn new(rounds_per_pulse: u64, base: Pulse, beacon: Beacon) -> Self {
         PulseBuilder {
             rounds_per_pulse: rounds_per_pulse.max(1),
@@ -57,7 +58,43 @@ impl PulseBuilder {
             anchors: 0,
             beacon,
             reveals: BTreeMap::new(),
+            last: None,
         }
+    }
+
+    /// The builder of the session that follows this one after Pulse
+    /// `base`: a fresh round count, `beacon` (re-synced with the validator
+    /// set by the caller) and the beacon reveals already committed for the
+    /// Pulses after `base`, which every validator collected alike.
+    pub fn next_session(&self, base: Pulse, beacon: Beacon) -> PulseBuilder {
+        let mut next = PulseBuilder::new(self.rounds_per_pulse, base, beacon);
+        next.reveals = self
+            .reveals
+            .iter()
+            .filter(|(pulse, _)| **pulse > base)
+            .map(|(pulse, reveals)| (*pulse, reveals.clone()))
+            .collect();
+        next
+    }
+
+    /// Closes no Pulse after `pulse`: the last Pulse of the epoch, after
+    /// which the next consensus session takes over. Whatever this session
+    /// commits later is never executed by it; [`take_leftover`] returns it
+    /// to be proposed again in the next session.
+    ///
+    /// [`take_leftover`]: PulseBuilder::take_leftover
+    pub fn end_after(&mut self, pulse: Pulse) {
+        self.last = Some(pulse);
+    }
+
+    /// Whether the builder still closes Pulses.
+    pub fn is_open(&self) -> bool {
+        self.last.map_or(true, |last| self.next <= last)
+    }
+
+    /// Payload items committed but not in any closed Pulse.
+    pub fn take_leftover(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.buffered)
     }
 
     /// The next Pulse to close.
@@ -77,7 +114,7 @@ impl PulseBuilder {
     /// Absorbs one commit; returns the Pulses it closed, in order.
     pub fn on_commit(&mut self, commit: &CommittedSubDag) -> Vec<ClosedPulse> {
         let mut closed = Vec::new();
-        while commit.round > self.last_round(self.next) {
+        while self.is_open() && commit.round > self.last_round(self.next) {
             closed.push(self.close());
         }
         self.buffered.extend(commit.items.iter().cloned());
@@ -196,5 +233,53 @@ mod tests {
             closed[0].anchors, 1,
             "the round-8 anchor belongs to Pulse 4"
         );
+    }
+
+    /// Found by the staking demo: a commit far beyond the epoch's last
+    /// Pulse closed the Pulses after it too, so the old session executed a
+    /// Pulse the next session then closed again.
+    #[test]
+    fn a_session_closes_nothing_after_its_last_pulse() {
+        let validator = ValidatorId::derive(b"v");
+        let chain = HashChain::new(Hash32::ZERO, 100);
+        let mut beacon = Beacon::new(Hash32::ZERO);
+        beacon.register(validator, chain.tip());
+        let mut builder = PulseBuilder::new(2, Pulse(0), beacon);
+        builder.end_after(Pulse(2));
+        let reveal = |p: u64| {
+            PayloadItem::Reveal {
+                validator,
+                pulse: Pulse(p),
+                value: chain.reveal_for(Pulse(p)).unwrap(),
+            }
+            .to_bytes()
+        };
+        assert!(builder
+            .on_commit(&commit(2, vec![reveal(4), b"late".to_vec()]))
+            .is_empty());
+        // Round 9 is past Pulses 1 to 4, but the session ends after Pulse 2.
+        let closed = builder.on_commit(&commit(9, vec![b"after".to_vec()]));
+        assert_eq!(
+            closed.iter().map(|c| c.pulse).collect::<Vec<_>>(),
+            vec![Pulse(1), Pulse(2)]
+        );
+        assert!(!builder.is_open());
+        assert!(builder
+            .on_commit(&commit(11, vec![b"more".to_vec()]))
+            .is_empty());
+        assert_eq!(
+            builder.take_leftover(),
+            vec![b"after".to_vec(), b"more".to_vec()],
+            "what the old session committed late is proposed again"
+        );
+        // The next session starts after Pulse 2 with the reveal for Pulse 4.
+        let mut next = builder.next_session(Pulse(2), builder.beacon().clone());
+        assert_eq!(next.next_pulse(), Pulse(3));
+        let closed = next.on_commit(&commit(5, vec![]));
+        assert_eq!(
+            closed.iter().map(|c| c.pulse).collect::<Vec<_>>(),
+            vec![Pulse(3), Pulse(4)]
+        );
+        assert_eq!(closed[1].beacon.revealed, vec![validator]);
     }
 }

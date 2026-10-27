@@ -294,6 +294,15 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
         self.me
     }
 
+    /// Whether this validator is a member of the committee. A non-member is
+    /// an **observer**: it never proposes or votes, but it accepts
+    /// certificates and commits exactly what members commit, so it can
+    /// follow the chain (for example while waiting to join at an epoch
+    /// boundary).
+    pub fn is_member(&self) -> bool {
+        self.committee.contains(&self.me)
+    }
+
     /// The committee.
     pub fn committee(&self) -> &Committee {
         &self.committee
@@ -327,6 +336,14 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
     /// Items waiting to be committed.
     pub fn mempool_len(&self) -> usize {
         self.mempool.len()
+    }
+
+    /// Removes and returns every item not committed yet, in submission
+    /// order: what a validator proposes again when this session ends.
+    pub fn take_mempool(&mut self) -> Vec<Vec<u8>> {
+        self.mempool_index.clear();
+        self.in_flight.clear();
+        std::mem::take(&mut self.mempool).into_values().collect()
     }
 
     /// Evidence detected so far.
@@ -363,7 +380,7 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
         let mut out = Vec::new();
         match event {
             Event::Start => {
-                if !self.started {
+                if !self.started && self.is_member() {
                     self.started = true;
                     self.propose(&mut out);
                     out.push(Action::SetTimer {
@@ -529,6 +546,10 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
     }
 
     fn on_header(&mut self, from: ValidatorId, signed: SignedHeader, out: &mut Vec<Action>) {
+        if !self.is_member() {
+            // Observers neither vote nor gather votes; certificates suffice.
+            return;
+        }
         let header = &signed.header;
         if header.chain != self.committee.chain()
             || header.epoch != self.committee.epoch()

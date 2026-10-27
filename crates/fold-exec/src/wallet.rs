@@ -143,6 +143,13 @@ impl Wallet {
                 vec![(AssetId::usd(), Amount(funding.0 + agent_bond.0))]
             }
             TxKind::CreateBounded { asset, total, .. } => vec![(*asset, *total)],
+            TxKind::RegisterValidator { stake, .. } => {
+                let asset = match view.object(&well_known::validators()).map(|o| o.data) {
+                    Some(ObjectData::Validators(set)) => set.params.stake_asset,
+                    _ => AssetId::usd(),
+                };
+                vec![(asset, *stake)]
+            }
             TxKind::SubmitOrder { market, submission } => {
                 let Some(ObjectData::Market(state)) = view.object(market).map(|o| o.data) else {
                     return Vec::new();

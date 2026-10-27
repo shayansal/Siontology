@@ -164,6 +164,20 @@ impl ApprovalProof {
         if !committee.contains(&batch.validator) {
             return Err(ConsensusError::UnknownValidator(batch.validator));
         }
+        self.verify_signed(tx, inputs, verifier)
+    }
+
+    /// Checks only that the batch's validator signed an approval of `tx`
+    /// spending `inputs`, whatever committee it was in: what equivocation
+    /// evidence needs, since double-signing is the offense wherever it
+    /// happened.
+    pub fn verify_signed<V: SignatureVerifier>(
+        &self,
+        tx: &TxDigest,
+        inputs: &[ObjectRef],
+        verifier: &V,
+    ) -> Result<(), ConsensusError> {
+        let batch = &self.batch;
         if !verifier.verify(&batch.validator, &batch.signing_digest().0, &self.signature) {
             return Err(ConsensusError::InvalidSignature(batch.validator));
         }

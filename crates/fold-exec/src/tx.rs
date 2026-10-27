@@ -12,9 +12,13 @@ use fold_assurance::{AtomClass, Policy};
 use fold_clearing::ClearingResult;
 use fold_core::encode::encode;
 use fold_core::hash::Hash32;
-use fold_core::ids::{AccountId, AssetId, AtomId, ClaimId, DomainId, ObjectId, Pulse, TxDigest};
+use fold_core::ids::{
+    AccountId, AssetId, AtomId, ClaimId, DomainId, ObjectId, Pulse, TxDigest, ValidatorId,
+};
 use fold_core::Amount;
-use fold_crypto::{AuthPolicy, Authorization, CryptoError, DualKeypair, KemPublicKey, KeyShare};
+use fold_crypto::{
+    AuthPolicy, Authorization, CryptoError, DualKeypair, KemPublicKey, KeyShare, PublicKey,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::charter::Caveats;
@@ -22,6 +26,7 @@ use crate::claim::ClaimBody;
 use crate::market::Submission;
 use crate::object::{well_known, CoordinationClass, ObjectRef};
 use crate::state::ChainConfig;
+use crate::validators::Equivocation;
 
 /// The signing domain for transactions.
 pub const TX_DOMAIN: &str = "fold/tx/v1";
@@ -246,6 +251,43 @@ pub enum TxKind {
         /// The clearing with its optimality certificate.
         result: ClearingResult,
     },
+    /// Stakes USD from the sender's coins to register a validator, which
+    /// joins the active set at the next epoch boundary. `possession` is the
+    /// validator's signature over
+    /// [`possession_digest`](crate::validators::possession_digest).
+    RegisterValidator {
+        /// The validator's ML-DSA-44 public key.
+        lattice: PublicKey,
+        /// The validator's SLH-DSA public key.
+        hash: PublicKey,
+        /// The tip of its beacon hash chain.
+        beacon_tip: Hash32,
+        /// Stake in USD.
+        stake: Amount,
+        /// Proof that the validator holds both keys.
+        possession: Vec<u8>,
+    },
+    /// The operator takes its validator out at the next epoch boundary.
+    Unstake {
+        /// The validator.
+        validator: ValidatorId,
+    },
+    /// The operator withdraws stake and unclaimed rewards after unbonding.
+    WithdrawStake {
+        /// The validator.
+        validator: ValidatorId,
+    },
+    /// The operator collects its validator's rewards.
+    ClaimRewards {
+        /// The validator.
+        validator: ValidatorId,
+    },
+    /// Reports a validator's equivocation: its stake is slashed, a share
+    /// to the sender and the rest to the treasury.
+    ReportEquivocation {
+        /// The signed evidence.
+        evidence: Box<Equivocation>,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -308,6 +350,11 @@ impl Transaction {
             TxKind::RevealBatch { market, .. } | TxKind::ClearBatch { market, .. } => {
                 Some(object_domain("market", market))
             }
+            TxKind::RegisterValidator { .. }
+            | TxKind::Unstake { .. }
+            | TxKind::WithdrawStake { .. }
+            | TxKind::ClaimRewards { .. }
+            | TxKind::ReportEquivocation { .. } => Some(well_known::validators_domain()),
             _ => None,
         }
     }

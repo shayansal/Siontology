@@ -1,19 +1,27 @@
 //! The deferred phase (spec §6.3): the last chunk of a Pulse. It sorts and
 //! applies every transaction's deferred items (atoms, bonds, claims,
 //! orders, returns, treasury credits, supply records, schedule entries),
-//! then processes the schedule's due events (batch sealing, clearing
-//! deadlines, registry ticks).
+//! posts the Pulse's forced intents as obligations of their senders'
+//! shards, then processes the schedule's due events (batch sealing,
+//! clearing deadlines, registry ticks, forced-inclusion deadlines with the
+//! committee rotations they cause, epoch ends).
 //!
-//! Protocol objects are read lazily: the schedule always and first, the
-//! assurance domain and the treasury only when an item or event needs
-//! them, a market only when an item or event needs it. Each is written back
-//! at the end only if something obtained it (the schedule: only if its
-//! entries changed).
+//! Protocol objects are read lazily: the schedule always and first; the
+//! assurance domain, the treasury, the validator set and the
+//! forced-inclusion obligations only when an item, an intent or an event
+//! needs them; a market only when an item or event needs it. Each is written
+//! back at the end only if something obtained it (the schedule: only if its
+//! entries changed), in the order markets (by identifier), assurance,
+//! treasury, validator set, obligations, schedule.
 //!
 //! Errors (§6.3, "Errors"): the arithmetic §6.3 marks saturating saturates;
 //! any remaining error — a missing or malformed protocol object, an
-//! overflowing `unallocated`, a failure of the registry's own accounting —
-//! makes the deferred phase invalid, so the chunk is rejected.
+//! overflowing `unallocated`, a failure of the registry's own accounting, a
+//! committee that cannot be sampled — makes the deferred phase invalid, so
+//! the chunk is rejected.
+
+mod epoch;
+mod forced;
 
 use std::collections::BTreeMap;
 
@@ -30,6 +38,8 @@ use fold_exec::market::{BatchStatus, Market, MarketBatch, PendingOrder, MAX_BATC
 use fold_exec::object::{
     well_known, Coin, Object, ObjectData, Owner, Schedule, ScheduledEvent, Treasury,
 };
+use fold_exec::tx::SignedTransaction;
+use fold_exec::validators::{ForcedObligations, ValidatorSet};
 
 use crate::commit::deferred_coin_id;
 use crate::context::SpecContext;
@@ -110,6 +120,11 @@ struct DeferredRun<'v> {
     assurance: Option<(Object, AssuranceDomain)>,
     /// The treasury object and its contents, once obtained.
     treasury: Option<(Object, Treasury)>,
+    /// The validator set object and its contents, once obtained.
+    validators: Option<(Object, ValidatorSet)>,
+    /// The forced-inclusion obligations object and its contents, once
+    /// obtained.
+    obligations: Option<(Object, ForcedObligations)>,
     /// Markets obtained so far, by identifier.
     markets: BTreeMap<ObjectId, (Object, Market)>,
     /// The knowledge log's frontier.
@@ -140,6 +155,8 @@ impl<'v> DeferredRun<'v> {
             schedule_changed: false,
             assurance: None,
             treasury: None,
+            validators: None,
+            obligations: None,
             markets: BTreeMap::new(),
             frontier,
             events: Vec::new(),
@@ -175,6 +192,43 @@ impl<'v> DeferredRun<'v> {
         match &mut self.treasury {
             Some((_, treasury)) => Ok(treasury),
             None => Err(broken("treasury unavailable")),
+        }
+    }
+
+    /// The validator set, loading it the first time.
+    fn validator_set(&mut self) -> Result<&mut ValidatorSet, SpecError> {
+        if self.validators.is_none() {
+            let object = self
+                .book
+                .load(&well_known::validators())
+                .map_err(rejected)?;
+            let ObjectData::Validators(set) = &object.data else {
+                return Err(broken("the validator set object is not a validator set"));
+            };
+            let set = (**set).clone();
+            self.validators = Some((object, set));
+        }
+        match &mut self.validators {
+            Some((_, set)) => Ok(set),
+            None => Err(broken("validator set unavailable")),
+        }
+    }
+
+    /// The forced-inclusion obligations, loading them the first time.
+    fn obligations(&mut self) -> Result<&mut ForcedObligations, SpecError> {
+        if self.obligations.is_none() {
+            let object = self.book.load(&well_known::forced()).map_err(rejected)?;
+            let ObjectData::Forced(obligations) = &object.data else {
+                return Err(broken(
+                    "the forced-inclusion object does not hold obligations",
+                ));
+            };
+            let obligations = (**obligations).clone();
+            self.obligations = Some((object, obligations));
+        }
+        match &mut self.obligations {
+            Some((_, obligations)) => Ok(obligations),
+            None => Err(broken("obligations unavailable")),
         }
     }
 
@@ -492,12 +546,15 @@ impl<'v> DeferredRun<'v> {
                     *balance = balance.saturating_add(released);
                 }
             }
+            ScheduledEvent::ForcedDeadline { intent } => self.forced_deadline(intent)?,
+            ScheduledEvent::EpochEnd => self.end_epoch()?,
         }
         Ok(())
     }
 
     /// Writes back what was used: markets in identifier order, then the
-    /// assurance domain, then the treasury, then the schedule (if changed).
+    /// assurance domain, the treasury, the validator set, the obligations,
+    /// and the schedule (if its entries changed).
     fn finish(mut self) -> Result<DeferredOutcome, SpecError> {
         let markets = std::mem::take(&mut self.markets);
         for (_, (object, market)) in markets {
@@ -524,6 +581,22 @@ impl<'v> DeferredRun<'v> {
                 })
                 .map_err(rejected)?;
         }
+        if let Some((object, set)) = self.validators.take() {
+            self.book
+                .store(Object {
+                    data: ObjectData::Validators(Box::new(set)),
+                    ..object
+                })
+                .map_err(rejected)?;
+        }
+        if let Some((object, obligations)) = self.obligations.take() {
+            self.book
+                .store(Object {
+                    data: ObjectData::Forced(Box::new(obligations)),
+                    ..object
+                })
+                .map_err(rejected)?;
+        }
         if self.schedule_changed {
             let object = Object {
                 data: ObjectData::Schedule(self.schedule.clone()),
@@ -542,19 +615,24 @@ impl<'v> DeferredRun<'v> {
 }
 
 /// Runs the deferred phase on `items` (every deferred item of the Pulse, in
-/// the order the transactions produced them), appending claims to
-/// `frontier`.
+/// the order the transactions produced them) and `posted` (the Pulse's
+/// posted forced intents, in order), appending claims to `frontier`.
 pub(crate) fn run_deferred_phase(
     ctx: &SpecContext,
     view: &ChunkView,
     frontier: Frontier,
     items: &[Deferred],
+    posted: &[SignedTransaction],
 ) -> Result<DeferredOutcome, SpecError> {
     let mut run = DeferredRun::start(ctx, view, frontier)?;
     let mut sorted: Vec<(_, &Deferred)> = items.iter().map(|item| (sort_key(item), item)).collect();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
     for (_, item) in sorted {
         run.item(item)?;
+    }
+    // After the items, the forced intents, in the order they were posted.
+    for intent in posted {
+        run.post(intent)?;
     }
     // Every entry with key ≤ ctx.pulse is removed first, then their events
     // run in ascending key order (set order within a key). Events scheduled
@@ -698,7 +776,7 @@ mod tests {
         let near_full = Amount(u128::MAX - 5);
         let objects = vec![schedule(BTreeMap::new()), assurance(near_full)];
         let outcome =
-            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items).unwrap();
+            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items, &[]).unwrap();
         let domain = domain_of(&outcome);
         assert_eq!(domain.vault, near_full);
         assert!(
@@ -718,7 +796,7 @@ mod tests {
         // With room in the vault the same item registers and posts.
         let objects = vec![schedule(BTreeMap::new()), assurance(Amount(1))];
         let outcome =
-            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items).unwrap();
+            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items, &[]).unwrap();
         let domain = domain_of(&outcome);
         assert_eq!(domain.vault, Amount(11));
         assert!(domain.registry.atom(&atom.id).is_some());
@@ -771,7 +849,7 @@ mod tests {
             bounded(10),
         ];
         let outcome =
-            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items).unwrap();
+            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items, &[]).unwrap();
         let ObjectData::Treasury(after) = &outcome.writes[&well_known::treasury()].data else {
             panic!("treasury")
         };
@@ -790,7 +868,7 @@ mod tests {
             bounded(u128::MAX - 1),
         ];
         assert!(matches!(
-            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items),
+            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items, &[]),
             Err(SpecError::DeferredPhase(_))
         ));
     }
@@ -811,7 +889,7 @@ mod tests {
             market(MAX_PERIOD, MAX_PERIOD, Vec::new()),
         ];
         let outcome =
-            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items).unwrap();
+            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &items, &[]).unwrap();
         let state = market_of(&outcome);
         let index = (u64::MAX - 1) / MAX_PERIOD;
         let batch = &state.batches[&index];
@@ -861,7 +939,8 @@ mod tests {
             ),
             market(2, 3, vec![open]),
         ];
-        let outcome = run_deferred_phase(&ctx, &view(objects), Frontier::default(), &[]).unwrap();
+        let outcome =
+            run_deferred_phase(&ctx, &view(objects), Frontier::default(), &[], &[]).unwrap();
         let state = market_of(&outcome);
         assert!(matches!(
             state.batches[&4].status,
@@ -1039,7 +1118,7 @@ mod registry_tick_tests {
                 challenger_share_permille: 500,
             },
         };
-        let outcome = run_deferred_phase(&ctx, &view, Frontier::default(), &[]).unwrap();
+        let outcome = run_deferred_phase(&ctx, &view, Frontier::default(), &[], &[]).unwrap();
         let ObjectData::Assurance(domain) = &outcome.writes[&well_known::registry()].data else {
             panic!("assurance")
         };

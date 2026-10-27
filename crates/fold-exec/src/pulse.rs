@@ -13,10 +13,12 @@
 //! 2. **Contended**: consensus-ordered transactions, in commit order.
 //! 3. **Deferred**: the commutative effects collected from phases 1 and 2 —
 //!    atoms, bonds, claims (sorted by claim ID), orders, returns, fees,
-//!    schedule entries — then the events the schedule says are due (batch
-//!    sealing, clearing deadlines, registry ticks). Claims may only
-//!    reference claims from earlier Pulses, so the knowledge phase never
-//!    depends on the order of transactions within a Pulse (CALM).
+//!    schedule entries — then the forced intents posted in this Pulse, then
+//!    the events the schedule says are due (batch sealing, clearing
+//!    deadlines, registry ticks, forced-inclusion deadlines, the end of an
+//!    epoch). Claims may only reference claims from earlier Pulses, so the
+//!    knowledge phase never depends on the order of transactions within a
+//!    Pulse (CALM).
 //!
 //! The same code produces *chunk traces* for the Fold: the Pulse is cut into
 //! consecutive chunks of transactions plus the deferred phase, each with the
@@ -29,9 +31,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use fold_assurance::{ClaimRecord, ClaimStatus, Ratio, Registry};
+use fold_consensus::resample_committee;
 use fold_core::encode::encode;
 use fold_core::hash::{hash_domain, hash_parts, Hash32};
-use fold_core::ids::{AccountId, AssetId, ClaimId, ObjectId, Pulse, TxDigest, Version};
+use fold_core::ids::{
+    AccountId, AssetId, ClaimId, Epoch, ObjectId, Pulse, ShardId, TxDigest, Version,
+};
 use fold_core::merkle::{self, Frontier};
 use fold_core::smt::{SmtProof, SmtSnapshot, SparseMerkleTree};
 use fold_core::Amount;
@@ -49,7 +54,11 @@ use crate::object::{
 };
 use crate::state::{ChainConfig, State, WorldCommitment};
 use crate::store::{ObjectStore, Overlay};
-use crate::tx::SignedTransaction;
+use crate::tx::{signing_context, SignedTransaction, TxKind, MAX_INPUTS};
+use crate::validators::{
+    rotation_seed, share_of, weight, ForcedObligations, Obligation, ShardRotation, ValidatorSet,
+    ValidatorStatus,
+};
 
 /// What a Pulse executes.
 #[derive(
@@ -64,6 +73,9 @@ pub struct PulseInput {
     pub owned: Vec<SignedTransaction>,
     /// Consensus-ordered contended transactions.
     pub contended: Vec<SignedTransaction>,
+    /// Forced intents committed in this Pulse, in commit order. They are not
+    /// executed here: each becomes an obligation of its sender's shard.
+    pub forced: Vec<SignedTransaction>,
 }
 
 /// Digest of a Pulse's executed order (bound into the Pulse header).
@@ -206,7 +218,8 @@ impl ChunkStatement {
 pub struct ChunkTrace {
     /// The statement.
     pub statement: ChunkStatement,
-    /// Transactions executed (empty for the deferred phase).
+    /// Transactions executed; for the deferred phase, the forced intents
+    /// posted in the Pulse.
     pub transactions: Vec<SignedTransaction>,
     /// For the deferred phase: every deferred item of the Pulse, in the
     /// order the transactions produced them.
@@ -276,6 +289,17 @@ impl Layered<'_> {
     fn lookup(&self, id: &ObjectId) -> Option<Object> {
         self.top.get(id).or_else(|| self.base.get(id)).cloned()
     }
+}
+
+/// The forced intents a Pulse posts: those committed, in commit order, each
+/// once.
+pub fn posted_intents(forced: &[SignedTransaction]) -> Vec<SignedTransaction> {
+    let mut seen = BTreeSet::new();
+    forced
+        .iter()
+        .filter(|tx| seen.insert(tx.digest()))
+        .cloned()
+        .collect()
 }
 
 /// The canonical execution order: owned transactions in digest order,
@@ -413,6 +437,7 @@ fn run_pulse(
     };
     let before = state.commitment();
     let ordered = canonical_order(state, input)?;
+    let forced = posted_intents(&input.forced);
     let tracing = chunking.is_some();
     let chunk_size = chunking.unwrap_or(usize::MAX);
 
@@ -504,7 +529,7 @@ fn run_pulse(
             top: &pulse_writes,
         };
         let mut overlay = Overlay::new(&layered);
-        let outcome = apply_deferred(&mut overlay, &ctx, &all_deferred, &mut frontier)?;
+        let outcome = apply_deferred(&mut overlay, &ctx, &all_deferred, &forced, &mut frontier)?;
         let witness = snapshot.as_ref().map(|snapshot| {
             build_witness(
                 &ctx.config,
@@ -537,9 +562,9 @@ fn run_pulse(
                 deferred_out: chain_deferred(&Hash32::ZERO, &all_deferred),
                 effects_in: effects_acc,
                 effects_out: effects_acc,
-                steps: steps_digest(&[]),
+                steps: steps_digest(&forced),
             },
-            transactions: Vec::new(),
+            transactions: forced.clone(),
             deferred_items: all_deferred,
             witness,
             writes: writes.values().cloned().collect(),
@@ -642,6 +667,8 @@ pub fn deferred_coin_id(pulse: Pulse, counter: u64) -> ObjectId {
 struct Protocol {
     assurance: Option<(Object, AssuranceDomain, bool)>,
     treasury: Option<(Object, Treasury, bool)>,
+    validators: Option<(Object, ValidatorSet, bool)>,
+    forced: Option<(Object, ForcedObligations, bool)>,
     schedule: (Object, Schedule, bool),
     markets: BTreeMap<ObjectId, (Object, bool)>,
 }
@@ -683,6 +710,44 @@ impl Protocol {
         let (_, treasury, dirty) = self.treasury.as_mut().expect("loaded above");
         *dirty = true;
         Ok(treasury)
+    }
+
+    fn validators<S: ObjectStore>(
+        &mut self,
+        run: &mut DeferredRun<'_, '_, S>,
+    ) -> Result<&mut ValidatorSet, ExecError> {
+        if self.validators.is_none() {
+            let object = run
+                .load(&well_known::validators())?
+                .ok_or(ExecError::MissingObject(well_known::validators()))?;
+            let ObjectData::Validators(set) = &object.data else {
+                return Err(ExecError::Invalid("validator set corrupted".into()));
+            };
+            let set = (**set).clone();
+            self.validators = Some((object, set, false));
+        }
+        let (_, set, dirty) = self.validators.as_mut().expect("loaded above");
+        *dirty = true;
+        Ok(set)
+    }
+
+    fn forced<S: ObjectStore>(
+        &mut self,
+        run: &mut DeferredRun<'_, '_, S>,
+    ) -> Result<&mut ForcedObligations, ExecError> {
+        if self.forced.is_none() {
+            let object = run
+                .load(&well_known::forced())?
+                .ok_or(ExecError::MissingObject(well_known::forced()))?;
+            let ObjectData::Forced(obligations) = &object.data else {
+                return Err(ExecError::Invalid("forced obligations corrupted".into()));
+            };
+            let obligations = (**obligations).clone();
+            self.forced = Some((object, obligations, false));
+        }
+        let (_, obligations, dirty) = self.forced.as_mut().expect("loaded above");
+        *dirty = true;
+        Ok(obligations)
     }
 
     fn market<S: ObjectStore>(
@@ -728,6 +793,14 @@ impl Protocol {
             object.data = ObjectData::Treasury(treasury);
             run.store(object);
         }
+        if let Some((mut object, set, true)) = self.validators {
+            object.data = ObjectData::Validators(Box::new(set));
+            run.store(object);
+        }
+        if let Some((mut object, obligations, true)) = self.forced {
+            object.data = ObjectData::Forced(Box::new(obligations));
+            run.store(object);
+        }
         let (mut object, schedule, dirty) = self.schedule;
         if dirty {
             object.data = ObjectData::Schedule(schedule);
@@ -758,11 +831,13 @@ fn deferred_key(item: &Deferred) -> DeferredKey {
 }
 
 /// Applies the deferred phase: commutative effects in canonical order, then
+/// the forced intents posted in this Pulse (`forced`, in commit order), then
 /// the scheduled events due at this Pulse.
 pub fn apply_deferred<S: ObjectStore>(
     overlay: &mut Overlay<'_, S>,
     ctx: &PulseContext,
     items: &[Deferred],
+    forced: &[SignedTransaction],
     frontier: &mut Frontier,
 ) -> Result<DeferredOutcome, ExecError> {
     let mut run = DeferredRun {
@@ -782,6 +857,8 @@ pub fn apply_deferred<S: ObjectStore>(
     let mut protocol = Protocol {
         assurance: None,
         treasury: None,
+        validators: None,
+        forced: None,
         schedule: (schedule_object, schedule, false),
         markets: BTreeMap::new(),
     };
@@ -924,6 +1001,58 @@ pub fn apply_deferred<S: ObjectStore>(
         }
     }
 
+    // Forced intents posted in this Pulse become obligations of their shard.
+    for intent in forced {
+        let digest = intent.digest();
+        let (window, max_pending, known, pending) = {
+            let obligations = protocol.forced(&mut run)?;
+            (
+                obligations.params.window.max(1),
+                obligations.params.max_pending,
+                obligations.pending.contains_key(&digest),
+                obligations.pending.len(),
+            )
+        };
+        let verdict = if known {
+            Err("already pending".to_string())
+        } else if pending >= max_pending as usize {
+            Err("too many intents pending".to_string())
+        } else {
+            admissible(&mut run, ctx, intent)?
+        };
+        match verdict {
+            Err(reason) => outcome.events.push(Event::ForcedDismissed {
+                intent: digest,
+                reason,
+            }),
+            Ok(rotations) => {
+                let tx = &intent.tx;
+                let shard = ShardId::for_account(&tx.sender, ctx.config.shard_count.max(1)).0;
+                let deadline = Pulse(ctx.pulse.0.saturating_add(window).min(tx.expires_at.0));
+                protocol.forced(&mut run)?.pending.insert(
+                    digest,
+                    Obligation {
+                        shard,
+                        sender: tx.sender,
+                        inputs: tx.inputs.clone(),
+                        expires_at: tx.expires_at,
+                        rotations,
+                        posted_at: ctx.pulse,
+                        deadline,
+                        missed: 0,
+                    },
+                );
+                protocol
+                    .schedule_event(deadline, ScheduledEvent::ForcedDeadline { intent: digest });
+                outcome.events.push(Event::ForcedPosted {
+                    intent: digest,
+                    shard,
+                    deadline,
+                });
+            }
+        }
+    }
+
     // Scheduled events due now (and any left from earlier Pulses). Every due
     // entry is taken out first; whatever processing schedules waits for a
     // later Pulse.
@@ -989,6 +1118,75 @@ pub fn apply_deferred<S: ObjectStore>(
                     }
                     outcome.events.push(Event::BatchRefunded { market, batch });
                 }
+                ScheduledEvent::ForcedDeadline { intent } => {
+                    let Some(obligation) = protocol.forced(&mut run)?.pending.get(&intent).cloned()
+                    else {
+                        continue;
+                    };
+                    if !still_executable(&mut run, &obligation)? {
+                        protocol.forced(&mut run)?.pending.remove(&intent);
+                        outcome.events.push(Event::ForcedResolved { intent });
+                        continue;
+                    }
+                    // The intent could still execute: its shard censored it.
+                    outcome.events.push(Event::ForcedOverdue {
+                        intent,
+                        shard: obligation.shard,
+                    });
+                    let window = protocol.forced(&mut run)?.params.window.max(1);
+                    let set = protocol.validators(&mut run)?;
+                    if let Some(rotation) = rotate(set, ctx, obligation.shard, window)? {
+                        outcome.events.push(Event::ShardRotated {
+                            shard: obligation.shard,
+                            rotation,
+                        });
+                    }
+                    let obligations = protocol.forced(&mut run)?;
+                    let window = obligations.params.window.max(1);
+                    if ctx.pulse >= obligation.expires_at {
+                        // It can never execute now; the violation stands recorded.
+                        obligations.pending.remove(&intent);
+                    } else {
+                        let deadline = Pulse(
+                            ctx.pulse
+                                .0
+                                .saturating_add(window)
+                                .min(obligation.expires_at.0),
+                        );
+                        if let Some(entry) = obligations.pending.get_mut(&intent) {
+                            entry.missed = entry.missed.saturating_add(1);
+                            entry.deadline = deadline;
+                        }
+                        protocol
+                            .schedule_event(deadline, ScheduledEvent::ForcedDeadline { intent });
+                    }
+                }
+                ScheduledEvent::EpochEnd => {
+                    if ctx.pulse != protocol.validators(&mut run)?.epoch_end() {
+                        continue;
+                    }
+                    let balance = protocol
+                        .treasury(&mut run)?
+                        .balances
+                        .get(&AssetId::usd())
+                        .copied()
+                        .unwrap_or(Amount::ZERO);
+                    let set = protocol.validators(&mut run)?;
+                    let paid = end_epoch(set, ctx, balance)?;
+                    let (epoch, active, next) = (set.epoch, set.active.len(), set.epoch_end());
+                    let treasury = protocol.treasury(&mut run)?;
+                    let entry = treasury
+                        .balances
+                        .entry(AssetId::usd())
+                        .or_insert(Amount::ZERO);
+                    *entry = entry.checked_sub(paid)?;
+                    protocol.schedule_event(next, ScheduledEvent::EpochEnd);
+                    outcome.events.push(Event::EpochChanged {
+                        epoch,
+                        active: active as u32,
+                        rewards: paid,
+                    });
+                }
                 ScheduledEvent::RegistryTick => {
                     let domain = protocol.assurance(&mut run)?;
                     // Advance to the next Pulse: claims valid through this one
@@ -1014,6 +1212,217 @@ pub fn apply_deferred<S: ObjectStore>(
 
     protocol.write_back(&mut run);
     Ok(outcome)
+}
+
+/// Whether a forced intent may become an obligation: everything `prepare`
+/// checks (§4.1 of the specification), read-only, plus that it is not a
+/// faucet transaction and does not expire in the Pulse it is posted in.
+/// Returns the sender's policy rotations, or why not.
+fn admissible<S: ObjectStore>(
+    run: &mut DeferredRun<'_, '_, S>,
+    ctx: &PulseContext,
+    signed: &SignedTransaction,
+) -> Result<Result<u32, String>, ExecError> {
+    let tx = &signed.tx;
+    if matches!(tx.kind, TxKind::Faucet { .. }) {
+        return Ok(Err("faucet transactions cannot be forced".into()));
+    }
+    if ctx.pulse >= tx.expires_at {
+        return Ok(Err("it expires before its shard could include it".into()));
+    }
+    if tx.inputs.is_empty() || tx.inputs.len() > MAX_INPUTS {
+        return Ok(Err(format!("it needs 1 to {MAX_INPUTS} inputs")));
+    }
+    let unique: BTreeSet<ObjectId> = tx.inputs.iter().map(|r| r.id).collect();
+    if unique.len() != tx.inputs.len() {
+        return Ok(Err("duplicate inputs".into()));
+    }
+    if tx.fee < ctx.config.min_fee(tx.size()) {
+        return Ok(Err("fee below the minimum".into()));
+    }
+    let (policy, rotations) = match run.load(&well_known::account(&tx.sender))? {
+        Some(object) => match object.data {
+            ObjectData::Account(state) => (state.policy, state.rotations),
+            _ => return Ok(Err("account object corrupted".into())),
+        },
+        None => {
+            let Some(policy) = tx.genesis_policy.clone() else {
+                return Ok(Err("unknown account and no genesis policy".into()));
+            };
+            if policy.validate().is_err() || policy.account_id() != tx.sender {
+                return Ok(Err("invalid genesis policy".into()));
+            }
+            (policy, 0)
+        }
+    };
+    // Always checked, even when the node skips signature checks for
+    // transactions it verified when locking their inputs: forced intents
+    // were never locked.
+    if policy
+        .verify(
+            &signing_context(&ctx.config),
+            &signed.digest().0 .0,
+            &signed.auth,
+        )
+        .is_err()
+    {
+        return Ok(Err("its authorization does not verify".into()));
+    }
+    for (index, input) in tx.inputs.iter().enumerate() {
+        let Some(object) = run.load(&input.id)? else {
+            return Ok(Err(format!("input {} does not exist", input.id)));
+        };
+        if object.version != input.version || object.is_tombstone() {
+            return Ok(Err(format!(
+                "input {} was spent or moved (executed or invalid)",
+                input.id
+            )));
+        }
+        if object.owner != Owner::Account(tx.sender) {
+            return Ok(Err(format!("input {} is not the sender's", input.id)));
+        }
+        if index == 0 {
+            match object.as_coin() {
+                Some(coin) if coin.asset == AssetId::usd() && coin.amount >= tx.fee => {}
+                _ => return Ok(Err("inputs[0] must be a USD coin covering the fee".into())),
+            }
+        }
+    }
+    Ok(Ok(rotations))
+}
+
+/// Whether an obligation's intent could still execute: every input is at the
+/// version it spends, unspent and the sender's, and the sender's policy has
+/// not rotated.
+fn still_executable<S: ObjectStore>(
+    run: &mut DeferredRun<'_, '_, S>,
+    obligation: &Obligation,
+) -> Result<bool, ExecError> {
+    for input in &obligation.inputs {
+        match run.load(&input.id)? {
+            Some(object)
+                if object.version == input.version
+                    && !object.is_tombstone()
+                    && object.owner == Owner::Account(obligation.sender) => {}
+            _ => return Ok(false),
+        }
+    }
+    let rotations = match run.load(&well_known::account(&obligation.sender))? {
+        Some(Object {
+            data: ObjectData::Account(state),
+            ..
+        }) => state.rotations,
+        Some(_) => return Ok(false),
+        None => 0,
+    };
+    Ok(rotations == obligation.rotations)
+}
+
+/// Freezes `shard`'s committee out and samples its replacement, unless the
+/// shard already rotated in the last `window` Pulses (the new committee gets
+/// a full window before it can be judged). Returns the shard's rotation
+/// count if it rotated.
+fn rotate(
+    set: &mut ValidatorSet,
+    ctx: &PulseContext,
+    shard: u16,
+    window: u64,
+) -> Result<Option<u32>, ExecError> {
+    if let Some(last) = set.rotations.get(&shard) {
+        if ctx.pulse.0 < last.at.0.saturating_add(window) {
+            return Ok(None);
+        }
+    }
+    let invalid = |e: fold_consensus::ConsensusError| ExecError::Invalid(e.to_string());
+    let previous = set.lane_members(ShardId(shard)).map_err(invalid)?;
+    let count = set
+        .rotations
+        .get(&shard)
+        .map(|r| r.count)
+        .unwrap_or(0)
+        .saturating_add(1);
+    let committee = resample_committee(
+        &set.active,
+        usize::from(set.params.seats),
+        &rotation_seed(&ctx.beacon, ShardId(shard), count),
+        Epoch(set.epoch),
+        ShardId(shard),
+        &previous,
+    )
+    .map_err(invalid)?;
+    set.rotations.insert(
+        shard,
+        ShardRotation {
+            count,
+            members: committee.members().iter().map(|(v, _)| *v).collect(),
+            at: ctx.pulse,
+        },
+    );
+    Ok(Some(count))
+}
+
+/// Ends the current epoch at the end of `ctx.pulse`, given the treasury's
+/// USD balance: pays the epoch's validators their share of what the
+/// treasury gained, admits and retires validators, picks the next active
+/// set and starts the next epoch. Returns the rewards paid (to be taken
+/// from the treasury).
+fn end_epoch(
+    set: &mut ValidatorSet,
+    ctx: &PulseContext,
+    balance: Amount,
+) -> Result<Amount, ExecError> {
+    let gain = balance.saturating_sub(set.treasury_mark);
+    let pool = crate::validators::permille_of(gain, set.params.reward_permille);
+    let total: u64 = set.active.iter().map(|(_, w)| *w).sum();
+    let mut paid = Amount::ZERO;
+    for (validator, w) in set.active.clone() {
+        let Some(record) = set.validators.get_mut(&validator) else {
+            continue;
+        };
+        if !matches!(
+            record.status,
+            ValidatorStatus::Active | ValidatorStatus::Leaving
+        ) {
+            continue;
+        }
+        let share = share_of(pool, w, total);
+        record.rewards = record.rewards.checked_add(share)?;
+        paid = paid.checked_add(share)?;
+    }
+    let unbonded = Pulse(ctx.pulse.0.saturating_add(set.params.unbonding));
+    for record in set.validators.values_mut() {
+        record.status = match record.status {
+            ValidatorStatus::Joining => ValidatorStatus::Active,
+            ValidatorStatus::Leaving => ValidatorStatus::Exited {
+                withdrawable_at: unbonded,
+            },
+            other => other,
+        };
+    }
+    let mut candidates: Vec<(Amount, fold_core::ids::ValidatorId)> = set
+        .validators
+        .values()
+        .filter(|r| r.status == ValidatorStatus::Active)
+        .map(|r| (r.stake, r.id))
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    candidates.truncate(usize::from(set.params.max_active.max(1)));
+    let mut active: Vec<(fold_core::ids::ValidatorId, u64)> = candidates
+        .iter()
+        .map(|(stake, id)| (*id, weight(*stake)))
+        .collect();
+    active.sort();
+    // A chain never runs without validators: if none are eligible, the old
+    // set carries on.
+    if !active.is_empty() {
+        set.active = active;
+    }
+    set.epoch = set.epoch.saturating_add(1);
+    set.epoch_start = ctx.pulse.next();
+    set.seed = ctx.beacon;
+    set.rotations.clear();
+    set.treasury_mark = balance.checked_sub(paid)?;
+    Ok(paid)
 }
 
 /// Issues a claim into the registry; returns the last Pulse of its window.
