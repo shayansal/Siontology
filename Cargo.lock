@@ -288,7 +288,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "fold-core",
- "hex",
  "proptest",
  "rand_chacha",
  "rand_core 0.6.4",
@@ -348,7 +347,17 @@ dependencies = [
 name = "fold-exec"
 version = "0.1.0"
 dependencies = [
+ "borsh",
+ "fold-assurance",
+ "fold-clearing",
  "fold-core",
+ "fold-crypto",
+ "fold-lp",
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
