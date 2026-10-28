@@ -233,11 +233,36 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
             validator,
             permille,
         } => delegation::set_commission(run, validator, *permille),
-        TxKind::PostDeal { .. }
-        | TxKind::AcceptDeal { .. }
-        | TxKind::ProveStorage { .. }
-        | TxKind::SettleDeal { .. }
-        | TxKind::CloseDeal { .. } => storage::not_yet(run),
+        TxKind::PostDeal {
+            root,
+            size,
+            challenges,
+            price,
+            rounds,
+            round_length,
+            collateral,
+            provider,
+            accept_by,
+            locator,
+        } => storage::post(
+            run,
+            storage::Terms {
+                root: *root,
+                size: *size,
+                challenges: *challenges,
+                price: *price,
+                rounds: *rounds,
+                round_length: *round_length,
+                collateral: *collateral,
+                provider: *provider,
+                accept_by: *accept_by,
+                locator,
+            },
+        ),
+        TxKind::AcceptDeal { deal } => storage::accept(run, *deal),
+        TxKind::ProveStorage { proofs } => storage::prove(run, proofs),
+        TxKind::SettleDeal { deal } => storage::settle(run, *deal),
+        TxKind::CloseDeal { deal } => storage::close(run, *deal),
     }
 }
 
@@ -247,7 +272,7 @@ mod tests {
 
     /// The bounds this crate takes from sion-exec's data layout are the
     /// values the specification states (§4.1, §5.2, §5.13, §5.18, §5.22,
-    /// §6.3).
+    /// §5.31, §5.40, §5.42, §5.45, §5.50, §6.3).
     #[test]
     fn shared_bounds_are_the_specified_values() {
         assert_eq!(sion_exec::tx::MAX_GRANT, Amount::units(1_000_000_000));
@@ -280,5 +305,24 @@ mod tests {
         assert_eq!(sion_exec::delegation::COMMISSION_STEP_PERMILLE, 20);
         assert_eq!(sion_exec::delegation::DELEGATION_SLASH_PERMILLE, 100);
         assert_eq!(sion_exec::delegation::CAP_FLOOR_PERMILLE, 100);
+        // §5.50, v1.12.
+        assert_eq!(sion_exec::storage::MAX_DEAL_LEAVES, 1 << 40);
+        assert_eq!(sion_exec::storage::MAX_LEAF_BYTES, 4_096);
+        assert_eq!(sion_exec::storage::MAX_PATH, 40);
+        assert_eq!(sion_exec::storage::MAX_CHALLENGES, 16);
+        assert_eq!(sion_exec::storage::MAX_ROUNDS, 1_000_000);
+        assert_eq!(sion_exec::storage::MIN_ROUND_LENGTH, 8);
+        assert_eq!(sion_exec::storage::MAX_ROUND_LENGTH, 100_000);
+        assert_eq!(sion_exec::storage::MAX_LOCATOR, 256);
+        assert_eq!(sion_exec::storage::MAX_PROOF_LEAVES, 64);
+        assert_eq!(sion_exec::storage::ABANDON_ROUNDS, 3);
+        assert_eq!(sion_exec::storage::SEED_DOMAIN, "sion/storage/seed");
+        assert_eq!(
+            sion_exec::storage::CHALLENGE_DOMAIN,
+            "sion/storage/challenge"
+        );
+        // §6.3, v1.12.
+        assert_eq!(sion_exec::beacons::BEACON_INTERVAL, 8);
+        assert_eq!(sion_exec::beacons::BEACON_SLOTS, 12_500);
     }
 }

@@ -4085,7 +4085,7 @@ fn advance_to_round(h: &mut Harness, deal: &ObjectId, round: u64) {
 fn storage(chunk_size: usize) -> Harness {
     use sion_exec::storage::{DealState, LeafProof, MAX_LOCATOR, MAX_PROOF_LEAVES};
 
-    let mut h = Harness::new(&STORAGE_NAMES, 100_000, 8, chunk_size);
+    let mut h = Harness::new(&STORAGE_NAMES, 100_000, 16, chunk_size);
     let (keeper, lazy, named) = (h.id("keeper"), h.id("lazy"), h.id("named"));
     let open_data = storage_data(1, 9);
     let keeper_data = storage_data(2, 3);
@@ -4491,13 +4491,11 @@ fn storage(chunk_size: usize) -> Harness {
 }
 
 #[test]
-#[ignore = "until proof stack B implements specification v1.12 (its storage operations are a placeholder)"]
 fn storage_deals_post_accept_prove_settle_and_close() {
     storage(1).summary("storage deals");
 }
 
 #[test]
-#[ignore = "until proof stack B implements specification v1.12 (its storage operations are a placeholder)"]
 fn storage_deals_many_transactions_per_chunk() {
     storage(4).summary("storage deals (chunks of 4)");
 }
@@ -11415,8 +11413,9 @@ fn pooled_stake(chunk_size: usize) -> Harness {
     expect(&out, &to_exited, Outcome::Failed);
 
     // Pulse 15: g1 equivocates. Its own stake is forfeited, and its pool
-    // (dave earning, erin unbonding) loses a tenth; the reporter's share is
-    // of both. A slashed validator takes no delegation.
+    // (dave earning, erin unbonding) loses a tenth, all of it to the
+    // treasury: the reporter's share is of the validator's own stake only.
+    // A slashed validator takes no delegation.
     let auth = KeyAuth::of(&genesis[1].0);
     let report = h.tx(
         "carol",
@@ -11444,7 +11443,7 @@ fn pooled_stake(chunk_size: usize) -> Harness {
             validator: g1,
             amount: units(100_000),
             reporter: h.id("carol"),
-            reward: Amount((units(100_000).0 + slashed) / 2)
+            reward: Amount(units(100_000).0 / 2)
         }
     );
     let pool = pool_of(&h, &g1);

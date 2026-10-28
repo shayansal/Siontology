@@ -351,17 +351,24 @@ pub(super) fn report_equivocation(run: &mut TxRun<'_>, evidence: &Equivocation) 
     store_set(run, loaded)?;
     // 4. The pool (v1.11).
     let pool_slashed = super::delegation::slash_pool(run, &offender)?;
-    // 5.
+    // 5. The reporter's share is of the offender's own stake and rewards;
+    // the pool's slashed part goes to the treasury whole.
     let sender = run.sender();
-    let forfeited_stake = stake.checked_add(pool_slashed.unwrap_or(Amount::ZERO))?;
     let mut reward = Amount::ZERO;
-    for (position, (asset, forfeited)) in [(params.stake_asset, forfeited_stake), (usd(), rewards)]
-        .into_iter()
-        .enumerate()
+    for (position, (asset, own, pooled)) in [
+        (
+            params.stake_asset,
+            stake,
+            pool_slashed.unwrap_or(Amount::ZERO),
+        ),
+        (usd(), rewards, Amount::ZERO),
+    ]
+    .into_iter()
+    .enumerate()
     {
-        let paid = permille_of(forfeited, params.reporter_permille);
+        let paid = permille_of(own, params.reporter_permille);
         run.mint(sender, asset, paid)?;
-        let rest = forfeited.checked_sub(paid)?;
+        let rest = own.checked_add(pooled)?.checked_sub(paid)?;
         if rest > Amount::ZERO {
             run.defer(Deferred::Treasury {
                 asset,

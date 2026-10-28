@@ -35,6 +35,7 @@ use sion_core::ids::{AccountId, AssetId, ObjectId, Pulse, Version};
 use sion_core::merkle::Frontier;
 use sion_core::Amount;
 use sion_exec::assurance::AssuranceDomain;
+use sion_exec::beacons::{BeaconRecord, BEACON_INTERVAL, BEACON_SLOTS};
 use sion_exec::claim::{claim_id, knowledge_leaf, ClaimBody, StoredClaim};
 use sion_exec::delegation::DelegationBook;
 use sion_exec::execute::{bond_owner, Deferred, Event};
@@ -598,6 +599,39 @@ impl<'v> DeferredRun<'v> {
         Ok(())
     }
 
+    /// The beacon record (§6.3, v1.12), last: a Pulse that is a multiple of
+    /// `BEACON_INTERVAL` records its beacon in slot `(pulse /
+    /// BEACON_INTERVAL) mod BEACON_SLOTS`, replacing the record there or
+    /// creating it.
+    fn record_beacon(&mut self) -> Result<(), SpecError> {
+        let pulse = self.ctx.pulse;
+        if pulse.0 % BEACON_INTERVAL != 0 {
+            return Ok(());
+        }
+        let slot = u32::try_from((pulse.0 / BEACON_INTERVAL) % BEACON_SLOTS)
+            .map_err(|_| broken("beacon slot out of range"))?;
+        let id = well_known::beacon(slot);
+        let data = ObjectData::Beacon(BeaconRecord {
+            pulse,
+            beacon: self.ctx.beacon,
+        });
+        let object = match self.book.try_load(&id).map_err(rejected)? {
+            Some(existing) => {
+                if !matches!(existing.data, ObjectData::Beacon(_)) {
+                    return Err(broken("a beacon slot holds something else"));
+                }
+                Object { data, ..existing }
+            }
+            None => Object {
+                id,
+                version: Version(0),
+                owner: Owner::Shared(well_known::beacons_domain()),
+                data,
+            },
+        };
+        self.book.store(object).map_err(rejected)
+    }
+
     /// Writes back what was used: markets in identifier order, then the
     /// assurance domain, the treasury, the validator set, the obligations,
     /// and the schedule (if its entries changed).
@@ -658,6 +692,7 @@ impl<'v> DeferredRun<'v> {
             };
             self.book.store(object).map_err(rejected)?;
         }
+        self.record_beacon()?;
         let parts = self.book.finish();
         Ok(DeferredOutcome {
             writes: parts.writes,
@@ -930,6 +965,74 @@ mod tests {
     /// §6.3 Fee: a fee credits both the balance and the running total of
     /// fees, each saturating; a Treasury credit (a slashing remainder)
     /// leaves the fee total alone.
+    #[test]
+    fn every_eighth_pulse_records_its_beacon_last() {
+        let beacon = Hash32([0x5b; 32]);
+        let mut ctx = context(16);
+        ctx.beacon = beacon;
+        let slot = well_known::beacon(2);
+        // A new slot (the witness shows it absent): created at version 0 in
+        // the beacons' domain.
+        let schedule_object = schedule(BTreeMap::new());
+        let absent = ChunkView::new(
+            [
+                (schedule_object.id, Some(schedule_object.clone())),
+                (slot, None),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let outcome = run_deferred_phase(&ctx, &absent, Frontier::default(), &[], &[]).unwrap();
+        let written = &outcome.writes[&slot];
+        assert_eq!(written.version, Version(0));
+        assert_eq!(written.owner, Owner::Shared(well_known::beacons_domain()));
+        assert_eq!(
+            written.data,
+            ObjectData::Beacon(BeaconRecord {
+                pulse: Pulse(16),
+                beacon
+            })
+        );
+        // A slot in use is replaced, a version up.
+        let mut old = written.clone();
+        old.version = Version(6);
+        old.data = ObjectData::Beacon(BeaconRecord {
+            pulse: Pulse(16),
+            beacon: Hash32::ZERO,
+        });
+        let mut later = context(16 + BEACON_INTERVAL * BEACON_SLOTS);
+        later.beacon = beacon;
+        let outcome = run_deferred_phase(
+            &later,
+            &view(vec![schedule(BTreeMap::new()), old]),
+            Frontier::default(),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(outcome.writes[&slot].version, Version(7));
+        // Between recorded Pulses nothing is written.
+        let outcome = run_deferred_phase(
+            &context(17),
+            &view(vec![schedule(BTreeMap::new())]),
+            Frontier::default(),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(outcome.writes.is_empty());
+        // A slot holding anything else is a broken state.
+        let wrong = shared(slot, ObjectData::Schedule(Schedule::default()));
+        assert!(run_deferred_phase(
+            &ctx,
+            &view(vec![schedule(BTreeMap::new()), wrong]),
+            Frontier::default(),
+            &[],
+            &[],
+        )
+        .is_err());
+    }
+
     #[test]
     fn fees_credit_the_balance_and_the_running_total() {
         let usd = AssetId::usd();
