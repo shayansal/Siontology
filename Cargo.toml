@@ -13,6 +13,7 @@ members = [
     "crates/sion-prover",
     "crates/sion-light",
     "crates/sion-memory",
+    "crates/sion-net",
     "crates/sion-node",
     "crates/sion-cli",
 ]
@@ -41,6 +42,7 @@ sion-spec = { path = "crates/sion-spec" }
 sion-prover = { path = "crates/sion-prover" }
 sion-light = { path = "crates/sion-light" }
 sion-memory = { path = "crates/sion-memory" }
+sion-net = { path = "crates/sion-net" }
 sion-node = { path = "crates/sion-node" }
 
 # Hashing, encoding, errors
@@ -68,6 +70,17 @@ num-bigint = "0.4"
 num-rational = "0.4"
 num-traits = "0.2"
 num-integer = "0.1"
+
+# Networking between machines (sion-net). quinn 0.11.9 is the newest
+# release that builds with the workspace's minimum Rust (1.80); 0.11.11 and
+# later need 1.85 (.cargo/config.toml makes the resolver prefer versions
+# that fit rust-version). rustls with the aws-lc-rs provider brings the
+# hybrid key exchange X25519MLKEM768 and ML-DSA-44.
+tokio = { version = "1.47", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
+webpki = { package = "rustls-webpki", version = "0.103.16", default-features = false, features = ["aws-lc-rs", "std"] }
+aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 
 # Interfaces
 clap = { version = "4", features = ["derive", "env"] }

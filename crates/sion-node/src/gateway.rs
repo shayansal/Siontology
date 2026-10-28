@@ -18,7 +18,7 @@
 //! handed to consensus again, until they execute.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,8 +31,14 @@ use sion_exec::object::well_known;
 use sion_exec::{ObjectData, SignedTransaction, Transaction, TxKind, Wallet};
 
 use crate::payload::{lane_inputs, PayloadItem};
-use crate::validator::{Bus, Input, Shared};
+use crate::transport::{NodeId, PeerMessage, Transport};
+use crate::validator::Shared;
 use crate::view::{Query, SubmitReceipt, TxStatus};
+
+/// How a gateway asks a validator about the state (the faucet's account,
+/// whether its grants executed): a channel to a validator thread in the same
+/// process, or a node's HTTP API.
+pub type Querier = Box<dyn Fn(Query) -> Result<Value, String> + Send>;
 
 /// Messages to the gateway.
 #[derive(Debug)]
@@ -44,23 +50,13 @@ pub enum GatewayInput {
         /// Where to answer.
         reply: Sender<Result<SubmitReceipt, String>>,
     },
-    /// A validator's sealed approval.
-    Approval {
-        /// The shard.
-        shard: ShardId,
-        /// The transaction.
-        tx: TxDigest,
-        /// The approval.
-        proof: ApprovalProof,
-    },
-    /// A validator refused to approve.
-    LaneRejected {
-        /// The transaction.
-        tx: TxDigest,
-        /// The validator.
-        validator: ValidatorId,
-        /// Why.
-        reason: String,
+    /// A message from a validator (an approval, a refusal or an execution
+    /// report), with the sender as the transport stamped it.
+    Peer {
+        /// Sender.
+        from: NodeId,
+        /// Message.
+        message: Box<PeerMessage>,
     },
     /// Faucet grants (devnet only).
     Faucet {
@@ -82,13 +78,6 @@ pub enum GatewayInput {
         /// Where to answer.
         reply: Sender<Option<TxStatus>>,
     },
-    /// A validator executed a Pulse (sent by validator 0).
-    Executed {
-        /// The Pulse.
-        pulse: Pulse,
-        /// The transactions it executed.
-        digests: Vec<TxDigest>,
-    },
     /// Stop.
     Shutdown,
 }
@@ -102,6 +91,20 @@ struct Pending {
     rejections: BTreeMap<ValidatorId, String>,
     /// The lane committee it is being certified by.
     lane_epoch: Epoch,
+    /// The members whose approvals arrived.
+    approved: std::collections::BTreeSet<ValidatorId>,
+    /// When to ask the members that stayed silent again.
+    retry_at: Instant,
+    /// How many times it has.
+    retries: u32,
+}
+
+/// When to ask again after `retries` retries: two batch intervals and a
+/// generous second for the answer, then twice as long each time, at most
+/// eight seconds. Approvals are idempotent, so asking twice is harmless.
+fn lane_retry_delay(batch_interval_ms: u64, retries: u32) -> Duration {
+    let first = Duration::from_millis(2 * batch_interval_ms + 1_000);
+    (first * 2u32.saturating_pow(retries.min(4))).min(Duration::from_secs(8))
 }
 
 /// A certified transaction handed to consensus, kept until it executes.
@@ -115,10 +118,10 @@ struct Sequenced {
 }
 
 /// The gateway's runtime.
-#[derive(Debug)]
 pub struct Gateway {
     shared: Arc<Shared>,
-    bus: Bus,
+    net: Arc<dyn Transport>,
+    query: Querier,
     inbox: Receiver<GatewayInput>,
     pending: BTreeMap<TxDigest, Pending>,
     statuses: BTreeMap<TxDigest, TxStatus>,
@@ -136,11 +139,25 @@ pub struct Gateway {
     lane_epochs: BTreeMap<ShardId, Epoch>,
 }
 
+impl std::fmt::Debug for Gateway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gateway")
+            .field("node", &self.net.local())
+            .field("pending", &self.pending.len())
+            .field("sequencing", &self.sequencing.len())
+            .finish()
+    }
+}
+
 /// A certified transaction not executed after this long is handed to
 /// consensus again (duplicates execute once).
 const RESEND_AFTER: Duration = Duration::from_secs(4);
 
 const STATUS_LIMIT: usize = 100_000;
+
+/// Transactions being certified at most; beyond it the gateway refuses new
+/// ones until some certify, are refused or expire.
+const PENDING_LIMIT: usize = 100_000;
 
 /// Certified transactions are handed to consensus in groups at most this
 /// often, sharing their batch headers.
@@ -157,17 +174,20 @@ const FAUCET_QUEUE_LIMIT: usize = 10_000;
 type Grant = (AccountId, AssetId, Amount);
 
 impl Gateway {
-    /// A gateway.
+    /// A gateway that reaches validators through `net`, receives what they
+    /// answer in `inbox`, and asks a validator about the state with `query`.
     pub fn new(
         shared: Arc<Shared>,
-        bus: Bus,
+        net: Arc<dyn Transport>,
+        query: Querier,
         inbox: Receiver<GatewayInput>,
         faucet: Wallet,
     ) -> Gateway {
         let verifier = shared.verifier.clone();
         Gateway {
             shared,
-            bus,
+            net,
+            query,
             inbox,
             pending: BTreeMap::new(),
             statuses: BTreeMap::new(),
@@ -276,8 +296,70 @@ impl Gateway {
             if last_tick.elapsed() >= Duration::from_millis(100) {
                 last_tick = Instant::now();
                 self.follow_committees();
+                self.retry_lane_requests();
                 self.tick_faucet();
             }
+        }
+    }
+
+    /// Asks the lane committee members whose answer is late again (a request
+    /// or its approval may have been lost), and gives up on transactions
+    /// that expired before they were certified.
+    fn retry_lane_requests(&mut self) {
+        let now = Instant::now();
+        let pulse = self.shared.view.read().map(|v| v.pulse).unwrap_or_default();
+        let expired: Vec<TxDigest> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.tx.tx.expires_at <= pulse)
+            .map(|(d, _)| *d)
+            .collect();
+        for digest in expired {
+            self.pending.remove(&digest);
+            self.set_status(
+                digest,
+                TxStatus::Rejected("it expired before a quorum approved it".into()),
+            );
+        }
+        let due: Vec<TxDigest> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.retry_at <= now)
+            .map(|(d, _)| *d)
+            .collect();
+        let batch_interval = self.shared.config.batch_interval_ms;
+        for digest in due {
+            let Some((shard, lane_epoch)) = self
+                .pending
+                .get(&digest)
+                .map(|pending| (pending.shard, pending.lane_epoch))
+            else {
+                continue;
+            };
+            let committee = match self.lane_committee(shard) {
+                // A replaced committee is handled by `follow_committees`.
+                Some(committee) if committee.epoch() == lane_epoch => committee,
+                _ => continue,
+            };
+            let Some(pending) = self.pending.get_mut(&digest) else {
+                continue;
+            };
+            let silent: Vec<NodeId> = committee
+                .members()
+                .iter()
+                .map(|(member, _)| *member)
+                .filter(|m| !pending.approved.contains(m) && !pending.rejections.contains_key(m))
+                .map(NodeId::Validator)
+                .collect();
+            pending.retries += 1;
+            pending.retry_at = now + lane_retry_delay(batch_interval, pending.retries);
+            let request = LaneRequest {
+                tx: digest,
+                inputs: lane_inputs(&pending.tx.tx.inputs),
+                owner_proof: encode(&pending.tx),
+            };
+            self.net
+                .send_all(&silent, &PeerMessage::Lane { shard, request });
         }
     }
 
@@ -297,12 +379,7 @@ impl Gateway {
             GatewayInput::Submit { tx, reply } => {
                 let _ = reply.send(self.submit(*tx));
             }
-            GatewayInput::Approval { shard, tx, proof } => self.on_approval(shard, tx, proof),
-            GatewayInput::LaneRejected {
-                tx,
-                validator,
-                reason,
-            } => self.on_rejection(tx, validator, reason),
+            GatewayInput::Peer { from, message } => self.on_peer(from, *message),
             GatewayInput::Faucet { grants, reply } => {
                 if grants.iter().any(|(_, _, a)| *a == Amount::ZERO) {
                     let _ = reply.send(Err("zero grant".into()));
@@ -317,12 +394,25 @@ impl Gateway {
                 let _ = reply.send(self.statuses.get(&tx).cloned());
             }
             GatewayInput::Censor { accounts } => self.censored = accounts,
-            GatewayInput::Executed { digests, .. } => {
+            GatewayInput::Shutdown => {}
+        }
+    }
+
+    /// What a validator sent. Only validators' messages count, and a
+    /// refusal counts as the refusal of the validator that sent it.
+    fn on_peer(&mut self, from: NodeId, message: PeerMessage) {
+        let Some(validator) = from.validator() else {
+            return;
+        };
+        match message {
+            PeerMessage::Approval { shard, tx, proof } => self.on_approval(shard, tx, proof),
+            PeerMessage::LaneRejected { tx, reason } => self.on_rejection(tx, validator, reason),
+            PeerMessage::Executed { digests, .. } => {
                 for digest in digests {
                     self.sequencing.remove(&digest);
                 }
             }
-            GatewayInput::Shutdown => {}
+            _ => {}
         }
     }
 
@@ -352,6 +442,9 @@ impl Gateway {
         if self.pending.contains_key(&digest) || self.statuses.contains_key(&digest) {
             return Ok(receipt);
         }
+        if self.pending.len() >= PENDING_LIMIT {
+            return Err("the gateway is busy; try again shortly".into());
+        }
         if self.censored.contains(&signed.tx.sender) {
             // A censoring gateway acknowledges and then does nothing.
             self.set_status(
@@ -372,15 +465,13 @@ impl Gateway {
             inputs: inputs.clone(),
             owner_proof: encode(&signed),
         };
-        for (member, _) in committee.members() {
-            self.bus.send(
-                member,
-                Input::Lane {
-                    shard,
-                    request: request.clone(),
-                },
-            );
-        }
+        let members: Vec<NodeId> = committee
+            .members()
+            .iter()
+            .map(|(member, _)| NodeId::Validator(*member))
+            .collect();
+        self.net
+            .send_all(&members, &PeerMessage::Lane { shard, request });
         self.pending.insert(
             digest,
             Pending {
@@ -390,6 +481,10 @@ impl Gateway {
                 approvals: 0,
                 rejections: BTreeMap::new(),
                 lane_epoch: committee.epoch(),
+                approved: Default::default(),
+                retry_at: Instant::now()
+                    + lane_retry_delay(self.shared.config.batch_interval_ms, 0),
+                retries: 0,
             },
         );
         self.set_status(
@@ -469,23 +564,31 @@ impl Gateway {
     /// least one honest proposer includes it (duplicates are executed once).
     /// Validators outside the active set only observe, so they are skipped.
     fn send_to_consensus(&mut self, bytes: Vec<u8>) {
-        let members: Vec<usize> = match self.committees() {
+        let members: Vec<NodeId> = match self.committees() {
             Some(committees) => committees
                 .consensus
                 .members()
                 .iter()
-                .filter_map(|(v, _)| self.bus.index.get(v).copied())
+                .map(|(v, _)| NodeId::Validator(*v))
+                .filter(|node| self.net.knows(node))
                 .collect(),
-            None => (0..self.bus.validators.len()).collect(),
+            None => self
+                .shared
+                .validators
+                .iter()
+                .map(|v| NodeId::Validator(*v))
+                .filter(|node| self.net.knows(node))
+                .collect(),
         };
         if members.is_empty() {
             return;
         }
         let copies = (members.len() - 1) / 3 + 1;
-        for k in 0..copies.min(members.len()) {
-            let index = members[(self.next + k) % members.len()];
-            let _ = self.bus.validators[index].send(Input::Submit(bytes.clone()));
-        }
+        let chosen: Vec<NodeId> = (0..copies.min(members.len()))
+            .map(|k| members[(self.next + k) % members.len()])
+            .collect();
+        self.net
+            .send_all(&chosen, &PeerMessage::Payload { item: bytes });
         self.next = self.next.wrapping_add(1);
     }
 
@@ -506,7 +609,12 @@ impl Gateway {
         let Some(pending) = self.pending.get_mut(&tx) else {
             return;
         };
-        match pending.builder.add(&committee, proof, &self.verifier) {
+        let approver = proof.batch.validator;
+        let added = pending.builder.add(&committee, proof, &self.verifier);
+        if added.is_ok() {
+            pending.approved.insert(approver);
+        }
+        match added {
             Ok(Some(certificate)) => {
                 let pending = self.pending.remove(&tx).expect("present");
                 self.certified.push((pending.tx, certificate));
@@ -516,7 +624,8 @@ impl Gateway {
                 }
             }
             Ok(None) => {
-                pending.approvals += 1;
+                // An approval asked for twice may arrive twice.
+                pending.approvals = pending.approved.len();
                 let approvals = pending.approvals;
                 self.set_status(
                     tx,
@@ -554,13 +663,7 @@ impl Gateway {
     }
 
     fn query(&self, query: Query) -> Result<Value, String> {
-        let (reply, answer) = mpsc::channel();
-        self.bus.validators[0]
-            .send(Input::Query(query, reply))
-            .map_err(|_| "validator stopped".to_string())?;
-        answer
-            .recv_timeout(Duration::from_secs(15))
-            .map_err(|_| "validator did not answer".to_string())?
+        (self.query)(query)
     }
 
     fn tick_faucet(&mut self) {

@@ -3,8 +3,9 @@
 `sion mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
 server for AI agents. [Connect an AI agent over MCP](../getting-started/mcp.md)
 shows how to add it to a client. This page lists every tool, with its input
-schema as `tools/list` returns it and a real call from a recorded session
-against a devnet.
+schema as `tools/list` returns it and, for all but the Task Charter tools
+(whose setup the [guide](../guides/tasks.md) walks through), real calls
+from recorded sessions against a devnet.
 
 ## Protocol
 
@@ -530,3 +531,368 @@ Result (`structuredContent`):
 }
 ```
 
+## sion_task_post
+
+Post a task (Task Charters): escrow money for work whose acceptance rule is fixed now. A result is paid only if it rests on every required claim (for example an environment vendor's bonded 'no known exploit' claim) and on the worker's bond or a named verifier's attestation, and passes the poster's decision rule; κ times the payment of its backing is then reserved, so a result later proven false compensates the poster. Without worker, the task is a bounty anyone may settle. With charter and allotment, the escrow comes from that agent's budget under its caveats.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `adjudicator` | string | no | Adjudicator atom id (hex) results must name |
+| `allotment` | string | no | The agent's allotment (hex), with charter |
+| `amount_usd` | number | yes | Escrow, paid in full for an accepted result |
+| `charter` | string | no | Post from this agent's budget (charter id, hex) |
+| `deadline_pulses` | integer | no | Pulses until the deadline (default 1000) |
+| `detection_permille` | integer | no | Largest detection factor results may declare (default 900) |
+| `kappa` | number | no | Safety factor κ (default 2) |
+| `reliance_pulses` | integer | no | Pulses the backing of a paid result stays reserved (default 1000) |
+| `requires` | array of string | no | Claim ids every result must rest on |
+| `spec` | string | no | The task's description; its bytes are committed |
+| `verifiers` | array of string | no | Verifiers whose attestations count (wallets or accounts) |
+| `wallet` | string | yes | The poster's wallet (the agent's, with charter) |
+| `worker` | string | no | The worker (wallet or account); omit for an open bounty |
+
+See [Task Charters from the command line](../guides/tasks.md) for the same steps as commands.
+
+## sion_task_attest
+
+Attest, as a verifier the task names, that an output passes: issues an attestation claim resting on the verifier's bond bond:<verifier>:verifier (or bond_label).
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `bond_label` | string | no |  |
+| `output` | string | yes | The output; its bytes are committed |
+| `task` | string | yes | Task id (hex) |
+| `wallet` | string | yes |  |
+
+See [Task Charters from the command line](../guides/tasks.md) for the same steps as commands.
+
+## sion_task_submit
+
+Submit a result for a task: issues a result claim with exactly the formula the task requires, over the attestations given (claim ids, in order). The worker needs a task bond (bond:<worker>:task-worker), however small.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `attestations` | array of string | no |  |
+| `output` | string | yes | The output; its bytes are committed |
+| `task` | string | yes | Task id (hex) |
+| `wallet` | string | yes |  |
+
+See [Task Charters from the command line](../guides/tasks.md) for the same steps as commands.
+
+## sion_task_settle
+
+Settle a task with your result claim and its attestations (claim ids, in the order the result lists them). The ledger pays only if the result passes the rule fixed when the task was posted, and only once.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `attestations` | array of string | no |  |
+| `result` | string | yes | Result claim id (hex) |
+| `task` | string | yes | Task id (hex) |
+| `wallet` | string | yes |  |
+
+See [Task Charters from the command line](../guides/tasks.md) for the same steps as commands.
+
+## sion_task_show
+
+Show a task: poster, worker, escrow, deadline, the acceptance rule and its state.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `task` | string | yes |  |
+
+See [Task Charters from the command line](../guides/tasks.md) for the same steps as commands.
+
+## sion_memory_open
+
+Open a memory log on the ledger: an append-only log of memory atoms kept off the ledger, whose head the ledger moves only along proofs that the log grew. With agent, the log belongs to that agent identity (the wallet must be its agent) and cannot grow while the agent is suspended.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `agent` | string | no | Agent identity id (hex) |
+| `wallet` | string | yes |  |
+
+Call:
+
+```json
+{"name": "sion_memory_open", "arguments": {"wallet": "robot-7"}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "log": "5bc688d4a6571cfe9e3dfda1a1cda7bdd76bb77257eb822381500a2ef5e2c93d",
+  "pulse": 13,
+  "receipt": "Done: memory log 5bc688d4 opened; fee 0.0012 USD.",
+  "status": "Success"
+}
+```
+
+## sion_memory_remember
+
+Record a memory atom in a log's local store: a statement (subject, predicate, value) with when it held and, for robots, where (a box in a frame, in millimetres). It reaches the ledger's commitment at the next sion_memory_commit.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `at` | array of integer | no | Its place: x, y, z in millimetres |
+| `confidence_permille` | integer | no | Confidence in thousandths (default 1000) |
+| `frame` | string | no | The frame its place is in, for example warehouse-3 |
+| `from_s` | integer | no | When it began to hold, seconds since the Unix epoch (default now) |
+| `kind` | string | no | observation (default), coverage, world-state, semantic, episodic, procedural, preference, goal, plan, … |
+| `log` | string | yes | Memory log id (hex) or a unique prefix |
+| `predicate` | string | yes |  |
+| `seconds` | integer | no | For how long it held (default open-ended) |
+| `size` | array of integer | no | Half the size of its box: dx, dy, dz in millimetres |
+| `subject` | string | yes |  |
+| `value` | string | yes | true/false, an integer, @name for an entity, or text |
+| `wallet` | string | yes |  |
+
+Call:
+
+```json
+{"name": "sion_memory_remember", "arguments": {"wallet": "robot-7", "log": "5bc688d4", "subject": "pallet-17", "predicate": "at", "value": "@aisle-4", "frame": "warehouse-3", "at": [41000, 11000, 500], "size": [600, 400, 500], "from_s": 1790812800, "seconds": 30, "confidence_permille": 900}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "id": "9622667160c390e3e39ec78984b160a21f08b18f760a287c77105241eadeaa6b",
+  "log": "5bc688d4a6571cfe9e3dfda1a1cda7bdd76bb77257eb822381500a2ef5e2c93d",
+  "seq": 0,
+  "size": 1,
+  "uncommitted": 1
+}
+```
+
+Call:
+
+```json
+{"name": "sion_memory_remember", "arguments": {"wallet": "robot-7", "log": "5bc688d4", "subject": "dock-door-2", "predicate": "open", "value": "true", "kind": "world-state", "from_s": 1790812808}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "id": "cd354fc96f13118cc26347040956d92a88a63835b4d2de80cfa17c0bc68c285c",
+  "log": "5bc688d4a6571cfe9e3dfda1a1cda7bdd76bb77257eb822381500a2ef5e2c93d",
+  "seq": 1,
+  "size": 2,
+  "uncommitted": 2
+}
+```
+
+## sion_memory_commit
+
+Commit a memory log's local head to the ledger with a proof that it extends the committed one. The Pulse it executes in becomes the transaction time of the atoms it adds.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `log` | string | yes | Memory log id (hex) or a unique prefix |
+| `seal` | boolean | no | Close the log for good |
+| `wallet` | string | yes |  |
+
+Call:
+
+```json
+{"name": "sion_memory_commit", "arguments": {"wallet": "robot-7", "log": "5bc688d4"}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "pulse": 16,
+  "receipt": "Done: memory log 5bc688d4 now holds 2 atoms (head 1); fee 0.0011 USD.",
+  "status": "Success"
+}
+```
+
+## sion_memory_recall
+
+Everything a memory log had recorded in a box of a frame during an interval, as of its committed head, with a proof of completeness checked against the index root the ledger holds (an empty answer is proved too).
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `frame` | string | yes |  |
+| `from_s` | integer | yes | Interval start, seconds since the Unix epoch |
+| `log` | string | yes | Memory log id (hex) or a unique prefix |
+| `max` | array of integer | yes | Upper corner x, y, z in millimetres |
+| `min` | array of integer | yes | Lower corner x, y, z in millimetres |
+| `until_s` | integer | yes | Interval end (exclusive) |
+
+Call:
+
+```json
+{"name": "sion_memory_recall", "arguments": {"log": "5bc688d4", "frame": "warehouse-3", "min": [40000, 10000, 0], "max": [42000, 12000, 3000], "from_s": 1790812800, "until_s": 1790812860}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "as_of": {
+    "index": "e2f53bbcd00b673fd659c051eeffeacd19b0f3503249b1ab5346039a7c4da018",
+    "pulse": 16,
+    "size": 2
+  },
+  "atoms": [
+    {
+      "confidence_permille": 900,
+      "id": "9622667160c390e3e39ec78984b160a21f08b18f760a287c77105241eadeaa6b",
+      "kind": "observation",
+      "seq": 0,
+      "statement": "pallet-17 at aisle-4",
+      "valid_from_s": 1790812800,
+      "valid_until_s": 1790812830
+    }
+  ],
+  "log": "5bc688d4a6571cfe9e3dfda1a1cda7bdd76bb77257eb822381500a2ef5e2c93d",
+  "proof_bytes": 327,
+  "verified": "complete against the index root the ledger holds"
+}
+```
+
+## sion_stake_pools
+
+Every validator with its own stake, its pool of delegated stake (and how much of it earns), its commission and its weight in the active set.
+
+No arguments.
+
+Call:
+
+```json
+{"name": "sion_stake_pools", "arguments": {}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "pools": [
+    "epoch 0, ending after Pulse 12; stake asset USD (test stake)",
+    "validator 91fa8cbb  operator operator-1  active  own 100,000  delegated 0 (earning 0)  commission 0%  weight 100000",
+    "validator 9c813b07  operator operator-3  active  own 100,000  delegated 0 (earning 0)  commission 0%  weight 100000",
+    "validator d7c1b77d  operator operator-0  active  own 100,000  delegated 0 (earning 0)  commission 0%  weight 100000",
+    "validator f28a5456  operator operator-2  active  own 100,000  delegated 0 (earning 0)  commission 0%  weight 100000"
+  ]
+}
+```
+
+## sion_stake_delegate
+
+Delegate stake to a validator's pool without handing it over: the wallet keeps a delegation object holding pool shares. It counts towards the validator's weight and earns a share of its rewards, less the validator's commission, from the end of this epoch; it shares the validator's slashing risk (a tenth of the pool on equivocation). Refused if it would give the validator more than twice an equal share of the bonded stake.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `amount` | number | yes | Stake, in the stake asset (at least 1) |
+| `validator` | string | yes | Validator id (hex) or a unique prefix |
+| `wallet` | string | yes |  |
+
+Call:
+
+```json
+{"name": "sion_stake_delegate", "arguments": {"wallet": "alice", "validator": "d7c1b77d", "amount": 5000}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "events": [
+    {
+      "Delegated": {
+        "amount": 5000000000,
+        "delegation": "59e26b64b3d1183081dc7f252445f320d888e0eb821d1bf3297af89d3beee293",
+        "owner": "42424444042f6eae3f1f69e9d99e163216bd317aed703c8eb19a98346b1eeb23",
+        "shares": 5000000000,
+        "validator": "d7c1b77db0ae57df54351fc2e4c60d8557ec8a9ba3f01e567431a45fb8198c59"
+      }
+    }
+  ],
+  "pulse": 9,
+  "receipt": "Done: alice delegated 5,000 USD to validator d7c1b77d as delegation 59e26b64, earning from the epoch's end; fee 0.0011 USD.",
+  "status": "Success"
+}
+```
+
+Call:
+
+```json
+{"name": "sion_stake_delegate", "arguments": {"wallet": "alice", "validator": "d7c1b77d", "amount": 0.5}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "events": [],
+  "pulse": 11,
+  "receipt": "Failed (invalid transaction: a delegation must be at least 1); nothing happened except the fee of 0.0011 USD.",
+  "status": {
+    "Failed": "invalid transaction: a delegation must be at least 1"
+  }
+}
+```
+
+## sion_stake_show
+
+An account's delegations: validator, shares, the stake behind them, state (pending, earning or unbonding) and the rewards owed now.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `account` | string | yes | A wallet name (devnet) or a 64-digit hex account ID |
+
+Call:
+
+```json
+{"name": "sion_stake_show", "arguments": {"account": "alice"}}
+```
+
+Result (`structuredContent`):
+
+```json
+{
+  "account": "42424444042f6eae3f1f69e9d99e163216bd317aed703c8eb19a98346b1eeb23",
+  "delegations": [
+    {
+      "delegation": "59e26b64b3d1183081dc7f252445f320d888e0eb821d1bf3297af89d3beee293",
+      "rewards_owed": "0",
+      "shares": "5000000000",
+      "since": 9,
+      "stake": "5,000",
+      "state": "pending: earns from the end of this epoch",
+      "validator": "d7c1b77db0ae57df54351fc2e4c60d8557ec8a9ba3f01e567431a45fb8198c59"
+    }
+  ],
+  "epoch": 0
+}
+```
+
+## sion_stake_claim
+
+Collect a delegation's rewards (USD).
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `delegation` | string | yes | Delegation id (hex) or a unique prefix |
+| `wallet` | string | yes |  |
+
+## sion_stake_undelegate
+
+Stop a delegation earning: collect its rewards and start unbonding. The stake stays slashable until it is withdrawn after the unbonding period.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `delegation` | string | yes | Delegation id (hex) or a unique prefix |
+| `wallet` | string | yes |  |
+
+## sion_stake_withdraw
+
+Withdraw an unbonded delegation's stake.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `delegation` | string | yes | Delegation id (hex) or a unique prefix |
+| `wallet` | string | yes |  |

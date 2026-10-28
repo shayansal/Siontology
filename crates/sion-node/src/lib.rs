@@ -1,8 +1,11 @@
-//! The Siontology devnet node.
+//! The Siontology node.
 //!
 //! A devnet runs every validator of a committee in one process, each on its
 //! own thread with its own state replica, connected by an in-memory
-//! network. Everything else is the real protocol:
+//! network ([`transport`]). A network runs one validator per process
+//! ([`node`]), connected by QUIC with post-quantum TLS and keys pinned by a
+//! genesis file ([`network`]). Both run the same validator and gateway
+//! code; everything else is the real protocol:
 //!
 //! - **Lanes** ([`sion_consensus::LaneValidator`]): owned-path transactions
 //!   are certified by their shard's committee, approvals batch-signed with
@@ -38,11 +41,14 @@ pub mod error;
 pub mod forced;
 pub mod gateway;
 pub mod keys;
+pub mod network;
+pub mod node;
 pub mod owners;
 pub mod payload;
 pub mod prover;
 pub mod pulses;
 pub mod storage;
+pub mod transport;
 pub mod validator;
 pub mod view;
 

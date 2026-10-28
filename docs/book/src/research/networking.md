@@ -1,7 +1,10 @@
 # Networking between machines
 
-*Research note, 28 October 2026. This is a design and a plan. Nothing in it
-is built.*
+*Research note, 28 October 2026. This is a design and a plan. Phase 0,
+the first three milestones of phase 2 and part of phase 1 are now built;
+[section 6](#6-implementation-plan) marks them **Done** and says where the
+build departs from the design. [Running a network of
+processes](../guides/network.md) shows how to use it.*
 
 Today every Siontology validator is a thread of one process, and validators
 exchange real signed messages over in-memory channels. The implementation
@@ -908,22 +911,31 @@ pub trait Transport: Send + Sync + std::fmt::Debug {
 
 Milestones:
 
-1. Add `PeerMessage`, `NodeId`, the `Transport` trait and `MemoryTransport`,
-   and route every validator-to-validator and gateway-to-validator send
-   through it. The transport stamps `from`. `MemoryTransport` can also
-   encode and decode every message, which tests the size limits.
-2. Add `FaultyTransport<T>`. It injects seeded loss, delay with jitter,
-   duplication, reordering and partitions, per message class, and a timer
-   thread releases delayed messages. A scenario script changes the faults
-   over time.
-3. Count messages and bytes per class and per peer, and report them in
-   `sion status` and `sion bench`. This gives measured values to replace
-   this note's computed ones.
+1. **Done.** Add `PeerMessage`, `NodeId`, the `Transport` trait and
+   `MemoryTransport`, and route every validator-to-validator and
+   gateway-to-validator send through it. The transport stamps `from`.
+   `MemoryTransport` can also encode and decode every message, which tests
+   the size limits. (`sion_node::transport`; `NodeId`, the classes and
+   framing live in `sion-net`. Consensus envelopes carry their session, and
+   peers' messages no longer name their sender.)
+2. **Done.** Add `FaultyTransport<T>`. It injects seeded loss, delay with
+   jitter, duplication, reordering and partitions, per message class, and a
+   timer thread releases delayed messages. A scenario script changes the
+   faults over time. (`transport::faulty`: one generator per link, seeded
+   through `sion_core::rng`.)
+3. **Done.** Count messages and bytes per class and per peer, and report
+   them in `sion status` and `sion bench`. This gives measured values to
+   replace this note's computed ones. (Per class, per message kind and per
+   peer; `sion bench` reports a validator's bytes per Pulse in each class
+   and per transfer.)
 
 Tests: the existing suite, unchanged. A property test that every
 `PeerMessage` round-trips through Borsh within its class limit. A devnet
 test with `FaultyTransport` at zero faults that matches the memory
-transport's results.
+transport's results. **Done**: the suite passes unchanged;
+`every_peer_message_round_trips_through_borsh_within_its_class_limit`
+(proptest) and
+`a_devnet_through_the_fault_injector_at_zero_faults_matches_the_memory_transport`.
 
 Exit criteria: all tests pass. The devnet's measured Pulse interval stays
 within 10 % of today's on the same machine (target).
@@ -933,12 +945,24 @@ within 10 % of today's on the same machine (target).
 Milestones:
 
 1. Session-tagged envelopes. The previous session's core serves for the
-   drain window. Add fetch by round range.
+   drain window. Add fetch by round range. **Done in part**: every
+   consensus envelope carries its session (phase 0); the drain window and
+   fetch by round range are not built.
 2. Retries:
    - the gateway retries lane requests whose approvals are late (missing
      after two batch intervals plus one round trip, proposed);
    - validators re-send their Pulse signatures and forced approvals until
      the Pulse or the intent is certified, and answer signature pulls.
+
+   **Done in part.** The gateway asks again the members whose approval is
+   late: after two batch intervals and a second, then twice as long each
+   time, at most every 8 s; it refuses new transactions beyond 100,000
+   pending. A validator holding an uncertified Pulse 2 s after executing
+   it pulls the signatures it lacks (`PulseSignatureRequest`), and members
+   answer. Between processes validators report executions to whoever hands
+   them work. Buffers peers can fill are bounded: future-session messages
+   by bytes per sender, parked lane requests by count. Not done: forced
+   approvals are re-shared after every Pulse, not on a timer.
 3. Batch announcements: approvals carry references, and each batch
    signature travels once per gateway.
 4. ~~The gateway caps a group by bytes below `max_payload_bytes`, not
@@ -949,6 +973,13 @@ Milestones:
 6. A consensus signing log, so a single validator can restart into the
    current session. Sessions no longer include a restart generation in
    networked mode.
+
+   **Done in part.** In networked mode the session is the epoch: there is
+   no restart generation. The signing log is not built, so a validator
+   records each session before it signs anything in it
+   (`data/signed-session`) and refuses to start in one it recorded
+   (`net:no-rejoin`). Without Pulse sync either, a stopped validator does
+   not come back.
 7. Lane lock hand-over: lock reads, the grace window and the expiry cap.
    This is a specification version, implemented by both proof stacks and
    covered by the differential tests.
@@ -957,6 +988,14 @@ Milestones:
    seeded faults, the method `sion_consensus::sim` already uses for the
    core. It covers lanes, Pulses, epochs and hand-overs, which the
    consensus simulator does not reach.
+
+So far (in process, through `FaultyTransport`, simulation signatures):
+lane requests lost for two seconds are asked again and execute; a
+validator cut off by a partition catches up through the DAG and pulls the
+Pulse signatures it missed; with 10 % loss, delay, jitter, duplicates and
+reordering in every class, transfers execute and every validator
+certifies every Pulse. The rest of milestone 1, milestones 3, 5, 7 and 8,
+and the property tests and exit criteria below are not done.
 
 Tests: the rows of the [fault matrix](#fault-injection-matrix) marked
 "in process", run both on real threads with `FaultyTransport` and in the
@@ -986,17 +1025,34 @@ Milestones:
 1. `sion-net`: the `quinn` endpoint, rustls with the aws-lc-rs provider
    (X25519MLKEM768 only, `mldsa44` only, TLS 1.3 only), the pinned-key
    verifier, framing with class limits and priorities, connection
-   management, keep-alive and quotas.
+   management, keep-alive and quotas. **Done**, with three departures:
+   - nodes present their network key as an RFC 7250 raw public key, not
+     a self-signed X.509 certificate (`net:raw-public-keys`): both ends pin
+     the key anyway, so a certificate would add only parsing, and the
+     server's first flight shrinks by the certificate's encoding. The TLS
+     server name is fixed (`sion.invalid`); the chain identity travels in a
+     hello right after the handshake instead, with the protocol version and
+     the node;
+   - each class has one long-lived stream per direction rather than a
+     stream per message or request; a class's frames stay in order, and
+     priorities keep a large certificate from delaying a vote;
+   - `quinn` is pinned to 0.11.9, the newest release that builds with the
+     workspace's minimum Rust (1.80).
 2. `sion keys`: generate a validator's dual keys and its network key
    locally, and write its signed network record. A genesis file collects
    public keys, possession proofs and records. Devnet keys stay for
-   `sion devnet` only (`impl:devnet-keys`).
+   `sion devnet` only (`impl:devnet-keys`). **Done**: `sion keys
+   validator` (the record's dual signature is the proof of possession),
+   `sion keys gateway`, and `sion genesis`, which writes `genesis.json` and
+   a `peers.json` listing gateways and newer records.
 3. `sion node`: one validator per process, with its own data directory,
    HTTP API on localhost, optional embedded gateway, and a peer file.
    `sion gateway`: a gateway as its own process. It learns committees
    from a node, or as a light client does from epoch proofs, and it
-   receives approvals as responses on its own connections.
-4. A TCP fallback using the same frames.
+   receives approvals as responses on its own connections. **Done**; the
+   gateway learns committees from a node it trusts
+   (`net:gateway-trusts-node`), not yet from epoch proofs.
+4. A TCP fallback using the same frames. Not built.
 
 Tests:
 
@@ -1012,6 +1068,20 @@ Tests:
   - a peer that offers only classical groups fails;
   - a handshake that needs the extra round trip of the amplification
     limit still completes.
+
+So far: four `sion node` processes and a `sion gateway` on one machine
+certify, order and execute transfers submitted through the gateway; every
+node reaches the same Pulse headers and balances; a light client checks a
+certified Pulse against the pinned chain identity; keys nobody pinned and
+classical-only key exchange are refused by every node; three validators
+continue without the fourth, which refuses to restart
+(`four_node_processes_and_a_gateway_certify_order_and_execute_transfers`,
+about 35 to 40 s on two cores). In `sion-net`, over QUIC on loopback, an
+unknown key, a node presenting another key, classical-only key exchange
+and a peer on another chain are refused; a newer record replacing an
+older one is tested in the peer file, not yet end to end. Not done: the
+phase 1 suite over QUIC, four machines, `netem`, process kills beyond
+one, fuzzing, and the amplification-limit test.
 
 Exit criteria (targets):
 
@@ -1219,13 +1289,16 @@ are sized for devnet-scale state and a few hundred transfers a second.
 
 | Atom | Status | Meaning |
 |---|---|---|
-| `impl:in-process-network` | Retired in phase 2 for networked deployments; kept for `sion devnet` | Validators share a process; network faults are not exercised |
+| `impl:in-process-network` | Retired in phase 2 for networked deployments; kept for `sion devnet` (**done**) | Validators share a process; network faults are not exercised |
 | `impl:reliable-handover` | Retired in phase 1 | The epoch hand-over relies on reliable delivery |
 | `impl:lock-handover` | Retired in phase 1 (specification version) | Certificates are not drained when a lane committee changes |
-| `net:transport-ml-dsa` | Added in phase 2 | Transport authentication rests on ML-DSA-44 alone; a forger could impersonate peers at the transport layer, not sign consensus messages |
-| `net:aws-lc` | Added in phase 2 | The TLS provider is aws-lc-rs, C code outside the workspace's audit scope |
-| `net:static-peers` | Added in phase 2; retired when records move into the state | Peers come from a testnet file of signed records |
-| `net:partial-synchrony` | Assumed by the architecture's security model; named as an atom here because a real network now exercises it | Liveness needs message delays to become bounded after some time |
+| `net:transport-ml-dsa` | Added in phase 2 (**added**) | Transport authentication rests on ML-DSA-44 alone; a forger could impersonate peers at the transport layer, not sign consensus messages |
+| `net:aws-lc` | Added in phase 2 (**added**) | The TLS provider is aws-lc-rs, C code outside the workspace's audit scope |
+| `net:static-peers` | Added in phase 2 (**added**); retired when records move into the state | Peers come from a testnet file of signed records |
+| `net:partial-synchrony` | Assumed by the architecture's security model; named as an atom here because a real network now exercises it (**added**) | Liveness needs message delays to become bounded after some time |
+| `net:raw-public-keys` | Added with phase 2's handshake | Nodes authenticate with RFC 7250 raw ML-DSA-44 public keys, pinned at both ends, instead of self-signed X.509 certificates; the handshake relies on rustls's raw-public-key support |
+| `net:gateway-trusts-node` | Added with phase 2's `sion gateway`; retired when gateways follow committees from epoch proofs | A gateway running alone learns committees and the state from one node it trusts |
+| `net:no-rejoin` | Added with phase 2's `sion node`; retired by the signing log and Pulse sync (phase 1) | A validator of a network that stops cannot rejoin; each stop is a permanent fault |
 
 ## Sources
 

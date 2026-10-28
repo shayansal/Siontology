@@ -8,6 +8,8 @@
 //! - [`demos`]: scripted end-to-end demonstrations.
 //! - [`verify`]: light-client verification of a Pulse.
 //! - [`mcp`]: a Model Context Protocol server for AI agents.
+//! - [`network`]: keys, genesis, nodes and gateways of a network of
+//!   processes.
 //! - [`stream`]: payment streams: the payer's chains and the payee's desk.
 //! - [`tasks`]: Task Charters: escrowed work with acceptance fixed in advance.
 //! - [`x402`]: HTTP 402 payments settled on Siontology, for servers and agents.
@@ -20,6 +22,7 @@ pub mod error;
 pub mod ledger;
 pub mod mcp;
 pub mod memory;
+pub mod network;
 pub mod session;
 pub mod stake;
 pub mod stream;

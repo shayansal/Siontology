@@ -1,0 +1,31 @@
+[package]
+name = "sion-net"
+description = "Networking between Siontology nodes: node identities, message classes and frames with size limits, network keys and records, and a QUIC endpoint (TLS 1.3, X25519MLKEM768, ML-DSA-44) with pinned peers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sion-core.workspace = true
+sion-crypto.workspace = true
+borsh.workspace = true
+serde.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+tokio.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+webpki.workspace = true
+aws-lc-rs.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

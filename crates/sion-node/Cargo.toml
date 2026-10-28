@@ -18,6 +18,7 @@ sion-consensus.workspace = true
 sion-exec.workspace = true
 sion-da.workspace = true
 sion-light.workspace = true
+sion-net.workspace = true
 sion-prover.workspace = true
 borsh.workspace = true
 serde.workspace = true
@@ -25,6 +26,8 @@ serde_json.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tiny_http.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

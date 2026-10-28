@@ -60,6 +60,9 @@ pub enum Query {
     Forced,
     /// The proof linking epoch `e − 1` to epoch `e` (for light clients).
     Epoch(u64),
+    /// The current committees and registered keys, encoded for a gateway
+    /// that runs in another process.
+    Committees,
 }
 
 /// Chain status.
@@ -117,6 +120,10 @@ pub struct StatusView {
     /// could carry them; above 0 means a submitter's size limit is wrong.
     #[serde(default)]
     pub dropped_items: u64,
+    /// What this validator's transport carried: messages and bytes sent,
+    /// received and dropped, per class, per kind and per peer.
+    #[serde(default)]
+    pub network: Option<crate::transport::TrafficStats>,
 }
 
 /// One coin.

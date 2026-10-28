@@ -49,7 +49,7 @@ live.
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
 | Economics: payments to provers, value-in-flight cap | Not built |
-| Networking between machines | Simulated (in-process channels) |
+| Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
 
 ## By section
 
@@ -453,16 +453,48 @@ budget, compounding.
 
 ### Node and operations
 
-**Simulated:** a devnet runs every validator in one process, each on its own
-thread with its own state replica, exchanging real signed messages over
-in-memory channels. There is no peer-to-peer networking, and the client
+**Networking between machines: simplified.** `sion node` runs one
+validator per process, with its own data directory and HTTP API, and
+`sion gateway` runs a gateway on its own; nodes talk QUIC (`quinn`) with
+TLS 1.3, the hybrid key exchange X25519MLKEM768 only and ML-DSA-44
+signatures only (rustls with aws-lc-rs, `net:aws-lc`). Each node has an
+ML-DSA-44 network key, separate from a validator's dual consensus keys,
+presented as a raw public key (RFC 7250, not an X.509 certificate,
+`net:raw-public-keys`) and pinned at both ends (`net:transport-ml-dsa`). Validators generate their
+keys locally (`sion keys validator`) and sign a network record binding
+their network key and addresses with both consensus keys; `sion genesis`
+collects the records into a genesis file, and a peer file lists the
+gateways validators accept (`net:static-peers`). Every message class has
+its own stream with a size limit and a priority; queues are bounded per
+peer and class; quotas drop floods. A consensus session is the epoch (no
+restart generation). Gateways ask again for late lane approvals and
+validators pull missing Pulse signatures, so a run survives lost
+messages; the fault injector tests this in process. Tested on one
+machine: four `sion node` processes and a `sion gateway` certify, order
+and execute transfers, every node reaches the same state, a light client
+checks a certified Pulse against the pinned chain identity, unknown keys
+and classical key exchange are refused, three validators continue
+without the fourth (`crates/sion-cli/tests/network.rs`). **Simplified:** a
+validator that stops cannot rejoin (`net:no-rejoin`); a standalone gateway
+trusts the node it follows (`net:gateway-trusts-node`); there is no drain
+window at epoch boundaries (`impl:reliable-handover`), no lane-lock
+hand-over (`impl:lock-handover`), no TCP fallback, no HTTPS on the API, no
+stake-weighted bandwidth, and peers do not follow committee changes. Not
+yet tested across machines, under `netem`, or by fuzzing the decoders.
+
+**Simulated (devnet):** `sion devnet` runs every validator in one
+process, each on its own thread with its own state replica, exchanging
+real signed messages through the same `Transport` seam over in-memory
+channels, optionally through a seeded fault injector (loss, delay,
+duplication, reordering and partitions per message class); the client
 gateway is a single component that collects lane approvals.
 
 **Built:** a segmented write-ahead log with checksums and torn-tail
 truncation, periodic snapshots, replay that re-checks every commitment,
-restart into a new consensus session, state sync for validators that fell
-behind, and epoch boundary proofs kept on disk for light clients
-(`GET /v1/epochs/{e}`).
+restart into a new consensus session and state sync for validators that
+fell behind (on a devnet, whose validators restart together; see
+`net:no-rejoin` for networks), and epoch boundary proofs kept on disk for
+light clients (`GET /v1/epochs/{e}`).
 
 ## Trust assumptions this implementation adds
 
@@ -474,8 +506,15 @@ the architecture's own:
 | `impl:replay-proofs` | World Proofs are checked by re-execution, so "proof finality" costs a verifier as much as executing; succinctness is assumed, not delivered. |
 | `impl:shared-primitives` | Both proof stacks use the same hashing, Merkle, signature, Assurance Algebra and clearing-certificate code; a bug there is common-mode. |
 | `impl:devnet-keys` | Devnet validator keys are derived from the chain name; anyone can derive them. A devnet secures nothing of value. |
-| `impl:in-process-network` | Validators share a machine and a process; network faults are not exercised by the devnet (they are by the consensus simulator). |
-| `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period. |
+| `impl:in-process-network` | `sion devnet` only: validators share a machine and a process; network faults are exercised only through the in-process fault injector and the consensus simulator. A network of `sion node` processes does not carry this atom. |
+| `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period: on a network of processes, a validator that misses old-session messages at a boundary can stall. |
+| `net:transport-ml-dsa` | Networks: transport authentication rests on ML-DSA-44 alone (each node's network key, presented as an RFC 7250 raw public key and pinned at both ends). A forger could impersonate a peer at the transport layer (delay, drop, eclipse), not sign consensus messages, which carry dual signatures. |
+| `net:aws-lc` | Networks: the TLS provider is aws-lc-rs, C code outside the workspace's audit scope (the workspace's own post-quantum code is pure Rust). |
+| `net:raw-public-keys` | Networks: TLS authenticates nodes with RFC 7250 raw public keys (an ML-DSA-44 SubjectPublicKeyInfo, signed for in the handshake's CertificateVerify), not the self-signed ML-DSA X.509 certificates the design proposed, and with no channel-binding fallback. Both ends pin the exact key, so no certificate path is validated; the handshake relies on rustls's raw-public-key support, newer and less used than its certificate path. |
+| `net:static-peers` | Networks: peers come from a genesis file and a peer file of signed records, read when a node starts, not from the state. A validator that joins by staking is reachable only by nodes started with its record in their peer file. |
+| `net:partial-synchrony` | Networks: liveness needs message delays to become bounded after some time (assumed by the architecture; named because a real network now exercises it). |
+| `net:gateway-trusts-node` | Networks: a gateway running alone learns committees and answers state queries from one node it trusts. A lying node can make it ask the wrong validators or show wrong balances; it cannot get a transaction certified that a committee did not approve. |
+| `net:no-rejoin` | Networks: a validator that stops cannot rejoin. Restarting in a session it signed in needs the consensus signing log, and catching up to a later session needs Pulse sync; neither is built, so it refuses to start rather than risk equivocation. Each stopped validator is a permanent fault; more than a third of the stake stopped halts the chain. |
 | `impl:slashed-seat` | A slashed validator keeps its seat, and its weight in quorums, until the epoch ends. |
 | `impl:active-floor` | Validators can leave until one remains: nothing keeps the active set large enough to tolerate a faulty member, so the operators of the other validators can leave a single validator forming every quorum. |
 | `impl:evidence-scope` | Equivocation evidence is not bound to this chain: a validator's keys must not be used on another network. |
