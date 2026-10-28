@@ -80,10 +80,25 @@ pub struct Settings {
     /// The most space one deal may take, in MiB.
     #[serde(default = "default_storage_mib")]
     pub storage_max_mib: u64,
+    /// Also take deals whose data is on this machine or its local network
+    /// (`file://` locators, private addresses). Off by default: a deal
+    /// written by a stranger would make the device read its own files or
+    /// probe its network.
+    #[serde(default)]
+    pub storage_local: bool,
+    /// Whether the next verification may pin the chain identity the node
+    /// serves. Off after settings that could not be read were reset, so
+    /// that a reset never pins a new identity silently.
+    #[serde(default = "yes")]
+    pub pin_on_first_use: bool,
 }
 
 fn default_storage_mib() -> u64 {
     256
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -94,6 +109,8 @@ impl Default for Settings {
             samples: DEFAULT_SAMPLES,
             provide_storage: false,
             storage_max_mib: default_storage_mib(),
+            storage_local: false,
+            pin_on_first_use: true,
         }
     }
 }
@@ -130,6 +147,9 @@ pub struct AppCore {
     /// The device's storage provider, kept between ticks for its cache of
     /// trees and of deals it could not fetch.
     provider: Mutex<Option<Provider>>,
+    /// Something the person should know about the settings (they could not
+    /// be read and were reset), until settings are saved again.
+    notice: Mutex<Option<String>>,
 }
 
 // A lock is only poisoned if a thread panicked while holding it; every
@@ -152,8 +172,27 @@ impl AppCore {
     pub fn open(dir: impl AsRef<Path>) -> Result<AppCore, AppError> {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir).map_err(|e| AppError::Storage(e.to_string()))?;
-        let settings: Settings = match std::fs::read_to_string(dir.join("settings.json")) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        let path = dir.join("settings.json");
+        let mut notice = None;
+        let settings: Settings = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    // Keep the unreadable file for the person to look at,
+                    // and do not pin a chain identity on first use again
+                    // without being asked.
+                    let kept = dir.join("settings.json.unreadable");
+                    let _ = std::fs::rename(&path, &kept);
+                    notice = Some(format!(
+                        "The settings could not be read ({error}) and were reset; the old file is kept as {}. Pin the chain identity again in Settings: it will not be pinned on first use.",
+                        kept.display()
+                    ));
+                    Settings {
+                        pin_on_first_use: false,
+                        ..Settings::default()
+                    }
+                }
+            },
             Err(_) => Settings::default(),
         };
         let wallet = Wallet::from_seed(&load_or_create_seed(&dir.join("key.seed"))?);
@@ -167,13 +206,19 @@ impl AppCore {
             epochs: Mutex::new(None),
             submitting: Mutex::new(()),
             provider: Mutex::new(None),
+            notice: Mutex::new(notice),
         })
     }
 
+    /// Saves the settings: written whole to a temporary file, then renamed
+    /// into place, so a crash never leaves half a file.
     fn save(&self, settings: &Settings) -> Result<(), AppError> {
         let text =
             serde_json::to_string_pretty(settings).map_err(|e| AppError::Storage(e.to_string()))?;
-        std::fs::write(self.dir.join("settings.json"), text)
+        let path = self.dir.join("settings.json");
+        let partial = self.dir.join("settings.json.partial");
+        std::fs::write(&partial, text)
+            .and_then(|()| std::fs::rename(&partial, &path))
             .map_err(|e| AppError::Storage(e.to_string()))
     }
 
@@ -193,9 +238,11 @@ impl AppCore {
         Ok(session)
     }
 
-    /// The settings.
+    /// The settings, and a notice about them if there is one.
     pub fn settings(&self) -> Value {
-        json!(*read(&self.settings))
+        let mut value = json!(*read(&self.settings));
+        value["notice"] = json!(*lock(&self.notice));
+        value
     }
 
     /// Points the app at another node. The pinned chain identity stays: a
@@ -226,8 +273,12 @@ impl AppCore {
             None => None,
         };
         let mut settings = write(&self.settings);
+        // Pinning by hand settles the question; unpinning asks for the next
+        // verification to pin again.
+        settings.pin_on_first_use = chain.is_none();
         settings.chain = chain;
         self.save(&settings)?;
+        *lock(&self.notice) = None;
         Ok(json!(*settings))
     }
 
@@ -268,14 +319,17 @@ impl AppCore {
         Ok(json!({ "requested": amount.to_string() }))
     }
 
-    /// Pays `amount` USD to `to` (a 64-digit account, or a devnet wallet
-    /// name). Returns the sentence signed and the receipt.
+    /// Pays `amount` USD to `to`, a 64-digit account. (A name would mean a
+    /// devnet wallet whose keys anyone can derive from the name.) Returns
+    /// the sentence signed and the receipt.
     pub fn send(&self, to: &str, amount: &str) -> Result<Value, AppError> {
         let amount = sion_cli::agents::parse_amount(amount)?;
+        let to = Hash32::from_hex(to.trim())
+            .map(sion_core::ids::AccountId::from_hash)
+            .map_err(|_| AppError::Input("give the recipient's account: 64 hex digits".into()))?;
         let _turn = lock(&self.submitting);
         let ledger = self.ledger();
         let mut session = self.session(&ledger)?;
-        let to = session.id(to.trim());
         let kind = TxKind::Transfer {
             asset: AssetId::usd(),
             outputs: vec![(to, amount)],
@@ -323,7 +377,10 @@ impl AppCore {
                 let mut pinned_now = false;
                 if pinned.is_none() {
                     let mut current = write(&self.settings);
-                    if current.chain.is_none() && current.node == settings.node {
+                    if current.chain.is_none()
+                        && current.node == settings.node
+                        && current.pin_on_first_use
+                    {
                         current.chain = Some(report.chain.to_hex());
                         self.save(&current)?;
                         pinned_now = true;
@@ -333,6 +390,11 @@ impl AppCore {
                     if pinned_now {
                         *first = format!(
                             "chain: {} pinned now, on first use: the node vouched for it; compare it with an identity from a source you trust (Settings)",
+                            report.chain.short()
+                        );
+                    } else if pinned.is_none() {
+                        *first = format!(
+                            "chain: {} as the node serves it, not pinned: pin an identity you trust in Settings",
                             report.chain.short()
                         );
                     }
@@ -438,6 +500,15 @@ impl AppCore {
         self.submit(&mut session, kind, vec![reference])
     }
 
+    /// Whether the device's storage provider also takes deals whose data is
+    /// on this machine or its local network (see [`Settings::storage_local`]).
+    pub fn set_storage_local(&self, allowed: bool) -> Result<Value, AppError> {
+        let mut settings = write(&self.settings);
+        settings.storage_local = allowed;
+        self.save(&settings)?;
+        Ok(json!(*settings))
+    }
+
     /// Turns the device's storage provider on or off, and sets the most
     /// space one deal may take.
     pub fn set_storage(&self, enabled: bool, max_mib: u64) -> Result<Value, AppError> {
@@ -485,6 +556,8 @@ impl AppCore {
         provider.policy.accept_open = settings.provide_storage;
         provider.policy.accept_named = settings.provide_storage;
         provider.policy.max_bytes = settings.storage_max_mib.saturating_mul(1 << 20);
+        provider.policy.allow_local = settings.storage_local;
+        provider.policy.allow_private = settings.storage_local;
         let _turn = lock(&self.submitting);
         let mut session = self.session(&ledger)?;
         let lines = provider.tick(&mut session, &ledger)?;
@@ -570,21 +643,45 @@ impl AppCore {
         kind: TxKind,
         extra: Vec<sion_exec::object::ObjectRef>,
     ) -> Result<Value, AppError> {
+        // The session waits for the transaction signed here (its digest
+        // computed locally), so the receipt proven below is for it.
         let view = session.send(ME, kind, extra)?;
-        let proof = self.prove_receipt(session.ledger, view.pulse, view.effects.digest);
-        Ok(json!({
-            "pulse": view.pulse,
-            "status": view.status,
-            "receipt": sion_cli::describe::receipt(&session.names(), &view.effects),
-            "digest": view.effects.digest,
-            "proof": proof,
-        }))
+        let digest = view.effects.digest;
+        match self.prove_receipt(session.ledger, view.pulse, digest) {
+            Ok((verified, line)) => {
+                let pinned = verified.chain.1;
+                Ok(json!({
+                    "pulse": verified.pulse,
+                    "status": verified.effects.status,
+                    // What happened, from the proven receipt only.
+                    "receipt": sion_cli::describe::receipt(&session.names(), &verified.effects),
+                    "digest": digest,
+                    "proof": { "ok": pinned, "proven": true, "pinned": pinned, "line": line },
+                }))
+            }
+            Err(line) => Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "receipt": format!(
+                    "The node reports, unproven: {}",
+                    sion_cli::describe::receipt(&session.names(), &view.effects)
+                ),
+                "digest": digest,
+                "proof": { "ok": false, "proven": false, "pinned": read(&self.settings).chain.is_some(), "line": line },
+            })),
+        }
     }
 
     /// Proves a receipt of the device's own transaction against its
     /// Pulse's certified header (the committee followed from the pinned
-    /// chain identity), once that Pulse is certified.
-    fn prove_receipt(&self, ledger: &dyn Ledger, pulse: Pulse, digest: TxDigest) -> Value {
+    /// chain identity), once that Pulse is certified. Returns the proven
+    /// receipt and a line saying how, or why it is not proven.
+    fn prove_receipt(
+        &self,
+        ledger: &dyn Ledger,
+        pulse: Pulse,
+        digest: TxDigest,
+    ) -> Result<(sion_cli::verify::VerifiedReceipt, String), String> {
         let pinned = read(&self.settings)
             .chain
             .as_deref()
@@ -607,20 +704,22 @@ impl AppCore {
                     ),
                     None => "certificate skipped: the devnet runs insecure simulation signatures".to_string(),
                 };
-                json!({
-                    "ok": true,
-                    "pinned": verified.chain.1,
-                    "line": format!(
-                        "Receipt proven against Pulse {}'s header, {certificate}, chain {}{}",
+                let line = if verified.chain.1 {
+                    format!(
+                        "Receipt proven against Pulse {}'s header, {certificate}, chain {}",
                         verified.pulse,
                         verified.chain.0.short(),
-                        if verified.chain.1 { "" } else { " (not pinned yet)" }
-                    ),
-                })
+                    )
+                } else {
+                    format!(
+                        "Receipt proven only against the chain the node serves ({}), which is not pinned: pin an identity you trust in Settings. Pulse {}'s header, {certificate}",
+                        verified.chain.0.short(),
+                        verified.pulse,
+                    )
+                };
+                Ok((verified, line))
             }
-            Err(error) => {
-                json!({ "ok": false, "pinned": pinned.is_some(), "line": format!("Receipt not proven: {error}") })
-            }
+            Err(error) => Err(format!("Receipt not proven: {error}")),
         }
     }
 }
@@ -659,6 +758,45 @@ fn write_secret(path: &Path, text: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_settings_are_kept_aside_and_nothing_is_pinned_silently() {
+        let dir =
+            std::env::temp_dir().join(format!("sion-app-core-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Half a file, as a crash in the middle of an old-style write left.
+        std::fs::write(dir.join("settings.json"), "{\"node\": \"http://10.0.0.").unwrap();
+        let app = AppCore::open(&dir).unwrap();
+        let settings = app.settings();
+        assert!(settings["notice"]
+            .as_str()
+            .unwrap()
+            .contains("could not be read"));
+        assert_eq!(settings["pin_on_first_use"], false);
+        assert!(dir.join("settings.json.unreadable").exists());
+        // Pinning by hand clears the notice; unpinning allows first use again.
+        app.pin_chain(Some(&"cd".repeat(32))).unwrap();
+        assert!(app.settings()["notice"].is_null());
+        assert_eq!(app.settings()["pin_on_first_use"], false);
+        app.pin_chain(None).unwrap();
+        assert_eq!(app.settings()["pin_on_first_use"], true);
+        // Saved whole: what is on disk reads back.
+        let reopened = AppCore::open(&dir).unwrap();
+        assert!(reopened.settings()["notice"].is_null());
+        assert!(!dir.join("settings.json.partial").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn payments_go_to_accounts_never_to_names() {
+        let dir = std::env::temp_dir().join(format!("sion-app-core-send-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = AppCore::open(&dir).unwrap();
+        let error = app.send("bob", "1").unwrap_err();
+        assert!(error.to_string().contains("64 hex digits"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_key_is_created_once_and_kept() {

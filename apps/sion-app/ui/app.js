@@ -161,7 +161,11 @@ async function verify(button) {
 $("verify-now").addEventListener("click", (event) => verify(event.currentTarget));
 
 setInterval(() => {
-  if (lastVerifiedAt) $("pulse-when").textContent = `${ago(lastVerifiedAt)} · ${lastVerified && lastVerified.ok ? "signatures, receipts and data checked" : "the node's answer did not check out"}`;
+  if (lastVerifiedAt) {
+    const skipped = lastVerified && (lastVerified.lines || []).some((line) => line.toLowerCase().includes("skipped"));
+    const checked = skipped ? "receipts and data checked; signatures not checked (simulation signatures)" : "signatures, receipts and data checked";
+    $("pulse-when").textContent = `${ago(lastVerifiedAt)} · ${lastVerified && lastVerified.ok ? checked : "the node's answer did not check out"}`;
+  }
 }, 1000);
 setInterval(() => verify(null), VERIFY_EVERY_MS);
 
@@ -281,7 +285,7 @@ function validatorRow(v) {
 
 function renderPools(pools) {
   const length = pools.epoch_length > 1e12 ? "an epoch that never ends" : `${pools.epoch_length}-Pulse epochs`;
-  $("epoch-note").textContent = `Epoch ${pools.epoch}, ${length}. A delegation earns from the end of the epoch it is made in.`;
+  $("epoch-note").textContent = `Epoch ${pools.epoch}, ${length}. A delegation counts from the end of the epoch it is made in.`;
   const rows = $("validators");
   const seen = new Set();
   for (const v of pools.validators) {
@@ -333,10 +337,18 @@ function renderMine(mine) {
     if (d.phase === "pending" || d.phase === "earning") actions.push(act("undelegate", "Leave"));
     if (d.phase === "unbonding") actions.push(act("withdraw", "Withdraw", lastPulse !== null && d.withdrawable_at > lastPulse));
     box.append(el("div", { class: "card" },
-      el("div", { class: "row-head" }, el("strong", {}, `${d.stake} USD`), el("span", { class: "mono" }, `with ${short(d.validator)}`)),
-      el("div", { class: "state" }, d.state, d.rewards_owed !== null ? ` · ${d.rewards_owed} USD owed` : ""),
+      el("div", { class: "row-head" }, el("strong", {}, `${d.stake} test USD`), el("span", { class: "mono" }, `with ${short(d.validator)}`)),
+      el("div", { class: "state" }, phaseLabel(d), d.rewards_owed !== null ? ` · ${d.rewards_owed} test USD to collect` : ""),
       el("div", { class: "actions" }, ...actions)));
   }
+}
+
+// How a delegation's phase reads (the protocol's names are for the API).
+function phaseLabel(d) {
+  if (d.phase === "pending") return "Pending: counts from the end of this epoch";
+  if (d.phase === "earning") return "Active";
+  if (d.phase === "unbonding") return `Leaving: withdrawable from Pulse ${d.withdrawable_at}`;
+  return d.state;
 }
 
 // ---------------------------------------------------------------- storage
@@ -354,7 +366,7 @@ function renderStorage(status) {
   $("st-due").textContent = status.due;
   const mib = (Number(status.bytes) / (1024 * 1024)).toFixed(1);
   $("st-note").textContent = storageEnabled
-    ? `Providing: ${mib} MiB kept, ${status.at_stake} USD of collateral at stake. Amounts in USD; on test networks, test USD.`
+    ? `Providing: ${mib} MiB kept, ${status.at_stake} test USD of collateral at stake.`
     : `Off. ${mib} MiB kept for deals already taken.`;
   const rows = $("st-deals");
   rows.replaceChildren();
@@ -363,12 +375,12 @@ function renderStorage(status) {
   }
   for (const d of status.deals) {
     const state = d.phase === "closed"
-      ? `closed: ${d.proven} of ${d.rounds} rounds proven${d.closed && Number(d.closed.forfeited) > 0 ? `, ${d.closed.forfeited} USD forfeited` : ""}`
+      ? `closed: ${d.proven} of ${d.rounds} rounds proven${d.closed && Number(d.closed.forfeited) > 0 ? `, ${d.closed.forfeited} test USD forfeited` : ""}`
       : `${d.proven} of ${d.rounds} rounds proven${d.round_now !== null ? `, round ${d.round_now} under way` : ""}`;
     rows.append(el("div", { class: "row" },
       el("div", { class: "row-head" },
         el("strong", {}, `${d.leaves} leaves`), el("span", { class: "mono" }, d.short),
-        el("span", { class: "weight" }, `${d.price} USD a round`)),
+        el("span", { class: "weight" }, `${d.price} test USD a round`)),
       el("div", { class: "facts" }, el("span", {}, state))));
   }
 }
@@ -418,7 +430,11 @@ async function refreshSettings() {
   const settings = await invoke("settings").catch(() => null);
   if (!settings) return;
   $("node-url").value = settings.node;
-  $("pinned").textContent = settings.chain || "Not pinned yet: the next verification pins what the node serves.";
+  $("pinned").textContent = settings.chain
+    || (settings.pin_on_first_use
+      ? "Not pinned yet: the next verification pins what the node serves."
+      : "Not pinned, and nothing will be pinned on first use: pin an identity you trust.");
+  if (settings.notice) toast(settings.notice, true);
 }
 
 $("node-form").addEventListener("submit", async (event) => {

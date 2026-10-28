@@ -336,6 +336,10 @@ pub struct Validator {
     timer_seq: u64,
     history: BTreeMap<Pulse, Executed>,
     tx_index: BTreeMap<TxDigest, (Pulse, u64)>,
+    /// Every storage deal's id, for `Query::Deals`: built by the first such
+    /// query from the state, then kept up to date from each Pulse's
+    /// created objects.
+    deal_index: Option<std::collections::BTreeSet<sion_core::ids::ObjectId>>,
     collectors: BTreeMap<Pulse, Collector>,
     early_signatures: BTreeMap<Pulse, Vec<(ValidatorId, Hash32, Vec<u8>)>>,
     certified: Pulse,
@@ -507,6 +511,7 @@ impl Validator {
             peers,
             executed_to: setup.executed_to,
             subscribers: BTreeMap::new(),
+            deal_index: None,
             answered: BTreeMap::new(),
             inbox: setup.inbox,
             timers: BinaryHeap::new(),
@@ -1170,6 +1175,16 @@ impl Validator {
             }
         };
         self.last_carry = closed.carry;
+        if let Some(index) = &mut self.deal_index {
+            for id in output.effects.iter().flat_map(|e| e.created.iter()) {
+                if matches!(
+                    self.state.objects.get(id).map(|o| &o.data),
+                    Some(ObjectData::Deal(_))
+                ) {
+                    index.insert(*id);
+                }
+            }
+        }
         let (s, f, r) = output.status_counts();
         self.executed = (
             self.executed.0 + s as u64,
@@ -2126,17 +2141,31 @@ impl Validator {
                 &self.committees,
                 &crate::committees::registered_keys(self.state.validators()),
             )),
-            Query::Deals => {
-                let deals: Vec<Value> = self
-                    .state
-                    .objects
-                    .values()
-                    .filter_map(|o| match &o.data {
-                        ObjectData::Deal(deal) => Some(json!({ "id": o.id, "deal": deal })),
+            Query::Deals { open } => {
+                let pulse = self.state.pulse;
+                let index = self.deal_index.get_or_insert_with(|| {
+                    self.state
+                        .objects
+                        .values()
+                        .filter(|o| matches!(o.data, ObjectData::Deal(_)))
+                        .map(|o| o.id)
+                        .collect()
+                });
+                let objects = &self.state.objects;
+                let deals: Vec<Value> = index
+                    .iter()
+                    .filter_map(|id| match objects.get(id).map(|o| &o.data) {
+                        Some(ObjectData::Deal(deal))
+                            if !open
+                                || deal.state == sion_exec::storage::DealState::Open
+                                    && deal.accept_by > pulse =>
+                        {
+                            Some(json!({ "id": id, "deal": deal }))
+                        }
                         _ => None,
                     })
                     .collect();
-                Ok(json!({ "pulse": self.state.pulse, "deals": deals }))
+                Ok(json!({ "pulse": pulse, "deals": deals }))
             }
             Query::Forced => {
                 let obligations = self.state.forced();

@@ -332,7 +332,7 @@ fn tools() -> Value {
         },
         {
             "name": "sion_storage_post",
-            "description": "Have a file kept by a storage provider (spec v1.12): escrows price × rounds for data whose Merkle root the deal fixes. A provider that accepts posts collateral and must prove every round that it holds leaves picked at random; it is paid per proven round, and loses collateral for missed rounds (all of it if it abandons the deal). Without a provider, any provider may accept. Returns the deal id.",
+            "description": "Have a file kept by a storage provider (spec v1.12): escrows price × rounds for data whose Merkle root the deal fixes. A provider that accepts posts collateral and must prove every round that it holds leaves picked at random; it is paid per proven round, and loses collateral for missed rounds (all of it if it abandons the deal). Without a provider, any provider may accept, and the deal must ask for collateral. Proofs publish the challenged leaves: encrypt private data first. Returns the deal id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -341,10 +341,11 @@ fn tools() -> Value {
                     "price": { "type": "number", "description": "USD paid per proven round" },
                     "rounds": { "type": "integer", "description": "Rounds (1 to 1,000,000)" },
                     "round_length": { "type": "integer", "description": "Pulses per round: a multiple of 8, from 8 to 100,000 (default 16)" },
-                    "collateral": { "type": "number", "description": "USD the provider must post (default 0)" },
+                    "collateral": { "type": "number", "description": "USD the provider must post (default: the escrow for an open deal, 0 for a named provider)" },
                     "challenges": { "type": "integer", "description": "Leaves challenged per round (1 to 16; default 4)" },
                     "provider": { "type": "string", "description": "Wallet name or account of the provider; omit for an open deal" },
-                    "locator": { "type": "string", "description": "Where providers fetch the data (default file://<path>)" }
+                    "locator": { "type": "string", "description": "Where providers fetch the data: an https:// URL serving the file" },
+                    "local": { "type": "boolean", "description": "Without a locator: point providers at the file itself (file://<path>), for a provider on this machine; the deal publishes the path" }
                 },
                 "required": ["wallet", "path", "price", "rounds"]
             }
@@ -945,23 +946,30 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
             let path = text_arg(args, "path")?;
             let data = std::fs::read(&path).map_err(|e| CliError::Usage(format!("{path}: {e}")))?;
             let tree = sion_exec::storage::DataTree::of_data(&data);
-            let locator = match args["locator"].as_str() {
-                Some(locator) => locator.to_string(),
-                None => format!(
+            let locator = match (args["locator"].as_str(), args["local"].as_bool()) {
+                (Some(locator), _) => locator.to_string(),
+                (None, Some(true)) => format!(
                     "file://{}",
                     std::fs::canonicalize(&path)
                         .map_err(|e| CliError::Usage(e.to_string()))?
                         .display()
                 ),
+                _ => {
+                    return Err(CliError::Usage(
+                        "give locator (an https URL serving the file), or local: true for a provider on this machine".into(),
+                    ))
+                }
             };
             let provider = args["provider"].as_str().map(|name| session.id(name));
             let rounds = args["rounds"]
                 .as_u64()
                 .and_then(|r| u32::try_from(r).ok())
                 .ok_or_else(|| CliError::Usage("rounds required".into()))?;
-            let collateral = match &args["collateral"] {
-                Value::Null => Amount::ZERO,
-                value => usd(value)?,
+            let price = usd(&args["price"])?;
+            let collateral = match (&args["collateral"], &provider) {
+                (Value::Null, Some(_)) => Amount::ZERO,
+                (Value::Null, None) => Amount(price.0.saturating_mul(u128::from(rounds))),
+                (value, _) => usd(value)?,
             };
             let accept_by = sion_core::ids::Pulse(session.ledger.pulse()?.0 + 200);
             let view = session.send(
@@ -973,7 +981,7 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                         .as_u64()
                         .and_then(|c| u8::try_from(c).ok())
                         .unwrap_or(4),
-                    price: usd(&args["price"])?,
+                    price,
                     rounds,
                     round_length: args["round_length"].as_u64().unwrap_or(16),
                     collateral,
@@ -1004,10 +1012,7 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
             }
             let open = args["open"].as_bool().unwrap_or(false);
             let mut list = Vec::new();
-            for (id, deal) in crate::storage::deals(session.ledger)? {
-                if open && deal.state != sion_exec::storage::DealState::Open {
-                    continue;
-                }
+            for (id, deal) in crate::storage::deals(session.ledger, open)? {
                 list.push(crate::storage::deal_json(session.ledger, id, &deal)?);
             }
             Ok(json!({ "deals": list }))

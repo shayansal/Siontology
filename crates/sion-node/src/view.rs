@@ -63,8 +63,12 @@ pub enum Query {
     /// The current committees and registered keys, encoded for a gateway
     /// that runs in another process.
     Committees,
-    /// Every storage deal, with its state (spec v1.12).
-    Deals,
+    /// Storage deals with their state (spec v1.12): with `open`, only those
+    /// that can still be accepted.
+    Deals {
+        /// Only deals open for acceptance.
+        open: bool,
+    },
 }
 
 /// Chain status.

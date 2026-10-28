@@ -199,8 +199,27 @@ impl<'a> Session<'a> {
                 crate::describe::sentence(&self.names(), &tx.tx)
             );
         }
-        let receipt = ledger.submit(&tx)?;
-        let result = self.wait(receipt.digest);
+        // A submission refused outright leaves its coins free: release
+        // them, or every later transaction would see them in flight.
+        let receipt = match ledger.submit(&tx) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.wallet(name).settle();
+                return Err(error);
+            }
+        };
+        // Wait for the transaction signed here, whatever digest the node
+        // answered with.
+        let digest = tx.digest();
+        if receipt.digest != digest {
+            self.wallet(name).settle();
+            return Err(CliError::Protocol(format!(
+                "the node acknowledged transaction {} instead of {}",
+                receipt.digest.short(),
+                digest.short()
+            )));
+        }
+        let result = self.wait(digest);
         self.wallet(name).settle();
         result
     }
@@ -223,7 +242,13 @@ impl<'a> Session<'a> {
                 crate::describe::sentence(&self.names(), &tx.tx)
             );
         }
-        let receipt = ledger.force(&tx)?;
+        let receipt = match ledger.force(&tx) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.wallet(name).settle();
+                return Err(error);
+            }
+        };
         let result = self.wait(receipt.digest);
         self.wallet(name).settle();
         result

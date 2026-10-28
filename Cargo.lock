@@ -1284,6 +1284,7 @@ dependencies = [
  "sion-crypto",
  "sion-da",
  "sion-exec",
+ "sion-http",
  "sion-light",
  "sion-memory",
  "sion-net",
@@ -1372,6 +1373,17 @@ dependencies = [
  "sion-crypto",
  "sion-lp",
  "thiserror",
+]
+
+[[package]]
+name = "sion-http"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "rustls-pki-types",
+ "thiserror",
+ "ureq",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1576,7 +1588,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -1859,6 +1871,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

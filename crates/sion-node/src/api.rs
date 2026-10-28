@@ -278,7 +278,9 @@ fn route<B: Backend>(backend: &B, request: &mut Request) -> Result<Value, HttpEr
         }
         (Method::Get, ["v1", "forced"]) => q(Query::Forced),
         (Method::Get, ["v1", "committees"]) => q(Query::Committees),
-        (Method::Get, ["v1", "deals"]) => q(Query::Deals),
+        (Method::Get, ["v1", "deals"]) => q(Query::Deals {
+            open: query_param(&url, "open").is_some_and(|v| v == "1" || v == "true"),
+        }),
         (Method::Post, ["v1", "devnet", "censor"]) => {
             let censor: CensorBody = body(request)?;
             let accounts = censor

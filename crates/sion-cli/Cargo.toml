@@ -26,6 +26,7 @@ sion-prover.workspace = true
 sion-spec.workspace = true
 sion-node.workspace = true
 sion-memory.workspace = true
+sion-http.workspace = true
 borsh.workspace = true
 serde.workspace = true
 serde_json.workspace = true

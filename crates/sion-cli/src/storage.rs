@@ -2,14 +2,19 @@
 //! for safekeeping, a provider accepts it, proves every round that it still
 //! holds it, and is paid for the rounds it proved.
 //!
-//! The ledger only sees the data's Merkle root. A provider fetches the data
-//! itself, from the deal's locator (`file://` or `http(s)://`) or a file it
-//! is given, checks that it hashes to the root before it accepts, and keeps
-//! its copy under `$SION_HOME/storage/<deal id>`. [`Provider::tick`] is one
-//! step of a provider's loop: accept open deals it can fetch, prove the
-//! round under way for every deal it holds, collect, and close deals that
-//! ended. `sion storage serve` runs it every second; the app and the
-//! `storage` demo use it too.
+//! The ledger stores only the data's Merkle root; proofs publish the leaves
+//! they answer with, so private data is encrypted before it is posted. A
+//! provider fetches the data itself, from the deal's locator (`https://`, or
+//! `file://` on the client's own machine) or a file it is given, checks that
+//! it hashes to the root before it accepts, and keeps its copy under
+//! `$SION_HOME/storage/<provider>`. [`Provider::tick`] is one step of a
+//! provider's loop: prove the round under way for every deal it holds,
+//! collect, close what ended, accept the deals whose data arrived, and start
+//! fetching new ones in the background, within its terms
+//! ([`ProviderPolicy`]: prices above the cost of proving, bounded
+//! collateral, disk and duration, nothing local fetched for strangers).
+//! `sion storage serve` runs it every second; the app and the `storage` demo
+//! use it too.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -56,9 +61,11 @@ pub enum StorageCommand {
         /// Pulses per round: a multiple of 8, from 8 to 100,000.
         #[arg(long, default_value_t = 16)]
         round_length: u64,
-        /// Collateral the provider must post (decimal USD).
-        #[arg(long, default_value = "0")]
-        collateral: String,
+        /// Collateral the provider must post (decimal USD). Default: the
+        /// escrow, for a deal open to anyone (which must ask for some); none
+        /// for a named provider.
+        #[arg(long)]
+        collateral: Option<String>,
         /// Leaves challenged per round (1 to 16).
         #[arg(long, default_value_t = 4)]
         challenges: u8,
@@ -69,9 +76,14 @@ pub enum StorageCommand {
         /// How many Pulses the deal stays open for acceptance.
         #[arg(long, default_value_t = 200)]
         accept_within: u64,
-        /// Where providers fetch the data (default: file://<the file>).
-        #[arg(long)]
+        /// Where providers fetch the data: an https:// URL serving the file.
+        #[arg(long, conflicts_with = "local")]
         locator: Option<String>,
+        /// Point providers at the file itself (file://<its path>): only a
+        /// provider on this machine can fetch it, and the deal publishes the
+        /// path.
+        #[arg(long)]
+        local: bool,
     },
     /// List storage deals.
     Deals {
@@ -117,20 +129,36 @@ pub enum StorageCommand {
         /// The deal (its id, or a unique prefix of it).
         deal: String,
     },
-    /// Run a provider: accept open deals whose data you can fetch, prove
-    /// every round, collect and close, every second until stopped.
+    /// Run a provider: accept deals whose data you can fetch, prove every
+    /// round, collect and close, every second until stopped.
     Serve {
         /// Your wallet (the provider).
         from: String,
-        /// Accept only deals paying at least this per round (decimal USD).
-        #[arg(long, default_value = "0.000001")]
+        /// Accept only deals paying at least this per round (decimal USD),
+        /// and at least twice what proving a round costs in fees.
+        #[arg(long, default_value = "0.01")]
         min_price: String,
         /// Accept only deals asking at most this collateral (decimal USD).
-        #[arg(long, default_value = "1000")]
+        #[arg(long, default_value = "10")]
         max_collateral: String,
+        /// The most collateral at stake across all deals (decimal USD).
+        #[arg(long, default_value = "100")]
+        max_total_collateral: String,
         /// Accept only data of at most this many MiB.
         #[arg(long, default_value_t = 64)]
         max_mib: u64,
+        /// Keep at most this many MiB in all.
+        #[arg(long, default_value_t = 1024)]
+        max_total_mib: u64,
+        /// Accept only deals lasting at most this many Pulses.
+        #[arg(long, default_value_t = 100_000)]
+        max_duration: u64,
+        /// Fetch file:// locators (a provider on the clients' machine).
+        #[arg(long)]
+        allow_local: bool,
+        /// Fetch from local and private network addresses.
+        #[arg(long)]
+        allow_private: bool,
         /// Stop after this many Pulses.
         #[arg(long)]
         pulses: Option<u64>,
@@ -162,10 +190,29 @@ impl Store {
         self.dir.join(format!("{}.bin", deal.0.to_hex()))
     }
 
-    /// Keeps a copy of `data` for `deal`.
+    /// Keeps a copy of `data` for `deal` (written whole, then renamed into
+    /// place, so a crash never leaves half a copy).
     pub fn put(&self, deal: &ObjectId, data: &[u8]) -> Result<(), CliError> {
         std::fs::create_dir_all(&self.dir).map_err(|e| CliError::Usage(e.to_string()))?;
-        std::fs::write(self.path(deal), data).map_err(|e| CliError::Usage(e.to_string()))
+        let path = self.path(deal);
+        let partial = path.with_extension("partial");
+        std::fs::write(&partial, data)
+            .and_then(|()| std::fs::rename(&partial, &path))
+            .map_err(|e| CliError::Usage(e.to_string()))
+    }
+
+    /// The bytes the copies take.
+    pub fn usage(&self) -> u64 {
+        std::fs::read_dir(&self.dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter_map(|entry| entry.metadata().ok())
+                    .filter(|metadata| metadata.is_file())
+                    .map(|metadata| metadata.len())
+                    .sum()
+            })
+            .unwrap_or(0)
     }
 
     /// The copy for `deal`, if this provider keeps one.
@@ -179,9 +226,10 @@ impl Store {
     }
 }
 
-/// Every storage deal on the ledger.
-pub fn deals(ledger: &dyn Ledger) -> Result<Vec<(ObjectId, Deal)>, CliError> {
-    let value = ledger.query(Query::Deals)?;
+/// The storage deals on the ledger: with `open`, only those that can still
+/// be accepted.
+pub fn deals(ledger: &dyn Ledger, open: bool) -> Result<Vec<(ObjectId, Deal)>, CliError> {
+    let value = ledger.query(Query::Deals { open })?;
     let list = value["deals"].as_array().cloned().unwrap_or_default();
     list.into_iter()
         .map(|entry| {
@@ -211,7 +259,7 @@ pub fn find_deal(ledger: &dyn Ledger, text: &str) -> Result<ObjectId, CliError> 
     if let Ok(hash) = Hash32::from_hex(&text) {
         return Ok(ObjectId::from_hash(hash));
     }
-    let matches: Vec<ObjectId> = deals(ledger)?
+    let matches: Vec<ObjectId> = deals(ledger, false)?
         .into_iter()
         .map(|(id, _)| id)
         .filter(|id| id.0.to_hex().starts_with(&text))
@@ -242,41 +290,95 @@ pub fn custody_records(
         .collect())
 }
 
-/// Fetches data from a locator: `file://<path>` or `http(s)://<url>`, at
-/// most `max_bytes`.
-pub fn fetch(locator: &str, max_bytes: u64) -> Result<Vec<u8>, CliError> {
+/// How a provider may fetch a deal's data.
+#[derive(Clone, Copy, Debug)]
+pub struct FetchOptions {
+    /// The most bytes taken.
+    pub max_bytes: u64,
+    /// Accept `file://` locators (a provider on the client's own machine).
+    /// Off for a provider that takes strangers' deals: a locator would make
+    /// it read its own files.
+    pub allow_local: bool,
+    /// Fetch from loopback, private and other local addresses. Off for a
+    /// provider that takes strangers' deals: a locator would make it probe
+    /// its own network.
+    pub allow_private: bool,
+}
+
+/// Fetches data from a locator, `file://<absolute path>` (if allowed) or
+/// `http(s)://<url>`, at most `options.max_bytes`. HTTP has a 5-second
+/// connect timeout, a 30-second deadline, no redirects, and refuses local
+/// and private addresses unless allowed ([`sion_http`]); a file must be a
+/// regular file.
+pub fn fetch(locator: &str, options: FetchOptions) -> Result<Vec<u8>, CliError> {
+    let shown = printable(locator);
     if let Some(path) = locator.strip_prefix("file://") {
-        let length = std::fs::metadata(path)
-            .map_err(|e| CliError::Usage(format!("{locator}: {e}")))?
-            .len();
-        if length > max_bytes {
+        if !options.allow_local {
             return Err(CliError::Usage(format!(
-                "{locator} holds {length} bytes, more than {max_bytes}"
+                "{shown}: file:// locators are refused (only a provider on the client's machine takes them)"
             )));
         }
-        return std::fs::read(path).map_err(|e| CliError::Usage(format!("{locator}: {e}")));
-    }
-    if locator.starts_with("http://") || locator.starts_with("https://") {
-        let response = ureq::get(locator)
-            .timeout(std::time::Duration::from_secs(60))
-            .call()
-            .map_err(|e| CliError::Usage(format!("{locator}: {e}")))?;
-        let mut data = Vec::new();
-        response
-            .into_reader()
-            .take(max_bytes.saturating_add(1))
-            .read_to_end(&mut data)
-            .map_err(|e| CliError::Usage(format!("{locator}: {e}")))?;
-        if data.len() as u64 > max_bytes {
+        let path = Path::new(path);
+        if !path.is_absolute() {
+            return Err(CliError::Usage(format!("{shown}: not an absolute path")));
+        }
+        // The metadata follows links; anything but a regular file (a
+        // device, a FIFO, a directory) is refused before it is opened.
+        let metadata =
+            std::fs::metadata(path).map_err(|e| CliError::Usage(format!("{shown}: {e}")))?;
+        if !metadata.is_file() {
+            return Err(CliError::Usage(format!("{shown}: not a regular file")));
+        }
+        if metadata.len() > options.max_bytes {
             return Err(CliError::Usage(format!(
-                "{locator} holds more than {max_bytes} bytes"
+                "{shown} holds {} bytes, more than {}",
+                metadata.len(),
+                options.max_bytes
+            )));
+        }
+        let mut data = Vec::new();
+        std::fs::File::open(path)
+            .and_then(|file| {
+                file.take(options.max_bytes.saturating_add(1))
+                    .read_to_end(&mut data)
+            })
+            .map_err(|e| CliError::Usage(format!("{shown}: {e}")))?;
+        if data.len() as u64 > options.max_bytes {
+            return Err(CliError::Usage(format!(
+                "{shown} holds more than {} bytes",
+                options.max_bytes
             )));
         }
         return Ok(data);
     }
+    if locator.starts_with("http://") || locator.starts_with("https://") {
+        let client = sion_http::Client::new(sion_http::Options {
+            allow_private: options.allow_private,
+            ..sion_http::Options::default()
+        })
+        .map_err(|e| CliError::Usage(e.to_string()))?;
+        return client
+            .get(locator, options.max_bytes)
+            .map(|fetched| fetched.body)
+            .map_err(|e| CliError::Usage(format!("{shown}: {e}")));
+    }
     Err(CliError::Usage(format!(
-        "cannot fetch {locator:?}: the locator must be file:// or http(s)://"
+        "cannot fetch {shown}: the locator must be http(s):// (or file:// on the client's machine)"
     )))
+}
+
+/// `text` safe to print: control characters replaced, at most 160
+/// characters (locators are written by strangers).
+pub fn printable(text: &str) -> String {
+    let mut shown: String = text
+        .chars()
+        .take(160)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if text.chars().count() > 160 {
+        shown.push('…');
+    }
+    shown
 }
 
 /// The beacon of `pulse` once the chain has recorded it: what the
@@ -301,7 +403,39 @@ pub fn matches_deal(data: &[u8], deal: &Deal) -> bool {
     tree.root() == deal.root && tree.size() == deal.size
 }
 
-/// The terms a provider accepts open deals on.
+/// The most bytes a deal's data can hold: every leaf full.
+pub fn deal_bytes(deal: &Deal) -> u64 {
+    deal.size
+        .saturating_mul(sion_exec::storage::MAX_LEAF_BYTES as u64)
+}
+
+/// What proving one round of `deal` costs in fees, at least: a transaction
+/// carrying its challenged leaves (full ones) and their paths, plus room
+/// for the signatures and inputs.
+pub fn round_fee(config: &sion_exec::state::ChainConfig, deal: &Deal) -> Amount {
+    let depth = 64 - deal.size.saturating_sub(1).leading_zeros() as usize;
+    let per_leaf = sion_exec::storage::MAX_LEAF_BYTES + 32 * depth + 16;
+    let bytes = PROOF_OVERHEAD + usize::from(deal.challenges) * per_leaf;
+    config.min_fee(bytes)
+}
+
+/// Room left in a proof transaction for the signatures, inputs and the
+/// rest, in bytes.
+const PROOF_OVERHEAD: usize = 8 * 1024;
+
+/// The most proof bytes one transaction carries: the gateway refuses
+/// transactions over 256 KiB, and signatures and inputs need room.
+pub const MAX_PROOF_BYTES: usize = 192 * 1024;
+
+/// How many fetches a provider runs at once.
+const MAX_FETCHES: usize = 2;
+
+/// How long a fetch may run before the provider gives up on its deal.
+const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The terms a provider takes deals on. The defaults suit a phone or a
+/// laptop taking strangers' deals: modest collateral, short deals, bounded
+/// disk, and nothing local fetched.
 #[derive(Clone, Debug)]
 pub struct ProviderPolicy {
     /// Accept open deals.
@@ -310,12 +444,26 @@ pub struct ProviderPolicy {
     /// takes nothing new but keeps proving, collecting and closing the
     /// deals it holds.
     pub accept_named: bool,
-    /// The lowest price per round taken.
+    /// The lowest price per round taken; deals must also pay at least twice
+    /// what proving a round costs in fees ([`round_fee`]).
     pub min_price: Amount,
     /// The most collateral posted for one deal.
     pub max_collateral: Amount,
+    /// The most collateral at stake across every deal held.
+    pub max_total_collateral: Amount,
     /// The most bytes kept for one deal.
     pub max_bytes: u64,
+    /// The most bytes kept across every deal.
+    pub max_total_bytes: u64,
+    /// The longest deal taken, in Pulses (rounds × round length): a deal
+    /// cannot be left early, and a provider that stops proving for
+    /// [`sion_exec::storage::ABANDON_ROUNDS`] rounds loses its collateral.
+    pub max_duration: u64,
+    /// Fetch `file://` locators (see [`FetchOptions::allow_local`]).
+    pub allow_local: bool,
+    /// Fetch from local and private addresses (see
+    /// [`FetchOptions::allow_private`]).
+    pub allow_private: bool,
     /// Collect once this many proven rounds are unpaid (closing collects
     /// the rest).
     pub settle_every: u32,
@@ -326,12 +474,67 @@ impl Default for ProviderPolicy {
         ProviderPolicy {
             accept_open: true,
             accept_named: true,
-            min_price: Amount(1),
-            max_collateral: Amount::units(1_000),
+            min_price: Amount(10_000),
+            max_collateral: Amount::units(10),
+            max_total_collateral: Amount::units(100),
             max_bytes: 64 << 20,
+            max_total_bytes: 1 << 30,
+            max_duration: 100_000,
+            allow_local: false,
+            allow_private: false,
             settle_every: 4,
         }
     }
+}
+
+impl ProviderPolicy {
+    /// Why `deal` is not taken under these terms, if it is not (the budgets
+    /// aside).
+    pub fn refuses(
+        &self,
+        config: &sion_exec::state::ChainConfig,
+        deal: &Deal,
+        me: AccountId,
+    ) -> Option<String> {
+        let named = deal.provider == Some(me);
+        if !(named && self.accept_named || deal.provider.is_none() && self.accept_open) {
+            return Some("not taking such deals".into());
+        }
+        let floor = self
+            .min_price
+            .max(Amount(round_fee(config, deal).0.saturating_mul(2)));
+        if deal.price < floor {
+            return Some(format!("pays {} a round, less than {floor}", deal.price));
+        }
+        if deal.collateral > self.max_collateral {
+            return Some(format!("asks {} of collateral", deal.collateral));
+        }
+        if deal_bytes(deal) > self.max_bytes {
+            return Some(format!("may hold {} bytes", deal_bytes(deal)));
+        }
+        let duration = u64::from(deal.rounds).saturating_mul(deal.round_length);
+        if duration > self.max_duration {
+            return Some(format!("lasts {duration} Pulses"));
+        }
+        None
+    }
+
+    /// How the provider fetches.
+    pub fn fetch_options(&self) -> FetchOptions {
+        FetchOptions {
+            max_bytes: self.max_bytes,
+            allow_local: self.allow_local,
+            allow_private: self.allow_private,
+        }
+    }
+}
+
+/// A fetch under way, off the proving path.
+#[derive(Debug)]
+struct Fetch {
+    deal: Deal,
+    started: std::time::Instant,
+    handle: std::thread::JoinHandle<Result<Vec<u8>, String>>,
 }
 
 /// A storage provider: its wallet, its copies and its terms.
@@ -345,8 +548,13 @@ pub struct Provider {
     pub policy: ProviderPolicy,
     /// Trees of the copies it holds, built once per deal.
     trees: BTreeMap<ObjectId, DataTree>,
-    /// Deals it could not fetch, so it does not try every second.
+    /// Deals it will not take, and why, so it does not try again.
     skipped: BTreeMap<ObjectId, String>,
+    /// Fetches under way.
+    fetches: BTreeMap<ObjectId, Fetch>,
+    /// Deals it held that are closed: their custody records stay, but there
+    /// is nothing left to do for them.
+    finished: std::collections::BTreeSet<ObjectId>,
 }
 
 impl Provider {
@@ -358,13 +566,36 @@ impl Provider {
             policy,
             trees: BTreeMap::new(),
             skipped: BTreeMap::new(),
+            fetches: BTreeMap::new(),
+            finished: std::collections::BTreeSet::new(),
         }
     }
 
-    /// One step: accept what it can, prove the round under way for every
-    /// deal it holds, collect, close what ended. Returns what it did, a
-    /// line each.
+    /// One step: prove the round under way for every deal it holds (first,
+    /// so nothing else can delay it), collect and close, accept the deals
+    /// whose data finished fetching, and start fetching new ones. Fetches
+    /// run in the background with deadlines: a locator that never answers
+    /// costs a fetch slot, never a round. Returns what it did, a line each.
     pub fn tick(
+        &mut self,
+        session: &mut Session<'_>,
+        ledger: &dyn Ledger,
+    ) -> Result<Vec<String>, CliError> {
+        let mut done = self.prove(session, ledger)?;
+        done.extend(self.collect(session, ledger)?);
+        done.extend(self.finish_fetches(session, ledger)?);
+        done.extend(self.start_fetches(session, ledger)?);
+        Ok(done)
+    }
+
+    /// Whether fetches are under way.
+    pub fn fetching(&self) -> usize {
+        self.fetches.len()
+    }
+
+    /// Collects for proven rounds once enough are unpaid, closes the deals
+    /// that ended, and lets go of the copies of closed deals.
+    fn collect(
         &mut self,
         session: &mut Session<'_>,
         ledger: &dyn Ledger,
@@ -372,53 +603,175 @@ impl Provider {
         let mut done = Vec::new();
         let me = session.id(&self.name);
         let pulse = ledger.pulse()?;
-        let all = deals(ledger)?;
-        for (id, deal) in &all {
-            if deal.state != DealState::Open || Pulse(pulse.0 + 1) > deal.accept_by {
+        for (_, record) in custody_records(ledger, me)? {
+            let id = record.deal;
+            if self.finished.contains(&id) {
                 continue;
             }
-            let named = deal.provider == Some(me);
-            if !(named && self.policy.accept_named
-                || deal.provider.is_none() && self.policy.accept_open)
-                || deal.price < self.policy.min_price
-                || deal.collateral > self.policy.max_collateral
-                || self.skipped.contains_key(id)
+            let Ok(terms) = deal(ledger, id) else {
+                continue;
+            };
+            match terms.state {
+                DealState::Active { provider, paid, .. } if provider == me => {
+                    if terms.end().is_some_and(|end| pulse >= end) {
+                        let line =
+                            self.send_line(session, TxKind::CloseDeal { deal: id }, Vec::new());
+                        if matches!(
+                            deal(ledger, id).map(|d| d.state),
+                            Ok(DealState::Closed { .. })
+                        ) {
+                            self.let_go(&id);
+                        }
+                        done.push(line);
+                    } else if record.proven.saturating_sub(paid) >= self.policy.settle_every.max(1)
+                    {
+                        done.push(self.send_line(
+                            session,
+                            TxKind::SettleDeal { deal: id },
+                            Vec::new(),
+                        ));
+                    }
+                }
+                DealState::Closed { .. } => self.let_go(&id),
+                _ => {}
+            }
+        }
+        Ok(done)
+    }
+
+    /// Forgets a closed deal and deletes its copy.
+    fn let_go(&mut self, id: &ObjectId) {
+        self.finished.insert(*id);
+        self.trees.remove(id);
+        self.store.forget(id);
+    }
+
+    /// The collateral at stake and the bytes kept or being fetched.
+    fn commitments(&self, ledger: &dyn Ledger, me: AccountId) -> Result<(Amount, u64), CliError> {
+        let mut collateral = Amount::ZERO;
+        for (_, record) in custody_records(ledger, me)? {
+            if self.finished.contains(&record.deal) {
+                continue;
+            }
+            if let Ok(Deal {
+                state: DealState::Active { bond, provider, .. },
+                ..
+            }) = deal(ledger, record.deal)
             {
-                continue;
-            }
-            match self.take(session, ledger, *id, deal, None) {
-                Ok(line) => done.push(line),
-                Err(error) => {
-                    done.push(format!("skipped deal {}: {error}", id.short()));
-                    self.skipped.insert(*id, error.to_string());
+                if provider == me {
+                    collateral = collateral.saturating_add(bond);
                 }
             }
         }
-        done.extend(self.prove(session, ledger)?);
+        let mut bytes = self.store.usage();
+        for fetch in self.fetches.values() {
+            collateral = collateral.saturating_add(fetch.deal.collateral);
+            bytes = bytes.saturating_add(deal_bytes(&fetch.deal));
+        }
+        Ok((collateral, bytes))
+    }
+
+    /// Starts fetching the open deals it would take, within its budgets.
+    fn start_fetches(
+        &mut self,
+        session: &mut Session<'_>,
+        ledger: &dyn Ledger,
+    ) -> Result<Vec<String>, CliError> {
+        if !(self.policy.accept_open || self.policy.accept_named)
+            || self.fetches.len() >= MAX_FETCHES
+        {
+            return Ok(Vec::new());
+        }
+        let me = session.id(&self.name);
         let pulse = ledger.pulse()?;
-        for (id, deal) in deals(ledger)? {
-            let DealState::Active {
-                provider,
-                custody,
-                paid,
-                ..
-            } = deal.state
-            else {
-                continue;
-            };
-            if provider != me {
+        let (mut collateral, mut bytes) = self.commitments(ledger, me)?;
+        let mut done = Vec::new();
+        for (id, terms) in deals(ledger, true)? {
+            if self.fetches.len() >= MAX_FETCHES {
+                break;
+            }
+            if self.skipped.contains_key(&id)
+                || self.fetches.contains_key(&id)
+                || self.finished.contains(&id)
+                // Leave time to fetch and accept.
+                || terms.accept_by.0 < pulse.0.saturating_add(4)
+            {
                 continue;
             }
-            let ended = deal.end().is_some_and(|end| pulse >= end);
-            let proven = match ledger.object(custody)?.map(|o| o.data) {
-                Some(ObjectData::Custody(record)) => record.proven,
-                _ => continue,
+            if let Some(reason) = self.policy.refuses(&session.config, &terms, me) {
+                self.skipped.insert(id, reason);
+                continue;
+            }
+            let more_collateral = collateral.saturating_add(terms.collateral);
+            let more_bytes = bytes.saturating_add(deal_bytes(&terms));
+            if more_collateral > self.policy.max_total_collateral
+                || more_bytes > self.policy.max_total_bytes
+            {
+                // Over budget for now; it may fit once other deals end.
+                continue;
+            }
+            collateral = more_collateral;
+            bytes = more_bytes;
+            let locator = terms.locator.clone();
+            let options = FetchOptions {
+                max_bytes: deal_bytes(&terms).min(self.policy.max_bytes),
+                ..self.policy.fetch_options()
             };
-            if ended {
-                done.push(self.send_line(session, TxKind::CloseDeal { deal: id }, Vec::new()));
-                self.trees.remove(&id);
-            } else if proven.saturating_sub(paid) >= self.policy.settle_every.max(1) {
-                done.push(self.send_line(session, TxKind::SettleDeal { deal: id }, Vec::new()));
+            let handle =
+                std::thread::spawn(move || fetch(&locator, options).map_err(|e| e.to_string()));
+            done.push(format!(
+                "fetching deal {} from {}",
+                id.short(),
+                printable(&terms.locator)
+            ));
+            self.fetches.insert(
+                id,
+                Fetch {
+                    deal: terms,
+                    started: std::time::Instant::now(),
+                    handle,
+                },
+            );
+        }
+        Ok(done)
+    }
+
+    /// Accepts the deals whose data arrived and matches; gives up on fetches
+    /// that failed or ran past their deadline.
+    fn finish_fetches(
+        &mut self,
+        session: &mut Session<'_>,
+        ledger: &dyn Ledger,
+    ) -> Result<Vec<String>, CliError> {
+        let mut done = Vec::new();
+        let ids: Vec<ObjectId> = self.fetches.keys().copied().collect();
+        for id in ids {
+            let finished = self.fetches[&id].handle.is_finished();
+            if !finished {
+                if self.fetches[&id].started.elapsed() > FETCH_DEADLINE {
+                    // The thread is left to end on its own deadline.
+                    self.fetches.remove(&id);
+                    self.skipped.insert(id, "the fetch took too long".into());
+                    done.push(format!(
+                        "skipped deal {}: the fetch took too long",
+                        id.short()
+                    ));
+                }
+                continue;
+            }
+            let fetch = self.fetches.remove(&id).expect("listed");
+            let outcome = match fetch.handle.join() {
+                Ok(Ok(data)) => self.accept(session, ledger, id, &fetch.deal, data),
+                Ok(Err(error)) => Err(CliError::Usage(error)),
+                Err(_) => Err(CliError::Usage("the fetch failed".into())),
+            };
+            match outcome {
+                Ok(line) => done.push(line),
+                Err(error) => {
+                    let reason = printable(&error.to_string());
+                    done.push(format!("skipped deal {}: {reason}", id.short()));
+                    self.skipped.insert(id, reason);
+                }
             }
         }
         Ok(done)
@@ -438,12 +791,13 @@ impl Provider {
         }
     }
 
-    /// Accepts `deal`: fetches its data (from `file`, or its locator),
-    /// checks it, keeps a copy and posts the collateral.
+    /// Accepts `deal` by hand: fetches its data (from `file`, or its
+    /// locator, `file://` included: the person chose this deal), checks it,
+    /// posts the collateral and keeps a copy.
     pub fn take(
         &mut self,
         session: &mut Session<'_>,
-        _ledger: &dyn Ledger,
+        ledger: &dyn Ledger,
         id: ObjectId,
         deal: &Deal,
         file: Option<&Path>,
@@ -451,8 +805,27 @@ impl Provider {
         let data = match file {
             Some(path) => std::fs::read(path)
                 .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?,
-            None => fetch(&deal.locator, self.policy.max_bytes)?,
+            None => fetch(
+                &deal.locator,
+                FetchOptions {
+                    allow_local: true,
+                    ..self.policy.fetch_options()
+                },
+            )?,
         };
+        self.accept(session, ledger, id, deal, data)
+    }
+
+    /// Checks `data` against `deal`, accepts it, and keeps the copy once
+    /// the acceptance went through (a refused one leaves nothing behind).
+    fn accept(
+        &mut self,
+        session: &mut Session<'_>,
+        _ledger: &dyn Ledger,
+        id: ObjectId,
+        deal: &Deal,
+        data: Vec<u8>,
+    ) -> Result<String, CliError> {
         let tree = DataTree::of_data(&data);
         if tree.root() != deal.root || tree.size() != deal.size {
             return Err(CliError::Usage(format!(
@@ -463,9 +836,15 @@ impl Provider {
                 deal.root.short()
             )));
         }
+        let view = session.send(&self.name, TxKind::AcceptDeal { deal: id }, Vec::new())?;
+        if view.effects.status != sion_exec::ExecStatus::Success {
+            return Err(CliError::Transaction(crate::describe::receipt(
+                &session.names(),
+                &view.effects,
+            )));
+        }
         self.store.put(&id, &data)?;
         self.trees.insert(id, tree);
-        let view = session.send(&self.name, TxKind::AcceptDeal { deal: id }, Vec::new())?;
         Ok(format!(
             "Pulse {}: {}",
             view.pulse,
@@ -474,7 +853,7 @@ impl Provider {
     }
 
     /// Proves the round under way for every deal this provider holds a
-    /// copy of, in as few transactions as the leaf limit allows.
+    /// copy of, in as few transactions as the leaf and size limits allow.
     pub fn prove(
         &mut self,
         session: &mut Session<'_>,
@@ -486,14 +865,35 @@ impl Provider {
         // Each batch remembers the last Pulse of the earliest round it
         // proves: the transaction expires then, so a proof that comes too
         // late is rejected (no fee) rather than failed.
-        let mut batches: Vec<(Vec<ObjectRef>, Vec<CustodyProof>, u64)> =
-            vec![(Vec::new(), Vec::new(), u64::MAX)];
-        let mut leaves = 0;
+        struct Batch {
+            refs: Vec<ObjectRef>,
+            proofs: Vec<CustodyProof>,
+            leaves: usize,
+            bytes: usize,
+            round_end: u64,
+        }
+        let empty = || Batch {
+            refs: Vec::new(),
+            proofs: Vec::new(),
+            leaves: 0,
+            bytes: 0,
+            round_end: u64::MAX,
+        };
+        let mut batches = vec![empty()];
         for (custody_id, custody) in custody_records(ledger, me)? {
+            if self.finished.contains(&custody.deal) {
+                continue;
+            }
             let Some(round) = current_round(custody.start, custody.round_length, next) else {
                 continue;
             };
             if round >= u64::from(custody.rounds) || round < u64::from(custody.next) {
+                continue;
+            }
+            // The round's challenge is known once its first Pulse has
+            // executed and the chain recorded its beacon.
+            let first = custody.round_start(round as u32);
+            if first > latest {
                 continue;
             }
             let active = matches!(
@@ -503,6 +903,9 @@ impl Provider {
             if !active {
                 continue;
             }
+            let Some(beacon) = recorded_beacon(ledger, first)? else {
+                continue;
+            };
             let Some(data) = self.store.get(&custody.deal) else {
                 continue;
             };
@@ -510,39 +913,40 @@ impl Provider {
                 .trees
                 .entry(custody.deal)
                 .or_insert_with(|| DataTree::of_data(&data));
-            // The round's challenge is known once its first Pulse has
-            // executed and the chain recorded its beacon.
-            let first = custody.round_start(round as u32);
-            if first > latest {
-                continue;
-            }
-            let Some(beacon) = recorded_beacon(ledger, first)? else {
-                continue;
-            };
             let Some(proof) = tree.answer(&data, &custody, round as u32, &beacon) else {
                 continue;
             };
-            if leaves + proof.leaves.len() > MAX_PROOF_LEAVES {
-                batches.push((Vec::new(), Vec::new(), u64::MAX));
-                leaves = 0;
+            let bytes = sion_core::encode::encode(&proof).len();
+            let current = batches.last().expect("one batch");
+            if current.leaves + proof.leaves.len() > MAX_PROOF_LEAVES
+                || current.bytes + bytes > MAX_PROOF_BYTES
+            {
+                batches.push(empty());
             }
-            leaves += proof.leaves.len();
             let round_end = custody
                 .start
                 .0
                 .saturating_add((round + 1).saturating_mul(custody.round_length))
                 .saturating_sub(1);
             let batch = batches.last_mut().expect("one batch");
-            batch.0.push(session.reference(&custody_id)?);
-            batch.1.push(proof);
-            batch.2 = batch.2.min(round_end);
+            batch.leaves += proof.leaves.len();
+            batch.bytes += bytes;
+            batch.refs.push(session.reference(&custody_id)?);
+            batch.proofs.push(proof);
+            batch.round_end = batch.round_end.min(round_end);
         }
         let mut done = Vec::new();
         let now = ledger.pulse()?.0;
         let usual = session.wallet(&self.name).validity;
-        for (refs, proofs, round_end) in batches.into_iter().filter(|(refs, ..)| !refs.is_empty()) {
-            session.wallet(&self.name).validity = round_end.saturating_sub(now).min(usual);
-            done.push(self.send_line(session, TxKind::ProveStorage { proofs }, refs));
+        for batch in batches.into_iter().filter(|b| !b.refs.is_empty()) {
+            session.wallet(&self.name).validity = batch.round_end.saturating_sub(now).min(usual);
+            done.push(self.send_line(
+                session,
+                TxKind::ProveStorage {
+                    proofs: batch.proofs,
+                },
+                batch.refs,
+            ));
         }
         session.wallet(&self.name).validity = usual;
         Ok(done)
@@ -643,18 +1047,30 @@ pub fn run(
             provider,
             accept_within,
             locator,
+            local,
         } => {
             let data = std::fs::read(&file)
                 .map_err(|e| CliError::Usage(format!("{}: {e}", file.display())))?;
             let tree = DataTree::of_data(&data);
-            let locator = match locator {
-                Some(locator) => locator,
-                None => format!(
+            let locator = match (locator, local) {
+                (Some(locator), _) => locator,
+                (None, true) => format!(
                     "file://{}",
                     std::fs::canonicalize(&file)
                         .map_err(|e| CliError::Usage(e.to_string()))?
                         .display()
                 ),
+                (None, false) => {
+                    return Err(CliError::Usage(
+                        "give --locator <https URL serving the file>, or --local for a provider on this machine (the deal then publishes the file's path)".into(),
+                    ))
+                }
+            };
+            let price_amount = crate::agents::parse_amount(&price)?;
+            let collateral = match (collateral, &provider) {
+                (Some(text), _) => crate::agents::parse_amount(&text)?,
+                (None, Some(_)) => Amount::ZERO,
+                (None, None) => Amount(price_amount.0.saturating_mul(u128::from(rounds))),
             };
             let provider = provider.map(|p| session.id(&p));
             let accept_by = Pulse(ledger.pulse()?.0 + accept_within.max(1));
@@ -664,10 +1080,10 @@ pub fn run(
                     root: tree.root(),
                     size: tree.size(),
                     challenges,
-                    price: crate::agents::parse_amount(&price)?,
+                    price: price_amount,
                     rounds,
                     round_length,
-                    collateral: crate::agents::parse_amount(&collateral)?,
+                    collateral,
                     provider,
                     accept_by,
                     locator,
@@ -684,7 +1100,7 @@ pub fn run(
         }
         StorageCommand::Deals { open } => {
             let names = session.names();
-            for (id, deal) in deals(ledger)? {
+            for (id, deal) in deals(ledger, open)? {
                 if open && deal.state != DealState::Open {
                     continue;
                 }
@@ -770,7 +1186,12 @@ pub fn run(
             from,
             min_price,
             max_collateral,
+            max_total_collateral,
             max_mib,
+            max_total_mib,
+            max_duration,
+            allow_local,
+            allow_private,
             pulses,
         } => {
             let policy = ProviderPolicy {
@@ -778,7 +1199,12 @@ pub fn run(
                 accept_named: true,
                 min_price: crate::agents::parse_amount(&min_price)?,
                 max_collateral: crate::agents::parse_amount(&max_collateral)?,
+                max_total_collateral: crate::agents::parse_amount(&max_total_collateral)?,
                 max_bytes: max_mib.saturating_mul(1 << 20),
+                max_total_bytes: max_total_mib.saturating_mul(1 << 20),
+                max_duration,
+                allow_local,
+                allow_private,
                 settle_every: 4,
             };
             let mut provider = Provider::new(&from, Store::new(storage_dir().join(&from)), policy);

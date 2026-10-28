@@ -45,14 +45,14 @@
     <!-- Wallet -->
     <section class="view" id="view-wallet" hidden aria-labelledby="wallet-title">
       <p class="kicker">Wallet</p>
-      <h1 id="wallet-title"><span id="balance">—</span> <span class="unit">USD</span></h1>
+      <h1 id="wallet-title"><span id="balance">—</span> <span class="unit">test USD</span></h1>
       <p class="account">Account <span class="mono" id="account">—</span>
         <button class="link" id="copy-account">Copy</button></p>
       <p class="note">Balances come from the node; the Node tab shows whether its latest Pulse verified.</p>
 
       <form class="form" id="send-form" autocomplete="off">
         <h2>Send</h2>
-        <label>To <input id="send-to" placeholder="account (64 hex digits) or devnet name" required></label>
+        <label>To <input id="send-to" placeholder="account: 64 hex digits" spellcheck="false" required></label>
         <label>Amount <input id="send-amount" inputmode="decimal" placeholder="1.50" required></label>
         <button class="button" type="submit">Sign and send</button>
       </form>
@@ -67,8 +67,8 @@
     <!-- Stake -->
     <section class="view" id="view-stake" hidden aria-labelledby="stake-title">
       <p class="kicker">Pooled stake</p>
-      <h1 id="stake-title">Back a validator</h1>
-      <p class="lede">Your stake counts towards a validator's weight and earns a share of its fees, less its commission (at most 25 %). It stays yours: only you can collect, leave or withdraw. If the validator signs two conflicting messages, a tenth of its pool is lost.</p>
+      <h1 id="stake-title">Delegate test stake</h1>
+      <p class="lede">On this test network, stake you delegate counts towards a validator's weight, and the protocol credits your delegation a share of the validator's fees, less its commission (at most 25 %). It stays yours: only you can collect, leave or withdraw. If the validator signs two conflicting messages, a tenth of its pool is lost. Test assets only: nothing here has value.</p>
 
       <h2>Your delegations</h2>
       <div id="mine" class="cards"><p class="empty">None yet.</p></div>
@@ -81,8 +81,8 @@
     <!-- Storage -->
     <section class="view" id="view-storage" hidden aria-labelledby="storage-title">
       <p class="kicker">Spare disk</p>
-      <h1 id="storage-title">Keep data, get paid</h1>
-      <p class="lede">This device can provide storage: it takes open storage deals whose data it can fetch, keeps a copy, and proves every round that it still holds it. Each proven round pays. Its collateral is at stake: a missed round costs part of it, an abandoned deal all of it. Best on a computer that stays on.</p>
+      <h1 id="storage-title">Provide storage</h1>
+      <p class="lede">This device can keep data for others on this test network: it takes storage deals whose data it can fetch from the internet, keeps a copy, and proves every round that it still holds it; the client's escrow pays for each proven round, in test USD. Its collateral is at stake: a missed round costs part of it, an abandoned deal all of it. It takes short deals with modest collateral, never fetches from this machine or its local network for a stranger, and keeps proving the deals it holds when turned off. Best on a computer that stays on.</p>
       <form class="form" id="storage-form" autocomplete="off">
         <label>Space for one deal, in MiB <input id="storage-mib" inputmode="numeric" value="256" required></label>
         <div class="actions">

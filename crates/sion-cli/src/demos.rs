@@ -2907,7 +2907,7 @@ pub fn storage(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliE
         _ => None,
     })?;
     out.say(format!(
-        "Pulse {:>3}  robot-gamma posts an open deal for the archive: 6 rounds of 12 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral",
+        "Pulse {:>3}  robot-gamma posts an open deal for the archive: 6 rounds of 16 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral",
         view.pulse
     ));
     let view = session.must(
@@ -2937,29 +2937,45 @@ pub fn storage(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliE
     ));
 
     // 3. The devices: the laptop takes open deals; the phone only its own.
+    //    They run on the robot's machine here, so they may read its files
+    //    (providers taking strangers' deals refuse file:// locators).
     let mut laptop = Provider::new(
         "laptop",
         Store::new(storage_dir().join("laptop")),
-        ProviderPolicy::default(),
+        ProviderPolicy {
+            allow_local: true,
+            ..ProviderPolicy::default()
+        },
     );
     let mut phone = Provider::new(
         "phone",
         Store::new(storage_dir().join("phone")),
         ProviderPolicy {
             accept_open: false,
+            allow_local: true,
             ..ProviderPolicy::default()
         },
     );
-    out.say("           a laptop and a phone run providers: each fetches a deal's data from its locator, checks it hashes to the deal's root, posts the collateral, then proves every round");
-    for line in laptop.tick(session, ledger)? {
-        out.say(format!("           laptop: {line}"));
+    out.say("           a laptop and a phone run providers: each fetches a deal's data from its locator in the background, checks it hashes to the deal's root, posts the collateral, then proves every round");
+    let accepted = |ledger: &dyn crate::ledger::Ledger| -> Result<bool, CliError> {
+        Ok(
+            matches!(deal(ledger, archive_deal)?.state, DealState::Active { .. })
+                && matches!(deal(ledger, camera_deal)?.state, DealState::Active { .. }),
+        )
+    };
+    for _ in 0..200 {
+        for line in laptop.tick(session, ledger)? {
+            out.say(format!("           laptop: {line}"));
+        }
+        for line in phone.tick(session, ledger)? {
+            out.say(format!("           phone:  {line}"));
+        }
+        if accepted(ledger)? {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    for line in phone.tick(session, ledger)? {
-        out.say(format!("           phone:  {line}"));
-    }
-    if !matches!(deal(ledger, archive_deal)?.state, DealState::Active { .. })
-        || !matches!(deal(ledger, camera_deal)?.state, DealState::Active { .. })
-    {
+    if !accepted(ledger)? {
         return Err(CliError::Protocol("the providers did not accept".into()));
     }
     // The phone keeps only the first half of the footage, to save space.

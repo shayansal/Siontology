@@ -53,7 +53,8 @@ fn an_install_verifies_the_chain_pays_and_delegates() {
         assert!(Instant::now() < deadline, "the faucet never paid");
         std::thread::sleep(Duration::from_millis(300));
     }
-    let paid = app.send("bob", "1.5").unwrap();
+    let bob = sion_exec::wallet::Wallet::named("bob").id;
+    let paid = app.send(&bob.0.to_hex(), "1.5").unwrap();
     assert_eq!(paid["status"], "Success", "{paid}");
     // The device proves its own receipt against the certified header.
     assert_eq!(paid["proof"]["ok"], true, "{paid}");
@@ -183,6 +184,9 @@ fn a_device_provides_storage_and_proves_its_rounds() {
     // Off by default: a tick does nothing.
     assert_eq!(app.storage_tick().unwrap()["enabled"], false);
     app.set_storage(true, 16).unwrap();
+    // The data is a file on this machine: the device must be told it may
+    // read local sources (strangers' deals cannot make it).
+    app.set_storage_local(true).unwrap();
 
     // A client posts an open deal for a file.
     let data: Vec<u8> = (0..30_000u32).map(|i| (i % 251) as u8).collect();
@@ -218,7 +222,10 @@ fn a_device_provides_storage_and_proves_its_rounds() {
                 challenges: 2,
                 price: sion_core::Amount(250_000),
                 rounds: 3,
-                round_length: 8,
+                // A proof can go out only once its round's first Pulse has
+                // executed; this devnet's Pulses are short, so rounds of 16
+                // leave time for one to land.
+                round_length: 16,
                 collateral: sion_core::Amount::units(1),
                 provider: None,
                 accept_by: sion_core::ids::Pulse(pulse.0 + 100),
@@ -234,8 +241,16 @@ fn a_device_provides_storage_and_proves_its_rounds() {
     // proving the deal it holds.
     let deadline = Instant::now() + Duration::from_secs(180);
     let mut on = true;
+    let mut log: Vec<String> = Vec::new();
     loop {
-        app.storage_tick().unwrap();
+        let tick = app.storage_tick().unwrap();
+        log.extend(
+            tick["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap_or_default().to_string()),
+        );
         let status = app.storage_status().unwrap();
         let deals = status["deals"].as_array().unwrap().clone();
         if let Some(deal) = deals.first() {
@@ -244,12 +259,16 @@ fn a_device_provides_storage_and_proves_its_rounds() {
                 on = false;
             }
             if deal["phase"] == "closed" {
-                assert_eq!(deal["proven"], 3, "{status}");
+                assert_eq!(deal["proven"], 3, "{status}\n{}", log.join("\n"));
                 assert_eq!(status["collected"], "0.75", "{status}");
                 break;
             }
         }
-        assert!(Instant::now() < deadline, "the deal never closed: {status}");
+        assert!(
+            Instant::now() < deadline,
+            "the deal never closed: {status}\n{}",
+            log.join("\n")
+        );
         std::thread::sleep(Duration::from_millis(400));
     }
     api.stop();
