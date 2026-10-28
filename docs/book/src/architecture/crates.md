@@ -26,12 +26,12 @@ sion-core        sion-lp
 | `sion-clearing` | Verifiable Clearing: sealed double auctions and assignment markets with certificates, beacon priorities | 1,402 | core, lp |
 | `sion-da` | 2D Reed–Solomon over the Goldilocks field, row and column commitments, sampling, reconstruction, fraud proofs | 2,203 | core |
 | `sion-consensus` | Linear Lanes (lane validators, batch-signed approvals, certificates), the certified-DAG BFT core, committees and sampling, the beacon, a deterministic network simulator | 4,318 | core |
-| `sion-exec` | The state machine: objects, accounts, claims, bonds, charters, escrow, markets, the validator set and forced-inclusion obligations; transactions; Pulse execution with chunk traces and witnesses; stateless replay; wallets | 7,331 | core, crypto, assurance, clearing, lp, consensus |
-| `sion-spec` | Proof stack B: an independent implementation of the state transition, written from the specification | 5,505 | core, crypto, assurance, clearing, consensus, exec (types only) |
+| `sion-exec` | The state machine: objects, accounts, claims, bonds, charters, escrow, markets, payment streams, the validator set and forced-inclusion obligations; transactions; Pulse execution with chunk traces and witnesses; stateless replay; wallets | 8,138 | core, crypto, assurance, clearing, lp, consensus |
+| `sion-spec` | Proof stack B: an independent implementation of the state transition, written from the specification | 6,065 | core, crypto, assurance, clearing, consensus, exec (types only) |
 | `sion-prover` | The `ProofStack` trait, stacks A and B, World Proofs, certificate checks | 1,047 | core, assurance, exec, spec, da, consensus |
 | `sion-light` | The light client: chain identity, header certificates, epoch-to-epoch committee following, state and claim proofs, availability sampling | 749 | core, crypto, consensus, exec, da |
-| `sion-node` | The devnet: validator threads, gateway, prover thread, committees from the state, forced-inclusion bookkeeping, write-ahead log and snapshots, HTTP API | 5,983 | everything except lp and spec |
-| `sion-cli` | The `sion` command: devnet, wallets, transactions, demos, light verification, MCP server, x402 adapter, benchmarks, sentences | 6,468 | everything except lp |
+| `sion-node` | The devnet: validator threads, gateway, prover thread, committees from the state, forced-inclusion bookkeeping, write-ahead log and snapshots, HTTP API | 6,112 | everything except lp and spec |
+| `sion-cli` | The `sion` command: devnet, wallets, transactions, payment streams (payer book, payee desk), demos, light verification, MCP server, x402 adapter, benchmarks, sentences | 8,855 | everything except lp |
 
 Lines are lines of Rust under each crate's `src/`, unit tests included, at
 the time of writing.
@@ -53,11 +53,14 @@ the time of writing.
 |---|---|
 | Unit tests in every crate | Encodings, hashes, Merkle structures, signatures, sampling, the beacon |
 | `sion-assurance`, `sion-lp`, `sion-exec/tests/properties.rs` | Property tests (`proptest`) of the algebra, the certificates and the state machine |
-| `sion-exec/tests/scenarios.rs`, `sion-exec/tests/validators.rs` | Scenario tests for every transaction kind, staking and forced inclusion |
+| `sion-exec/tests/scenarios.rs`, `sion-exec/tests/validators.rs` | Scenario tests for every transaction kind, staking, forced inclusion and payment streams |
 | `sion-consensus/tests` | The consensus simulator with adversarial network phases; lanes; observers |
 | `sion-clearing/tests`, `sion-da/tests` | Auctions and assignments; encoding, sampling, reconstruction |
 | `sion-spec/tests/differential.rs` | Stack A against stack B on random workloads, boundary probes and tampering |
 | `sion-node/tests/devnet.rs` | End-to-end devnets with dual post-quantum signatures |
-| `sion-cli/tests/demos.rs` | The demos |
+| `sion-cli/tests/demos.rs` | The demos (`#[ignore]`d: they take minutes) and an MCP session |
+| `sion-cli/tests/streams.rs` | An x402 server's stream desk on a devnet: refusals, recovery, top-ups and the close-out |
 
-Run them all with `cargo test --workspace`.
+`cargo test --workspace` runs the fast suite, as CI does on every push.
+`cargo test --workspace -- --include-ignored` adds the demo runs, as CI
+does every night.

@@ -1,7 +1,7 @@
 # Changelog
 
 Notable changes to Siontology, newest first. There are no releases yet:
-everything below is on the `main` branch, unreleased. Once releases begin,
+everything below is on the default branch, unreleased. Once releases begin,
 they will follow [Semantic Versioning](https://semver.org/). The state
 transition specification (`docs/spec/state-transition.md`) has its own
 version, given below where it changed.
@@ -9,6 +9,68 @@ version, given below where it changed.
 Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
+
+### Continuous integration
+
+- Pull requests and pushes run the fast suite: formatting, lints, the tests
+  not marked `#[ignore]`, the independence check, and now also a check that
+  the generated website pages match their sources and a build of the book.
+- The demo runs (about three minutes on two cores) are `#[ignore]`d and run
+  every night with every other test (`cargo test --workspace --
+  --include-ignored`), next to the quick benchmarks, whose JSON is kept for
+  90 days.
+- The website deploys from `master` as well as `main`.
+
+### Node fixes found by the networking review
+
+- The gateway handed consensus every certificate of a 20 ms flush as one
+  group, capped at 512 transactions but not in bytes. Consensus drops an
+  item above `max_payload_bytes` (512 KiB) without a reply, and about 20
+  dual-signed transfers fill it, so a burst never executed: the gateway
+  re-sent the same oversized group every 4 s until it expired. Groups are
+  now split by encoded size, at most half the payload limit
+  (`PayloadItem::groups`), in both the flush and the re-send path. A
+  transaction whose certificate cannot fit even alone is refused with a
+  reason instead of retried forever. A devnet test sends 40 dual-signed
+  transfers at once under a 128 KiB limit; it fails without the fix.
+- Beacon reveals committed ahead of their Pulse lived only in the Pulse
+  builder, so a validator restarting alone would compute a different beacon
+  for up to 8 Pulses. Log records and snapshots now carry them with the
+  beacon (storage format 4, `SIONWAL4` and `SIONSNP4`), taken as of each
+  Pulse's own close: one commit can close two Pulses, and the first one's
+  record used to hold the beacon after the second. A directory in the older
+  format is refused with a clear error instead of being truncated as a torn
+  tail. Pulse headers do not yet commit to the pending reveals; that needs a
+  specification version.
+
+### Payment streams (specification v1.6 and v1.7)
+
+- Payment streams: a payer escrows funds for one payee and pays it off the
+  ledger by revealing the elements of a SHA3-256 hash chain, one per
+  payment. The payee checks a payment with one hash and settles many in one
+  transaction (`OpenStream`, `SettleStream`, `TopUpStream`,
+  `CloseStream`, §5.31 to §5.34). A settlement walks from the head, one
+  hash per step, at most 65,536 steps, and pays 2 micro-USD per hash.
+- Specification v1.7, checkpoints: a payer may commit to a Merkle tree over
+  every `spacing`-th chain element, and the payee may settle by a jump to
+  the checkpoint below its position, for at most `spacing + 21` hashes
+  however many payments the settlement covers.
+- Both proof stacks implement the rules; differential tests, a randomized
+  property test and executor scenarios cover them.
+- x402 gains a `stream` scheme: a request is paid with the next chain
+  element, checked by the server with one hash, and settled in batches by
+  the server's stream desk. A refused payment names the server's position
+  so an honest client resynchronizes. The x402 client reuses HTTP
+  connections.
+- New commands `sion stream open|pay|jump|check|settle|top-up|close|show`;
+  `sion x402 serve --streams` and `sion x402 fetch --stream --count`; the
+  `streams` demo; the `streams` benchmark group.
+- Measured on one core of a 2-core sandbox: a payee checks a payment in
+  0.42 µs; settlements by checkpoint covering about 9 × 10⁸ payments a
+  second executed with every signature checked. See the research note
+  [Billions of payments a second](docs/book/src/research/billion-scale.md).
+- New research notes in the book: the billion-payment note, a plan for
+  succinct validity proofs and a plan for networking between machines.
 
 ### Review of the validator machinery (specification v1.5)
 

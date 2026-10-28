@@ -113,6 +113,10 @@ pub struct StatusView {
     pub forced_pending: u32,
     /// Forced intents that missed a deadline (censorship).
     pub forced_overdue: u32,
+    /// Consensus payload items this validator refused because no header
+    /// could carry them; above 0 means a submitter's size limit is wrong.
+    #[serde(default)]
+    pub dropped_items: u64,
 }
 
 /// One coin.

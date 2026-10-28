@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.5
+# The Siontology state transition — specification v1.7
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -25,7 +25,7 @@ It does **not** re-specify:
 - **Data layouts.** The Rust type definitions in `sion_core`, `sion_crypto`,
   `sion_assurance`, `sion_clearing` and the *type definitions* in
   `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
-  `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
+  `stream`, `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
   normative; their canonical encoding is Borsh. One rule goes beyond the
@@ -49,8 +49,10 @@ It does **not** re-specify:
 An implementation of this document MUST NOT call the reference executor's
 logic: `sion_exec::execute`, `sion_exec::pulse` (other than the type
 definitions and the commitment helpers named in §7), `sion_exec::stateless`,
-`sion_exec::wallet`, `sion_exec::sim`, `sion_exec::genesis`, nor the methods
-`Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
+`sion_exec::wallet`, `sion_exec::sim`, `sion_exec::genesis`, the
+`sion_exec::stream` helpers (`step`, `walk`, `extends`, `checkpoint_leaf`,
+`jump_hashes`, `verify_jump`, `PayerChain`, `Stream::checkpoint_count`), nor
+the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
 helpers `Transaction::{digest, domain, class, size}`,
@@ -653,6 +655,100 @@ wherever it was signed, so an operator MUST NOT use a validator's keys on
 more than one network. A validator that has withdrawn has nothing left to
 slash (step 2).
 
+### 5.31 OpenStream { payee, asset, unit, length, anchor, deposit, until, checkpoints }
+
+A **stream** lets the sender, its payer, pay `payee` in steps of `unit`
+without a transaction per payment. The payer keeps a secret hash chain whose
+last element is `anchor`: with `step(x) = H("sion/stream/step", x)` for a
+32-byte `x`, and `stepᵏ` for `k` applications of `step`, the chain is
+`w_length, …, w_1, w_0 = anchor` with `w_{i−1} = step(w_i)`. The payer
+reveals `w_1, w_2, …` in order, off the ledger; a payee holding `w_i` holds
+`i` steps. Checking a revealed element against the last one costs one hash.
+The payee settles from time to time (§5.32). Constants of
+`sion_exec::stream`: `MAX_STREAM_LENGTH` (2³²), `MAX_SETTLE_STEPS` (65,536),
+`STREAM_STEP_FEE` (`Amount(2)`, 2 micro-units of USD per hash a settlement
+costs), `MAX_CHECKPOINTS` (2²⁰), `MAX_CHECKPOINT_DEPTH` (20) and
+`CHECKPOINT_TAG` (the bytes `sion/stream/checkpoint`).
+
+**Checkpoints** (optional). `checkpoints = Some(Checkpoints { spacing, root
+})` commits to every `spacing`-th element of the chain: for `j = 0, …,
+⌊length / spacing⌋`, leaf `j` is `L_j = merkle::leaf_hash(CHECKPOINT_TAG ‖
+be64(j) ‖ w_{j·spacing})` (`be64` the 8-byte big-endian encoding, `w` the 32
+bytes of the element), and `root = merkle::root(L_0, …, L_m)`, the shared
+Merkle tree hash (`sion_core::merkle`, RFC 9162 shape). They let the payee
+settle any number of steps with a bounded number of hashes (§5.32). The
+ledger cannot check that `root` commits to the payer's chain; a wrong root
+only makes jumps fail, and the payee can always settle by walking.
+
+1. `unit > 0`; `1 ≤ length ≤ MAX_STREAM_LENGTH`; `deposit > 0`;
+   `ctx.pulse < until ≤ ctx.pulse + MAX_PERIOD` (the addition saturating;
+   `MAX_PERIOD` as in §5.22). If `checkpoints` is `Some { spacing, root }`:
+   `1 ≤ spacing ≤ length` and `⌊length / spacing⌋ < MAX_CHECKPOINTS`.
+2. `draw(asset, deposit)`.
+3. `stream_id = created_id(digest, next_index)`;
+   `create(Shared(object_domain("stream", stream_id)), Stream { payer:
+   sender, payee, asset, unit, length, position: 0, head: anchor, escrow:
+   deposit, until, open: true, spacing, checkpoints: root })`, with
+   `spacing = 0` and `checkpoints = Hash32::ZERO` when `checkpoints` is
+   `None`.
+4. Event `StreamOpened { stream: stream_id, payer: sender, payee, deposit }`.
+
+### 5.32 SettleStream { stream, position, value, jump }
+
+1. Load `stream` (MUST be a stream); it MUST be `open`; the sender MUST be
+   its `payee`; `ctx.pulse ≤ until`.
+2. `stream.position < position ≤ length`; `steps = position −
+   stream.position`.
+3. The hashes the check costs:
+   - `jump = None` (a **walk** from the head): `steps ≤ MAX_SETTLE_STEPS`;
+     `hashes = steps`.
+   - `jump = Some(Jump { index, path })` (a **jump** to a checkpoint):
+     `stream.spacing > 0`; `|path| ≤ MAX_CHECKPOINT_DEPTH`; `base = index ×
+     spacing` (checked: an overflow fails); `base ≤ position < base +
+     spacing`; `rest = position − base`; `hashes = rest + 1 + |path|`.
+4. `tx.fee ≥ ctx.config.min_fee(tx.size()) + hashes × STREAM_STEP_FEE` (the
+   arithmetic saturating).
+5. The element MUST be genuine:
+   - walk: `stepˢᵗᵉᵖˢ(value) = head`;
+   - jump: with `x = stepʳᵉˢᵗ(value)`, `merkle::verify_inclusion(checkpoints,
+     ⌊length / spacing⌋ + 1, index, merkle::leaf_hash(CHECKPOINT_TAG ‖
+     be64(index) ‖ x), path)` MUST succeed.
+6. `amount = unit × steps` (checked: an overflow fails); `amount ≤ escrow`.
+7. `escrow −= amount`; `position = position`; `head = value`; store the
+   stream; `mint(sender, asset, amount)`.
+8. Event `StreamSettled { stream, position, head: value, amount }`.
+
+A jump proves `value` is the chain element at `position` without walking to
+the head, so its cost does not depend on `steps`: at most `spacing + 21`
+hashes, however many payments the settlement covers. A jump's checkpoint may
+lie below the settled position.
+
+Anyone holding an element `v` that a payer revealed at position `p` can
+check that it was paid once a settlement reaches a position `c ≥ p`:
+`stepᶜ⁻ᵖ(head after that settlement) = v`, or, with the jump for checkpoint
+`⌊p / spacing⌋`, by step 5's jump check.
+
+### 5.33 TopUpStream { stream, deposit, until }
+
+1. Load `stream` (MUST be a stream); it MUST be `open`; the sender MUST be
+   its `payer`; `ctx.pulse ≤ stream.until`.
+2. `stream.until ≤ until ≤ ctx.pulse + MAX_PERIOD` (saturating); `deposit
+   > 0` or `until > stream.until`.
+3. If `deposit > 0`: `draw(asset, deposit)` and `escrow += deposit`.
+4. `stream.until = until`; store the stream; event `StreamToppedUp {
+   stream, deposit, until }`.
+
+### 5.34 CloseStream { stream }
+
+1. Load `stream` (MUST be a stream); it MUST be `open`. The sender MUST be
+   its `payee`, or its `payer` once `ctx.pulse > until`.
+2. `refund = escrow`; `escrow = 0`; `open = false`; store the stream;
+   `mint(payer, asset, refund)`.
+3. Event `StreamClosed { stream, refund }`.
+
+A stream is never deleted: once closed it keeps its last `position` and
+`head`, so items it paid stay checkable.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -987,6 +1083,24 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.7.** Stream checkpoints (§5.31, §5.32): a payer may commit, when it
+  opens a stream, to a Merkle tree over every `spacing`-th element of its
+  chain, and a payee may then settle by a jump to the checkpoint below its
+  position instead of a walk from the head. A jump costs at most `spacing +
+  1 + 20` hashes however many steps it covers, and the per-hash fee applies
+  to the hashes actually checked; a walk is still limited to 65,536 steps.
+  New types `sion_exec::stream::{Checkpoints, Jump}`; `OpenStream` gains
+  `checkpoints`, `SettleStream` gains `jump`, and `Stream` gains `spacing`
+  and `checkpoints`.
+
+- **v1.6.** Payment streams (§5.31 to §5.34): a payer escrows funds for one
+  payee and pays it off the ledger by revealing the elements of a hash
+  chain, one hash to check per payment; the payee settles many payments in
+  one transaction, which checks one hash per step and pays a fee per step.
+  `SettleStream`, `TopUpStream` and `CloseStream` are contended in the
+  stream's own domain. New types `sion_exec::stream::Stream`, object
+  `ObjectData::Stream`, transaction kinds and events.
 
 - **v1.5.** From an independent review of the staking machinery: at an
   epoch's end, slashed validators lose their seats even if no other

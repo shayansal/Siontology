@@ -230,6 +230,7 @@ pub struct Core<A: Authenticator, V: SignatureVerifier> {
     gc_round: Round,
     evidence: Vec<DagEvidence>,
     reported: BTreeSet<(u8, Round, ValidatorId)>,
+    oversized: u64,
 }
 
 impl<A: Authenticator, V: SignatureVerifier> fmt::Debug for Core<A, V> {
@@ -277,6 +278,7 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
             gc_round: Round(0),
             evidence: Vec::new(),
             reported: BTreeSet::new(),
+            oversized: 0,
         };
         for certificate in Certificate::genesis(&core.committee) {
             let digest = certificate.digest();
@@ -336,6 +338,13 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
     /// Items waiting to be committed.
     pub fn mempool_len(&self) -> usize {
         self.mempool.len()
+    }
+
+    /// Payload items refused because no header could carry them (larger
+    /// than `max_payload_bytes`). Whoever submits items should keep this
+    /// at zero.
+    pub fn oversized_items(&self) -> u64 {
+        self.oversized
     }
 
     /// Removes and returns every item not committed yet, in submission
@@ -432,6 +441,7 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
     fn submit(&mut self, item: Vec<u8>) {
         // An item that cannot fit in any header would never be proposed.
         if item.len() > self.config.max_payload_bytes {
+            self.oversized += 1;
             return;
         }
         let hash = item_hash(&item);
@@ -1170,6 +1180,10 @@ mod tests {
                 .unwrap();
         let mut core = Core::new(committee, keys[0].clone(), verifier, CoreConfig::default());
         core.handle(Event::Submit(b"hello".to_vec()));
+        // An item no header can carry is refused, and counted.
+        let limit = CoreConfig::default().max_payload_bytes;
+        core.handle(Event::Submit(vec![7; limit + 1]));
+        assert_eq!((core.mempool_len(), core.oversized_items()), (1, 1));
         core.handle(Event::Start);
         let mut items = Vec::new();
         for _ in 0..12 {

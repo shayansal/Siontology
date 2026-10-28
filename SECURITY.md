@@ -5,7 +5,7 @@
 None in production. Siontology is a devnet-scale reference implementation:
 it runs every validator in one process, its proofs are replay proofs, and
 its devnet keys can be derived by anyone. It secures nothing of value.
-Fixes go to the `main` branch; there are no maintained release branches.
+Fixes go to the default branch; there are no maintained release branches.
 
 ## Reporting a vulnerability
 

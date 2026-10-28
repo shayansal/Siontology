@@ -17,19 +17,21 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use sion_consensus::{Beacon, LaneRequest};
+use sion_consensus::LaneRequest;
 use sion_core::encode::{decode, encode};
 use sion_core::hash::hash_domain;
 use sion_core::ids::{Pulse, ShardId};
 use sion_exec::pulse::{execute_pulse, PulseInput};
 use sion_exec::{SignedTransaction, State, WorldCommitment};
 
-/// Magic tag at the start of every record (version 3: forced intents are
-/// part of the Pulse input; obligations live in the state).
-pub const RECORD_MAGIC: &[u8; 8] = b"SIONWAL3";
-/// Magic tag at the start of every snapshot (version 3: snapshots carry the
-/// restart generation and the signed forced intents still owed).
-pub const SNAPSHOT_MAGIC: &[u8; 8] = b"SIONSNP3";
+use crate::pulses::Carry;
+
+/// Magic tag at the start of every record (version 4: a record carries the
+/// beacon reveals committed ahead of their Pulse, not only the beacon).
+pub const RECORD_MAGIC: &[u8; 8] = b"SIONWAL4";
+/// Magic tag at the start of every snapshot (version 4: snapshots carry the
+/// beacon reveals committed ahead of their Pulse too).
+pub const SNAPSHOT_MAGIC: &[u8; 8] = b"SIONSNP4";
 /// Magic tag at the start of every lane-lock record.
 pub const LANE_MAGIC: &[u8; 8] = b"SIONLAN1";
 /// Default segment size before rotation.
@@ -44,6 +46,9 @@ pub enum StorageError {
     /// A record or snapshot failed to decode or verify.
     #[error("corrupt {0}")]
     Corrupt(String),
+    /// The directory holds a log or snapshot in an older format.
+    #[error("{0} was written in an older storage format; start from a fresh data directory")]
+    OlderFormat(String),
     /// Replaying the log did not reproduce the logged commitment.
     #[error("replay of Pulse {pulse} diverged: logged {logged:?}, got {got:?}")]
     Divergence {
@@ -63,8 +68,9 @@ pub struct PulseRecord {
     pub input: PulseInput,
     /// The resulting commitment.
     pub after: WorldCommitment,
-    /// The beacon state after the Pulse closed.
-    pub beacon: Beacon,
+    /// What the Pulse builder carried past the Pulse's close: the beacon and
+    /// the reveals already committed for later Pulses.
+    pub carry: Carry,
 }
 
 /// A full snapshot.
@@ -72,8 +78,8 @@ pub struct PulseRecord {
 pub struct Snapshot {
     /// The state.
     pub state: State,
-    /// The beacon state.
-    pub beacon: Beacon,
+    /// What the Pulse builder carried past the state's Pulse.
+    pub carry: Carry,
     /// The restart generation in progress when the snapshot was taken.
     pub generation: u64,
     /// Signed forced intents the state still holds obligations for (the
@@ -115,6 +121,7 @@ impl Wal {
     /// what it contains.
     pub fn open(dir: &Path, sync: bool) -> Result<(Wal, Recovered), StorageError> {
         fs::create_dir_all(dir)?;
+        refuse_older_formats(dir)?;
         let snapshot = latest_snapshot(dir)?;
         let floor = snapshot.as_ref().map(|s| s.state.pulse).unwrap_or(Pulse(0));
         let mut segments = list(dir, "wal-", ".log")?;
@@ -242,6 +249,35 @@ impl Wal {
     }
 }
 
+/// Refuses a directory whose newest log segment or any snapshot starts with
+/// an older version of its magic tag. Without this, an older record would
+/// read as a torn tail and be truncated.
+fn refuse_older_formats(dir: &Path) -> Result<(), StorageError> {
+    let older = |path: &Path, current: &[u8; 8]| -> Result<bool, StorageError> {
+        let mut head = [0u8; 8];
+        let mut file = File::open(path)?;
+        let mut read = 0;
+        while read < head.len() {
+            match file.read(&mut head[read..])? {
+                0 => return Ok(false),
+                n => read += n,
+            }
+        }
+        Ok(head[..7] == current[..7] && head[7] != current[7])
+    };
+    for path in list(dir, "wal-", ".log")? {
+        if older(&path, RECORD_MAGIC)? {
+            return Err(StorageError::OlderFormat(path.display().to_string()));
+        }
+    }
+    for path in list(dir, "snapshot-", ".bin")? {
+        if older(&path, SNAPSHOT_MAGIC)? {
+            return Err(StorageError::OlderFormat(path.display().to_string()));
+        }
+    }
+    Ok(())
+}
+
 fn parse_record(bytes: &[u8]) -> Option<(u64, &[u8], usize)> {
     if bytes.len() < 28 || &bytes[..8] != RECORD_MAGIC {
         return None;
@@ -294,13 +330,14 @@ fn latest_snapshot(dir: &Path) -> Result<Option<Snapshot>, StorageError> {
     Ok(None)
 }
 
-/// Rebuilds the state from a snapshot (or genesis) and the logged Pulses.
+/// Rebuilds the state from a snapshot (or genesis) and the logged Pulses,
+/// with what the Pulse builder carried past the last of them.
 pub fn replay(
     mut state: State,
-    mut beacon: Beacon,
+    mut carry: Carry,
     mut forced: Vec<SignedTransaction>,
     records: &[PulseRecord],
-) -> Result<(State, Beacon, Vec<SignedTransaction>), StorageError> {
+) -> Result<(State, Carry, Vec<SignedTransaction>), StorageError> {
     for record in records {
         if record.input.pulse <= state.pulse {
             continue;
@@ -315,12 +352,12 @@ pub fn replay(
             });
         }
         forced.extend(record.input.forced.iter().cloned());
-        beacon = record.beacon.clone();
+        carry = record.carry.clone();
     }
     let owed = &state.forced().pending;
     let mut seen = std::collections::BTreeSet::new();
     forced.retain(|tx| owed.contains_key(&tx.digest()) && seen.insert(tx.digest()));
-    Ok((state, beacon, forced))
+    Ok((state, carry, forced))
 }
 
 /// Durable lane locks.
@@ -435,7 +472,9 @@ fn parse_lane_record(bytes: &[u8]) -> Option<((ShardId, LaneRequest), usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sion_consensus::Beacon;
     use sion_core::hash::Hash32;
+    use sion_core::ids::ValidatorId;
     use sion_exec::sim::{sim_beacon, Chain};
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -474,10 +513,16 @@ mod tests {
             for w in chain.wallets.values_mut() {
                 w.settle();
             }
+            // A reveal committed ahead for the Pulse after next.
+            let mut carry = Carry::fresh(Beacon::new(Hash32::ZERO));
+            carry.reveals.insert(
+                Pulse(pulse.0 + 2),
+                vec![(ValidatorId::derive(b"v"), Hash32([amount as u8; 32]))],
+            );
             wal.append(&PulseRecord {
                 input,
                 after: output.after,
-                beacon: Beacon::new(Hash32::ZERO),
+                carry,
             })
             .unwrap();
         }
@@ -495,28 +540,53 @@ mod tests {
         assert_eq!(recovered.records.len(), 2);
         assert!(recovered.truncated > 0);
         assert_eq!(wal.len(), 2);
-        let (state, _, _) = replay(
+        let (state, carry, _) = replay(
             genesis.clone(),
-            Beacon::new(Hash32::ZERO),
+            Carry::fresh(Beacon::new(Hash32::ZERO)),
             Vec::new(),
             &recovered.records,
         )
         .unwrap();
         assert_eq!(state.pulse, Pulse(2));
+        // Replay hands back what the builder carried past the last Pulse.
+        assert_eq!(
+            carry.reveals.keys().copied().collect::<Vec<_>>(),
+            vec![Pulse(4)]
+        );
         // A snapshot plus the log reproduces the same state.
         wal.snapshot(&Snapshot {
             state: state.clone(),
-            beacon: Beacon::new(Hash32::ZERO),
+            carry: carry.clone(),
             generation: 0,
             forced: Vec::new(),
         })
         .unwrap();
         let (_, again) = Wal::open(&dir, false).unwrap();
-        assert_eq!(
-            again.snapshot.unwrap().state.commitment(),
-            state.commitment()
-        );
+        let snapshot = again.snapshot.unwrap();
+        assert_eq!(snapshot.state.commitment(), state.commitment());
+        assert_eq!(snapshot.carry, carry, "snapshots keep the waiting reveals");
         assert!(again.records.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_log_is_refused_rather_than_truncated() {
+        let dir = temp_dir("older");
+        fs::create_dir_all(&dir).unwrap();
+        let segment = dir.join("wal-0000000000000000.log");
+        let mut old = b"SIONWAL3".to_vec();
+        old.extend_from_slice(&[0u8; 40]);
+        fs::write(&segment, &old).unwrap();
+        let error = Wal::open(&dir, false).unwrap_err();
+        assert!(matches!(error, StorageError::OlderFormat(_)), "{error}");
+        assert_eq!(fs::read(&segment).unwrap(), old, "nothing was truncated");
+
+        fs::remove_file(&segment).unwrap();
+        fs::write(dir.join("snapshot-0000000000000001.bin"), b"SIONSNP3").unwrap();
+        assert!(matches!(
+            Wal::open(&dir, false),
+            Err(StorageError::OlderFormat(_))
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -29,6 +29,7 @@ use crate::error::NodeError;
 use crate::gateway::{Gateway, GatewayInput};
 use crate::keys::{NodeVerifier, SignatureMode, ValidatorKeys};
 use crate::prover::{self, ProverHandle};
+use crate::pulses::Carry;
 use crate::storage::{replay, LaneLog, Snapshot, Wal};
 use crate::validator::{Bus, Input, Shared, Validator, ValidatorSetup};
 use crate::view::{Query, SubmitReceipt, TxStatus, TxView};
@@ -201,8 +202,9 @@ pub fn devnet_genesis(config: &DevnetConfig) -> GenesisSpec {
 /// A validator's lane log and the live lane locks restored from it.
 type RecoveredLanes = (Option<LaneLog>, Vec<(ShardId, LaneRequest)>);
 
-/// A validator's recovered state, beacon, owed forced intents and log.
-type RecoveredState = (State, Beacon, Vec<SignedTransaction>, Option<Wal>);
+/// A validator's recovered state, Pulse-builder carry (beacon and waiting
+/// reveals), owed forced intents and log.
+type RecoveredState = (State, Carry, Vec<SignedTransaction>, Option<Wal>);
 
 struct Recovery {
     generation: u64,
@@ -225,7 +227,7 @@ fn recover(
                 .map(|_| {
                     (
                         genesis_state.clone(),
-                        genesis_beacon.clone(),
+                        Carry::fresh(genesis_beacon.clone()),
                         Vec::new(),
                         None,
                     )
@@ -258,31 +260,36 @@ fn recover(
     let mut states = Vec::with_capacity(n);
     for index in 0..n {
         let (wal, recovered) = Wal::open(&dir.join(format!("validator-{index}")), config.fsync)?;
-        let (base, beacon, forced) = match recovered.snapshot {
-            Some(snapshot) => (snapshot.state, snapshot.beacon, snapshot.forced),
-            None => (genesis_state.clone(), genesis_beacon.clone(), Vec::new()),
+        let (base, carry, forced) = match recovered.snapshot {
+            Some(snapshot) => (snapshot.state, snapshot.carry, snapshot.forced),
+            None => (
+                genesis_state.clone(),
+                Carry::fresh(genesis_beacon.clone()),
+                Vec::new(),
+            ),
         };
-        let (state, beacon, forced) = replay(base, beacon, forced, &recovered.records)?;
-        states.push((state, beacon, forced, Some(wal)));
+        let (state, carry, forced) = replay(base, carry, forced, &recovered.records)?;
+        states.push((state, carry, forced, Some(wal)));
     }
     // Validators stop together, but a validator may have logged one Pulse
     // more than another; replicas are deterministic, so the laggards adopt
-    // the most advanced state (state sync) and snapshot it.
+    // the most advanced state (state sync), with the beacon reveals already
+    // committed for the Pulses after it, and snapshot it.
     let best = (0..n).max_by_key(|i| states[*i].0.pulse).unwrap_or(0);
-    let (best_state, best_beacon, best_forced) = (
+    let (best_state, best_carry, best_forced) = (
         states[best].0.clone(),
         states[best].1.clone(),
         states[best].2.clone(),
     );
-    for (state, beacon, forced, wal) in states.iter_mut() {
+    for (state, carry, forced, wal) in states.iter_mut() {
         if state.pulse < best_state.pulse {
             *state = best_state.clone();
-            *beacon = best_beacon.clone();
+            *carry = best_carry.clone();
             *forced = best_forced.clone();
             if let Some(wal) = wal {
                 wal.snapshot(&Snapshot {
                     state: state.clone(),
-                    beacon: beacon.clone(),
+                    carry: carry.clone(),
                     generation,
                     forced: forced.clone(),
                 })?;
@@ -393,7 +400,7 @@ impl Devnet {
         let mut threads = Vec::new();
         for (
             index,
-            (((receiver, (state, beacon, forced_txs, wal)), chain), (lane_log, lane_locks)),
+            (((receiver, (state, carry, forced_txs, wal)), chain), (lane_log, lane_locks)),
         ) in receivers
             .into_iter()
             .zip(recovery.states)
@@ -405,7 +412,7 @@ impl Devnet {
                 index,
                 auth: keys[index].authenticator(mode),
                 state,
-                beacon,
+                carry,
                 chain,
                 wal,
                 inbox: receiver,

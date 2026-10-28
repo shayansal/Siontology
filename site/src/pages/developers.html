@@ -1,4 +1,4 @@
-<!--{"file": "developers.html", "title": "Developers | Siontology", "description": "Run a Siontology devnet on your machine: the sion CLI, scripted demos, a JSON HTTP API, an MCP server for AI agents, x402 payments and a light client.", "nav": "developers", "scenes": ["x402"]}-->
+<!--{"file": "developers.html", "title": "Developers | Siontology", "description": "Run a Siontology devnet on your machine: the sion CLI, scripted demos, a JSON HTTP API, an MCP server for AI agents, x402 payments, payment streams and a light client.", "nav": "developers", "scenes": ["x402"]}-->
 <header class="page-head wrap">
   <h1>Build on the devnet.</h1>
   <p class="lede">Everything runs on your machine: a devnet of validators that sign with two post-quantum signature families, the <code>sion</code> command line, a JSON HTTP API and a Model Context Protocol server for AI agents. The reference documentation lives at <a href="{{DOCS}}">siontology.org/docs</a>.</p>
@@ -31,6 +31,7 @@
           <tr><td><code>sion demo market --local</code></td><td>A sealed-bid GPU-hour market that clears at one price with an optimality certificate.</td></tr>
           <tr><td><code>sion demo receipts --local</code></td><td>Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions.</td></tr>
           <tr><td><code>sion demo x402 --local</code></td><td>An agent pays an HTTP API per request; a replayed payment and an over-limit payment are refused.</td></tr>
+          <tr><td><code>sion demo streams --local</code></td><td>An agent pays an API 2,000 times from one payment stream: one hash per call at the server, a few settlements on the ledger, a call&rsquo;s receipt audited against the ledger.</td></tr>
           <tr><td><code>sion demo censorship --local</code></td><td>Forced inclusion: a censored user gets through by posting straight to consensus. When more than a third of a committee censors too, the shard misses its deadline, its committee is replaced, and certified headers count the overdue intent.</td></tr>
           <tr><td><code>sion demo staking --local</code></td><td>A standby validator stakes and joins the active set at the next epoch boundary, and a light client follows the committee change from genesis. Rewards are claimed; the newcomer signs two headers for one round, is slashed and loses its seat.</td></tr>
           <tr><td><code>sion demo light --local</code></td><td>A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys.</td></tr>
@@ -68,9 +69,10 @@
           <tr><td><code>sion tx</code>, <code>sion receipt</code></td><td>A transaction&rsquo;s effects; its receipt, verified as a light client would</td></tr>
           <tr><td><code>sion verify</code></td><td>Verifies a Pulse as a light client</td></tr>
           <tr><td><code>sion mcp</code></td><td>Serves the Model Context Protocol on stdio</td></tr>
-          <tr><td><code>sion x402 serve</code>, <code>sion x402 fetch</code></td><td>Sells or buys HTTP resources per request</td></tr>
+          <tr><td><code>sion x402 serve</code>, <code>sion x402 fetch</code></td><td>Sells or buys HTTP resources per request, by transaction or from a payment stream</td></tr>
+          <tr><td><code>sion stream open</code>, <code>pay</code>, <code>check</code>, <code>settle</code>, <code>top-up</code>, <code>close</code>, <code>show</code></td><td>Payment streams by hand: pay with chain elements, check them, settle by walk or by checkpoint</td></tr>
           <tr><td><code>sion censor</code></td><td>Adversary simulation on a devnet: censor accounts at the gateway or at validators</td></tr>
-          <tr><td><code>sion bench</code></td><td>Measures signatures, hashing, data availability, clearing, the Assurance Algebra, execution, proving and a live devnet</td></tr>
+          <tr><td><code>sion bench</code></td><td>Measures signatures, hashing, data availability, clearing, the Assurance Algebra, execution, proving, payment streams and a live devnet</td></tr>
         </tbody>
       </table>
     </div>
@@ -139,9 +141,11 @@
     <h2 id="x402-title">x402: pay per request</h2>
     <div class="prose">
       <p>x402 lets an HTTP server ask for payment with status <code>402 Payment Required</code>, and lets a client, typically an agent, pay and retry without accounts, API keys or checkout pages. The adapter speaks version 2 of the protocol with an <code>exact</code> payment scheme on Siontology. The server answers only after verifying the payment&rsquo;s receipt as a light client would, and an agent paying under a charter cannot exceed its limits.</p>
+      <p>With <code>--streams</code>, the server also accepts the <code>stream</code> scheme: a client that opened a payment stream to it pays each request with the next element of its hash chain, which the server checks with one hash, and the server settles many requests in one transaction. See <a href="{{DOCS}}guides/x402.html#the-stream-scheme-one-hash-per-request">the guide</a>.</p>
     </div>
     {{fig:x402}}
     {{code:x402}}
+    {{code:streams}}
   </section>
 
   <section class="topic" id="light" aria-labelledby="light-title">

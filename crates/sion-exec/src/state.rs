@@ -237,6 +237,7 @@ impl State {
                 ObjectData::Bounded(bounded) if bounded.asset == *asset => {
                     total += bounded.unallocated.0
                 }
+                ObjectData::Stream(stream) if stream.asset == *asset => total += stream.escrow.0,
                 ObjectData::Market(market) => {
                     for batch in market.batches.values() {
                         if matches!(

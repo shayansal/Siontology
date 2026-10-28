@@ -49,6 +49,7 @@ anyone (`impl:devnet-keys`).
 | `pulse − certified_pulse` | 0 to 2 | It grows: header signatures are not reaching a quorum |
 | `pulse − proven_pulse` | Small | It grows past 16: the prover is behind and Pulses go unproven |
 | `forced_overdue` | 0 | Above 0: some shard is censoring a forced intent |
+| `dropped_items` | 0 | Above 0: something submits payload items larger than consensus carries, and their transactions never execute |
 | `executed[2]` (rejected) | Low | It climbs: clients are sending stale or invalid transactions |
 | `epoch`, `active_validators` | Change only at boundaries | The active set shrinks unexpectedly |
 
@@ -84,8 +85,9 @@ separately: anyone who reads a seed controls the account.
 ## Upgrades
 
 There is no migration between versions. Log and snapshot formats carry a
-version tag and change when the state does; a data directory from another
-version may not load, and a different genesis is refused. After upgrading,
+version tag and change when the state does; a data directory in an older
+format is refused (`… was written in an older storage format; start from a
+fresh data directory`), and so is a different genesis. After upgrading,
 start a fresh data directory.
 
 ## What is not supported

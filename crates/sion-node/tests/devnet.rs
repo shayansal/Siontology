@@ -253,3 +253,72 @@ fn contended_and_knowledge_transactions_flow_and_state_survives_restarts() {
     devnet.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_burst_larger_than_a_consensus_payload_still_executes() {
+    // Dual post-quantum transactions are about 20 KB each, and so is every
+    // signed batch header. Forty certified at once are far more than one
+    // 128 KiB consensus payload: the gateway must split them into groups
+    // that fit, or consensus drops them and they never execute.
+    let _serial = serial();
+    let mut config = config();
+    config.core.max_payload_bytes = 128 * 1024;
+    let devnet = Devnet::start(config).unwrap();
+    let remote = Remote {
+        devnet: &devnet,
+        config: devnet.shared.genesis.config.clone(),
+    };
+    let mut alice = Wallet::named("alice");
+    let bob = Wallet::named("bob");
+    let mut senders: Vec<Wallet> = (0..40)
+        .map(|i| Wallet::named(&format!("burst-{i}")))
+        .collect();
+    let funding = alice
+        .build(
+            &remote,
+            TxKind::Transfer {
+                asset: AssetId::usd(),
+                outputs: senders.iter().map(|w| (w.id, Amount::units(5))).collect(),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let funded = devnet.submit(funding).unwrap();
+    let record = devnet
+        .wait_for(funded.digest, Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(record.status, ExecStatus::Success);
+
+    let burst: Vec<_> = senders
+        .iter_mut()
+        .map(|wallet| {
+            wallet
+                .build(
+                    &remote,
+                    TxKind::Transfer {
+                        asset: AssetId::usd(),
+                        outputs: vec![(bob.id, Amount::units(1))],
+                    },
+                    Vec::new(),
+                )
+                .unwrap()
+        })
+        .collect();
+    let size: usize = burst.iter().map(|tx| tx.size()).sum();
+    assert!(size > 4 * 128 * 1024, "the burst is {size} bytes");
+    let digests: Vec<_> = burst
+        .into_iter()
+        .map(|tx| devnet.submit(tx).unwrap().digest)
+        .collect();
+    for digest in digests {
+        let record = devnet.wait_for(digest, Duration::from_secs(60)).unwrap();
+        assert_eq!(record.status, ExecStatus::Success);
+    }
+    let bob_view: AccountView =
+        serde_json::from_value(devnet.query(Query::Account(bob.id)).unwrap()).unwrap();
+    assert_eq!(
+        bob_view.balances,
+        vec![(AssetId::usd(), Amount::units(100_040))]
+    );
+    devnet.shutdown();
+}

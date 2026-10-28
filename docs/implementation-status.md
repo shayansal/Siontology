@@ -41,6 +41,7 @@ live.
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
+| Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: payments to provers, value-in-flight cap | Not built |
@@ -304,7 +305,38 @@ sets and within its charter's limits. The adapter speaks the protocol's
 headers and JSON; it has not been tested against third-party x402
 clients, and EVM schemes are out of scope.
 
+**x402 `stream` scheme: built.** A client that opened a payment stream to a
+server pays each request with the next element of its hash chain instead
+of a transaction; the server's `StreamDesk` checks it with one hash per
+step, serves, and settles in batches (by checkpoint when it can), and
+settles everything before it stops. A refused payment's response names the
+server's position, so an honest client resynchronizes. Tested end to end
+on a devnet (`crates/sion-cli/tests/streams.rs`): lost payments, escrow
+refusals and top-ups, forged and replayed elements, misdirected
+requirements, and the close-out. The desk keeps its tabs in memory: a
+server that crashes loses what it had not settled. MCP's
+`sion_fetch_paid` pays with `exact` only.
+
 **Not built:** adapters for AP2, ERC-8004 and C2PA.
+
+### Payments
+
+**Payment streams: built (specification v1.6 and v1.7).** Not in the
+architecture paper; added to test whether a ledger can settle payments at
+billions a second without checking each one
+([research note](book/src/research/billion-scale.md)). A payer escrows funds for one
+payee and pays by revealing a SHA3-256 hash chain's elements off the
+ledger; the payee settles with a walk (one hash per step, at most 65,536)
+or, with checkpoints, a jump (at most `spacing + 21` hashes, however many
+payments). Both proof stacks implement it, with differential tests for
+every rule, a randomized property test and executor scenarios; the CLI
+has `sion stream …`, the demo `streams`, and the bench group `streams`.
+Measured on one core of the 2-core sandbox: about 2.2 million payee
+checks a second, and settlements covering about 9 × 10⁸ payments a second
+by checkpoint. **Simplified:** the fee of 2 micro-USD per hash prices
+execution, not proving; payers build their chain up front (one hash per
+step); unsettled payments are the payee's risk if it does not settle by the
+stream's last Pulse; a stream pays one payee in one direction.
 
 ### Economics
 
@@ -374,8 +406,9 @@ itself.
 
 Three independent reviews, run by agents that had not written the code,
 read the consensus-critical libraries, the node, and the validator
-machinery, and confirmed their findings with tests. Everything below is
-fixed, with a regression test, unless marked otherwise.
+machinery, and confirmed their findings with tests. A fourth, the
+networking plan, found two more gaps while reading the node. Everything
+below is fixed, with a regression test, unless marked otherwise.
 
 - **State machine and libraries.** An unbounded chain of claim references
   made cost-of-corruption and reservation traversals recurse once per link
@@ -441,3 +474,15 @@ fixed, with a regression test, unless marked otherwise.
     (fixed).
   - **Open:** the active set can shrink to a single validator
     (`impl:active-floor`).
+- **Networking plan** ([research note](book/src/research/networking.md)).
+  - The gateway capped certificate groups at 512 transactions but not in
+    bytes, and consensus drops an item above its payload limit without a
+    reply, so a burst of dual-signed transfers never executed (fixed:
+    groups are split by encoded size, at most half the limit; a
+    certificate too large to fit alone is refused with a reason).
+  - Beacon reveals committed ahead of their Pulse were kept only in
+    memory, so a validator restarting alone would compute a different
+    beacon (fixed in storage format 4: records and snapshots carry them,
+    as of each Pulse's close). **Open:** Pulse headers do not commit to
+    them yet, which a validator syncing from certified headers will need
+    (a specification version).

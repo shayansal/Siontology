@@ -1,5 +1,9 @@
 //! Every demo runs end to end on a real in-process devnet, and the MCP
 //! server answers an agent's session.
+//!
+//! The demo runs take minutes, so they are `#[ignore]`d: CI runs them every
+//! night (`.github/workflows/nightly.yml`), and locally
+//! `cargo test --workspace -- --include-ignored` runs them with the rest.
 
 use serde_json::{json, Value};
 use sion_cli::demos::{self, Narrator};
@@ -42,6 +46,7 @@ fn run(devnet: &Devnet, name: &str) -> String {
 }
 
 #[test]
+#[ignore = "slow (minutes): runs nightly, or with --include-ignored"]
 fn all_demos_run_and_tell_the_truth() {
     let _serial = serial();
     let devnet = devnet();
@@ -97,6 +102,20 @@ fn all_demos_run_and_tell_the_truth() {
         text.contains("pays the same API with a plain transfer → 200 OK"),
         "{text}"
     );
+    for expected in [
+        "2,000 calls paid from the stream in",
+        "and sent no transaction per call",
+        "carol settled 2,000 payments in",
+        "proven by a jump to a checkpoint), not one per payment",
+        "call 1,234's receipt: genuine and settled, in 766 hashes from the settled head",
+        "a forged receipt for the same call → not an element of the stream's chain",
+        "the agent gets 18 USD back",
+    ] {
+        assert!(
+            text.contains(expected),
+            "streams: missing {expected:?}:\n{text}"
+        );
+    }
     assert!(
         text.contains("this devnet has no standby validator"),
         "the staking demo explains what it needs: {text}"
@@ -105,6 +124,7 @@ fn all_demos_run_and_tell_the_truth() {
 }
 
 #[test]
+#[ignore = "slow (about a minute): runs nightly, or with --include-ignored"]
 fn validators_join_earn_get_slashed_and_light_clients_follow() {
     let _serial = serial();
     // No prover: the staking demo checks certificates and epoch proofs,

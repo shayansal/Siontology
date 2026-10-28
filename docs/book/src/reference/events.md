@@ -92,6 +92,15 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 See [Censorship resistance](../concepts/censorship-resistance.md) for when
 each happens.
 
+## Payment streams
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `StreamOpened` | `stream`, `payer`, `payee`, `deposit` | `OpenStream` | `<payer> opened stream <id> to <payee> with <deposit> USD in escrow` |
+| `StreamSettled` | `stream`, `position`, `head` (the element at `position`), `amount` | `SettleStream` | `stream <id> settled to step <p>: <amount> USD paid` |
+| `StreamToppedUp` | `stream`, `deposit`, `until` | `TopUpStream` | `stream <id> topped up by <deposit> USD, open until Pulse <until>` |
+| `StreamClosed` | `stream`, `refund` | `CloseStream` | `stream <id> closed: <refund> USD returned to its payer` |
+
 ## Failed transactions
 
 A transaction that fails keeps no events: its receipt reads

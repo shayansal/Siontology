@@ -1,6 +1,6 @@
 # Run the demos
 
-Eight scripted demos drive real transactions through the whole protocol
+Nine scripted demos drive real transactions through the whole protocol
 (lane certificates, consensus, Pulse execution, header certificates, data
 availability and proving) and narrate what the ledger established.
 
@@ -12,7 +12,7 @@ sion demo all --local
 validators, 2 shards, dual post-quantum signatures, proving on) and stops it
 at the end. The staking demo needs epochs that end, so it gets a devnet of
 its own with a standby validator and 24-Pulse epochs: `sion demo all
---local` runs the first seven demos on one default devnet, then starts a
+--local` runs the first eight demos on one default devnet, then starts a
 second devnet for the staking demo.
 
 Without `--local`, a demo runs against the node at `--node` (default
@@ -31,19 +31,18 @@ seconds against a running devnet.
 | `market` | A GPU-hour market that clears at one price with an optimality certificate |
 | `receipts` | An AI inference receipt priced under three policies: trusting a TEE, distrusting it, or assuming it broken |
 | `x402` | An AI agent pays an HTTP API per request: `402`, payment under its charter, `200`; a replayed payment and an over-limit payment are refused |
+| `streams` | An agent pays an API 2,000 times from one payment stream: one hash per call at the server, a few settlements on the ledger, a receipt audited by its checkpoint |
 | `censorship` | Forced inclusion: a censored user gets through by posting straight to consensus; when more than a third of a committee censors too, certified headers count the overdue intent |
 | `light` | A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys |
 | `staking` | A standby validator stakes and joins at the next epoch boundary, a light client follows the committee change, rewards are claimed, and the newcomer is slashed for equivocating and loses its seat |
 
 Run one with `sion demo <name> --local`, except `light`, which needs a
-devnet that has already proven a Pulse ([light](#light) below). (`sion demo
---help` lists every name except `x402` and `staking`, which work all the
-same.)
+devnet that has already proven a Pulse ([light](#light) below).
 
 What follows is real output: the first five demos from one run of
-`sion demo all --local`, and the censorship, light and staking demos from
-runs of their own on a later version, so chain identities differ between
-them. Account names such as `supplier` and `judge` are deterministic devnet
+`sion demo all --local`, and the streams, censorship, light and staking
+demos from runs of their own on later versions, so chain identities differ
+between them. Account names such as `supplier` and `judge` are deterministic devnet
 wallets: anyone who knows the name can derive the keys.
 
 ## invoice
@@ -151,6 +150,27 @@ Result: no accounts, no API keys; every request is paid and proven before it is 
 ```
 
 See [x402: selling and buying an API](../guides/x402.md).
+
+## streams
+
+From `sion demo streams --local` on a release build (15 seconds in all):
+
+```text
+== Streams: an agent pays an API a tenth of a cent per call, one hash per payment ==
+Pulse   5  the agent opens a stream to carol: 20 USD in escrow, 0.001 USD a step, 100,000 steps; carol may settle until Pulse 2002
+           carol's API at http://127.0.0.1:38625/v1/price: 0.001 USD per call, paid by `exact` (a transaction per call) or `stream` (a hash per call)
+           one call paid with a transfer: a transaction, certified and proven, 0.0011 USD in fees
+           2,000 calls paid from the stream in 0.6 s: carol's server checked 2,220 hashes and sent no transaction per call
+           carol settled 2,000 payments in 2 transactions: 2 USD received, 0.002388 USD in fees (1.19 micro-USD per payment, against 1,100 for a transaction per call)
+           the validators checked 44 hashes for those settlements (2 proven by a jump to a checkpoint), not one per payment; the stream is at position 2,000 with 18 USD left in escrow
+           an auditor checks call 1,234's receipt: genuine and settled, in 766 hashes from the settled head, or 45 from the checkpoint below it
+           a forged receipt for the same call → not an element of the stream's chain
+Pulse  14  carol closes the stream; the agent gets 18 USD back
+Result: each payment costs the server one hash, not a signature; a settlement costs the ledger the same however many payments it covers; and every payment stays checkable by anyone.
+```
+
+The server's 2,220 hashes are one per call plus the checkpoint paths it
+checked (one every 100 calls). See [Payment streams](../concepts/payment-streams.md).
 
 ## censorship
 

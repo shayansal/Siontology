@@ -38,11 +38,18 @@ reason.
 ## Handing certificates to consensus
 
 Every 20 ms the gateway sends the certificates collected since the last
-flush, at most 512, as one **group**: each signed batch header once, each
-approval as a reference (batch, position, Merkle path). It sends the group
-to f + 1 members of the consensus committee, rotating through them, so at
-least one honest proposer includes it. Validators outside the active set
-only observe, so they are skipped.
+flush in **groups**: each signed batch header once per group, each approval
+as a reference (batch, position, Merkle path). Consensus drops an item
+larger than its payload limit (`max_payload_bytes`, 512 KiB on the devnet)
+without a reply, and a dual-signed transfer and a signed batch header are
+about 20 KB each, so groups are bounded in bytes: at most half the limit,
+so a header can carry two of them, and at most 512 transactions
+(`PayloadItem::groups`). A transaction whose certificate does not fit even
+alone is refused with a reason. Each group goes to f + 1 members of the
+consensus committee, rotating through them, so at least one honest
+proposer includes it. Validators outside the active set only observe, so
+they are skipped. A validator's `dropped_items` status counts items its
+consensus refused for size; it should stay 0.
 
 It keeps every certified transaction until a Pulse executes it:
 

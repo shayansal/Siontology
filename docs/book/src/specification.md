@@ -5,7 +5,7 @@ repository:
 [`docs/spec/state-transition.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md).
 This page says what it covers and how to read it; it does not copy it.
 
-The current version is **v1.5**.
+The current version is **v1.7**.
 
 ## What it specifies
 
@@ -28,7 +28,7 @@ it reads, because a read outside the chunk's witness rejects the chunk.
 | §2 State | Objects, tombstones, the knowledge log, the well-known objects, the validator set; reads and the witness |
 | §3 Bookkeeping | Loading, storing, creating and consuming objects; drawing coins; fees; errors |
 | §4 Outcome | Preparing a transaction (expiry, inputs, fee, signatures) and executing it: Success, Failed, Rejected |
-| §5 Operations | Every transaction kind, §5.1 `Transfer` to §5.30 `ReportEquivocation` |
+| §5 Operations | Every transaction kind, §5.1 `Transfer` to §5.34 `CloseStream` |
 | §6 The Pulse | The order, phases and chunks, and the deferred phase: canonical sorting, forced-intent posting, due events, epoch ends |
 | §7 Commitments | World commitments, effects leaves, accumulators, steps |
 | §8 Verifying a chunk | What a proof stack checks for one chunk |
@@ -52,6 +52,8 @@ differential tests exist to find out which. See
 | v1.3 | Validators, stake, epochs and the censorship response join the state transition: staking, unstaking, withdrawing and rewards (§5.26–5.29); slashing for equivocation (§5.30); forced intents posted as obligations, deadlines and committee rotation (§6.1, §6.3); committees derived from the state and covered by the World Proof (§9) |
 | v1.4 | Validators are paid from fees only: each fee is credited to the treasury as its own deferred item and added to a running total of fees, and an epoch's reward pool is a share of the fees collected since the last epoch end. Slashing remainders and released bond pools stay in the treasury and never become validator income |
 | v1.5 | From an independent review of the validator machinery: slashed validators lose their seats at the epoch boundary even if nobody else is eligible, so a chain whose every eligible validator was slashed halts instead of running on them; the reasoning behind approval evidence is spelled out (an approval holds its inputs until its transaction succeeds, fails or expires; a rejection is none of these) |
+| v1.6 | Payment streams (§5.31–5.34): a payer escrows funds for one payee and pays it off the ledger by revealing a hash chain's elements, one hash to check per payment; the payee settles many payments in one transaction, which walks one hash per step and pays a fee per hash |
+| v1.7 | Stream checkpoints: a payer may commit to a Merkle tree over every `spacing`-th element of its chain, and the payee may settle by a jump to a checkpoint, for at most `spacing + 21` hashes however many payments it covers ([Payment streams](concepts/payment-streams.md)) |
 
 The **Changes** section of the document has the full entries.
 

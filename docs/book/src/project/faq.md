@@ -66,6 +66,20 @@ second, mostly bound by post-quantum signatures. The architecture's targets (100
 second on a testnet) assume many machines and signature aggregation in
 proofs, and have not been measured. See [Benchmarks](../guides/benchmarks.md).
 
+## Can it do billions of transactions a second?
+
+Not as general transactions: our own estimate for a billion a second with
+succinct proofs is millions of prover machines. It can settle *payments*
+at that rate. With [payment streams](../concepts/payment-streams.md), each
+payment is checked by its payee with one hash, and a settlement by
+checkpoint costs the ledger the same however many payments it covers. On
+one core of a 2-core sandbox, settlements covering about 9 × 10⁸ payments a
+second executed with every signature checked. A billion payments a second
+would then need about a thousand settlements a second on the ledger; that
+has not been run across machines. See
+[Billions of payments a second](../research/billion-scale.md) for the
+measurements, the limits and what is not new.
+
 ## What can a phone check?
 
 With the chain identity pinned: that a header was certified by the
@@ -78,7 +92,8 @@ and, at the cost of replay, the Pulse's World Proof. See
 
 Through the MCP server (`sion mcp`), the CLI or the HTTP API. An agent can
 pay inside an Agent Charter whose limits the ledger enforces, price a claim
-before relying on it, and buy HTTP resources through x402. See
+before relying on it, and buy HTTP resources through x402, one transaction
+per request or one hash per request from a payment stream. See
 [Connect an AI agent over MCP](../getting-started/mcp.md).
 
 ## What if my transactions are ignored?
@@ -96,7 +111,7 @@ channels inside one process (`impl:in-process-network`).
 ## Where is the specification?
 
 [`docs/spec/state-transition.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md),
-version 1.5. See [The state transition specification](../specification.md).
+version 1.7. See [The state transition specification](../specification.md).
 
 ## How do I report a security problem?
 

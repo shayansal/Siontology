@@ -71,6 +71,9 @@ consensus core and Pulse builder:
 - the old builder closes no Pulse after the epoch's last Pulse; what the old
   session committed after it, and what was still in the old core's
   mempool, is proposed again in the new session (beacon reveals excepted);
+- the new builder carries over the beacon and the reveals already committed
+  for later Pulses. After a restart they come from the log: each record and
+  snapshot holds them as of its Pulse's close (`pulses::Carry`);
 - beacon participants follow the active set.
 
 A validator outside the active set runs the core as an **observer**: it

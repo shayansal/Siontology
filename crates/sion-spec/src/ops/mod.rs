@@ -10,6 +10,7 @@ mod charter;
 mod coins;
 mod knowledge;
 mod market;
+mod stream;
 mod validators;
 
 use sion_exec::tx::TxKind;
@@ -130,6 +131,40 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
         TxKind::WithdrawStake { validator } => validators::withdraw_stake(run, validator),
         TxKind::ClaimRewards { validator } => validators::claim_rewards(run, validator),
         TxKind::ReportEquivocation { evidence } => validators::report_equivocation(run, evidence),
+        TxKind::OpenStream {
+            payee,
+            asset,
+            unit,
+            length,
+            anchor,
+            deposit,
+            until,
+            checkpoints,
+        } => stream::open(
+            run,
+            stream::OpenTerms {
+                payee: *payee,
+                asset: *asset,
+                unit: *unit,
+                length: *length,
+                anchor: *anchor,
+                deposit: *deposit,
+                until: *until,
+                checkpoints: *checkpoints,
+            },
+        ),
+        TxKind::SettleStream {
+            stream,
+            position,
+            value,
+            jump,
+        } => stream::settle(run, *stream, *position, *value, jump.as_ref()),
+        TxKind::TopUpStream {
+            stream,
+            deposit,
+            until,
+        } => stream::top_up(run, *stream, *deposit, *until),
+        TxKind::CloseStream { stream } => stream::close(run, *stream),
     }
 }
 
@@ -148,5 +183,14 @@ mod tests {
         assert_eq!(sion_exec::tx::MAX_INPUTS, 256);
         assert_eq!(sion_exec::escrow::MAX_ALLOTMENTS, 256);
         assert_eq!(sion_exec::market::MAX_BATCH_ORDERS, 1_024);
+        // §5.31.
+        assert_eq!(sion_exec::stream::MAX_STREAM_LENGTH, 1 << 32);
+        assert_eq!(sion_exec::stream::MAX_SETTLE_STEPS, 65_536);
+        assert_eq!(sion_exec::stream::STREAM_STEP_FEE, Amount(2));
+        assert_eq!(sion_exec::stream::STEP_DOMAIN, "sion/stream/step");
+        // §5.31, v1.7.
+        assert_eq!(sion_exec::stream::MAX_CHECKPOINTS, 1 << 20);
+        assert_eq!(sion_exec::stream::MAX_CHECKPOINT_DEPTH, 20);
+        assert_eq!(sion_exec::stream::CHECKPOINT_TAG, b"sion/stream/checkpoint");
     }
 }

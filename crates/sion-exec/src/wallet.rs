@@ -143,6 +143,13 @@ impl Wallet {
                 vec![(AssetId::usd(), Amount(funding.0 + agent_bond.0))]
             }
             TxKind::CreateBounded { asset, total, .. } => vec![(*asset, *total)],
+            TxKind::OpenStream { asset, deposit, .. } => vec![(*asset, *deposit)],
+            TxKind::TopUpStream {
+                stream, deposit, ..
+            } if *deposit > Amount::ZERO => match view.object(stream).map(|o| o.data) {
+                Some(ObjectData::Stream(state)) => vec![(state.asset, *deposit)],
+                _ => Vec::new(),
+            },
             TxKind::RegisterValidator { stake, .. } => {
                 let asset = match view.object(&well_known::validators()).map(|o| o.data) {
                     Some(ObjectData::Validators(set)) => set.params.stake_asset,
@@ -166,6 +173,35 @@ impl Wallet {
                 }
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// The fee an operation needs beyond the minimum for its size: settling
+    /// a stream pays per step checked (spec §5.32).
+    fn extra_fee(view: &impl StateView, kind: &TxKind) -> Amount {
+        match kind {
+            TxKind::SettleStream {
+                stream,
+                position,
+                jump,
+                ..
+            } => match view.object(stream).map(|o| o.data) {
+                Some(ObjectData::Stream(state)) => {
+                    let hashes = match jump {
+                        Some(jump) => {
+                            crate::stream::jump_hashes(&state, *position, jump).unwrap_or(0)
+                        }
+                        None => position.saturating_sub(state.position),
+                    };
+                    Amount(
+                        crate::stream::STREAM_STEP_FEE
+                            .0
+                            .saturating_mul(u128::from(hashes)),
+                    )
+                }
+                _ => Amount::ZERO,
+            },
+            _ => Amount::ZERO,
         }
     }
 
@@ -202,7 +238,8 @@ impl Wallet {
 
         let nonce = self.nonce;
         let expires_at = Pulse(view.current_pulse().0 + self.validity);
-        let mut fee = config.min_fee(0);
+        let extra_fee = Self::extra_fee(view, &kind);
+        let mut fee = config.min_fee(0).saturating_add(extra_fee);
         for _ in 0..4 {
             // USD coins: enough for the fee plus any USD the operation draws.
             let need = fee.0 + usd_draw;
@@ -247,7 +284,7 @@ impl Wallet {
                 expires_at,
                 nonce,
             };
-            let required = config.min_fee(tx.size());
+            let required = config.min_fee(tx.size()).saturating_add(extra_fee);
             if required <= fee {
                 let signed = tx.sign(&self.keys, &config)?;
                 for input in &signed.tx.inputs {

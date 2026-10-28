@@ -52,7 +52,7 @@ details.
 ## Supported versions
 
 None is supported in production. Siontology is a devnet-scale reference
-implementation; fixes go to the main branch.
+implementation; fixes go to the default branch.
 
 ## Safe harbour
 

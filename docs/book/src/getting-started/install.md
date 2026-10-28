@@ -60,9 +60,15 @@ linear-programming certificates and the state machine, a deterministic
 consensus simulator with adversarial network phases, scenario tests for
 every transaction kind, differential tests of the two proof stacks,
 end-to-end devnet tests with dual post-quantum signatures, and every demo.
+The demo runs take minutes, so they are skipped unless you ask for them:
+
+```bash
+cargo test --workspace -- --include-ignored
+```
+
 See `CONTRIBUTING.md` for the full checklist.
 
 ## Next
 
-- [Run the demos](demos.md): eight scripted scenarios, no setup.
+- [Run the demos](demos.md): nine scripted scenarios, no setup.
 - [Run a devnet](devnet.md) and use it from another terminal.

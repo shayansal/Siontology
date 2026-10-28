@@ -69,12 +69,22 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   committee certificate, the certified order of transactions, receipts,
   state and claim proofs, samples data availability at random and verifies
   World Proofs, without running a node.
+- **Payment streams.** A payer escrows funds once and pays by revealing
+  the elements of a hash chain, one per payment: the payee checks each
+  with one hash, and settles thousands or millions in one transaction.
+  With checkpoints, a settlement costs the ledger the same however many
+  payments it covers. On one core, settlements covering about 9 × 10⁸
+  payments a second executed with every signature checked (measured; see
+  [the research note](docs/book/src/research/billion-scale.md) for what
+  this does and does not mean).
 - **Agent-native interfaces.** A CLI, a JSON HTTP API and a Model Context
   Protocol server, so AI agents can pay, issue claims, price a claim's
   trustworthiness before relying on it, and verify the chain. An x402
   adapter lets any HTTP API charge per request (`402 Payment Required`)
-  and settle on Siontology: the server serves only once the payment's receipt
-  verifies, and an agent paying under a charter cannot exceed its limits.
+  and settle on Siontology: with `exact`, the server serves only once the
+  payment's receipt verifies, and an agent paying under a charter cannot
+  exceed its limits; with `stream`, each request is paid from a payment
+  stream and checked with one hash.
 
 ## Quickstart
 
@@ -115,6 +125,14 @@ sion x402 serve carol --price 0.25   # http://127.0.0.1:8402/v1/resource
 sion x402 fetch http://127.0.0.1:8402/v1/resource --wallet dana --max 1
 ```
 
+Or pay per request from a payment stream, one hash per request:
+
+```bash
+sion x402 serve carol --price 0.001 --streams
+sion stream open dana carol --unit 0.001 --deposit 5   # prints the stream's ID
+sion x402 fetch http://127.0.0.1:8402/v1/resource --stream <ID> --count 100
+```
+
 Measure everything on your machine:
 
 ```bash
@@ -135,6 +153,7 @@ availability and proving) and narrates what the ledger established.
 | `market` | A sealed-bid GPU-hour market that clears at one price with an optimality certificate. |
 | `receipts` | Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions (trusting a TEE, distrusting it, or assuming it broken). |
 | `x402` | An AI agent pays an HTTP API per request with x402: the API answers `402`, the agent pays under its charter and retries, and the API serves once the receipt verifies; a replayed payment and an over-limit payment are refused. |
+| `streams` | An agent pays an API 2,000 times from one payment stream: the server checks one hash per call and sends no transaction per call; two to four settlements, proven by checkpoint, cover all of them; an auditor checks a call's receipt against the ledger. |
 | `censorship` | Forced inclusion: a user censored by the gateway gets through by posting straight to consensus; when more than a third of a committee censors too, the shard misses its deadline, its committee is replaced, certified headers count the overdue intent and a light client sees it. |
 | `light` | A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys. |
 | `staking` | A standby validator stakes and joins the active set at the next epoch boundary, a light client follows the committee change from genesis, rewards are claimed, and the newcomer is slashed for signing two headers for one round and loses its seat. `--local` starts a devnet with a standby validator and 24-Pulse epochs; against your own devnet, start it with `--standby 1 --epoch-length 24`. |
@@ -150,12 +169,12 @@ availability and proving) and narrates what the ledger established.
 | [`sion-clearing`](crates/sion-clearing) | Verifiable Clearing: sealed double auctions and assignment markets with certificates |
 | [`sion-da`](crates/sion-da) | 2D Reed–Solomon over the Goldilocks field, commitments, sampling, reconstruction, fraud proofs |
 | [`sion-consensus`](crates/sion-consensus) | Linear Lanes, certified-DAG BFT, committees and sampling, the beacon, forced inclusion, a deterministic network simulator |
-| [`sion-exec`](crates/sion-exec) | The state machine: objects, accounts, claims, bonds, Agent Charters, escrow, markets; Pulse execution with chunk traces and witnesses |
+| [`sion-exec`](crates/sion-exec) | The state machine: objects, accounts, claims, bonds, Agent Charters, escrow, markets, payment streams; Pulse execution with chunk traces and witnesses |
 | [`sion-spec`](crates/sion-spec) | An independent implementation of the state transition written from [the specification](docs/spec/state-transition.md) (proof stack B) |
 | [`sion-prover`](crates/sion-prover) | Proof stacks, World Proofs and their verification |
 | [`sion-light`](crates/sion-light) | The light client: chain identity, header certificates, proofs, availability sampling |
 | [`sion-node`](crates/sion-node) | The devnet: validators, gateway, prover, write-ahead log and snapshots, HTTP API |
-| [`sion-cli`](crates/sion-cli) | The `sion` command: devnet, wallets, demos, light verification, MCP server, benchmarks |
+| [`sion-cli`](crates/sion-cli) | The `sion` command: devnet, wallets, payment streams, x402, demos, light verification, MCP server, benchmarks |
 
 ## Documentation
 
@@ -169,10 +188,13 @@ availability and proving) and narrates what the ledger established.
 - [Implementation status](docs/implementation-status.md): what is built,
   simplified, simulated or missing, and the trust assumptions the
   implementation adds.
-- [State transition specification](docs/spec/state-transition.md) (v1.5):
+- [State transition specification](docs/spec/state-transition.md) (v1.7):
   the normative description both proof stacks implement.
 - [Benchmarks](docs/book/src/guides/benchmarks.md): measured costs, and what
   they imply.
+- [Research](docs/book/src/research/index.md): billions of payments a
+  second, the succinct-proof plan and the networking plan, each with what
+  is built, measured or only planned.
 - [Implementation plan](docs/implementation-plan.md): how the architecture
   maps onto crates.
 - [Brand guidelines](brand/guidelines.md) and the [website](site/) source.
@@ -191,6 +213,8 @@ linear-programming certificates and the state machine, a deterministic
 consensus simulator with adversarial network phases, scenario tests for
 every transaction kind, differential tests between the two proof stacks,
 end-to-end devnet tests with dual post-quantum signatures, and the demos.
+The demo runs take minutes, so they are `#[ignore]`d and run nightly in CI;
+`cargo test --workspace -- --include-ignored` runs everything.
 
 ## Contributing and community
 

@@ -3,7 +3,7 @@
 `sion bench` measures the costs that decide how far this design scales:
 post-quantum signatures, state roots, data-availability encoding,
 clearing certificates, the Assurance Algebra, execution, replay proving,
-and a live devnet. Run it on your own machine; the numbers below are from
+payment streams, and a live devnet. Run it on your own machine; the numbers below are from
 one machine and say little about yours.
 
 ```text
@@ -12,7 +12,7 @@ Usage: sion bench [OPTIONS]
 Options:
       --quick        Smaller sizes
       --no-devnet    Skip the end-to-end devnet measurement
-      --only <ONLY>  Run only these groups: signatures, state, data, clearing, assurance, execution, devnet (comma-separated)
+      --only <ONLY>  Run only these groups: signatures, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
       --json <JSON>  Write the measurements as JSON to this file
 ```
 
@@ -102,6 +102,37 @@ architecture's targets (100,000 operations a second on a testnet, sub-second
 certificate finality) assume many machines, networking, and signature
 aggregation in proofs. Nothing here measures them.
 
+## Payment streams
+
+The `streams` group measures what a [payment stream](../concepts/payment-streams.md)
+payment costs its payee, its payer and the ledger. On the same kind of
+2-core machine, idle, release build, 28 October 2026
+(`sion bench --only streams`):
+
+```text
+group        measurement                                                   value unit     note
+streams      payee checks a payment (one SHA3-256 hash)                     0.43 µs       2.30 million payments/s per core
+streams      payer builds a chain of 1000000 steps (once)                 380.45 ms       one hash per step
+streams      payer reveals the next element                                 0.50 µs       in order; checkpoints every √n steps
+streams      Pulse of 16 settlements × 65536 steps, walked            2343833.23 payments/s 447.4 ms per Pulse with signature checks, one core; one hash per step
+streams      stateless replay of those settlements (stack A)          2219115.59 payments/s 472.5 ms
+streams      fee per payment, walked settlement                             2.02 µUSD     0.132172 USD for 65536 steps
+streams      Pulse of 16 settlements × 1048064 steps, by checkpoint   996467770.74 payments/s 16.8 ms per Pulse with signature checks, one core; 524 hashes each
+streams      stateless replay of those settlements (stack A)        812938546.36 payments/s 20.6 ms
+streams      fee per 1,000 payments, settlement by checkpoint               2.05 µUSD     0.002148 USD for 1048064 steps
+streams      published bytes per 1,000 payments, by checkpoint              0.52 B        547 B body; 20071 B with signatures, which are verified, not published
+```
+
+**A settlement by checkpoint costs the same however many payments it
+covers.** Each of the 16 settlements above covers 1,048,064 payments for
+524 hashes and one dual signature check, so one core executed about 10⁹
+settled payments a second in this run (5.9 × 10⁸ to 1.0 × 10⁹ over four
+runs). Walking costs one hash per payment, and a transfer per payment
+costs a signature check: about 2.3 × 10⁶ and 880 a second. The payments
+themselves are checked by their payees, one hash each. What this does and
+does not mean for throughput at scale is in
+[Billions of payments a second](../research/billion-scale.md).
+
 ## Measuring your own machine
 
 ```bash
@@ -111,3 +142,8 @@ cargo build --release
 
 Use `--quick` for a short run and `--no-devnet` to skip the end-to-end
 part. Close other heavy work first: the devnet group is sensitive to load.
+
+CI runs `sion bench --quick --json bench.json` every night
+(`.github/workflows/nightly.yml`) and keeps the file as a build artifact for
+90 days, so a change in a measured number shows up between nights. Shared
+CI machines are noisy: compare trends, not single runs.

@@ -1,4 +1,4 @@
-<!--{"file": "technology.html", "title": "Technology | Siontology", "description": "How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, forced inclusion and staking.", "nav": "technology", "scenes": ["two-sorted", "lanes", "dag", "da", "fold", "assurance", "clearing", "charters", "forced", "staking"]}-->
+<!--{"file": "technology.html", "title": "Technology | Siontology", "description": "How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, payment streams, forced inclusion and staking.", "nav": "technology", "scenes": ["two-sorted", "lanes", "dag", "da", "fold", "assurance", "clearing", "charters", "streams", "forced", "staking"]}-->
 <header class="page-head wrap">
   <h1>How Siontology works.</h1>
   <p class="lede">A neo-blockchain pays for ordering only where the mathematics requires it, prices every assumption a claim rests on, and folds every proof into one. Each mechanism below comes with the demo, specification or code behind it, and with its status in the reference implementation.</p>
@@ -21,6 +21,7 @@
         <li><a href="#assurance">The Assurance Algebra</a></li>
         <li><a href="#clearing">Verifiable Clearing</a></li>
         <li><a href="#charters">Agent Charters</a></li>
+        <li><a href="#streams">Payment streams</a></li>
         <li><a href="#forced">Forced inclusion</a></li>
         <li><a href="#staking">Validators, stake and epochs</a></li>
         <li><a href="#targets">Targets and the devnet</a></li>
@@ -203,13 +204,23 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
       {{fig:charters:8}}
     </section>
 
+    <section class="topic" id="streams" aria-labelledby="streams-title">
+      <h2 id="streams-title">Payment streams</h2>
+      <div class="prose">
+        <p>Most payments between machines are small, frequent and between the same two parties. A payment stream pays each one without a transaction. The payer escrows funds for one payee and commits to a secret hash chain by publishing its last element. Each payment reveals the next element; the payee checks it with one SHA3-256 hash against the last one it accepted. Hash functions are the only cryptography a payment needs, so payments are post-quantum by construction.</p>
+        <p>The payee settles many payments in one transaction. A settlement can walk from the stream&rsquo;s head, one hash per payment, or, if the payer also committed to a Merkle tree over every <code>spacing</code>-th element, jump to the checkpoint just below its position: at most <code>spacing</code> + 21 hashes, however many payments it covers. Anyone can check any payment later against what the ledger settled.</p>
+        <p>On one core, settlements by checkpoint covering about 9 &times; 10<sup>8</sup> payments a second executed with every signature checked. That is a measurement of the ledger&rsquo;s side on one machine, not of a network, and stream payments are one-way, out of escrow. The <a href="{{DOCS}}research/billion-scale.html">research note</a> has the construction, the safety argument, the capacity law, the prior art and the limits. Over HTTP, an x402 server accepts stream payments with <code>--streams</code>.</p>
+      </div>
+      {{fig:streams:9}}
+    </section>
+
     <section class="topic" id="forced" aria-labelledby="forced-title">
       <h2 id="forced-title">Forced inclusion</h2>
       <div class="prose">
         <p>Censorship cannot be attributed the way equivocation can, so it is made visible instead. A user whose transactions are ignored posts them straight to consensus as forced intents. Every validator proposes every round, so one honest proposer is enough to order one. The state then holds the intent as an obligation of the sender&rsquo;s shard, which has 8 Pulses to execute it. Every Pulse header commits to how many intents are pending and how many are overdue, so censorship by more than a third of a committee shows up in certified headers that every light client checks.</p>
         <p>When a deadline passes and the intent could still execute, the state replaces the shard&rsquo;s committee, drawing from validators outside it first, and the obligation stands for another window. The architecture also freezes the shard until it meets the obligation; the reference implementation keeps it running under its new committee.</p>
       </div>
-      {{fig:forced:9}}
+      {{fig:forced:10}}
     </section>
 
     <section class="topic" id="staking" aria-labelledby="staking-title">
@@ -219,7 +230,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
         <p>Equivocation is signed evidence that anyone can submit: two consensus headers for one round, or two lane approvals of one object version. The whole stake is forfeited, the reporter receives a share of it (5 % on the devnet), and the validator loses its seat at the next boundary. A light client that pins the genesis follows the committee from epoch to epoch through boundary proofs.</p>
         <p>On the devnet, validators stake devnet USD, which has no value. Siontology has no token and nothing is on offer. Fees are paid in stablecoins.</p>
       </div>
-      {{fig:staking:10}}
+      {{fig:staking:11}}
     </section>
 
     <section class="topic" id="targets" aria-labelledby="targets-title">
@@ -252,6 +263,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
             <tr><th scope="row">Lane approvals</th><td>Batched and signed every 25 ms</td></tr>
             <tr><th scope="row">Proving</th><td>16 transactions per chunk, replay proofs from two stacks</td></tr>
             <tr><th scope="row">Forced inclusion</th><td>8 Pulses to execute a forced intent</td></tr>
+            <tr><th scope="row">Payment streams</th><td>A walk settles at most 65,536 steps; a jump at most <code>spacing</code> + 21 hashes; 2 micro-USD per hash checked</td></tr>
             <tr><th scope="row">Epochs</th><td>One epoch that never ends; <code>--epoch-length</code> sets Pulses per epoch and <code>--standby</code> adds validators without a seat</td></tr>
             <tr><th scope="row">Light client</th><td>16 data-availability samples per check</td></tr>
           </tbody>

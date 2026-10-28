@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Technology | Siontology</title>
-<meta name="description" content="How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, forced inclusion and staking.">
+<meta name="description" content="How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, payment streams, forced inclusion and staking.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Siontology">
 <meta property="og:title" content="Technology | Siontology">
-<meta property="og:description" content="How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, forced inclusion and staking.">
+<meta property="og:description" content="How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, payment streams, forced inclusion and staking.">
 <meta property="og:url" content="https://siontology.org/technology.html">
 <meta property="og:image" content="https://siontology.org/img/siontology-social-1200x630.png">
 <meta property="og:image:width" content="1200">
@@ -35,6 +35,7 @@
 <script src="js/scenes/assurance.js" defer></script>
 <script src="js/scenes/clearing.js" defer></script>
 <script src="js/scenes/charters.js" defer></script>
+<script src="js/scenes/streams.js" defer></script>
 <script src="js/scenes/forced.js" defer></script>
 <script src="js/scenes/staking.js" defer></script>
 </head>
@@ -77,6 +78,7 @@
         <li><a href="#assurance">The Assurance Algebra</a></li>
         <li><a href="#clearing">Verifiable Clearing</a></li>
         <li><a href="#charters">Agent Charters</a></li>
+        <li><a href="#streams">Payment streams</a></li>
         <li><a href="#forced">Forced inclusion</a></li>
         <li><a href="#staking">Validators, stake and epochs</a></li>
         <li><a href="#targets">Targets and the devnet</a></li>
@@ -315,17 +317,34 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
 </figure>
     </section>
 
+    <section class="topic" id="streams" aria-labelledby="streams-title">
+      <h2 id="streams-title">Payment streams</h2>
+      <div class="prose">
+        <p>Most payments between machines are small, frequent and between the same two parties. A payment stream pays each one without a transaction. The payer escrows funds for one payee and commits to a secret hash chain by publishing its last element. Each payment reveals the next element; the payee checks it with one SHA3-256 hash against the last one it accepted. Hash functions are the only cryptography a payment needs, so payments are post-quantum by construction.</p>
+        <p>The payee settles many payments in one transaction. A settlement can walk from the stream&rsquo;s head, one hash per payment, or, if the payer also committed to a Merkle tree over every <code>spacing</code>-th element, jump to the checkpoint just below its position: at most <code>spacing</code> + 21 hashes, however many payments it covers. Anyone can check any payment later against what the ledger settled.</p>
+        <p>On one core, settlements by checkpoint covering about 9 &times; 10<sup>8</sup> payments a second executed with every signature checked. That is a measurement of the ledger&rsquo;s side on one machine, not of a network, and stream payments are one-way, out of escrow. The <a href="https://siontology.org/docs/research/billion-scale.html">research note</a> has the construction, the safety argument, the capacity law, the prior art and the limits. Over HTTP, an x402 server accepts stream payments with <code>--streams</code>.</p>
+      </div>
+      <figure class="plate" aria-labelledby="fig-streams-9-title">
+  <canvas data-scene="streams" role="img" aria-label="Animation: an AI agent pays an API per call with the next element of its hash chain; the API checks each payment with one hash; after about a million calls, one settlement proven by a checkpoint puts them all on the ledger." aria-describedby="fig-streams-9-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-streams-9-title"><span class="fig">Fig. 9</span>Payment streams: pay per call, settle per million</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-streams-9-desc">From the streams demo and the streams benchmark. The agent opened a payment stream to the API: an escrow, and the last element of a secret hash chain. Each call is paid with the next element, which the API checks with one SHA3-256 hash against the last one it accepted, 0.42 &micro;s on one core; nothing per call reaches the ledger. The API then settles every payment so far in one transaction, ordered by consensus. With checkpoints, that settlement walks only to the checkpoint below its position and proves the checkpoint's Merkle path: 524 hashes and one signature check for 1,048,064 payments, about a nanosecond per payment on the ledger. Payments are one-way, from one payer to one payee, out of escrow the payer locked in advance, and the rates were measured on one core of a two-core machine, not on a network.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo streams --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;5.31 to &sect;5.34</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built on the devnet; measured on one machine</span></dd></div></dl>
+  </figcaption>
+</figure>
+    </section>
+
     <section class="topic" id="forced" aria-labelledby="forced-title">
       <h2 id="forced-title">Forced inclusion</h2>
       <div class="prose">
         <p>Censorship cannot be attributed the way equivocation can, so it is made visible instead. A user whose transactions are ignored posts them straight to consensus as forced intents. Every validator proposes every round, so one honest proposer is enough to order one. The state then holds the intent as an obligation of the sender&rsquo;s shard, which has 8 Pulses to execute it. Every Pulse header commits to how many intents are pending and how many are overdue, so censorship by more than a third of a committee shows up in certified headers that every light client checks.</p>
         <p>When a deadline passes and the intent could still execute, the state replaces the shard&rsquo;s committee, drawing from validators outside it first, and the obligation stands for another window. The architecture also freezes the shard until it meets the obligation; the reference implementation keeps it running under its new committee.</p>
       </div>
-      <figure class="plate" aria-labelledby="fig-forced-9-title">
-  <canvas data-scene="forced" role="img" aria-label="Animation: a censored payment is posted straight to consensus; when the shard misses its 8-Pulse deadline, certified Pulse headers count the intent as overdue and the shard&#x27;s committee is rotated." aria-describedby="fig-forced-9-desc"></canvas>
+      <figure class="plate" aria-labelledby="fig-forced-10-title">
+  <canvas data-scene="forced" role="img" aria-label="Animation: a censored payment is posted straight to consensus; when the shard misses its 8-Pulse deadline, certified Pulse headers count the intent as overdue and the shard&#x27;s committee is rotated." aria-describedby="fig-forced-10-desc"></canvas>
   <figcaption>
-    <div class="plate-title"><p class="plate-name" id="fig-forced-9-title"><span class="fig">Fig. 9</span>Forced inclusion</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
-    <p class="plate-desc" id="fig-forced-9-desc">From the censorship demo. A gateway silently drops a user's payment. The user posts it as a forced intent straight to consensus, where every validator proposes every round, so one honest proposer is enough; the shard's validators certify it among themselves and it executes. Then two of the shard's four validators censor as well, so no certificate, which needs three, can form. The shard has a window of 8 Pulses to execute the intent. When the deadline passes and the intent could still execute, every certified Pulse header counts it as overdue, any light client sees it, and the state replaces the shard's committee, drawing from validators outside it first, as drawn here. On the default devnet, four validators for four seats, the same members return and the intent stays owed. The architecture also freezes the shard until it meets the obligation; the implementation does not.</p>
+    <div class="plate-title"><p class="plate-name" id="fig-forced-10-title"><span class="fig">Fig. 10</span>Forced inclusion</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-forced-10-desc">From the censorship demo. A gateway silently drops a user's payment. The user posts it as a forced intent straight to consensus, where every validator proposes every round, so one honest proposer is enough; the shard's validators certify it among themselves and it executes. Then two of the shard's four validators censor as well, so no certificate, which needs three, can form. The shard has a window of 8 Pulses to execute the intent. When the deadline passes and the intent could still execute, every certified Pulse header counts it as overdue, any light client sees it, and the state replaces the shard's committee, drawing from validators outside it first, as drawn here. On the default devnet, four validators for four seats, the same members return and the intent stays owed. The architecture also freezes the shard until it meets the obligation; the implementation does not.</p>
     <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo censorship --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;6.3</a></dd></div><div><dt>Status</dt><dd><span class="status status--simplified">Simplified: committee rotation, but the shard is not frozen</span></dd></div></dl>
   </figcaption>
 </figure>
@@ -338,11 +357,11 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
         <p>Equivocation is signed evidence that anyone can submit: two consensus headers for one round, or two lane approvals of one object version. The whole stake is forfeited, the reporter receives a share of it (5 % on the devnet), and the validator loses its seat at the next boundary. A light client that pins the genesis follows the committee from epoch to epoch through boundary proofs.</p>
         <p>On the devnet, validators stake devnet USD, which has no value. Siontology has no token and nothing is on offer. Fees are paid in stablecoins.</p>
       </div>
-      <figure class="plate" aria-labelledby="fig-staking-10-title">
-  <canvas data-scene="staking" role="img" aria-label="Animation: a standby validator stakes 50,000 USD and joins at the next epoch boundary; it signs two headers for one round, is reported, forfeits its stake and loses its seat." aria-describedby="fig-staking-10-desc"></canvas>
+      <figure class="plate" aria-labelledby="fig-staking-11-title">
+  <canvas data-scene="staking" role="img" aria-label="Animation: a standby validator stakes 50,000 USD and joins at the next epoch boundary; it signs two headers for one round, is reported, forfeits its stake and loses its seat." aria-describedby="fig-staking-11-desc"></canvas>
   <figcaption>
-    <div class="plate-title"><p class="plate-name" id="fig-staking-10-title"><span class="fig">Fig. 10</span>Staking, epochs and slashing</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
-    <p class="plate-desc" id="fig-staking-10-desc">From the staking demo. A standby validator stakes 50,000 USD with a proof that it holds its keys and joins the active set at the next epoch boundary; the committees are re-derived from the state. It then signs two consensus headers for one round, and a watchdog reports the signed evidence. Its whole stake of 50,000 USD is forfeited, 2,500 USD of it (5 % on the devnet) goes to the watchdog, and it loses its seat at the next boundary. Every committee change follows rules in the state, so the World Proof covers it.</p>
+    <div class="plate-title"><p class="plate-name" id="fig-staking-11-title"><span class="fig">Fig. 11</span>Staking, epochs and slashing</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-staking-11-desc">From the staking demo. A standby validator stakes 50,000 USD with a proof that it holds its keys and joins the active set at the next epoch boundary; the committees are re-derived from the state. It then signs two consensus headers for one round, and a watchdog reports the signed evidence. Its whole stake of 50,000 USD is forfeited, 2,500 USD of it (5 % on the devnet) goes to the watchdog, and it loses its seat at the next boundary. Every committee change follows rules in the state, so the World Proof covers it.</p>
     <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo staking --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;5.26 to &sect;5.30</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span></dd></div></dl>
   </figcaption>
 </figure>
@@ -378,6 +397,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
             <tr><th scope="row">Lane approvals</th><td>Batched and signed every 25 ms</td></tr>
             <tr><th scope="row">Proving</th><td>16 transactions per chunk, replay proofs from two stacks</td></tr>
             <tr><th scope="row">Forced inclusion</th><td>8 Pulses to execute a forced intent</td></tr>
+            <tr><th scope="row">Payment streams</th><td>A walk settles at most 65,536 steps; a jump at most <code>spacing</code> + 21 hashes; 2 micro-USD per hash checked</td></tr>
             <tr><th scope="row">Epochs</th><td>One epoch that never ends; <code>--epoch-length</code> sets Pulses per epoch and <code>--standby</code> adds validators without a seat</td></tr>
             <tr><th scope="row">Light client</th><td>16 data-availability samples per check</td></tr>
           </tbody>

@@ -41,6 +41,7 @@ guides show the commands in use.
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
 | Agents | `charter create`, `charter pay`, `charter revoke`, `mcp`, `x402 serve`, `x402 fetch` |
 | Markets | `market create`, `market order`, `market clear`, `market show` |
+| Payment streams | `stream open`, `stream pay`, `stream jump`, `stream check`, `stream settle`, `stream top-up`, `stream close`, `stream show` |
 | Verification | `tx`, `receipt`, `verify` |
 | Other | `demo`, `bench` |
 
@@ -73,12 +74,13 @@ Commands:
   rule       Rule on a challenge as the claim's adjudicator
   charter    Agent Charters
   market     Markets
+  stream     Payment streams: escrow once, pay per request with one hash each, settle thousands of payments in one transaction
   tx         A transaction's status and effects
   receipt    A transaction's receipt, verified as a light client would
   pulse      A Pulse's header, certificate and summary
   events     Recent events
   verify     Verify a Pulse as a light client
-  demo       Run a scripted demo: invoice, agents, market, receipts, censorship, light or all
+  demo       Run a scripted demo: invoice, agents, market, receipts, x402, streams, censorship, light, staking or all
   mcp        Serve the Model Context Protocol on stdio (for AI agents)
   x402       Sell or buy HTTP resources with x402 (HTTP 402 payments settled on Siontology)
   bench      Measure primitives, execution, proving, clearing and a devnet
@@ -622,6 +624,174 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion stream`
+
+```text
+Payment streams: escrow once, pay per request with one hash each, settle thousands of payments in one transaction
+
+Usage: sion stream [OPTIONS] <COMMAND>
+
+Commands:
+  open    Open a stream: escrow funds for one payee and keep the chain that pays it (its secret seed goes under $SION_HOME/streams)
+  pay     Pay from a stream: prints the next payment, `<stream>:<position>:<element>`, to give to the payee, and the jump for its checkpoint when it is the first payment past one
+  jump    Print the jump for the checkpoint below a position (as the payer)
+  check   Check a payment against the stream's settled head (anyone can)
+  settle  Settle as the payee: everything up to the latest payment received
+  top-up  Add escrow and/or time, as the payer
+  close   Close a stream: the payee at any time, the payer after its last Pulse. What is left in escrow goes back to the payer
+  show    Show a stream
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Payment streams](../concepts/payment-streams.md) and [Streams from the command line](../guides/streams.md).
+
+## `sion stream open`
+
+```text
+Open a stream: escrow funds for one payee and keep the chain that pays it (its secret seed goes under $SION_HOME/streams)
+
+Usage: sion stream open [OPTIONS] <PAYER> <PAYEE>
+
+Arguments:
+  <PAYER>  The paying wallet
+  <PAYEE>  Who is paid (wallet name or account ID)
+
+Options:
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --unit <UNIT>        The value of one step (USD) [default: 0.001]
+      --steps <STEPS>      Steps in the chain: the most the stream can ever pay is unit × steps [default: 100000]
+      --deposit <DEPOSIT>  Escrow (USD) [default: 10]
+      --pulses <PULSES>    Pulses the payee has to settle (after them the payer may close the stream and take back what is left) [default: 10000]
+      --spacing <SPACING>  Steps between checkpoints, which let the payee settle any number of steps for a bounded number of hashes (default: every 64 steps, fewer for very long chains; 0: no checkpoints)
+  -h, --help               Print help
+```
+
+The chain's secret seed goes in `$SION_HOME/streams/<stream>.json`, with the position revealed so far. Building the chain costs one hash per step, once (about 0.4 s per million steps on a release build).
+
+## `sion stream pay`
+
+```text
+Pay from a stream: prints the next payment, `<stream>:<position>:<element>`, to give to the payee, and the jump for its checkpoint when it is the first payment past one
+
+Usage: sion stream pay [OPTIONS] <STREAM>
+
+Arguments:
+  <STREAM>  The stream
+
+Options:
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --steps <STEPS>  Steps to pay [default: 1]
+  -h, --help           Print help
+```
+
+Writes the new position to disk before it prints the payment, so it never reveals the same position for two payments. A second line, `jump <index>:<path>`, follows when the payment is the first past a checkpoint.
+
+## `sion stream jump`
+
+```text
+Print the jump for the checkpoint below a position (as the payer)
+
+Usage: sion stream jump [OPTIONS] <STREAM>
+
+Arguments:
+  <STREAM>  The stream
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --position <POSITION>  The position (default: the last one revealed)
+  -h, --help                 Print help
+```
+
+## `sion stream check`
+
+```text
+Check a payment against the stream's settled head (anyone can)
+
+Usage: sion stream check [OPTIONS] <PAYMENT>
+
+Arguments:
+  <PAYMENT>  The payment
+
+Options:
+      --jump <JUMP>  Check it by this jump instead of walking from the head
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Without `--jump`, walks from the settled head down to the payment (for a settled payment) or from the payment down to the head (for an unsettled one): one hash per step in between. With `--jump`, at most the spacing plus 21 hashes.
+
+## `sion stream settle`
+
+```text
+Settle as the payee: everything up to the latest payment received
+
+Usage: sion stream settle [OPTIONS] <PAYEE> <PAYMENT>
+
+Arguments:
+  <PAYEE>    The payee's wallet
+  <PAYMENT>  The latest payment received
+
+Options:
+      --jump <JUMP>  Prove it by this jump (from the payer) instead of walking from the head
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Without `--jump`, a settlement covers at most 65,536 steps.
+
+## `sion stream top-up`
+
+```text
+Add escrow and/or time, as the payer
+
+Usage: sion stream top-up [OPTIONS] <PAYER> <STREAM>
+
+Arguments:
+  <PAYER>   The payer's wallet
+  <STREAM>  The stream
+
+Options:
+      --deposit <DEPOSIT>  Escrow to add (USD) [default: 0]
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --pulses <PULSES>    Pulses to add to the stream's last [default: 0]
+  -h, --help               Print help
+```
+
+## `sion stream close`
+
+```text
+Close a stream: the payee at any time, the payer after its last Pulse. What is left in escrow goes back to the payer
+
+Usage: sion stream close [OPTIONS] <WHO> <STREAM>
+
+Arguments:
+  <WHO>     Who closes
+  <STREAM>  The stream
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stream show`
+
+```text
+Show a stream
+
+Usage: sion stream show [OPTIONS] <STREAM>
+
+Arguments:
+  <STREAM>  The stream
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
 ## `sion tx`
 
 ```text
@@ -711,7 +881,7 @@ See [Verify as a light client](../getting-started/light-client.md).
 ## `sion demo`
 
 ```text
-Run a scripted demo: invoice, agents, market, receipts, censorship, light or all
+Run a scripted demo: invoice, agents, market, receipts, x402, streams, censorship, light, staking or all
 
 Usage: sion demo [OPTIONS] [NAME]
 
@@ -724,8 +894,8 @@ Options:
   -h, --help         Print help
 ```
 
-Demos: `invoice`, `agents`, `market`, `receipts`, `x402`, `censorship`,
-`light`, `staking`, and `all`, which runs them in that order. With
+Demos: `invoice`, `agents`, `market`, `receipts`, `x402`, `streams`,
+`censorship`, `light`, `staking`, and `all`, which runs them in that order. With
 `--local`, the staking demo gets its own devnet with a standby validator
 and 24-Pulse epochs; the others share a default devnet. `sion demo light
 --local` on its own fails, because its fresh devnet has no proven Pulse
@@ -773,13 +943,16 @@ Arguments:
   <PAY_TO>  Who gets paid (wallet name or account ID)
 
 Options:
-      --listen <LISTEN>  Listen address [default: 127.0.0.1:8402]
-      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --path <PATH>      The resource's path [default: /v1/resource]
-      --price <PRICE>    Price per request (USD) [default: 0.25]
-      --body <BODY>      What every paid request returns [default: {"paid":true}]
-      --chain <CHAIN>    The chain identity receipts must verify against. Without it the node vouches for itself [env: SION_CHAIN=]
-  -h, --help             Print help
+      --listen <LISTEN>              Listen address [default: 127.0.0.1:8402]
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --path <PATH>                  The resource's path [default: /v1/resource]
+      --price <PRICE>                Price per request (USD) [default: 0.25]
+      --body <BODY>                  What every paid request returns [default: {"paid":true}]
+      --chain <CHAIN>                The chain identity receipts must verify against. Without it the node vouches for itself [env: SION_CHAIN=]
+      --streams                      Also accept payments from streams (scheme `stream`), settled by PAY_TO's wallet, which must be a wallet name
+      --settle-every <SETTLE_EVERY>  With --streams: settle once a stream has this many unsettled steps [default: 1000]
+      --settle-after <SETTLE_AFTER>  With --streams: settle a stream's payments at the latest this many seconds after the first unsettled one [default: 30]
+  -h, --help                         Print help
 ```
 
 See [x402](../guides/x402.md).
@@ -789,16 +962,18 @@ See [x402](../guides/x402.md).
 ```text
 Fetch a URL, paying through x402 if the server asks
 
-Usage: sion x402 fetch [OPTIONS] --wallet <WALLET> <URL>
+Usage: sion x402 fetch [OPTIONS] <URL>
 
 Arguments:
   <URL>  The URL
 
 Options:
       --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --wallet <WALLET>        The paying wallet (the agent's, when paying under a charter)
+      --wallet <WALLET>        The paying wallet (the agent's, when paying under a charter; not needed with --stream)
       --charter <CHARTER>      Pay under this Agent Charter (ID) instead of by transfer
       --allotment <ALLOTMENT>  The agent's allotment (ID), with --charter
+      --stream <STREAM>        Pay from this payment stream (ID) instead: one chain element per request, no transaction
+      --count <COUNT>          Fetch this many times (with --stream, every request after the first is paid up front) [default: 1]
       --max <MAX>              The most to pay (USD) [default: 1]
       --chain <CHAIN>          The chain identity to pay on. Without it the node vouches for itself [env: SION_CHAIN=]
   -h, --help                   Print help
@@ -815,7 +990,7 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --quick        Smaller sizes
       --no-devnet    Skip the end-to-end devnet measurement
-      --only <ONLY>  Run only these groups: signatures, state, data, clearing, assurance, execution, devnet (comma-separated)
+      --only <ONLY>  Run only these groups: signatures, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
       --json <JSON>  Write the measurements as JSON to this file
   -h, --help         Print help
 ```
