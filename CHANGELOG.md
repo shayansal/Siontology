@@ -1,7 +1,7 @@
 # Changelog
 
 Notable changes to Siontology, newest first. There are no releases yet:
-everything below is on the `main` branch, unreleased. Once releases begin,
+everything below is on the default branch, unreleased. Once releases begin,
 they will follow [Semantic Versioning](https://semver.org/). The state
 transition specification (`docs/spec/state-transition.md`) has its own
 version, given below where it changed.
