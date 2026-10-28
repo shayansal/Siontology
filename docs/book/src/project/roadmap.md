@@ -46,7 +46,9 @@ simulated:
   hash-based proof stack would plug into the existing `ProofStack`
   interface.
 - **A proving market**, and payments to provers.
-- **Networking between machines.** Validators run in one process.
+- **Networking between machines**, beyond what is simplified today:
+  `sion node` processes talk QUIC, tested on one machine, with peers from
+  files; a validator that stops cannot rejoin.
 - **An uncertified DAG** (Mysticeti class) for Contention Consensus; the
   current protocol is a certified DAG.
 - **Sampled consensus committees** and a **value-in-flight cap** at

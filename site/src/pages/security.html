@@ -74,15 +74,29 @@
             <tr><th scope="row"><code>impl:replay-proofs</code></th><td>World Proofs are checked by re-execution, so proof finality costs a verifier as much as executing. Succinctness is assumed, not delivered.</td></tr>
             <tr><th scope="row"><code>impl:shared-primitives</code></th><td>Both proof stacks use the same hashing, Merkle, signature, Assurance Algebra and clearing-certificate code; a bug there is common to both.</td></tr>
             <tr><th scope="row"><code>impl:devnet-keys</code></th><td>Devnet validator keys are derived from the chain name, so anyone can derive them.</td></tr>
-            <tr><th scope="row"><code>impl:in-process-network</code></th><td>Validators share a machine and a process. The devnet does not exercise network faults; the consensus simulator does.</td></tr>
-            <tr><th scope="row"><code>impl:reliable-handover</code></th><td>At an epoch boundary each validator starts a new consensus session, relying on the in-process network to deliver every message already sent. A real network needs a drain period.</td></tr>
+            <tr><th scope="row"><code>impl:in-process-network</code></th><td><code>sion devnet</code> only: validators share a machine and a process, and network faults are exercised only through an in-process fault injector and the consensus simulator. A network of <code>sion node</code> processes does not carry this atom.</td></tr>
+            <tr><th scope="row"><code>impl:reliable-handover</code></th><td>At an epoch boundary each validator starts a new consensus session, relying on the in-process network to deliver every message already sent. A real network needs a drain period: on a network of processes, a validator that misses messages at a boundary can stall.</td></tr>
+            <tr><th scope="row"><code>net:transport-ml-dsa</code></th><td>Networks of processes: transport authentication rests on ML-DSA-44 alone, each node&rsquo;s network key pinned at both ends. A forger could delay, drop or isolate a peer&rsquo;s messages, not sign consensus messages, which carry dual signatures.</td></tr>
+            <tr><th scope="row"><code>net:aws-lc</code></th><td>Networks of processes: the TLS provider is aws-lc-rs, C code outside the workspace&rsquo;s audit scope.</td></tr>
+            <tr><th scope="row"><code>net:raw-public-keys</code></th><td>Networks of processes: TLS authenticates nodes with RFC 7250 raw public keys, pinned at both ends, not with certificates.</td></tr>
+            <tr><th scope="row"><code>net:static-peers</code></th><td>Networks of processes: peers come from a genesis file and a peer file read when a node starts, not from the state. A validator that joins by staking is reachable only by nodes started with its record.</td></tr>
+            <tr><th scope="row"><code>net:partial-synchrony</code></th><td>Networks of processes: liveness needs message delays to become bounded after some time.</td></tr>
+            <tr><th scope="row"><code>net:gateway-trusts-node</code></th><td>Networks of processes: a gateway running alone learns committees and answers state queries from one node it trusts. A lying node can mislead it, not get a transaction certified that a committee did not approve.</td></tr>
+            <tr><th scope="row"><code>net:no-rejoin</code></th><td>Networks of processes: a validator that stops cannot rejoin, so each stopped validator is a permanent fault, and more than a third of the stake stopped halts the chain.</td></tr>
             <tr><th scope="row"><code>impl:slashed-seat</code></th><td>A slashed validator keeps its seat, and its weight in quorums, until the epoch ends.</td></tr>
             <tr><th scope="row"><code>impl:active-floor</code></th><td>Validators can leave until one remains: nothing keeps the active set large enough to tolerate a faulty member.</td></tr>
             <tr><th scope="row"><code>impl:evidence-scope</code></th><td>Equivocation evidence is not bound to one chain, so a validator&rsquo;s keys must not be used on another network.</td></tr>
             <tr><th scope="row"><code>impl:lock-handover</code></th><td>Lane certificates are not drained when a shard&rsquo;s committee changes, so certificate finality for owned transactions holds within one committee&rsquo;s term. An owner who signs two spends could get the second certified by a committee that has been fully replaced.</td></tr>
             <tr><th scope="row"><code>impl:hash-chain-beacon</code></th><td>The beacon is a hash-chain commit and reveal; the last validator to reveal can bias it by withholding, at the cost of being seen.</td></tr>
             <tr><th scope="row"><code>impl:public-amounts</code></th><td>Amounts and balances are visible to everyone.</td></tr>
+            <tr><th scope="row"><code>impl:memory-index</code></th><td>The ledger stores a memory log&rsquo;s index root without checking it; nothing on the ledger yet acts on proof that an index left a memory out.</td></tr>
             <tr><th scope="row"><code>impl:unaudited-pq-crates</code></th><td>The FIPS 203, 204 and 205 implementations are unaudited pure-Rust crates.</td></tr>
+            <tr><th scope="row"><code>storage:no-replication</code></th><td>A storage proof shows that the provider could produce the challenged pieces during the round, not that it keeps a copy of its own.</td></tr>
+            <tr><th scope="row"><code>storage:raw-proofs</code></th><td>Every storage proof carries its challenged pieces and their Merkle paths on the ledger, about 17 to 22 KiB a deal a round. Proofs are not aggregated, so ledger bandwidth bounds how many deals a network can keep.</td></tr>
+            <tr><th scope="row"><code>storage:no-retrieval</code></th><td>Getting data back is not part of the protocol: a provider proves custody, and returning the data is up to the provider and its client.</td></tr>
+            <tr><th scope="row"><code>app:first-use-pin</code></th><td>The app pins the chain identity of the first node it verifies unless its user pins one first. A first use against a lying node pins the liar&rsquo;s chain.</td></tr>
+            <tr><th scope="row"><code>app:plain-key</code></th><td>The app keeps the device&rsquo;s key unencrypted in its directory, not in the platform&rsquo;s keystore. Anything that can read the directory can spend.</td></tr>
+            <tr><th scope="row"><code>app:unproven-balances</code></th><td>The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven.</td></tr>
             <tr><th scope="row"><code>impl:insecure-sim-signatures</code></th><td>Only when a devnet is started with <code>--insecure-fast-signatures</code>: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so.</td></tr>
           </tbody>
         </table>
@@ -96,14 +110,14 @@
         <li><h3>It does not remove stake from safety.</h3><p>A Byzantine third of a committee can still double-certify, and is slashed for it. Two conflicting World Proofs could then exist, and only stake decides which is canonical.</p></li>
         <li><h3>It is not proven at scale.</h3><p>The capacity and latency figures are design targets, to be met or missed on a public testnet. There is no testnet and no mainnet.</p></li>
         <li><h3>It is not private yet.</h3><p>Payloads can be encrypted and orders sealed, but amounts and balances are public. Confidential transfers and compliance by proof need a zero-knowledge stack that is not built.</p></li>
-        <li><h3>Some defences are not built.</h3><p>Personhood, a proving market, payments to provers and a cap on value in flight are missing, and networking between machines is simulated.</p></li>
+        <li><h3>Some defences are not built.</h3><p>Personhood, a proving market, payments to provers and a cap on value in flight are missing. Networking between machines is simplified: processes have talked over QUIC on one machine, and a validator that stops cannot rejoin.</p></li>
       </ul>
     </section>
 
     <section class="topic" id="reviews" aria-labelledby="reviews-title">
       <h2 id="reviews-title">Reviews</h2>
       <div class="prose">
-        <p>Three independent reviews, run by AI agents that had not written the code, read the consensus-critical libraries, the node and the validator machinery, and confirmed their findings with tests. Everything they found is fixed with a regression test, except where marked open. Among the fixes:</p>
+        <p>Four independent reviews, run by AI agents that had not written the code, read the consensus-critical libraries, the node, the validator machinery, and storage deals with the app, and confirmed their findings with tests. Everything they found is fixed with a regression test, except where marked open. Among the fixes:</p>
         <ul>
           <li>an unbounded chain of claim references could overflow a validator&rsquo;s stack; claim references and formulas now have bounded depth;</li>
           <li>a signature cache keyed on the transaction body but not its signatures, so a copy with stripped signatures could split replicas;</li>
@@ -112,7 +126,10 @@
           <li>transactions and validator messages were not bound to a chain; transaction signatures now cover the chain configuration;</li>
           <li>light-client sampling used a fixed seed, and a missing World Proof did not fail verification;</li>
           <li>an owner could get honest validators slashed: the node released a rejected transaction&rsquo;s lane locks at once, so its next approval of the same inputs counted as equivocation; a rejected transaction now keeps its locks until it expires;</li>
-          <li>if every active validator was slashed within an epoch, they kept their seats into the next one; since specification v1.5 they lose them regardless, and such a chain halts.</li>
+          <li>if every active validator was slashed within an epoch, they kept their seats into the next one; since specification v1.5 they lose them regardless, and such a chain halts;</li>
+          <li>a storage provider working with a validator could steer which pieces of data it was asked for, by timing its proofs; since specification v1.12 a round&rsquo;s challenge comes from the beacon of the round&rsquo;s first Pulse, which the ledger records;</li>
+          <li>a provider fetched from any address a deal named, including its own machine and network; it now refuses local files and private addresses unless told otherwise;</li>
+          <li>the app presented the node&rsquo;s account of what a transaction did as fact; it now shows what the receipt it proved says, and labels anything else as the node&rsquo;s unproven report.</li>
         </ul>
         <p><strong>Open:</strong> fee-paying transactions with large bodies can still make Pulses slow, since data-availability encoding of the largest allowed Pulse takes seconds on one core; an account query scans every object; the active set can shrink to a single validator (<code>impl:active-floor</code>).</p>
         <p>Differential testing of the two proof stacks found two defects in the reference executor, including a market deadline overflow that let any account halt the chain; both were fixed in specification v1.1. The full list is in <a href="{{REPO}}/blob/main/docs/implementation-status.md#reviews-and-what-they-found">docs/implementation-status.md</a>.</p>
