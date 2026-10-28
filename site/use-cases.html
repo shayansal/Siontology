@@ -27,6 +27,7 @@
 <script>(function(){var d=document.documentElement;d.classList.add('js');try{var t=localStorage.getItem('siontology-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t)}catch(e){}})();</script>
 <script src="js/site.js" defer></script>
 <script src="js/scenes/core.js" defer></script>
+<script src="js/scenes/streams.js" defer></script>
 <script src="js/scenes/charters.js" defer></script>
 <script src="js/scenes/x402.js" defer></script>
 <script src="js/scenes/assurance.js" defer></script>
@@ -120,9 +121,9 @@ Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived i
       <dl class="facts">
         <div><dt>For</dt><dd>Anyone selling an API, a dataset or a model behind an HTTP endpoint, and the agents that buy from them.</dd></div>
         <div><dt>Today</dt><dd>A card payment costs more than one API call is worth, so APIs are sold as monthly plans behind accounts, API keys and invoices. US merchants paid 198.25 billion USD in card fees in 2025 (<a href="https://merchantspaymentscoalition.com/credit-and-debit-card-swipe-fees-reach-record-19825-billion-president-and-congress-call-action">Nilson data, via the Merchants Payments Coalition</a>).</dd></div>
-        <div><dt>With Siontology</dt><dd>The API answers a request with HTTP 402 Payment Required and a quote. The agent pays in a stablecoin, under its charter if it has one, and retries; the server checks the payment itself, as a light client, before it answers. It speaks <a href="https://www.linuxfoundation.org/press/linux-foundation-is-launching-the-x402-foundation-and-welcoming-the-contribution-of-the-x402-protocol">x402</a>, the open standard for payments over HTTP, a Linux Foundation project.</dd></div>
-        <div><dt>What changes</dt><dd>No accounts, keys or invoices. Every request is paid and proven before it is served, a replayed payment is refused, and an agent cannot pay more than its charter allows.</dd></div>
-        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>x402 version 2 with the exact scheme, not yet tested against third-party x402 clients. Each request is settled as its own transaction; streams that settle many requests in one transaction are being designed.</dd></div>
+        <div><dt>With Siontology</dt><dd>The API answers a request with HTTP 402 Payment Required and a quote. It speaks <a href="https://www.linuxfoundation.org/press/linux-foundation-is-launching-the-x402-foundation-and-welcoming-the-contribution-of-the-x402-protocol">x402</a>, the open standard for payments over HTTP, a Linux Foundation project, with two ways to pay. An agent that calls once pays in a stablecoin, under its charter if it has one, and the server checks the payment as a light client before it answers. An agent that calls often opens a payment stream to the API once, then pays each call with the next element of a hash chain, which the server checks with one hash; the server settles thousands or millions of calls in one transaction.</dd></div>
+        <div><dt>What changes</dt><dd>No accounts, keys or invoices. Every request is paid and checked before it is served, a replayed payment is refused, and an agent cannot pay more than its charter or its stream allows. With a stream, a call costs the server under a microsecond to check and the ledger about two nano-USD in fees, measured.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>x402 version 2 with the <code>exact</code> scheme and Siontology&rsquo;s <code>stream</code> scheme, not yet tested against third-party x402 clients. Streams pay one API, one way, out of escrow the agent locks in advance.</dd></div>
       </dl>
       <ol class="steps">
         <li><div><strong>Ask</strong><p>The agent requests a resource. The server answers 402 with a quote: price, payee, chain and a fresh nonce.</p></div></li>
@@ -157,6 +158,44 @@ Result: no accounts, no API keys; every request is paid and proven before it is 
 <span class="c"># serves http://127.0.0.1:8402/v1/resource for 0.25 USD a request</span>
 
 sion x402 fetch http://127.0.0.1:8402/v1/resource --wallet dana --max 1</code></pre>
+</div>
+      <p class="lede">For an agent that calls the same API often, a payment stream replaces the transaction per call:</p>
+      <ol class="steps">
+        <li><div><strong>Open</strong><p>The agent escrows funds for the API and publishes the last element of a secret hash chain, once.</p></div></li>
+        <li><div><strong>Pay</strong><p>Each call carries the next element of the chain. The server checks it with one hash and serves at once; nothing goes to the ledger.</p></div></li>
+        <li><div><strong>Settle</strong><p>From time to time the server settles everything it has accepted in one transaction, proven by a checkpoint, for a fee that does not grow with the number of calls.</p></div></li>
+      </ol>
+      <figure class="plate" aria-labelledby="fig-streams-title">
+  <canvas data-scene="streams" role="img" aria-label="Animation: an AI agent pays an API per call with the next element of its hash chain; the API checks each payment with one hash; after about a million calls, one settlement proven by a checkpoint puts them all on the ledger." aria-describedby="fig-streams-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-streams-title">Payment streams: pay per call, settle per million</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-streams-desc">From the streams demo and the streams benchmark. The agent opened a payment stream to the API: an escrow, and the last element of a secret hash chain. Each call is paid with the next element, which the API checks with one SHA3-256 hash against the last one it accepted, 0.42 &micro;s on one core; nothing per call reaches the ledger. The API then settles every payment so far in one transaction, ordered by consensus. With checkpoints, that settlement walks only to the checkpoint below its position and proves the checkpoint's Merkle path: 524 hashes and one signature check for 1,048,064 payments, about a nanosecond per payment on the ledger. Payments are one-way, from one payer to one payee, out of escrow the payer locked in advance, and the rates were measured on one core of a two-core machine, not on a network.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo streams --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;5.31 to &sect;5.34</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built on the devnet; measured on one machine</span></dd></div></dl>
+  </figcaption>
+</figure>
+      <div class="code code--wrap">
+  <div class="code-label"><span>sion demo streams --local: real output</span><button class="copy-button" type="button" data-copy="code-demo-streams">Copy</button></div>
+  <pre id="code-demo-streams"><code>== Streams: an agent pays an API a tenth of a cent per call, one hash per payment ==
+Pulse   5  the agent opens a stream to carol: 20 USD in escrow, 0.001 USD a step, 100,000 steps; carol may settle until Pulse 2002
+           carol's API at http://127.0.0.1:38625/v1/price: 0.001 USD per call, paid by `exact` (a transaction per call) or `stream` (a hash per call)
+           one call paid with a transfer: a transaction, certified and proven, 0.0011 USD in fees
+           2,000 calls paid from the stream in 0.6 s: carol's server checked 2,220 hashes and sent no transaction per call
+           carol settled 2,000 payments in 2 transactions: 2 USD received, 0.002388 USD in fees (1.19 micro-USD per payment, against 1,100 for a transaction per call)
+           the validators checked 44 hashes for those settlements (2 proven by a jump to a checkpoint), not one per payment; the stream is at position 2,000 with 18 USD left in escrow
+           an auditor checks call 1,234's receipt: genuine and settled, in 766 hashes from the settled head, or 45 from the checkpoint below it
+           a forged receipt for the same call → not an element of the stream's chain
+Pulse  14  carol closes the stream; the agent gets 18 USD back
+Result: each payment costs the server one hash, not a signature; a settlement costs the ledger the same however many payments it covers; and every payment stays checkable by anyone.</code></pre>
+</div>
+      <div class="code">
+  <div class="code-label"><span>Pay per call from a stream, one hash per call</span><button class="copy-button" type="button" data-copy="code-streams">Copy</button></div>
+  <pre id="code-streams"><code>sion x402 serve carol --price 0.001 --streams
+
+sion stream open dana carol --unit 0.001 --deposit 5
+<span class="c"># prints the stream's ID; each call below is paid with one hash</span>
+sion x402 fetch http://127.0.0.1:8402/v1/resource --stream &lt;ID&gt; --count 1000
+
+sion bench --only streams   <span class="c"># what a payment costs the API and the ledger</span></code></pre>
 </div>
     </section>
 

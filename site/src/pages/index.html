@@ -1,4 +1,4 @@
-<!--{"file": "index.html", "title": "Siontology: verified knowledge, not ordered transactions", "description": "Siontology is an open-source ledger where payments, AI output and claims carry a proof or priced evidence: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices.", "nav": "", "scenes": ["fold-hero", "x402", "charters", "assurance"]}-->
+<!--{"file": "index.html", "title": "Siontology: verified knowledge, not ordered transactions", "description": "Siontology is an open-source ledger where payments, AI output and claims carry a proof or priced evidence: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices.", "nav": "", "scenes": ["fold-hero", "streams", "x402", "charters", "assurance"]}-->
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
     <h1 class="display" id="hero-title"><span class="line">Know what to trust</span> <span class="line">before you rely on it.</span></h1>
@@ -47,9 +47,9 @@
         {{icon:api}}
         <p class="uc-for">For anyone selling an API or data</p>
         <h3>APIs paid per request</h3>
-        <p>The API answers HTTP 402 with a price, the agent pays in a stablecoin, and the server serves the request once it has checked the payment itself. No accounts, API keys or invoices.</p>
+        <p>The API answers HTTP 402 with a price. An agent that calls once pays in a stablecoin; one that calls often pays from a payment stream, one hash per call. The server serves once it has checked the payment itself. No accounts, API keys or invoices.</p>
         <p class="uc-today"><strong>Today</strong>A card payment costs more than one API call, so APIs are sold as monthly plans behind accounts and keys.</p>
-        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo x402 --local</code></p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo streams --local</code></p>
         <a class="cell-link" href="use-cases.html#apis">Walk through it</a>
       </article>
       <article class="uc">
@@ -90,6 +90,23 @@
       </article>
     </div>
     <p class="notice-line"><strong>Designed for, not built yet:</strong> cross-border stablecoin settlement with compliance proven rather than disclosed, and media provenance that survives a platform stripping its metadata. <a href="use-cases.html">Every use case, step by step</a></p>
+  </div>
+</section>
+
+<section class="section" id="scale" aria-labelledby="scale-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="scale-title">Pay per call. Settle per million.</h2>
+      <p>Most payments between machines are small, frequent and between the same two parties. A payment stream pays each one with a hash instead of a transaction, and the ledger settles a million of them for the cost of one. Throughput is then counted in payments, and grows with the size of a settlement, not with the size of the network.</p>
+    </div>
+    <dl class="measures">
+      <div><dt>The API checks a payment</dt><dd><span class="measure">0.42 &micro;s</span><span class="measure-note">One SHA3-256 hash. No signature, no ledger read. Measured.</span></dd></div>
+      <div><dt>Payments settled a second, one core</dt><dd><span class="measure">9&thinsp;&times;&thinsp;10<sup>8</sup></span><span class="measure-note">16 settlements of a million payments each in 17 to 28 ms, every signature checked. Measured.</span></dd></div>
+      <div><dt>Ledger fees for a million payments</dt><dd><span class="measure">0.002 USD</span><span class="measure-note">Settled by checkpoint. A transaction per payment would cost 1,100 USD. Measured.</span></dd></div>
+      <div><dt>For a billion payments a second</dt><dd><span class="measure">&asymp;&thinsp;950 tx/s</span><span class="measure-note">Settlements on the ledger. Our arithmetic; not yet run across machines.</span></dd></div>
+    </dl>
+    {{fig:streams}}
+    <p class="notice-line"><strong>What this is not:</strong> a billion general transactions a second. A stream pays one payee, one way, out of escrow, and the settlement rates come from one machine, not a network. <a href="{{DOCS}}research/billion-scale.html">The research note: construction, measurements, prior art and limits</a></p>
   </div>
 </section>
 
@@ -192,7 +209,7 @@
         </li>
         <li>
           <h3>A normative specification</h3>
-          <p>The state transition, version 1.5, written so that another implementation can be built from the document alone. It covers validators, stake, epochs, slashing and the response to censorship, and pays validators from fees alone.</p>
+          <p>The state transition, version 1.7, written so that another implementation can be built from the document alone. It covers validators, stake, epochs, slashing, the response to censorship and payment streams, and pays validators from fees alone.</p>
         </li>
         <li>
           <h3>Every shortcut named</h3>
@@ -222,6 +239,7 @@
           <tr><td>Verifiable Clearing and Agent Charters</td><td><span class="status status--built">Built</span></td></tr>
           <tr><td>Validator staking, epochs, rewards, slashing and committee rotation</td><td><span class="status status--built">Built (devnet)</span></td></tr>
           <tr><td>Forced inclusion: obligations in the state, overdue intents counted in certified headers</td><td><span class="status status--simplified">Simplified: the shard is not frozen</span></td></tr>
+          <tr><td>Payment streams: one hash per payment, settlement by checkpoint</td><td><span class="status status--built">Built (devnet)</span></td></tr>
           <tr><td>CLI, HTTP API, MCP server and an x402 adapter</td><td><span class="status status--built">Built</span></td></tr>
           <tr><td>The Fold: a World Proof per Pulse, from two independent stacks</td><td><span class="status status--simulated">Simulated: replay proofs</span></td></tr>
           <tr><td>Networking between machines</td><td><span class="status status--simulated">Simulated: one process</span></td></tr>

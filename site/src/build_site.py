@@ -160,7 +160,7 @@ def figure(fid, number=None):
 
 
 WRAP = {"verify-output", "demo-agents", "demo-x402", "demo-receipts", "demo-invoice",
-        "demo-market"}  # terminal output that reads better wrapped than scrolled
+        "demo-market", "demo-streams"}  # terminal output that reads better wrapped than scrolled
 
 
 def code(cid):

@@ -1,4 +1,4 @@
-<!--{"file": "use-cases.html", "title": "Use cases | Siontology", "description": "What Siontology is for: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output, payments a deepfake cannot approve, invoices that repay you if they are false, and markets that prove their prices.", "nav": "uses", "scenes": ["charters", "x402", "assurance", "clearing"]}-->
+<!--{"file": "use-cases.html", "title": "Use cases | Siontology", "description": "What Siontology is for: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output, payments a deepfake cannot approve, invoices that repay you if they are false, and markets that prove their prices.", "nav": "uses", "scenes": ["streams", "charters", "x402", "assurance", "clearing"]}-->
 <header class="page-head wrap">
   <h1>What Siontology is for.</h1>
   <p class="lede">Eight uses where trust is what slows business down today. Five run on the devnet as scripted demos, one is built from the same parts, and two need parts that are not built yet. Each section says who it is for, what happens today, what changes, how it works and what is still missing.</p>
@@ -49,9 +49,9 @@
       <dl class="facts">
         <div><dt>For</dt><dd>Anyone selling an API, a dataset or a model behind an HTTP endpoint, and the agents that buy from them.</dd></div>
         <div><dt>Today</dt><dd>A card payment costs more than one API call is worth, so APIs are sold as monthly plans behind accounts, API keys and invoices. US merchants paid 198.25 billion USD in card fees in 2025 (<a href="https://merchantspaymentscoalition.com/credit-and-debit-card-swipe-fees-reach-record-19825-billion-president-and-congress-call-action">Nilson data, via the Merchants Payments Coalition</a>).</dd></div>
-        <div><dt>With Siontology</dt><dd>The API answers a request with HTTP 402 Payment Required and a quote. The agent pays in a stablecoin, under its charter if it has one, and retries; the server checks the payment itself, as a light client, before it answers. It speaks <a href="https://www.linuxfoundation.org/press/linux-foundation-is-launching-the-x402-foundation-and-welcoming-the-contribution-of-the-x402-protocol">x402</a>, the open standard for payments over HTTP, a Linux Foundation project.</dd></div>
-        <div><dt>What changes</dt><dd>No accounts, keys or invoices. Every request is paid and proven before it is served, a replayed payment is refused, and an agent cannot pay more than its charter allows.</dd></div>
-        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>x402 version 2 with the exact scheme, not yet tested against third-party x402 clients. Each request is settled as its own transaction; streams that settle many requests in one transaction are being designed.</dd></div>
+        <div><dt>With Siontology</dt><dd>The API answers a request with HTTP 402 Payment Required and a quote. It speaks <a href="https://www.linuxfoundation.org/press/linux-foundation-is-launching-the-x402-foundation-and-welcoming-the-contribution-of-the-x402-protocol">x402</a>, the open standard for payments over HTTP, a Linux Foundation project, with two ways to pay. An agent that calls once pays in a stablecoin, under its charter if it has one, and the server checks the payment as a light client before it answers. An agent that calls often opens a payment stream to the API once, then pays each call with the next element of a hash chain, which the server checks with one hash; the server settles thousands or millions of calls in one transaction.</dd></div>
+        <div><dt>What changes</dt><dd>No accounts, keys or invoices. Every request is paid and checked before it is served, a replayed payment is refused, and an agent cannot pay more than its charter or its stream allows. With a stream, a call costs the server under a microsecond to check and the ledger about two nano-USD in fees, measured.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>x402 version 2 with the <code>exact</code> scheme and Siontology&rsquo;s <code>stream</code> scheme, not yet tested against third-party x402 clients. Streams pay one API, one way, out of escrow the agent locks in advance.</dd></div>
       </dl>
       <ol class="steps">
         <li><div><strong>Ask</strong><p>The agent requests a resource. The server answers 402 with a quote: price, payee, chain and a fresh nonce.</p></div></li>
@@ -62,6 +62,15 @@
       {{fig:x402}}
       {{code:demo-x402}}
       {{code:x402}}
+      <p class="lede">For an agent that calls the same API often, a payment stream replaces the transaction per call:</p>
+      <ol class="steps">
+        <li><div><strong>Open</strong><p>The agent escrows funds for the API and publishes the last element of a secret hash chain, once.</p></div></li>
+        <li><div><strong>Pay</strong><p>Each call carries the next element of the chain. The server checks it with one hash and serves at once; nothing goes to the ledger.</p></div></li>
+        <li><div><strong>Settle</strong><p>From time to time the server settles everything it has accepted in one transaction, proven by a checkpoint, for a fee that does not grow with the number of calls.</p></div></li>
+      </ol>
+      {{fig:streams}}
+      {{code:demo-streams}}
+      {{code:streams}}
     </section>
 
     <section class="topic" id="receipts" aria-labelledby="receipts-title">

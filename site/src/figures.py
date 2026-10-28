@@ -157,6 +157,23 @@ FIGURES = {
         "spec": ("crates/sion-cli/src/x402.rs", BLOB + "sion-cli/src/x402.rs"),
         "status": ("built", "Built: x402 version 2, not yet tested against third-party clients"),
     },
+    "streams": {
+        "scene": "streams",
+        "title": "Payment streams: pay per call, settle per million",
+        "label": "Animation: an AI agent pays an API per call with the next element of its hash chain; the API checks each payment with one hash; after about a million calls, one settlement proven by a checkpoint puts them all on the ledger.",
+        "desc": ("From the streams demo and the streams benchmark. The agent opened a payment stream to the API: an "
+                 "escrow, and the last element of a secret hash chain. Each call is paid with the next element, "
+                 "which the API checks with one SHA3-256 hash against the last one it accepted, 0.42 &micro;s on one "
+                 "core; nothing per call reaches the ledger. The API then settles every payment so far in one "
+                 "transaction, ordered by consensus. With checkpoints, that settlement walks only to the checkpoint "
+                 "below its position and proves the checkpoint's Merkle path: 524 hashes and one signature check for "
+                 "1,048,064 payments, about a nanosecond per payment on the ledger. Payments are one-way, from one "
+                 "payer to one payee, out of escrow the payer locked in advance, and the rates were measured on one "
+                 "core of a two-core machine, not on a network."),
+        "run": "sion demo streams --local",
+        "spec": ("Specification &sect;5.31 to &sect;5.34", SPEC),
+        "status": ("built", "Built on the devnet; measured on one machine"),
+    },
     "staking": {
         "scene": "staking",
         "title": "Staking, epochs and slashing",
@@ -233,6 +250,14 @@ CODE = {
              "<span class=\"c\"># serves http://127.0.0.1:8402/v1/resource for 0.25 USD a request</span>\n"
              "\n"
              "sion x402 fetch http://127.0.0.1:8402/v1/resource --wallet dana --max 1"),
+    "streams": ("Pay per call from a stream, one hash per call",
+                "sion x402 serve carol --price 0.001 --streams\n"
+                "\n"
+                "sion stream open dana carol --unit 0.001 --deposit 5\n"
+                "<span class=\"c\"># prints the stream's ID; each call below is paid with one hash</span>\n"
+                "sion x402 fetch http://127.0.0.1:8402/v1/resource --stream &lt;ID&gt; --count 1000\n"
+                "\n"
+                "sion bench --only streams   <span class=\"c\"># what a payment costs the API and the ledger</span>"),
     "http": ("HTTP API",
              "curl http://127.0.0.1:8730/v1/status\n"
              "curl http://127.0.0.1:8730/v1/pulses/latest\n"
@@ -310,6 +335,18 @@ CODE.update({
         'Pulse  26  judge upholds: 2 claims falsified (the delivery, and the invoice resting on it)\n'
         '           financier compensated 10,000 USD automatically from the slashed bonds (balance 199,999.9988 → 209,999.9988)\n'
         'Result: reliance on a false invoice was repaid in full, in Pulses, with no lawsuit and no adjuster.'),
+    "demo-streams": ('sion demo streams --local: real output',
+        '== Streams: an agent pays an API a tenth of a cent per call, one hash per payment ==\n'
+        'Pulse   5  the agent opens a stream to carol: 20 USD in escrow, 0.001 USD a step, 100,000 steps; carol may settle until Pulse 2002\n'
+        "           carol's API at http://127.0.0.1:38625/v1/price: 0.001 USD per call, paid by `exact` (a transaction per call) or `stream` (a hash per call)\n"
+        '           one call paid with a transfer: a transaction, certified and proven, 0.0011 USD in fees\n'
+        "           2,000 calls paid from the stream in 0.6 s: carol's server checked 2,220 hashes and sent no transaction per call\n"
+        '           carol settled 2,000 payments in 2 transactions: 2 USD received, 0.002388 USD in fees (1.19 micro-USD per payment, against 1,100 for a transaction per call)\n'
+        '           the validators checked 44 hashes for those settlements (2 proven by a jump to a checkpoint), not one per payment; the stream is at position 2,000 with 18 USD left in escrow\n'
+        "           an auditor checks call 1,234's receipt: genuine and settled, in 766 hashes from the settled head, or 45 from the checkpoint below it\n"
+        "           a forged receipt for the same call → not an element of the stream's chain\n"
+        'Pulse  14  carol closes the stream; the agent gets 18 USD back\n'
+        'Result: each payment costs the server one hash, not a signature; a settlement costs the ledger the same however many payments it covers; and every payment stays checkable by anyone.'),
     "demo-market": ('sion demo market --local: real output',
         '== Verifiable Clearing: a GPU-hour market that proves it is optimal ==\n'
         'Pulse  56  operator opens a market: batches of 12 Pulses, sealed with the beacon, cleared by anyone with a certificate\n'
