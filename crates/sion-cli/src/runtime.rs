@@ -7,7 +7,7 @@
 //! approvals decide what the agent tries; the ledger decides what it can
 //! do, and refuses a payment outside the charter whatever the runtime said.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -354,6 +354,15 @@ pub struct Saved {
     pub workspace: Option<PathBuf>,
     /// Whether it may fetch from the web.
     pub web: bool,
+    /// The agent's memory log, if it has one.
+    #[serde(default)]
+    pub memory: Option<ObjectId>,
+    /// The directory of the agent's skills.
+    #[serde(default)]
+    pub skills: Option<PathBuf>,
+    /// The system prompt of the last run, as the model saw it.
+    #[serde(default)]
+    pub prompt: String,
     /// The conversation and everything the runtime keeps.
     pub state: State,
     /// How the last run ended.
@@ -474,6 +483,23 @@ impl Saved {
                 .map_err(|e| CliError::Usage(e.to_string()))?;
             tools.add(sion_agent::builtin::Fetch { client });
         }
+        let memory = self.memory.map(|log| crate::agent_memory::Memory {
+            acting: acting.clone(),
+            log,
+        });
+        if let Some(memory) = &memory {
+            for tool in memory.tools() {
+                tools.add_boxed(tool);
+            }
+        }
+        if let Some(root) = &self.skills {
+            std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
+            for tool in sion_agent::skills::tools(root) {
+                tools.add_boxed(tool);
+            }
+        }
+        let system = self.system_prompt();
+        self.prompt = system.clone();
         let skip = self.state.turns_taken as usize;
         let models: Vec<Box<dyn Model>> = self
             .models
@@ -485,7 +511,7 @@ impl Saved {
             tools: &tools,
             policy: self.policy.clone(),
             limits: self.limits.clone(),
-            system: self.system.clone(),
+            system,
             now: &now,
             stopped: &stopped,
         };
@@ -518,7 +544,53 @@ impl Saved {
             &self.state.messages[from.min(self.state.messages.len())..],
         ));
         lines.push(ending(&ended, &self.state.id));
+        // What was recorded reaches the ledger; a finished session is
+        // recorded as an episode first.
+        if let (Some(memory), false) = (&memory, ended == Ended::Stopped) {
+            let committed = match &ended {
+                Ended::Done { text } => {
+                    let task = self
+                        .state
+                        .messages
+                        .first()
+                        .map(|m| m.text())
+                        .unwrap_or_default();
+                    crate::agent_memory::record_episode(
+                        memory,
+                        &self.state.id,
+                        &task,
+                        text,
+                        &sion_agent::trace::digest(&self.state),
+                    )
+                }
+                _ => memory.commit(),
+            };
+            match committed {
+                Ok(Some(receipt)) => lines.push(format!("memory committed: {receipt}")),
+                Ok(None) => {}
+                Err(e) => lines.push(format!("memory not committed: {e}")),
+            }
+        }
         Ok(lines)
+    }
+
+    /// The system prompt of the next run: the session's own, then what the
+    /// agent knows of itself: its core memory and the skills it has.
+    pub fn system_prompt(&self) -> String {
+        let mut system = self.system.clone();
+        if let Some(log) = &self.memory {
+            let core = crate::agent_memory::core(log);
+            if !core.is_empty() {
+                system = format!("{system}\n\n{}", core.trim_end());
+            }
+        }
+        if let Some(root) = &self.skills {
+            let catalog = sion_agent::skills::catalog(&sion_agent::skills::list(root));
+            if !catalog.is_empty() {
+                system = format!("{system}\n\n{}", catalog.trim_end());
+            }
+        }
+        system
     }
 
     /// Approves or declines the call waiting for a person.
@@ -603,8 +675,27 @@ pub fn new_id() -> String {
     hex::encode(bytes)
 }
 
+/// What a session may use besides the ledger.
+#[derive(Clone, Debug, Default)]
+pub struct Equipment {
+    /// A directory the agent may read and write.
+    pub workspace: Option<PathBuf>,
+    /// Whether it may fetch public web pages.
+    pub web: bool,
+    /// Its memory log.
+    pub memory: Option<ObjectId>,
+    /// Its skills' directory (by default `$SION_HOME/agents/skills/<agent>`).
+    pub skills: Option<PathBuf>,
+    /// A system prompt other than the default.
+    pub system: Option<String>,
+}
+
+/// The default directory of an agent's skills.
+pub fn skills_dir(agent: &ObjectId) -> PathBuf {
+    agents_dir().join("skills").join(agent.0.to_hex())
+}
+
 /// Starts a session for `wallet` acting as `agent` on `task`.
-#[allow(clippy::too_many_arguments)]
 pub fn start(
     ledger: SharedLedger,
     wallet: &str,
@@ -612,10 +703,15 @@ pub fn start(
     task: &str,
     models: Vec<String>,
     policy: Policy,
-    workspace: Option<&Path>,
-    web: bool,
-    system: Option<String>,
+    equipment: Equipment,
 ) -> Result<(Saved, Vec<String>), CliError> {
+    let Equipment {
+        workspace,
+        web,
+        memory,
+        skills,
+        system,
+    } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
     }
@@ -628,6 +724,16 @@ pub fn start(
             agent.short()
         )));
     }
+    if let Some(log) = &memory {
+        let state = crate::memory::committed(ledger.as_ref(), log)?;
+        if state.writer != charter.agent {
+            return Err(CliError::Usage(format!(
+                "memory log {} is not written by agent {}'s account",
+                log.short(),
+                agent.short()
+            )));
+        }
+    }
     let did = crate::agents::did(ledger.as_ref(), &agent)?;
     let limits = Limits::default();
     let mut saved = Saved {
@@ -637,8 +743,11 @@ pub fn start(
         policy,
         limits: limits.clone(),
         system: system.unwrap_or_else(|| default_system(&did)),
-        workspace: workspace.map(Path::to_path_buf),
+        workspace,
         web,
+        memory,
+        skills: Some(skills.unwrap_or_else(|| skills_dir(&agent))),
+        prompt: String::new(),
         state: State::start(&new_id(), task, &limits),
         ended: None,
         decided: None,

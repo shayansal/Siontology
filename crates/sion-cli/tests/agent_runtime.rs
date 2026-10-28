@@ -111,9 +111,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         "Pay bob 5 USD for inference.",
         vec![model],
         policy,
-        None,
-        false,
-        None,
+        Default::default(),
     )
     .unwrap();
     let text = lines.join("\n");
@@ -150,9 +148,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         "Pay bob 3 USD for data.",
         vec![model],
         policy,
-        None,
-        false,
-        None,
+        Default::default(),
     )
     .unwrap();
     assert!(
@@ -197,9 +193,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
             autonomy: Autonomy::L6,
             ..Policy::default()
         },
-        None,
-        false,
-        None,
+        Default::default(),
     )
     .unwrap();
     assert_eq!(saved.ended, Some(Ended::Stopped));
@@ -213,9 +207,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         "Pay me.",
         vec!["script:/dev/null".into()],
         Policy::default(),
-        None,
-        false,
-        None,
+        Default::default(),
     );
     assert!(wrong.is_err());
     std::fs::remove_dir_all(&home).unwrap();

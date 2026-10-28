@@ -182,6 +182,16 @@ pub enum AgentCommand {
         /// who it is and how its charter limits it).
         #[arg(long)]
         system: Option<std::path::PathBuf>,
+        /// The agent's memory log (its id, or a unique prefix of one with a
+        /// local store), or `new` to open one for it. Its preferences, goals
+        /// and procedures go into the prompt; what it records is committed
+        /// when the session ends, with the session as an episode.
+        #[arg(long)]
+        memory: Option<String>,
+        /// The directory of the agent's skills (default:
+        /// $SION_HOME/agents/skills/<agent>).
+        #[arg(long)]
+        skills: Option<std::path::PathBuf>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -232,8 +242,22 @@ pub fn run(
             workspace,
             web,
             system,
+            memory,
+            skills,
         } => {
             let agent = parse_id(&agent, "agent")?;
+            let memory = match memory.as_deref() {
+                None => None,
+                Some("new") => {
+                    let (view, opened) = crate::memory::open(session, &wallet, Some(agent))?;
+                    print_receipt(session, &view);
+                    let log = opened
+                        .ok_or_else(|| CliError::Transaction("no memory log was opened".into()))?;
+                    println!("memory log {log}");
+                    Some(log)
+                }
+                Some(text) => Some(crate::memory::find_log(ledger, text)?),
+            };
             let policy = sion_agent::Policy {
                 autonomy: autonomy.parse().map_err(CliError::Usage)?,
                 ..sion_agent::Policy::default()
@@ -251,9 +275,13 @@ pub fn run(
                 &task,
                 models,
                 policy,
-                workspace.as_deref(),
-                web,
-                system,
+                crate::runtime::Equipment {
+                    workspace,
+                    web,
+                    memory,
+                    skills,
+                    system,
+                },
             )?;
             println!("session {} for agent {}", saved.state.id, agent.short());
             for line in lines {
@@ -329,7 +357,7 @@ pub fn run(
             let saved = crate::runtime::Saved::load(&id)?;
             println!(
                 "{}",
-                sion_agent::trace::chat_line(&saved.state, &saved.system, saved.ended.as_ref())
+                sion_agent::trace::chat_line(&saved.state, &saved.prompt, saved.ended.as_ref())
             );
             Ok(())
         }

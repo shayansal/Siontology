@@ -40,6 +40,7 @@ pub mod policy;
 pub mod providers;
 pub mod scripted;
 pub mod session;
+pub mod skills;
 pub mod tools;
 pub mod trace;
 
