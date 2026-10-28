@@ -82,7 +82,7 @@
   <div class="wrap">
     <div class="section-head">
       <h2 class="statement" id="uses-title">What it is for.</h2>
-      <p>Six uses where trust is what slows business down today. Five run on the devnet as scripted demos; the sixth is built from the same claims and bonds, but its workflow is not. Each says what is still missing.</p>
+      <p>Nine uses where trust is what slows business down today. Eight run on the devnet as scripted demos; the ninth is built from the same claims and bonds, but its workflow is not. Each says what is still missing.</p>
     </div>
     <div class="cells cells--3">
       <article class="uc">
@@ -138,6 +138,33 @@
         <p class="uc-today"><strong>Today</strong>Matching engines are black boxes: nobody can check that the allocation was the best available, and arrival order can be gamed.</p>
         <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo market --local</code></p>
         <a class="cell-link" href="use-cases.html#markets">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="2" y="12" width="9" height="9" fill="currentColor"/><path d="M13 16.5h6M16.5 14l2.5 2.5-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="21" y="6" width="9" height="21" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M23 17l2 2 3.5-4.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <p class="uc-for">For AI labs and anyone buying evals or training runs</p>
+        <h3>Work paid only when it passes</h3>
+        <p>Escrow a task with the rule a result must pass, fixed before anyone starts: the environment vendor&rsquo;s bonded claim that its grader cannot be gamed, and the verifiers whose word counts. The worker is paid once, and if the grader is later proven exploitable, the buyer is repaid from the vendor&rsquo;s bond.</p>
+        <p class="uc-today"><strong>Today</strong>An eval or training environment is paid for up front; if its grader turns out to reward a shortcut, the buyer absorbs the loss.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo tasks --local</code></p>
+        <a class="cell-link" href="use-cases.html#tasks">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="4" width="20" height="5" fill="currentColor"/><rect x="3" y="11" width="20" height="5" fill="currentColor"/><rect x="3" y="18" width="20" height="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 27h20" fill="none" stroke="currentColor" stroke-width="1.6"/><path class="pict-signal" d="M25 4l5 5M30 4l-5 5" fill="none" stroke-width="1.6"/></svg>
+        <p class="uc-for">For robotics and agent builders</p>
+        <h3>Memory a robot cannot rewrite</h3>
+        <p>Each robot or agent keeps a log of what it saw, where and when. The ledger keeps the log&rsquo;s head, lets it only grow and says when each memory was recorded. Anyone can check a complete answer to &ldquo;what was in aisle 4 at 10:02&rdquo;, and convict an index that hides something.</p>
+        <p class="uc-today"><strong>Today</strong>An agent&rsquo;s or a robot&rsquo;s memory is a file its operator can edit, so nobody can prove what it knew, and when.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo robots --local</code></p>
+        <a class="cell-link" href="use-cases.html#memory">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="3" width="7" height="7" fill="currentColor"/><rect x="22" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="12.5" width="7" height="7" fill="currentColor"/><rect x="3" y="22" width="7" height="7" fill="currentColor"/><rect x="12.5" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <p class="uc-for">For anyone who keeps data with someone else</p>
+        <h3>Storage that proves itself every round</h3>
+        <p>Pay per round to have data kept, fixed by its Merkle root. The provider puts up collateral and, each round, shows pieces of the data nobody could predict. A provider that loses data is caught and loses its collateral. Any computer running the app can be a provider.</p>
+        <p class="uc-today"><strong>Today</strong>You take a storage provider&rsquo;s word that your data is still there, until the day you need it.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo storage --local</code></p>
+        <a class="cell-link" href="use-cases.html#storage">Walk through it</a>
       </article>
     </div>
     <p class="notice-line"><strong>Designed for, not built yet:</strong> cross-border stablecoin settlement with compliance proven rather than disclosed, and media provenance that survives a platform stripping its metadata. <a href="use-cases.html">Every use case, step by step</a></p>
@@ -330,7 +357,10 @@ sion demo all --local</code></pre>
           <tr><td>Payment streams: one hash per payment, settlement by checkpoint</td><td><span class="status status--built">Built (devnet)</span></td></tr>
           <tr><td>CLI, HTTP API, MCP server and an x402 adapter</td><td><span class="status status--built">Built</span></td></tr>
           <tr><td>The Fold: a World Proof per Pulse, from two independent stacks</td><td><span class="status status--simulated">Simulated: replay proofs</span></td></tr>
-          <tr><td>Networking between machines</td><td><span class="status status--simulated">Simulated: one process</span></td></tr>
+          <tr><td>Agent identities and subagents, memory logs for agents and robots, Task Charters</td><td><span class="status status--built">Built (devnet)</span></td></tr>
+          <tr><td>Storage deals: data kept by providers who prove it every round</td><td><span class="status status--built">Built (devnet)</span></td></tr>
+          <tr><td>The app: a light node on every device, which can also provide storage</td><td><span class="status status--simplified">Desktop built; mobile not built yet</span></td></tr>
+          <tr><td>Networking between machines</td><td><span class="status status--simplified">Simplified: QUIC between processes, peers from files</span></td></tr>
           <tr><td>Personhood, a proving market, payments to provers, confidential amounts, compliance proofs</td><td><span class="status status--missing">Not built</span></td></tr>
           <tr><td>Mainnet</td><td><span class="status status--missing">None</span></td></tr>
           <tr><td>Token</td><td><span class="status status--missing">Siontology has no token and nothing is on offer. Fees are paid in stablecoins.</span></td></tr>
