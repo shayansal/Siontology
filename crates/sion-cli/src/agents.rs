@@ -149,15 +149,216 @@ pub enum AgentCommand {
         /// Agent id.
         agent: String,
     },
+    /// Put an agent to work on a task: a model drives it, with the ledger
+    /// (balance, payments under its charter, transactions), optionally
+    /// files in a workspace and the web, as tools. The session is kept, so
+    /// one waiting for your approval can resume.
+    Run {
+        /// The agent's wallet.
+        wallet: String,
+        /// The agent (its id).
+        agent: String,
+        /// The task, in words.
+        #[arg(long)]
+        task: String,
+        /// The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model>
+        /// (OPENAI_BASE_URL, OPENAI_API_KEY) or script:<file>. Repeat for
+        /// fallbacks, in order.
+        #[arg(long = "model", required = true)]
+        models: Vec<String>,
+        /// How much it may do without asking: L0 (nothing) to L6 (spend
+        /// within its charter). L3 reads and writes its workspace; L5 also
+        /// fetches from the web and asks before paying.
+        #[arg(long, default_value = "L5")]
+        autonomy: String,
+        /// A directory the agent may read and write.
+        #[arg(long)]
+        workspace: Option<std::path::PathBuf>,
+        /// Let it fetch public web pages (they taint the session: external
+        /// calls and payments then wait for approval).
+        #[arg(long)]
+        web: bool,
+        /// A file with the system prompt (default: one that tells the agent
+        /// who it is and how its charter limits it).
+        #[arg(long)]
+        system: Option<std::path::PathBuf>,
+    },
+    /// Continue a session: approve or decline the call it waits on, or tell
+    /// it more.
+    Continue {
+        /// The session (its id, or a unique prefix of it).
+        session: String,
+        /// Approve the call it waits on.
+        #[arg(long, conflicts_with_all = ["decline", "say"])]
+        approve: bool,
+        /// Decline the call it waits on, saying why.
+        #[arg(long, conflicts_with = "say")]
+        decline: Option<String>,
+        /// Tell it something more and let it go on.
+        #[arg(long)]
+        say: Option<String>,
+    },
+    /// The agent sessions on this machine.
+    Sessions,
+    /// A session as one JSON line in chat format with tool calls, with its
+    /// outcome: for review, evaluation or training.
+    Trace {
+        /// The session (its id, or a unique prefix of it).
+        session: String,
+    },
+    /// The kill switch: `on` stops every agent run on this machine before
+    /// its next call; `off` lets them run again.
+    KillSwitch {
+        /// on or off.
+        state: String,
+    },
 }
 
-/// Runs an agent command.
+/// Runs an agent command. `shared` is the same ledger, for the runtime's
+/// tools, which keep it between calls.
 pub fn run(
     session: &mut Session<'_>,
     ledger: &dyn Ledger,
+    shared: crate::runtime::SharedLedger,
     command: AgentCommand,
 ) -> Result<(), CliError> {
     match command {
+        AgentCommand::Run {
+            wallet,
+            agent,
+            task,
+            models,
+            autonomy,
+            workspace,
+            web,
+            system,
+        } => {
+            let agent = parse_id(&agent, "agent")?;
+            let policy = sion_agent::Policy {
+                autonomy: autonomy.parse().map_err(CliError::Usage)?,
+                ..sion_agent::Policy::default()
+            };
+            let system = system
+                .map(|path| {
+                    std::fs::read_to_string(&path)
+                        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))
+                })
+                .transpose()?;
+            let (saved, lines) = crate::runtime::start(
+                shared,
+                &wallet,
+                agent,
+                &task,
+                models,
+                policy,
+                workspace.as_deref(),
+                web,
+                system,
+            )?;
+            println!("session {} for agent {}", saved.state.id, agent.short());
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        AgentCommand::Continue {
+            session: id,
+            approve,
+            decline,
+            say,
+        } => {
+            let mut saved = crate::runtime::Saved::load(&id)?;
+            if approve {
+                saved.decide(true, "")?;
+            } else if let Some(why) = decline {
+                saved.decide(false, &why)?;
+            } else if let Some(more) = say {
+                if saved.state.pending.is_some() {
+                    return Err(CliError::Usage(
+                        "the session waits for a decision: --approve or --decline first".into(),
+                    ));
+                }
+                saved.state.tell(&more, &saved.limits);
+            }
+            for line in saved.run(shared)? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        AgentCommand::Sessions => {
+            let dir = crate::runtime::sessions_dir();
+            let mut rows = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if let Some(id) = name.strip_suffix(".json") {
+                        if let Ok(saved) = crate::runtime::Saved::load(id) {
+                            let task = saved
+                                .state
+                                .messages
+                                .first()
+                                .map(|m| m.text())
+                                .unwrap_or_default();
+                            let ended = match &saved.ended {
+                                Some(sion_agent::Ended::Done { .. }) => "done".to_string(),
+                                Some(sion_agent::Ended::NeedsApproval { tool, .. }) => {
+                                    format!("waiting on {tool}")
+                                }
+                                Some(other) => format!("{other:?}").to_lowercase(),
+                                None => "new".into(),
+                            };
+                            rows.push(format!(
+                                "{id}  {}  {ended}  {}",
+                                saved.wallet,
+                                task.chars().take(60).collect::<String>()
+                            ));
+                        }
+                    }
+                }
+            }
+            rows.sort();
+            if rows.is_empty() {
+                println!("no agent sessions in {}", dir.display());
+            }
+            for row in rows {
+                println!("{row}");
+            }
+            Ok(())
+        }
+        AgentCommand::Trace { session: id } => {
+            let saved = crate::runtime::Saved::load(&id)?;
+            println!(
+                "{}",
+                sion_agent::trace::chat_line(&saved.state, &saved.system, saved.ended.as_ref())
+            );
+            Ok(())
+        }
+        AgentCommand::KillSwitch { state } => {
+            let path = crate::runtime::kill_switch();
+            match state.as_str() {
+                "on" => {
+                    if let Some(dir) = path.parent() {
+                        std::fs::create_dir_all(dir).map_err(|e| CliError::Usage(e.to_string()))?;
+                    }
+                    std::fs::write(&path, "agents stop before their next call\n")
+                        .map_err(|e| CliError::Usage(e.to_string()))?;
+                    println!(
+                        "kill switch on: every agent run stops before its next call ({})",
+                        path.display()
+                    );
+                }
+                "off" => {
+                    let _ = std::fs::remove_file(&path);
+                    println!("kill switch off");
+                }
+                other => {
+                    return Err(CliError::Usage(format!(
+                        "the kill switch is on or off, not {other}"
+                    )))
+                }
+            }
+            Ok(())
+        }
         AgentCommand::Register {
             principal,
             agent,

@@ -1289,6 +1289,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sion-agent",
  "sion-assurance",
  "sion-clearing",
  "sion-consensus",

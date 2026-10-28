@@ -149,6 +149,18 @@ impl Scripted {
     pub fn left(&self) -> usize {
         self.steps.lock().expect("the script's lock").len()
     }
+
+    /// Drops the first `n` steps: a resumed session's script goes on from
+    /// the turn it reached.
+    pub fn skip(self, n: usize) -> Scripted {
+        {
+            let mut steps = self.steps.lock().expect("the script's lock");
+            for _ in 0..n.min(steps.len()) {
+                steps.pop_front();
+            }
+        }
+        self
+    }
 }
 
 impl Model for Scripted {

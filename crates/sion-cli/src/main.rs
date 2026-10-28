@@ -1238,7 +1238,12 @@ fn run(cli: Cli) -> Result<(), CliError> {
             )?;
             show_tx(&session.names(), &view);
         }
-        Command::Agent(command) => sion_cli::agents::run(&mut session, ledger, command)?,
+        Command::Agent(command) => sion_cli::agents::run(
+            &mut session,
+            ledger,
+            std::sync::Arc::new(http.clone()),
+            command,
+        )?,
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
         Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
