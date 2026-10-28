@@ -26,6 +26,7 @@ use crate::claim::ClaimBody;
 use crate::market::Submission;
 use crate::object::{well_known, CoordinationClass, ObjectRef};
 use crate::state::ChainConfig;
+use crate::task::Acceptance;
 use crate::validators::Equivocation;
 
 /// The signing domain for transactions.
@@ -401,6 +402,38 @@ pub enum TxKind {
         /// Whether to seal the log after this commit.
         seal: bool,
     },
+    /// Escrows `amount` for a task whose acceptance is fixed now (spec
+    /// §5.42). With `charter`, the escrow comes from that agent's
+    /// allotment (`inputs[1]`), under its caveats; otherwise from coins.
+    PostTask {
+        /// A commitment to the task's specification.
+        spec: Hash32,
+        /// The rule a result must pass.
+        acceptance: Acceptance,
+        /// The worker, or `None` for an open task.
+        worker: Option<AccountId>,
+        /// The escrow.
+        amount: Amount,
+        /// The last Pulse a result may be settled.
+        deadline: Pulse,
+        /// The agent's charter whose allotment pays, if any.
+        charter: Option<ObjectId>,
+    },
+    /// A worker settles a task with its result claim and the attestations
+    /// it rests on (spec §5.43).
+    SettleTask {
+        /// The task.
+        task: ObjectId,
+        /// The body of the sender's result claim.
+        result: ClaimBody,
+        /// Verifiers' attestations: each verifier and its claim's body.
+        attestations: Vec<(AccountId, ClaimBody)>,
+    },
+    /// Cancels an open task and refunds its escrow (spec §5.44).
+    CancelTask {
+        /// The task.
+        task: ObjectId,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -473,6 +506,8 @@ impl Transaction {
             TxKind::SettleStream { stream, .. }
             | TxKind::TopUpStream { stream, .. }
             | TxKind::CloseStream { stream } => Some(object_domain("stream", stream)),
+            TxKind::SettleTask { .. } => Some(well_known::assurance_domain()),
+            TxKind::CancelTask { task } => Some(object_domain("task", task)),
             _ => None,
         }
     }
@@ -490,7 +525,10 @@ impl Transaction {
             | TxKind::SpendAllotment { .. }
             | TxKind::ReturnAllotment
             | TxKind::Delegate { .. }
-            | TxKind::SpawnAgents { .. } => CoordinationClass::Bounded,
+            | TxKind::SpawnAgents { .. }
+            | TxKind::PostTask {
+                charter: Some(_), ..
+            } => CoordinationClass::Bounded,
             _ => CoordinationClass::OwnedLinear,
         }
     }

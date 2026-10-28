@@ -115,6 +115,17 @@ each happens.
 
 The atoms a commit adds have the commit's Pulse as their transaction time.
 
+## Task Charters
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `TaskPosted` | `task`, `poster`, `worker`, `amount`, `deadline` | `PostTask` | `task <id> posted with <amount> USD in escrow, for <worker>\|open to anyone, until Pulse <deadline>` |
+| `TaskSettled` | `task`, `worker`, `result`, `amount`, `reservation` | `SettleTask` | `task <id> settled: <amount> USD paid to <worker> for result <id>, its backing reserved` |
+| `TaskCancelled` | `task`, `refund`, `to` | `CancelTask` | `task <id> cancelled: <refund> USD refunded to <account>` |
+
+If a claim a paid result rests on is later falsified, the payer's
+compensation appears as `Compensated` events of the `Rule` that broke it.
+
 ## Failed transactions
 
 A transaction that fails keeps no events: its receipt reads

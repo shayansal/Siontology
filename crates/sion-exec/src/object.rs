@@ -133,6 +133,8 @@ pub enum ObjectData {
     Stream(crate::stream::Stream),
     /// A memory log's head (specification v1.9).
     MemoryLog(crate::memory::MemoryLog),
+    /// An escrowed task (specification v1.10).
+    Task(Box<crate::task::Task>),
 }
 
 /// Something the protocol must do at a given Pulse.

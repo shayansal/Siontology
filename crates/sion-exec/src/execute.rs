@@ -42,6 +42,10 @@ use crate::object::{
 };
 use crate::state::ChainConfig;
 use crate::store::{ObjectStore, Overlay};
+use crate::task::{
+    result_formula, Task, TaskResult, TaskState, ATTESTATION_SCHEMA, MAX_REQUIRED, MAX_VERIFIERS,
+    RESULT_SCHEMA,
+};
 use crate::tx::{
     object_domain, signing_context, SignedTransaction, Transaction, TxKind, MAX_GRANT, MAX_INPUTS,
 };
@@ -547,6 +551,42 @@ pub enum Event {
         commits: u64,
         /// Whether the log is now sealed.
         sealed: bool,
+    },
+    /// A task was posted (spec §5.42).
+    TaskPosted {
+        /// The task.
+        task: ObjectId,
+        /// Who posted it.
+        poster: AccountId,
+        /// Its worker, or `None` for an open task.
+        worker: Option<AccountId>,
+        /// The escrow.
+        amount: Amount,
+        /// The last Pulse a result may be settled.
+        deadline: Pulse,
+    },
+    /// A task was settled: its worker was paid, and κ times the payment of
+    /// the result's backing reserved for the poster (spec §5.43).
+    TaskSettled {
+        /// The task.
+        task: ObjectId,
+        /// Who was paid.
+        worker: AccountId,
+        /// The result claim.
+        result: ClaimId,
+        /// What was paid.
+        amount: Amount,
+        /// The reservation.
+        reservation: Hash32,
+    },
+    /// A task was cancelled and its escrow refunded (spec §5.44).
+    TaskCancelled {
+        /// The task.
+        task: ObjectId,
+        /// What was refunded.
+        refund: Amount,
+        /// To whom.
+        to: AccountId,
     },
 }
 
@@ -2463,6 +2503,266 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             };
             run.store(object);
             run.event(event);
+        }
+        TxKind::PostTask {
+            spec,
+            acceptance,
+            worker,
+            amount,
+            deadline,
+            charter,
+        } => {
+            if *amount == Amount::ZERO {
+                return Err(ExecError::Invalid("a task needs a positive escrow".into()));
+            }
+            let latest = pulse.0.saturating_add(crate::market::MAX_PERIOD);
+            if deadline.0 <= pulse.0 || deadline.0 > latest {
+                return Err(ExecError::Invalid(format!(
+                    "a task's deadline must be 1 to {} Pulses away",
+                    crate::market::MAX_PERIOD
+                )));
+            }
+            if acceptance.requires.len() > MAX_REQUIRED
+                || acceptance.verifiers.len() > MAX_VERIFIERS
+            {
+                return Err(ExecError::Invalid(format!(
+                    "a task requires at most {MAX_REQUIRED} claims and names at most {MAX_VERIFIERS} verifiers"
+                )));
+            }
+            if acceptance.detection_permille > 1000 {
+                return Err(ExecError::Invalid("detection factor above one".into()));
+            }
+            if acceptance.reliance == 0 || acceptance.reliance > crate::market::MAX_PERIOD {
+                return Err(ExecError::Invalid(format!(
+                    "reliance must last 1 to {} Pulses",
+                    crate::market::MAX_PERIOD
+                )));
+            }
+            let (funder, refund_to) = match charter {
+                None => {
+                    run.draw(AssetId::usd(), *amount)?;
+                    (None, tx.sender)
+                }
+                Some(charter_id) => {
+                    let allotment_id = run.input(1)?;
+                    let mut allotment = load_allotment(run, &allotment_id)?;
+                    let state = load_charter(run, charter_id)?;
+                    check_charter_chain(run, charter_id)?;
+                    if allotment.source != *charter_id
+                        || allotment.writer != tx.sender
+                        || state.agent != tx.sender
+                    {
+                        return Err(ExecError::Invalid(
+                            "allotment does not belong to this charter's agent".into(),
+                        ));
+                    }
+                    let caveats = allotment
+                        .caveats
+                        .clone()
+                        .ok_or_else(|| ExecError::Invalid("not a charter allotment".into()))?;
+                    if worker.is_none() && caveats.payees.is_some() {
+                        return Err(ExecError::Caveat(
+                            "an agent limited to listed payees cannot post an open task".into(),
+                        ));
+                    }
+                    let evidence_ok = caveats.evidence_policy == acceptance.policy;
+                    let payee = worker.unwrap_or(tx.sender);
+                    allotment.spend(&payee, *amount, pulse, Some(evidence_ok))?;
+                    store_allotment(run, allotment_id, allotment)?;
+                    (Some(*charter_id), state.backer)
+                }
+            };
+            let task = created_id(&run.digest, run.next_index);
+            run.create(
+                Owner::Shared(object_domain("task", &task)),
+                ObjectData::Task(Box::new(Task {
+                    poster: tx.sender,
+                    funder,
+                    refund_to,
+                    spec: *spec,
+                    acceptance: acceptance.clone(),
+                    worker: *worker,
+                    amount: *amount,
+                    deadline: *deadline,
+                    posted_at: pulse,
+                    state: TaskState::Open,
+                })),
+            );
+            run.event(Event::TaskPosted {
+                task,
+                poster: tx.sender,
+                worker: *worker,
+                amount: *amount,
+                deadline: *deadline,
+            });
+        }
+        TxKind::SettleTask {
+            task,
+            result,
+            attestations,
+        } => {
+            let mut task_object = run.load(task)?;
+            let ObjectData::Task(state) = &task_object.data else {
+                return Err(ExecError::Invalid(format!("{task} is not a task")));
+            };
+            let mut state = (**state).clone();
+            if state.state != TaskState::Open {
+                return Err(ExecError::Invalid("the task is not open".into()));
+            }
+            if pulse > state.deadline {
+                return Err(ExecError::Invalid("the task's deadline has passed".into()));
+            }
+            if let Some(worker) = state.worker {
+                if worker != tx.sender {
+                    return Err(ExecError::Unauthorized(
+                        "only the task's worker may settle it".into(),
+                    ));
+                }
+            }
+            let result_id = claim_id(&tx.sender, result);
+            let (registry_object, mut domain) = run.assurance()?;
+            let record = match domain.registry.claim(&result_id) {
+                Some(record) if record.status == ClaimStatus::Active => record.clone(),
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "the result is not an active claim of the sender".into(),
+                    ))
+                }
+            };
+            if result.schema != RESULT_SCHEMA {
+                return Err(ExecError::Invalid(format!(
+                    "a result claim has schema {RESULT_SCHEMA}"
+                )));
+            }
+            let Payload::Public(bytes) = &result.payload else {
+                return Err(ExecError::Invalid("a result's payload is public".into()));
+            };
+            match decode::<TaskResult>(bytes) {
+                Ok(committed) if committed.task == *task => {}
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "the result does not commit to this task".into(),
+                    ))
+                }
+            }
+            if attestations.len() > MAX_VERIFIERS {
+                return Err(ExecError::Invalid(format!(
+                    "at most {MAX_VERIFIERS} attestations"
+                )));
+            }
+            let mut verifiers = BTreeSet::new();
+            let mut attested = Vec::with_capacity(attestations.len());
+            for (verifier, body) in attestations {
+                if !verifiers.insert(*verifier) {
+                    return Err(ExecError::Invalid("one attestation per verifier".into()));
+                }
+                if !state.acceptance.verifiers.contains(verifier) {
+                    return Err(ExecError::Invalid(
+                        "an attestation from a verifier the task does not name".into(),
+                    ));
+                }
+                let id = claim_id(verifier, body);
+                match domain.registry.claim(&id) {
+                    Some(record) if record.status == ClaimStatus::Active => {}
+                    _ => {
+                        return Err(ExecError::Invalid(
+                            "an attestation is not an active claim".into(),
+                        ))
+                    }
+                }
+                if body.schema != ATTESTATION_SCHEMA || body.payload != result.payload {
+                    return Err(ExecError::Invalid(
+                        "an attestation must attest this result's output".into(),
+                    ));
+                }
+                attested.push(id);
+            }
+            let expected = result_formula(&tx.sender, &attested, &state.acceptance.requires);
+            if record.formula != expected {
+                return Err(ExecError::Invalid(
+                    "the result's formula is not the one the task requires".into(),
+                ));
+            }
+            if record.adjudicator != state.acceptance.adjudicator {
+                return Err(ExecError::Invalid(
+                    "the result must name the task's adjudicator".into(),
+                ));
+            }
+            if result.detection_permille > state.acceptance.detection_permille {
+                return Err(ExecError::Invalid(
+                    "the result declares a detection factor above the task's".into(),
+                ));
+            }
+            let until = Pulse(pulse.0.saturating_add(state.acceptance.reliance));
+            let (decision, reservation) = accept_and_reserve(
+                &mut domain.registry,
+                &state.acceptance.policy,
+                state.refund_to,
+                &result_id,
+                state.amount,
+                until,
+                task.0.prefix_u64(),
+            )?;
+            let Some(reservation) = reservation else {
+                return Err(ExecError::Invalid(format!(
+                    "result not accepted: {}",
+                    decision.reasons.join("; ")
+                )));
+            };
+            run.store_assurance(registry_object, domain);
+            run.effects.deferred.push(Deferred::Schedule {
+                at: until,
+                event: ScheduledEvent::RegistryTick,
+            });
+            run.mint_coin(tx.sender, AssetId::usd(), state.amount);
+            let amount = state.amount;
+            state.state = TaskState::Settled {
+                worker: tx.sender,
+                result: result_id,
+                reservation,
+                at: pulse,
+            };
+            task_object.data = ObjectData::Task(Box::new(state));
+            run.store(task_object);
+            run.event(Event::TaskSettled {
+                task: *task,
+                worker: tx.sender,
+                result: result_id,
+                amount,
+                reservation,
+            });
+        }
+        TxKind::CancelTask { task } => {
+            let mut task_object = run.load(task)?;
+            let ObjectData::Task(state) = &task_object.data else {
+                return Err(ExecError::Invalid(format!("{task} is not a task")));
+            };
+            let mut state = (**state).clone();
+            if state.state != TaskState::Open {
+                return Err(ExecError::Invalid("the task is not open".into()));
+            }
+            let released = state.worker == Some(tx.sender);
+            let withdrawn = (tx.sender == state.poster || tx.sender == state.refund_to)
+                && (state.worker.is_none() || pulse > state.deadline);
+            if !released && !withdrawn {
+                return Err(ExecError::Unauthorized(
+                    "only the worker, or the poster once the task is open to all or expired, may cancel it"
+                        .into(),
+                ));
+            }
+            let (refund, to) = (state.amount, state.refund_to);
+            run.mint_coin(to, AssetId::usd(), refund);
+            state.state = TaskState::Cancelled {
+                by: tx.sender,
+                at: pulse,
+            };
+            task_object.data = ObjectData::Task(Box::new(state));
+            run.store(task_object);
+            run.event(Event::TaskCancelled {
+                task: *task,
+                refund,
+                to,
+            });
         }
     }
     Ok(())

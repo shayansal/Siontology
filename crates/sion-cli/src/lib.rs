@@ -9,6 +9,7 @@
 //! - [`verify`]: light-client verification of a Pulse.
 //! - [`mcp`]: a Model Context Protocol server for AI agents.
 //! - [`stream`]: payment streams: the payer's chains and the payee's desk.
+//! - [`tasks`]: Task Charters: escrowed work with acceptance fixed in advance.
 //! - [`x402`]: HTTP 402 payments settled on Siontology, for servers and agents.
 
 pub mod agents;
@@ -20,6 +21,7 @@ pub mod ledger;
 pub mod mcp;
 pub mod session;
 pub mod stream;
+pub mod tasks;
 pub mod verify;
 pub mod x402;
 

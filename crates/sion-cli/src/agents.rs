@@ -477,7 +477,7 @@ fn ensure_wallet(name: &str) -> Result<(), CliError> {
     create_wallet(name).map(|_| ())
 }
 
-fn print_receipt(session: &Session<'_>, view: &sion_node::TxView) {
+pub(crate) fn print_receipt(session: &Session<'_>, view: &sion_node::TxView) {
     println!(
         "Pulse {}: {}",
         view.pulse,
@@ -491,7 +491,7 @@ fn parse_id(text: &str, what: &str) -> Result<ObjectId, CliError> {
         .map_err(|_| CliError::Usage(format!("{what} must be a 64-digit hex ID")))
 }
 
-fn parse_amount(text: &str) -> Result<Amount, CliError> {
+pub(crate) fn parse_amount(text: &str) -> Result<Amount, CliError> {
     let text = text.trim();
     let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
     if whole.is_empty() && fraction.is_empty() || fraction.len() > 6 {

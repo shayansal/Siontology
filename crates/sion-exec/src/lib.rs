@@ -52,6 +52,7 @@ pub mod state;
 pub mod stateless;
 pub mod store;
 pub mod stream;
+pub mod task;
 pub mod tx;
 pub mod validators;
 pub mod wallet;

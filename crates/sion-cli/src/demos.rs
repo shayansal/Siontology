@@ -1964,6 +1964,392 @@ pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     Ok(())
 }
 
+/// Task Charters (spec v1.10): a lab buys evaluation work from others,
+/// pays only for results that pass the rule it fixed when it posted the
+/// work, and is compensated when the environment turns out to be
+/// exploitable.
+pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use sion_exec::task::{
+        result_formula, Acceptance, TaskResult, ATTESTATION_SCHEMA, RESULT_SCHEMA,
+        WORKER_BOND_LABEL,
+    };
+    out.say(
+        "== Task Charters: paying for work only when the result passes a rule fixed in advance ==",
+    );
+    fund_all(
+        session,
+        &[
+            ("lab", AssetId::usd(), usd(10_000)),
+            ("eval-orchestrator", AssetId::usd(), usd(10)),
+            ("sandbox-vendor", AssetId::usd(), usd(6_000)),
+            ("coder", AssetId::usd(), usd(200)),
+            ("bounty-hunter", AssetId::usd(), usd(10)),
+            ("reviewer-1", AssetId::usd(), usd(1_100)),
+            ("reviewer-2", AssetId::usd(), usd(1_100)),
+            ("arbiter", AssetId::usd(), usd(3_100)),
+            ("red-team", AssetId::usd(), usd(200)),
+        ],
+    )?;
+    let (lab, orchestrator, vendor) = (
+        session.id("lab"),
+        session.id("eval-orchestrator"),
+        session.id("sandbox-vendor"),
+    );
+    let (coder, hunter) = (session.id("coder"), session.id("bounty-hunter"));
+    let (r1, r2) = (session.id("reviewer-1"), session.id("reviewer-2"));
+    let env_atom = bond_atom(AtomClass::Economic, &vendor, "environment");
+    let arbiter_atom = bond_atom(
+        AtomClass::Adjudicator,
+        &session.id("arbiter"),
+        "arbitration",
+    );
+
+    for (who, class, label, amount) in [
+        (
+            "sandbox-vendor",
+            AtomClass::Economic,
+            "environment",
+            usd(5_000),
+        ),
+        ("arbiter", AtomClass::Adjudicator, "arbitration", usd(3_000)),
+        ("coder", AtomClass::Economic, WORKER_BOND_LABEL, usd(100)),
+        (
+            "bounty-hunter",
+            AtomClass::Economic,
+            WORKER_BOND_LABEL,
+            Amount(1),
+        ),
+        ("reviewer-1", AtomClass::Economic, "verifier", usd(1_000)),
+        ("reviewer-2", AtomClass::Economic, "verifier", usd(1_000)),
+    ] {
+        session.must(
+            who,
+            TxKind::PostBond {
+                class,
+                label: label.into(),
+                amount,
+            },
+            Vec::new(),
+        )?;
+    }
+    out.say("           bonds: sandbox-vendor 5,000 USD behind its environment, arbiter 3,000, reviewers 1,000 each, coder 100");
+
+    let environment = ClaimBody {
+        schema: "environment.no-known-exploit/v1".into(),
+        subject:
+            "swe-sandbox-7 has no known exploit that passes grader g-3 without solving the task"
+                .into(),
+        payload: Payload::Commitment(hash_domain("demo/environment", b"swe-sandbox-7")),
+        formula: formulas::bonded_statement(env_atom.id),
+        adjudicator: Some(arbiter_atom.id),
+        detection_permille: 1000,
+        valid_for: 5_000,
+        challenge_period: 2_000,
+    };
+    let env_claim = claim_id(&vendor, &environment);
+    let view = session.must(
+        "sandbox-vendor",
+        TxKind::IssueClaim { claim: environment },
+        Vec::new(),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  sandbox-vendor claims \"swe-sandbox-7 has no known exploit that passes grader g-3\"  [backed by its 5,000 USD bond]",
+        view.pulse
+    ));
+
+    let mut caveats = charter_caveats(lab);
+    caveats.payees = None;
+    caveats.max_per_payment = usd(500);
+    caveats.max_per_window = usd(1_000);
+    let view = session.must(
+        "lab",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card: sion_exec::charter::card_commitment(br#"{"name":"lab eval orchestrator"}"#),
+            caveats,
+            funding: usd(1_000),
+            agent_bond: Amount::ZERO,
+        },
+        Vec::new(),
+    )?;
+    let (agent, allotment) = find(&view, |e| match e {
+        Event::AgentRegistered {
+            agent, allotment, ..
+        } => Some((*agent, *allotment)),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task",
+        view.pulse
+    ));
+    session.wait_pulses(1)?;
+
+    let acceptance = |verifiers: &[sion_core::ids::AccountId]| Acceptance {
+        policy: Policy::standard(),
+        requires: [env_claim].into_iter().collect(),
+        verifiers: verifiers.iter().copied().collect(),
+        adjudicator: Some(arbiter_atom.id),
+        detection_permille: 900,
+        reliance: 2_000,
+    };
+    let deadline = Pulse(session.ledger.pulse()?.0 + 2_000);
+    let post = |session: &mut Session<'_>,
+                acceptance: Acceptance,
+                worker: Option<sion_core::ids::AccountId>,
+                amount: Amount|
+     -> Result<(ObjectId, Pulse), CliError> {
+        let input = session.reference(&allotment)?;
+        let view = session.must(
+            "eval-orchestrator",
+            TxKind::PostTask {
+                spec: hash_domain("demo/task", b"fix issue #4711 in the parser"),
+                acceptance,
+                worker,
+                amount,
+                deadline,
+                charter: Some(agent),
+            },
+            vec![input],
+        )?;
+        let task = find(&view, |e| match e {
+            Event::TaskPosted { task, .. } => Some(*task),
+            _ => None,
+        })?;
+        Ok((task, view.pulse))
+    };
+    let (t1, pulse) = post(session, acceptance(&[r1, r2]), Some(coder), usd(150))?;
+    out.say(format!(
+        "Pulse {pulse:>3}  the orchestrator posts task {}: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on",
+        t1.short()
+    ));
+    out.say("           sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2");
+    let (t2, pulse) = post(session, acceptance(&[r2]), None, usd(40))?;
+    out.say(format!(
+        "Pulse {pulse:>3}  …and task {}: a 40 USD bounty open to anyone, on the same terms",
+        t2.short()
+    ));
+
+    // The work, and what it rests on.
+    let payload = |task, output: &[u8]| {
+        TaskResult {
+            task,
+            output: hash_domain("demo/output", output),
+        }
+        .payload()
+    };
+    let claim = |schema: &str, payload: Payload, formula, detection| ClaimBody {
+        schema: schema.into(),
+        subject: "patch passes grader g-3".into(),
+        payload,
+        formula,
+        adjudicator: Some(arbiter_atom.id),
+        detection_permille: detection,
+        valid_for: 5_000,
+        challenge_period: 2_000,
+    };
+    let verifier_formula = |who: &sion_core::ids::AccountId| {
+        formulas::bonded_statement(bond_atom(AtomClass::Economic, who, "verifier").id)
+    };
+    let a1 = claim(
+        ATTESTATION_SCHEMA,
+        payload(t1, b"patch-4711"),
+        verifier_formula(&r1),
+        1000,
+    );
+    let a2 = claim(
+        ATTESTATION_SCHEMA,
+        payload(t1, b"patch-4711"),
+        verifier_formula(&r2),
+        1000,
+    );
+    let a3 = claim(
+        ATTESTATION_SCHEMA,
+        payload(t2, b"patch-88"),
+        verifier_formula(&r2),
+        1000,
+    );
+    let (a1_id, a2_id, a3_id) = (claim_id(&r1, &a1), claim_id(&r2, &a2), claim_id(&r2, &a3));
+    let requires: std::collections::BTreeSet<ClaimId> = [env_claim].into_iter().collect();
+    let alone = claim(
+        RESULT_SCHEMA,
+        payload(t1, b"patch-4711"),
+        result_formula(&coder, &[], &requires),
+        900,
+    );
+    let attested = claim(
+        RESULT_SCHEMA,
+        payload(t1, b"patch-4711"),
+        result_formula(&coder, &[a1_id, a2_id], &requires),
+        900,
+    );
+    let bounty = claim(
+        RESULT_SCHEMA,
+        payload(t2, b"patch-88"),
+        result_formula(&hunter, &[a3_id], &requires),
+        900,
+    );
+    for (who, body) in [
+        ("reviewer-1", a1.clone()),
+        ("reviewer-2", a2.clone()),
+        ("reviewer-2", a3.clone()),
+        ("coder", alone.clone()),
+    ] {
+        session.must(who, TxKind::IssueClaim { claim: body }, Vec::new())?;
+    }
+    session.wait_pulses(1)?;
+    for (who, body) in [
+        ("coder", attested.clone()),
+        ("bounty-hunter", bounty.clone()),
+    ] {
+        session.must(who, TxKind::IssueClaim { claim: body }, Vec::new())?;
+    }
+    session.wait_pulses(1)?;
+    out.say("           coder submits patch-4711; reviewer-1 and reviewer-2 each attest that it passes, on their own bonds");
+
+    let settle = |session: &mut Session<'_>,
+                  who: &str,
+                  task,
+                  result: &ClaimBody,
+                  attestations: Vec<(sion_core::ids::AccountId, ClaimBody)>| {
+        session.send(
+            who,
+            TxKind::SettleTask {
+                task,
+                result: result.clone(),
+                attestations,
+            },
+            Vec::new(),
+        )
+    };
+    let view = settle(session, "coder", t1, &alone, Vec::new())?;
+    out.say(format!(
+        "Pulse {:>3}  coder claims the 150 USD on its own 100 USD bond → {}",
+        view.pulse,
+        refusal(&view)
+    ));
+    let before = session.balance("coder", AssetId::usd())?;
+    let view = settle(
+        session,
+        "coder",
+        t1,
+        &attested,
+        vec![(r1, a1.clone()), (r2, a2.clone())],
+    )?;
+    let paid = session.balance("coder", AssetId::usd())?;
+    out.say(format!(
+        "Pulse {:>3}  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid {} USD; 300 USD of that backing reserved for the lab",
+        view.pulse,
+        Amount(paid.0.saturating_sub(before.0).saturating_add(view.effects.fee.0))
+    ));
+    let view = settle(
+        session,
+        "coder",
+        t1,
+        &attested,
+        vec![(r1, a1.clone()), (r2, a2.clone())],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  coder settles again → {}: a task is paid once",
+        view.pulse,
+        refusal(&view)
+    ));
+    let view = settle(
+        session,
+        "bounty-hunter",
+        t2,
+        &bounty,
+        vec![(r2, a3.clone())],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  bounty-hunter settles the open bounty with reviewer-2's attestation → {}",
+        view.pulse,
+        match &view.status {
+            ExecStatus::Success => "paid 40 USD".to_string(),
+            _ => refusal(&view),
+        }
+    ));
+
+    // A bounty nobody took is withdrawn.
+    let (t3, _) = post(session, acceptance(&[]), None, usd(30))?;
+    let view = session.must(
+        "eval-orchestrator",
+        TxKind::CancelTask { task: t3 },
+        Vec::new(),
+    )?;
+    let refund = find(&view, |e| match e {
+        Event::TaskCancelled { refund, .. } => Some(*refund),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  the orchestrator withdraws an unclaimed bounty: {refund} USD back to the lab",
+        view.pulse
+    ));
+
+    // The exploit.
+    let view = session.must(
+        "red-team",
+        TxKind::Challenge {
+            claim: env_claim,
+            target: env_atom.id,
+            evidence: hash_domain(
+                "demo/exploit",
+                b"grader g-3 accepts any patch that deletes the failing test",
+            ),
+            deposit: usd(100),
+        },
+        Vec::new(),
+    )?;
+    let challenge = find(&view, |e| match e {
+        Event::ChallengeOpened { challenge, .. } => Some(*challenge),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim",
+        view.pulse
+    ));
+    let lab_before = session.balance("lab", AssetId::usd())?;
+    let red_before = session.balance("red-team", AssetId::usd())?;
+    let view = session.must(
+        "arbiter",
+        TxKind::Rule {
+            challenge,
+            upheld: true,
+        },
+        Vec::new(),
+    )?;
+    let falsified = events(&view)
+        .iter()
+        .filter(|e| matches!(e, Event::Falsified { .. }))
+        .count();
+    let compensated: u128 = events(&view)
+        .iter()
+        .filter_map(|e| match e {
+            Event::Compensated {
+                consumer, amount, ..
+            } if *consumer == lab => Some(amount.0),
+            _ => None,
+        })
+        .sum();
+    session.wait_pulses(1)?;
+    let lab_after = session.balance("lab", AssetId::usd())?;
+    let red_after = session.balance("red-team", AssetId::usd())?;
+    out.say(format!(
+        "Pulse {:>3}  arbiter upholds it: the vendor's bond is slashed, and {falsified} claims fall: the environment's, and the {} results resting on it, paid or not",
+        view.pulse,
+        falsified.saturating_sub(1)
+    ));
+    out.say(format!(
+        "           the lab is compensated {} USD from the vendor's bond for the two results it paid for (lab +{} USD)",
+        Amount(compensated),
+        Amount(lab_after.0.saturating_sub(lab_before.0))
+    ));
+    out.say(format!(
+        "           red-team gets its deposit back and a share of the slashed bond: +{} USD, a bounty for the reward hack paid by the vendor",
+        Amount(red_after.0.saturating_sub(red_before.0))
+    ));
+    Ok(())
+}
+
 fn refusal(view: &TxView) -> String {
     match &view.status {
         ExecStatus::Failed(reason) => format!("refused by the ledger: {reason}"),
@@ -1971,10 +2357,11 @@ fn refusal(view: &TxView) -> String {
     }
 }
 
-pub const ALL: [&str; 10] = [
+pub const ALL: [&str; 11] = [
     "invoice",
     "agents",
     "swarm",
+    "tasks",
     "market",
     "receipts",
     "x402",
@@ -1984,13 +2371,14 @@ pub const ALL: [&str; 10] = [
     "staking",
 ];
 
-/// Runs a named demo (`invoice`, `agents`, `swarm`, `market`, `receipts`,
+/// Runs a named demo (`invoice`, `agents`, `swarm`, `tasks`, `market`, `receipts`,
 /// `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
         "agents" => agents(session, out),
         "swarm" => swarm(session, out),
+        "tasks" => tasks(session, out),
         "market" => market(session, out),
         "receipts" => receipts(session, out),
         "light" => light(session, out),
@@ -2008,7 +2396,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             Ok(())
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, swarm, market, receipts, x402, streams, censorship, light, staking or all"
+            "unknown demo {other:?}; try invoice, agents, swarm, tasks, market, receipts, x402, streams, censorship, light, staking or all"
         ))),
     }
 }

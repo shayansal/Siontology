@@ -149,6 +149,11 @@ impl Wallet {
             }
             TxKind::CreateBounded { asset, total, .. } => vec![(*asset, *total)],
             TxKind::OpenStream { asset, deposit, .. } => vec![(*asset, *deposit)],
+            TxKind::PostTask {
+                amount,
+                charter: None,
+                ..
+            } => vec![(AssetId::usd(), *amount)],
             TxKind::TopUpStream {
                 stream, deposit, ..
             } if *deposit > Amount::ZERO => match view.object(stream).map(|o| o.data) {

@@ -12,6 +12,7 @@ mod knowledge;
 mod market;
 mod memory;
 mod stream;
+mod task;
 mod validators;
 
 use sion_exec::tx::TxKind;
@@ -196,6 +197,30 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
                 seal: *seal,
             },
         ),
+        TxKind::PostTask {
+            spec,
+            acceptance,
+            worker,
+            amount,
+            deadline,
+            charter,
+        } => task::post(
+            run,
+            task::Posting {
+                spec: *spec,
+                acceptance,
+                worker: *worker,
+                amount: *amount,
+                deadline: *deadline,
+                charter: *charter,
+            },
+        ),
+        TxKind::SettleTask {
+            task,
+            result,
+            attestations,
+        } => task::settle(run, *task, result, attestations),
+        TxKind::CancelTask { task } => task::cancel(run, *task),
     }
 }
 
@@ -225,5 +250,11 @@ mod tests {
         assert_eq!(sion_exec::stream::CHECKPOINT_TAG, b"sion/stream/checkpoint");
         // §5.40, v1.9.
         assert_eq!(sion_exec::memory::MAX_CONSISTENCY_PROOF, 128);
+        // §5.42, v1.10.
+        assert_eq!(sion_exec::task::RESULT_SCHEMA, "task.result/v1");
+        assert_eq!(sion_exec::task::ATTESTATION_SCHEMA, "task.attestation/v1");
+        assert_eq!(sion_exec::task::WORKER_BOND_LABEL, "task-worker");
+        assert_eq!(sion_exec::task::MAX_REQUIRED, 16);
+        assert_eq!(sion_exec::task::MAX_VERIFIERS, 16);
     }
 }

@@ -238,6 +238,10 @@ enum Command {
     /// identities, suspend, resume and revoke whole subtrees.
     #[command(subcommand)]
     Agent(sion_cli::agents::AgentCommand),
+    /// Task Charters: escrow work whose acceptance rule is fixed when it is
+    /// posted; attest, submit and settle results; cancel.
+    #[command(subcommand)]
+    Task(sion_cli::tasks::TaskCommand),
     /// Markets.
     #[command(subcommand)]
     Market(MarketCommand),
@@ -288,7 +292,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, market, receipts, x402, streams, censorship, light, staking or all.
+    /// Run a scripted demo: invoice, agents, swarm, tasks, market, receipts, x402, streams, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -1200,6 +1204,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             show_tx(&session.names(), &view);
         }
         Command::Agent(command) => sion_cli::agents::run(&mut session, ledger, command)?,
+        Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,
             agent,

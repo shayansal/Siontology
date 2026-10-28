@@ -139,6 +139,18 @@ See [Payment streams](../concepts/payment-streams.md).
 
 See [Memory for agents and robots](../concepts/memory.md).
 
+## Task Charters
+
+| Kind | What it does | Class | Sentence | Sent by |
+|---|---|---|---|---|
+| `PostTask { spec, acceptance, worker, amount, deadline, charter }` | Escrows `amount` for a task whose acceptance rule is fixed now; with `charter`, from that agent's allotment (`inputs[1]`) under its caveats | owned-linear, or bounded with `charter` | `Escrow <amount> USD for a task for <worker>\|open to anyone, paid … for a result resting on <n> required claims and accepted under your policy, settled by Pulse <deadline>[, from agent <id>'s budget]` | `sion task post` |
+| `SettleTask { task, result, attestations }` | Pays the worker once a result claim with exactly the required formula passes the decision rule; reserves κ times the amount of its backing for the payer | contended (assurance) | `Settle task <id> with your result[ and <n> attestations]` | `sion task settle` |
+| `CancelTask { task }` | Refunds a task: released by its worker, or withdrawn by its poster when open to all or expired | contended (task) | `Cancel task <id> and refund its escrow` | `sion task cancel` |
+
+Results and attestations are claims (`IssueClaim`, schemas `task.result/v1`
+and `task.attestation/v1`), issued with `sion task submit` and
+`sion task attest`. See [Task Charters](../concepts/task-charters.md).
+
 ## Outcomes
 
 Each transaction ends as **Success**, **Failed** or **Rejected**

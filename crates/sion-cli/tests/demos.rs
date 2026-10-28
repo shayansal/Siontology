@@ -130,6 +130,20 @@ fn all_demos_run_and_tell_the_truth() {
             "swarm: missing {expected:?}:\n{text}"
         );
     }
+    for expected in [
+        "coder claims the 150 USD on its own 100 USD bond → refused by the ledger",
+        "is below κ·V = 300",
+        "→ paid 150 USD; 300 USD of that backing reserved for the lab",
+        "a task is paid once",
+        "bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD",
+        "the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab",
+        "the lab is compensated 190 USD from the vendor's bond",
+    ] {
+        assert!(
+            text.contains(expected),
+            "tasks: missing {expected:?}:\n{text}"
+        );
+    }
     assert!(
         text.contains("this devnet has no standby validator"),
         "the staking demo explains what it needs: {text}"

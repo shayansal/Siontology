@@ -1,6 +1,6 @@
 # Run the demos
 
-Ten scripted demos drive real transactions through the whole protocol
+Eleven scripted demos drive real transactions through the whole protocol
 (lane certificates, consensus, Pulse execution, header certificates, data
 availability and proving) and narrate what the ledger established.
 
@@ -12,7 +12,7 @@ sion demo all --local
 validators, 2 shards, dual post-quantum signatures, proving on) and stops it
 at the end. The staking demo needs epochs that end, so it gets a devnet of
 its own with a standby validator and 24-Pulse epochs: `sion demo all
---local` runs the first nine demos on one default devnet, then starts a
+--local` runs the first ten demos on one default devnet, then starts a
 second devnet for the staking demo.
 
 Without `--local`, a demo runs against the node at `--node` (default
@@ -29,6 +29,7 @@ seconds against a running devnet.
 | `invoice` | Trade finance on insured knowledge: a bonded invoice claim, priced with the Assurance Algebra, relied on within its backing, and repaid from slashed bonds when it proves false |
 | `agents` | An AI agent with a budget the ledger enforces: an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent |
 | `swarm` | Agent identities: an orchestrator launches 12 researchers in one transaction and one of them launches 3 of its own, each with its own identity, account and budget; 15 pay at once without consensus; one suspension stops the whole tree and one resumption restarts it |
+| `tasks` | Task Charters: an eval orchestrator posts work from its budget; a result is paid only when it rests on the environment's claim and enough attested backing, and only once; a bounty is settled and another withdrawn; an exploit in the grader is proven and the lab is compensated from the vendor's bond |
 | `market` | A GPU-hour market that clears at one price with an optimality certificate |
 | `receipts` | An AI inference receipt priced under three policies: trusting a TEE, distrusting it, or assuming it broken |
 | `x402` | An AI agent pays an HTTP API per request: `402`, payment under its charter, `200`; a replayed payment and an over-limit payment are refused |
@@ -41,7 +42,7 @@ Run one with `sion demo <name> --local`, except `light`, which needs a
 devnet that has already proven a Pulse ([light](#light) below).
 
 What follows is real output: the first five demos from one run of
-`sion demo all --local`, and the swarm, streams, censorship, light and
+`sion demo all --local`, and the swarm, tasks, streams, censorship, light and
 staking demos from runs of their own on later versions, so chain identities
 differ between them. Account names such as `supplier` and `judge` are deterministic devnet
 wallets: anyone who knows the name can derive the keys.
@@ -115,6 +116,36 @@ Each Pulse line is one transaction, except the payments line, which is
 fifteen transactions certified together. Every refusal comes from the
 ledger: the subagents' code is not involved. See [Agent identities and
 subagents](../concepts/agent-identities.md).
+
+## tasks
+
+```text
+== Task Charters: paying for work only when the result passes a rule fixed in advance ==
+           bonds: sandbox-vendor 5,000 USD behind its environment, arbiter 3,000, reviewers 1,000 each, coder 100
+Pulse  17  sandbox-vendor claims "swe-sandbox-7 has no known exploit that passes grader g-3"  [backed by its 5,000 USD bond]
+Pulse  19  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task
+Pulse  22  the orchestrator posts task 7243db20: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on
+           sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2
+Pulse  24  …and task 0e88a347: a 40 USD bounty open to anyone, on the same terms
+           coder submits patch-4711; reviewer-1 and reviewer-2 each attest that it passes, on their own bonds
+Pulse  41  coder claims the 150 USD on its own 100 USD bond → refused by the ledger: invalid transaction: result not accepted: cost of corruption 90 (after detection discount 900/1000) is below κ·V = 300; only 100 of backing is unreserved; κ·V = 300 is needed
+Pulse  43  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid 150 USD; 300 USD of that backing reserved for the lab
+Pulse  46  coder settles again → refused by the ledger: invalid transaction: the task is not open: a task is paid once
+Pulse  49  bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD
+Pulse  54  the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab
+Pulse  56  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim
+Pulse  58  arbiter upholds it: the vendor's bond is slashed, and 4 claims fall: the environment's, and the 3 results resting on it, paid or not
+           the lab is compensated 190 USD from the vendor's bond for the two results it paid for (lab +190 USD)
+           red-team gets its deposit back and a share of the slashed bond: +2,505 USD, a bounty for the reward hack paid by the vendor
+```
+
+The lab never sees the coder's work: it sees a result claim committed to
+the task and the output, two reviewers' attestations on their own bonds,
+and the vendor's claim about its environment. The ledger pays only when
+those add up to the rule the lab fixed at posting, pays once, and keeps
+the lab's reliance backed until the reliance period ends; the red team is
+paid by the vendor for finding the exploit. See [Task
+Charters](../concepts/task-charters.md).
 
 ## market
 

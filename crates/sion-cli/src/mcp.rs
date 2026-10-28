@@ -139,6 +139,76 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "sion_task_post",
+            "description": "Post a task (Task Charters): escrow money for work whose acceptance rule is fixed now. A result is paid only if it rests on every required claim (for example an environment vendor's bonded 'no known exploit' claim) and on the worker's bond or a named verifier's attestation, and passes the poster's decision rule; κ times the payment of its backing is then reserved, so a result later proven false compensates the poster. Without worker, the task is a bounty anyone may settle. With charter and allotment, the escrow comes from that agent's budget under its caveats.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string", "description": "The poster's wallet (the agent's, with charter)" },
+                    "amount_usd": { "type": "number", "description": "Escrow, paid in full for an accepted result" },
+                    "worker": { "type": "string", "description": "The worker (wallet or account); omit for an open bounty" },
+                    "requires": { "type": "array", "items": { "type": "string" }, "description": "Claim ids every result must rest on" },
+                    "verifiers": { "type": "array", "items": { "type": "string" }, "description": "Verifiers whose attestations count (wallets or accounts)" },
+                    "adjudicator": { "type": "string", "description": "Adjudicator atom id (hex) results must name" },
+                    "deadline_pulses": { "type": "integer", "description": "Pulses until the deadline (default 1000)" },
+                    "detection_permille": { "type": "integer", "description": "Largest detection factor results may declare (default 900)" },
+                    "reliance_pulses": { "type": "integer", "description": "Pulses the backing of a paid result stays reserved (default 1000)" },
+                    "kappa": { "type": "number", "description": "Safety factor κ (default 2)" },
+                    "spec": { "type": "string", "description": "The task's description; its bytes are committed" },
+                    "charter": { "type": "string", "description": "Post from this agent's budget (charter id, hex)" },
+                    "allotment": { "type": "string", "description": "The agent's allotment (hex), with charter" }
+                },
+                "required": ["wallet", "amount_usd"]
+            }
+        },
+        {
+            "name": "sion_task_attest",
+            "description": "Attest, as a verifier the task names, that an output passes: issues an attestation claim resting on the verifier's bond bond:<verifier>:verifier (or bond_label).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "task": { "type": "string", "description": "Task id (hex)" },
+                    "output": { "type": "string", "description": "The output; its bytes are committed" },
+                    "bond_label": { "type": "string" }
+                },
+                "required": ["wallet", "task", "output"]
+            }
+        },
+        {
+            "name": "sion_task_submit",
+            "description": "Submit a result for a task: issues a result claim with exactly the formula the task requires, over the attestations given (claim ids, in order). The worker needs a task bond (bond:<worker>:task-worker), however small.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "task": { "type": "string", "description": "Task id (hex)" },
+                    "output": { "type": "string", "description": "The output; its bytes are committed" },
+                    "attestations": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["wallet", "task", "output"]
+            }
+        },
+        {
+            "name": "sion_task_settle",
+            "description": "Settle a task with your result claim and its attestations (claim ids, in the order the result lists them). The ledger pays only if the result passes the rule fixed when the task was posted, and only once.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "task": { "type": "string", "description": "Task id (hex)" },
+                    "result": { "type": "string", "description": "Result claim id (hex)" },
+                    "attestations": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["wallet", "task", "result"]
+            }
+        },
+        {
+            "name": "sion_task_show",
+            "description": "Show a task: poster, worker, escrow, deadline, the acceptance rule and its state.",
+            "inputSchema": { "type": "object", "properties": { "task": { "type": "string" } }, "required": ["task"] }
+        },
+        {
             "name": "sion_fetch_receipt",
             "description": "Fetch a transaction's receipt and verify it as a light client: the chain identity, the committee certificate of its Pulse and the receipt's inclusion proof. Pass the chain identity you trust as `chain`.",
             "inputSchema": {
@@ -162,6 +232,13 @@ fn usd(value: &Value) -> Result<Amount, CliError> {
     }
     // Reporting boundary: convert to micro-units once, rounding to the micro-unit.
     Ok(Amount((number * 1_000_000.0).round() as u128))
+}
+
+fn text_arg(args: &Value, key: &str) -> Result<String, CliError> {
+    args[key]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| CliError::Usage(format!("{key} required")))
 }
 
 fn hex_id(value: &Value, what: &str) -> Result<Hash32, CliError> {
@@ -409,6 +486,159 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                 "chain_pinned": verified.chain.1,
                 "verified": true,
             }))
+        }
+        "sion_task_post" => {
+            let wallet = text_arg(args, "wallet")?;
+            let ids = |key: &str| -> Result<Vec<Hash32>, CliError> {
+                args[key]
+                    .as_array()
+                    .map(|items| items.iter().map(|v| hex_id(v, key)).collect())
+                    .unwrap_or_else(|| Ok(Vec::new()))
+            };
+            let kappa = args["kappa"].as_f64().unwrap_or(2.0).max(1.0);
+            let acceptance = sion_exec::task::Acceptance {
+                policy: Policy::standard()
+                    .with_kappa(Ratio::new((kappa * 1000.0).round() as u64, 1000)),
+                requires: ids("requires")?
+                    .into_iter()
+                    .map(ClaimId::from_hash)
+                    .collect(),
+                verifiers: args["verifiers"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|v| session.id(v))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                adjudicator: match args["adjudicator"].as_str() {
+                    Some(_) => Some(AtomId::from_hash(hex_id(
+                        &args["adjudicator"],
+                        "adjudicator",
+                    )?)),
+                    None => None,
+                },
+                detection_permille: args["detection_permille"].as_u64().unwrap_or(900).min(1000)
+                    as u16,
+                reliance: args["reliance_pulses"].as_u64().unwrap_or(1_000),
+            };
+            let charter = match args["charter"].as_str() {
+                Some(_) => Some(ObjectId::from_hash(hex_id(&args["charter"], "charter")?)),
+                None => None,
+            };
+            let extra = match charter {
+                Some(_) => vec![session.reference(&ObjectId::from_hash(hex_id(
+                    &args["allotment"],
+                    "allotment",
+                )?))?],
+                None => Vec::new(),
+            };
+            let deadline = Pulse(
+                session.ledger.pulse()?.0 + args["deadline_pulses"].as_u64().unwrap_or(1_000),
+            );
+            let spec = sion_core::hash::hash_domain(
+                "sion/task/spec",
+                args["spec"].as_str().unwrap_or("").as_bytes(),
+            );
+            let worker = args["worker"].as_str().map(|w| session.id(w));
+            let view = session.send(
+                &wallet,
+                TxKind::PostTask {
+                    spec,
+                    acceptance,
+                    worker,
+                    amount: usd(&args["amount_usd"])?,
+                    deadline,
+                    charter,
+                },
+                extra,
+            )?;
+            let task = view.effects.events.iter().find_map(|e| match e {
+                Event::TaskPosted { task, .. } => Some(*task),
+                _ => None,
+            });
+            Ok(json!({
+                "task": task,
+                "pulse": view.pulse,
+                "status": view.status,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
+        }
+        "sion_task_attest" | "sion_task_submit" => {
+            let wallet = text_arg(args, "wallet")?;
+            let task = ObjectId::from_hash(hex_id(&args["task"], "task")?);
+            let output = args["output"].as_str().unwrap_or("").as_bytes().to_vec();
+            let who = session.id(&wallet);
+            let body = if name == "sion_task_attest" {
+                crate::tasks::attestation_body(
+                    session.ledger,
+                    task,
+                    &who,
+                    &output,
+                    args["bond_label"]
+                        .as_str()
+                        .unwrap_or(crate::tasks::VERIFIER_BOND_LABEL),
+                )?
+            } else {
+                let attestations = args["attestations"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|v| hex_id(v, "attestation").map(ClaimId::from_hash))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .unwrap_or_else(|| Ok(Vec::new()))?;
+                crate::tasks::result_body(session.ledger, task, &who, &output, &attestations)?
+            };
+            let claim = claim_id(&who, &body);
+            let view = session.send(&wallet, TxKind::IssueClaim { claim: body }, Vec::new())?;
+            Ok(json!({
+                "claim": claim,
+                "pulse": view.pulse,
+                "status": view.status,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+                "note": "the claim joins the knowledge log at the end of this Pulse; use it from the next one",
+            }))
+        }
+        "sion_task_settle" => {
+            let wallet = text_arg(args, "wallet")?;
+            let task = ObjectId::from_hash(hex_id(&args["task"], "task")?);
+            let result =
+                crate::tasks::stored_claim(session.ledger, args["result"].as_str().unwrap_or(""))?;
+            let attestations = args["attestations"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|v| {
+                            crate::tasks::stored_claim(session.ledger, v.as_str().unwrap_or(""))
+                                .map(|c| (c.issuer, c.body))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .unwrap_or_else(|| Ok(Vec::new()))?;
+            let view = session.send(
+                &wallet,
+                TxKind::SettleTask {
+                    task,
+                    result: result.body,
+                    attestations,
+                },
+                Vec::new(),
+            )?;
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "events": view.effects.events,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
+        }
+        "sion_task_show" => {
+            let task = ObjectId::from_hash(hex_id(&args["task"], "task")?);
+            crate::tasks::describe(session.ledger, task)
         }
         other => Err(CliError::Usage(format!("unknown tool {other}"))),
     }

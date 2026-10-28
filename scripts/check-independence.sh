@@ -42,6 +42,8 @@ forbidden = [
      "sion_exec::stream helpers (only the Stream, Checkpoints and Jump types and the §5.31 constants are allowed)"),
     (r"\bPayerChain\b|\bextends\s*\(|\bcheckpoint_leaf\b|\bverify_jump\b|\bjump_hashes\b|\bcheckpoint_count\b|\bwalk\s*\(",
      "sion_exec::stream helpers"),
+    (r"\bresult_formula\b|\bworker_bond\b|TaskResult::payload\b",
+     "sion_exec::task helpers (result_formula, worker_bond, TaskResult::payload)"),
 ]
 
 # The sion_exec::pulse items the library may use: type definitions only

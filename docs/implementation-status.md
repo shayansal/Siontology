@@ -44,6 +44,7 @@ live.
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Partly built (the ledger's part) |
+| Orchestration: Task Charters, escrowed work with acceptance fixed at posting (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: payments to provers, value-in-flight cap | Not built |
@@ -377,6 +378,31 @@ the index and manifest roots are stored unchecked (atom
 index and its completeness proofs, belief folding, encryption), command-
 line and MCP interfaces, aggregators that commit many logs in one claim,
 curators of shared world memory, and storage with proofs.
+
+### Orchestration
+
+**Task Charters: built (specification v1.10).** Not in the architecture
+paper; added for work bought across trust boundaries
+([concept](book/src/concepts/task-charters.md), [design
+note](book/src/research/agent-scale.md)). `PostTask` escrows money for a
+task and fixes its acceptance rule: the poster's policy, the claims every
+result must rest on, the verifiers whose attestations count, the
+adjudicator, the largest detection factor and the reliance period. An
+agent posts from its allotment under its caveats. `SettleTask` pays once
+a result claim that commits to the task, and whose formula is exactly the
+worker's bond or a named verifier's attestation of the same output and
+every required claim, passes the decision rule; it reserves κ times the
+payment of the result's backing for the payer, so a falsified result
+compensates it. `CancelTask` refunds tasks released by their worker, open
+ones and expired ones. Both proof stacks implement it, with differential
+tests for every rule and failure, including an exploit proven against an
+environment claim and the compensation that follows; the CLI has
+`sion task …`, the MCP server `sion_task_*` tools, and the demo `tasks`.
+**Simplified:** settlements reserve backing in the one contended assurance
+registry, so they are ordered one after another. **Not built:** batches
+of outputs checked by beacon-chosen samples, assignment markets on the
+ledger, automatic slashing for two signed outputs of one deterministic
+task, capability leases at gateways, dataset manifests.
 
 ### Economics
 

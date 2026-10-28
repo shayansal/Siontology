@@ -30,12 +30,19 @@ of corruption, the decision rule, reservations and slashing. See
 bond, a piece of hardware, an institution. Each has a class and, if
 bonded, a bond.
 
+**Attestation.** A verifier's claim (`task.attestation/v1`) that a task's
+output passes, resting on the verifier's bond. A result may rest on the
+attestations of verifiers the task names.
+
 **Beacon.** Public randomness for each Pulse, from validators' hash-chain
 reveals. It seals market batches, breaks clearing ties and seeds lane
 committees.
 
 **Bond.** Money posted behind an atom, slashed if a challenge against it
 is upheld.
+
+**Bounty.** A task that names no worker: anyone may settle it with an
+acceptable result, and its poster may withdraw it until then.
 
 **Certificate.** Signatures from more than two thirds of a committee's
 weight: on a transaction's inputs (a lane certificate), or on a Pulse
@@ -146,11 +153,11 @@ ordered transactions. See [Neo-blockchains](../concepts/neo-blockchains.md).
 **Obligation.** A forced intent a shard owes, held in the state with a
 deadline.
 
-**Overseer.** For an agent identity: its backer, its principal, or the
-agent of any charter above it. Any overseer may suspend or revoke it.
-
 **Operator.** The account that stakes for a validator and receives its
 rewards and withdrawals.
+
+**Overseer.** For an agent identity: its backer, its principal, or the
+agent of any charter above it. Any overseer may suspend or revoke it.
 
 **Payment stream.** Escrow from one payer for one payee, paid off the
 ledger by revealing a hash chain's elements, one per payment, and settled
@@ -175,6 +182,9 @@ receipts root; for agent payments, also a receipt claim.
 when it relies on the claim, so no claim is relied on beyond its backing.
 See [Reservations](../concepts/assurance/reservations.md).
 
+**Result claim.** A worker's claim (`task.result/v1`) that commits to a
+task and its output, with exactly the formula the task requires.
+
 **Rotation.** Replacing a shard's lane committee after it misses a
 forced-inclusion deadline.
 
@@ -198,13 +208,17 @@ what it forfeits if it equivocates.
 
 **State root.** The root of the sparse Merkle tree over every object.
 
+**Stream desk.** The payee's side of payment streams in `sion_cli`: it
+checks each payment with one hash, decides when to settle, and settles by
+walk or jump.
+
 **Subagent.** An agent launched by another with `SpawnAgents`: its own
 identity, account, card and budget, with caveats and a window limit carved
 from its parent's.
 
-**Stream desk.** The payee's side of payment streams in `sion_cli`: it
-checks each payment with one hash, decides when to settle, and settles by
-walk or jump.
+**Task.** Escrow for a piece of work, with the rule a result must pass
+fixed when it is posted (specification v1.10). See [Task
+Charters](../concepts/task-charters.md).
 
 **The Fold.** Folding every chunk proof of a Pulse into one World Proof.
 See [The Fold and World Proofs](../concepts/the-fold.md).

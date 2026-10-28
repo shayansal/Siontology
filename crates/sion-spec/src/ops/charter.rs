@@ -191,7 +191,7 @@ fn oversees(run: &mut TxRun<'_>, charter: &Charter, sender: AccountId) -> Step<b
 }
 
 /// Splits a loaded object into its charter.
-fn as_charter(object: &Object) -> Step<Charter> {
+pub(super) fn as_charter(object: &Object) -> Step<Charter> {
     match &object.data {
         ObjectData::Charter(charter) => Ok(charter.clone()),
         _ => Err(fail(format!("{} is not a charter", object.id))),
@@ -199,7 +199,7 @@ fn as_charter(object: &Object) -> Step<Charter> {
 }
 
 /// Splits a loaded object into its allotment.
-fn as_allotment(object: &Object) -> Step<Allotment> {
+pub(super) fn as_allotment(object: &Object) -> Step<Allotment> {
     match &object.data {
         ObjectData::Allotment(allotment) => Ok(allotment.clone()),
         _ => Err(fail(format!("{} is not an allotment", object.id))),
@@ -207,7 +207,7 @@ fn as_allotment(object: &Object) -> Step<Allotment> {
 }
 
 /// The allotment a charter operation spends from: `tx.inputs[1]`.
-fn allotment_input(run: &TxRun<'_>) -> Step<ObjectId> {
+pub(super) fn allotment_input(run: &TxRun<'_>) -> Step<ObjectId> {
     run.tx
         .inputs
         .get(1)

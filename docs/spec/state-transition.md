@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.9
+# The Siontology state transition — specification v1.10
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -25,7 +25,7 @@ It does **not** re-specify:
 - **Data layouts.** The Rust type definitions in `sion_core`, `sion_crypto`,
   `sion_assurance`, `sion_clearing` and the *type definitions* in
   `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
-  `stream`, `memory`, `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
+  `stream`, `memory`, `task`, `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
   normative; their canonical encoding is Borsh. One rule goes beyond the
@@ -51,7 +51,9 @@ logic: `sion_exec::execute`, `sion_exec::pulse` (other than the type
 definitions and the commitment helpers named in §7), `sion_exec::stateless`,
 `sion_exec::wallet`, `sion_exec::sim`, `sion_exec::genesis`, the
 `sion_exec::stream` helpers (`step`, `walk`, `extends`, `checkpoint_leaf`,
-`jump_hashes`, `verify_jump`, `PayerChain`, `Stream::checkpoint_count`), nor
+`jump_hashes`, `verify_jump`, `PayerChain`, `Stream::checkpoint_count`), the
+`sion_exec::task` helpers (`result_formula`, `worker_bond`,
+`TaskResult::payload`), nor
 the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
@@ -891,6 +893,105 @@ queries are relative to the committed `index`; that the index matches the
 log is a trust atom (`impl:memory-index`) until fraud proofs for it are
 built.
 
+### 5.42 PostTask { spec, acceptance, worker, amount, deadline, charter }
+
+A **task** escrows `amount` for work whose result must pass an acceptance
+rule fixed now, when the task is posted. Owned-linear, or bounded with
+`charter`; the task is a shared object in its own domain. Constants of
+`sion_exec::task`:
+`RESULT_SCHEMA` (`task.result/v1`), `ATTESTATION_SCHEMA`
+(`task.attestation/v1`), `WORKER_BOND_LABEL` (`task-worker`),
+`MAX_REQUIRED` (16) and `MAX_VERIFIERS` (16).
+
+1. `amount > 0`; `ctx.pulse < deadline ≤ ctx.pulse + MAX_PERIOD`
+   (saturating); `|acceptance.requires| ≤ MAX_REQUIRED`;
+   `|acceptance.verifiers| ≤ MAX_VERIFIERS`;
+   `acceptance.detection_permille ≤ 1000`; `1 ≤ acceptance.reliance ≤
+   MAX_PERIOD`.
+2. Funding:
+   - `charter = None`: `draw(USD, amount)`; `funder = None`; `refund_to =
+     sender`.
+   - `charter = Some(c)`: `allotment_id = tx.inputs[1].id` (error if
+     absent); load it (MUST be an allotment), then load `c` (MUST be a
+     charter); **chain check** `c`; the allotment's `source` MUST be `c`,
+     and its `writer` and `c.agent` MUST be the sender; it MUST have
+     caveats `k`. If `worker = None`, `k.payees` MUST be `None`: an agent
+     limited to listed payees cannot post work anyone may take.
+     `evidence_ok = (acceptance.policy = k.evidence_policy)`;
+     **spend**(allotment, `worker` or, for an open task, the sender,
+     `amount`, `Some(evidence_ok)`) (§5.13), so the escrow counts against
+     the agent's balance, payees, per-payment and window limits, and a task
+     above the evidence threshold must be accepted under the charter's own
+     policy; store the allotment; `funder = Some(c)`; `refund_to =
+     c.backer`.
+3. `task = created_id(digest, next_index)`; `create(Shared(object_domain(
+   "task", task)), Task { poster: sender, funder, refund_to, spec,
+   acceptance, worker, amount, deadline, posted_at: ctx.pulse, state: Open
+   })`.
+4. Event `TaskPosted { task, poster: sender, worker, amount, deadline }`.
+
+### 5.43 SettleTask { task, result, attestations }
+
+Contended, in the assurance domain. `result` is the body of the sender's
+result claim; `attestations` lists `(verifier, body)` pairs.
+
+1. Load `task` (MUST be a task, call it `t`); `t.state = Open`;
+   `ctx.pulse ≤ t.deadline`; if `t.worker = Some(w)`, the sender MUST be
+   `w` (an open task may be settled by anyone).
+2. `r = claim_id(sender, result)`. Load the assurance object; the registry
+   MUST hold `r` with status Active.
+3. `result.schema = RESULT_SCHEMA`; `result.payload = Public(bytes)` with
+   `decode::<TaskResult>(bytes) = TaskResult { task, output }` for this
+   `task` and some `output`.
+4. `|attestations| ≤ MAX_VERIFIERS`; their verifiers are distinct. For
+   each `(v, body)`: `v ∈ t.acceptance.verifiers`; `a = claim_id(v,
+   body)` is Active in the registry; `body.schema = ATTESTATION_SCHEMA`;
+   `body.payload = result.payload`.
+5. The result's formula MUST be exactly
+   `Formula::and([dual_signature(), Formula::or(alternatives),
+   Formula::claim(q₁), …, Formula::claim(qⱼ)])`, where `alternatives` is
+   `Formula::atom(bond_atom(Economic, sender, WORKER_BOND_LABEL).id)`
+   followed by `Formula::claim(a)` for each attestation in the order
+   listed, and `q₁ < … < qⱼ` are
+   `t.acceptance.requires`. The registry's record of `r` MUST name
+   `t.acceptance.adjudicator` as its adjudicator, and
+   `result.detection_permille ≤ t.acceptance.detection_permille`.
+6. `(decision, reservation) = accept_and_reserve(&mut registry,
+   t.acceptance.policy, t.refund_to, r, t.amount, ctx.pulse +
+   t.acceptance.reliance (saturating), nonce)`, where `nonce` is the
+   first 8 bytes of `task`'s identifier read as a big-endian integer;
+   `reservation = None` is an error ("not accepted").
+7. Store the assurance object; defer `Schedule { at: ctx.pulse +
+   reliance, event: RegistryTick }`.
+8. `mint(sender, USD, t.amount)`; `t.state = Settled { worker: sender,
+   result: r, reservation, at: ctx.pulse }`; store the task.
+9. Event `TaskSettled { task, worker: sender, result: r, amount, reservation }`.
+
+Step 5 fixes what a result rests on: the worker's own task bond, or any
+named verifier's attestation of the same output, and every required
+claim. A worker therefore needs a task bond, however small, to issue a
+result at all (a claim's atoms must be registered, §5.4). A worker cannot make a result look harder to fake by citing
+unrelated claims, and cannot leave out the environment's. Because the
+reservation is made for `t.refund_to`, if a required claim is later
+proven false (an exploit in the environment, say), the result falls with
+it, and the party whose money paid for it is compensated from the slashed
+bonds the reservation holds (§5.10).
+
+A task is paid at most once: settling it closes it.
+
+### 5.44 CancelTask { task }
+
+Contended, in the task's domain.
+
+1. Load `task` (MUST be a task, `t`); `t.state = Open`.
+2. The sender MUST be `t.worker` (a worker releases its task), or `t.poster`
+   or `t.refund_to` when `t.worker = None` (an open task) or `ctx.pulse >
+   t.deadline` (an expired one). A worker named by a task can therefore
+   count on it until the deadline, whoever posted it.
+3. `mint(t.refund_to, USD, t.amount)`; `t.state = Cancelled { by: sender,
+   at: ctx.pulse }`; store.
+4. Event `TaskCancelled { task, refund: t.amount, to: t.refund_to }`.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -1225,6 +1326,23 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.10.** Task Charters (§5.42 to §5.44). `PostTask` escrows money for
+  a task whose acceptance is fixed when it is posted: the policy the
+  decision rule runs under, the claims every result must rest on (an
+  environment's bonded "no known exploit" claim, say), the verifiers whose
+  attestations count, the adjudicator, the largest detection factor and how
+  long the poster relies on a paid result. An agent posts from its
+  allotment, under its caveats. `SettleTask` pays the worker once a result
+  claim whose payload commits to the task, and whose formula is exactly
+  the worker's bond or a named verifier's attestation of the same output
+  and every required claim, passes the decision rule; κ times the payment
+  of its backing is reserved for the party whose money paid, so a result
+  later proven false compensates it. `CancelTask` refunds an open task, an
+  expired one, or one its worker releases. New types
+  `sion_exec::task::{Task, TaskState, Acceptance, TaskResult}`, object
+  `ObjectData::Task`, transaction kinds and events; the supply counts open
+  task escrow.
 
 - **v1.9.** Memory logs (§5.40, §5.41). `OpenMemory` creates a memory log
   owned by its writer, optionally for an agent identity whose agent is the

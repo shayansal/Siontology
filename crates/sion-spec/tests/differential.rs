@@ -133,6 +133,18 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::OpenMemory { agent: Some(_), .. } => "OpenMemory(agent)",
         TxKind::OpenMemory { .. } => "OpenMemory",
         TxKind::CommitMemory { .. } => "CommitMemory",
+        TxKind::PostTask {
+            charter: Some(_),
+            worker: Some(_),
+            ..
+        } => "PostTask(agent)",
+        TxKind::PostTask {
+            charter: Some(_), ..
+        } => "PostTask(agent, open)",
+        TxKind::PostTask { worker: None, .. } => "PostTask(open)",
+        TxKind::PostTask { .. } => "PostTask",
+        TxKind::SettleTask { .. } => "SettleTask",
+        TxKind::CancelTask { .. } => "CancelTask",
     }
 }
 
@@ -3086,6 +3098,670 @@ fn memory_logs_open_grow_seal_and_follow_their_agent() {
 #[test]
 fn memory_logs_many_transactions_per_chunk() {
     memory(4).summary("memory (chunks of 4)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: Task Charters (spec v1.10)
+// ---------------------------------------------------------------------------
+
+fn task_posted(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::TaskPosted { task, .. } => Some(*task),
+                _ => None,
+            })
+        })
+        .expect("task posted")
+}
+
+fn task_state(h: &Harness, id: &ObjectId) -> sion_exec::task::Task {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Task(task) => (**task).clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn acceptance(
+    requires: &[ClaimId],
+    verifiers: &[AccountId],
+    adjudicator: sion_core::ids::AtomId,
+) -> sion_exec::task::Acceptance {
+    sion_exec::task::Acceptance {
+        policy: Policy::standard(),
+        requires: requires.iter().copied().collect(),
+        verifiers: verifiers.iter().copied().collect(),
+        adjudicator: Some(adjudicator),
+        detection_permille: 900,
+        reliance: 100,
+    }
+}
+
+/// A result or attestation body committing to `task` and `output`.
+fn task_claim(
+    schema: &str,
+    task: ObjectId,
+    output: &[u8],
+    formula: Formula,
+    adjudicator: sion_core::ids::AtomId,
+    detection_permille: u16,
+) -> ClaimBody {
+    ClaimBody {
+        schema: schema.into(),
+        subject: format!("work for task {}", task.0.short()),
+        payload: sion_exec::task::TaskResult {
+            task,
+            output: hash_domain("test/output", output),
+        }
+        .payload(),
+        formula,
+        adjudicator: Some(adjudicator),
+        detection_permille,
+        valid_for: 500,
+        challenge_period: 200,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn post_task(
+    h: &mut Harness,
+    who: &str,
+    acceptance: sion_exec::task::Acceptance,
+    worker: Option<AccountId>,
+    amount: Amount,
+    deadline: Pulse,
+    charter: Option<(ObjectId, ObjectId)>,
+) -> SignedTransaction {
+    let kind = TxKind::PostTask {
+        spec: hash_domain("test/spec", who.as_bytes()),
+        acceptance,
+        worker,
+        amount,
+        deadline,
+        charter: charter.map(|(c, _)| c),
+    };
+    match charter {
+        Some((_, allotment)) => {
+            let input = h.reference(&allotment);
+            h.tx_with(who, kind, vec![input])
+        }
+        None => h.tx(who, kind),
+    }
+}
+
+fn settle_task(
+    h: &mut Harness,
+    who: &str,
+    task: ObjectId,
+    result: &ClaimBody,
+    attestations: &[(&str, &ClaimBody)],
+) -> SignedTransaction {
+    let attestations = attestations
+        .iter()
+        .map(|(name, body)| (h.id(name), (*body).clone()))
+        .collect();
+    h.tx(
+        who,
+        TxKind::SettleTask {
+            task,
+            result: result.clone(),
+            attestations,
+        },
+    )
+}
+
+const TASK_NAMES: [&str; 11] = [
+    "lab",
+    "orchestrator",
+    "narrow",
+    "vendor",
+    "worker",
+    "hunter",
+    "verifier-1",
+    "verifier-2",
+    "judge",
+    "challenger",
+    "stranger",
+];
+
+fn tasks(chunk_size: usize) -> Harness {
+    use sion_exec::task::{result_formula, worker_bond, ATTESTATION_SCHEMA, RESULT_SCHEMA};
+
+    let mut h = Harness::new(&TASK_NAMES, 100_000, 8, chunk_size);
+    let id = |h: &Harness, name: &str| h.id(name);
+    let (orchestrator, narrow, worker, hunter) = (
+        id(&h, "orchestrator"),
+        id(&h, "narrow"),
+        id(&h, "worker"),
+        id(&h, "hunter"),
+    );
+    let (v1, v2) = (id(&h, "verifier-1"), id(&h, "verifier-2"));
+    let env_atom = bond_atom(AtomClass::Economic, &id(&h, "vendor"), "environment");
+    let judge_atom = bond_atom(AtomClass::Adjudicator, &id(&h, "judge"), "arbitration");
+    let verifier_atom = |who: &AccountId| bond_atom(AtomClass::Economic, who, "verifier");
+
+    // Bonds, and two agents: an orchestrator that may pay anyone, and one
+    // limited to paying the worker.
+    let bond = |h: &mut Harness, who: &str, class, label: &str, amount| {
+        h.tx(
+            who,
+            TxKind::PostBond {
+                class,
+                label: label.into(),
+                amount: units(amount),
+            },
+        )
+    };
+    let mut wide = charter_caveats(worker);
+    wide.payees = None;
+    wide.max_per_payment = units(500);
+    let register = |h: &mut Harness, agent: AccountId, caveats: Caveats| {
+        h.tx(
+            "lab",
+            TxKind::RegisterAgent {
+                agent,
+                card: card_commitment(b"agent"),
+                caveats,
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+    };
+    let txs = vec![
+        bond(&mut h, "vendor", AtomClass::Economic, "environment", 5_000),
+        bond(
+            &mut h,
+            "judge",
+            AtomClass::Adjudicator,
+            "arbitration",
+            3_000,
+        ),
+        bond(&mut h, "worker", AtomClass::Economic, "task-worker", 100),
+        // The bounty hunter's bond is nominal: its result rests on an
+        // attestation.
+        h.tx(
+            "hunter",
+            TxKind::PostBond {
+                class: AtomClass::Economic,
+                label: "task-worker".into(),
+                amount: Amount(1),
+            },
+        ),
+        bond(&mut h, "verifier-1", AtomClass::Economic, "verifier", 1_000),
+        bond(&mut h, "verifier-2", AtomClass::Economic, "verifier", 1_000),
+    ];
+    let reg_orchestrator = register(&mut h, orchestrator, wide);
+    let reg_narrow = register(&mut h, narrow, charter_caveats(worker));
+    let mut all = txs;
+    all.push(reg_orchestrator.clone());
+    all.push(reg_narrow.clone());
+    let out = h.pulse(all);
+    let orchestrator_agent = agent_registered(&out, &reg_orchestrator);
+    let narrow_agent = agent_registered(&out, &reg_narrow);
+
+    // The environment vendor's bonded claim that its environment has no
+    // known exploit passing its grader.
+    let environment = ClaimBody {
+        schema: "environment.no-known-exploit/v1".into(),
+        subject: "environment sandbox-7 has no known exploit passing grader g-3".into(),
+        payload: Payload::Commitment(hash_domain("test/environment", b"sandbox-7")),
+        formula: formulas::bonded_statement(env_atom.id),
+        adjudicator: Some(judge_atom.id),
+        detection_permille: 1000,
+        valid_for: 500,
+        challenge_period: 200,
+    };
+    let env_claim = claim_id(&id(&h, "vendor"), &environment);
+    let tx = h.tx("vendor", TxKind::IssueClaim { claim: environment });
+    h.pulse(vec![tx]);
+
+    let terms = |verifiers: &[AccountId]| acceptance(&[env_claim], verifiers, judge_atom.id);
+
+    // Posting: a direct task from the orchestrator's budget, and failures
+    // that change nothing but the fee.
+    let base = h.pulse_number();
+    let t1_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[v1, v2]),
+        Some(worker),
+        units(150),
+        Pulse(base + 60),
+        Some(orchestrator_agent),
+    );
+    let zero = post_task(
+        &mut h,
+        "lab",
+        terms(&[]),
+        Some(worker),
+        Amount::ZERO,
+        Pulse(base + 60),
+        None,
+    );
+    let past = post_task(
+        &mut h,
+        "lab",
+        terms(&[]),
+        Some(worker),
+        units(1),
+        Pulse(0),
+        None,
+    );
+    let mut reckless = terms(&[]);
+    reckless.reliance = 0;
+    let no_reliance = post_task(
+        &mut h,
+        "lab",
+        reckless,
+        Some(worker),
+        units(1),
+        Pulse(base + 9),
+        None,
+    );
+    let narrow_open = post_task(
+        &mut h,
+        "narrow",
+        terms(&[]),
+        None,
+        units(10),
+        Pulse(base + 9),
+        Some(narrow_agent),
+    );
+    let out = h.pulse(vec![
+        t1_tx.clone(),
+        zero.clone(),
+        past.clone(),
+        no_reliance.clone(),
+        narrow_open.clone(),
+    ]);
+    expect(&out, &t1_tx, Outcome::Success);
+    expect(&out, &zero, Outcome::Failed);
+    expect(&out, &past, Outcome::Failed);
+    expect(&out, &no_reliance, Outcome::Failed);
+    expect(&out, &narrow_open, Outcome::Failed);
+    let t1 = task_posted(&out, &t1_tx);
+    assert_eq!(task_state(&h, &t1).refund_to, id(&h, "lab"));
+    assert_eq!(task_state(&h, &t1).funder, Some(orchestrator_agent.0));
+
+    // An open bounty from the budget; one above the per-payment limit; one
+    // from an allotment that is not the poster's charter's.
+    let base = h.pulse_number();
+    let t2_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[v2]),
+        None,
+        units(40),
+        Pulse(base + 60),
+        Some(orchestrator_agent),
+    );
+    let mismatched = post_task(
+        &mut h,
+        "narrow",
+        terms(&[]),
+        Some(worker),
+        units(5),
+        Pulse(base + 9),
+        Some((orchestrator_agent.0, narrow_agent.1)),
+    );
+    let out = h.pulse(vec![t2_tx.clone(), mismatched.clone()]);
+    expect(&out, &t2_tx, Outcome::Success);
+    expect(&out, &mismatched, Outcome::Failed);
+    let t2 = task_posted(&out, &t2_tx);
+    let base = h.pulse_number();
+    let over_limit = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[]),
+        Some(worker),
+        units(600),
+        Pulse(base + 9),
+        Some(orchestrator_agent),
+    );
+    let out = h.pulse(vec![over_limit.clone()]);
+    expect(&out, &over_limit, Outcome::Failed);
+
+    // Attestations of the outputs, then results.
+    let attest = |task, output: &[u8], who: &AccountId| {
+        task_claim(
+            ATTESTATION_SCHEMA,
+            task,
+            output,
+            formulas::bonded_statement(verifier_atom(who).id),
+            judge_atom.id,
+            1000,
+        )
+    };
+    let a1 = attest(t1, b"t1 output", &v1);
+    let a2 = attest(t1, b"t1 output", &v2);
+    let a3 = attest(t2, b"t2 output", &v2);
+    let unnamed = attest(t2, b"t2 output", &v1);
+    let txs = vec![
+        h.tx("verifier-1", TxKind::IssueClaim { claim: a1.clone() }),
+        h.tx("verifier-2", TxKind::IssueClaim { claim: a2.clone() }),
+        h.tx("verifier-2", TxKind::IssueClaim { claim: a3.clone() }),
+        h.tx(
+            "verifier-1",
+            TxKind::IssueClaim {
+                claim: unnamed.clone(),
+            },
+        ),
+    ];
+    h.pulse(txs);
+    let (a1_id, a2_id, a3_id) = (claim_id(&v1, &a1), claim_id(&v2, &a2), claim_id(&v2, &a3));
+
+    let requires = task_state(&h, &t1).acceptance.requires.clone();
+    let result = |task, output: &[u8], formula| {
+        task_claim(RESULT_SCHEMA, task, output, formula, judge_atom.id, 900)
+    };
+    let good = result(
+        t1,
+        b"t1 output",
+        result_formula(&worker, &[a1_id, a2_id], &requires),
+    );
+    let without_environment = result(
+        t1,
+        b"t1 output",
+        result_formula(&worker, &[a1_id, a2_id], &BTreeSet::new()),
+    );
+    let bond_only = result(t1, b"t1 output", result_formula(&worker, &[], &requires));
+    let elsewhere = result(
+        t2,
+        b"t1 output",
+        result_formula(&worker, &[a1_id, a2_id], &requires),
+    );
+    let bounty = result(
+        t2,
+        b"t2 output",
+        result_formula(&hunter, &[a3_id], &requires),
+    );
+    assert!(h
+        .chain
+        .state
+        .registry()
+        .atom(&worker_bond(&hunter))
+        .is_some());
+    let txs = vec![
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: good.clone(),
+            },
+        ),
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: without_environment.clone(),
+            },
+        ),
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: bond_only.clone(),
+            },
+        ),
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: elsewhere.clone(),
+            },
+        ),
+        h.tx(
+            "hunter",
+            TxKind::IssueClaim {
+                claim: bounty.clone(),
+            },
+        ),
+    ];
+    h.pulse(txs);
+
+    // Settling: every way a result can fail the rule fixed at posting.
+    let wrong_worker = settle_task(
+        &mut h,
+        "stranger",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let missing_environment = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &without_environment,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let too_weak = settle_task(&mut h, "worker", t1, &bond_only, &[]);
+    let other_task = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &elsewhere,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let unnamed_verifier = settle_task(&mut h, "hunter", t2, &bounty, &[("verifier-1", &unnamed)]);
+    let missing_attestation = settle_task(&mut h, "worker", t1, &good, &[("verifier-1", &a1)]);
+    let twice = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-1", &a1)],
+    );
+    let out = h.pulse(vec![
+        wrong_worker.clone(),
+        missing_environment.clone(),
+        too_weak.clone(),
+        other_task.clone(),
+        unnamed_verifier.clone(),
+        missing_attestation.clone(),
+        twice.clone(),
+    ]);
+    for (tx, why) in [
+        (&wrong_worker, "only the task's worker"),
+        (
+            &missing_environment,
+            "formula is not the one the task requires",
+        ),
+        (&too_weak, "not accepted"),
+        (&other_task, "does not commit to this task"),
+        (&unnamed_verifier, "verifier the task does not name"),
+        (
+            &missing_attestation,
+            "formula is not the one the task requires",
+        ),
+        (&twice, "one attestation per verifier"),
+    ] {
+        match status_of(&out, tx) {
+            ExecStatus::Failed(reason) => assert!(reason.contains(why), "{reason}"),
+            other => panic!("expected a failure ({why}), got {other:?}"),
+        }
+    }
+
+    // The honest settlement pays the worker once; a second one fails.
+    let before = h.balance("worker", &usd());
+    let settle = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let out = h.pulse(vec![settle.clone()]);
+    expect(&out, &settle, Outcome::Success);
+    let fee = out
+        .effects
+        .iter()
+        .find(|e| e.digest == settle.digest())
+        .map(|e| e.fee)
+        .unwrap();
+    assert_eq!(
+        h.balance("worker", &usd()),
+        before
+            .checked_add(units(150))
+            .unwrap()
+            .checked_sub(fee)
+            .unwrap()
+    );
+    assert!(matches!(
+        task_state(&h, &t1).state,
+        sion_exec::task::TaskState::Settled { .. }
+    ));
+    let again = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let out = h.pulse(vec![again.clone()]);
+    expect(&out, &again, Outcome::Failed);
+
+    // An open bounty: anyone may settle it with an acceptable result, here
+    // a hunter with a nominal bond whose output a named verifier attested.
+    let hunted = settle_task(&mut h, "hunter", t2, &bounty, &[("verifier-2", &a3)]);
+    let out = h.pulse(vec![hunted.clone()]);
+    expect(&out, &hunted, Outcome::Success);
+
+    // Cancelling: a named worker can count on its task until the deadline;
+    // only it can release it. Open tasks can be withdrawn; expired ones
+    // refunded.
+    let base = h.pulse_number();
+    let t3_tx = post_task(
+        &mut h,
+        "lab",
+        terms(&[]),
+        Some(worker),
+        units(100),
+        Pulse(base + 30),
+        None,
+    );
+    let t4_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[]),
+        None,
+        units(30),
+        Pulse(base + 30),
+        Some(orchestrator_agent),
+    );
+    let out = h.pulse(vec![t3_tx.clone(), t4_tx.clone()]);
+    let (t3, t4) = (task_posted(&out, &t3_tx), task_posted(&out, &t4_tx));
+    let base = h.pulse_number();
+    let t5_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[]),
+        Some(worker),
+        units(20),
+        Pulse(base + 2),
+        Some(orchestrator_agent),
+    );
+    let out = h.pulse(vec![t5_tx.clone()]);
+    let t5 = task_posted(&out, &t5_tx);
+    let lab_cancels = h.tx("lab", TxKind::CancelTask { task: t3 });
+    let stranger_cancels = h.tx("stranger", TxKind::CancelTask { task: t4 });
+    let out = h.pulse(vec![lab_cancels.clone(), stranger_cancels.clone()]);
+    expect(&out, &lab_cancels, Outcome::Failed);
+    expect(&out, &stranger_cancels, Outcome::Failed);
+    let lab_before = h.balance("lab", &usd());
+    let release = h.tx("worker", TxKind::CancelTask { task: t3 });
+    let withdraw = h.tx("orchestrator", TxKind::CancelTask { task: t4 });
+    let out = h.pulse(vec![release.clone(), withdraw.clone()]);
+    expect(&out, &release, Outcome::Success);
+    expect(&out, &withdraw, Outcome::Success);
+    assert_eq!(
+        h.balance("lab", &usd()),
+        lab_before.checked_add(units(130)).unwrap()
+    );
+    h.advance(3);
+    let late = settle_task(&mut h, "worker", t5, &bond_only, &[]);
+    let expire = h.tx("orchestrator", TxKind::CancelTask { task: t5 });
+    let settled_cancel = h.tx("orchestrator", TxKind::CancelTask { task: t1 });
+    let out = h.pulse(vec![late.clone(), expire.clone(), settled_cancel.clone()]);
+    expect(&out, &late, Outcome::Failed);
+    expect(&out, &expire, Outcome::Success);
+    expect(&out, &settled_cancel, Outcome::Failed);
+
+    // An exploit in the environment is proven: the vendor's bond is
+    // slashed, the environment claim and every result resting on it fall,
+    // and the lab, which relied on the paid result, is compensated.
+    let challenge = h.tx(
+        "challenger",
+        TxKind::Challenge {
+            claim: env_claim,
+            target: env_atom.id,
+            evidence: hash_domain("test/exploit", b"grader g-3 accepts an empty patch"),
+            deposit: units(100),
+        },
+    );
+    let out = h.pulse(vec![challenge.clone()]);
+    expect(&out, &challenge, Outcome::Success);
+    let opened = all_events(&out)
+        .into_iter()
+        .find_map(|event| match event {
+            Event::ChallengeOpened { challenge, .. } => Some(challenge),
+            _ => None,
+        })
+        .expect("challenge opened");
+    let lab_before = h.balance("lab", &usd());
+    let rule = h.tx(
+        "judge",
+        TxKind::Rule {
+            challenge: opened,
+            upheld: true,
+        },
+    );
+    let out = h.pulse(vec![rule.clone()]);
+    expect(&out, &rule, Outcome::Success);
+    let events = all_events(&out);
+    let good_id = claim_id(&worker, &good);
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Falsified { claim, .. } if *claim == good_id
+    )));
+    let compensated: Amount = Amount(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Compensated {
+                    consumer, amount, ..
+                } if *consumer == id(&h, "lab") => Some(amount.0),
+                _ => None,
+            })
+            .sum(),
+    );
+    assert_eq!(compensated, units(190));
+    assert_eq!(
+        h.balance("lab", &usd()),
+        lab_before.checked_add(compensated).unwrap()
+    );
+
+    h.assert_covered(&[
+        "PostTask/ok",
+        "PostTask/failed",
+        "PostTask(agent)/ok",
+        "PostTask(agent)/failed",
+        "PostTask(agent, open)/ok",
+        "PostTask(agent, open)/failed",
+        "SettleTask/ok",
+        "SettleTask/failed",
+        "CancelTask/ok",
+        "CancelTask/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn tasks_post_settle_once_cancel_and_compensate_an_exploit() {
+    tasks(1).summary("tasks");
+}
+
+#[test]
+fn tasks_many_transactions_per_chunk() {
+    tasks(5).summary("tasks (chunks of 5)");
 }
 
 // ---------------------------------------------------------------------------

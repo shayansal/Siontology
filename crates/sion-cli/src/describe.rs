@@ -500,6 +500,43 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
                 if *seal { ", and seal it" } else { "" }
             )
         }
+        TxKind::PostTask {
+            acceptance,
+            worker,
+            amount,
+            deadline,
+            charter,
+            ..
+        } => format!(
+            "Escrow {} for a task {}, paid {} for a result resting on {} required {} and accepted under your policy, settled by Pulse {deadline}{}",
+            names.usd(*amount),
+            match worker {
+                Some(worker) => format!("for {}", names.account(worker)),
+                None => "open to anyone".to_string(),
+            },
+            if worker.is_some() { "to them" } else { "to the first worker" },
+            acceptance.requires.len(),
+            if acceptance.requires.len() == 1 { "claim" } else { "claims" },
+            match charter {
+                Some(charter) => format!(", from agent {}'s budget", object(charter)),
+                None => String::new(),
+            }
+        ),
+        TxKind::SettleTask {
+            task, attestations, ..
+        } => format!(
+            "Settle task {} with your result{}",
+            object(task),
+            match attestations.len() {
+                0 => String::new(),
+                1 => " and 1 attestation".to_string(),
+                n => format!(" and {n} attestations"),
+            }
+        ),
+        TxKind::CancelTask { task } => format!(
+            "Cancel task {} and refund its escrow",
+            object(task)
+        ),
     };
     format!(
         "{body}. Fee {}; valid until Pulse {}.",
@@ -769,6 +806,40 @@ pub fn event(names: &Names, event: &Event) -> String {
             object(log),
             if *size == 1 { "atom" } else { "atoms" },
             if *sealed { ", sealed" } else { "" }
+        ),
+        Event::TaskPosted {
+            task,
+            worker,
+            amount,
+            deadline,
+            ..
+        } => format!(
+            "task {} posted with {} in escrow, {}, until Pulse {deadline}",
+            object(task),
+            names.usd(*amount),
+            match worker {
+                Some(worker) => format!("for {}", names.account(worker)),
+                None => "open to anyone".to_string(),
+            }
+        ),
+        Event::TaskSettled {
+            task,
+            worker,
+            result,
+            amount,
+            ..
+        } => format!(
+            "task {} settled: {} paid to {} for result {}, its backing reserved",
+            object(task),
+            names.usd(*amount),
+            names.account(worker),
+            result.short()
+        ),
+        Event::TaskCancelled { task, refund, to } => format!(
+            "task {} cancelled: {} refunded to {}",
+            object(task),
+            names.usd(*refund),
+            names.account(to)
         ),
     }
 }

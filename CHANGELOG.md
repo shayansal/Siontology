@@ -10,6 +10,32 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Task Charters (specification v1.10)
+
+- `PostTask` escrows money for a task and fixes, at posting, the rule a
+  result must pass: the poster's policy, the claims every result must rest
+  on (an environment's bonded "no known exploit" claim, say), the
+  verifiers whose attestations count, the adjudicator, the largest
+  detection factor and how long the poster relies on a paid result. An
+  agent can post from its own budget, under its caveats.
+- `SettleTask` pays the worker once, when a result claim that commits to
+  the task, with exactly the formula the task requires (the worker's bond
+  or a named verifier's attestation of the same output, and every required
+  claim), passes the decision rule. It reserves κ times the payment of the
+  result's backing for whoever paid, so if a required claim is later
+  falsified (an exploit in the environment), that party is compensated
+  from the slashed bonds and the challenger is paid a share.
+- `CancelTask` refunds a task its worker releases, a bounty its poster
+  withdraws, or one past its deadline. A named worker can count on its
+  task until the deadline.
+- Both proof stacks implement v1.10; the differential tests run every rule
+  and failure, posting from an agent's budget, bounties, cancellation and
+  an exploit's compensation. New `sion task` commands (`post`, `attest`,
+  `submit`, `settle`, `cancel`, `show`), MCP tools `sion_task_post`,
+  `sion_task_attest`, `sion_task_submit`, `sion_task_settle` and
+  `sion_task_show`, and the `tasks` demo.
+- The supply invariant counts open task escrow.
+
 ### Memory logs (specification v1.9)
 
 - A memory log is a log of memory atoms that only its writer appends to,
