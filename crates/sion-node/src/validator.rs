@@ -1681,6 +1681,7 @@ impl Validator {
                     forced_pending: summary.pending,
                     forced_overdue: summary.overdue,
                     dropped_items: self.dropped_items + self.core.oversized_items(),
+                    network: Some(self.net.stats()),
                 };
                 Ok(to_json(&status))
             }
