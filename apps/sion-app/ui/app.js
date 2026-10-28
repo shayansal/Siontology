@@ -277,8 +277,8 @@ function validatorRow(v) {
   const update = (v) => {
     name.textContent = v.operator;
     weight.textContent = v.weight === null ? v.status.toLowerCase() : `weight ${Number(v.weight).toLocaleString("en-US")}`;
-    own.textContent = v.own;
-    pooled.textContent = v.delegated;
+    own.textContent = `${v.own} test USD`;
+    pooled.textContent = `${v.delegated} test USD`;
     commission.textContent = v.next_commission && v.next_commission !== v.commission
       ? `${v.commission}, ${v.next_commission} from the epoch's end` : v.commission;
   };

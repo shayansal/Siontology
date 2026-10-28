@@ -235,6 +235,8 @@ impl AppCore {
     fn session<'l>(&self, ledger: &'l HttpLedger) -> Result<Session<'l>, AppError> {
         let mut session = Session::open(ledger)?;
         session.add_wallet(ME, self.wallet.clone());
+        // Every amount the app shows is test money: its sentences say so.
+        session.label_asset(AssetId::usd(), "test USD");
         Ok(session)
     }
 

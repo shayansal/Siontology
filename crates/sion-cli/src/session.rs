@@ -116,6 +116,8 @@ pub struct Session<'a> {
     /// The payment streams this session pays from (in memory unless the
     /// caller points it at a directory).
     pub streams: crate::stream::PayerBook,
+    /// Names for assets in this session's sentences, over the usual ones.
+    asset_labels: BTreeMap<AssetId, String>,
 }
 
 impl std::fmt::Debug for Session<'_> {
@@ -135,7 +137,15 @@ impl<'a> Session<'a> {
             timeout: Duration::from_secs(90),
             verbose: false,
             streams: crate::stream::PayerBook::in_memory(),
+            asset_labels: BTreeMap::new(),
         })
+    }
+
+    /// Names `asset` as `label` in this session's sentences: an app on a
+    /// test network calls the devnet's USD "test USD", so that no amount it
+    /// shows reads as money.
+    pub fn label_asset(&mut self, asset: AssetId, label: &str) {
+        self.asset_labels.insert(asset, label.to_string());
     }
 
     /// An address book: the devnet's usual accounts and every wallet this
@@ -144,6 +154,9 @@ impl<'a> Session<'a> {
         let mut names = crate::describe::Names::devnet(["alice", "bob", "carol", "faucet"]);
         for (name, wallet) in &self.wallets {
             names.add_account(wallet.id, name);
+        }
+        for (asset, label) in &self.asset_labels {
+            names.add_asset(*asset, label);
         }
         names
     }

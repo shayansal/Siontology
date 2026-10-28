@@ -56,6 +56,10 @@ fn an_install_verifies_the_chain_pays_and_delegates() {
     let bob = sion_exec::wallet::Wallet::named("bob").id;
     let paid = app.send(&bob.0.to_hex(), "1.5").unwrap();
     assert_eq!(paid["status"], "Success", "{paid}");
+    // Its sentences call the devnet's money what it is.
+    let receipt = paid["receipt"].as_str().unwrap();
+    assert!(receipt.contains("1.5 test USD"), "{paid}");
+    assert!(!receipt.contains("test test"), "{paid}");
     // The device proves its own receipt against the certified header.
     assert_eq!(paid["proof"]["ok"], true, "{paid}");
     assert_eq!(paid["proof"]["pinned"], true, "{paid}");

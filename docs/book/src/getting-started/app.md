@@ -5,7 +5,8 @@ holds the device's own key, and it checks every Pulse it shows instead of
 trusting the server it talks to. Its owner can pay, delegate stake to a
 validator without handing the stake over, and let the device keep data
 for others ([storage deals](../concepts/storage.md)), on test networks
-with test USD.
+with test USD. Every amount it shows says so, in receipts and activity
+too.
 
 One Rust core, `sion-app-core`, does the work. A [Tauri 2](https://v2.tauri.app)
 shell wraps it for desktop and mobile, under `apps/sion-app`.
