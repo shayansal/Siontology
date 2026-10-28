@@ -1,0 +1,6 @@
+# Prefer dependency versions whose minimum Rust fits the workspace's
+# rust-version (1.80) when resolving: quinn 0.11.11 and later, for example,
+# need 1.85. Cargo 1.84 and later honour this; it changes nothing that is
+# already in Cargo.lock.
+[resolver]
+incompatible-rust-versions = "fallback"
