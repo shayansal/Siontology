@@ -1,12 +1,12 @@
-<!--{"file": "index.html", "title": "Siontology: verified knowledge, not ordered transactions", "description": "Siontology is an open-source neo-blockchain. Every claim carries a proof or priced evidence, and every Pulse the proofs fold into one World Proof, designed so that a phone can check it.", "nav": "", "scenes": ["fold-hero", "assurance", "charters"]}-->
+<!--{"file": "index.html", "title": "Siontology: verified knowledge, not ordered transactions", "description": "Siontology is an open-source ledger where payments, AI output and claims carry a proof or priced evidence: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices.", "nav": "", "scenes": ["fold-hero", "x402", "charters", "assurance"]}-->
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
-    <h1 class="display" id="hero-title"><span class="line">Verified knowledge,</span> <span class="line">not ordered transactions.</span></h1>
+    <h1 class="display" id="hero-title"><span class="line">Know what to trust</span> <span class="line">before you rely on it.</span></h1>
     <div class="hero-intro">
-      <p class="lede">Siontology is an open-source neo-blockchain. Every claim, whether about a payment, a computation, an AI output or an event in the world, carries a proof or priced evidence. Every Pulse, the proofs fold into one World Proof, designed so that a phone can check it.</p>
+      <p class="lede">Siontology is an open-source ledger for an economy in which AI agents buy, sell and publish. Payments, AI output and claims about the world carry a proof or priced evidence, so a person or an agent can check them and see what faking them would cost.</p>
       <div class="actions">
-        <a class="button" href="technology.html">How it works</a>
-        <a class="button button--quiet" href="developers.html">Run the devnet</a>
+        <a class="button" href="#uses">What it is for</a>
+        <a class="button button--quiet" href="technology.html">How it works</a>
       </div>
     </div>
   </div>
@@ -24,6 +24,92 @@
   </figure>
   <div class="wrap">
     <p class="status-line"><strong>Status</strong><span>A devnet-scale reference implementation in Rust. Succinct proofs are simulated, validators run in one process, and there is no mainnet and no token.</span><a href="#status">What exists today</a></p>
+  </div>
+</section>
+
+<section class="section" id="uses" aria-labelledby="uses-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="uses-title">What it is for.</h2>
+      <p>Six uses where trust is what slows business down today. Five run on the devnet as scripted demos; the sixth is built from the same claims and bonds, but its workflow is not. Each says what is still missing.</p>
+    </div>
+    <div class="cells cells--3">
+      <article class="uc">
+        {{icon:agent}}
+        <p class="uc-for">For teams deploying AI agents</p>
+        <h3>Agents that cannot overspend</h3>
+        <p>Give an agent a budget, a list of payees and a cap per payment. The ledger refuses any payment outside them, even from a hijacked or prompt-injected agent, and one revocation stops every sub-agent at once.</p>
+        <p class="uc-today"><strong>Today</strong>An agent&rsquo;s limits live in its own code or its card&rsquo;s settings, so one prompt injection can turn them into a loss.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo agents --local</code></p>
+        <a class="cell-link" href="use-cases.html#agents">Walk through it</a>
+      </article>
+      <article class="uc">
+        {{icon:api}}
+        <p class="uc-for">For anyone selling an API or data</p>
+        <h3>APIs paid per request</h3>
+        <p>The API answers HTTP 402 with a price, the agent pays in a stablecoin, and the server serves the request once it has checked the payment itself. No accounts, API keys or invoices.</p>
+        <p class="uc-today"><strong>Today</strong>A card payment costs more than one API call, so APIs are sold as monthly plans behind accounts and keys.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo x402 --local</code></p>
+        <a class="cell-link" href="use-cases.html#apis">Walk through it</a>
+      </article>
+      <article class="uc">
+        {{icon:receipt}}
+        <p class="uc-for">For AI providers and publishers</p>
+        <h3>Receipts for AI output</h3>
+        <p>Each output gets a receipt naming the model, the time and a hash of the content, issued in batches. Anyone can check a receipt and see what forging it would cost.</p>
+        <p class="uc-today"><strong>Today</strong>The EU AI Act has required machine-readable marking of AI-generated content since 2 August 2026, and a watermark alone can be stripped.</p>
+        <p class="uc-foot"><span class="status status--simplified">Claims built; the receipt service is not</span><code>sion demo receipts --local</code></p>
+        <a class="cell-link" href="use-cases.html#receipts">Walk through it</a>
+      </article>
+      <article class="uc">
+        {{icon:approval}}
+        <p class="uc-for">For finance and treasury teams</p>
+        <h3>Payments a deepfake cannot approve</h3>
+        <p>A payment above a threshold needs an approval claim backed by more than the payment is worth, so an attacker has to outspend it, not imitate a face on a call.</p>
+        <p class="uc-today"><strong>Today</strong>One deepfake video call cost the engineering firm Arup about 25.6 million USD in 2024.</p>
+        <p class="uc-foot"><span class="status status--simplified">Claims and bonds built; the workflow is not</span></p>
+        <a class="cell-link" href="use-cases.html#approvals">Walk through it</a>
+      </article>
+      <article class="uc">
+        {{icon:invoice}}
+        <p class="uc-for">For lenders and trade platforms</p>
+        <h3>Invoices that repay you if they are false</h3>
+        <p>Suppliers, shippers and arbiters bond what they attest. A financier funds an invoice only up to what those bonds can repay, and is repaid automatically when a challenge proves the invoice false.</p>
+        <p class="uc-today"><strong>Today</strong>A financier who funds a false invoice recovers through insurers or the courts, if at all.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo invoice --local</code></p>
+        <a class="cell-link" href="use-cases.html#invoices">Walk through it</a>
+      </article>
+      <article class="uc">
+        {{icon:market}}
+        <p class="uc-for">For compute and energy marketplaces</p>
+        <h3>Markets that prove their prices</h3>
+        <p>Orders are sealed in batches and cleared at one price. A batch settles only with a certificate that no better allocation exists, so a place in the queue is worth nothing and there is nothing to front-run.</p>
+        <p class="uc-today"><strong>Today</strong>Matching engines are black boxes: nobody can check that the allocation was the best available, and arrival order can be gamed.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo market --local</code></p>
+        <a class="cell-link" href="use-cases.html#markets">Walk through it</a>
+      </article>
+    </div>
+    <p class="notice-line"><strong>Designed for, not built yet:</strong> cross-border stablecoin settlement with compliance proven rather than disclosed, and media provenance that survives a platform stripping its metadata. <a href="use-cases.html">Every use case, step by step</a></p>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="x402-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="x402-title">An agent buys one API call.</h2>
+      <p>The agent asks for a forecast and gets 402 Payment Required with a price. It pays under its charter, the server checks the payment the way a light client would, and only then answers. No account, no key, no invoice, and the agent&rsquo;s limits hold even if its prompt is hijacked.</p>
+    </div>
+    {{fig:x402}}
+  </div>
+</section>
+
+<section class="section" aria-labelledby="charters-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="charters-title">Limits live in the ledger, not in the agent.</h2>
+      <p>An Agent Charter fixes whom an AI agent may pay, how much per payment and per window, and who answers for it. Validators check every payment against the charter, so a hijacked or prompt-injected agent cannot exceed it, and revoking the charter stops every sub-agent at once.</p>
+    </div>
+    {{fig:charters}}
   </div>
 </section>
 
@@ -53,8 +139,8 @@
 <section class="section" aria-labelledby="fold-title">
   <div class="wrap">
     <div class="section-head">
-      <h2 class="statement" id="fold-title">Blockchains chain blocks. <span class="nowrap-md">Neo-blockchains</span> fold claims.</h2>
-      <p>DAGs link transactions. Siontology folds every proof in the network into one World Proof per Pulse, designed to stay the same size however much it covers. Four pieces carry it.</p>
+      <h2 class="statement" id="fold-title">Verified knowledge, not ordered transactions.</h2>
+      <p>Blockchains chain blocks and DAGs link transactions. Siontology, a neo-blockchain, folds every proof in the network into one World Proof per Pulse, designed to stay the same size however much it covers, so that a phone can check it. Four pieces carry it.</p>
     </div>
     <div class="cells cells--4">
       <div>
@@ -88,75 +174,6 @@
       <p>A claim&rsquo;s formula names the assumptions it rests on: &and; where it needs all of them, &or; where any one route will do. Its cost of corruption is the cheapest set of failures that would make it false. An agent relies on the claim only if that cost covers &kappa; times its value at risk, and reserves that much of the backing, so no claim is relied on beyond what slashing can repay.</p>
     </div>
     {{fig:assurance}}
-  </div>
-</section>
-
-<section class="section" aria-labelledby="charters-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="charters-title">Limits live in the ledger, not in the agent.</h2>
-      <p>An Agent Charter fixes whom an AI agent may pay, how much per payment and per window, and who answers for it. Validators check every payment against the charter, so a hijacked or prompt-injected agent cannot exceed it, and revoking the charter stops every sub-agent at once.</p>
-    </div>
-    {{fig:charters}}
-  </div>
-</section>
-
-<section class="section" aria-labelledby="uses-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="uses-title">Where trust is the binding constraint.</h2>
-      <p>The <a href="{{DOCS}}papers/architecture.html">architecture paper</a> names six applications, each with a baseline to beat. Two orders of magnitude are plausible where trust is the bottleneck; elsewhere the effect will be modest.</p>
-    </div>
-    <div class="cells cells--3">
-      <div>
-        <h3>AI receipts</h3>
-        <p>A verifiable receipt per model output, anchored in batches: a registry beside the watermark that machine-readable marking rules ask for.</p>
-      </div>
-      <div>
-        <h3>Agent commerce with bounded risk</h3>
-        <p>Charters, receipts and bonds on any payment rail, so the worst case of an agent&rsquo;s spending is known in advance.</p>
-      </div>
-      <div>
-        <h3>Approvals a deepfake cannot pass</h3>
-        <p>A high-value payment needs a mandate claim whose cost of corruption exceeds the amount, not a familiar face on a call.</p>
-      </div>
-      <div>
-        <h3>Settlement with compliance by proof</h3>
-        <p>Private stablecoin settlement with KYC and sanctions checks proven rather than disclosed. A design goal; the zero-knowledge stack it needs is not built yet.</p>
-      </div>
-      <div>
-        <h3>Certified-optimal marketplaces</h3>
-        <p>Verifiable Clearing in place of a black-box matching engine, starting with GPU compute, with the optimality gap published.</p>
-      </div>
-      <div>
-        <h3>Provenance that survives</h3>
-        <p>Media manifests anchored as claims and found again by content hash after a platform strips the metadata; revocations stay visible.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="section" aria-labelledby="inversions-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="inversions-title">Eight assumptions, inverted.</h2>
-      <p>What blockchains take for granted, what a neo-blockchain is designed to do instead, and the mechanism for each.</p>
-    </div>
-    <div class="table-scroll">
-      <table class="table table--wide">
-        <thead><tr><th scope="col">Blockchains assume</th><th scope="col">A neo-blockchain inverts it</th><th scope="col">Mechanism</th></tr></thead>
-        <tbody>
-          <tr><td>Verify by re-executing: every node repeats the work</td><td>Verify by checking a proof, at near-constant cost</td><td>Proof-carrying state; the Fold</td></tr>
-          <tr><td>Totally order every operation</td><td>Order only operations that conflict</td><td>Two-sorted state; Linear Lanes</td></tr>
-          <tr><td>The ledger knows only its own state</td><td>The ledger records claims about the world, with their assumptions priced</td><td>Claims; the Assurance Algebra</td></tr>
-          <tr><td>Transparent by default</td><td>Private by default, provable on demand</td><td>Compliance-by-proof <span class="faint">(not built yet)</span></td></tr>
-          <tr><td>A human signs each action</td><td>Agents act inside limits the protocol enforces</td><td>Agent Charters</td></tr>
-          <tr><td>Market outcomes depend on who orders transactions</td><td>Market outcomes carry a certificate that no better allocation exists</td><td>Verifiable Clearing</td></tr>
-          <tr><td>Fees rise when demand meets fixed capacity</td><td>The cost per verified claim falls as volume grows</td><td>Batching, folding, sampling</td></tr>
-          <tr><td>One cryptographic assumption guards each function</td><td>Unrelated families guard authorization; independent implementations guard validity</td><td>Dual-origin signatures and proofs</td></tr>
-        </tbody>
-      </table>
-    </div>
   </div>
 </section>
 

@@ -9,6 +9,7 @@
     <div>
       <h2 id="toc-title">On this page</h2>
       <ol>
+        <li><a href="#inversions">Eight assumptions, inverted</a></li>
         <li><a href="#lifecycle">Lifecycle of a claim</a></li>
         <li><a href="#two-sorted">Two sorts of state</a></li>
         <li><a href="#lanes">Linear Lanes</a></li>
@@ -28,6 +29,28 @@
   </aside>
 
   <div>
+    <section class="topic" id="inversions" aria-labelledby="inversions-title">
+      <h2 id="inversions-title">Eight assumptions, inverted</h2>
+      <div class="prose">
+        <p>What blockchains take for granted, what a neo-blockchain is designed to do instead, and the mechanism for each. The sections below take the mechanisms one at a time.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <thead><tr><th scope="col">Blockchains assume</th><th scope="col">A neo-blockchain inverts it</th><th scope="col">Mechanism</th></tr></thead>
+          <tbody>
+            <tr><td>Verify by re-executing: every node repeats the work</td><td>Verify by checking a proof, at near-constant cost</td><td>Proof-carrying state; the Fold</td></tr>
+            <tr><td>Totally order every operation</td><td>Order only operations that conflict</td><td>Two-sorted state; Linear Lanes</td></tr>
+            <tr><td>The ledger knows only its own state</td><td>The ledger records claims about the world, with their assumptions priced</td><td>Claims; the Assurance Algebra</td></tr>
+            <tr><td>Transparent by default</td><td>Private by default, provable on demand</td><td>Compliance-by-proof <span class="faint">(not built yet)</span></td></tr>
+            <tr><td>A human signs each action</td><td>Agents act inside limits the protocol enforces</td><td>Agent Charters</td></tr>
+            <tr><td>Market outcomes depend on who orders transactions</td><td>Market outcomes carry a certificate that no better allocation exists</td><td>Verifiable Clearing</td></tr>
+            <tr><td>Fees rise when demand meets fixed capacity</td><td>The cost per verified claim falls as volume grows</td><td>Batching, folding, sampling</td></tr>
+            <tr><td>One cryptographic assumption guards each function</td><td>Unrelated families guard authorization; independent implementations guard validity</td><td>Dual-origin signatures and proofs</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="topic" id="lifecycle" aria-labelledby="lifecycle-title">
       <h2 id="lifecycle-title">Lifecycle of a claim</h2>
       <div class="prose">

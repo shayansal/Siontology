@@ -46,7 +46,7 @@
     <button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
     <nav class="site-nav" id="site-nav" aria-label="Main">
       <ul>
-        <li><a href="technology.html" aria-current="page">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
+        <li><a href="use-cases.html">Use cases</a></li><li><a href="technology.html" aria-current="page">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
       </ul>
     </nav>
     <div class="header-tools">
@@ -65,6 +65,7 @@
     <div>
       <h2 id="toc-title">On this page</h2>
       <ol>
+        <li><a href="#inversions">Eight assumptions, inverted</a></li>
         <li><a href="#lifecycle">Lifecycle of a claim</a></li>
         <li><a href="#two-sorted">Two sorts of state</a></li>
         <li><a href="#lanes">Linear Lanes</a></li>
@@ -84,6 +85,28 @@
   </aside>
 
   <div>
+    <section class="topic" id="inversions" aria-labelledby="inversions-title">
+      <h2 id="inversions-title">Eight assumptions, inverted</h2>
+      <div class="prose">
+        <p>What blockchains take for granted, what a neo-blockchain is designed to do instead, and the mechanism for each. The sections below take the mechanisms one at a time.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <thead><tr><th scope="col">Blockchains assume</th><th scope="col">A neo-blockchain inverts it</th><th scope="col">Mechanism</th></tr></thead>
+          <tbody>
+            <tr><td data-label="Blockchains assume">Verify by re-executing: every node repeats the work</td><td data-label="A neo-blockchain inverts it">Verify by checking a proof, at near-constant cost</td><td data-label="Mechanism">Proof-carrying state; the Fold</td></tr>
+            <tr><td data-label="Blockchains assume">Totally order every operation</td><td data-label="A neo-blockchain inverts it">Order only operations that conflict</td><td data-label="Mechanism">Two-sorted state; Linear Lanes</td></tr>
+            <tr><td data-label="Blockchains assume">The ledger knows only its own state</td><td data-label="A neo-blockchain inverts it">The ledger records claims about the world, with their assumptions priced</td><td data-label="Mechanism">Claims; the Assurance Algebra</td></tr>
+            <tr><td data-label="Blockchains assume">Transparent by default</td><td data-label="A neo-blockchain inverts it">Private by default, provable on demand</td><td data-label="Mechanism">Compliance-by-proof <span class="faint">(not built yet)</span></td></tr>
+            <tr><td data-label="Blockchains assume">A human signs each action</td><td data-label="A neo-blockchain inverts it">Agents act inside limits the protocol enforces</td><td data-label="Mechanism">Agent Charters</td></tr>
+            <tr><td data-label="Blockchains assume">Market outcomes depend on who orders transactions</td><td data-label="A neo-blockchain inverts it">Market outcomes carry a certificate that no better allocation exists</td><td data-label="Mechanism">Verifiable Clearing</td></tr>
+            <tr><td data-label="Blockchains assume">Fees rise when demand meets fixed capacity</td><td data-label="A neo-blockchain inverts it">The cost per verified claim falls as volume grows</td><td data-label="Mechanism">Batching, folding, sampling</td></tr>
+            <tr><td data-label="Blockchains assume">One cryptographic assumption guards each function</td><td data-label="A neo-blockchain inverts it">Unrelated families guard authorization; independent implementations guard validity</td><td data-label="Mechanism">Dual-origin signatures and proofs</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="topic" id="lifecycle" aria-labelledby="lifecycle-title">
       <h2 id="lifecycle-title">Lifecycle of a claim</h2>
       <div class="prose">
@@ -377,6 +400,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
       <nav aria-labelledby="footer-project">
         <h2 id="footer-project">Project</h2>
         <ul>
+          <li><a href="use-cases.html">Use cases</a></li>
           <li><a href="technology.html">Technology</a></li>
           <li><a href="developers.html">Developers</a></li>
           <li><a href="open-source.html">Open source</a></li>

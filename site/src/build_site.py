@@ -17,7 +17,8 @@ is served at any address).
 Placeholders in a fragment: {{fig:<id>}} or {{fig:<id>:<number>}} for a
 figure and {{code:<id>}} for a code block, both defined in figures.py;
 {{REPO}} and {{DOCS}} for the repository and documentation addresses;
-{{toggle}} for a figure's Pause button.
+{{toggle}} for a figure's Pause button; {{icon:<id>}} for a pictogram from
+figures.py.
 
 Besides the pages, the build writes sitemap.xml and robots.txt.
 """
@@ -32,7 +33,7 @@ PAGES = os.path.join(SRC, "pages")
 SITE = os.path.dirname(SRC)
 sys.path.insert(0, SRC)
 sys.dont_write_bytecode = True  # keep site/ free of __pycache__
-from figures import FIGURES, CODE  # noqa: E402
+from figures import FIGURES, CODE, ICONS  # noqa: E402
 
 ORIGIN = "https://siontology.org/"
 REPO = "https://github.com/ColdAI-org/siontology"
@@ -45,6 +46,7 @@ SMALL_MARK = ('<svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true
               '<rect x="18" y="18" width="4" height="4"/></svg>')
 
 NAV = [
+    ("uses", "use-cases.html", "Use cases"),
     ("technology", "technology.html", "Technology"),
     ("developers", "developers.html", "Developers"),
     ("open-source", "open-source.html", "Open source"),
@@ -53,7 +55,7 @@ NAV = [
 ]
 
 # Order of the sitemap; any other indexable page follows, sorted.
-SITEMAP_ORDER = ["index.html", "technology.html", "developers.html", "open-source.html",
+SITEMAP_ORDER = ["index.html", "use-cases.html", "technology.html", "developers.html", "open-source.html",
                  "security.html", "whitepapers.html", "brand.html", "legal.html"]
 
 THEME_ICON = ('<svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">'
@@ -99,6 +101,7 @@ def footer(base):
       <nav aria-labelledby="footer-project">
         <h2 id="footer-project">Project</h2>
         <ul>
+          <li><a href="{base}use-cases.html">Use cases</a></li>
           <li><a href="{base}technology.html">Technology</a></li>
           <li><a href="{base}developers.html">Developers</a></li>
           <li><a href="{base}open-source.html">Open source</a></li>
@@ -156,7 +159,8 @@ def figure(fid, number=None):
 </figure>'''
 
 
-WRAP = {"verify-output"}  # terminal output that reads better wrapped than scrolled
+WRAP = {"verify-output", "demo-agents", "demo-x402", "demo-receipts", "demo-invoice",
+        "demo-market"}  # terminal output that reads better wrapped than scrolled
 
 
 def code(cid):
@@ -267,7 +271,13 @@ def label_table(match):
     return table[:body.start(1)] + labelled + table[body.end(1):]
 
 
+def icon(iid):
+    return ('<svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" '
+            'focusable="false">' + ICONS[iid] + "</svg>")
+
+
 def expand(body):
+    body = re.sub(r"\{\{icon:([a-z0-9-]+)\}\}", lambda m: icon(m.group(1)), body)
     body = re.sub(r"\{\{fig:([a-z0-9-]+)(?::(\d+))?\}\}", lambda m: figure(m.group(1), m.group(2)), body)
     body = re.sub(r"\{\{code:([a-z0-9-]+)\}\}", lambda m: code(m.group(1)), body)
     body = body.replace("{{REPO}}", REPO).replace("{{DOCS}}", DOCS).replace("{{toggle}}", toggle())

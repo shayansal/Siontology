@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Siontology: verified knowledge, not ordered transactions</title>
-<meta name="description" content="Siontology is an open-source neo-blockchain. Every claim carries a proof or priced evidence, and every Pulse the proofs fold into one World Proof, designed so that a phone can check it.">
+<meta name="description" content="Siontology is an open-source ledger where payments, AI output and claims carry a proof or priced evidence: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Siontology">
 <meta property="og:title" content="Siontology: verified knowledge, not ordered transactions">
-<meta property="og:description" content="Siontology is an open-source neo-blockchain. Every claim carries a proof or priced evidence, and every Pulse the proofs fold into one World Proof, designed so that a phone can check it.">
+<meta property="og:description" content="Siontology is an open-source ledger where payments, AI output and claims carry a proof or priced evidence: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices.">
 <meta property="og:url" content="https://siontology.org/">
 <meta property="og:image" content="https://siontology.org/img/siontology-social-1200x630.png">
 <meta property="og:image:width" content="1200">
@@ -28,8 +28,9 @@
 <script src="js/site.js" defer></script>
 <script src="js/scenes/core.js" defer></script>
 <script src="js/scenes/fold-hero.js" defer></script>
-<script src="js/scenes/assurance.js" defer></script>
+<script src="js/scenes/x402.js" defer></script>
 <script src="js/scenes/charters.js" defer></script>
+<script src="js/scenes/assurance.js" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -39,7 +40,7 @@
     <button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
     <nav class="site-nav" id="site-nav" aria-label="Main">
       <ul>
-        <li><a href="technology.html">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
+        <li><a href="use-cases.html">Use cases</a></li><li><a href="technology.html">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
       </ul>
     </nav>
     <div class="header-tools">
@@ -50,12 +51,12 @@
 <main id="main">
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
-    <h1 class="display" id="hero-title"><span class="line">Verified knowledge,</span> <span class="line">not ordered transactions.</span></h1>
+    <h1 class="display" id="hero-title"><span class="line">Know what to trust</span> <span class="line">before you rely on it.</span></h1>
     <div class="hero-intro">
-      <p class="lede">Siontology is an open-source neo-blockchain. Every claim, whether about a payment, a computation, an AI output or an event in the world, carries a proof or priced evidence. Every Pulse, the proofs fold into one World Proof, designed so that a phone can check it.</p>
+      <p class="lede">Siontology is an open-source ledger for an economy in which AI agents buy, sell and publish. Payments, AI output and claims about the world carry a proof or priced evidence, so a person or an agent can check them and see what faking them would cost.</p>
       <div class="actions">
-        <a class="button" href="technology.html">How it works</a>
-        <a class="button button--quiet" href="developers.html">Run the devnet</a>
+        <a class="button" href="#uses">What it is for</a>
+        <a class="button button--quiet" href="technology.html">How it works</a>
       </div>
     </div>
   </div>
@@ -73,6 +74,106 @@
   </figure>
   <div class="wrap">
     <p class="status-line"><strong>Status</strong><span>A devnet-scale reference implementation in Rust. Succinct proofs are simulated, validators run in one process, and there is no mainnet and no token.</span><a href="#status">What exists today</a></p>
+  </div>
+</section>
+
+<section class="section" id="uses" aria-labelledby="uses-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="uses-title">What it is for.</h2>
+      <p>Six uses where trust is what slows business down today. Five run on the devnet as scripted demos; the sixth is built from the same claims and bonds, but its workflow is not. Each says what is still missing.</p>
+    </div>
+    <div class="cells cells--3">
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><path d="M11 4 20 16 11 28 2 16Z" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="23" y="20" width="7" height="7" fill="currentColor"/><path class="pict-signal" d="M23 5l7 7M30 5l-7 7" fill="none" stroke-width="1.6"/></svg>
+        <p class="uc-for">For teams deploying AI agents</p>
+        <h3>Agents that cannot overspend</h3>
+        <p>Give an agent a budget, a list of payees and a cap per payment. The ledger refuses any payment outside them, even from a hijacked or prompt-injected agent, and one revocation stops every sub-agent at once.</p>
+        <p class="uc-today"><strong>Today</strong>An agent&rsquo;s limits live in its own code or its card&rsquo;s settings, so one prompt injection can turn them into a loss.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo agents --local</code></p>
+        <a class="cell-link" href="use-cases.html#agents">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="2" y="10" width="12" height="12" fill="currentColor"/><path d="M16 16h5M18.5 13.5 21 16l-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M23 16.5l2.5 2.5L30 12" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <p class="uc-for">For anyone selling an API or data</p>
+        <h3>APIs paid per request</h3>
+        <p>The API answers HTTP 402 with a price, the agent pays in a stablecoin, and the server serves the request once it has checked the payment itself. No accounts, API keys or invoices.</p>
+        <p class="uc-today"><strong>Today</strong>A card payment costs more than one API call, so APIs are sold as monthly plans behind accounts and keys.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo x402 --local</code></p>
+        <a class="cell-link" href="use-cases.html#apis">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="4" y="3" width="17" height="23" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 9h9M8 13h9M8 17h6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M19 25l3 3 7-9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <p class="uc-for">For AI providers and publishers</p>
+        <h3>Receipts for AI output</h3>
+        <p>Each output gets a receipt naming the model, the time and a hash of the content, issued in batches. Anyone can check a receipt and see what forging it would cost.</p>
+        <p class="uc-today"><strong>Today</strong>The EU AI Act has required machine-readable marking of AI-generated content since 2 August 2026, and a watermark alone can be stripped.</p>
+        <p class="uc-foot"><span class="status status--simplified">Claims built; the receipt service is not</span><code>sion demo receipts --local</code></p>
+        <a class="cell-link" href="use-cases.html#receipts">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><path d="M4 7v18M9 7v18M14 7v18M19 7v18M2 22 21 10" fill="none" stroke="currentColor" stroke-width="1.6"/><path class="pict-signal" d="M24 19l6 6M30 19l-6 6" fill="none" stroke-width="1.6"/></svg>
+        <p class="uc-for">For finance and treasury teams</p>
+        <h3>Payments a deepfake cannot approve</h3>
+        <p>A payment above a threshold needs an approval claim backed by more than the payment is worth, so an attacker has to outspend it, not imitate a face on a call.</p>
+        <p class="uc-today"><strong>Today</strong>One deepfake video call cost the engineering firm Arup about 25.6 million USD in 2024.</p>
+        <p class="uc-foot"><span class="status status--simplified">Claims and bonds built; the workflow is not</span></p>
+        <a class="cell-link" href="use-cases.html#approvals">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="5" y="3" width="22" height="15" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 8h14M9 12h9" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="5" y="21" width="22" height="8" fill="currentColor"/></svg>
+        <p class="uc-for">For lenders and trade platforms</p>
+        <h3>Invoices that repay you if they are false</h3>
+        <p>Suppliers, shippers and arbiters bond what they attest. A financier funds an invoice only up to what those bonds can repay, and is repaid automatically when a challenge proves the invoice false.</p>
+        <p class="uc-today"><strong>Today</strong>A financier who funds a false invoice recovers through insurers or the courts, if at all.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo invoice --local</code></p>
+        <a class="cell-link" href="use-cases.html#invoices">Walk through it</a>
+      </article>
+      <article class="uc">
+        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="7" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 13l6-6M3 19 15 7M3 25 21 7M9 25l12-12M15 25l6-6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M23 17l2.5 2.5L30 13" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <p class="uc-for">For compute and energy marketplaces</p>
+        <h3>Markets that prove their prices</h3>
+        <p>Orders are sealed in batches and cleared at one price. A batch settles only with a certificate that no better allocation exists, so a place in the queue is worth nothing and there is nothing to front-run.</p>
+        <p class="uc-today"><strong>Today</strong>Matching engines are black boxes: nobody can check that the allocation was the best available, and arrival order can be gamed.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo market --local</code></p>
+        <a class="cell-link" href="use-cases.html#markets">Walk through it</a>
+      </article>
+    </div>
+    <p class="notice-line"><strong>Designed for, not built yet:</strong> cross-border stablecoin settlement with compliance proven rather than disclosed, and media provenance that survives a platform stripping its metadata. <a href="use-cases.html">Every use case, step by step</a></p>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="x402-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="x402-title">An agent buys one API call.</h2>
+      <p>The agent asks for a forecast and gets 402 Payment Required with a price. It pays under its charter, the server checks the payment the way a light client would, and only then answers. No account, no key, no invoice, and the agent&rsquo;s limits hold even if its prompt is hijacked.</p>
+    </div>
+    <figure class="plate" aria-labelledby="fig-x402-title">
+  <canvas data-scene="x402" role="img" aria-label="Animation: an agent&#x27;s request gets 402 Payment Required; it pays on Siontology under its charter; the server verifies the receipt as a light client and answers 200 OK." aria-describedby="fig-x402-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-x402-title">x402: paying per request</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-x402-desc">From the x402 demo. The agent asks carol's API for a forecast and gets 402 Payment Required with a quote: 0.25 USD to carol, scheme exact, a fresh nonce. The agent signs a payment under its charter whose purpose names the quote, and retries with it. carol's facilitator submits the payment, waits for it to execute and verifies the receipt the way a light client would: committee certificate, certified order, inclusion proof. Only then does the API answer 200 OK. Replaying the same payment is refused, because each quote pays for one request.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo x402 --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/crates/sion-cli/src/x402.rs">crates/sion-cli/src/x402.rs</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built: x402 version 2, not yet tested against third-party clients</span></dd></div></dl>
+  </figcaption>
+</figure>
+  </div>
+</section>
+
+<section class="section" aria-labelledby="charters-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="charters-title">Limits live in the ledger, not in the agent.</h2>
+      <p>An Agent Charter fixes whom an AI agent may pay, how much per payment and per window, and who answers for it. Validators check every payment against the charter, so a hijacked or prompt-injected agent cannot exceed it, and revoking the charter stops every sub-agent at once.</p>
+    </div>
+    <figure class="plate" aria-labelledby="fig-charters-title">
+  <canvas data-scene="charters" role="img" aria-label="Animation: an AI agent pays within its charter; a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent." aria-describedby="fig-charters-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-charters-title">Agent Charters</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-charters-desc">From the agents demo. acme charters its agent: pay only gpu-cloud, at most 100 USD per payment and 250 USD per window, a 1,000 USD budget, receipts on, 500 USD bonded behind the receipts. The agent pays gpu-cloud 80 USD and a receipt claim joins the knowledge log. Prompt-injected, it tries to pay mallory 90 USD: the ledger refuses, payee not allowed. It tries 150 USD: refused, above the per-payment limit. It delegates 100 USD to a sub-agent under narrower caveats, at most 20 USD per payment, and the sub-agent pays 20 USD. Once acme revokes the charter, both the agent and the sub-agent are refused.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo agents --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;5.12 to &sect;5.17</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built</span></dd></div></dl>
+  </figcaption>
+</figure>
   </div>
 </section>
 
@@ -102,8 +203,8 @@
 <section class="section" aria-labelledby="fold-title">
   <div class="wrap">
     <div class="section-head">
-      <h2 class="statement" id="fold-title">Blockchains chain blocks. <span class="nowrap-md">Neo-blockchains</span> fold claims.</h2>
-      <p>DAGs link transactions. Siontology folds every proof in the network into one World Proof per Pulse, designed to stay the same size however much it covers. Four pieces carry it.</p>
+      <h2 class="statement" id="fold-title">Verified knowledge, not ordered transactions.</h2>
+      <p>Blockchains chain blocks and DAGs link transactions. Siontology, a neo-blockchain, folds every proof in the network into one World Proof per Pulse, designed to stay the same size however much it covers, so that a phone can check it. Four pieces carry it.</p>
     </div>
     <div class="cells cells--4">
       <div>
@@ -144,82 +245,6 @@
     <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo invoice --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/tree/main/crates/sion-assurance">crates/sion-assurance</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built</span></dd></div></dl>
   </figcaption>
 </figure>
-  </div>
-</section>
-
-<section class="section" aria-labelledby="charters-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="charters-title">Limits live in the ledger, not in the agent.</h2>
-      <p>An Agent Charter fixes whom an AI agent may pay, how much per payment and per window, and who answers for it. Validators check every payment against the charter, so a hijacked or prompt-injected agent cannot exceed it, and revoking the charter stops every sub-agent at once.</p>
-    </div>
-    <figure class="plate" aria-labelledby="fig-charters-title">
-  <canvas data-scene="charters" role="img" aria-label="Animation: an AI agent pays within its charter; a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent." aria-describedby="fig-charters-desc"></canvas>
-  <figcaption>
-    <div class="plate-title"><p class="plate-name" id="fig-charters-title">Agent Charters</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
-    <p class="plate-desc" id="fig-charters-desc">From the agents demo. acme charters its agent: pay only gpu-cloud, at most 100 USD per payment and 250 USD per window, a 1,000 USD budget, receipts on, 500 USD bonded behind the receipts. The agent pays gpu-cloud 80 USD and a receipt claim joins the knowledge log. Prompt-injected, it tries to pay mallory 90 USD: the ledger refuses, payee not allowed. It tries 150 USD: refused, above the per-payment limit. It delegates 100 USD to a sub-agent under narrower caveats, at most 20 USD per payment, and the sub-agent pays 20 USD. Once acme revokes the charter, both the agent and the sub-agent are refused.</p>
-    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo agents --local</code></dd></div><div><dt>Source</dt><dd><a href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Specification &sect;5.12 to &sect;5.17</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built</span></dd></div></dl>
-  </figcaption>
-</figure>
-  </div>
-</section>
-
-<section class="section" aria-labelledby="uses-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="uses-title">Where trust is the binding constraint.</h2>
-      <p>The <a href="https://siontology.org/docs/papers/architecture.html">architecture paper</a> names six applications, each with a baseline to beat. Two orders of magnitude are plausible where trust is the bottleneck; elsewhere the effect will be modest.</p>
-    </div>
-    <div class="cells cells--3">
-      <div>
-        <h3>AI receipts</h3>
-        <p>A verifiable receipt per model output, anchored in batches: a registry beside the watermark that machine-readable marking rules ask for.</p>
-      </div>
-      <div>
-        <h3>Agent commerce with bounded risk</h3>
-        <p>Charters, receipts and bonds on any payment rail, so the worst case of an agent&rsquo;s spending is known in advance.</p>
-      </div>
-      <div>
-        <h3>Approvals a deepfake cannot pass</h3>
-        <p>A high-value payment needs a mandate claim whose cost of corruption exceeds the amount, not a familiar face on a call.</p>
-      </div>
-      <div>
-        <h3>Settlement with compliance by proof</h3>
-        <p>Private stablecoin settlement with KYC and sanctions checks proven rather than disclosed. A design goal; the zero-knowledge stack it needs is not built yet.</p>
-      </div>
-      <div>
-        <h3>Certified-optimal marketplaces</h3>
-        <p>Verifiable Clearing in place of a black-box matching engine, starting with GPU compute, with the optimality gap published.</p>
-      </div>
-      <div>
-        <h3>Provenance that survives</h3>
-        <p>Media manifests anchored as claims and found again by content hash after a platform strips the metadata; revocations stay visible.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="section" aria-labelledby="inversions-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="inversions-title">Eight assumptions, inverted.</h2>
-      <p>What blockchains take for granted, what a neo-blockchain is designed to do instead, and the mechanism for each.</p>
-    </div>
-    <div class="table-scroll">
-      <table class="table table--wide">
-        <thead><tr><th scope="col">Blockchains assume</th><th scope="col">A neo-blockchain inverts it</th><th scope="col">Mechanism</th></tr></thead>
-        <tbody>
-          <tr><td data-label="Blockchains assume">Verify by re-executing: every node repeats the work</td><td data-label="A neo-blockchain inverts it">Verify by checking a proof, at near-constant cost</td><td data-label="Mechanism">Proof-carrying state; the Fold</td></tr>
-          <tr><td data-label="Blockchains assume">Totally order every operation</td><td data-label="A neo-blockchain inverts it">Order only operations that conflict</td><td data-label="Mechanism">Two-sorted state; Linear Lanes</td></tr>
-          <tr><td data-label="Blockchains assume">The ledger knows only its own state</td><td data-label="A neo-blockchain inverts it">The ledger records claims about the world, with their assumptions priced</td><td data-label="Mechanism">Claims; the Assurance Algebra</td></tr>
-          <tr><td data-label="Blockchains assume">Transparent by default</td><td data-label="A neo-blockchain inverts it">Private by default, provable on demand</td><td data-label="Mechanism">Compliance-by-proof <span class="faint">(not built yet)</span></td></tr>
-          <tr><td data-label="Blockchains assume">A human signs each action</td><td data-label="A neo-blockchain inverts it">Agents act inside limits the protocol enforces</td><td data-label="Mechanism">Agent Charters</td></tr>
-          <tr><td data-label="Blockchains assume">Market outcomes depend on who orders transactions</td><td data-label="A neo-blockchain inverts it">Market outcomes carry a certificate that no better allocation exists</td><td data-label="Mechanism">Verifiable Clearing</td></tr>
-          <tr><td data-label="Blockchains assume">Fees rise when demand meets fixed capacity</td><td data-label="A neo-blockchain inverts it">The cost per verified claim falls as volume grows</td><td data-label="Mechanism">Batching, folding, sampling</td></tr>
-          <tr><td data-label="Blockchains assume">One cryptographic assumption guards each function</td><td data-label="A neo-blockchain inverts it">Unrelated families guard authorization; independent implementations guard validity</td><td data-label="Mechanism">Dual-origin signatures and proofs</td></tr>
-        </tbody>
-      </table>
-    </div>
   </div>
 </section>
 
@@ -299,6 +324,7 @@ sion demo all --local</code></pre>
       <nav aria-labelledby="footer-project">
         <h2 id="footer-project">Project</h2>
         <ul>
+          <li><a href="use-cases.html">Use cases</a></li>
           <li><a href="technology.html">Technology</a></li>
           <li><a href="developers.html">Developers</a></li>
           <li><a href="open-source.html">Open source</a></li>

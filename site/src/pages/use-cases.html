@@ -1,0 +1,164 @@
+<!--{"file": "use-cases.html", "title": "Use cases | Siontology", "description": "What Siontology is for: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output, payments a deepfake cannot approve, invoices that repay you if they are false, and markets that prove their prices.", "nav": "uses", "scenes": ["charters", "x402", "assurance", "clearing"]}-->
+<header class="page-head wrap">
+  <h1>What Siontology is for.</h1>
+  <p class="lede">Eight uses where trust is what slows business down today. Five run on the devnet as scripted demos, one is built from the same parts, and two need parts that are not built yet. Each section says who it is for, what happens today, what changes, how it works and what is still missing.</p>
+</header>
+
+<div class="wrap with-toc">
+  <aside class="toc" data-toc aria-labelledby="toc-title">
+    <div>
+      <h2 id="toc-title">On this page</h2>
+      <ol>
+        <li><a href="#agents">Agents that cannot overspend</a></li>
+        <li><a href="#apis">APIs paid per request</a></li>
+        <li><a href="#receipts">Receipts for AI output</a></li>
+        <li><a href="#approvals">Payments a deepfake cannot approve</a></li>
+        <li><a href="#invoices">Invoices that repay you if they are false</a></li>
+        <li><a href="#markets">Markets that prove their prices</a></li>
+        <li><a href="#settlement">Settlement with compliance proven</a></li>
+        <li><a href="#provenance">Provenance that survives a platform</a></li>
+      </ol>
+    </div>
+  </aside>
+
+  <div>
+    <section class="topic" id="agents" aria-labelledby="agents-title">
+      {{icon:agent}}
+      <h2 id="agents-title">Agents that cannot overspend</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>Companies that let AI agents spend money: on compute, data, API calls or goods, on someone&rsquo;s behalf.</dd></div>
+        <div><dt>Today</dt><dd>An agent&rsquo;s limits live in its own code, its prompt or a card&rsquo;s settings, so a prompt injection, a bug or a stolen key can spend whatever the agent can reach. Gartner expects AI agents to intermediate 90% of B2B buying, more than 15 trillion USD, by 2028 (<a href="https://www.gartner.com/en/articles/strategic-predictions-for-2026">Gartner</a>).</dd></div>
+        <div><dt>With Siontology</dt><dd>An Agent Charter is an object on the ledger that fixes whom the agent may pay, how much per payment and per window, its budget, and who answers for it. Validators check every payment against the charter before it executes.</dd></div>
+        <div><dt>What changes</dt><dd>The worst case is known before the agent starts: at most its budget, only to listed payees. A compromised agent is stopped by the ledger, not by its own judgement, and revoking the charter stops the agent and every sub-agent it created.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>Not built: limits on which models may act under a charter, and adapters for other agent-payment standards such as AP2 and ERC-8004.</dd></div>
+      </dl>
+      <ol class="steps">
+        <li><div><strong>Charter</strong><p>The company creates a charter: payees, a limit per payment and per window, a budget, receipts on, and a bond behind the agent&rsquo;s receipts.</p></div></li>
+        <li><div><strong>Pay</strong><p>The agent pays a listed payee within its limits. The payment executes and its receipt joins the knowledge log.</p></div></li>
+        <li><div><strong>Refuse</strong><p>A payment to an unlisted payee, or above a limit, is refused by the validators, whatever the agent was told.</p></div></li>
+        <li><div><strong>Delegate</strong><p>The agent can give a sub-agent part of its budget under narrower limits, never wider ones.</p></div></li>
+        <li><div><strong>Revoke</strong><p>One transaction revokes the charter. Once it executes, the agent and all its sub-agents are refused.</p></div></li>
+      </ol>
+      {{fig:charters}}
+      {{code:demo-agents}}
+    </section>
+
+    <section class="topic" id="apis" aria-labelledby="apis-title">
+      {{icon:api}}
+      <h2 id="apis-title">APIs paid per request</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>Anyone selling an API, a dataset or a model behind an HTTP endpoint, and the agents that buy from them.</dd></div>
+        <div><dt>Today</dt><dd>A card payment costs more than one API call is worth, so APIs are sold as monthly plans behind accounts, API keys and invoices. US merchants paid 198.25 billion USD in card fees in 2025 (<a href="https://merchantspaymentscoalition.com/credit-and-debit-card-swipe-fees-reach-record-19825-billion-president-and-congress-call-action">Nilson data, via the Merchants Payments Coalition</a>).</dd></div>
+        <div><dt>With Siontology</dt><dd>The API answers a request with HTTP 402 Payment Required and a quote. The agent pays in a stablecoin, under its charter if it has one, and retries; the server checks the payment itself, as a light client, before it answers. It speaks <a href="https://www.linuxfoundation.org/press/linux-foundation-is-launching-the-x402-foundation-and-welcoming-the-contribution-of-the-x402-protocol">x402</a>, the open standard for payments over HTTP, a Linux Foundation project.</dd></div>
+        <div><dt>What changes</dt><dd>No accounts, keys or invoices. Every request is paid and proven before it is served, a replayed payment is refused, and an agent cannot pay more than its charter allows.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>x402 version 2 with the exact scheme, not yet tested against third-party x402 clients. Each request is settled as its own transaction; streams that settle many requests in one transaction are being designed.</dd></div>
+      </dl>
+      <ol class="steps">
+        <li><div><strong>Ask</strong><p>The agent requests a resource. The server answers 402 with a quote: price, payee, chain and a fresh nonce.</p></div></li>
+        <li><div><strong>Pay</strong><p>The agent signs a payment whose purpose names the quote, and retries the request with it.</p></div></li>
+        <li><div><strong>Check</strong><p>The server submits the payment, waits for it to execute and verifies the receipt the way a light client would: committee certificate, certified order, inclusion proof.</p></div></li>
+        <li><div><strong>Serve</strong><p>Only then does the API answer 200 OK. The same payment cannot buy a second request.</p></div></li>
+      </ol>
+      {{fig:x402}}
+      {{code:demo-x402}}
+      {{code:x402}}
+    </section>
+
+    <section class="topic" id="receipts" aria-labelledby="receipts-title">
+      {{icon:receipt}}
+      <h2 id="receipts-title">Receipts for AI output</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>AI providers that must mark what their models generate, and the platforms, newsrooms and courts that need to check it.</dd></div>
+        <div><dt>Today</dt><dd>The EU AI Act has required machine-readable marking of AI-generated content since 2 August 2026, and systems already on the market must comply by 2 December 2026 (<a href="https://artificialintelligenceact.eu/implementation-timeline/">timeline</a>). A watermark inside the content can be stripped or imitated, and a provider&rsquo;s own database vouches only for itself.</dd></div>
+        <div><dt>With Siontology</dt><dd>The provider issues a receipt for each output: a claim naming the model, the time and a hash of the content. Each receipt carries a formula of what it rests on, such as the provider&rsquo;s signature, a hardware attestation and a bond.</dd></div>
+        <div><dt>What changes</dt><dd>Anyone can check a receipt against the ledger, and see what forging it would cost under their own assumptions, without trusting the provider&rsquo;s database. The design target is under 0.0001 USD per receipt.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--simplified">Claims and their pricing built on the devnet</span><br>Not built: a receipt service that commits many outputs in one claim, and an SDK for providers. The cost per receipt has not been measured.</dd></div>
+      </dl>
+      <ol class="steps">
+        <li><div><strong>Bond</strong><p>The provider posts a bond behind its receipts.</p></div></li>
+        <li><div><strong>Issue</strong><p>Each output gets a receipt whose formula is the provider&rsquo;s signature and either a hardware attestation or the bond.</p></div></li>
+        <li><div><strong>Price</strong><p>A consumer computes the receipt&rsquo;s cost of corruption under its own policy: whether it trusts the hardware, distrusts it, or prices an attack on it.</p></div></li>
+        <li><div><strong>Decide</strong><p>The consumer relies on the receipt only if that cost covers its value at risk, times a safety factor.</p></div></li>
+      </ol>
+      {{code:demo-receipts}}
+    </section>
+
+    <section class="topic" id="approvals" aria-labelledby="approvals-title">
+      {{icon:approval}}
+      <h2 id="approvals-title">Payments a deepfake cannot approve</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>Finance and treasury teams, and anyone who moves large payments on instructions given by voice, video or email.</dd></div>
+        <div><dt>Today</dt><dd>US victims reported a record 20.9 billion USD in losses in 2025, 3.05 billion of it from business email compromise (<a href="https://www.ic3.gov/AnnualReport/Reports/2025_IC3Report.pdf">FBI IC3</a>). One deepfake video call cost the engineering firm Arup about 25.6 million USD (<a href="https://edition.cnn.com/2024/05/16/tech/arup-deepfake-scam-loss-hong-kong-intl-hnk">CNN</a>).</dd></div>
+        <div><dt>With Siontology</dt><dd>The treasury&rsquo;s payment agent works under a charter that requires evidence above a threshold: a mandate claim from the people or systems that must agree, each backed by a bond. The payment executes only if what the approvers would forfeit by lying exceeds the amount at risk.</dd></div>
+        <div><dt>What changes</dt><dd>Imitating a face or a voice is no longer enough. An attacker has to corrupt approvers whose bonds exceed the payment, and what they forfeit repays the loss.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--simplified">Partly built</span><br>Charters already refuse a payment above a threshold without a claim that passes the decision rule, and claims, bonds and slashing are built. The approval workflow and the apps around it are not.</dd></div>
+      </dl>
+      <ol class="steps">
+        <li><div><strong>Set the rule</strong><p>The treasury charters its payment agent: above a threshold, a payment needs a claim that passes the decision rule.</p></div></li>
+        <li><div><strong>Request</strong><p>A payment request arrives by call or email, and the agent prepares the payment.</p></div></li>
+        <li><div><strong>Approve</strong><p>The approvers issue a mandate claim, each backed by a bond. Its formula names whose approval it rests on.</p></div></li>
+        <li><div><strong>Check</strong><p>Validators compute the claim&rsquo;s cost of corruption. The payment executes only if it covers the amount times the safety factor.</p></div></li>
+        <li><div><strong>Repay</strong><p>If an approval is proven false, its bond is slashed and compensates the payer.</p></div></li>
+      </ol>
+    </section>
+
+    <section class="topic" id="invoices" aria-labelledby="invoices-title">
+      {{icon:invoice}}
+      <h2 id="invoices-title">Invoices that repay you if they are false</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>Invoice financiers, trade-finance platforms and marketplaces that pay out before goods are confirmed.</dd></div>
+        <div><dt>Today</dt><dd>A financier that funds a false invoice recovers through insurers or the courts, if at all.</dd></div>
+        <div><dt>With Siontology</dt><dd>The supplier, the shipper and an arbiter each post a bond behind what they attest. The invoice is a claim whose formula names those attestations, so its cost of corruption is what a forger would have to forfeit. A financier relies on it only up to what that covers, reserves that much of the backing so nobody else can count on the same bonds, and is repaid from slashed bonds if a challenge proves the invoice false.</dd></div>
+        <div><dt>What changes</dt><dd>Reliance on a false invoice is repaid in full, a few Pulses after the ruling, without a lawsuit, from bonds posted in advance.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>Rulings come from an adjudicator named in each claim; there is no network of adjudicators yet.</dd></div>
+      </dl>
+      <ol class="steps">
+        <li><div><strong>Bond</strong><p>The supplier bonds 30,000 USD behind its invoices, the shipper 20,000 USD behind its deliveries, and an arbiter 100,000 USD behind its rulings.</p></div></li>
+        <li><div><strong>Attest</strong><p>The shipper attests the delivery; the supplier issues the invoice for 10,000 USD, resting on its own bond or on the delivery.</p></div></li>
+        <li><div><strong>Price</strong><p>The invoice&rsquo;s cost of corruption is 50,000 USD: a forger must corrupt both routes.</p></div></li>
+        <li><div><strong>Fund</strong><p>A financier relies on 10,000 USD with a safety factor of 2 and reserves 20,000 USD of the backing. A request to rely on 30,000 USD is refused.</p></div></li>
+        <li><div><strong>Repay</strong><p>The buyer challenges, the arbiter upholds, the bonds are slashed, and the financier is repaid 10,000 USD automatically.</p></div></li>
+      </ol>
+      {{fig:assurance}}
+      {{code:demo-invoice}}
+    </section>
+
+    <section class="topic" id="markets" aria-labelledby="markets-title">
+      {{icon:market}}
+      <h2 id="markets-title">Markets that prove their prices</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>Marketplaces for GPU compute, energy and other goods that clear many orders at once, and the buyers and sellers who use them.</dd></div>
+        <div><dt>Today</dt><dd>Matching engines are black boxes. Participants cannot check that the allocation was the best available, and when the order of arrival decides who trades, arriving first is worth money and gets gamed.</dd></div>
+        <div><dt>With Siontology</dt><dd>Orders are sealed into a batch with the Pulse&rsquo;s random beacon, so nobody can reorder them. A solver computes the allocation that maximises total welfare and submits it with a certificate, its dual prices; the ledger checks the certificate in linear time and settles everyone at one price.</dd></div>
+        <div><dt>What changes</dt><dd>Every batch carries proof that no better allocation existed. A place in the batch is worth nothing, so there is nothing to front-run.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>Sealed double auctions and assignment markets. Convex and combinatorial markets are designs.</dd></div>
+      </dl>
+      {{fig:clearing}}
+      {{code:demo-market}}
+    </section>
+
+    <section class="topic" id="settlement" aria-labelledby="settlement-title">
+      {{icon:settlement}}
+      <h2 id="settlement-title">Settlement with compliance proven</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>Fintechs, remittance companies and payment providers that move stablecoins across borders.</dd></div>
+        <div><dt>Today</dt><dd>Sending 200 USD abroad costs 6.36% on average, and 14.99% through banks (<a href="https://remittanceprices.worldbank.org/sites/default/files/2026-04/RPW_main_report_and_annex_Q325.pdf">World Bank, Q3 2025</a>). Financial-crime compliance costs 206.1 billion USD a year (<a href="https://risk.lexisnexis.com/about-us/press-room/press-release/20230926-global-financial-crime-compliance-costs">LexisNexis, 2023</a>).</dd></div>
+        <div><dt>With Siontology</dt><dd>Stablecoin transfers settle on the ledger in seconds and stay private by default. KYC, Travel Rule and sanctions checks are proven with zero-knowledge proofs: the receiving institution learns that the checks passed, not the data behind them.</dd></div>
+        <div><dt>What changes</dt><dd>The design goal is a few cents per transfer, with compliance checked once, in a proof, instead of repeated by every intermediary.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--missing">Not built</span><br>Stablecoin transfers run on the devnet with public amounts. Confidential amounts and compliance proofs need a zero-knowledge proof stack that is not built yet.</dd></div>
+      </dl>
+    </section>
+
+    <section class="topic" id="provenance" aria-labelledby="provenance-title">
+      {{icon:provenance}}
+      <h2 id="provenance-title">Provenance that survives a platform</h2>
+      <dl class="facts">
+        <div><dt>For</dt><dd>Newsrooms, camera makers, creators and platforms that publish media with C2PA content credentials.</dd></div>
+        <div><dt>Today</dt><dd>Platforms strip content credentials on upload. In one Washington Post test, none of eight platforms kept an AI video&rsquo;s credentials (<a href="https://fredritchin.substack.com/p/major-platforms-are-not-labeling">report</a>).</dd></div>
+        <div><dt>With Siontology</dt><dd>A media manifest is registered as a claim. When a platform strips the metadata, the claim is found again by the content&rsquo;s hash, and a revoked manifest shows as revoked.</dd></div>
+        <div><dt>What changes</dt><dd>Provenance stops depending on every platform keeping metadata intact.</dd></div>
+        <div><dt>Status</dt><dd><span class="status status--missing">Not built</span><br>A claim can carry a manifest&rsquo;s hash today; the C2PA adapter and lookup by content hash are not built.</dd></div>
+      </dl>
+    </section>
+  </div>
+</div>

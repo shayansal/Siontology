@@ -2,3 +2,4 @@
 /target-*
 /devnet-data
 /.claude
+__pycache__/

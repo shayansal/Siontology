@@ -250,3 +250,114 @@ CODE = {
               "                           <span class=\"c\"># assurance, execution, proving and a live devnet</span>\n"
               "sion bench --quick --only signatures,data"),
 }
+
+
+# Real output of the scripted demos (docs/book/src/getting-started/demos.md),
+# shown on the use-cases page.
+CODE.update({
+    "demo-agents": ('sion demo agents --local: real output',
+        '== Agent Charters: an AI agent with a budget the ledger enforces ==\n'
+        "Pulse  32  acme charters its agent: pay only gpu-cloud, ≤ 100 USD per payment, ≤ 250 USD per window, 1,000 USD budget, receipts on, 500 USD bond behind the agent's receipts\n"
+        'Pulse  34  agent pays gpu-cloud 80 USD for inference: Success; receipt claim 2c4e5264 joins the knowledge log\n'
+        'Pulse  36  a prompt-injected agent tries to pay mallory 90 USD → refused by the ledger: charter caveat violated: payee not allowed\n'
+        'Pulse  38  the agent tries a 150 USD payment → refused by the ledger: charter caveat violated: payment 150 above per-payment limit 100\n'
+        'Pulse  41  agent delegates 100 USD to a sub-agent under narrower caveats (≤ 20 USD per payment)\n'
+        'Pulse  43  sub-agent pays gpu-cloud 20 USD: Success\n'
+        'Pulse  45  acme revokes the charter (ordered by consensus)\n'
+        'Pulse  47  acme-agent tries to pay again → charter caveat violated: charter revoked\n'
+        'Pulse  49  sub-agent tries to pay again → charter caveat violated: charter revoked\n'
+        "           the agent's receipt is a claim backed by acme's bond: cost to forge it 500 USD\n"
+        'Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived in the ledger, not the agent.'),
+    "demo-x402": ('sion demo x402 --local: real output',
+        '== x402: an AI agent pays an API per request, inside limits the ledger enforces ==\n'
+        'Pulse  86  acme charters its agent: pay only carol, ≤ 1 USD per payment, ≤ 2 USD per window, 20 USD budget\n'
+        '           carol serves a forecast API at http://127.0.0.1:36159: 0.25 USD per call, settled on sion:b016a36ab737405623a15a6a9466c434\n'
+        '           agent: GET /v1/forecast → 402 Payment Required: 0.25 USD to carol (quote c752275a2dcfb17487dc0f7a829c6417)\n'
+        'Pulse  89  agent pays under its charter (purpose x402:&lt;quote&gt;) and retries → 200 OK {"region":"eu-west","gpu_hours":18250,"confidence":0.82}\n'
+        "           carol's server answered only after verifying the receipt as a light client: committee certificate, certified order, inclusion proof\n"
+        '           replaying the same PAYMENT-SIGNATURE → 402: unknown quote, or one already used\n'
+        "           agent: GET /v1/report (5 USD) → pays → the ledger refused the payment: charter caveat violated: payment 5 above per-payment limit 1; carol's API answers 402 and serves nothing\n"
+        'Pulse  93  bob, a person without a charter, pays the same API with a plain transfer → 200 OK\n'
+        "Result: no accounts, no API keys; every request is paid and proven before it is served, and the agent's limits live in the ledger, not in its prompt."),
+    "demo-receipts": ('sion demo receipts --local: real output',
+        '== Inference receipts: what would it cost to forge this answer? ==\n'
+        'Pulse  78  inference-co bonds 5,000 USD behind its receipts\n'
+        'Pulse  80  receipt issued  [dual-signature ∧ (TEE quote: nvidia-h100 ∨ bond:inference-co)]\n'
+        '           standard policy: cost to forge = 6,000 USD  (TEE attack ≈ 1,000 USD + 5,000 USD bond)\n'
+        "           the TEE's attack cost deters forgery but cannot repay anyone; only the bond is slashable\n"
+        '           standard           relying on 2000 USD → ACCEPT: cost of corruption 6,000 covers κ·V = 4,000\n'
+        '           standard           relying on 3000 USD → REJECT: only 5,000 of backing is unreserved; κ·V = 6,000 is needed\n'
+        '           assumes TEE broken relying on 2000 USD → ACCEPT: cost of corruption 5,000 covers κ·V = 4,000\n'
+        '           assumes TEE broken relying on 3000 USD → REJECT: cost of corruption 5,000 (after detection discount 1000/1000) is below κ·V = 6,000\n'
+        '           trusts the TEE     relying on 2000 USD → ACCEPT: cost of corruption ∞ covers κ·V = 4,000\n'
+        '           trusts the TEE     relying on 3000 USD → ACCEPT: cost of corruption ∞ covers κ·V = 6,000\n'
+        'Result: every consumer prices the same receipt under its own assumptions; trust is a number, not a brand.'),
+    "demo-invoice": ('sion demo invoice --local: real output',
+        '== Invoice #1042: trade finance on insured knowledge ==\n'
+        'Pulse   6  supplier bonds 30,000 USD behind "invoices"\n'
+        'Pulse   8  shipper bonds 20,000 USD behind "logistics"\n'
+        'Pulse  10  judge bonds 100,000 USD behind "arbitration"\n'
+        'Pulse  12  shipper attests "Shipment for invoice #1042 delivered"  [dual-signature ∧ bond:shipper]\n'
+        'Pulse  15  supplier issues "Invoice #1042: 10,000 USD payable"  [dual-signature ∧ (bond:supplier ∨ delivery)]\n'
+        '           cost of corruption (standard policy): 50,000 USD, exact\n'
+        "           = 30,000 (supplier's bond) + 20,000 (shipper's bond): a forger must corrupt both routes\n"
+        '           rely on  10000 USD at κ = 2 → ACCEPT: cost of corruption 50,000 covers κ·V = 20,000\n'
+        '           rely on  30000 USD at κ = 2 → REJECT: cost of corruption 50,000 (after detection discount 1000/1000) is below κ·V = 60,000\n'
+        'Pulse  18  financier funds the invoice and reserves 20,000 USD of its backing (κ·V): nobody else can rely on the same bonds beyond what slashing can repay\n'
+        "Pulse  20  buyer challenges the supplier's attestation (deposit 1,000 USD)\n"
+        "Pulse  22  judge upholds: supplier's bond slashed (30,000 USD); the invoice still holds through the delivery route\n"
+        "Pulse  24  buyer challenges the shipper's delivery attestation, under the shipper's own adjudicator\n"
+        'Pulse  26  judge upholds: 2 claims falsified (the delivery, and the invoice resting on it)\n'
+        '           financier compensated 10,000 USD automatically from the slashed bonds (balance 199,999.9988 → 209,999.9988)\n'
+        'Result: reliance on a false invoice was repaid in full, in Pulses, with no lawsuit and no adjuster.'),
+    "demo-market": ('sion demo market --local: real output',
+        '== Verifiable Clearing: a GPU-hour market that proves it is optimal ==\n'
+        'Pulse  56  operator opens a market: batches of 12 Pulses, sealed with the beacon, cleared by anyone with a certificate\n'
+        'Pulse  61  agent-1 bids for 5 GPU-hours at ≤ 2.10 USD: Success\n'
+        'Pulse  62  agent-2 bids for 3 GPU-hours at ≤ 1.90 USD: Success\n'
+        'Pulse  62  lab-a offers 5 GPU-hours at ≤ 1.80 USD: Success\n'
+        'Pulse  62  lab-b offers 6 GPU-hours at ≤ 2.00 USD: Success\n'
+        '           batch 5 sealed with the Pulse beacon 18f40c60 — 4 orders, nobody can reorder them now\n'
+        '           solver computes the welfare-maximizing allocation: 5 GPU-hours at one price 1.95 USD (supporting band 1.9–2), welfare 1.5 USD, with an LP optimality certificate\n'
+        'Pulse  73  the ledger checks the certificate in linear time and settles everyone at that price\n'
+        '           agent-1  now holds 5 GPU-hours and 990.2488 USD\n'
+        '           agent-2  now holds 0 GPU-hours and 999.9988 USD\n'
+        '           lab-a    now holds 0 GPU-hours and 109.7488 USD\n'
+        '           lab-b    now holds 6 GPU-hours and 99.9988 USD\n'
+        'Result: one uniform, certified-optimal price; a place in the batch is worth nothing, so there is nothing to front-run.'),
+})
+
+
+# Pictograms for the use cases, drawn on a 32-unit grid in the diagram
+# vocabulary (brand/guidelines.md, Iconography): a diamond is an AI agent, a
+# solid cell something real and final, an outline cell a claim, tally strokes
+# approvals, a hatched cell a batch ordered by consensus, a rounded rectangle a
+# phone; a check means accepted and a cross, the only colour, refused.
+_S = 'fill="none" stroke="currentColor" stroke-width="1.6"'
+ICONS = {
+    "agent": ('<path d="M11 4 20 16 11 28 2 16Z" ' + _S + '/>'
+              '<rect x="23" y="20" width="7" height="7" fill="currentColor"/>'
+              '<path class="pict-signal" d="M23 5l7 7M30 5l-7 7" fill="none" stroke-width="1.6"/>'),
+    "api": ('<rect x="2" y="10" width="12" height="12" fill="currentColor"/>'
+            '<path d="M16 16h5M18.5 13.5 21 16l-2.5 2.5" ' + _S + '/>'
+            '<path d="M23 16.5l2.5 2.5L30 12" ' + _S + '/>'),
+    "receipt": ('<rect x="4" y="3" width="17" height="23" ' + _S + '/>'
+                '<path d="M8 9h9M8 13h9M8 17h6" ' + _S + '/>'
+                '<path d="M19 25l3 3 7-9" ' + _S + '/>'),
+    "approval": ('<path d="M4 7v18M9 7v18M14 7v18M19 7v18M2 22 21 10" ' + _S + '/>'
+                 '<path class="pict-signal" d="M24 19l6 6M30 19l-6 6" fill="none" stroke-width="1.6"/>'),
+    "invoice": ('<rect x="5" y="3" width="22" height="15" ' + _S + '/>'
+                '<path d="M9 8h14M9 12h9" ' + _S + '/>'
+                '<rect x="5" y="21" width="22" height="8" fill="currentColor"/>'),
+    "market": ('<rect x="3" y="7" width="18" height="18" ' + _S + '/>'
+               '<path d="M3 13l6-6M3 19 15 7M3 25 21 7M9 25l12-12M15 25l6-6" fill="none" stroke="currentColor" stroke-width="1.2"/>'
+               '<path d="M23 17l2.5 2.5L30 13" ' + _S + '/>'),
+    "settlement": ('<rect x="2" y="12" width="8" height="8" fill="currentColor"/>'
+                   '<path d="M11 16h10M18.5 13.5 21 16l-2.5 2.5" ' + _S + '/>'
+                   '<rect x="22" y="12" width="8" height="8" fill="currentColor"/>'
+                   '<rect x="7" y="4" width="18" height="5" ' + _S + '/>'),
+    "provenance": ('<rect x="3" y="5" width="14" height="19" ' + _S + '/>'
+                   '<path d="M7 11h6M7 15h6" ' + _S + '/>'
+                   '<rect x="19" y="8" width="10" height="19" rx="2.5" ' + _S + '/>'
+                   '<path d="M21.5 18l2 2 3.5-4.5" ' + _S + '/>'),
+}
