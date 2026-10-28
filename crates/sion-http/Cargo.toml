@@ -1,6 +1,6 @@
 [package]
 name = "sion-http"
-description = "Outbound HTTP for Siontology tools: TLS 1.3 with the hybrid post-quantum key exchange X25519MLKEM768 first, the platform's and SSL_CERT_FILE's roots, deadlines, bounded reads, no redirects unless asked, and refusal of private and local addresses"
+description = "Outbound HTTP for Siontology tools: TLS 1.3 or 1.2, offering the hybrid post-quantum key exchange X25519MLKEM768 first, the platform's and SSL_CERT_FILE's roots, deadlines, bounded reads, no redirects unless asked, and refusal of private and local addresses"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -18,6 +18,7 @@ members = [
     "crates/sion-cli",
     "crates/sion-app-core",
     "crates/sion-http",
+    "crates/sion-agent",
 ]
 
 [workspace.package]
@@ -49,6 +50,7 @@ sion-node = { path = "crates/sion-node" }
 sion-cli = { path = "crates/sion-cli" }
 sion-app-core = { path = "crates/sion-app-core" }
 sion-http = { path = "crates/sion-http" }
+sion-agent = { path = "crates/sion-agent" }
 
 # Hashing, encoding, errors
 sha3 = "0.10"
