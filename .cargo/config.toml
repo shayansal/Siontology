@@ -1,6 +1,10 @@
 # Prefer dependency versions whose minimum Rust fits the workspace's
 # rust-version (1.80) when resolving: quinn 0.11.11 and later, for example,
 # need 1.85. Cargo 1.84 and later honour this; it changes nothing that is
-# already in Cargo.lock.
+# already in Cargo.lock. A `cargo update` may therefore pick older releases
+# than the newest: the lockfile already holds some that need a newer Rust
+# than 1.80 (clap 4.6, the fips203/204/205 0.5 crates and zeroize 1.9 need
+# 1.85; icu 2.4, through url and ureq, and proptest 1.12 need 1.88), and an
+# update would move those that have a release fitting 1.80 back to it.
 [resolver]
 incompatible-rust-versions = "fallback"
