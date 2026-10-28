@@ -1,8 +1,8 @@
 # Glossary
 
 **Active set.** The validators that hold seats in the current epoch, each
-with a weight equal to its stake in whole units. See
-[Validators, staking and epochs](../concepts/committees.md).
+with a weight equal to its own plus its pool's earning stake, in whole
+units. See [Validators, staking and epochs](../concepts/committees.md).
 
 **Adjudicator.** A bonded party a claim names to rule on challenges. A
 ruling cannot be trusted beyond the adjudicator's own bond.
@@ -67,6 +67,10 @@ with a statement and a witness; the unit a proof stack proves.
 rests on, appended to the knowledge log. See
 [Claims and the knowledge log](../concepts/claims.md).
 
+**Commission.** The share of its pool's rewards a validator's operator
+keeps: at most 25 %, effective at the epoch's end. See
+[Pooled stake](../concepts/validators/pooled-stake.md).
+
 **Committee.** The validators that certify something: the consensus
 committee (the active set) certifies Pulse headers and orders contended
 transactions; each shard's lane committee certifies its transactions'
@@ -92,6 +96,10 @@ erasure-coded data so withholding is detected with high probability. See
 corruption, discounted for detection and capped by the adjudicator, is at
 least κ·V, and that much backing is unreserved. See
 [The decision rule](../concepts/assurance/decision-rule.md).
+
+**Delegation.** An object its delegator owns that holds shares of a
+validator's pool: stake added to the validator's weight without handing
+it over. See [Pooled stake](../concepts/validators/pooled-stake.md).
 
 **Deferred phase.** The last part of a Pulse: commutative effects in
 canonical order, forced-intent posting, and scheduled events such as batch
@@ -163,6 +171,10 @@ agent of any charter above it. Any overseer may suspend or revoke it.
 ledger by revealing a hash chain's elements, one per payment, and settled
 by the payee in batches. See [Payment streams](../concepts/payment-streams.md).
 
+**Pool.** A validator's delegated stake, divided into shares, in the
+delegation book. Earning shares share the validator's rewards; all shares
+share its slashing.
+
 **Policy.** A consumer's view of which atoms and classes to trust,
 distrust or assume broken, and its κ.
 
@@ -204,7 +216,8 @@ description of the state transition. See
 its operator stakes for it.
 
 **Stake.** What a validator deposits to join; its weight in committees and
-what it forfeits if it equivocates.
+what it forfeits if it equivocates. Delegators add stake to a validator's
+pool (see Delegation).
 
 **State root.** The root of the sparse Merkle tree over every object.
 
@@ -233,8 +246,8 @@ time, when the statement held, is the writer's.
 **Two-sorted state.** Linear objects that are consumed at most once, and
 knowledge that is only appended.
 
-**Unbonding.** The Pulses an exited validator's stake stays locked before it
-can be withdrawn.
+**Unbonding.** The Pulses an exited validator's stake, or an undelegated
+delegation's, stays locked, and slashable, before it can be withdrawn.
 
 **Validator set.** The state object holding every validator's record, the
 active set, the epoch and its parameters.
@@ -243,8 +256,8 @@ active set, the epoch and its parameters.
 that no better allocation exists. See
 [Verifiable Clearing](../concepts/verifiable-clearing.md).
 
-**Weight.** A validator's stake in whole units of the stake asset, its
-voting weight in the consensus committee.
+**Weight.** A validator's own plus its pool's earning stake in whole
+units of the stake asset: its voting weight in the consensus committee.
 
 **Witness.** The objects a chunk touches, with state proofs, plus the
 knowledge log's frontier: what a stateless verifier needs to re-execute it.

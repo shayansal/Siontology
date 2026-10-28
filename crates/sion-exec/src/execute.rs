@@ -30,6 +30,11 @@ use crate::charter::{
     AgentIdentity, Allotment, Caveats, Charter, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH,
 };
 use crate::claim::{claim_id, formulas, ClaimBody, Payload};
+use crate::delegation::{
+    cap_permille, resolve, within_cap, Delegation, DelegationBook, DelegationState, Standing,
+    COMMISSION_CEILING_PERMILLE, COMMISSION_STEP_PERMILLE, DELEGATION_SLASH_PERMILLE,
+    MIN_DELEGATION,
+};
 use crate::error::ExecError;
 use crate::escrow::BoundedTotal;
 use crate::market::{
@@ -587,6 +592,57 @@ pub enum Event {
         refund: Amount,
         /// To whom.
         to: AccountId,
+    },
+    /// Stake was delegated to a validator's pool (spec §5.45).
+    Delegated {
+        /// The delegation.
+        delegation: ObjectId,
+        /// The validator.
+        validator: ValidatorId,
+        /// The delegator.
+        owner: AccountId,
+        /// Stake added, in the stake asset.
+        amount: Amount,
+        /// Pool shares received.
+        shares: u128,
+    },
+    /// A delegation stopped earning and began unbonding (spec §5.46).
+    Undelegated {
+        /// The delegation.
+        delegation: ObjectId,
+        /// Rewards paid out, in USD.
+        rewards: Amount,
+        /// The first Pulse its stake can be withdrawn.
+        withdrawable_at: Pulse,
+    },
+    /// An unbonded delegation's stake was withdrawn (spec §5.47).
+    DelegationWithdrawn {
+        /// The delegation.
+        delegation: ObjectId,
+        /// Stake returned, in the stake asset.
+        amount: Amount,
+    },
+    /// A delegator collected its rewards (spec §5.48).
+    DelegatorRewardsClaimed {
+        /// The delegation.
+        delegation: ObjectId,
+        /// Rewards paid, in USD.
+        amount: Amount,
+    },
+    /// A validator set its pool's commission from the epoch's end (spec
+    /// §5.49).
+    CommissionSet {
+        /// The validator.
+        validator: ValidatorId,
+        /// The commission, in thousandths.
+        permille: u16,
+    },
+    /// An equivocating validator's pool lost part of its stake (spec §5.30).
+    PoolSlashed {
+        /// The offender.
+        validator: ValidatorId,
+        /// Stake forfeited from the pool, in the stake asset.
+        amount: Amount,
     },
 }
 
@@ -2156,8 +2212,20 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             record.rewards = Amount::ZERO;
             record.status = ValidatorStatus::Slashed { at: pulse };
             run.store_validators(object, set);
+            // Its pool loses a share of its stake, pending and unbonding
+            // delegations included: every share is worth less.
+            let mut pool_slashed = None;
+            if let Some((book_object, mut book)) = load_book(run)? {
+                if let Some(pool) = book.pools.get_mut(&offender) {
+                    let slashed = permille_of(pool.value, DELEGATION_SLASH_PERMILLE);
+                    pool.value = pool.value.checked_sub(slashed)?;
+                    pool_slashed = Some(slashed);
+                    store_book(run, book_object, book);
+                }
+            }
+            let forfeited_stake = stake.checked_add(pool_slashed.unwrap_or(Amount::ZERO))?;
             let mut paid = [Amount::ZERO; 2];
-            for (index, (asset, forfeited)) in [(asset, stake), (AssetId::usd(), rewards)]
+            for (index, (asset, forfeited)) in [(asset, forfeited_stake), (AssetId::usd(), rewards)]
                 .into_iter()
                 .enumerate()
             {
@@ -2176,6 +2244,221 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 amount: stake,
                 reporter: tx.sender,
                 reward: paid[0],
+            });
+            if let Some(amount) = pool_slashed {
+                run.event(Event::PoolSlashed {
+                    validator: offender,
+                    amount,
+                });
+            }
+        }
+        TxKind::DelegateStake { validator, amount } => {
+            if *amount < MIN_DELEGATION {
+                return Err(ExecError::Invalid(format!(
+                    "a delegation must be at least {MIN_DELEGATION}"
+                )));
+            }
+            let (_, set) = run.validators()?;
+            match set.validators.get(validator) {
+                Some(record) if eligible(record) => {}
+                Some(_) => {
+                    return Err(ExecError::Invalid(
+                        "the validator is neither active nor joining".into(),
+                    ))
+                }
+                None => return Err(ExecError::Invalid("unknown validator".into())),
+            }
+            run.draw(set.params.stake_asset, *amount)?;
+            let (book_object, mut book) = match load_book(run)? {
+                Some(loaded) => loaded,
+                None => (new_book(), DelegationBook::default()),
+            };
+            // No validator may hold more than the weight cap.
+            let mut total = Amount::ZERO;
+            let mut count = 0u64;
+            for record in set.validators.values().filter(|r| eligible(r)) {
+                count += 1;
+                total = total.checked_add(bonded_stake(record, &book)?)?;
+            }
+            let own = bonded_stake(&set.validators[validator], &book)?.checked_add(*amount)?;
+            let all = total.checked_add(*amount)?;
+            if !within_cap(own, all, count).ok_or_else(overflow)? {
+                return Err(ExecError::Invalid(format!(
+                    "the delegation would give the validator more than {}‰ of the bonded stake",
+                    cap_permille(count)
+                )));
+            }
+            let pool = book.pools.entry(*validator).or_default();
+            let shares = pool
+                .shares_for(*amount)
+                .ok_or_else(|| ExecError::Invalid("the pool has shares but no stake".into()))?;
+            if shares == 0 {
+                return Err(ExecError::Invalid("the delegation buys no shares".into()));
+            }
+            pool.pending = pool.pending.checked_add(shares).ok_or_else(overflow)?;
+            pool.pending_delegations = pool
+                .pending_delegations
+                .checked_add(1)
+                .ok_or_else(overflow)?;
+            pool.value = pool.value.checked_add(*amount)?;
+            let delegation = run.create(
+                Owner::Account(tx.sender),
+                ObjectData::Delegation(Delegation {
+                    owner: tx.sender,
+                    validator: *validator,
+                    shares,
+                    state: DelegationState::Pending { epoch: set.epoch },
+                    since: pulse,
+                }),
+            );
+            store_book(run, book_object, book);
+            run.event(Event::Delegated {
+                delegation,
+                validator: *validator,
+                owner: tx.sender,
+                amount: *amount,
+                shares,
+            });
+        }
+        TxKind::Undelegate => {
+            let id = run.input(1)?;
+            let (mut object, mut delegation) = load_delegation(run, &id, &tx.sender)?;
+            let (_, set) = run.validators()?;
+            let (book_object, mut book) = existing_book(run)?;
+            let pool = book
+                .pools
+                .get_mut(&delegation.validator)
+                .ok_or_else(|| ExecError::Invalid("the validator has no pool".into()))?;
+            let shares = delegation.shares;
+            let rewards = match resolve(&mut delegation, pool, set.epoch)
+                .map_err(|e| ExecError::Invalid(e.into()))?
+            {
+                Standing::Pending => {
+                    pool.pending = pool.pending.checked_sub(shares).ok_or_else(overflow)?;
+                    pool.pending_delegations = pool
+                        .pending_delegations
+                        .checked_sub(1)
+                        .ok_or_else(overflow)?;
+                    Amount::ZERO
+                }
+                Standing::Earning { entry } => {
+                    let owed = pool.owed(shares, entry).ok_or_else(overflow)?;
+                    pool.earning = pool.earning.checked_sub(shares).ok_or_else(overflow)?;
+                    pool.rewards_held = pool.rewards_held.checked_sub(owed)?;
+                    owed
+                }
+            };
+            pool.unbonding = pool.unbonding.checked_add(shares).ok_or_else(overflow)?;
+            let withdrawable_at = Pulse(pulse.0.saturating_add(set.params.unbonding));
+            delegation.state = DelegationState::Unbonding {
+                at: withdrawable_at,
+            };
+            object.data = ObjectData::Delegation(delegation);
+            run.store(object);
+            store_book(run, book_object, book);
+            run.mint_coin(tx.sender, AssetId::usd(), rewards);
+            run.event(Event::Undelegated {
+                delegation: id,
+                rewards,
+                withdrawable_at,
+            });
+        }
+        TxKind::WithdrawDelegation => {
+            let id = run.input(1)?;
+            let (_, delegation) = load_delegation(run, &id, &tx.sender)?;
+            match delegation.state {
+                DelegationState::Unbonding { at } if at <= pulse => {}
+                DelegationState::Unbonding { at } => {
+                    return Err(ExecError::Invalid(format!(
+                        "the delegation is withdrawable from Pulse {at}"
+                    )))
+                }
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "only an unbonding delegation can be withdrawn".into(),
+                    ))
+                }
+            }
+            let (_, set) = run.validators()?;
+            let (book_object, mut book) = existing_book(run)?;
+            let pool = book
+                .pools
+                .get_mut(&delegation.validator)
+                .ok_or_else(|| ExecError::Invalid("the validator has no pool".into()))?;
+            let amount = pool.value_of(delegation.shares).ok_or_else(overflow)?;
+            pool.unbonding = pool
+                .unbonding
+                .checked_sub(delegation.shares)
+                .ok_or_else(overflow)?;
+            pool.value = pool.value.checked_sub(amount)?;
+            store_book(run, book_object, book);
+            run.consume(&id)?;
+            run.mint_coin(tx.sender, set.params.stake_asset, amount);
+            run.event(Event::DelegationWithdrawn {
+                delegation: id,
+                amount,
+            });
+        }
+        TxKind::ClaimDelegatorRewards => {
+            let id = run.input(1)?;
+            let (mut object, mut delegation) = load_delegation(run, &id, &tx.sender)?;
+            let (_, set) = run.validators()?;
+            let (book_object, mut book) = existing_book(run)?;
+            let pool = book
+                .pools
+                .get_mut(&delegation.validator)
+                .ok_or_else(|| ExecError::Invalid("the validator has no pool".into()))?;
+            let Standing::Earning { entry } = resolve(&mut delegation, pool, set.epoch)
+                .map_err(|e| ExecError::Invalid(e.into()))?
+            else {
+                return Err(ExecError::Invalid(
+                    "the delegation earns from the epoch's end".into(),
+                ));
+            };
+            let amount = pool.owed(delegation.shares, entry).ok_or_else(overflow)?;
+            if amount == Amount::ZERO {
+                return Err(ExecError::Invalid("no rewards to claim".into()));
+            }
+            pool.rewards_held = pool.rewards_held.checked_sub(amount)?;
+            delegation.state = DelegationState::Earning {
+                entry: pool.reward_per_share,
+            };
+            object.data = ObjectData::Delegation(delegation);
+            run.store(object);
+            store_book(run, book_object, book);
+            run.mint_coin(tx.sender, AssetId::usd(), amount);
+            run.event(Event::DelegatorRewardsClaimed {
+                delegation: id,
+                amount,
+            });
+        }
+        TxKind::SetCommission {
+            validator,
+            permille,
+        } => {
+            let (_, mut set) = run.validators()?;
+            operated(&mut set, validator, &tx.sender)?;
+            if *permille > COMMISSION_CEILING_PERMILLE {
+                return Err(ExecError::Invalid(format!(
+                    "the commission may be at most {COMMISSION_CEILING_PERMILLE}‰"
+                )));
+            }
+            let (book_object, mut book) = match load_book(run)? {
+                Some(loaded) => loaded,
+                None => (new_book(), DelegationBook::default()),
+            };
+            let pool = book.pools.entry(*validator).or_default();
+            let current = pool.commission_permille;
+            if pool.shares() > 0 && *permille > current.saturating_add(COMMISSION_STEP_PERMILLE) {
+                return Err(ExecError::Invalid(format!(
+                    "a commission rises by at most {COMMISSION_STEP_PERMILLE}‰ at a time"
+                )));
+            }
+            pool.next_commission = Some(*permille);
+            store_book(run, book_object, book);
+            run.event(Event::CommissionSet {
+                validator: *validator,
+                permille: *permille,
             });
         }
         TxKind::OpenStream {
@@ -2766,6 +3049,86 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
         }
     }
     Ok(())
+}
+
+/// Pool-share arithmetic overflowed (only on corrupt state or absurd
+/// amounts).
+fn overflow() -> ExecError {
+    ExecError::Core(sion_core::CoreError::Overflow("pool shares"))
+}
+
+/// Whether a validator may receive delegations and counts towards the
+/// weight cap: joining or active.
+fn eligible(record: &ValidatorRecord) -> bool {
+    matches!(
+        record.status,
+        ValidatorStatus::Joining | ValidatorStatus::Active
+    )
+}
+
+/// A validator's bonded stake: its own plus its pool's earning and pending
+/// stake.
+fn bonded_stake(record: &ValidatorRecord, book: &DelegationBook) -> Result<Amount, ExecError> {
+    let pooled = match book.pools.get(&record.id) {
+        Some(pool) => pool.bonded().ok_or_else(overflow)?,
+        None => Amount::ZERO,
+    };
+    Ok(record.stake.checked_add(pooled)?)
+}
+
+/// The delegation book's object for its first write.
+fn new_book() -> Object {
+    Object {
+        id: well_known::delegations(),
+        version: Version(0),
+        owner: Owner::Shared(well_known::validators_domain()),
+        data: ObjectData::Delegations(Box::default()),
+    }
+}
+
+/// The delegation book, if any delegation or commission created it.
+fn load_book<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+) -> Result<Option<(Object, DelegationBook)>, ExecError> {
+    let Some(object) = run.try_load(&well_known::delegations())? else {
+        return Ok(None);
+    };
+    let ObjectData::Delegations(book) = &object.data else {
+        return Err(ExecError::Invalid("delegation book corrupted".into()));
+    };
+    let book = (**book).clone();
+    Ok(Some((object, book)))
+}
+
+/// The delegation book, which must exist.
+fn existing_book<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+) -> Result<(Object, DelegationBook), ExecError> {
+    load_book(run)?.ok_or_else(|| ExecError::Invalid("no delegation book".into()))
+}
+
+fn store_book<S: ObjectStore>(run: &mut Run<'_, '_, S>, mut object: Object, book: DelegationBook) {
+    object.data = ObjectData::Delegations(Box::new(book));
+    run.store(object);
+}
+
+/// Loads a delegation the sender owns.
+fn load_delegation<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+    sender: &AccountId,
+) -> Result<(Object, Delegation), ExecError> {
+    let object = run.load(id)?;
+    let ObjectData::Delegation(delegation) = &object.data else {
+        return Err(ExecError::Invalid("not a delegation".into()));
+    };
+    let delegation = delegation.clone();
+    if delegation.owner != *sender {
+        return Err(ExecError::Unauthorized(
+            "only the delegator may do this".into(),
+        ));
+    }
+    Ok((object, delegation))
 }
 
 /// The record of `validator`, which `operator` must operate.

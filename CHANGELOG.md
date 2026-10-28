@@ -10,6 +10,37 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Pooled stake (specification v1.11)
+
+- `DelegateStake` adds stake to a validator's pool without handing it
+  over: the delegator keeps a delegation object holding pool shares. It
+  joins at the epoch's end, then counts towards the validator's weight and
+  earns a share of its rewards. `Undelegate` pays what is owed and starts
+  unbonding (the stake stays slashable), `WithdrawDelegation` returns the
+  stake, and `ClaimDelegatorRewards` pays the rewards credited so far.
+- At each epoch's end a validator's reward is split between its own stake
+  and its pool's earning stake; the operator keeps a commission on the
+  pool's part, set with `SetCommission`: at most 25 %, effective at the
+  epoch's end, and, once anyone has delegated, raised by at most 2 points
+  at a time. The rest is credited per share with an exact accumulator.
+- A delegation is refused if it would give its validator more than twice
+  an equal share of the bonded stake (never less than a tenth).
+- An equivocation also slashes a tenth of the offender's pool, unbonding
+  delegations included; the reporter's share is of both. Validators rank
+  for the active set by their own plus their pool's earning stake.
+- Both proof stacks implement v1.11. The differential tests run every rule
+  and failure through both, check every epoch end's split against a third,
+  plain-arithmetic reading, and run randomized workloads of delegations,
+  claims, commission changes, fees and slashings, checking the pools
+  against the delegations they hold after every Pulse.
+- New `sion stake` commands (`pools`, `delegate`, `show`, `claim`,
+  `undelegate`, `withdraw`, `commission`), MCP tools `sion_stake_pools`,
+  `sion_stake_delegate`, `sion_stake_show`, `sion_stake_claim`,
+  `sion_stake_undelegate` and `sion_stake_withdraw`, and the guide
+  *Delegating stake*. The node's account view lists an account's
+  delegations. The supply invariant counts pooled stake and unclaimed
+  delegator rewards.
+
 ### Task Charters (specification v1.10)
 
 - `PostTask` escrows money for a task and fixes, at posting, the rule a

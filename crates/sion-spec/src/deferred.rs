@@ -10,10 +10,12 @@
 //! Protocol objects are read lazily: the schedule always and first; the
 //! assurance domain, the treasury, the validator set and the
 //! forced-inclusion obligations only when an item, an intent or an event
-//! needs them; a market only when an item or event needs it. Each is written
-//! back at the end only if something obtained it (the schedule: only if its
-//! entries changed), in the order markets (by identifier), assurance,
-//! treasury, validator set, obligations, schedule.
+//! needs them; a market only when an item or event needs it; the
+//! delegation book only at an epoch's end, and only if it exists. Each is
+//! written back at the end only if something obtained it (the schedule:
+//! only if its entries changed), in the order markets (by identifier),
+//! assurance, treasury, validator set, delegation book, obligations,
+//! schedule.
 //!
 //! Errors (§6.3, "Errors"): the arithmetic §6.3 marks saturating saturates;
 //! any remaining error — a missing or malformed protocol object, an
@@ -34,6 +36,7 @@ use sion_core::merkle::Frontier;
 use sion_core::Amount;
 use sion_exec::assurance::AssuranceDomain;
 use sion_exec::claim::{claim_id, knowledge_leaf, ClaimBody, StoredClaim};
+use sion_exec::delegation::DelegationBook;
 use sion_exec::execute::{bond_owner, Deferred, Event};
 use sion_exec::market::{BatchStatus, Market, MarketBatch, PendingOrder, MAX_BATCH_ORDERS};
 use sion_exec::object::{
@@ -124,6 +127,9 @@ struct DeferredRun<'v> {
     treasury: Option<(Object, Treasury)>,
     /// The validator set object and its contents, once obtained.
     validators: Option<(Object, ValidatorSet)>,
+    /// The delegation book, once obtained (v1.11): `Some(None)` if it does
+    /// not exist.
+    delegations: Option<Option<(Object, DelegationBook)>>,
     /// The forced-inclusion obligations object and its contents, once
     /// obtained.
     obligations: Option<(Object, ForcedObligations)>,
@@ -158,6 +164,7 @@ impl<'v> DeferredRun<'v> {
             assurance: None,
             treasury: None,
             validators: None,
+            delegations: None,
             obligations: None,
             markets: BTreeMap::new(),
             frontier,
@@ -214,6 +221,34 @@ impl<'v> DeferredRun<'v> {
             Some((_, set)) => Ok(set),
             None => Err(broken("validator set unavailable")),
         }
+    }
+
+    /// The delegation book, reading it (`try_load`) the first time; `None`
+    /// if no delegation created it.
+    fn delegation_book(&mut self) -> Result<Option<&mut DelegationBook>, SpecError> {
+        if self.delegations.is_none() {
+            let found = match self
+                .book
+                .try_load(&well_known::delegations())
+                .map_err(rejected)?
+            {
+                None => None,
+                Some(object) => {
+                    let ObjectData::Delegations(book) = &object.data else {
+                        return Err(broken(
+                            "the delegation book object is not a delegation book",
+                        ));
+                    };
+                    let book = (**book).clone();
+                    Some((object, book))
+                }
+            };
+            self.delegations = Some(found);
+        }
+        Ok(match &mut self.delegations {
+            Some(Some((_, book))) => Some(book),
+            _ => None,
+        })
     }
 
     /// The forced-inclusion obligations, loading them the first time.
@@ -596,6 +631,14 @@ impl<'v> DeferredRun<'v> {
             self.book
                 .store(Object {
                     data: ObjectData::Validators(Box::new(set)),
+                    ..object
+                })
+                .map_err(rejected)?;
+        }
+        if let Some(Some((object, book))) = self.delegations.take() {
+            self.book
+                .store(Object {
+                    data: ObjectData::Delegations(Box::new(book)),
                     ..object
                 })
                 .map_err(rejected)?;

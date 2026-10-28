@@ -8,15 +8,24 @@
 //! the treasury's running total of USD fees gained since the last epoch end
 //! (`fees_mark`). Whatever else the treasury received — slashing
 //! remainders, released bond pools — stays in its balance.
+//!
+//! Pooled stake (v1.11): a validator's reward is split between its own
+//! stake and its pool's earning stake; delegations made during the epoch
+//! join; commission changes take effect; validators rank by their own plus
+//! their pool's earning stake.
+
+use std::collections::BTreeMap;
 
 use sion_core::ids::{Pulse, ValidatorId};
 use sion_core::Amount;
+use sion_exec::delegation::{Join, REWARD_SCALE};
 use sion_exec::execute::Event;
 use sion_exec::object::ScheduledEvent;
 use sion_exec::validators::{permille_of, share_of, weight, ValidatorSet, ValidatorStatus};
 
 use super::{add, broken, sub, DeferredRun};
 use crate::error::SpecError;
+use crate::ops::delegation::{floor_mul_div, stake_behind};
 use crate::tx::usd;
 
 /// `epoch_end = epoch_start + max(epoch_length, 1) − 1`, saturating (§2).
@@ -40,11 +49,14 @@ impl DeferredRun<'_> {
             .copied()
             .unwrap_or(Amount::ZERO);
         let collected = treasury.fees.get(&usd()).copied().unwrap_or(Amount::ZERO);
+        // The delegation book, if any delegation created it (v1.11).
+        let has_book = self.delegation_book()?.is_some();
         let set = self.validator_set()?;
+        let ending = set.epoch;
 
         // 1. Rewards: a share of the fees collected since the last epoch
         //    end, by weight, to the active set's records that are Active or
-        //    Leaving.
+        //    Leaving. First each such validator's share and own stake.
         let gain = collected.checked_sub(set.fees_mark).unwrap_or(Amount::ZERO);
         let pool = permille_of(gain, set.params.reward_permille);
         let total = set
@@ -53,8 +65,9 @@ impl DeferredRun<'_> {
             .try_fold(0u64, |total, (_, weight)| total.checked_add(*weight))
             .ok_or_else(|| broken("the active set's total weight overflows"))?;
         let mut paid = Amount::ZERO;
+        let mut shares: Vec<(ValidatorId, Amount, Amount)> = Vec::new();
         for (validator, weight) in &set.active {
-            let Some(record) = set.validators.get_mut(validator) else {
+            let Some(record) = set.validators.get(validator) else {
                 continue;
             };
             if matches!(
@@ -62,12 +75,78 @@ impl DeferredRun<'_> {
                 ValidatorStatus::Active | ValidatorStatus::Leaving
             ) {
                 let share = share_of(pool, *weight, total);
-                record.rewards = add(record.rewards, share, "a validator's rewards")?;
                 paid = add(paid, share, "the epoch's rewards")?;
+                shares.push((*validator, share, record.stake));
+            }
+        }
+        //    Then the pools take their part, less commission, per earning
+        //    share; the operator keeps the rest.
+        let mut to_operators: Vec<(ValidatorId, Amount)> = Vec::with_capacity(shares.len());
+        for (validator, share, own) in shares {
+            let mut kept = share;
+            if has_book {
+                if let Some(pool) = self
+                    .delegation_book()?
+                    .and_then(|book| book.pools.get_mut(&validator))
+                {
+                    let earning = stake_behind(pool, pool.earning)
+                        .ok_or_else(|| broken("a pool's earning stake overflows"))?;
+                    if pool.earning > 0 && earning > Amount::ZERO {
+                        let whole = add(own, earning, "a validator's earning stake")?;
+                        let part = floor_mul_div(share.0, earning.0, whole.0)
+                            .ok_or_else(|| broken("a pool's part of the rewards overflows"))?;
+                        let commission = permille_of(Amount(part), pool.commission_permille);
+                        let delegated = sub(Amount(part), commission, "a pool's rewards")?;
+                        let per_share = floor_mul_div(delegated.0, REWARD_SCALE, pool.earning)
+                            .ok_or_else(|| broken("a pool's reward per share overflows"))?;
+                        pool.reward_per_share = pool
+                            .reward_per_share
+                            .checked_add(per_share)
+                            .ok_or_else(|| broken("a pool's accumulator overflows"))?;
+                        pool.rewards_held =
+                            add(pool.rewards_held, delegated, "a pool's unclaimed rewards")?;
+                        kept = sub(share, delegated, "a validator's share")?;
+                    }
+                }
+            }
+            to_operators.push((validator, kept));
+        }
+        let set = self.validator_set()?;
+        for (validator, kept) in to_operators {
+            if let Some(record) = set.validators.get_mut(&validator) {
+                record.rewards = add(record.rewards, kept, "a validator's rewards")?;
             }
         }
 
-        // 2. Joining validators become active, leaving ones exit.
+        // 2. Delegations made this epoch join every pool, from the
+        //    accumulator after the epoch's rewards; commission changes take
+        //    effect.
+        if let Some(book) = self.delegation_book()? {
+            for pool in book.pools.values_mut() {
+                if pool.pending_delegations > 0 {
+                    pool.joins.insert(
+                        ending,
+                        Join {
+                            reward_per_share: pool.reward_per_share,
+                            waiting: pool.pending_delegations,
+                        },
+                    );
+                }
+                pool.earning = pool
+                    .earning
+                    .checked_add(pool.pending)
+                    .ok_or_else(|| broken("a pool's earning shares overflow"))?;
+                pool.pending = 0;
+                pool.pending_delegations = 0;
+                if let Some(next) = pool.next_commission {
+                    pool.commission_permille = next;
+                    pool.next_commission = None;
+                }
+            }
+        }
+        let set = self.validator_set()?;
+
+        // 3. Joining validators become active, leaving ones exit.
         let unbonding = set.params.unbonding;
         for record in set.validators.values_mut() {
             match record.status {
@@ -81,15 +160,31 @@ impl DeferredRun<'_> {
             }
         }
 
-        // 3. The next active set: the largest stakes (ties by identifier),
-        //    weighted, sorted by identifier; empty if no record is active
-        //    (the chain halts).
-        let mut ranked: Vec<(Amount, ValidatorId)> = set
+        // 4. The next active set: the largest stakes, own plus the pool's
+        //    earning stake (ties by identifier), weighted, sorted by
+        //    identifier; empty if no record is active (the chain halts).
+        let active_stakes: Vec<(ValidatorId, Amount)> = set
             .validators
             .iter()
             .filter(|(_, record)| record.status == ValidatorStatus::Active)
-            .map(|(id, record)| (record.stake, *id))
+            .map(|(id, record)| (*id, record.stake))
             .collect();
+        let mut pooled: BTreeMap<ValidatorId, Amount> = BTreeMap::new();
+        if let Some(book) = self.delegation_book()? {
+            for (id, _) in &active_stakes {
+                if let Some(pool) = book.pools.get(id) {
+                    let stake = stake_behind(pool, pool.earning)
+                        .ok_or_else(|| broken("a pool's earning stake overflows"))?;
+                    pooled.insert(*id, stake);
+                }
+            }
+        }
+        let mut ranked: Vec<(Amount, ValidatorId)> = Vec::new();
+        for (id, own) in active_stakes {
+            let extra = pooled.get(&id).copied().unwrap_or(Amount::ZERO);
+            ranked.push((add(own, extra, "a validator's ranking stake")?, id));
+        }
+        let set = self.validator_set()?;
         ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         ranked.truncate(usize::from(set.params.max_active.max(1)));
         let mut next: Vec<(ValidatorId, u64)> = ranked
@@ -99,7 +194,7 @@ impl DeferredRun<'_> {
         next.sort();
         set.active = next;
 
-        // 4. The next epoch.
+        // 5. The next epoch.
         set.epoch = set.epoch.saturating_add(1);
         set.epoch_start = Pulse(
             pulse
@@ -115,7 +210,7 @@ impl DeferredRun<'_> {
         let active = u32::try_from(set.active.len())
             .map_err(|_| broken("the active set does not fit an event"))?;
 
-        // 5. The rewards leave the treasury: `balances[USD]` is set to
+        // 6. The rewards leave the treasury: `balances[USD]` is set to
         //    `balance − paid` (an error if more is paid than the treasury
         //    holds), written even when nothing is paid and the treasury held
         //    no USD.
@@ -235,7 +330,11 @@ mod tests {
             ),
             shared(well_known::treasury(), ObjectData::Treasury(treasury)),
         ];
-        let view = ChunkView::new(objects.into_iter().map(|o| (o.id, Some(o))).collect());
+        let mut witnessed: BTreeMap<ObjectId, Option<Object>> =
+            objects.into_iter().map(|o| (o.id, Some(o))).collect();
+        // No delegation was ever made: the book is proven absent (v1.11).
+        witnessed.insert(well_known::delegations(), None);
+        let view = ChunkView::new(witnessed);
         run_deferred_phase(&context(pulse), &view, Frontier::default(), &[], &[])
     }
 

@@ -81,7 +81,8 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 | `ValidatorLeaving` | `validator` | `Unstake` | `validator <id> is leaving the active set` |
 | `StakeWithdrawn` | `validator`, `amount` (stake returned) | `WithdrawStake` | `<amount> USD of stake withdrawn from validator <id>` |
 | `RewardsClaimed` | `validator`, `amount` | `ClaimRewards` | `<amount> USD of rewards claimed for validator <id>` |
-| `ValidatorSlashed` | `validator`, `amount` (stake forfeited), `reporter`, `reward` (reporter's share of the stake) | `ReportEquivocation` | `validator <id> slashed: <amount> USD forfeited, <reward> USD of it to <reporter> for the report` |
+| `ValidatorSlashed` | `validator`, `amount` (its own stake forfeited), `reporter`, `reward` (reporter's share of the stake forfeited, its pool's included) | `ReportEquivocation` | `validator <id> slashed: <amount> USD forfeited, <reward> USD of it to <reporter> for the report` |
+| `PoolSlashed` | `validator`, `amount` (forfeited from its pool) | `ReportEquivocation`, when the offender has a pool | `validator <id>'s pool lost <amount> USD of its delegated stake` |
 | `EpochChanged` | `epoch` (the new one), `active` (size of its active set), `rewards` (paid from the fees of the epoch that ended) | deferred phase (epoch's last Pulse) | `epoch <e> began with <n> active validators; <rewards> USD paid in rewards` |
 
 ## Forced inclusion
@@ -125,6 +126,21 @@ The atoms a commit adds have the commit's Pulse as their transaction time.
 
 If a claim a paid result rests on is later falsified, the payer's
 compensation appears as `Compensated` events of the `Rule` that broke it.
+
+## Pooled stake
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `Delegated` | `delegation`, `validator`, `owner`, `amount`, `shares` | `DelegateStake` | `<owner> delegated <amount> USD to validator <id> as delegation <id>, earning from the epoch's end` |
+| `Undelegated` | `delegation`, `rewards` (paid now), `withdrawable_at` | `Undelegate` | `delegation <id> stopped earning (<rewards> USD of rewards paid) and is withdrawable from Pulse <p>` |
+| `DelegationWithdrawn` | `delegation`, `amount` (stake returned) | `WithdrawDelegation` | `<amount> USD withdrawn from delegation <id>` |
+| `DelegatorRewardsClaimed` | `delegation`, `amount` | `ClaimDelegatorRewards` | `<amount> USD of rewards collected from delegation <id>` |
+| `CommissionSet` | `validator`, `permille` | `SetCommission` | `validator <id>'s commission becomes <p>% at the epoch's end` |
+
+Rewards reach pools at epoch ends, in the deferred phase, without an event
+of their own: `EpochChanged`'s `rewards` is the total paid to validators
+and their pools together. `sion stake show` prints what each delegation is
+owed.
 
 ## Failed transactions
 

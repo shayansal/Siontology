@@ -1643,14 +1643,22 @@ impl Validator {
                 for coin in coins.iter().filter_map(|o| o.as_coin()) {
                     *balances.entry(coin.asset).or_default() += coin.amount.0;
                 }
+                let owned =
+                    |object: &&sion_exec::object::Object| object.owner == Owner::Account(account);
                 let allotments = self
                     .state
                     .objects
                     .values()
-                    .filter(|o| {
-                        o.owner == Owner::Account(account)
-                            && matches!(o.data, ObjectData::Allotment(_))
-                    })
+                    .filter(owned)
+                    .filter(|o| matches!(o.data, ObjectData::Allotment(_)))
+                    .cloned()
+                    .collect();
+                let delegations = self
+                    .state
+                    .objects
+                    .values()
+                    .filter(owned)
+                    .filter(|o| matches!(o.data, ObjectData::Delegation(_)))
                     .cloned()
                     .collect();
                 let view = AccountView {
@@ -1659,6 +1667,7 @@ impl Validator {
                     coins,
                     balances: balances.into_iter().map(|(a, v)| (a, Amount(v))).collect(),
                     allotments,
+                    delegations,
                     pulse: self.state.pulse,
                 };
                 Ok(to_json(&view))

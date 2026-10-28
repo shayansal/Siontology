@@ -8,6 +8,7 @@ mod assurance;
 mod bounded;
 mod charter;
 mod coins;
+pub(crate) mod delegation;
 mod knowledge;
 mod market;
 mod memory;
@@ -221,6 +222,16 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
             attestations,
         } => task::settle(run, *task, result, attestations),
         TxKind::CancelTask { task } => task::cancel(run, *task),
+        TxKind::DelegateStake { validator, amount } => {
+            delegation::delegate_stake(run, validator, *amount)
+        }
+        TxKind::Undelegate => delegation::undelegate(run),
+        TxKind::WithdrawDelegation => delegation::withdraw_delegation(run),
+        TxKind::ClaimDelegatorRewards => delegation::claim_delegator_rewards(run),
+        TxKind::SetCommission {
+            validator,
+            permille,
+        } => delegation::set_commission(run, validator, *permille),
     }
 }
 
@@ -256,5 +267,12 @@ mod tests {
         assert_eq!(sion_exec::task::WORKER_BOND_LABEL, "task-worker");
         assert_eq!(sion_exec::task::MAX_REQUIRED, 16);
         assert_eq!(sion_exec::task::MAX_VERIFIERS, 16);
+        // §5.45, v1.11.
+        assert_eq!(sion_exec::delegation::REWARD_SCALE, 1_000_000_000_000);
+        assert_eq!(sion_exec::delegation::MIN_DELEGATION, Amount::units(1));
+        assert_eq!(sion_exec::delegation::COMMISSION_CEILING_PERMILLE, 250);
+        assert_eq!(sion_exec::delegation::COMMISSION_STEP_PERMILLE, 20);
+        assert_eq!(sion_exec::delegation::DELEGATION_SLASH_PERMILLE, 100);
+        assert_eq!(sion_exec::delegation::CAP_FLOOR_PERMILLE, 100);
     }
 }

@@ -44,6 +44,7 @@
   - [Epochs and committees](concepts/validators/epochs.md)
   - [Rewards](concepts/validators/rewards.md)
   - [Slashing for equivocation](concepts/validators/equivocation-slashing.md)
+  - [Pooled stake](concepts/validators/pooled-stake.md)
 
 # Guides
 
@@ -58,6 +59,7 @@
 - [Markets and clearing](guides/markets.md)
 - [Forced inclusion and the censorship demo](guides/forced-inclusion.md)
 - [Staking and epochs](guides/staking.md)
+- [Delegating stake](guides/delegation.md)
 - [x402: selling and buying an API](guides/x402.md)
 - [Streams from the command line](guides/streams.md)
 - [Light-client verification](guides/light-client.md)

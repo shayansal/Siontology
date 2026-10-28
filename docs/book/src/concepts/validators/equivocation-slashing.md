@@ -40,12 +40,15 @@ withdrawn:
 
 1. Its whole stake and its unclaimed rewards are forfeited, and its status
    becomes **Slashed**.
-2. The reporter receives `reporter_permille` thousandths of each (5 % on
-   the devnet).
-3. The rest goes to the treasury. It is not a fee, so it is never paid
+2. If it has a pool of delegated stake, the pool loses a tenth of its
+   stake, unbonding delegations included
+   ([Pooled stake](pooled-stake.md)).
+3. The reporter receives `reporter_permille` thousandths of the stake
+   forfeited, the pool's included, and of the rewards (5 % on the devnet).
+4. The rest goes to the treasury. It is not a fee, so it is never paid
    out as rewards ([Rewards](rewards.md)).
-4. The event `ValidatorSlashed { validator, amount, reporter, reward }` is
-   emitted.
+5. The events `ValidatorSlashed { validator, amount, reporter, reward }`
+   and, with a pool, `PoolSlashed { validator, amount }` are emitted.
 
 The reporter's share is small on purpose: a validator that reports itself
 to recover its stake still loses 95 % of it.

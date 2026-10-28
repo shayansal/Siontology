@@ -20,6 +20,7 @@ pub mod error;
 pub mod ledger;
 pub mod mcp;
 pub mod session;
+pub mod stake;
 pub mod stream;
 pub mod tasks;
 pub mod verify;

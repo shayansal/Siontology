@@ -61,12 +61,13 @@
   on them. Work may be retried many times; it is settled once. That
   frontier labs need this is a hypothesis, and section 5 says what would
   test it.
-- **A network anyone can join (design).** Phones verify the chain for
-  themselves and earn nothing. Desktops serve data, relay for phones and
-  keep archival segments, and are paid from fees for each challenge they
-  pass, in proportion to a bond, so splitting into many identities gains
-  nothing. Anyone can delegate stake to a validator without handing it
-  over. A validator runs on a modest server, and the project's own testnet
+- **A network anyone can join (design, delegation built).** Phones
+  verify the chain for themselves and earn nothing. Desktops serve data,
+  relay for phones and keep archival segments, and are paid from fees for
+  each challenge they pass, in proportion to a bond, so splitting into
+  many identities gains nothing. Anyone can delegate stake to a validator
+  without handing it over (built in specification v1.11). A validator runs
+  on a modest server, and the project's own testnet
   can start at about EUR 104 a month, against the 7,000 USD a month our
   networking plan estimated on AWS.
 - **What it is not.** Nothing at this scale has run. Nothing has run
@@ -851,6 +852,17 @@ Post-quantum validators cannot share one key the way BLS-based distributed
 validators do, because ML-DSA and SLH-DSA signatures do not add together.
 Concentration has to be controlled with caps.
 
+**What specification v1.11 built** is simpler than this design
+([Pooled stake](../concepts/validators/pooled-stake.md)): delegations are
+owned by their delegators; delegations made in an epoch join at its end,
+from a per-epoch record of the reward accumulator; the commission is
+between 0 and 25 %, effective at the epoch's end, raised by at most 2
+points at a time; the cap is twice an equal share, never below 10 %; an
+equivocation forfeits the operator's whole stake and a flat tenth of the
+pool. Not built yet: the per-validator commission maximum, the operator's
+minimum share of its validator's total, and slashing scaled by
+correlation.
+
 **Before outsiders delegate**, four things must hold: misbehaviour
 evidence bound to the chain's identity, a signing log so that a validator
 restarting alone cannot sign twice, a minimum size for the active set, and
@@ -887,9 +899,9 @@ round with 7 validators. A desktop community node needs no server at all.
 | Step | What | Status |
 |---|---|---|
 | Specification v1.8 | Agent identities and subagents | Built |
-| v1.9 | Memory logs kept append-only by the ledger; the `sion-memory` library with the 4D index, its proofs and RMP; a demo of robots sharing a warehouse | Planned next |
-| v1.10 | Task Charters: task escrows with acceptance fixed at posting, adjudicators on result claims, batch claims with beacon-chosen samples | Planned |
-| v1.11 | Non-custodial delegation; node registration, bond-weighted archival assignments and custody challenges; the light-client accumulator | Planned |
+| v1.9 | Memory logs kept append-only by the ledger; the `sion-memory` library with the 4D index, its proofs and RMP; a demo of robots sharing a warehouse | Ledger part built; library built, being integrated |
+| v1.10 | Task Charters: task escrows with acceptance fixed at posting, adjudicators on result claims, batch claims with beacon-chosen samples | Built, except batch claims |
+| v1.11 | Non-custodial delegation; node registration, bond-weighted archival assignments and custody challenges; the light-client accumulator | Delegation built; the rest planned |
 | v1.12 | Amortized authorization: batch roots and a verification fee, cohorts, keyless children, lineage ids, token buckets, overlays | Planned |
 | Later | Certificate stamps, once the consensus simulator can test lagging and Byzantine committees; aggregators, curators and storage proofs for memory | Design |
 | In parallel | Networking between machines, phase by phase | Under way |

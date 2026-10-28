@@ -160,6 +160,13 @@ impl Wallet {
                 Some(ObjectData::Stream(state)) => vec![(state.asset, *deposit)],
                 _ => Vec::new(),
             },
+            TxKind::DelegateStake { amount, .. } => {
+                let asset = match view.object(&well_known::validators()).map(|o| o.data) {
+                    Some(ObjectData::Validators(set)) => set.params.stake_asset,
+                    _ => AssetId::usd(),
+                };
+                vec![(asset, *amount)]
+            }
             TxKind::RegisterValidator { stake, .. } => {
                 let asset = match view.object(&well_known::validators()).map(|o| o.data) {
                     Some(ObjectData::Validators(set)) => set.params.stake_asset,

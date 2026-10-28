@@ -115,9 +115,21 @@ only" below) can be built and signed with the Rust API
 | `Unstake { validator }` | The operator takes its validator out at the next epoch boundary | contended (validators) | `Take validator <id> out of the active set at the next epoch boundary` | Rust API only |
 | `WithdrawStake { validator }` | The operator withdraws stake and unclaimed rewards after unbonding | contended (validators) | `Withdraw validator <id>'s stake and unclaimed rewards after unbonding` | Rust API only |
 | `ClaimRewards { validator }` | The operator collects its validator's rewards | contended (validators) | `Collect validator <id>'s rewards` | `sion demo staking` |
-| `ReportEquivocation { evidence }` | Reports two conflicting signed headers or approvals; the offender's stake is slashed, with a share to the sender | contended (validators) | `Report that a validator signed two conflicting consensus headers\|lane approvals; its stake is slashed and you receive a share` | `sion demo staking` |
+| `ReportEquivocation { evidence }` | Reports two conflicting signed headers or approvals; the offender's stake is slashed, and a tenth of its pool, with a share of both to the sender | contended (validators) | `Report that a validator signed two conflicting consensus headers\|lane approvals; its stake is slashed and you receive a share` | `sion demo staking` |
 
 See [Validators, staking and epochs](../concepts/committees.md).
+
+## Pooled stake
+
+| Kind | What it does | Class | Sentence | Sent by |
+|---|---|---|---|---|
+| `DelegateStake { validator, amount }` | Adds stake to a joining or active validator's pool without handing it over: the sender keeps a delegation holding pool shares, which earns and counts towards the validator's weight from the epoch's end; refused above the weight cap | contended (validators) | `Delegate <amount> USD to validator <id>'s pool; you keep the delegation, which earns from the epoch's end` | `sion stake delegate`, MCP `sion_stake_delegate` |
+| `Undelegate` | Stops the delegation at `inputs[1]` earning, pays its rewards and starts its unbonding | contended (validators) | `Stop a delegation earning, collect its rewards and start unbonding` | `sion stake undelegate`, MCP `sion_stake_undelegate` |
+| `WithdrawDelegation` | Returns an unbonded delegation's stake (`inputs[1]`), slashes included | contended (validators) | `Withdraw an unbonded delegation's stake` | `sion stake withdraw`, MCP `sion_stake_withdraw` |
+| `ClaimDelegatorRewards` | Pays the rewards credited to the delegation at `inputs[1]` | contended (validators) | `Collect a delegation's rewards` | `sion stake claim`, MCP `sion_stake_claim` |
+| `SetCommission { validator, permille }` | The operator sets its pool's commission (at most 250 ‰; once anyone has delegated, a raise of at most 20 ‰ at a time), from the epoch's end | contended (validators) | `Set validator <id>'s commission to <p>% from the epoch's end` | `sion stake commission` |
+
+See [Pooled stake](../concepts/pooled-stake.md).
 
 ## Payment streams
 

@@ -47,6 +47,7 @@ live.
 | Orchestration: Task Charters, escrowed work with acceptance fixed at posting (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
+| Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
 | Economics: payments to provers, value-in-flight cap | Not built |
 | Networking between machines | Simulated (in-process channels) |
 
@@ -416,6 +417,23 @@ for one round, or two live lane approvals of one object version. The
 whole stake and unclaimed rewards are forfeited; the reporter receives a
 share (5 % on the devnet, so reporting oneself still costs 95 %) and the
 treasury the rest.
+
+**Pooled stake (specification v1.11): built.** Anyone may delegate stake
+to a validator without handing it over: a delegation is an object its
+delegator owns, holding shares of the validator's pool. Delegations join
+at the epoch's end; rewards are split between a validator's own and its
+pool's earning stake, the operator keeping a commission (at most 25 %,
+raised by at most 2 points at a time once anyone has delegated, effective
+at the epoch's end); a delegation may not give a validator more than twice
+an equal share of the bonded stake; an equivocation slashes a tenth of the
+pool, unbonding delegations included; validators rank by own plus pooled
+earning stake. Both proof stacks implement it, and the differential tests
+add randomized workloads checked against a third, plain-arithmetic reading
+of the split. Commands `sion stake …` and MCP tools `sion_stake_*`.
+**Simplified:** one shared object holds every pool, so delegation
+transactions are ordered one after another; a pool slash is a flat tenth.
+**Not built:** redelegation without unbonding, delegating from an agent's
+budget, compounding.
 
 **Not built:** payments to provers, a value-in-flight cap.
 

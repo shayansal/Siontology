@@ -2,7 +2,8 @@
 //! (§5.28), ClaimRewards (§5.29) and ReportEquivocation (§5.30).
 //!
 //! Each operation loads the validator set (`well_known::validators()`), the
-//! only object these operations read besides the inputs `draw` spends.
+//! only object these operations read besides the inputs `draw` spends and,
+//! for ReportEquivocation, the delegation book (v1.11).
 //! Signatures in equivocation evidence are checked with the keys the set
 //! records for the signer, through the shared consensus message formats.
 
@@ -348,10 +349,13 @@ pub(super) fn report_equivocation(run: &mut TxRun<'_>, evidence: &Equivocation) 
     record.rewards = Amount::ZERO;
     record.status = ValidatorStatus::Slashed { at: pulse };
     store_set(run, loaded)?;
-    // 4.
+    // 4. The pool (v1.11).
+    let pool_slashed = super::delegation::slash_pool(run, &offender)?;
+    // 5.
     let sender = run.sender();
+    let forfeited_stake = stake.checked_add(pool_slashed.unwrap_or(Amount::ZERO))?;
     let mut reward = Amount::ZERO;
-    for (position, (asset, forfeited)) in [(params.stake_asset, stake), (usd(), rewards)]
+    for (position, (asset, forfeited)) in [(params.stake_asset, forfeited_stake), (usd(), rewards)]
         .into_iter()
         .enumerate()
     {
@@ -368,12 +372,18 @@ pub(super) fn report_equivocation(run: &mut TxRun<'_>, evidence: &Equivocation) 
             reward = paid;
         }
     }
-    // 5.
+    // 6.
     run.event(Event::ValidatorSlashed {
         validator: offender,
         amount: stake,
         reporter: sender,
         reward,
     });
+    if let Some(amount) = pool_slashed {
+        run.event(Event::PoolSlashed {
+            validator: offender,
+            amount,
+        });
+    }
     Ok(())
 }

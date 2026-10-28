@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.10
+# The Siontology state transition — specification v1.11
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -25,7 +25,8 @@ It does **not** re-specify:
 - **Data layouts.** The Rust type definitions in `sion_core`, `sion_crypto`,
   `sion_assurance`, `sion_clearing` and the *type definitions* in
   `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
-  `stream`, `memory`, `task`, `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
+  `stream`, `memory`, `task`, `delegation` (its types and constants),
+  `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
   normative; their canonical encoding is Borsh. One rule goes beyond the
@@ -53,7 +54,9 @@ definitions and the commitment helpers named in §7), `sion_exec::stateless`,
 `sion_exec::stream` helpers (`step`, `walk`, `extends`, `checkpoint_leaf`,
 `jump_hashes`, `verify_jump`, `PayerChain`, `Stream::checkpoint_count`), the
 `sion_exec::task` helpers (`result_formula`, `worker_bond`,
-`TaskResult::payload`), nor
+`TaskResult::payload`), the `sion_exec::delegation` helpers (`mul_div`,
+`cap_permille`, `within_cap`, `resolve`, `Pool::{shares, value_of,
+shares_for, bonded, earning_value, owed}`), nor
 the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
@@ -662,12 +665,18 @@ USD, rewards)`. Event `RewardsClaimed { validator, amount: rewards }`.
    `Withdrawn`.
 3. Take `stake` and `rewards` from the record, set both to 0 and the status
    to `Slashed { at: ctx.pulse }`; store the set.
-4. For `(asset, forfeited)` in `[(params.stake_asset, stake), (USD,
-   rewards)]`, in that order: `paid = permille_of(forfeited,
+4. **The pool** (v1.11, §5.45): `try_load(well_known::delegations())`; if
+   it exists (it MUST be a delegation book) and has a pool for the
+   offender: `slashed = permille_of(value, DELEGATION_SLASH_PERMILLE)`;
+   `value −= slashed`; store the book. Otherwise `slashed = 0`. Every
+   share of the pool, pending and unbonding ones included, is worth less.
+5. For `(asset, forfeited)` in `[(params.stake_asset, stake + slashed),
+   (USD, rewards)]`, in that order: `paid = permille_of(forfeited,
    params.reporter_permille)`; `mint(sender, asset, paid)`; if `forfeited −
    paid > 0`, defer `Treasury { asset, amount: forfeited − paid }`.
-5. Event `ValidatorSlashed { validator: offender, amount: stake, reporter:
-   sender, reward: <paid of the stake> }`.
+6. Event `ValidatorSlashed { validator: offender, amount: stake, reporter:
+   sender, reward: <paid of the stake> }`; then, if the offender had a
+   pool, event `PoolSlashed { validator: offender, amount: slashed }`.
 
 Evidence is checked against itself, not against this chain or a time: the
 two messages must agree on `chain`, but nothing requires it to be this
@@ -992,6 +1001,132 @@ Contended, in the task's domain.
    at: ctx.pulse }`; store.
 4. Event `TaskCancelled { task, refund: t.amount, to: t.refund_to }`.
 
+### 5.45 DelegateStake { validator, amount }
+
+**Pooled stake.** Anyone may add stake to a validator's weight without
+handing it over. A **delegation** is an object its delegator owns, holding
+**shares** of the validator's **pool**; the pool holds the stake. Pools
+live in the **delegation book**, a shared object at
+`well_known::delegations()` owned by `Shared(validators_domain())`; the
+first `DelegateStake` or `SetCommission` creates it. All five delegation
+kinds are contended, in the validators' domain. Constants of
+`sion_exec::delegation`: `REWARD_SCALE` (10¹²), `MIN_DELEGATION`
+(`Amount(1_000_000)`), `COMMISSION_CEILING_PERMILLE` (250),
+`COMMISSION_STEP_PERMILLE` (20), `DELEGATION_SLASH_PERMILLE` (100) and
+`CAP_FLOOR_PERMILLE` (100).
+
+**Arithmetic**, in `u128`, every step an error on overflow or division
+by zero: `mul_div(a, b, c) = (a / c) × b + (a mod c) × b / c` with integer
+division (equal to `⌊a·b/c⌋`). For a pool `p`: `shares(p) = earning +
+pending + unbonding` (saturating); `value_of(p, s) = 0` if `shares(p) =
+0`, else `mul_div(s, value, shares(p))`; the shares `amount` buys are
+`amount` if `shares(p) = 0`, else `mul_div(amount, shares(p), value)`. A
+validator's **bonded stake** is its record's `stake` plus, if it has a
+pool, `value_of(p, earning + pending)` (`earning + pending` saturating).
+
+1. `amount ≥ MIN_DELEGATION`. Load the validator set; `validator` MUST be
+   a record with status `Joining` or `Active`.
+2. `draw(params.stake_asset, amount)`.
+3. `try_load(well_known::delegations())`: if it exists it MUST be a
+   delegation book; otherwise start an empty one.
+4. **Cap.** With `n` the number of records whose status is `Joining` or
+   `Active`, `T` the sum of their bonded stakes and `B` the bonded stake
+   of `validator`: `(B + amount) × 1000 ≤ cap × (T + amount)`, where `cap =
+   max(⌊2000 / n⌋, CAP_FLOOR_PERMILLE)`. No validator may gain, by
+   delegation, more than twice an equal share of the bonded stake, and the
+   cap is never below a tenth.
+5. Let `p` be `validator`'s pool (a default pool, all zero, if it has
+   none) and `s` the shares `amount` buys; `s > 0`. `p.pending += s`;
+   `p.pending_delegations += 1`; `p.value += amount`.
+6. `d = create(Account(sender), Delegation { owner: sender, validator,
+   shares: s, state: Pending { epoch: set.epoch }, since: ctx.pulse })`;
+   store the book (with `p` in it).
+7. Event `Delegated { delegation: d, validator, owner: sender, amount,
+   shares: s }`.
+
+A delegation made during an epoch earns, and counts towards its
+validator's weight, from that epoch's end (§6.3): delegating just before
+an epoch ends earns nothing for that epoch.
+
+**Resolving** a delegation `d` of pool `p`, with `E` the validator set's
+current `epoch`:
+
+- `Pending { epoch: e }` with `e < E`: it joined at the end of epoch `e`.
+  `j = p.joins[e]` (an error if absent); `j.waiting −= 1` (an error if it
+  was 0), and the entry is removed if `waiting` is now 0; `d.state =
+  Earning { entry: j.reward_per_share }`. It resolves as **earning** from
+  that entry.
+- `Pending { epoch: E }`: it resolves as **pending**.
+- `Earning { entry }`: it resolves as **earning** from `entry`.
+- `Unbonding`: an error.
+
+An earning delegation of `s` shares from `entry` is **owed**
+`mul_div(s, p.reward_per_share − entry, REWARD_SCALE)` (an error if
+`entry > p.reward_per_share`).
+
+### 5.46 Undelegate
+
+`tx.inputs[1]` is the delegation.
+
+1. Load `tx.inputs[1].id` (an error if absent; it MUST be a delegation
+   `d`); `d.owner` MUST be the sender. Load the validator set. Load
+   `well_known::delegations()` (it MUST exist and be a delegation book)
+   and take `d.validator`'s pool `p` (it MUST exist).
+2. Resolve `d`. Pending: `p.pending −= d.shares`; `p.pending_delegations
+   −= 1`; `owed = 0`. Earning from `entry`: `owed` as above; `p.earning −=
+   d.shares`; `p.rewards_held −= owed`. Then `p.unbonding += d.shares`;
+   `d.state = Unbonding { at: ctx.pulse + params.unbonding }`
+   (saturating).
+3. Store `d`, then the book; `mint(sender, USD, owed)`.
+4. Event `Undelegated { delegation: d, rewards: owed, withdrawable_at:
+   <at> }`.
+
+An unbonding delegation earns nothing and no longer counts towards its
+validator's weight from the next epoch's end, but its stake stays in the
+pool, where it is slashed with the pool (§5.30), until it is withdrawn.
+
+### 5.47 WithdrawDelegation
+
+1. Load `tx.inputs[1].id` (an error if absent; it MUST be a delegation
+   `d`); `d.owner` MUST be the sender; `d.state` MUST be `Unbonding { at
+   }` with `at ≤ ctx.pulse`.
+2. Load the validator set; load the delegation book (it MUST exist) and
+   take `d.validator`'s pool `p` (it MUST exist).
+3. `amount = value_of(p, d.shares)`; `p.unbonding −= d.shares`; `p.value
+   −= amount`; store the book.
+4. `consume(d)`; `mint(sender, params.stake_asset, amount)`.
+5. Event `DelegationWithdrawn { delegation: d, amount }`.
+
+### 5.48 ClaimDelegatorRewards
+
+1. Load `tx.inputs[1].id` (an error if absent; it MUST be a delegation
+   `d`); `d.owner` MUST be the sender. Load the validator set; load the
+   delegation book (it MUST exist) and take `d.validator`'s pool `p` (it
+   MUST exist).
+2. Resolve `d`; it MUST resolve as earning, from `entry`, and be owed
+   `owed > 0`.
+3. `p.rewards_held −= owed`; `d.state = Earning { entry:
+   p.reward_per_share }`; store `d`, then the book; `mint(sender, USD,
+   owed)`.
+4. Event `DelegatorRewardsClaimed { delegation: d, amount: owed }`.
+
+### 5.49 SetCommission { validator, permille }
+
+1. Load the validator set; `validator` MUST be operated by the sender
+   (§5.26); `permille ≤ COMMISSION_CEILING_PERMILLE`.
+2. `try_load(well_known::delegations())` (if it exists it MUST be a
+   delegation book; otherwise start an empty one); take `validator`'s
+   pool `p` (a default pool if it has none). If `shares(p) > 0`, `permille
+   ≤ p.commission_permille + COMMISSION_STEP_PERMILLE`.
+3. `p.next_commission = Some(permille)`; store the book.
+4. Event `CommissionSet { validator, permille }`.
+
+The commission takes effect at the epoch's end (§6.3), after that epoch's
+rewards, so delegators see every change at least an epoch before it costs
+them anything, and a pool with delegators sees its commission rise by at
+most 2 percentage points per epoch. A pool nobody has delegated to yet may
+set any commission up to the ceiling.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -1027,12 +1162,14 @@ counter `k = 0` for payouts: **pay(owner, asset, amount)**: if `amount =
 **Protocol objects.** The schedule object is always loaded first. The
 assurance object, the treasury, the validator set and the forced-inclusion
 obligations are loaded the first time something needs them (and only
-then); a market is loaded the first time an item or event needs it. Each of
-these is written back at the end **only if** something used it mutably
-(assurance, treasury, validator set, obligations, markets: anything that
-obtained it; schedule: any change to its entries, including removing due
-entries). Write-back order: markets in id order, then assurance, treasury,
-validator set, obligations, schedule. Other objects (bounded totals, coins)
+then); a market is loaded the first time an item or event needs it; the
+delegation book (v1.11) is read, with `try_load`, only by EpochEnd, and
+may not exist. Each of these is written back at the end **only if**
+something used it mutably (assurance, treasury, validator set, delegation
+book, obligations, markets: anything that obtained it; schedule: any
+change to its entries, including removing due entries). Write-back order:
+markets in id order, then assurance, treasury, validator set, delegation
+book, obligations, schedule. Other objects (bounded totals, coins)
 are stored when changed. Reads of other objects in this phase are
 `try_load`s.
 
@@ -1173,7 +1310,7 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   expires_at)` (saturating), increment `missed` (saturating), and schedule
   `ForcedDeadline { intent }` at the new deadline.
 - **Rotate** a shard `s` (with `window` as above): skip if the active set
-  is empty (the chain has halted: EpochEnd step 3), or if `rotations[s]`
+  is empty (the chain has halted: EpochEnd step 4), or if `rotations[s]`
   exists and `ctx.pulse < rotations[s].at + window` (saturating). Otherwise `previous` = the shard's **lane members**
   (`rotations[s].members` if present, else the members of
   `sample_committee(active, seats, seed, Epoch(epoch), s)`); `count =
@@ -1186,25 +1323,42 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   `collected = fees[USD]` (or 0). Validators are paid from fees only: what
   else reaches the treasury (slashing remainders, released pools) stays
   there.
+  Then obtain the delegation book: `try_load(well_known::delegations())`
+  (if it exists it MUST be a delegation book, and it is written back).
   1. `gain = collected − fees_mark` (0 if negative); `pool =
      permille_of(gain, reward_permille)`; `total` = the sum of the active
      set's weights. For each `(v, w)` of the active set, in order, whose
      record is `Active` or `Leaving`: `share = share_of(pool, w, total)`;
-     `rewards += share`; `paid += share`.
-  2. Every record, in id order: `Joining` becomes `Active`; `Leaving`
+     `paid += share`. If the book has a pool `p` for `v` with `p.earning >
+     0` and `e = value_of(p, p.earning) > 0` (§5.45): `part = mul_div(share,
+     e, stake + e)`, with `stake` the record's; `commission =
+     permille_of(part, p.commission_permille)`; `delegated = part −
+     commission`; `p.reward_per_share += mul_div(delegated, REWARD_SCALE,
+     p.earning)`; `p.rewards_held += delegated`; the record's `rewards +=
+     share − delegated`. Otherwise the record's `rewards += share`. (The
+     rounding left over by the accumulator stays in `rewards_held`.)
+  2. Every pool of the book, in validator order: if `pending_delegations
+     > 0`, `joins[epoch] = Join { reward_per_share, waiting:
+     pending_delegations }`, with `epoch` the ending epoch; `earning +=
+     pending`; `pending = 0`; `pending_delegations = 0`; if
+     `next_commission = Some(c)`, `commission_permille = c` and
+     `next_commission = None`.
+  3. Every record, in id order: `Joining` becomes `Active`; `Leaving`
      becomes `Exited { withdrawable_at: ctx.pulse + unbonding }`
      (saturating).
-  3. The next active set: the `Active` records, sorted by stake descending
-     then id ascending, the first `max(max_active, 1)`, as `(id,
-     weight(stake))` sorted by id. It may be empty: if every validator that
-     could serve was slashed, the next epoch has no active set, no
-     committee can certify its Pulses, and the chain **halts** rather than
-     run on proven equivocators with nothing at stake. (§5.27 keeps the
-     last validator from leaving, so only slashing empties the set.)
-  4. `epoch += 1` (saturating); `epoch_start = ctx.pulse + 1` (an error at
+  4. The next active set: the `Active` records, ranked by `stake +
+     value_of(p, p.earning)` for their pool `p` (just `stake` without one),
+     descending, then id ascending; the first `max(max_active, 1)`, as
+     `(id, weight(<that sum>))` sorted by id. It may be empty: if every
+     validator that could serve was slashed, the next epoch has no active
+     set, no committee can certify its Pulses, and the chain **halts**
+     rather than run on proven equivocators with nothing at stake. (§5.27
+     keeps the last validator from leaving, so only slashing empties the
+     set.)
+  5. `epoch += 1` (saturating); `epoch_start = ctx.pulse + 1` (an error at
      Pulse `u64::MAX`, which no chain reaches); `seed = ctx.beacon`;
      `rotations` emptied; `fees_mark = collected`.
-  5. Set `balances[USD]` to `balance − paid` (an error if `paid > balance`,
+  6. Set `balances[USD]` to `balance − paid` (an error if `paid > balance`,
      which no reachable state allows: rewards are a share of fees the
      treasury already holds, and nothing else leaves it). The entry is
      written even when nothing is paid and the treasury had no USD entry
@@ -1327,6 +1481,26 @@ carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
 
+- **v1.11.** Pooled stake (§5.45 to §5.49). Anyone may delegate stake to a
+  validator without handing it over: a delegation is an object its
+  delegator owns, holding shares of the validator's pool, which counts
+  towards the validator's weight and shares its rewards from the end of the
+  epoch the delegation was made in. At each epoch's end a validator's
+  reward is split between its own stake and its pool's earning stake in
+  proportion; the operator keeps its commission (at most 25 %, raised by at
+  most 2 points per epoch once anyone has delegated, every change taking
+  effect at the epoch's end) and the rest is credited per share, exactly,
+  for delegators to claim. Validators rank for the active set by their own
+  plus their pools' earning stake. No validator may gain more than twice
+  an equal share of the bonded stake by delegation (never less than a
+  tenth). An equivocation now also slashes a tenth of the offender's pool,
+  unbonding delegations included; the reporter's share is of both. New
+  types `sion_exec::delegation::{DelegationBook, Pool, Join, Delegation,
+  DelegationState}`, objects `ObjectData::{Delegations, Delegation}` and
+  `well_known::delegations()`, transaction kinds and events; the supply
+  counts pooled stake and delegators' unclaimed rewards; the epoch end
+  reads and writes the delegation book (§6.3).
+
 - **v1.10.** Task Charters (§5.42 to §5.44). `PostTask` escrows money for
   a task whose acceptance is fixed when it is posted: the policy the
   decision rule runs under, the claims every result must rest on (an
@@ -1394,7 +1568,7 @@ carries the validator set with a state proof against `before.state_root`.
 
 - **v1.5.** From an independent review of the staking machinery: at an
   epoch's end, slashed validators lose their seats even if no other
-  validator is eligible (§6.3, EpochEnd step 3). Until v1.4 the old active
+  validator is eligible (§6.3, EpochEnd step 4). Until v1.4 the old active
   set was kept when the next one would be empty, so a committee whose every
   member had been slashed carried on into the next epoch with nothing at
   stake; now the next active set is empty and the chain halts, and a

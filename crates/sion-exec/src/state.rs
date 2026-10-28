@@ -244,6 +244,24 @@ impl State {
                 {
                     total += task.amount.0
                 }
+                ObjectData::Delegations(book) => {
+                    let stake_asset =
+                        match self.objects.get(&crate::object::well_known::validators()) {
+                            Some(Object {
+                                data: ObjectData::Validators(set),
+                                ..
+                            }) => set.params.stake_asset,
+                            _ => AssetId::usd(),
+                        };
+                    for pool in book.pools.values() {
+                        if stake_asset == *asset {
+                            total += pool.value.0;
+                        }
+                        if *asset == AssetId::usd() {
+                            total += pool.rewards_held.0;
+                        }
+                    }
+                }
                 ObjectData::Market(market) => {
                     for batch in market.batches.values() {
                         if matches!(

@@ -139,6 +139,9 @@ pub struct AccountView {
     pub balances: Vec<(sion_core::ids::AssetId, Amount)>,
     /// Allotments the account can spend.
     pub allotments: Vec<Object>,
+    /// The account's delegations of stake (spec v1.11).
+    #[serde(default)]
+    pub delegations: Vec<Object>,
     /// The Pulse this view is from.
     pub pulse: Pulse,
 }

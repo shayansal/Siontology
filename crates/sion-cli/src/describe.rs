@@ -537,6 +537,24 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             "Cancel task {} and refund its escrow",
             object(task)
         ),
+        TxKind::DelegateStake { validator, amount } => format!(
+            "Delegate {} to validator {}'s pool; you keep the delegation, which earns from the epoch's end",
+            names.usd(*amount),
+            validator.short()
+        ),
+        TxKind::Undelegate => {
+            "Stop a delegation earning, collect its rewards and start unbonding".into()
+        }
+        TxKind::WithdrawDelegation => "Withdraw an unbonded delegation's stake".into(),
+        TxKind::ClaimDelegatorRewards => "Collect a delegation's rewards".into(),
+        TxKind::SetCommission {
+            validator,
+            permille,
+        } => format!(
+            "Set validator {}'s commission to {} from the epoch's end",
+            validator.short(),
+            percent(*permille)
+        ),
     };
     format!(
         "{body}. Fee {}; valid until Pulse {}.",
@@ -841,6 +859,60 @@ pub fn event(names: &Names, event: &Event) -> String {
             names.usd(*refund),
             names.account(to)
         ),
+        Event::Delegated {
+            delegation,
+            validator,
+            owner,
+            amount,
+            ..
+        } => format!(
+            "{} delegated {} to validator {} as delegation {}, earning from the epoch's end",
+            names.account(owner),
+            names.usd(*amount),
+            validator.short(),
+            object(delegation)
+        ),
+        Event::Undelegated {
+            delegation,
+            rewards,
+            withdrawable_at,
+        } => format!(
+            "delegation {} stopped earning ({} of rewards paid) and is withdrawable from Pulse {}",
+            object(delegation),
+            names.usd(*rewards),
+            withdrawable_at
+        ),
+        Event::DelegationWithdrawn { delegation, amount } => format!(
+            "{} withdrawn from delegation {}",
+            names.usd(*amount),
+            object(delegation)
+        ),
+        Event::DelegatorRewardsClaimed { delegation, amount } => format!(
+            "{} of rewards collected from delegation {}",
+            names.usd(*amount),
+            object(delegation)
+        ),
+        Event::CommissionSet {
+            validator,
+            permille,
+        } => format!(
+            "validator {}'s commission becomes {} at the epoch's end",
+            validator.short(),
+            percent(*permille)
+        ),
+        Event::PoolSlashed { validator, amount } => format!(
+            "validator {}'s pool lost {} of its delegated stake",
+            validator.short(),
+            names.usd(*amount)
+        ),
+    }
+}
+
+/// Thousandths as a percentage: 100 → "10%", 125 → "12.5%".
+pub fn percent(permille: u16) -> String {
+    match permille % 10 {
+        0 => format!("{}%", permille / 10),
+        tenth => format!("{}.{tenth}%", permille / 10),
     }
 }
 

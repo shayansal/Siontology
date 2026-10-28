@@ -209,6 +209,65 @@ fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": { "task": { "type": "string" } }, "required": ["task"] }
         },
         {
+            "name": "sion_stake_pools",
+            "description": "Every validator with its own stake, its pool of delegated stake (and how much of it earns), its commission and its weight in the active set.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "sion_stake_delegate",
+            "description": "Delegate stake to a validator's pool without handing it over: the wallet keeps a delegation object holding pool shares. It counts towards the validator's weight and earns a share of its rewards, less the validator's commission, from the end of this epoch; it shares the validator's slashing risk (a tenth of the pool on equivocation). Refused if it would give the validator more than twice an equal share of the bonded stake.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "validator": { "type": "string", "description": "Validator id (hex) or a unique prefix" },
+                    "amount": { "type": "number", "description": "Stake, in the stake asset (at least 1)" }
+                },
+                "required": ["wallet", "validator", "amount"]
+            }
+        },
+        {
+            "name": "sion_stake_show",
+            "description": "An account's delegations: validator, shares, the stake behind them, state (pending, earning or unbonding) and the rewards owed now.",
+            "inputSchema": { "type": "object", "properties": { "account": account }, "required": ["account"] }
+        },
+        {
+            "name": "sion_stake_claim",
+            "description": "Collect a delegation's rewards (USD).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "delegation": { "type": "string", "description": "Delegation id (hex) or a unique prefix" }
+                },
+                "required": ["wallet", "delegation"]
+            }
+        },
+        {
+            "name": "sion_stake_undelegate",
+            "description": "Stop a delegation earning: collect its rewards and start unbonding. The stake stays slashable until it is withdrawn after the unbonding period.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "delegation": { "type": "string", "description": "Delegation id (hex) or a unique prefix" }
+                },
+                "required": ["wallet", "delegation"]
+            }
+        },
+        {
+            "name": "sion_stake_withdraw",
+            "description": "Withdraw an unbonded delegation's stake.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "delegation": { "type": "string", "description": "Delegation id (hex) or a unique prefix" }
+                },
+                "required": ["wallet", "delegation"]
+            }
+        },
+        {
             "name": "sion_fetch_receipt",
             "description": "Fetch a transaction's receipt and verify it as a light client: the chain identity, the committee certificate of its Pulse and the receipt's inclusion proof. Pass the chain identity you trust as `chain`.",
             "inputSchema": {
@@ -639,6 +698,53 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
         "sion_task_show" => {
             let task = ObjectId::from_hash(hex_id(&args["task"], "task")?);
             crate::tasks::describe(session.ledger, task)
+        }
+        "sion_stake_pools" => Ok(json!({
+            "pools": crate::stake::pool_lines(session.ledger, &crate::stake::operator_names(session))?
+        })),
+        "sion_stake_delegate" => {
+            let wallet = text_arg(args, "wallet")?;
+            let set = crate::stake::validator_set(session.ledger)?;
+            let validator = crate::stake::find_validator(&set, &text_arg(args, "validator")?)?;
+            let amount = usd(&args["amount"])?;
+            let view = session.send(
+                &wallet,
+                TxKind::DelegateStake { validator, amount },
+                Vec::new(),
+            )?;
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "events": view.effects.events,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
+        }
+        "sion_stake_show" => {
+            let account = text_arg(args, "account")?;
+            let id = session.id(&account);
+            crate::stake::delegations_of(session.ledger, id)
+        }
+        "sion_stake_claim" | "sion_stake_undelegate" | "sion_stake_withdraw" => {
+            let wallet = text_arg(args, "wallet")?;
+            let owner = session.id(&wallet);
+            let delegation = crate::stake::find_delegation(
+                session.ledger,
+                owner,
+                &text_arg(args, "delegation")?,
+            )?;
+            let kind = match name {
+                "sion_stake_claim" => TxKind::ClaimDelegatorRewards,
+                "sion_stake_undelegate" => TxKind::Undelegate,
+                _ => TxKind::WithdrawDelegation,
+            };
+            let reference = session.reference(&delegation)?;
+            let view = session.send(&wallet, kind, vec![reference])?;
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "events": view.effects.events,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
         }
         other => Err(CliError::Usage(format!("unknown tool {other}"))),
     }

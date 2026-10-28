@@ -5,7 +5,7 @@ repository:
 [`docs/spec/state-transition.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md).
 This page says what it covers and how to read it; it does not copy it.
 
-The current version is **v1.10**.
+The current version is **v1.11**.
 
 ## What it specifies
 
@@ -57,6 +57,7 @@ differential tests exist to find out which. See
 | v1.8 | Agent identities (§5.35–5.39): registered agents and subagents launched 256 at a time, each with its own account, card commitment, caveats and budget; suspension and resumption of whole subtrees; revocation by the agent or any overseer; window limits carved from the parent's like budgets ([Agent identities and subagents](concepts/agent-identities.md)) |
 | v1.9 | Memory logs (§5.40–5.41): logs of memory atoms kept off the ledger, whose heads the ledger moves only along RFC 9162 consistency proofs, so a log only grows and cannot fork; the Pulse of a commit is the transaction time of the atoms it adds ([Memory for agents and robots](concepts/memory.md)) |
 | v1.10 | Task Charters (§5.42–5.44): escrowed tasks whose acceptance rule is fixed at posting; results bound to their task, with exactly the formula the task requires; settlement once, with κ times the payment of backing reserved for the payer, so a result later proven false compensates it; bounties, cancellation, and posting from an agent's budget ([Task Charters](concepts/task-charters.md)) |
+| v1.11 | Pooled stake (§5.45–5.49): delegations owned by their delegators, holding shares of a validator's pool; joining at the epoch's end; rewards split between a validator's own and pooled earning stake, less a commission of at most 25 % that rises by at most 2 points at a time; a cap of twice an equal share; a tenth of the pool slashed on equivocation; ranking by own plus pooled stake ([Pooled stake](concepts/validators/pooled-stake.md)) |
 
 The **Changes** section of the document has the full entries.
 

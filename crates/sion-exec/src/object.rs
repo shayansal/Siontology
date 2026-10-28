@@ -135,6 +135,10 @@ pub enum ObjectData {
     MemoryLog(crate::memory::MemoryLog),
     /// An escrowed task (specification v1.10).
     Task(Box<crate::task::Task>),
+    /// Every validator's pool of delegated stake (specification v1.11).
+    Delegations(Box<crate::delegation::DelegationBook>),
+    /// A delegation, owned by its delegator (specification v1.11).
+    Delegation(crate::delegation::Delegation),
 }
 
 /// Something the protocol must do at a given Pulse.
@@ -307,6 +311,12 @@ pub mod well_known {
     /// The validator set's contention domain.
     pub fn validators_domain() -> DomainId {
         DomainId::derive(b"validators")
+    }
+
+    /// The validators' pools of delegated stake (in the validators'
+    /// domain; created by the first delegation).
+    pub fn delegations() -> ObjectId {
+        ObjectId::derive(b"well-known/delegations")
     }
 
     /// The forced-inclusion obligations.

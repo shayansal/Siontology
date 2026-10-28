@@ -434,6 +434,29 @@ pub enum TxKind {
         /// The task.
         task: ObjectId,
     },
+    /// Delegates stake to a validator's pool without handing it over (spec
+    /// §5.45): the sender keeps a delegation object holding pool shares.
+    DelegateStake {
+        /// The validator.
+        validator: ValidatorId,
+        /// Stake, in the stake asset.
+        amount: Amount,
+    },
+    /// Stops a delegation (`inputs[1]`) earning, pays out its rewards and
+    /// starts its unbonding (spec §5.46).
+    Undelegate,
+    /// Withdraws an unbonded delegation's stake (`inputs[1]`) (spec §5.47).
+    WithdrawDelegation,
+    /// Collects a delegation's rewards (`inputs[1]`) (spec §5.48).
+    ClaimDelegatorRewards,
+    /// The operator sets its pool's commission from the next epoch's end
+    /// (spec §5.49).
+    SetCommission {
+        /// The validator.
+        validator: ValidatorId,
+        /// The commission, in thousandths.
+        permille: u16,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -502,7 +525,12 @@ impl Transaction {
             | TxKind::Unstake { .. }
             | TxKind::WithdrawStake { .. }
             | TxKind::ClaimRewards { .. }
-            | TxKind::ReportEquivocation { .. } => Some(well_known::validators_domain()),
+            | TxKind::ReportEquivocation { .. }
+            | TxKind::DelegateStake { .. }
+            | TxKind::Undelegate
+            | TxKind::WithdrawDelegation
+            | TxKind::ClaimDelegatorRewards
+            | TxKind::SetCommission { .. } => Some(well_known::validators_domain()),
             TxKind::SettleStream { stream, .. }
             | TxKind::TopUpStream { stream, .. }
             | TxKind::CloseStream { stream } => Some(object_domain("stream", stream)),

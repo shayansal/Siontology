@@ -39,6 +39,7 @@ pub mod account;
 pub mod assurance;
 pub mod charter;
 pub mod claim;
+pub mod delegation;
 pub mod error;
 pub mod escrow;
 pub mod execute;

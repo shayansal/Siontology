@@ -242,6 +242,10 @@ enum Command {
     /// posted; attest, submit and settle results; cancel.
     #[command(subcommand)]
     Task(sion_cli::tasks::TaskCommand),
+    /// Pooled stake: delegate to a validator without handing the stake
+    /// over, collect rewards, leave; set a validator's commission.
+    #[command(subcommand)]
+    Stake(sion_cli::stake::StakeCommand),
     /// Markets.
     #[command(subcommand)]
     Market(MarketCommand),
@@ -1205,6 +1209,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         }
         Command::Agent(command) => sion_cli::agents::run(&mut session, ledger, command)?,
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
+        Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,
             agent,

@@ -34,6 +34,7 @@ use sion_crypto::{
 };
 use sion_exec::charter::{card_commitment, Caveats, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH};
 use sion_exec::claim::{claim_id, formulas, ClaimBody, Payload};
+use sion_exec::delegation::{Delegation, DelegationBook, DelegationState, Join, Pool};
 use sion_exec::execute::{bond_atom, registered_atom, Deferred, Event, ExecStatus};
 use sion_exec::market::{BatchStatus, Market, OrderTerms, Submission, SEALED_ORDER_DOMAIN};
 use sion_exec::object::{
@@ -145,6 +146,11 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::PostTask { .. } => "PostTask",
         TxKind::SettleTask { .. } => "SettleTask",
         TxKind::CancelTask { .. } => "CancelTask",
+        TxKind::DelegateStake { .. } => "DelegateStake",
+        TxKind::Undelegate => "Undelegate",
+        TxKind::WithdrawDelegation => "WithdrawDelegation",
+        TxKind::ClaimDelegatorRewards => "ClaimDelegatorRewards",
+        TxKind::SetCommission { .. } => "SetCommission",
     }
 }
 
@@ -518,6 +524,7 @@ impl Harness {
                                 _ => None,
                             });
                     if let Some(rewards) = rewards {
+                        check_pool_split(trace, &mut self.coverage);
                         let check = check_epoch_rewards(trace, rewards, self.epoch_balance);
                         self.epoch_balance = check.balance_after;
                         self.epochs += 1;
@@ -787,6 +794,181 @@ fn check_epoch_rewards(trace: &ChunkTrace, rewards: Amount, last_balance: Amount
         balance_after,
         gain,
         other_income: Amount(income.0 - gain.0),
+    }
+}
+
+/// The v1.11 split, checked against stack A's deferred phase from its
+/// witness and writes with plain integer arithmetic (a third reading of
+/// §6.3): each paid validator's pool takes `⌊share·e / (stake + e)⌋` of its
+/// share, less commission, credited per earning share; the operator keeps
+/// the rest; delegations made in the epoch join; commission changes take
+/// effect; validators rank by their own plus their pool's earning stake.
+fn check_pool_split(trace: &ChunkTrace, coverage: &mut BTreeSet<String>) {
+    let pulse = trace.statement.pulse.0;
+    let witnessed = |id: ObjectId| {
+        trace
+            .witness
+            .objects
+            .iter()
+            .find(|(entry, _, _)| *entry == id)
+            .and_then(|(_, object, _)| object.clone())
+            .map(|object| object.data)
+    };
+    let written = |id: ObjectId| {
+        trace
+            .writes
+            .iter()
+            .find(|object| object.id == id)
+            .map(|object| object.data.clone())
+    };
+    let Some(ObjectData::Delegations(before)) = witnessed(well_known::delegations()) else {
+        assert!(
+            written(well_known::delegations()).is_none(),
+            "pulse {pulse}: an epoch end writes no book it did not read"
+        );
+        return;
+    };
+    let Some(ObjectData::Delegations(after)) = written(well_known::delegations()) else {
+        panic!("pulse {pulse}: an epoch end writes the delegation book it read");
+    };
+    let Some(ObjectData::Validators(set)) = witnessed(well_known::validators()) else {
+        panic!("pulse {pulse}: an epoch end reads the validator set");
+    };
+    let Some(ObjectData::Validators(set_after)) = written(well_known::validators()) else {
+        panic!("pulse {pulse}: an epoch end writes the validator set");
+    };
+    let Some(ObjectData::Treasury(treasury)) = witnessed(well_known::treasury()) else {
+        panic!("pulse {pulse}: an epoch end reads the treasury");
+    };
+    let fees_in_phase: u128 = trace
+        .deferred_items
+        .iter()
+        .filter_map(|item| match item {
+            Deferred::Fee { asset, amount } if *asset == usd() => Some(amount.0),
+            _ => None,
+        })
+        .sum();
+    let collected = treasury.fees.get(&usd()).copied().unwrap_or(Amount::ZERO).0 + fees_in_phase;
+    let gain = collected.saturating_sub(set.fees_mark.0);
+    let reward_pool = gain * u128::from(set.params.reward_permille) / 1000;
+    let total: u128 = set
+        .active
+        .iter()
+        .map(|(_, weight)| u128::from(*weight))
+        .sum();
+    let earning_stake = |pool: &Pool| {
+        let shares = pool.earning + pool.pending + pool.unbonding;
+        (pool.earning * pool.value.0)
+            .checked_div(shares)
+            .unwrap_or(0)
+    };
+    let mut delegated: BTreeMap<ValidatorId, u128> = BTreeMap::new();
+    for (validator, weight) in &set.active {
+        let record = &set.validators[validator];
+        if !matches!(
+            record.status,
+            ValidatorStatus::Active | ValidatorStatus::Leaving
+        ) {
+            continue;
+        }
+        let share = reward_pool * u128::from(*weight) / total;
+        let to_pool = match before.pools.get(validator) {
+            Some(pool) if pool.earning > 0 && earning_stake(pool) > 0 => {
+                let e = earning_stake(pool);
+                let part = share * e / (record.stake.0 + e);
+                part - part * u128::from(pool.commission_permille) / 1000
+            }
+            _ => 0,
+        };
+        assert_eq!(
+            set_after.validators[validator].rewards.0,
+            record.rewards.0 + share - to_pool,
+            "pulse {pulse}: validator {validator} keeps its share less its pool's part"
+        );
+        if to_pool > 0 {
+            coverage.insert("epoch/pool-rewards-split".into());
+        }
+        delegated.insert(*validator, to_pool);
+    }
+    assert_eq!(
+        before.pools.keys().collect::<Vec<_>>(),
+        after.pools.keys().collect::<Vec<_>>(),
+        "pulse {pulse}: an epoch end adds or removes no pool"
+    );
+    for (validator, pool) in &before.pools {
+        let now = &after.pools[validator];
+        let credit = delegated.get(validator).copied().unwrap_or(0);
+        let per_share = if credit > 0 {
+            credit * 1_000_000_000_000 / pool.earning
+        } else {
+            0
+        };
+        assert_eq!(
+            now.reward_per_share,
+            pool.reward_per_share + per_share,
+            "pulse {pulse}: pool {validator}'s accumulator"
+        );
+        assert_eq!(now.rewards_held.0, pool.rewards_held.0 + credit);
+        assert_eq!(now.earning, pool.earning + pool.pending);
+        assert_eq!((now.pending, now.pending_delegations), (0, 0));
+        assert_eq!((now.value, now.unbonding), (pool.value, pool.unbonding));
+        let mut joins = pool.joins.clone();
+        if pool.pending_delegations > 0 {
+            joins.insert(
+                set.epoch,
+                Join {
+                    reward_per_share: now.reward_per_share,
+                    waiting: pool.pending_delegations,
+                },
+            );
+            coverage.insert("epoch/delegations-join".into());
+        }
+        assert_eq!(now.joins, joins, "pulse {pulse}: pool {validator}'s joins");
+        assert_eq!(
+            (now.commission_permille, now.next_commission),
+            (
+                pool.next_commission.unwrap_or(pool.commission_permille),
+                None
+            )
+        );
+        if pool.next_commission.is_some() {
+            coverage.insert("epoch/commission-takes-effect".into());
+        }
+    }
+    // The ranking: Active records after the epoch's status changes, by own
+    // stake plus the pool's earning stake after the joins.
+    let mut ranked: Vec<(u128, ValidatorId)> = set
+        .validators
+        .values()
+        .filter(|record| {
+            matches!(
+                record.status,
+                ValidatorStatus::Active | ValidatorStatus::Joining
+            )
+        })
+        .map(|record| {
+            let pooled = after.pools.get(&record.id).map(earning_stake).unwrap_or(0);
+            (record.stake.0 + pooled, record.id)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked.truncate(usize::from(set.params.max_active.max(1)));
+    let mut expected: Vec<(ValidatorId, u64)> = ranked
+        .into_iter()
+        .map(|(stake, id)| (id, sion_exec::validators::weight(Amount(stake))))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        set_after.active, expected,
+        "pulse {pulse}: the next active set"
+    );
+    if expected.iter().any(|(id, _)| {
+        after
+            .pools
+            .get(id)
+            .is_some_and(|pool| earning_stake(pool) > 0)
+    }) {
+        coverage.insert("epoch/pooled-stake-ranks".into());
     }
 }
 
@@ -10225,4 +10407,857 @@ fn probe_fees_across_epochs() {
         "epoch/non-fee-income-kept",
     ]);
     h.assert_minimal_witnesses();
+}
+
+// ---------------------------------------------------------------------------
+// Scenario (v1.11): pooled stake
+// ---------------------------------------------------------------------------
+
+fn delegation_made(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::Delegated { delegation, .. } => Some(*delegation),
+                _ => None,
+            })
+        })
+        .expect("delegation made")
+}
+
+fn delegation_of(h: &Harness, id: &ObjectId) -> Delegation {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Delegation(delegation) => delegation.clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn delegation_book(h: &Harness) -> Option<DelegationBook> {
+    match h.chain.state.objects.get(&well_known::delegations()) {
+        None => None,
+        Some(Object {
+            data: ObjectData::Delegations(book),
+            ..
+        }) => Some((**book).clone()),
+        Some(other) => panic!("the delegation book object holds {other:?}"),
+    }
+}
+
+fn pool_of(h: &Harness, validator: &ValidatorId) -> Pool {
+    delegation_book(h)
+        .and_then(|book| book.pools.get(validator).cloned())
+        .unwrap_or_default()
+}
+
+fn delegate(
+    h: &mut Harness,
+    name: &str,
+    validator: ValidatorId,
+    amount: Amount,
+) -> SignedTransaction {
+    h.tx(name, TxKind::DelegateStake { validator, amount })
+}
+
+/// `name`'s transaction of `kind` on `delegation` (its second input).
+fn on_delegation(
+    h: &mut Harness,
+    name: &str,
+    kind: TxKind,
+    delegation: &ObjectId,
+) -> SignedTransaction {
+    let reference = h.reference(delegation);
+    h.tx_with(name, kind, vec![reference])
+}
+
+/// The event a transaction emitted, by name.
+fn event_of(out: &PulseOutput, tx: &SignedTransaction, name: &str) -> Event {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| e.events.iter().find(|event| event_name(event) == name))
+        .cloned()
+        .unwrap_or_else(|| panic!("no {name} event"))
+}
+
+/// What an earning delegation is owed now, from the pool's accumulator.
+fn owed_now(h: &Harness, delegation: &ObjectId) -> u128 {
+    let d = delegation_of(h, delegation);
+    let pool = pool_of(h, &d.validator);
+    let entry = match d.state {
+        DelegationState::Earning { entry } => entry,
+        DelegationState::Pending { epoch } => pool.joins[&epoch].reward_per_share,
+        DelegationState::Unbonding { .. } => panic!("unbonding"),
+    };
+    d.shares * (pool.reward_per_share - entry) / 1_000_000_000_000
+}
+
+fn pooled_stake(chunk_size: usize) -> Harness {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol", "dave", "erin", "vic"],
+        400_000,
+        8,
+        chunk_size,
+        validator_params(4),
+        forced_params(3, 8),
+    );
+    let genesis = h.genesis_validators();
+    let ids: Vec<ValidatorId> = genesis.iter().map(|(_, id)| *id).collect();
+    let (g0, g1, g2) = (ids[0], ids[1], ids[2]);
+    let vic_keys = pool_keys(3);
+    let v = key_id(vic_keys);
+    let nobody = ValidatorId::derive(b"no such validator");
+
+    // Pulse 1: the faucet, which operates the genesis validators, gets gas.
+    h.fund(&[
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+    ]);
+    assert!(delegation_book(&h).is_none(), "no book before a delegation");
+
+    // Pulse 2: a commission on a pool nobody has joined may jump to any
+    // value up to the ceiling; it creates the book. Above the ceiling, by
+    // someone else or for an unknown validator, it fails. Vic registers a
+    // validator.
+    let commission = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 100,
+        },
+    );
+    let too_high = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g1,
+            permille: 251,
+        },
+    );
+    let not_operator = h.tx(
+        "alice",
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 50,
+        },
+    );
+    let unknown = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: nobody,
+            permille: 10,
+        },
+    );
+    let register = {
+        let kind = registration(&h, "vic", vic_keys, units(1_000));
+        h.tx("vic", kind)
+    };
+    let out = h.pulse(vec![
+        commission.clone(),
+        too_high.clone(),
+        not_operator.clone(),
+        unknown.clone(),
+        register.clone(),
+    ]);
+    expect(&out, &commission, Outcome::Success);
+    for tx in [&too_high, &not_operator, &unknown] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    expect(&out, &register, Outcome::Success);
+    let pool = pool_of(&h, &g0);
+    assert_eq!(
+        (pool.commission_permille, pool.next_commission),
+        (0, Some(100))
+    );
+
+    // Pulse 3 (epoch 0): alice delegates to g0 and carol to vic's joining
+    // validator; below the minimum or to an unknown validator fails.
+    let alice_in = delegate(&mut h, "alice", g0, units(10_000));
+    let below = delegate(&mut h, "bob", g0, Amount(999_999));
+    let nowhere = delegate(&mut h, "carol", nobody, units(10));
+    let carol_in = delegate(&mut h, "carol", v, units(2_000));
+    let out = h.pulse(vec![
+        alice_in.clone(),
+        below.clone(),
+        nowhere.clone(),
+        carol_in.clone(),
+    ]);
+    expect(&out, &alice_in, Outcome::Success);
+    expect(&out, &carol_in, Outcome::Success);
+    expect(&out, &below, Outcome::Failed);
+    expect(&out, &nowhere, Outcome::Failed);
+    let a = delegation_made(&out, &alice_in);
+    let c = delegation_made(&out, &carol_in);
+    let alice_d = delegation_of(&h, &a);
+    assert_eq!(alice_d.state, DelegationState::Pending { epoch: 0 });
+    assert_eq!(
+        alice_d.shares,
+        units(10_000).0,
+        "an empty pool sells one share per micro-unit"
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!(
+        (pool.pending, pool.pending_delegations, pool.value),
+        (units(10_000).0, 1, units(10_000))
+    );
+
+    // Pulse 4, epoch 0's last: a pending delegation has nothing to claim;
+    // dave delegates to g1. The epoch ends: the pending delegations join,
+    // from an accumulator still at 0, and count towards the ranking.
+    let pending_claim = on_delegation(&mut h, "alice", TxKind::ClaimDelegatorRewards, &a);
+    let dave_in = delegate(&mut h, "dave", g1, units(100_000));
+    let mut txs = fee_traffic(&mut h, "bob", "erin", 3);
+    txs.extend([pending_claim.clone(), dave_in.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &pending_claim, Outcome::Failed);
+    expect(&out, &dave_in, Outcome::Success);
+    let d = delegation_made(&out, &dave_in);
+    assert_eq!(count_events(&out, "EpochChanged"), 1);
+    let pool = pool_of(&h, &g0);
+    assert_eq!(
+        (pool.earning, pool.pending, pool.commission_permille),
+        (units(10_000).0, 0, 100)
+    );
+    assert_eq!(
+        pool.joins[&0],
+        Join {
+            reward_per_share: 0,
+            waiting: 1
+        }
+    );
+    let set = h.validator_set();
+    let weight_of = |validator: ValidatorId| {
+        set.active
+            .iter()
+            .find(|(id, _)| *id == validator)
+            .map(|(_, weight)| *weight)
+    };
+    assert_eq!(weight_of(g0), Some(110_000));
+    assert_eq!(weight_of(g1), Some(200_000));
+    assert_eq!(
+        weight_of(v),
+        Some(3_000),
+        "vic's own 1,000 and carol's 2,000"
+    );
+
+    // Pulse 5 (epoch 1): five eligible validators, so the cap is 400 ‰ of
+    // the bonded stake (513,000). g1 holds 200,000: erin may add at most
+    // 8,666.666666 units. One micro-unit more fails; exactly that succeeds.
+    // Alice's delegation is earning now, but nothing has been credited.
+    let over = delegate(&mut h, "erin", g1, Amount(8_666_666_667));
+    let exact = delegate(&mut h, "erin", g1, Amount(8_666_666_666));
+    let nothing_yet = on_delegation(&mut h, "alice", TxKind::ClaimDelegatorRewards, &a);
+    let mut txs = fee_traffic(&mut h, "bob", "carol", 3);
+    txs.extend([over.clone(), exact.clone(), nothing_yet.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &over, Outcome::Failed);
+    expect(&out, &exact, Outcome::Success);
+    expect(&out, &nothing_yet, Outcome::Failed);
+    let e = delegation_made(&out, &exact);
+
+    // Pulse 6: g0 has delegators now, so its commission rises by at most
+    // 20 ‰ at a time (100 → 120, not 121).
+    let jump = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 121,
+        },
+    );
+    let step = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 120,
+        },
+    );
+    let mut txs = fee_traffic(&mut h, "bob", "carol", 3);
+    txs.extend([jump.clone(), step.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &jump, Outcome::Failed);
+    expect(&out, &step, Outcome::Success);
+    assert_eq!(pool_of(&h, &g0).next_commission, Some(120));
+
+    // Pulse 7: an earning delegation cannot be withdrawn, and a coin is not
+    // a delegation.
+    let not_unbonding = on_delegation(&mut h, "alice", TxKind::WithdrawDelegation, &a);
+    let coin = h.coins("alice", &usd())[0];
+    let not_a_delegation = h.tx_with("alice", TxKind::ClaimDelegatorRewards, vec![coin]);
+    let mut txs = fee_traffic(&mut h, "bob", "carol", 3);
+    txs.extend([not_unbonding.clone(), not_a_delegation.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &not_unbonding, Outcome::Failed);
+    expect(&out, &not_a_delegation, Outcome::Failed);
+
+    // Pulse 8, epoch 1's last: the pools earn their part of their
+    // validators' rewards (the oracle checks every split); erin joins g1;
+    // g0's commission becomes 120.
+    let txs = fee_traffic(&mut h, "bob", "carol", 3);
+    h.pulse(txs);
+    let pool = pool_of(&h, &g0);
+    assert!(pool.reward_per_share > 0 && pool.rewards_held > Amount::ZERO);
+    assert_eq!(
+        (pool.commission_permille, pool.next_commission),
+        (120, None)
+    );
+    let g1_pool = pool_of(&h, &g1);
+    assert_eq!(g1_pool.joins[&1].waiting, 1, "erin joined at epoch 1's end");
+    assert!(
+        pool_of(&h, &v).reward_per_share > 0,
+        "carol's pool earned too"
+    );
+
+    // Pulse 9 (epoch 2): alice and dave collect; erin joined after the
+    // rewards, so she has nothing; bob cannot spend alice's delegation.
+    let alice_owed = owed_now(&h, &a);
+    let dave_owed = owed_now(&h, &d);
+    assert!(alice_owed > 0 && dave_owed > 0);
+    assert_eq!(owed_now(&h, &e), 0);
+    let alice_claim = on_delegation(&mut h, "alice", TxKind::ClaimDelegatorRewards, &a);
+    let dave_claim = on_delegation(&mut h, "dave", TxKind::ClaimDelegatorRewards, &d);
+    let erin_claim = on_delegation(&mut h, "erin", TxKind::ClaimDelegatorRewards, &e);
+    let theft = {
+        let reference = h.reference(&a);
+        by_hand(
+            &mut h,
+            "bob",
+            TxKind::ClaimDelegatorRewards,
+            vec![reference],
+        )
+    };
+    let held = pool_of(&h, &g0).rewards_held;
+    let out = h.pulse(vec![
+        alice_claim.clone(),
+        dave_claim.clone(),
+        erin_claim.clone(),
+        theft.clone(),
+    ]);
+    expect(&out, &alice_claim, Outcome::Success);
+    expect(&out, &dave_claim, Outcome::Success);
+    expect(&out, &erin_claim, Outcome::Failed);
+    expect(&out, &theft, Outcome::Rejected);
+    assert_eq!(
+        event_of(&out, &alice_claim, "DelegatorRewardsClaimed"),
+        Event::DelegatorRewardsClaimed {
+            delegation: a,
+            amount: Amount(alice_owed)
+        }
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!(pool.rewards_held.0, held.0 - alice_owed);
+    assert!(
+        pool.joins.is_empty(),
+        "alice used the last of epoch 0's join"
+    );
+    assert_eq!(
+        delegation_of(&h, &a).state,
+        DelegationState::Earning {
+            entry: pool.reward_per_share
+        }
+    );
+
+    // Pulse 10: alice undelegates (nothing new to collect); without its
+    // delegation, an undelegation fails; bob delegates to g2.
+    let alice_out = on_delegation(&mut h, "alice", TxKind::Undelegate, &a);
+    let missing = h.tx("dave", TxKind::Undelegate);
+    let bob_in = delegate(&mut h, "bob", g2, units(5_000));
+    let out = h.pulse(vec![alice_out.clone(), missing.clone(), bob_in.clone()]);
+    expect(&out, &alice_out, Outcome::Success);
+    expect(&out, &missing, Outcome::Failed);
+    expect(&out, &bob_in, Outcome::Success);
+    let b = delegation_made(&out, &bob_in);
+    assert_eq!(
+        event_of(&out, &alice_out, "Undelegated"),
+        Event::Undelegated {
+            delegation: a,
+            rewards: Amount::ZERO,
+            withdrawable_at: Pulse(13)
+        }
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!((pool.earning, pool.unbonding), (0, units(10_000).0));
+
+    // Pulse 11: bob leaves in the epoch he joined (his shares never earn);
+    // alice cannot withdraw before Pulse 13; vic takes his validator out
+    // (it leaves at the epoch's end).
+    let bob_out = on_delegation(&mut h, "bob", TxKind::Undelegate, &b);
+    let early = on_delegation(&mut h, "alice", TxKind::WithdrawDelegation, &a);
+    let leave = h.tx("vic", TxKind::Unstake { validator: v });
+    let mut txs = fee_traffic(&mut h, "dave", "carol", 3);
+    txs.extend([bob_out.clone(), early.clone(), leave.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &bob_out, Outcome::Success);
+    expect(&out, &early, Outcome::Failed);
+    expect(&out, &leave, Outcome::Success);
+    let pool = pool_of(&h, &g2);
+    assert_eq!(
+        (pool.pending, pool.pending_delegations, pool.unbonding),
+        (0, 0, units(5_000).0)
+    );
+
+    // Pulse 12, epoch 2's last: alice cannot undelegate twice. g0's pool
+    // has no earning shares left, so its operator keeps all; vic's leaving
+    // validator is paid once more, its pool included, and exits.
+    let twice = on_delegation(&mut h, "alice", TxKind::Undelegate, &a);
+    let mut txs = fee_traffic(&mut h, "dave", "carol", 3);
+    txs.push(twice.clone());
+    let out = h.pulse(txs);
+    expect(&out, &twice, Outcome::Failed);
+    assert!(pool_of(&h, &g2).joins.is_empty());
+    assert_eq!(
+        h.record(&v).status,
+        ValidatorStatus::Exited {
+            withdrawable_at: Pulse(15)
+        }
+    );
+
+    // Pulse 13: alice withdraws her 10,000 exactly when she may; erin
+    // leaves g1 with epoch 2's rewards; carol leaves vic's exited
+    // validator with hers.
+    let erin_owed = owed_now(&h, &e);
+    let carol_owed = owed_now(&h, &c);
+    assert!(erin_owed > 0 && carol_owed > 0);
+    let withdraw = on_delegation(&mut h, "alice", TxKind::WithdrawDelegation, &a);
+    let erin_out = on_delegation(&mut h, "erin", TxKind::Undelegate, &e);
+    let carol_out = on_delegation(&mut h, "carol", TxKind::Undelegate, &c);
+    let out = h.pulse(vec![withdraw.clone(), erin_out.clone(), carol_out.clone()]);
+    for tx in [&withdraw, &erin_out, &carol_out] {
+        expect(&out, tx, Outcome::Success);
+    }
+    assert_eq!(
+        event_of(&out, &withdraw, "DelegationWithdrawn"),
+        Event::DelegationWithdrawn {
+            delegation: a,
+            amount: units(10_000)
+        }
+    );
+    assert!(h.chain.state.objects[&a].is_tombstone());
+    assert_eq!(
+        event_of(&out, &erin_out, "Undelegated"),
+        Event::Undelegated {
+            delegation: e,
+            rewards: Amount(erin_owed),
+            withdrawable_at: Pulse(16)
+        }
+    );
+    assert_eq!(
+        event_of(&out, &carol_out, "Undelegated"),
+        Event::Undelegated {
+            delegation: c,
+            rewards: Amount(carol_owed),
+            withdrawable_at: Pulse(16)
+        }
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!((pool.unbonding, pool.value), (0, Amount::ZERO));
+
+    // Pulse 14: bob withdraws; an exited validator takes no delegation.
+    let bob_back = on_delegation(&mut h, "bob", TxKind::WithdrawDelegation, &b);
+    let to_exited = delegate(&mut h, "carol", v, units(10));
+    let out = h.pulse(vec![bob_back.clone(), to_exited.clone()]);
+    expect(&out, &bob_back, Outcome::Success);
+    expect(&out, &to_exited, Outcome::Failed);
+
+    // Pulse 15: g1 equivocates. Its own stake is forfeited, and its pool
+    // (dave earning, erin unbonding) loses a tenth; the reporter's share is
+    // of both. A slashed validator takes no delegation.
+    let auth = KeyAuth::of(&genesis[1].0);
+    let report = h.tx(
+        "carol",
+        report_headers(
+            signed_header(&auth, 7, 0, b"a"),
+            signed_header(&auth, 7, 0, b"b"),
+        ),
+    );
+    let after_slash = delegate(&mut h, "dave", g1, units(10));
+    let value = pool_of(&h, &g1).value;
+    let out = h.pulse(vec![report.clone(), after_slash.clone()]);
+    expect(&out, &report, Outcome::Success);
+    expect(&out, &after_slash, Outcome::Failed);
+    let slashed = value.0 / 10;
+    assert_eq!(
+        event_of(&out, &report, "PoolSlashed"),
+        Event::PoolSlashed {
+            validator: g1,
+            amount: Amount(slashed)
+        }
+    );
+    assert_eq!(
+        event_of(&out, &report, "ValidatorSlashed"),
+        Event::ValidatorSlashed {
+            validator: g1,
+            amount: units(100_000),
+            reporter: h.id("carol"),
+            reward: Amount((units(100_000).0 + slashed) / 2)
+        }
+    );
+    let pool = pool_of(&h, &g1);
+    assert_eq!(pool.value.0, value.0 - slashed);
+
+    // Pulse 16, epoch 3's last: erin withdraws 90 % of her stake; dave
+    // collects epoch 2's rewards, which the slash left alone.
+    let erin_shares = delegation_of(&h, &e).shares;
+    let erin_expected = erin_shares * pool.value.0 / (pool.earning + pool.unbonding);
+    let dave_owed = owed_now(&h, &d);
+    assert!(dave_owed > 0);
+    let erin_back = on_delegation(&mut h, "erin", TxKind::WithdrawDelegation, &e);
+    let dave_claim = on_delegation(&mut h, "dave", TxKind::ClaimDelegatorRewards, &d);
+    let out = h.pulse(vec![erin_back.clone(), dave_claim.clone()]);
+    expect(&out, &erin_back, Outcome::Success);
+    expect(&out, &dave_claim, Outcome::Success);
+    assert_eq!(
+        event_of(&out, &erin_back, "DelegationWithdrawn"),
+        Event::DelegationWithdrawn {
+            delegation: e,
+            amount: Amount(erin_expected)
+        }
+    );
+    assert_eq!(
+        erin_expected * 10 / 9 / 1_000,
+        Amount(8_666_666_666).0 / 1_000
+    );
+
+    // Pulses 17–20: dave leaves the slashed pool and takes what is left.
+    let dave_out = on_delegation(&mut h, "dave", TxKind::Undelegate, &d);
+    let out = h.pulse(vec![dave_out.clone()]);
+    expect(&out, &dave_out, Outcome::Success);
+    h.advance_to(19);
+    let left = pool_of(&h, &g1).value;
+    let dave_back = on_delegation(&mut h, "dave", TxKind::WithdrawDelegation, &d);
+    let out = h.pulse(vec![dave_back.clone()]);
+    expect(&out, &dave_back, Outcome::Success);
+    assert_eq!(
+        event_of(&out, &dave_back, "DelegationWithdrawn"),
+        Event::DelegationWithdrawn {
+            delegation: d,
+            amount: left
+        }
+    );
+    let pool = pool_of(&h, &g1);
+    assert_eq!(
+        (pool.value, pool.earning, pool.unbonding),
+        (Amount::ZERO, 0, 0)
+    );
+
+    // More epochs.
+    let txs = fee_traffic(&mut h, "bob", "carol", 2);
+    h.pulse(txs);
+    h.advance_to(28);
+
+    h.assert_covered(&[
+        "SetCommission/ok",
+        "SetCommission/failed",
+        "DelegateStake/ok",
+        "DelegateStake/failed",
+        "Undelegate/ok",
+        "Undelegate/failed",
+        "WithdrawDelegation/ok",
+        "WithdrawDelegation/failed",
+        "ClaimDelegatorRewards/ok",
+        "ClaimDelegatorRewards/failed",
+        "ClaimDelegatorRewards/rejected",
+        "ReportEquivocation/ok",
+        "deferred-event/EpochChanged",
+        "epoch/pool-rewards-split",
+        "epoch/delegations-join",
+        "epoch/commission-takes-effect",
+        "epoch/pooled-stake-ranks",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn pooled_stake_delegate_earn_claim_leave_and_share_a_slash() {
+    pooled_stake(1).summary("pooled stake (1 per chunk)");
+}
+
+#[test]
+fn pooled_stake_many_transactions_per_chunk() {
+    pooled_stake(4).summary("pooled stake (4 per chunk)");
+}
+
+/// §5.45 step 4 at its boundary: with the four genesis validators (100,000
+/// each), the cap is 500 ‰, so one validator may gain exactly 200,000.
+#[test]
+fn probe_delegation_cap_boundary() {
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        1_000_000,
+        8,
+        2,
+        validator_params(4),
+        forced_params(3, 8),
+    );
+    let ids: Vec<ValidatorId> = h.genesis_validators().iter().map(|(_, id)| *id).collect();
+    let over = delegate(&mut h, "alice", ids[0], Amount(units(200_000).0 + 1));
+    let exact = delegate(&mut h, "alice", ids[0], units(200_000));
+    let more = delegate(&mut h, "bob", ids[0], units(1));
+    let elsewhere = delegate(&mut h, "bob", ids[1], units(1));
+    let out = h.pulse(vec![
+        over.clone(),
+        exact.clone(),
+        more.clone(),
+        elsewhere.clone(),
+    ]);
+    expect(&out, &over, Outcome::Failed);
+    expect(&out, &exact, Outcome::Success);
+    expect(&out, &more, Outcome::Failed);
+    expect(&out, &elsewhere, Outcome::Success);
+    h.advance_to(4);
+    let set = h.validator_set();
+    assert!(set.active.contains(&(ids[0], 300_000)));
+    h.assert_minimal_witnesses();
+}
+
+/// A random operation on pooled stake.
+#[derive(Clone, Debug)]
+enum PoolOp {
+    /// Delegator `who` delegates `units` (0: just below the minimum) to
+    /// validator `validator` (4: one that does not exist).
+    Delegate {
+        who: usize,
+        validator: usize,
+        units: u64,
+    },
+    Undelegate {
+        who: usize,
+        pick: usize,
+    },
+    Withdraw {
+        who: usize,
+        pick: usize,
+    },
+    Claim {
+        who: usize,
+        pick: usize,
+    },
+    Commission {
+        validator: usize,
+        permille: u16,
+    },
+    Fees {
+        count: usize,
+    },
+    Slash {
+        validator: usize,
+    },
+}
+
+fn pool_op() -> impl Strategy<Value = PoolOp> {
+    prop_oneof![
+        4 => (0usize..4, 0usize..5, 0u64..60_000)
+            .prop_map(|(who, validator, units)| PoolOp::Delegate { who, validator, units }),
+        3 => (0usize..4, any::<usize>()).prop_map(|(who, pick)| PoolOp::Undelegate { who, pick }),
+        3 => (0usize..4, any::<usize>()).prop_map(|(who, pick)| PoolOp::Withdraw { who, pick }),
+        2 => (0usize..4, any::<usize>()).prop_map(|(who, pick)| PoolOp::Claim { who, pick }),
+        1 => (0usize..4, 0u16..=300)
+            .prop_map(|(validator, permille)| PoolOp::Commission { validator, permille }),
+        3 => (1usize..4).prop_map(|count| PoolOp::Fees { count }),
+        1 => (0usize..4).prop_map(|validator| PoolOp::Slash { validator }),
+    ]
+}
+
+/// The pools' bookkeeping against every live delegation: shares by state,
+/// pending counts, joins, and that what is owed and withdrawable never
+/// exceeds what the pool holds.
+fn check_pools_against_delegations(h: &Harness) {
+    let Some(book) = delegation_book(h) else {
+        return;
+    };
+    let epoch = h.validator_set().epoch;
+    let mut by_pool: BTreeMap<ValidatorId, Vec<Delegation>> = BTreeMap::new();
+    for object in h.chain.state.objects.values() {
+        if let ObjectData::Delegation(d) = &object.data {
+            by_pool.entry(d.validator).or_default().push(d.clone());
+        }
+    }
+    for (validator, pool) in &book.pools {
+        let live = by_pool.remove(validator).unwrap_or_default();
+        let (mut earning, mut pending, mut unbonding, mut count) = (0u128, 0u128, 0u128, 0u64);
+        let mut waiting: BTreeMap<u64, u64> = BTreeMap::new();
+        let (mut owed, mut worth) = (0u128, 0u128);
+        let shares = pool.earning + pool.pending + pool.unbonding;
+        for d in &live {
+            let entry = match d.state {
+                DelegationState::Pending { epoch: made } if made == epoch => {
+                    pending += d.shares;
+                    count += 1;
+                    None
+                }
+                DelegationState::Pending { epoch: made } => {
+                    earning += d.shares;
+                    *waiting.entry(made).or_default() += 1;
+                    Some(pool.joins[&made].reward_per_share)
+                }
+                DelegationState::Earning { entry } => {
+                    earning += d.shares;
+                    Some(entry)
+                }
+                DelegationState::Unbonding { .. } => {
+                    unbonding += d.shares;
+                    None
+                }
+            };
+            if let Some(entry) = entry {
+                owed += d.shares * (pool.reward_per_share - entry) / 1_000_000_000_000;
+            }
+            worth += d.shares * pool.value.0 / shares.max(1);
+        }
+        assert_eq!(
+            (
+                pool.earning,
+                pool.pending,
+                pool.unbonding,
+                pool.pending_delegations
+            ),
+            (earning, pending, unbonding, count),
+            "pool {validator}"
+        );
+        let joins: BTreeMap<u64, u64> = pool.joins.iter().map(|(e, j)| (*e, j.waiting)).collect();
+        assert_eq!(
+            joins, waiting,
+            "pool {validator}: joins wait for exactly the delegations that joined"
+        );
+        assert!(
+            owed <= pool.rewards_held.0,
+            "pool {validator}: owed {owed} > held {}",
+            pool.rewards_held
+        );
+        assert!(
+            worth <= pool.value.0,
+            "pool {validator}: worth {worth} > value {}",
+            pool.value
+        );
+    }
+    assert!(
+        by_pool.is_empty(),
+        "delegations without a pool: {by_pool:?}"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 16,
+        ..ProptestConfig::default()
+    })]
+
+    /// Random delegations, undelegations, withdrawals, claims, commission
+    /// changes, fees and slashings over many short epochs: stack B verifies
+    /// every chunk, the split oracle checks every epoch end, the supply is
+    /// conserved, and the pools agree with the delegations they hold.
+    #[test]
+    fn random_pooled_stake_workloads_are_verified(
+        chunk_size in 1usize..4,
+        pulses in proptest::collection::vec(proptest::collection::vec(pool_op(), 1..6), 10..30),
+    ) {
+        let mut h = Harness::with_params(
+            &["d0", "d1", "d2", "d3", "payer", "payee"],
+            400_000,
+            8,
+            chunk_size,
+            validator_params(3),
+            forced_params(3, 8),
+        );
+        let genesis = h.genesis_validators();
+        let mut validators: Vec<ValidatorId> = genesis.iter().map(|(_, id)| *id).collect();
+        validators.push(ValidatorId::derive(b"no such validator"));
+        h.fund(&[
+            (FAUCET_NAME, usd(), units(1_000)),
+            (FAUCET_NAME, usd(), units(1_000)),
+            (FAUCET_NAME, usd(), units(1_000)),
+            (FAUCET_NAME, usd(), units(1_000)),
+        ]);
+        let mut held: Vec<Vec<ObjectId>> = vec![Vec::new(); 4];
+        let mut slashes = 0u64;
+        for ops in pulses {
+            let mut txs: Vec<SignedTransaction> = Vec::new();
+            let mut delegating: Vec<(usize, TxDigest)> = Vec::new();
+            for op in ops {
+                match op {
+                    PoolOp::Delegate { who, validator, units: n } => {
+                        let amount = if n == 0 { Amount(999_999) } else { units(n) };
+                        let kind = TxKind::DelegateStake { validator: validators[validator], amount };
+                        if let Ok(tx) = h.chain.tx(&format!("d{who}"), kind) {
+                            delegating.push((who, tx.digest()));
+                            txs.push(tx);
+                        }
+                    }
+                    PoolOp::Undelegate { who, pick }
+                    | PoolOp::Withdraw { who, pick }
+                    | PoolOp::Claim { who, pick } => {
+                        if held[who].is_empty() {
+                            continue;
+                        }
+                        let id = held[who][pick % held[who].len()];
+                        let kind = match op {
+                            PoolOp::Undelegate { .. } => TxKind::Undelegate,
+                            PoolOp::Withdraw { .. } => TxKind::WithdrawDelegation,
+                            _ => TxKind::ClaimDelegatorRewards,
+                        };
+                        let reference = h.reference(&id);
+                        if let Ok(tx) = h.chain.tx_with(&format!("d{who}"), kind, vec![reference]) {
+                            txs.push(tx);
+                        }
+                    }
+                    PoolOp::Commission { validator, permille } => {
+                        let kind = TxKind::SetCommission { validator: validators[validator], permille };
+                        if let Ok(tx) = h.chain.tx(FAUCET_NAME, kind) {
+                            txs.push(tx);
+                        }
+                    }
+                    PoolOp::Fees { count } => {
+                        let to = h.id("payee");
+                        for n in 0..count {
+                            let kind = TxKind::Transfer {
+                                asset: usd(),
+                                outputs: vec![(to, units(n as u64 + 1))],
+                            };
+                            if let Ok(tx) = h.chain.tx("payer", kind) {
+                                txs.push(tx);
+                            }
+                        }
+                    }
+                    PoolOp::Slash { validator } => {
+                        slashes += 1;
+                        let auth = KeyAuth::of(&genesis[validator].0);
+                        let kind = report_headers(
+                            signed_header(&auth, slashes, 0, b"a"),
+                            signed_header(&auth, slashes, 0, b"b"),
+                        );
+                        if let Ok(tx) = h.chain.tx("payee", kind) {
+                            txs.push(tx);
+                        }
+                    }
+                }
+            }
+            let out = h.pulse(txs);
+            for (who, digest) in delegating {
+                let made = out
+                    .effects
+                    .iter()
+                    .find(|e| e.digest == digest)
+                    .and_then(|e| e.events.iter().find_map(|event| match event {
+                        Event::Delegated { delegation, .. } => Some(*delegation),
+                        _ => None,
+                    }));
+                if let Some(id) = made {
+                    held[who].push(id);
+                }
+            }
+            h.settle();
+            check_pools_against_delegations(&h);
+        }
+        // Two more epochs, so the last delegations join and earn.
+        let txs = fee_traffic(&mut h, "payer", "payee", 2);
+        h.pulse(txs);
+        let end = h.pulse_number() + 6;
+        h.advance_to(end);
+        check_pools_against_delegations(&h);
+        h.assert_minimal_witnesses();
+        if std::env::var_os("SION_POOL_STATS").is_some() {
+            let pools = delegation_book(&h).map(|b| b.pools.len()).unwrap_or(0);
+            eprintln!("pools {pools}, slashes {slashes}, coverage {:?}", h.coverage);
+        }
+    }
 }

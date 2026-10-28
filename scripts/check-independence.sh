@@ -44,6 +44,10 @@ forbidden = [
      "sion_exec::stream helpers"),
     (r"\bresult_formula\b|\bworker_bond\b|TaskResult::payload\b",
      "sion_exec::task helpers (result_formula, worker_bond, TaskResult::payload)"),
+    (r"sion_exec::delegation::(?!\{|DelegationBook\b|Pool\b|Join\b|Delegation\b|DelegationState\b|REWARD_SCALE\b|MIN_DELEGATION\b|COMMISSION_CEILING_PERMILLE\b|COMMISSION_STEP_PERMILLE\b|DELEGATION_SLASH_PERMILLE\b|CAP_FLOOR_PERMILLE\b)\w+",
+     "sion_exec::delegation helpers (only the types and the §5.45 constants are allowed)"),
+    (r"\bmul_div\b|\bcap_permille\b|\bwithin_cap\b|\bStanding\b|\bresolve\s*\(|\.(shares|value_of|shares_for|bonded|earning_value|owed)\s*\(|Pool::\w+\s*\(",
+     "sion_exec::delegation helpers (mul_div, cap_permille, within_cap, resolve, Pool methods)"),
 ]
 
 # The sion_exec::pulse items the library may use: type definitions only
