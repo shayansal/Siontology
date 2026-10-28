@@ -357,6 +357,8 @@ pub struct Validator {
     future_bytes: BTreeMap<ValidatorId, usize>,
     boundaries: BTreeMap<u64, Boundary>,
     boundary_dir: Option<PathBuf>,
+    /// Where it records each consensus session before signing in it.
+    session_guard: Option<PathBuf>,
     forced_txs: BTreeMap<TxDigest, SignedTransaction>,
     forced_waiters: BTreeSet<TxDigest>,
     forced_builders: BTreeMap<TxDigest, CertificateBuilder>,
@@ -412,6 +414,11 @@ pub struct ValidatorSetup {
     pub lane_log: Option<LaneLog>,
     /// Locks to restore (approved before a restart, not yet executed).
     pub lane_locks: Vec<(ShardId, LaneRequest)>,
+    /// A node of a network: the directory where it records each consensus
+    /// session before it signs anything in it ([`crate::node::claim_session`];
+    /// the session it starts in is claimed before it starts). A devnet,
+    /// whose sessions change with every restart, needs none.
+    pub session_guard: Option<PathBuf>,
 }
 
 impl Validator {
@@ -525,6 +532,7 @@ impl Validator {
             future_bytes: BTreeMap::new(),
             boundaries,
             boundary_dir: setup.boundary_dir,
+            session_guard: setup.session_guard,
             forced_txs,
             forced_waiters: BTreeSet::new(),
             forced_builders: BTreeMap::new(),
@@ -1581,6 +1589,19 @@ impl Validator {
                 return actions;
             }
         };
+        if next.session != self.committees.session {
+            if let Some(dir) = &self.session_guard {
+                // Nothing is signed in a session before it is recorded: a
+                // validator that cannot record it stops here.
+                if let Err(error) = crate::node::claim_session(dir, next.session) {
+                    eprintln!(
+                        "validator {}: stops before session {}: {error}",
+                        self.index, next.session
+                    );
+                    return actions;
+                }
+            }
+        }
         for (shard, committee) in &next.lanes {
             if self.committees.lanes.get(shard) == Some(committee) {
                 continue;
@@ -2082,6 +2103,11 @@ impl Validator {
                 "digest": self.shared.genesis_digest,
                 "spec": self.shared.genesis,
             })),
+            Query::Committees => Ok(crate::committees::encode_view(
+                self.state.pulse,
+                &self.committees,
+                &crate::committees::registered_keys(self.state.validators()),
+            )),
             Query::Forced => {
                 let obligations = self.state.forced();
                 Ok(json!({

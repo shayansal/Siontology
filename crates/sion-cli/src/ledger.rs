@@ -258,6 +258,7 @@ impl Ledger for HttpLedger {
             Query::Genesis => self.get("/v1/genesis"),
             Query::Forced => self.get("/v1/forced"),
             Query::Epoch(epoch) => self.get(&format!("/v1/epochs/{epoch}")),
+            Query::Committees => self.get("/v1/committees"),
         }
     }
 

@@ -60,6 +60,9 @@ pub enum Query {
     Forced,
     /// The proof linking epoch `e − 1` to epoch `e` (for light clients).
     Epoch(u64),
+    /// The current committees and registered keys, encoded for a gateway
+    /// that runs in another process.
+    Committees,
 }
 
 /// Chain status.

@@ -20,7 +20,12 @@
 //! | GET | `/v1/events?from=&limit=` | events |
 //! | POST | `/v1/forced` | post a forced intent `{tx: hex}`, bypassing the gateway |
 //! | GET | `/v1/forced` | forced-inclusion obligations: the window, a summary (pending and overdue counts, the overdue root), each pending obligation, and this epoch's shard rotations |
+//! | GET | `/v1/committees` | the current committees and registered keys, Borsh in hex (what a gateway in another process follows) |
 //! | POST | `/v1/devnet/censor` | **adversary simulation**: `{accounts: [hex], gateway, validators}` |
+//!
+//! The same routes serve an in-process devnet, one validator of a network
+//! ([`crate::node::Node`]) and a gateway running alone
+//! ([`crate::node::GatewayNode`]): each is a [`Backend`].
 
 use std::io::Read;
 use std::sync::Arc;
@@ -38,7 +43,60 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::devnet::Devnet;
 use crate::error::NodeError;
-use crate::view::{Query, TxStatus};
+use crate::view::{Query, SubmitReceipt, TxStatus};
+
+/// What the API serves from.
+pub trait Backend: Send + Sync + 'static {
+    /// Answers a query about the state.
+    fn query(&self, query: Query) -> Result<Value, String>;
+    /// Submits a signed transaction through a gateway.
+    fn submit(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String>;
+    /// Where a transaction is.
+    fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String>;
+    /// Queues faucet grants (test networks).
+    fn faucet(&self, grants: Vec<(AccountId, AssetId, Amount)>) -> Result<(), String>;
+    /// Posts a forced intent straight to consensus.
+    fn force(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String>;
+    /// **Adversary simulation (devnet only).**
+    fn censor(
+        &self,
+        accounts: Vec<AccountId>,
+        gateway: bool,
+        validators: usize,
+    ) -> Result<(), String>;
+}
+
+impl Backend for Devnet {
+    fn query(&self, query: Query) -> Result<Value, String> {
+        Devnet::query(self, query)
+    }
+
+    fn submit(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
+        Devnet::submit(self, tx)
+    }
+
+    fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String> {
+        Devnet::status(self, digest)
+    }
+
+    fn faucet(&self, grants: Vec<(AccountId, AssetId, Amount)>) -> Result<(), String> {
+        Devnet::faucet(self, grants)
+    }
+
+    fn force(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
+        Devnet::force(self, tx)
+    }
+
+    fn censor(
+        &self,
+        accounts: Vec<AccountId>,
+        gateway: bool,
+        validators: usize,
+    ) -> Result<(), String> {
+        Devnet::censor(self, accounts, gateway, validators);
+        Ok(())
+    }
+}
 
 /// A running API server.
 pub struct ApiHandle {
@@ -66,8 +124,9 @@ impl ApiHandle {
     }
 }
 
-/// Serves the API on `address` (for example `127.0.0.1:8730`).
-pub fn serve(devnet: Arc<Devnet>, address: &str) -> Result<ApiHandle, NodeError> {
+/// Serves the API of `backend` on `address` (for example
+/// `127.0.0.1:8730`).
+pub fn serve<B: Backend>(backend: Arc<B>, address: &str) -> Result<ApiHandle, NodeError> {
     let server = Arc::new(
         Server::http(address)
             .map_err(|e| NodeError::Config(format!("cannot listen on {address}: {e}")))?,
@@ -80,14 +139,14 @@ pub fn serve(devnet: Arc<Devnet>, address: &str) -> Result<ApiHandle, NodeError>
     let mut threads = Vec::new();
     for worker in 0..4 {
         let server = server.clone();
-        let devnet = devnet.clone();
+        let backend = backend.clone();
         threads.push(
             thread::Builder::new()
                 .name(format!("api-{worker}"))
                 .stack_size(crate::THREAD_STACK_BYTES)
                 .spawn(move || {
                     while let Ok(request) = server.recv() {
-                        handle(&devnet, request);
+                        handle(backend.as_ref(), request);
                     }
                 })?,
         );
@@ -170,12 +229,12 @@ fn body<T: for<'de> Deserialize<'de>>(request: &mut Request) -> Result<T, HttpEr
     serde_json::from_str(&text).map_err(|e| bad(format!("bad JSON body: {e}")))
 }
 
-fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
+fn route<B: Backend>(backend: &B, request: &mut Request) -> Result<Value, HttpError> {
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or("").trim_end_matches('/');
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
     let method = request.method().clone();
-    let q = |query: Query| devnet.query(query).map_err(not_found);
+    let q = |query: Query| backend.query(query).map_err(not_found);
     match (method, parts.as_slice()) {
         (Method::Get, ["v1", "status"]) => q(Query::Status),
         (Method::Get, ["v1", "validators"]) => q(Query::Validators),
@@ -202,7 +261,7 @@ fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
             let bytes = hex::decode(submit.tx.trim()).map_err(|_| bad("tx must be hex"))?;
             let tx: SignedTransaction =
                 decode(&bytes).map_err(|_| bad("tx is not a Borsh SignedTransaction"))?;
-            let receipt = devnet.submit(tx)?;
+            let receipt = backend.submit(tx)?;
             Ok(serde_json::to_value(receipt).unwrap_or(Value::Null))
         }
         (Method::Post, ["v1", "forced"]) => {
@@ -213,10 +272,11 @@ fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
             if tx.size() > 256 * 1024 {
                 return Err(bad("transaction too large"));
             }
-            let receipt = devnet.force(tx)?;
+            let receipt = backend.force(tx)?;
             Ok(serde_json::to_value(receipt).unwrap_or(Value::Null))
         }
         (Method::Get, ["v1", "forced"]) => q(Query::Forced),
+        (Method::Get, ["v1", "committees"]) => q(Query::Committees),
         (Method::Post, ["v1", "devnet", "censor"]) => {
             let censor: CensorBody = body(request)?;
             let accounts = censor
@@ -224,14 +284,14 @@ fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
                 .iter()
                 .map(|a| hash(a).map(AccountId::from_hash))
                 .collect::<Result<Vec<_>, _>>()?;
-            devnet.censor(accounts, censor.gateway, censor.validators);
+            backend.censor(accounts, censor.gateway, censor.validators)?;
             Ok(
                 json!({ "censoring": censor.accounts.len(), "gateway": censor.gateway, "validators": censor.validators }),
             )
         }
         (Method::Get, ["v1", "transactions", digest]) => {
             let digest = TxDigest::from_hash(hash(digest)?);
-            match devnet.status(digest)? {
+            match backend.status(digest)? {
                 Some(TxStatus::Executed(view)) => {
                     Ok(json!({ "state": "executed", "record": view }))
                 }
@@ -257,7 +317,7 @@ fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
                     "amount must be between 1 micro-unit and one million units",
                 ));
             }
-            devnet.faucet(vec![(account, asset, Amount(faucet.amount))])?;
+            backend.faucet(vec![(account, asset, Amount(faucet.amount))])?;
             Ok(json!({ "queued": true }))
         }
         (Method::Get, ["v1", "pulses", "latest"]) => q(Query::Pulse(None)),
@@ -287,8 +347,8 @@ fn route(devnet: &Devnet, request: &mut Request) -> Result<Value, HttpError> {
     }
 }
 
-fn handle(devnet: &Devnet, mut request: Request) {
-    let (status, value) = match route(devnet, &mut request) {
+fn handle<B: Backend>(backend: &B, mut request: Request) {
+    let (status, value) = match route(backend, &mut request) {
         Ok(value) => (200, value),
         Err(HttpError(code, message)) => (code, json!({ "error": message })),
     };

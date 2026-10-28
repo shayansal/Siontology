@@ -55,13 +55,19 @@ impl ValidatorKeys {
             "sion/devnet/validator-seed",
             format!("{chain}/{index}").as_bytes(),
         );
-        let keys = DualKeypair::from_seed(&seed.0, Scheme::SlhDsaSha2_128f);
+        ValidatorKeys::from_seed(&seed.0)
+    }
+
+    /// The keys derived from a secret 32-byte seed (what `sion keys
+    /// validator` generates and keeps in a node's directory).
+    pub fn from_seed(seed: &[u8; 32]) -> Self {
+        let keys = DualKeypair::from_seed(seed, Scheme::SlhDsaSha2_128f);
         // The identifier is always the hash of the public keys, as the state
         // registers it; only the signatures differ between the modes.
         let id = validator_id(keys.lattice.public(), keys.hash.public());
         let sim = InsecureSimAuthenticator::with_identity(
             id,
-            hash_domain("sion/devnet/sim-secret", &seed.0).0,
+            hash_domain("sion/devnet/sim-secret", seed).0,
         );
         ValidatorKeys {
             id,
@@ -218,6 +224,16 @@ impl NodeVerifier {
 }
 
 impl NodeVerifier {
+    /// A verifier of dual post-quantum signatures by the validators in
+    /// `set` (public keys only: what a node of a network knows of the
+    /// others).
+    pub fn dual(set: ValidatorSet) -> Self {
+        NodeVerifier {
+            set,
+            ..NodeVerifier::default()
+        }
+    }
+
     /// Adds the keys of every validator the state registers (dual
     /// post-quantum mode; the simulation scheme knows every devnet key from
     /// the start). Identifiers that do not derive from their keys are
