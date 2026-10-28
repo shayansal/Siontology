@@ -51,6 +51,7 @@ pub mod pulse;
 pub mod sim;
 pub mod state;
 pub mod stateless;
+pub mod storage;
 pub mod store;
 pub mod stream;
 pub mod task;

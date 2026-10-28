@@ -151,6 +151,12 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::WithdrawDelegation => "WithdrawDelegation",
         TxKind::ClaimDelegatorRewards => "ClaimDelegatorRewards",
         TxKind::SetCommission { .. } => "SetCommission",
+        TxKind::PostDeal { provider: None, .. } => "PostDeal(open)",
+        TxKind::PostDeal { .. } => "PostDeal",
+        TxKind::AcceptDeal { .. } => "AcceptDeal",
+        TxKind::ProveStorage { .. } => "ProveStorage",
+        TxKind::SettleDeal { .. } => "SettleDeal",
+        TxKind::CloseDeal { .. } => "CloseDeal",
     }
 }
 

@@ -48,6 +48,10 @@ forbidden = [
      "sion_exec::delegation helpers (only the types and the §5.45 constants are allowed)"),
     (r"\bmul_div\b|\bcap_permille\b|\bwithin_cap\b|\bStanding\b|\bresolve\s*\(|\.(shares|value_of|shares_for|bonded|earning_value|owed)\s*\(|Pool::\w+\s*\(",
      "sion_exec::delegation helpers (mul_div, cap_permille, within_cap, resolve, Pool methods)"),
+    (r"sion_exec::storage::(?!\{|Deal\b|DealState\b|Custody\b|CustodyProof\b|LeafProof\b|MAX_DEAL_LEAVES\b|MAX_LEAF_BYTES\b|MAX_PATH\b|MAX_CHALLENGES\b|MAX_ROUNDS\b|MIN_ROUND_LENGTH\b|MAX_ROUND_LENGTH\b|MAX_LOCATOR\b|MAX_PROOF_LEAVES\b|ABANDON_ROUNDS\b|SEED_DOMAIN\b|CHALLENGE_DOMAIN\b)\w+",
+     "sion_exec::storage helpers (only the types and the §5.50 constants are allowed)"),
+    (r"\bchallenge_index\b|\bfirst_seed\b|\bnext_seed\b|\bcurrent_round\b|\bDataTree\b|\bsplit_leaves\b|Deal::end\b|\.end\s*\(\s*\)",
+     "sion_exec::storage helpers (challenge_index, first_seed, next_seed, current_round, DataTree, split_leaves, Deal::end)"),
 ]
 
 # The sion_exec::pulse items the library may use: type definitions only

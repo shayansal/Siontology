@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.11
+# The Siontology state transition — specification v1.12
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -26,6 +26,7 @@ It does **not** re-specify:
   `sion_assurance`, `sion_clearing` and the *type definitions* in
   `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
   `stream`, `memory`, `task`, `delegation` (its types and constants),
+  `storage` (its types and constants),
   `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
@@ -56,7 +57,9 @@ definitions and the commitment helpers named in §7), `sion_exec::stateless`,
 `sion_exec::task` helpers (`result_formula`, `worker_bond`,
 `TaskResult::payload`), the `sion_exec::delegation` helpers (`mul_div`,
 `cap_permille`, `within_cap`, `resolve`, `Pool::{shares, value_of,
-shares_for, bonded, earning_value, owed}`), nor
+shares_for, bonded, earning_value, owed}`), the `sion_exec::storage`
+helpers (`challenge_index`, `first_seed`, `next_seed`, `current_round`,
+`DataTree`, `split_leaves`, `Deal::end`), nor
 the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
@@ -1133,6 +1136,155 @@ them anything, and a pool with delegators sees its commission rise by at
 most 2 percentage points per epoch. A pool nobody has delegated to yet may
 set any commission up to the ceiling.
 
+### 5.50 PostDeal { root, size, challenges, price, rounds, round_length, collateral, provider, accept_by, locator }
+
+A **storage deal** pays a provider, round by round, for keeping a body of
+data whose Merkle root is fixed when the deal is posted, and for proving in
+each round that it still holds pieces of it that nobody could predict.
+The data is `size` **leaves**, byte strings of at most `MAX_LEAF_BYTES`
+bytes each, and `root = merkle::root([leaf_hash(d₀), …, leaf_hash(d_{size−1})])`
+(`sion_core::merkle`, RFC 9162 shape). The ledger never sees the data:
+`locator` only tells providers where to fetch it.
+
+Money stays in the deal, a shared object in its own domain
+(`object_domain("deal", deal)`): the client's escrow, and the provider's
+collateral once it accepts. Proofs go to a **custody record** the provider
+owns (§5.51), so proving is owned-linear: it needs a lane certificate, not
+consensus, and one transaction can prove many deals (§5.52). Money moves
+only when a deal is settled or closed (§5.53, §5.54).
+
+Owned-linear. Constants of `sion_exec::storage`: `MAX_DEAL_LEAVES` (2⁴⁰),
+`MAX_LEAF_BYTES` (4,096), `MAX_PATH` (40), `MAX_CHALLENGES` (16),
+`MAX_ROUNDS` (1,000,000), `MIN_ROUND_LENGTH` (8), `MAX_ROUND_LENGTH`
+(1,000,000), `MAX_LOCATOR` (256), `MAX_PROOF_LEAVES` (64),
+`ABANDON_ROUNDS` (3), `SEED_DOMAIN` (`sion/storage/seed`) and
+`CHALLENGE_DOMAIN` (`sion/storage/challenge`).
+
+1. `1 ≤ size ≤ MAX_DEAL_LEAVES`; `1 ≤ challenges ≤ MAX_CHALLENGES`; `price
+   > 0`; `1 ≤ rounds ≤ MAX_ROUNDS`; `MIN_ROUND_LENGTH ≤ round_length ≤
+   MAX_ROUND_LENGTH`; `ctx.pulse < accept_by ≤ ctx.pulse + MAX_PERIOD`
+   (saturating; `sion_exec::market::MAX_PERIOD`); `locator` is at most
+   `MAX_LOCATOR` bytes long (UTF-8).
+2. `escrow = price × rounds` (an error if it overflows); `draw(USD,
+   escrow)`.
+3. `deal = created_id(digest, next_index)`; `create(Shared(object_domain(
+   "deal", deal)), Deal { client: sender, provider, root, size, challenges,
+   price, rounds, round_length, collateral, accept_by, locator, escrow,
+   posted_at: ctx.pulse, state: Open })`.
+4. Event `DealPosted { deal, client: sender, provider, size, price,
+   rounds, collateral }`.
+
+`provider = None` posts an **open** deal: any account may accept it. A
+provider should accept only once it holds data whose leaves hash to
+`root`: it can check that before it accepts, and from then on its
+collateral is at stake.
+
+### 5.51 AcceptDeal { deal }
+
+Contended, in the deal's domain.
+
+1. Load `deal` (MUST be a deal, `d`); `d.state = Open`; `ctx.pulse ≤
+   d.accept_by`; if `d.provider = Some(p)`, the sender MUST be `p`.
+2. `draw(USD, d.collateral)`.
+3. `start = ctx.pulse + 1` (saturating); `seed = hash_parts(SEED_DOMAIN,
+   [ctx.beacon, deal, Hash32::ZERO])`, each part its 32 bytes.
+4. `custody = create(Account(sender), Custody { deal, root: d.root, size:
+   d.size, challenges: d.challenges, start, round_length: d.round_length,
+   rounds: d.rounds, seed, next: 0, proven: 0 })`.
+5. `d.state = Active { provider: sender, custody, start, bond:
+   d.collateral, paid: 0 }`; store `d`.
+6. Event `DealAccepted { deal, provider: sender, custody, start }`.
+
+Round `i` (from 0) of the deal is the Pulses `start + i × round_length` to
+`start + (i + 1) × round_length − 1`; the deal **ends** at `end = start +
+rounds × round_length` (saturating), the first Pulse after its last round.
+
+### 5.52 ProveStorage { proofs }
+
+Owned-linear. `proofs[j]` is a `CustodyProof { round, leaves }` for the
+custody record `tx.inputs[j + 1]`, and `leaves[k]` is a `LeafProof { data,
+path }`.
+
+1. `|proofs| ≥ 1`; `|tx.inputs| > |proofs|`; `Σ |proofs[j].leaves| ≤
+   MAX_PROOF_LEAVES`.
+2. For each `j`, in order, with `id = tx.inputs[j + 1].id` and `p =
+   proofs[j]`: load `id` (MUST be a custody record, `c`; prepare has
+   checked that the sender owns it). With `i = p.round`: `ctx.pulse ≥
+   c.start`; `i = (ctx.pulse − c.start) / c.round_length` (the round under
+   way: a round is proven during the round); `i < c.rounds`; `i ≥ c.next`;
+   `|p.leaves| = c.challenges`. For each `k` from 0 to `c.challenges − 1`:
+   - `index = challenge(c.seed, i, k) mod c.size`, where `challenge(seed,
+     i, k)` is the first 8 bytes, read big-endian, of
+     `hash_parts(CHALLENGE_DOMAIN, [seed (32 bytes), i (4 bytes,
+     big-endian), k (1 byte)])`;
+   - with `(data, path) = p.leaves[k]`: `|data| ≤ MAX_LEAF_BYTES`; `|path|
+     ≤ MAX_PATH`; `merkle::verify_inclusion(c.root, c.size, index,
+     leaf_hash(data), path)` MUST succeed.
+
+   Then `c.proven += 1`; `c.next = i + 1`; `c.seed =
+   hash_parts(SEED_DOMAIN, [ctx.beacon, c.deal, c.seed])`; store `c`; event
+   `StorageProven { deal: c.deal, custody: id, round: i }`.
+
+The challenge of a round is fixed when the round before it is proven (or
+the deal accepted) and changes with every proof, from the beacon of the
+Pulse the proof executed in: a provider cannot keep only the leaves a
+future round will ask for, because it cannot know them two proofs ahead.
+A round passes unproven if no proof of it executes during it. A custody
+record does not know whether its deal is still active: proofs after a deal
+is closed change nothing but the record.
+
+### 5.53 SettleDeal { deal }
+
+Contended, in the deal's domain.
+
+1. Load `deal` (MUST be a deal, `d`); `d.state = Active { provider,
+   custody, … , paid }`; the sender MUST be `provider`.
+2. Load `custody` (MUST be a custody record, `c`, with `c.deal = deal`).
+3. `due = c.proven − paid` (MUST be positive); `amount = due × d.price`
+   (an error if it overflows); `d.escrow −= amount` (an error if it would
+   be negative); `paid = c.proven`; store `d`; `mint(provider, USD,
+   amount)`.
+4. Event `DealSettled { deal, rounds: due, amount }`.
+
+### 5.54 CloseDeal { deal }
+
+Contended, in the deal's domain.
+
+1. Load `deal` (MUST be a deal, `d`).
+2. If `d.state = Open`: the sender MUST be `d.client`; `proven = 0`,
+   `missed = 0`, `paid_now = 0`, `returned = 0`, `forfeited = 0`.
+3. If `d.state = Active { provider, custody, start, bond, paid }`: load
+   `custody` (MUST be a custody record, `c`, with `c.deal = deal`);
+   `proven = c.proven`; `end = start + d.rounds × d.round_length`
+   (saturating).
+   - **At the end**, `ctx.pulse ≥ end`: the sender MUST be `d.client` or
+     `provider`; `missed = d.rounds − proven`; `forfeited = min(bond,
+     missed × ⌊bond / d.rounds⌋)`; `returned = bond − forfeited`.
+   - **Abandoned**, `ctx.pulse < end`: the sender MUST be `d.client`;
+     `ctx.pulse ≥ start`; with `r = (ctx.pulse − start) / d.round_length`,
+     `r ≥ c.next + ABANDON_ROUNDS` (the provider proved none of the last
+     `ABANDON_ROUNDS` rounds or more); `missed = r − proven`; `forfeited =
+     bond`; `returned = 0`.
+
+   Then `due = proven − paid`; `paid_now = due × d.price` (an error if it
+   overflows); `d.escrow −= paid_now` (an error if it would be negative);
+   `mint(provider, USD, paid_now + returned)`.
+4. Otherwise (`Closed`): an error.
+5. `refund = d.escrow`; `mint(d.client, USD, refund)`; if `forfeited >
+   0`, defer `Treasury { asset: USD, amount: forfeited }`.
+6. `d.escrow = 0`; `d.state = Closed { at: ctx.pulse, proven, missed,
+   refund, forfeited }`; store `d`.
+7. Event `DealClosed { deal, refund, paid: paid_now, returned, forfeited,
+   missed }`.
+
+The provider is paid for every round it proved, whoever closes. A
+provider that proves every round gets its whole collateral back; each
+round it missed costs it `⌊bond / rounds⌋`; one that stops proving for
+`ABANDON_ROUNDS` rounds may lose all of it as soon as the client closes.
+Forfeited collateral goes to the treasury, not to the client, so that
+nobody profits from making a provider fail (by flooding its network, say).
+The client gets back the escrow of every round not proven.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -1486,6 +1638,22 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.12.** Storage deals (§5.50 to §5.54). A client escrows payment for
+  keeping data whose Merkle root it fixes at posting (`PostDeal`), for a
+  named provider or for any; the provider accepts with collateral
+  (`AcceptDeal`) and gets a custody record it owns. In each round it
+  proves, from its record, that it holds leaves picked by a challenge
+  derived from the beacon and changed by every proof (`ProveStorage`,
+  owned-linear, many deals per transaction). The provider collects for
+  proven rounds (`SettleDeal`); closing (`CloseDeal`) pays what is due,
+  refunds the escrow of unproven rounds to the client, returns the
+  collateral less `⌊bond / rounds⌋` per missed round, and forfeits all of
+  it to the treasury if the client closes a deal its provider has
+  abandoned for `ABANDON_ROUNDS` rounds. New types
+  `sion_exec::storage::{Deal, DealState, Custody, CustodyProof,
+  LeafProof}`, objects `ObjectData::{Deal, Custody}`, transaction kinds and
+  events; the supply counts deal escrow and collateral.
 
 - **v1.11.** Pooled stake (§5.45 to §5.49). Anyone may delegate stake to a
   validator without handing it over: a delegation is an object its

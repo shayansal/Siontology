@@ -12,6 +12,7 @@ pub(crate) mod delegation;
 mod knowledge;
 mod market;
 mod memory;
+mod storage;
 mod stream;
 mod task;
 mod validators;
@@ -232,6 +233,11 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
             validator,
             permille,
         } => delegation::set_commission(run, validator, *permille),
+        TxKind::PostDeal { .. }
+        | TxKind::AcceptDeal { .. }
+        | TxKind::ProveStorage { .. }
+        | TxKind::SettleDeal { .. }
+        | TxKind::CloseDeal { .. } => storage::not_yet(run),
     }
 }
 

@@ -46,6 +46,11 @@ use crate::object::{
     Tombstone,
 };
 use crate::state::ChainConfig;
+use crate::storage::{
+    challenge_index, current_round, first_seed, next_seed, Custody, CustodyProof, Deal, DealState,
+    ABANDON_ROUNDS, MAX_CHALLENGES, MAX_DEAL_LEAVES, MAX_LEAF_BYTES, MAX_LOCATOR, MAX_PATH,
+    MAX_PROOF_LEAVES, MAX_ROUNDS, MAX_ROUND_LENGTH, MIN_ROUND_LENGTH,
+};
 use crate::store::{ObjectStore, Overlay};
 use crate::task::{
     result_formula, Task, TaskResult, TaskState, ATTESTATION_SCHEMA, MAX_REQUIRED, MAX_VERIFIERS,
@@ -643,6 +648,67 @@ pub enum Event {
         validator: ValidatorId,
         /// Stake forfeited from the pool, in the stake asset.
         amount: Amount,
+    },
+    /// A storage deal was posted (spec §5.50).
+    DealPosted {
+        /// The deal.
+        deal: ObjectId,
+        /// Who pays.
+        client: AccountId,
+        /// The provider named, or `None` for an open deal.
+        provider: Option<AccountId>,
+        /// Leaves.
+        size: u64,
+        /// Paid per proven round.
+        price: Amount,
+        /// Rounds.
+        rounds: u32,
+        /// Collateral required.
+        collateral: Amount,
+    },
+    /// A provider accepted a deal (spec §5.51).
+    DealAccepted {
+        /// The deal.
+        deal: ObjectId,
+        /// The provider.
+        provider: AccountId,
+        /// Its custody record.
+        custody: ObjectId,
+        /// The first Pulse of round 0.
+        start: Pulse,
+    },
+    /// A provider proved a round of a deal (spec §5.52).
+    StorageProven {
+        /// The deal.
+        deal: ObjectId,
+        /// The custody record.
+        custody: ObjectId,
+        /// The round.
+        round: u32,
+    },
+    /// A provider collected for the rounds it proved (spec §5.53).
+    DealSettled {
+        /// The deal.
+        deal: ObjectId,
+        /// Rounds paid for.
+        rounds: u32,
+        /// What was paid.
+        amount: Amount,
+    },
+    /// A deal was closed (spec §5.54).
+    DealClosed {
+        /// The deal.
+        deal: ObjectId,
+        /// Escrow returned to the client.
+        refund: Amount,
+        /// Paid to the provider for proven rounds not yet paid.
+        paid: Amount,
+        /// Collateral returned to the provider.
+        returned: Amount,
+        /// Collateral forfeited to the treasury.
+        forfeited: Amount,
+        /// Rounds missed.
+        missed: u32,
     },
 }
 
@@ -3047,7 +3113,412 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 to,
             });
         }
+        TxKind::PostDeal {
+            root,
+            size,
+            challenges,
+            price,
+            rounds,
+            round_length,
+            collateral,
+            provider,
+            accept_by,
+            locator,
+        } => post_deal(
+            run,
+            Deal {
+                client: tx.sender,
+                provider: *provider,
+                root: *root,
+                size: *size,
+                challenges: *challenges,
+                price: *price,
+                rounds: *rounds,
+                round_length: *round_length,
+                collateral: *collateral,
+                accept_by: *accept_by,
+                locator: locator.clone(),
+                escrow: Amount::ZERO,
+                posted_at: pulse,
+                state: DealState::Open,
+            },
+        )?,
+        TxKind::AcceptDeal { deal } => accept_deal(run, deal)?,
+        TxKind::ProveStorage { proofs } => prove_storage(run, proofs)?,
+        TxKind::SettleDeal { deal } => settle_deal(run, deal)?,
+        TxKind::CloseDeal { deal } => close_deal(run, deal)?,
     }
+    Ok(())
+}
+
+/// Loads a storage deal.
+fn load_deal<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+) -> Result<(Object, Deal), ExecError> {
+    let object = run.load(id)?;
+    let ObjectData::Deal(deal) = &object.data else {
+        return Err(ExecError::Invalid(format!("{id} is not a storage deal")));
+    };
+    let deal = (**deal).clone();
+    Ok((object, deal))
+}
+
+/// Loads the custody record of `deal`.
+fn load_custody<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+    deal: &ObjectId,
+) -> Result<Custody, ExecError> {
+    let object = run.load(id)?;
+    match &object.data {
+        ObjectData::Custody(custody) if custody.deal == *deal => Ok(custody.clone()),
+        _ => Err(ExecError::Invalid(format!(
+            "{id} is not the custody record of {deal}"
+        ))),
+    }
+}
+
+fn store_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, mut object: Object, deal: Deal) {
+    object.data = ObjectData::Deal(Box::new(deal));
+    run.store(object);
+}
+
+/// `PostDeal` (spec §5.50). `terms` carries the deal as posted, with an
+/// empty escrow.
+fn post_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, mut terms: Deal) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    if terms.size == 0 || terms.size > MAX_DEAL_LEAVES {
+        return Err(ExecError::Invalid(format!(
+            "a deal covers 1 to {MAX_DEAL_LEAVES} leaves"
+        )));
+    }
+    if terms.challenges == 0 || terms.challenges > MAX_CHALLENGES {
+        return Err(ExecError::Invalid(format!(
+            "a deal challenges 1 to {MAX_CHALLENGES} leaves a round"
+        )));
+    }
+    if terms.price == Amount::ZERO {
+        return Err(ExecError::Invalid(
+            "a deal pays a positive price per round".into(),
+        ));
+    }
+    if terms.rounds == 0 || terms.rounds > MAX_ROUNDS {
+        return Err(ExecError::Invalid(format!(
+            "a deal has 1 to {MAX_ROUNDS} rounds"
+        )));
+    }
+    if !(MIN_ROUND_LENGTH..=MAX_ROUND_LENGTH).contains(&terms.round_length) {
+        return Err(ExecError::Invalid(format!(
+            "a round lasts {MIN_ROUND_LENGTH} to {MAX_ROUND_LENGTH} Pulses"
+        )));
+    }
+    let latest = pulse.0.saturating_add(crate::market::MAX_PERIOD);
+    if terms.accept_by.0 <= pulse.0 || terms.accept_by.0 > latest {
+        return Err(ExecError::Invalid(format!(
+            "a deal must be acceptable for 1 to {} Pulses",
+            crate::market::MAX_PERIOD
+        )));
+    }
+    if terms.locator.len() > MAX_LOCATOR {
+        return Err(ExecError::Invalid(format!(
+            "a locator is at most {MAX_LOCATOR} bytes"
+        )));
+    }
+    let escrow = terms
+        .price
+        .0
+        .checked_mul(u128::from(terms.rounds))
+        .map(Amount)
+        .ok_or(ExecError::Core(sion_core::CoreError::Overflow(
+            "deal escrow",
+        )))?;
+    run.draw(AssetId::usd(), escrow)?;
+    terms.escrow = escrow;
+    let deal = created_id(&run.digest, run.next_index);
+    let event = Event::DealPosted {
+        deal,
+        client: terms.client,
+        provider: terms.provider,
+        size: terms.size,
+        price: terms.price,
+        rounds: terms.rounds,
+        collateral: terms.collateral,
+    };
+    run.create(
+        Owner::Shared(object_domain("deal", &deal)),
+        ObjectData::Deal(Box::new(terms)),
+    );
+    run.event(event);
+    Ok(())
+}
+
+/// `AcceptDeal` (spec §5.51).
+fn accept_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    let (object, mut deal) = load_deal(run, id)?;
+    if deal.state != DealState::Open {
+        return Err(ExecError::Invalid("the deal is not open".into()));
+    }
+    if pulse > deal.accept_by {
+        return Err(ExecError::Invalid(
+            "the deal can no longer be accepted".into(),
+        ));
+    }
+    if deal.provider.is_some_and(|p| p != sender) {
+        return Err(ExecError::Unauthorized(
+            "the deal names another provider".into(),
+        ));
+    }
+    run.draw(AssetId::usd(), deal.collateral)?;
+    let start = pulse.next();
+    let custody = run.create(
+        Owner::Account(sender),
+        ObjectData::Custody(Custody {
+            deal: *id,
+            root: deal.root,
+            size: deal.size,
+            challenges: deal.challenges,
+            start,
+            round_length: deal.round_length,
+            rounds: deal.rounds,
+            seed: first_seed(&run.ctx.beacon, id),
+            next: 0,
+            proven: 0,
+        }),
+    );
+    deal.state = DealState::Active {
+        provider: sender,
+        custody,
+        start,
+        bond: deal.collateral,
+        paid: 0,
+    };
+    store_deal(run, object, deal);
+    run.event(Event::DealAccepted {
+        deal: *id,
+        provider: sender,
+        custody,
+        start,
+    });
+    Ok(())
+}
+
+/// `ProveStorage` (spec §5.52).
+fn prove_storage<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    proofs: &[CustodyProof],
+) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    if proofs.is_empty() || run.tx.inputs.len() <= proofs.len() {
+        return Err(ExecError::Invalid(
+            "a storage proof needs one custody record per proof, after the gas coin".into(),
+        ));
+    }
+    let leaves: usize = proofs.iter().map(|p| p.leaves.len()).sum();
+    if leaves > MAX_PROOF_LEAVES {
+        return Err(ExecError::Invalid(format!(
+            "one transaction proves at most {MAX_PROOF_LEAVES} leaves"
+        )));
+    }
+    for (j, proof) in proofs.iter().enumerate() {
+        let id = run.input(j + 1)?;
+        let mut object = run.load(&id)?;
+        let ObjectData::Custody(custody) = &object.data else {
+            return Err(ExecError::Invalid(format!("{id} is not a custody record")));
+        };
+        let mut custody = custody.clone();
+        let round = proof.round;
+        if current_round(custody.start, custody.round_length, pulse) != Some(u64::from(round)) {
+            return Err(ExecError::Invalid(format!(
+                "round {round} is not under way"
+            )));
+        }
+        if round >= custody.rounds || round < custody.next {
+            return Err(ExecError::Invalid(format!(
+                "round {round} cannot be proven"
+            )));
+        }
+        if proof.leaves.len() != usize::from(custody.challenges) {
+            return Err(ExecError::Invalid(format!(
+                "the deal challenges {} leaves a round",
+                custody.challenges
+            )));
+        }
+        for (k, leaf) in proof.leaves.iter().enumerate() {
+            let k = u8::try_from(k).map_err(|_| ExecError::Invalid("too many leaves".into()))?;
+            let index = challenge_index(&custody.seed, round, k, custody.size);
+            if leaf.data.len() > MAX_LEAF_BYTES || leaf.path.len() > MAX_PATH {
+                return Err(ExecError::Invalid("a leaf or its path is too long".into()));
+            }
+            merkle::verify_inclusion(
+                &custody.root,
+                custody.size,
+                index,
+                &merkle::leaf_hash(&leaf.data),
+                &leaf.path,
+            )
+            .map_err(|_| {
+                ExecError::Invalid(format!("leaf {index} does not match the deal's root"))
+            })?;
+        }
+        custody.proven = custody.proven.saturating_add(1);
+        custody.next = round.saturating_add(1);
+        custody.seed = next_seed(&run.ctx.beacon, &custody.deal, &custody.seed);
+        let deal = custody.deal;
+        object.data = ObjectData::Custody(custody);
+        run.store(object);
+        run.event(Event::StorageProven {
+            deal,
+            custody: id,
+            round,
+        });
+    }
+    Ok(())
+}
+
+/// What `rounds` proven rounds cost at `price`.
+fn rounds_cost(price: Amount, rounds: u32) -> Result<Amount, ExecError> {
+    price
+        .0
+        .checked_mul(u128::from(rounds))
+        .map(Amount)
+        .ok_or(ExecError::Core(sion_core::CoreError::Overflow(
+            "deal payment",
+        )))
+}
+
+/// `SettleDeal` (spec §5.53).
+fn settle_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Result<(), ExecError> {
+    let (object, mut deal) = load_deal(run, id)?;
+    let DealState::Active {
+        provider,
+        custody,
+        start,
+        bond,
+        paid,
+    } = deal.state
+    else {
+        return Err(ExecError::Invalid("the deal is not active".into()));
+    };
+    if run.tx.sender != provider {
+        return Err(ExecError::Unauthorized(
+            "only the deal's provider collects for it".into(),
+        ));
+    }
+    let record = load_custody(run, &custody, id)?;
+    let due = record.proven.saturating_sub(paid);
+    if due == 0 {
+        return Err(ExecError::Invalid("no proven round is unpaid".into()));
+    }
+    let amount = rounds_cost(deal.price, due)?;
+    deal.escrow = deal.escrow.checked_sub(amount)?;
+    deal.state = DealState::Active {
+        provider,
+        custody,
+        start,
+        bond,
+        paid: record.proven,
+    };
+    store_deal(run, object, deal);
+    run.mint_coin(provider, AssetId::usd(), amount);
+    run.event(Event::DealSettled {
+        deal: *id,
+        rounds: due,
+        amount,
+    });
+    Ok(())
+}
+
+/// `CloseDeal` (spec §5.54).
+fn close_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    let (object, mut deal) = load_deal(run, id)?;
+    let (proven, missed, paid_now, returned, forfeited) = match deal.state.clone() {
+        DealState::Open => {
+            if sender != deal.client {
+                return Err(ExecError::Unauthorized(
+                    "only the client closes an open deal".into(),
+                ));
+            }
+            (0, 0, Amount::ZERO, Amount::ZERO, Amount::ZERO)
+        }
+        DealState::Active {
+            provider,
+            custody,
+            start,
+            bond,
+            paid,
+        } => {
+            let record = load_custody(run, &custody, id)?;
+            let proven = record.proven;
+            let end = start
+                .0
+                .saturating_add(u64::from(deal.rounds).saturating_mul(deal.round_length));
+            let (missed, returned, forfeited) = if pulse.0 >= end {
+                if sender != deal.client && sender != provider {
+                    return Err(ExecError::Unauthorized(
+                        "only the client or the provider closes a deal".into(),
+                    ));
+                }
+                let missed = deal.rounds.saturating_sub(proven);
+                let per_round = Amount(bond.0 / u128::from(deal.rounds.max(1)));
+                let forfeited = Amount(per_round.0.saturating_mul(u128::from(missed)).min(bond.0));
+                (missed, bond.checked_sub(forfeited)?, forfeited)
+            } else {
+                if sender != deal.client {
+                    return Err(ExecError::Unauthorized(
+                        "only the client closes a deal before its end".into(),
+                    ));
+                }
+                let round = current_round(start, deal.round_length, pulse);
+                let abandoned =
+                    round.is_some_and(|r| r >= u64::from(record.next) + u64::from(ABANDON_ROUNDS));
+                if !abandoned {
+                    return Err(ExecError::Invalid(format!(
+                        "the deal runs until Pulse {end} and its provider has not missed {ABANDON_ROUNDS} rounds in a row"
+                    )));
+                }
+                let r = u32::try_from(round.unwrap_or(0)).unwrap_or(u32::MAX);
+                (r.saturating_sub(proven), Amount::ZERO, bond)
+            };
+            let due = proven.saturating_sub(paid);
+            let paid_now = rounds_cost(deal.price, due)?;
+            deal.escrow = deal.escrow.checked_sub(paid_now)?;
+            run.mint_coin(provider, AssetId::usd(), paid_now.checked_add(returned)?);
+            (proven, missed, paid_now, returned, forfeited)
+        }
+        DealState::Closed { .. } => {
+            return Err(ExecError::Invalid("the deal is closed".into()));
+        }
+    };
+    let refund = deal.escrow;
+    run.mint_coin(deal.client, AssetId::usd(), refund);
+    if forfeited > Amount::ZERO {
+        run.effects.deferred.push(Deferred::Treasury {
+            asset: AssetId::usd(),
+            amount: forfeited,
+        });
+    }
+    deal.escrow = Amount::ZERO;
+    deal.state = DealState::Closed {
+        at: pulse,
+        proven,
+        missed,
+        refund,
+        forfeited,
+    };
+    store_deal(run, object, deal);
+    run.event(Event::DealClosed {
+        deal: *id,
+        refund,
+        paid: paid_now,
+        returned,
+        forfeited,
+        missed,
+    });
     Ok(())
 }
 

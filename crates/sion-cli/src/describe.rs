@@ -555,6 +555,46 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             validator.short(),
             percent(*permille)
         ),
+        TxKind::PostDeal {
+            root,
+            size,
+            challenges,
+            price,
+            rounds,
+            round_length,
+            collateral,
+            provider,
+            ..
+        } => format!(
+            "Escrow {} to have data {} ({size} leaves) kept by {} for {rounds} rounds of {round_length} Pulses: {} per round proven by {challenges} random leaves, with {} of collateral at stake",
+            names.usd(Amount(price.0.saturating_mul(u128::from(*rounds)))),
+            root.short(),
+            match provider {
+                Some(provider) => names.account(provider),
+                None => "any provider".to_string(),
+            },
+            names.usd(*price),
+            names.usd(*collateral)
+        ),
+        TxKind::AcceptDeal { deal } => format!(
+            "Accept storage deal {}, posting its collateral; prove each round or lose it",
+            object(deal)
+        ),
+        TxKind::ProveStorage { proofs } => {
+            let leaves: usize = proofs.iter().map(|p| p.leaves.len()).sum();
+            format!(
+                "Prove custody of {} storage deal(s) for the round under way with {leaves} challenged leaves",
+                proofs.len()
+            )
+        }
+        TxKind::SettleDeal { deal } => format!(
+            "Collect for the proven rounds of storage deal {}",
+            object(deal)
+        ),
+        TxKind::CloseDeal { deal } => format!(
+            "Close storage deal {}: pay what is due, refund the escrow of unproven rounds, settle the collateral",
+            object(deal)
+        ),
     };
     format!(
         "{body}. Fee {}; valid until Pulse {}.",
@@ -904,6 +944,63 @@ pub fn event(names: &Names, event: &Event) -> String {
             "validator {}'s pool lost {} of its delegated stake",
             validator.short(),
             names.usd(*amount)
+        ),
+        Event::DealPosted {
+            deal,
+            provider,
+            size,
+            price,
+            rounds,
+            collateral,
+            ..
+        } => format!(
+            "storage deal {} posted: {size} leaves, {rounds} rounds at {} each, {} of collateral, {}",
+            object(deal),
+            names.usd(*price),
+            names.usd(*collateral),
+            match provider {
+                Some(provider) => format!("for {}", names.account(provider)),
+                None => "open to any provider".to_string(),
+            }
+        ),
+        Event::DealAccepted {
+            deal,
+            provider,
+            custody,
+            start,
+        } => format!(
+            "{} accepted storage deal {} (custody record {}); rounds start at Pulse {start}",
+            names.account(provider),
+            object(deal),
+            object(custody)
+        ),
+        Event::StorageProven { deal, round, .. } => format!(
+            "round {round} of storage deal {} proven",
+            object(deal)
+        ),
+        Event::DealSettled {
+            deal,
+            rounds,
+            amount,
+        } => format!(
+            "{} paid for {rounds} proven round(s) of storage deal {}",
+            names.usd(*amount),
+            object(deal)
+        ),
+        Event::DealClosed {
+            deal,
+            refund,
+            paid,
+            returned,
+            forfeited,
+            missed,
+        } => format!(
+            "storage deal {} closed: {} refunded, {} paid, {} of collateral returned, {} forfeited, {missed} round(s) missed",
+            object(deal),
+            names.usd(*refund),
+            names.usd(*paid),
+            names.usd(*returned),
+            names.usd(*forfeited)
         ),
     }
 }

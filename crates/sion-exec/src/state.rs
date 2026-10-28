@@ -224,8 +224,9 @@ impl State {
     }
 
     /// Everything of `asset` held anywhere: coins, allotments, bounded
-    /// totals' unallocated amounts, stream and open task escrow, market
-    /// escrow, the assurance vault and the treasury. Equals the minted
+    /// totals' unallocated amounts, stream and open task escrow, storage
+    /// deals' escrow and collateral, market escrow, the assurance vault and
+    /// the treasury. Equals the minted
     /// supply in a correct state.
     pub fn supply(&self, asset: &AssetId) -> Amount {
         let mut total: u128 = 0;
@@ -243,6 +244,12 @@ impl State {
                     if *asset == AssetId::usd() && task.state == crate::task::TaskState::Open =>
                 {
                     total += task.amount.0
+                }
+                ObjectData::Deal(deal) if *asset == AssetId::usd() => {
+                    total += deal.escrow.0;
+                    if let crate::storage::DealState::Active { bond, .. } = deal.state {
+                        total += bond.0;
+                    }
                 }
                 ObjectData::Delegations(book) => {
                     let stake_asset =

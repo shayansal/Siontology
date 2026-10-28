@@ -139,6 +139,11 @@ pub enum ObjectData {
     Delegations(Box<crate::delegation::DelegationBook>),
     /// A delegation, owned by its delegator (specification v1.11).
     Delegation(crate::delegation::Delegation),
+    /// A storage deal (specification v1.12).
+    Deal(Box<crate::storage::Deal>),
+    /// A provider's custody record of a storage deal, owned by the
+    /// provider (specification v1.12).
+    Custody(crate::storage::Custody),
 }
 
 /// Something the protocol must do at a given Pulse.

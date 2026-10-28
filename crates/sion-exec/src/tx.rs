@@ -26,6 +26,7 @@ use crate::claim::ClaimBody;
 use crate::market::Submission;
 use crate::object::{well_known, CoordinationClass, ObjectRef};
 use crate::state::ChainConfig;
+use crate::storage::CustodyProof;
 use crate::task::Acceptance;
 use crate::validators::Equivocation;
 
@@ -457,6 +458,53 @@ pub enum TxKind {
         /// The commission, in thousandths.
         permille: u16,
     },
+    /// Escrows `price × rounds` for keeping data whose Merkle root is
+    /// `root` (spec §5.50).
+    PostDeal {
+        /// The Merkle tree hash over the data's leaf hashes.
+        root: Hash32,
+        /// Leaves.
+        size: u64,
+        /// Leaves challenged per round.
+        challenges: u8,
+        /// Paid per proven round.
+        price: Amount,
+        /// Rounds.
+        rounds: u32,
+        /// Pulses per round.
+        round_length: u64,
+        /// Collateral the provider posts when it accepts.
+        collateral: Amount,
+        /// The provider, or `None` for a deal anyone may accept.
+        provider: Option<AccountId>,
+        /// The last Pulse the deal may be accepted.
+        accept_by: Pulse,
+        /// Where providers can fetch the data (not checked).
+        locator: String,
+    },
+    /// A provider accepts a deal with its collateral and gets a custody
+    /// record (spec §5.51).
+    AcceptDeal {
+        /// The deal.
+        deal: ObjectId,
+    },
+    /// Proves the current round of the deals whose custody records are
+    /// `inputs[1..]`, one proof each, in order (spec §5.52).
+    ProveStorage {
+        /// One proof per custody record.
+        proofs: Vec<CustodyProof>,
+    },
+    /// The provider collects for the rounds it proved (spec §5.53).
+    SettleDeal {
+        /// The deal.
+        deal: ObjectId,
+    },
+    /// Closes a deal: refunds an open one, or ends an accepted one at its
+    /// end or once abandoned (spec §5.54).
+    CloseDeal {
+        /// The deal.
+        deal: ObjectId,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -536,6 +584,9 @@ impl Transaction {
             | TxKind::CloseStream { stream } => Some(object_domain("stream", stream)),
             TxKind::SettleTask { .. } => Some(well_known::assurance_domain()),
             TxKind::CancelTask { task } => Some(object_domain("task", task)),
+            TxKind::AcceptDeal { deal }
+            | TxKind::SettleDeal { deal }
+            | TxKind::CloseDeal { deal } => Some(object_domain("deal", deal)),
             _ => None,
         }
     }

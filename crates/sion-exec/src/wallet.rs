@@ -160,6 +160,14 @@ impl Wallet {
                 Some(ObjectData::Stream(state)) => vec![(state.asset, *deposit)],
                 _ => Vec::new(),
             },
+            TxKind::PostDeal { price, rounds, .. } => vec![(
+                AssetId::usd(),
+                Amount(price.0.saturating_mul(u128::from(*rounds))),
+            )],
+            TxKind::AcceptDeal { deal } => match view.object(deal).map(|o| o.data) {
+                Some(ObjectData::Deal(state)) => vec![(AssetId::usd(), state.collateral)],
+                _ => Vec::new(),
+            },
             TxKind::DelegateStake { amount, .. } => {
                 let asset = match view.object(&well_known::validators()).map(|o| o.data) {
                     Some(ObjectData::Validators(set)) => set.params.stake_asset,
