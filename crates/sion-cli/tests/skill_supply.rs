@@ -336,5 +336,10 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
         "{:?}",
         second_ruling.effects.events
     );
+    // The next session takes the skill out of use.
+    let quarantined = sion_cli::skills::quarantine_falsified(ledger.as_ref(), &skills);
+    assert_eq!(quarantined.len(), 1, "{quarantined:?}");
+    assert!(quarantined[0].contains("falsified"), "{quarantined:?}");
+    assert!(sion_agent::skills::list(&skills).is_empty());
     std::fs::remove_dir_all(&home).unwrap();
 }

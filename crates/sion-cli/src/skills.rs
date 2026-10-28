@@ -457,6 +457,52 @@ pub fn put_in_place(
     Ok(dir)
 }
 
+/// Takes out of use every installed skill in `skills` whose release is no
+/// longer active (falsified, or expired): its directory is renamed so that
+/// the agent no longer sees it. Returns a line for each.
+pub fn quarantine_falsified(ledger: &dyn Ledger, skills: &Path) -> Vec<String> {
+    let mut lines = Vec::new();
+    for skill in sion_agent::skills::list(skills) {
+        let Ok(text) = std::fs::read_to_string(skill.dir.join(SOURCE)) else {
+            continue;
+        };
+        let Some(release) = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| v["release"].as_str().map(str::to_string))
+        else {
+            continue;
+        };
+        let Ok(id) = parse_hash(&release, "release") else {
+            continue;
+        };
+        let status = match ledger.claim(ClaimId::from_hash(id)) {
+            Ok(view) => view["status"].clone(),
+            Err(_) => continue,
+        };
+        if status == "Active" {
+            continue;
+        }
+        let state = match &status {
+            Value::String(s) => s.to_lowercase(),
+            Value::Object(map) => map
+                .keys()
+                .next()
+                .map(|k| k.to_lowercase())
+                .unwrap_or_default(),
+            _ => "inactive".into(),
+        };
+        let target = skills.join(format!("{}.{state}-{}", skill.name, &release[..8]));
+        if std::fs::rename(&skill.dir, &target).is_ok() {
+            lines.push(format!(
+                "skill {} taken out of use: its release {} is {state}",
+                skill.name,
+                &release[..8]
+            ));
+        }
+    }
+    lines
+}
+
 /// Runs a skill command.
 pub fn run(
     session: &mut Session<'_>,
@@ -631,13 +677,15 @@ pub fn install(
     };
     let policy =
         Policy::standard().with_kappa(Ratio::new((kappa * 1000.0).round().max(1.0) as u64, 1000));
-    let mut lines = vec![format!(
+    // Shown now, before the acceptance is signed.
+    println!(
         "bundle {} checked: {} files, skill {} {}",
         release.bundle.short(),
         files.len(),
         release.name,
         release.version
-    )];
+    );
+    let mut lines = Vec::new();
     // Ask first, for free: a refusal costs no fee.
     let decision = ledger.decide(release.claim, value_at_risk, policy.clone())?;
     if decision["accept"] != true {

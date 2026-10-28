@@ -492,8 +492,11 @@ impl Saved {
                 tools.add_boxed(tool);
             }
         }
+        let mut quarantined = Vec::new();
         if let Some(root) = &self.skills {
             std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
+            // A skill whose release was falsified is out of use at once.
+            quarantined = crate::skills::quarantine_falsified(acting.ledger.as_ref(), root);
             for tool in sion_agent::skills::tools(root) {
                 tools.add_boxed(tool);
             }
@@ -520,7 +523,7 @@ impl Saved {
         let ended = runtime.run(&mut self.state);
         self.ended = Some(ended.clone());
         self.save()?;
-        let mut lines = Vec::new();
+        let mut lines = quarantined;
         // A call that waited for a decision is answered in place: show how.
         if let Some(waiting) = waiting {
             let still = self.state.pending.as_ref().map(|p| &p.use_id) == Some(&waiting.use_id);
