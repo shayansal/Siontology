@@ -1257,7 +1257,42 @@ pub fn apply_deferred<S: ObjectStore>(
     }
 
     protocol.write_back(&mut run);
+    record_beacon(&mut run, ctx)?;
     Ok(outcome)
+}
+
+/// Records the beacon of a Pulse that is a multiple of
+/// [`crate::beacons::BEACON_INTERVAL`] in its slot (spec §6.3), last in the
+/// deferred phase.
+fn record_beacon<S: ObjectStore>(
+    run: &mut DeferredRun<'_, '_, S>,
+    ctx: &PulseContext,
+) -> Result<(), ExecError> {
+    let Some(slot) = crate::beacons::slot_of(ctx.pulse) else {
+        return Ok(());
+    };
+    let id = well_known::beacon(slot);
+    let data = ObjectData::Beacon(crate::beacons::BeaconRecord {
+        pulse: ctx.pulse,
+        beacon: ctx.beacon,
+    });
+    let object = match run.load(&id)? {
+        Some(mut object) => {
+            if !matches!(object.data, ObjectData::Beacon(_)) {
+                return Err(ExecError::Invalid("beacon record corrupted".into()));
+            }
+            object.data = data;
+            object
+        }
+        None => Object {
+            id,
+            version: Version(0),
+            owner: Owner::Shared(well_known::beacons_domain()),
+            data,
+        },
+    };
+    run.store(object);
+    Ok(())
 }
 
 /// Whether a forced intent may become an obligation: everything `prepare`

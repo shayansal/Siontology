@@ -2775,14 +2775,16 @@ pub fn robots(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
 /// it promised is caught by the challenges and loses its collateral.
 pub fn storage(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     use crate::storage::{deal, storage_dir, Provider, ProviderPolicy, Store};
-    use sion_exec::storage::{challenge_index, current_round, DataTree, DealState, ABANDON_ROUNDS};
+    use sion_exec::storage::{
+        challenge_index, current_round, round_seed, DataTree, DealState, ABANDON_ROUNDS,
+    };
     use sion_memory::{
         AtomClass as MemoryClass, Box3, FrameId, Interval, Memory, MemoryKind, RememberRequest,
         Space, Statement, Value as Fact,
     };
     const SECOND: u64 = 1_000_000_000;
     const ROUNDS: u32 = 6;
-    const ROUND_LENGTH: u64 = 12;
+    const ROUND_LENGTH: u64 = 16;
     let fail = |e: sion_memory::MemoryError| CliError::Protocol(e.to_string());
     let io = |e: std::io::Error| CliError::Usage(e.to_string());
     let ledger = session.ledger;
@@ -2989,15 +2991,20 @@ pub fn storage(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliE
     let deadline = ledger.pulse()?.0 + u64::from(ROUNDS) * ROUND_LENGTH + 40;
     loop {
         if let Some(record) = custody_of(camera_deal)? {
-            let next = Pulse(ledger.pulse()?.0 + 1);
-            if let Some(round) = current_round(record.start, record.round_length, next) {
-                if round < u64::from(ROUNDS)
-                    && announced != Some(round)
-                    && round >= u64::from(record.next)
-                {
+            let latest = ledger.pulse()?;
+            let beacon = match current_round(record.start, record.round_length, latest.next()) {
+                Some(round) if round < u64::from(ROUNDS) => {
+                    crate::storage::recorded_beacon(ledger, record.round_start(round as u32))?
+                        .map(|beacon| (round, beacon))
+                }
+                _ => None,
+            };
+            if let Some((round, beacon)) = beacon {
+                if announced != Some(round) && round >= u64::from(record.next) {
                     announced = Some(round);
+                    let seed = round_seed(&beacon, &record.deal);
                     let picks: Vec<u64> = (0..record.challenges)
-                        .map(|k| challenge_index(&record.seed, round as u32, k, record.size))
+                        .map(|k| challenge_index(&seed, round as u32, k, record.size))
                         .collect();
                     let missing = picks.iter().filter(|&&i| i >= half).count();
                     out.say(format!(

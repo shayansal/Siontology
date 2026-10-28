@@ -4034,6 +4034,14 @@ fn next_round(h: &Harness, custody: &sion_exec::storage::Custody) -> u32 {
     ((next - custody.start.0) / custody.round_length) as u32
 }
 
+/// The beacon a round's challenge is drawn from: that of its first Pulse
+/// (the simulated chain's beacons are known in advance).
+fn round_beacon(custody: &sion_exec::storage::Custody, round: u32) -> Hash32 {
+    sion_exec::sim::sim_beacon(Pulse(
+        custody.start.0 + u64::from(round) * custody.round_length,
+    ))
+}
+
 /// The provider's honest answer to the round under way in the next Pulse.
 fn answer(
     h: &Harness,
@@ -4043,7 +4051,7 @@ fn answer(
     let (custody_id, custody) = custody_of(h, deal);
     let round = next_round(h, &custody);
     let proof = sion_exec::storage::DataTree::of_data(data)
-        .answer(data, &custody, round)
+        .answer(data, &custody, round, &round_beacon(&custody, round))
         .expect("the provider holds the data");
     (h.reference(&custody_id), proof)
 }
@@ -4060,7 +4068,7 @@ fn answer_record(
     };
     let round = next_round(h, custody);
     let proof = sion_exec::storage::DataTree::of_data(data)
-        .answer(data, custody, round)
+        .answer(data, custody, round, &round_beacon(custody, round))
         .expect("the provider holds the data");
     (h.reference(custody_id), proof)
 }
@@ -4129,16 +4137,7 @@ fn storage(chunk_size: usize) -> Harness {
     let unwanted = post_deal(&mut h, "client", &tiny_data, 1, units(2), 2, units(1), None);
     // Malformed terms fail: built honestly, then edited and signed again.
     let edit = |h: &mut Harness, f: &dyn Fn(&mut TxKind)| {
-        let base = post_deal(
-            h,
-            "stranger",
-            &tiny_data,
-            1,
-            units(1),
-            1,
-            Amount::ZERO,
-            None,
-        );
+        let base = post_deal(h, "stranger", &tiny_data, 1, units(1), 1, units(1), None);
         let mut body = base.tx.clone();
         f(&mut body.kind);
         h.resign("stranger", body)
@@ -4151,6 +4150,7 @@ fn storage(chunk_size: usize) -> Harness {
                 price,
                 rounds,
                 round_length,
+                collateral,
                 accept_by,
                 locator,
                 ..
@@ -4164,6 +4164,9 @@ fn storage(chunk_size: usize) -> Harness {
                 "price" => *price = Amount::ZERO,
                 "rounds" => *rounds = 0,
                 "round_length" => *round_length = 4,
+                "round_length_multiple" => *round_length = 12,
+                "round_length_long" => *round_length = 100_008,
+                "collateral" => *collateral = Amount::ZERO,
                 "accept_by" => *accept_by = Pulse(0),
                 "locator" => *locator = "x".repeat(MAX_LOCATOR + 1),
                 "overflow" => *price = Amount(u128::MAX / 2),
@@ -4177,6 +4180,9 @@ fn storage(chunk_size: usize) -> Harness {
         "price",
         "rounds",
         "round_length",
+        "round_length_multiple",
+        "round_length_long",
+        "collateral",
         "accept_by",
         "locator",
         "overflow",
@@ -4289,6 +4295,28 @@ fn storage(chunk_size: usize) -> Harness {
     );
     let out = h.pulse(vec![tampered.clone()]);
     expect(&out, &tampered, Outcome::Failed);
+    // An answer to the challenge the beacon of the proof's own Pulse would
+    // pick (what each proof chose before rounds took the beacon of their
+    // first Pulse) fails, unless it happens to pick the same leaves.
+    let (open_ref, honest) = answer(&h, &open, &open_data);
+    {
+        let (_, custody) = custody_of(&h, &open);
+        let own = sion_exec::sim::sim_beacon(Pulse(h.pulse_number() + 1));
+        let steered = sion_exec::storage::DataTree::of_data(&open_data)
+            .answer(&open_data, &custody, honest.round, &own)
+            .unwrap();
+        if steered.leaves != honest.leaves {
+            let tx = h.tx_with(
+                "keeper",
+                TxKind::ProveStorage {
+                    proofs: vec![steered],
+                },
+                vec![open_ref],
+            );
+            let out = h.pulse(vec![tx.clone()]);
+            expect(&out, &tx, Outcome::Failed);
+        }
+    }
     let (open_ref, honest) = answer(&h, &open, &open_data);
     let mut short = honest.clone();
     short.leaves.pop();

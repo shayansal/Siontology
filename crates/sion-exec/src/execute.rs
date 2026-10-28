@@ -26,6 +26,7 @@ use sion_core::{merkle, Amount};
 
 use crate::account::AccountState;
 use crate::assurance::AssuranceDomain;
+use crate::beacons::{next_boundary, slot_of, BEACON_INTERVAL};
 use crate::charter::{
     AgentIdentity, Allotment, Caveats, Charter, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH,
 };
@@ -47,7 +48,7 @@ use crate::object::{
 };
 use crate::state::ChainConfig;
 use crate::storage::{
-    challenge_index, current_round, first_seed, next_seed, Custody, CustodyProof, Deal, DealState,
+    challenge_index, current_round, round_seed, Custody, CustodyProof, Deal, DealState,
     ABANDON_ROUNDS, MAX_CHALLENGES, MAX_DEAL_LEAVES, MAX_LEAF_BYTES, MAX_LOCATOR, MAX_PATH,
     MAX_PROOF_LEAVES, MAX_ROUNDS, MAX_ROUND_LENGTH, MIN_ROUND_LENGTH,
 };
@@ -2272,7 +2273,9 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 ));
             }
             // Stake and unclaimed rewards are forfeited; the reporter gets
-            // its share of each, the treasury the rest.
+            // its share of each, the treasury the rest and the pool's
+            // slashed part (a share of the pool would pay an operator with
+            // a large pool for reporting itself).
             let (stake, rewards) = (record.stake, record.rewards);
             record.stake = Amount::ZERO;
             record.rewards = Amount::ZERO;
@@ -2289,15 +2292,17 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     store_book(run, book_object, book);
                 }
             }
-            let forfeited_stake = stake.checked_add(pool_slashed.unwrap_or(Amount::ZERO))?;
             let mut paid = [Amount::ZERO; 2];
-            for (index, (asset, forfeited)) in [(asset, forfeited_stake), (AssetId::usd(), rewards)]
-                .into_iter()
-                .enumerate()
+            for (index, (asset, own, pooled)) in [
+                (asset, stake, pool_slashed.unwrap_or(Amount::ZERO)),
+                (AssetId::usd(), rewards, Amount::ZERO),
+            ]
+            .into_iter()
+            .enumerate()
             {
-                paid[index] = permille_of(forfeited, share);
+                paid[index] = permille_of(own, share);
                 run.mint_coin(tx.sender, asset, paid[index]);
-                let rest = forfeited.checked_sub(paid[index])?;
+                let rest = own.checked_add(pooled)?.checked_sub(paid[index])?;
                 if rest > Amount::ZERO {
                     run.effects.deferred.push(Deferred::Treasury {
                         asset,
@@ -3208,10 +3213,17 @@ fn post_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, mut terms: Deal) -> Resul
             "a deal has 1 to {MAX_ROUNDS} rounds"
         )));
     }
-    if !(MIN_ROUND_LENGTH..=MAX_ROUND_LENGTH).contains(&terms.round_length) {
+    if !(MIN_ROUND_LENGTH..=MAX_ROUND_LENGTH).contains(&terms.round_length)
+        || terms.round_length % BEACON_INTERVAL != 0
+    {
         return Err(ExecError::Invalid(format!(
-            "a round lasts {MIN_ROUND_LENGTH} to {MAX_ROUND_LENGTH} Pulses"
+            "a round lasts a multiple of {BEACON_INTERVAL} Pulses, from {MIN_ROUND_LENGTH} to {MAX_ROUND_LENGTH}"
         )));
+    }
+    if terms.provider.is_none() && terms.collateral == Amount::ZERO {
+        return Err(ExecError::Invalid(
+            "an open deal asks for collateral".into(),
+        ));
     }
     let latest = pulse.0.saturating_add(crate::market::MAX_PERIOD);
     if terms.accept_by.0 <= pulse.0 || terms.accept_by.0 > latest {
@@ -3272,7 +3284,7 @@ fn accept_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Resul
         ));
     }
     run.draw(AssetId::usd(), deal.collateral)?;
-    let start = pulse.next();
+    let start = next_boundary(pulse);
     let custody = run.create(
         Owner::Account(sender),
         ObjectData::Custody(Custody {
@@ -3283,7 +3295,6 @@ fn accept_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Resul
             start,
             round_length: deal.round_length,
             rounds: deal.rounds,
-            seed: first_seed(&run.ctx.beacon, id),
             next: 0,
             proven: 0,
         }),
@@ -3346,9 +3357,11 @@ fn prove_storage<S: ObjectStore>(
                 custody.challenges
             )));
         }
+        let beacon = beacon_at(run, custody.round_start(round))?;
+        let seed = round_seed(&beacon, &custody.deal);
         for (k, leaf) in proof.leaves.iter().enumerate() {
             let k = u8::try_from(k).map_err(|_| ExecError::Invalid("too many leaves".into()))?;
-            let index = challenge_index(&custody.seed, round, k, custody.size);
+            let index = challenge_index(&seed, round, k, custody.size);
             if leaf.data.len() > MAX_LEAF_BYTES || leaf.path.len() > MAX_PATH {
                 return Err(ExecError::Invalid("a leaf or its path is too long".into()));
             }
@@ -3365,7 +3378,6 @@ fn prove_storage<S: ObjectStore>(
         }
         custody.proven = custody.proven.saturating_add(1);
         custody.next = round.saturating_add(1);
-        custody.seed = next_seed(&run.ctx.beacon, &custody.deal, &custody.seed);
         let deal = custody.deal;
         object.data = ObjectData::Custody(custody);
         run.store(object);
@@ -3376,6 +3388,24 @@ fn prove_storage<S: ObjectStore>(
         });
     }
     Ok(())
+}
+
+/// The beacon of a recorded Pulse `at ≤ ctx.pulse` (spec §5.52): the
+/// current Pulse's own, or its beacon record's.
+fn beacon_at<S: ObjectStore>(run: &mut Run<'_, '_, S>, at: Pulse) -> Result<Hash32, ExecError> {
+    if at == run.ctx.pulse {
+        return Ok(run.ctx.beacon);
+    }
+    let slot = slot_of(at)
+        .filter(|_| at < run.ctx.pulse)
+        .ok_or_else(|| ExecError::Invalid(format!("Pulse {at} has no beacon record")))?;
+    let record = run.load(&well_known::beacon(slot))?;
+    match record.data {
+        ObjectData::Beacon(record) if record.pulse == at => Ok(record.beacon),
+        _ => Err(ExecError::Invalid(format!(
+            "the beacon of Pulse {at} is no longer recorded"
+        ))),
+    }
 }
 
 /// What `rounds` proven rounds cost at `price`.
@@ -3464,8 +3494,12 @@ fn close_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Result
                     ));
                 }
                 let missed = deal.rounds.saturating_sub(proven);
-                let per_round = Amount(bond.0 / u128::from(deal.rounds.max(1)));
-                let forfeited = Amount(per_round.0.saturating_mul(u128::from(missed)).min(bond.0));
+                let forfeited = Amount(
+                    crate::delegation::mul_div(bond.0, u128::from(missed), u128::from(deal.rounds))
+                        .ok_or(ExecError::Core(sion_core::CoreError::Overflow(
+                            "forfeited collateral",
+                        )))?,
+                );
                 (missed, bond.checked_sub(forfeited)?, forfeited)
             } else {
                 if sender != deal.client {

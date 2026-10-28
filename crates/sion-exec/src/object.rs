@@ -144,6 +144,9 @@ pub enum ObjectData {
     /// A provider's custody record of a storage deal, owned by the
     /// provider (specification v1.12).
     Custody(crate::storage::Custody),
+    /// The beacon of a recorded Pulse, in one of the reusable slots
+    /// (specification v1.12, §6.3).
+    Beacon(crate::beacons::BeaconRecord),
 }
 
 /// Something the protocol must do at a given Pulse.
@@ -322,6 +325,17 @@ pub mod well_known {
     /// domain; created by the first delegation).
     pub fn delegations() -> ObjectId {
         ObjectId::derive(b"well-known/delegations")
+    }
+
+    /// The `slot`-th beacon record (`crate::beacons`): it holds the beacon
+    /// of the latest recorded Pulse whose slot it is.
+    pub fn beacon(slot: u32) -> ObjectId {
+        ObjectId::derive_parts(&[b"well-known/beacon", &slot.to_be_bytes()])
+    }
+
+    /// The beacon records' domain.
+    pub fn beacons_domain() -> DomainId {
+        DomainId::derive(b"beacons")
     }
 
     /// The forced-inclusion obligations.

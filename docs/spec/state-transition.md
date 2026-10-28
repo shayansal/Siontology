@@ -26,7 +26,8 @@ It does **not** re-specify:
   `sion_assurance`, `sion_clearing` and the *type definitions* in
   `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
   `stream`, `memory`, `task`, `delegation` (its types and constants),
-  `storage` (its types and constants),
+  `storage` (its types and constants), `beacons` (its types and
+  constants),
   `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
@@ -58,8 +59,9 @@ definitions and the commitment helpers named in §7), `sion_exec::stateless`,
 `TaskResult::payload`), the `sion_exec::delegation` helpers (`mul_div`,
 `cap_permille`, `within_cap`, `resolve`, `Pool::{shares, value_of,
 shares_for, bonded, earning_value, owed}`), the `sion_exec::storage`
-helpers (`challenge_index`, `first_seed`, `next_seed`, `current_round`,
-`DataTree`, `split_leaves`, `Deal::end`), nor
+helpers (`challenge_index`, `round_seed`, `current_round`,
+`DataTree`, `split_leaves`, `Deal::end`), the `sion_exec::beacons` helpers
+(`slot_of`, `next_boundary`), nor
 the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
@@ -673,10 +675,14 @@ USD, rewards)`. Event `RewardsClaimed { validator, amount: rewards }`.
    offender: `slashed = permille_of(value, DELEGATION_SLASH_PERMILLE)`;
    `value −= slashed`; store the book. Otherwise `slashed = 0`. Every
    share of the pool, pending and unbonding ones included, is worth less.
-5. For `(asset, forfeited)` in `[(params.stake_asset, stake + slashed),
-   (USD, rewards)]`, in that order: `paid = permille_of(forfeited,
-   params.reporter_permille)`; `mint(sender, asset, paid)`; if `forfeited −
-   paid > 0`, defer `Treasury { asset, amount: forfeited − paid }`.
+5. For `(asset, own, pooled)` in `[(params.stake_asset, stake, slashed),
+   (USD, rewards, 0)]`, in that order: `paid = permille_of(own,
+   params.reporter_permille)`; `mint(sender, asset, paid)`; if `own +
+   pooled − paid > 0`, defer `Treasury { asset, amount: own + pooled −
+   paid }`. The reporter's share is of the offender's own stake and
+   rewards, never of its pool: a share of the pool would let an operator
+   whose pool is large enough against its own stake profit from reporting
+   itself through another account, since header evidence never expires.
 6. Event `ValidatorSlashed { validator: offender, amount: stake, reporter:
    sender, reward: <paid of the stake> }`; then, if the offender had a
    pool, event `PoolSlashed { validator: offender, amount: slashed }`.
@@ -1143,8 +1149,10 @@ data whose Merkle root is fixed when the deal is posted, and for proving in
 each round that it still holds pieces of it that nobody could predict.
 The data is `size` **leaves**, byte strings of at most `MAX_LEAF_BYTES`
 bytes each, and `root = merkle::root([leaf_hash(d₀), …, leaf_hash(d_{size−1})])`
-(`sion_core::merkle`, RFC 9162 shape). The ledger never sees the data:
-`locator` only tells providers where to fetch it.
+(`sion_core::merkle`, RFC 9162 shape). The ledger does not store the
+data: `locator` only tells providers where to fetch it. Proofs do publish
+the leaves they answer with (§5.52), so data that must stay private
+should be encrypted before its root is computed.
 
 Money stays in the deal, a shared object in its own domain
 (`object_domain("deal", deal)`): the client's escrow, and the provider's
@@ -1156,15 +1164,17 @@ only when a deal is settled or closed (§5.53, §5.54).
 Owned-linear. Constants of `sion_exec::storage`: `MAX_DEAL_LEAVES` (2⁴⁰),
 `MAX_LEAF_BYTES` (4,096), `MAX_PATH` (40), `MAX_CHALLENGES` (16),
 `MAX_ROUNDS` (1,000,000), `MIN_ROUND_LENGTH` (8), `MAX_ROUND_LENGTH`
-(1,000,000), `MAX_LOCATOR` (256), `MAX_PROOF_LEAVES` (64),
+(100,000), `MAX_LOCATOR` (256), `MAX_PROOF_LEAVES` (64),
 `ABANDON_ROUNDS` (3), `SEED_DOMAIN` (`sion/storage/seed`) and
-`CHALLENGE_DOMAIN` (`sion/storage/challenge`).
+`CHALLENGE_DOMAIN` (`sion/storage/challenge`); and of `sion_exec::beacons`
+(§6.3): `BEACON_INTERVAL` (8) and `BEACON_SLOTS` (12,500).
 
 1. `1 ≤ size ≤ MAX_DEAL_LEAVES`; `1 ≤ challenges ≤ MAX_CHALLENGES`; `price
    > 0`; `1 ≤ rounds ≤ MAX_ROUNDS`; `MIN_ROUND_LENGTH ≤ round_length ≤
-   MAX_ROUND_LENGTH`; `ctx.pulse < accept_by ≤ ctx.pulse + MAX_PERIOD`
-   (saturating; `sion_exec::market::MAX_PERIOD`); `locator` is at most
-   `MAX_LOCATOR` bytes long (UTF-8).
+   MAX_ROUND_LENGTH` and `round_length mod BEACON_INTERVAL = 0`; if
+   `provider = None`, `collateral > 0`; `ctx.pulse < accept_by ≤ ctx.pulse
+   + MAX_PERIOD` (saturating; `sion_exec::market::MAX_PERIOD`); `locator`
+   is at most `MAX_LOCATOR` bytes long (UTF-8).
 2. `escrow = price × rounds` (an error if it overflows); `draw(USD,
    escrow)`.
 3. `deal = created_id(digest, next_index)`; `create(Shared(object_domain(
@@ -1174,7 +1184,9 @@ Owned-linear. Constants of `sion_exec::storage`: `MAX_DEAL_LEAVES` (2⁴⁰),
 4. Event `DealPosted { deal, client: sender, provider, size, price,
    rounds, collateral }`.
 
-`provider = None` posts an **open** deal: any account may accept it. A
+`provider = None` posts an **open** deal: any account may accept it, so
+it must ask for collateral; without any, a stranger could accept it, never
+prove a round, and hold the client's escrow until the deal is abandoned. A
 provider should accept only once it holds data whose leaves hash to
 `root`: it can check that before it accepts, and from then on its
 collateral is at stake.
@@ -1186,11 +1198,11 @@ Contended, in the deal's domain.
 1. Load `deal` (MUST be a deal, `d`); `d.state = Open`; `ctx.pulse ≤
    d.accept_by`; if `d.provider = Some(p)`, the sender MUST be `p`.
 2. `draw(USD, d.collateral)`.
-3. `start = ctx.pulse + 1` (saturating); `seed = hash_parts(SEED_DOMAIN,
-   [ctx.beacon, deal, Hash32::ZERO])`, each part its 32 bytes.
+3. `start = BEACON_INTERVAL × (⌊ctx.pulse / BEACON_INTERVAL⌋ + 1)`
+   (saturating): the first multiple of `BEACON_INTERVAL` after this Pulse.
 4. `custody = create(Account(sender), Custody { deal, root: d.root, size:
    d.size, challenges: d.challenges, start, round_length: d.round_length,
-   rounds: d.rounds, seed, next: 0, proven: 0 })`.
+   rounds: d.rounds, next: 0, proven: 0 })`.
 5. `d.state = Active { provider: sender, custody, start, bond:
    d.collateral, paid: 0 }`; store `d`.
 6. Event `DealAccepted { deal, provider: sender, custody, start }`.
@@ -1198,6 +1210,8 @@ Contended, in the deal's domain.
 Round `i` (from 0) of the deal is the Pulses `start + i × round_length` to
 `start + (i + 1) × round_length − 1`; the deal **ends** at `end = start +
 rounds × round_length` (saturating), the first Pulse after its last round.
+Since `start` and `round_length` are multiples of `BEACON_INTERVAL`, so is
+the first Pulse of every round, and the chain records its beacon (§6.3).
 
 ### 5.52 ProveStorage { proofs }
 
@@ -1212,8 +1226,11 @@ path }`.
    checked that the sender owns it). With `i = p.round`: `ctx.pulse ≥
    c.start`; `i = (ctx.pulse − c.start) / c.round_length` (the round under
    way: a round is proven during the round); `i < c.rounds`; `i ≥ c.next`;
-   `|p.leaves| = c.challenges`. For each `k` from 0 to `c.challenges − 1`:
-   - `index = challenge(c.seed, i, k) mod c.size`, where `challenge(seed,
+   `|p.leaves| = c.challenges`. With `b = c.start + i × c.round_length`,
+   the round's first Pulse, `seed = hash_parts(SEED_DOMAIN, [beacon_at(b),
+   c.deal])`, each part its 32 bytes. For each `k` from 0 to
+   `c.challenges − 1`:
+   - `index = challenge(seed, i, k) mod c.size`, where `challenge(seed,
      i, k)` is the first 8 bytes, read big-endian, of
      `hash_parts(CHALLENGE_DOMAIN, [seed (32 bytes), i (4 bytes,
      big-endian), k (1 byte)])`;
@@ -1221,17 +1238,29 @@ path }`.
      ≤ MAX_PATH`; `merkle::verify_inclusion(c.root, c.size, index,
      leaf_hash(data), path)` MUST succeed.
 
-   Then `c.proven += 1`; `c.next = i + 1`; `c.seed =
-   hash_parts(SEED_DOMAIN, [ctx.beacon, c.deal, c.seed])`; store `c`; event
+   Then `c.proven += 1`; `c.next = i + 1`; store `c`; event
    `StorageProven { deal: c.deal, custody: id, round: i }`.
 
-The challenge of a round is fixed when the round before it is proven (or
-the deal accepted) and changes with every proof, from the beacon of the
-Pulse the proof executed in: a provider cannot keep only the leaves a
-future round will ask for, because it cannot know them two proofs ahead.
-A round passes unproven if no proof of it executes during it. A custody
-record does not know whether its deal is still active: proofs after a deal
-is closed change nothing but the record.
+**beacon_at(b)**, for a Pulse `b ≤ ctx.pulse` with `b mod
+BEACON_INTERVAL = 0`: if `b = ctx.pulse`, `ctx.beacon`; otherwise `load(
+well_known::beacon((b / BEACON_INTERVAL) mod BEACON_SLOTS))`, which MUST
+be a beacon record with `pulse = b`, and its `beacon`. Every round's first
+Pulse is a multiple of `BEACON_INTERVAL`, and a proof executes less than
+`MAX_ROUND_LENGTH = BEACON_INTERVAL × BEACON_SLOTS` Pulses after it, so the
+record is still there.
+
+A round's challenge is fixed by the beacon of its first Pulse, a Pulse
+fixed when the deal was accepted. A provider learns it only when that Pulse
+executes, so it must hold every leaf until then, and it cannot change the
+challenge by choosing when its proof executes. (Before this was settled,
+each proof fixed the next round's challenge through the beacon of the Pulse
+it executed in; a provider that could time its proofs, with a validator's
+help, could steer its challenges towards the leaves it kept.) What remains
+is the beacon's own bias: a validator that withholds its reveal for the
+round's first Pulse chooses between two beacons, and `m` colluding
+validators among `2^m`. A round passes unproven if no proof of it executes
+during it. A custody record does not know whether its deal is still
+active: proofs after a deal is closed change nothing but the record.
 
 ### 5.53 SettleDeal { deal }
 
@@ -1258,8 +1287,10 @@ Contended, in the deal's domain.
    `proven = c.proven`; `end = start + d.rounds × d.round_length`
    (saturating).
    - **At the end**, `ctx.pulse ≥ end`: the sender MUST be `d.client` or
-     `provider`; `missed = d.rounds − proven`; `forfeited = min(bond,
-     missed × ⌊bond / d.rounds⌋)`; `returned = bond − forfeited`.
+     `provider`; `missed = d.rounds − proven`; `forfeited = ⌊bond × missed
+     / d.rounds⌋`, computed exactly in `u128` as `mul_div(bond, missed,
+     d.rounds)` (§5.45; at most `bond`, since `missed ≤ d.rounds`);
+     `returned = bond − forfeited`.
    - **Abandoned**, `ctx.pulse < end`: the sender MUST be `d.client`;
      `ctx.pulse ≥ start`; with `r = (ctx.pulse − start) / d.round_length`,
      `r ≥ c.next + ABANDON_ROUNDS` (the provider proved none of the last
@@ -1278,8 +1309,11 @@ Contended, in the deal's domain.
    missed }`.
 
 The provider is paid for every round it proved, whoever closes. A
-provider that proves every round gets its whole collateral back; each
-round it missed costs it `⌊bond / rounds⌋`; one that stops proving for
+provider that proves every round gets its whole collateral back; the
+rounds it missed cost it their share of it, `bond × missed / rounds`
+rounded down once (rounding each round's share down instead would let a
+collateral smaller than the number of rounds escape entirely); one that
+stops proving for
 `ABANDON_ROUNDS` rounds may lose all of it as soon as the client closes.
 Forfeited collateral goes to the treasury, not to the client, so that
 nobody profits from making a provider fail (by flooding its network, say).
@@ -1327,9 +1361,20 @@ something used it mutably (assurance, treasury, validator set, delegation
 book, obligations, markets: anything that obtained it; schedule: any
 change to its entries, including removing due entries). Write-back order:
 markets in id order, then assurance, treasury, validator set, delegation
-book, obligations, schedule. Other objects (bounded totals, coins)
-are stored when changed. Reads of other objects in this phase are
-`try_load`s.
+book, obligations, schedule, then the beacon record. Other objects (bounded
+totals, coins) are stored when changed. Reads of other objects in this
+phase are `try_load`s.
+
+**The beacon record** (v1.12). If `pulse mod BEACON_INTERVAL = 0`, the
+phase ends by recording the Pulse's beacon: with `slot = (pulse /
+BEACON_INTERVAL) mod BEACON_SLOTS` and `id = well_known::beacon(slot)`,
+`try_load(id)`; if it exists it MUST be a beacon record, and it is stored
+with its data replaced by `Beacon(BeaconRecord { pulse, beacon })`;
+otherwise a new object `Object { id, version: 0, owner:
+Shared(well_known::beacons_domain()), data: Beacon(BeaconRecord { pulse,
+beacon }) }` is stored. (Each slot is reused every `BEACON_INTERVAL ×
+BEACON_SLOTS` Pulses; the beacons themselves stay in the certified Pulse
+headers.) No other Pulse writes a beacon record.
 
 **Sorting.** Items are sorted by the key `(rank, natural, enc(item))`,
 where `natural` and `enc(item)` compare as byte strings (so Schedule items,
@@ -1644,16 +1689,28 @@ carries the validator set with a state proof against `before.state_root`.
   named provider or for any; the provider accepts with collateral
   (`AcceptDeal`) and gets a custody record it owns. In each round it
   proves, from its record, that it holds leaves picked by a challenge
-  derived from the beacon and changed by every proof (`ProveStorage`,
-  owned-linear, many deals per transaction). The provider collects for
-  proven rounds (`SettleDeal`); closing (`CloseDeal`) pays what is due,
-  refunds the escrow of unproven rounds to the client, returns the
-  collateral less `⌊bond / rounds⌋` per missed round, and forfeits all of
-  it to the treasury if the client closes a deal its provider has
-  abandoned for `ABANDON_ROUNDS` rounds. New types
+  derived from the beacon of the round's first Pulse (`ProveStorage`,
+  owned-linear, many deals per transaction). Rounds start on multiples of
+  `BEACON_INTERVAL` (8), and the deferred phase of every such Pulse records
+  its beacon in one of `BEACON_SLOTS` (12,500) beacon records, so a proof
+  can read the beacon of its round's first Pulse for up to
+  `MAX_ROUND_LENGTH` (100,000) Pulses. The provider collects for proven
+  rounds (`SettleDeal`); closing (`CloseDeal`) pays what is due, refunds the
+  escrow of unproven rounds to the client, returns the collateral less
+  `⌊bond × missed / rounds⌋`, and forfeits all of it to the treasury if the
+  client closes a deal its provider has abandoned for `ABANDON_ROUNDS`
+  rounds. An open deal asks for collateral. New types
   `sion_exec::storage::{Deal, DealState, Custody, CustodyProof,
-  LeafProof}`, objects `ObjectData::{Deal, Custody}`, transaction kinds and
-  events; the supply counts deal escrow and collateral.
+  LeafProof}` and `sion_exec::beacons::BeaconRecord`, objects
+  `ObjectData::{Deal, Custody, Beacon}` and `well_known::beacon(slot)`,
+  transaction kinds and events; the supply counts deal escrow and
+  collateral. Before release, an independent review changed three things:
+  as first written, each proof fixed the next round's challenge through the
+  beacon of the Pulse it executed in, so a provider that could time its
+  proofs could steer its challenges (one keeping half its data passed 20
+  rounds of 20 in a simulation); a missed round cost `⌊bond / rounds⌋`,
+  nothing when the collateral was smaller than the number of rounds; and
+  open deals could ask for no collateral.
 
 - **v1.11.** Pooled stake (§5.45 to §5.49). Anyone may delegate stake to a
   validator without handing it over: a delegation is an object its
@@ -1668,7 +1725,12 @@ carries the validator set with a state proof against `before.state_root`.
   plus their pools' earning stake. No validator may gain more than twice
   an equal share of the bonded stake by delegation (never less than a
   tenth). An equivocation now also slashes a tenth of the offender's pool,
-  unbonding delegations included; the reporter's share is of both. New
+  unbonding delegations included, all of it to the treasury: the reporter's
+  share is of the offender's own stake and rewards only. (As first written,
+  v1.11 paid the reporter a share of the pool's tenth too, which made
+  reporting yourself profitable once your pool was about 190 times your
+  stake; a review of the economics found it, and it was changed before
+  release.) New
   types `sion_exec::delegation::{DelegationBook, Pool, Join, Delegation,
   DelegationState}`, objects `ObjectData::{Delegations, Delegation}` and
   `well_known::delegations()`, transaction kinds and events; the supply

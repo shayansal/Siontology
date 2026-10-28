@@ -21,7 +21,7 @@ use sion_core::hash::Hash32;
 use sion_core::ids::{AccountId, ObjectId, Pulse};
 use sion_core::Amount;
 use sion_exec::execute::Event;
-use sion_exec::object::{ObjectData, ObjectRef};
+use sion_exec::object::{well_known, ObjectData, ObjectRef};
 use sion_exec::storage::{
     current_round, Custody, CustodyProof, DataTree, Deal, DealState, MAX_PROOF_LEAVES,
 };
@@ -53,8 +53,8 @@ pub enum StorageCommand {
         /// Rounds.
         #[arg(long)]
         rounds: u32,
-        /// Pulses per round (at least 8).
-        #[arg(long, default_value_t = 20)]
+        /// Pulses per round: a multiple of 8, from 8 to 100,000.
+        #[arg(long, default_value_t = 16)]
         round_length: u64,
         /// Collateral the provider must post (decimal USD).
         #[arg(long, default_value = "0")]
@@ -279,6 +279,22 @@ pub fn fetch(locator: &str, max_bytes: u64) -> Result<Vec<u8>, CliError> {
     )))
 }
 
+/// The beacon of `pulse` once the chain has recorded it: what the
+/// challenge of a round starting at `pulse` is drawn from (spec §5.52).
+/// `None` before that Pulse has executed, or for a Pulse that is not
+/// recorded (not a multiple of the beacon interval, or too old).
+pub fn recorded_beacon(ledger: &dyn Ledger, pulse: Pulse) -> Result<Option<Hash32>, CliError> {
+    let Some(slot) = sion_exec::beacons::slot_of(pulse) else {
+        return Ok(None);
+    };
+    Ok(
+        match ledger.object(well_known::beacon(slot))?.map(|o| o.data) {
+            Some(ObjectData::Beacon(record)) if record.pulse == pulse => Some(record.beacon),
+            _ => None,
+        },
+    )
+}
+
 /// Whether `data` is what `deal` commits to.
 pub fn matches_deal(data: &[u8], deal: &Deal) -> bool {
     let tree = DataTree::of_data(data);
@@ -465,7 +481,8 @@ impl Provider {
         ledger: &dyn Ledger,
     ) -> Result<Vec<String>, CliError> {
         let me = session.id(&self.name);
-        let next = Pulse(ledger.pulse()?.0 + 1);
+        let latest = ledger.pulse()?;
+        let next = latest.next();
         // Each batch remembers the last Pulse of the earliest round it
         // proves: the transaction expires then, so a proof that comes too
         // late is rejected (no fee) rather than failed.
@@ -493,7 +510,16 @@ impl Provider {
                 .trees
                 .entry(custody.deal)
                 .or_insert_with(|| DataTree::of_data(&data));
-            let Some(proof) = tree.answer(&data, &custody, round as u32) else {
+            // The round's challenge is known once its first Pulse has
+            // executed and the chain recorded its beacon.
+            let first = custody.round_start(round as u32);
+            if first > latest {
+                continue;
+            }
+            let Some(beacon) = recorded_beacon(ledger, first)? else {
+                continue;
+            };
+            let Some(proof) = tree.answer(&data, &custody, round as u32, &beacon) else {
                 continue;
             };
             if leaves + proof.leaves.len() > MAX_PROOF_LEAVES {
