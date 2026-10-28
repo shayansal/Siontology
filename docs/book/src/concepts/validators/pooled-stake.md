@@ -82,11 +82,17 @@ its pool loses **a tenth** of its stake. Every share loses the same
 fraction, pending and unbonding delegations included: undelegating does
 not escape a slash until the stake is withdrawn. Evidence is not bound to a
 time, so a delegation made after the offence but before the report is
-slashed too. The reporter's share (5 % on the devnet) is of both.
+slashed too. The reporter's share (5 % on the devnet) is of the
+validator's own stake only; the pool's tenth goes to the treasury whole.
+(As first written, v1.11 paid the reporter a share of the pool's tenth
+too: an operator whose pool was about 190 times its own stake could then
+profit from reporting itself through another account, since header
+evidence never expires. A review of the economics found it, and it was
+changed before release.)
 
 In the example, if `v` equivocates: its 100,000 is forfeited, the pool
 loses 5,000, alice's delegation is worth 27,000 and bob's 18,000, and the
-reporter receives 5 % of 105,000, 5,250. Delegators keep the rewards
+reporter receives 5 % of 100,000, 5,000. Delegators keep the rewards
 already credited to them.
 
 Choosing a validator is therefore a real decision: its commission, its

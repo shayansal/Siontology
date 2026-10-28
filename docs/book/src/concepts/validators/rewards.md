@@ -24,7 +24,8 @@ deferred phase of an epoch's last Pulse:
    new fees.
 
 Other money reaches the treasury too: the treasury's share of a slashed
-bond, the remainder of a slashed stake after the reporter's share, and
+bond, the remainder of a slashed stake after the reporter's share, a
+slashed pool's tenth, forfeited storage collateral, and
 slashed-bond funds no longer needed to compensate anyone. It stays there.
 It is never paid out as rewards, so slashing a validator does not enrich
 the others.

@@ -2,9 +2,10 @@
 
 The Siontology app turns a laptop or a phone into a **light node**. It
 holds the device's own key, and it checks every Pulse it shows instead of
-trusting the server it talks to. Its owner can pay, pool stake with a
-validator without handing the stake over, and let the device earn by
-keeping data for others ([storage deals](../concepts/storage.md)).
+trusting the server it talks to. Its owner can pay, delegate stake to a
+validator without handing the stake over, and let the device keep data
+for others ([storage deals](../concepts/storage.md)), on test networks
+with test USD.
 
 One Rust core, `sion-app-core`, does the work. A [Tauri 2](https://v2.tauri.app)
 shell wraps it for desktop and mobile, under `apps/sion-app`.
@@ -49,7 +50,11 @@ verification, and the tab says so in red.
 
 Every transaction the device signs (a payment, a delegation, a claim)
 comes back with its receipt **proven** against the certified header of the
-Pulse it executed in, the way `sion receipt` proves one.
+Pulse it executed in, the way `sion receipt` proves one. The app waits for
+the digest it computed itself, and what it shows, success or failure,
+comes from the proven receipt only: a receipt it could not prove is shown
+as the node's unproven claim, and one proven against a chain identity
+that is not pinned yet is not marked as proven.
 
 The app does not check the World Proof: re-executing a Pulse is a
 desktop's or a server's job, not a phone's.
@@ -58,11 +63,11 @@ desktop's or a server's job, not a phone's.
 
 **It does not validate, store or serve the chain.** Validators run on
 servers (`sion node`, see [Running a network of
-processes](../guides/network.md)). Verifying earns nothing. A device earns
-by providing storage from the Storage tab, and its owner by pooling stake
-with a validator from the Stake tab ([Pooled
-stake](../concepts/validators/pooled-stake.md)), on test networks with
-test USD.
+processes](../guides/network.md)). Verifying pays nothing. On test
+networks, with test USD, a device can keep data for others from the
+Storage tab, paid by each deal's escrow for the rounds it proves, and its
+owner can delegate stake from the Stake tab ([Pooled
+stake](../concepts/validators/pooled-stake.md)).
 
 **Its balances come from the node.** The Wallet tab shows what the node
 reports for the device's account, unproven; the Node tab says whether the
@@ -103,22 +108,28 @@ cargo tauri build
 
 - **Node**: the latest verified Pulse, the checks behind it, and the tally
   of verifications.
-- **Wallet**: the device's account and balance; *Send* signs a transfer
-  with the device's key and shows its receipt. On a devnet, *Get 100 test
-  USD* asks the node's faucet.
+- **Wallet**: the device's account and balance, in test USD; *Send* signs
+  a transfer to a 64-digit account with the device's key and shows its
+  receipt. (Names are refused: on a devnet a name means a wallet whose
+  keys anyone can derive from it.) On a devnet, *Get 100 test USD* asks
+  the node's faucet.
 - **Stake**: every validator with its own stake, the stake pooled behind
   it, its commission and its weight in the current epoch. *Delegate* puts
   stake in a validator's pool; each delegation shows its state and what it
   is owed, with *Collect*, *Leave* (undelegate) and *Withdraw*.
 - **Storage**: *Provide storage* makes the device a storage provider. Every
-  two seconds it takes open deals whose data it can fetch from their
-  locator and that fit the space it allows per deal, keeps a copy in the
-  app's directory, proves the round under way for every deal it keeps, and
-  collects and closes. Each proof expires at the end of its round, so a
-  late one is refused for free instead of failing for a fee. *Stop
-  providing* takes no new deals but keeps proving the ones it holds until
-  they end, while the app runs: turning it off never abandons a deal. The
-  tab shows the deals kept, what was collected and what is due.
+  two seconds it proves the round under way for every deal it keeps,
+  collects and closes, accepts the deals whose data arrived, and fetches
+  new ones in the background: open deals on modest terms (see [Providers on
+  people's devices](../concepts/storage.md#providers-on-peoples-devices))
+  that fit the space it allows per deal, whose data comes from the
+  internet. It never fetches from the device itself or its local network
+  for a stranger (the `storage_local` setting allows it, for data on your
+  own machines). Each proof expires at the end of its round, so a late one
+  is refused for free instead of failing for a fee. *Stop providing* takes
+  no new deals but keeps proving the ones it holds until they end, while
+  the app runs: turning it off never abandons a deal. The tab shows the
+  deals kept, what was collected and what is due.
 - **Settings**: the node, and the pinned chain identity.
 
 ## Pinning the chain identity
@@ -131,7 +142,10 @@ validator keys, fails.
 A first use against a lying node would pin the liar's chain. Compare the
 pinned identity with one from a source you trust (a release, a friend, a
 second node), or paste that one into *Pin an identity you trust* before
-the first verification.
+the first verification. If the settings ever cannot be read, the app keeps
+the file aside as `settings.json.unreadable`, starts from the defaults,
+says so, and does not pin on first use again until you pin an identity
+(or unpin, which asks for the next verification to pin).
 
 ## Where its state lives
 
@@ -141,8 +155,9 @@ The app's directory holds two files:
   with mode 0600. It is not encrypted. A release for people's money would
   keep it in the platform's keystore (the Keychain, the Android Keystore),
   which this version does not do.
-- `settings.json`: the node, the pinned chain identity and the number of
-  shares sampled per Pulse.
+- `settings.json`: the node, the pinned chain identity, the number of
+  shares sampled per Pulse and the storage settings, written whole and
+  renamed into place so that a crash never leaves half a file.
 
 Delete the directory to start over with a new key.
 

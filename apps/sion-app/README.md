@@ -14,7 +14,7 @@ covers what it checks, what it does not, and where its key lives.
 
 | Layer | Where | What |
 |---|---|---|
-| Core | `crates/sion-app-core` (in the workspace, tested against a devnet over HTTP) | The key (`key.seed`, mode 0600), settings, light-client verification, payments, pooled stake |
+| Core | `crates/sion-app-core` (in the workspace, tested against a devnet over HTTP) | The key (`key.seed`, mode 0600), settings, light-client verification, payments, pooled stake, the storage provider |
 | Shell | `apps/sion-app/src-tauri` (its own Cargo workspace, so GUI dependencies stay out of the protocol's) | Tauri commands that forward to the core; the app-data directory |
 | Interface | `apps/sion-app/ui` | Static HTML, CSS and JavaScript in the brand's tokens; it holds no key and makes no network call |
 

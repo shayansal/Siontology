@@ -790,6 +790,29 @@ certificate per session, and each further Pulse it samples costs about 7 to
 
 ### 6.3 Paying for device work without paying fake identities
 
+**What is built: storage deals (specification v1.12).** A market version
+of custody came first: a client escrows payment for keeping data whose
+root it fixes, and a provider that accepts with collateral proves, every
+round, the leaves the beacon of the round's first Pulse picks
+([Storage deals](../concepts/storage.md)). The client pays, so fake
+identities are paid nothing a client did not choose to pay; collateral and
+forfeiture make a provider's promise credible. The app makes any desktop a
+provider. What follows, protocol-assigned archival custody paid from fees,
+is still a design: the same proofs, with the treasury as client.
+
+**Capacity** (our arithmetic). A proof carries each challenged leaf (up
+to 4 KiB) and its path (32 bytes a level): with 4 challenges, about 17 KiB
+for an 18-leaf file and 22 KiB for a 2⁴⁰-leaf one, a deal a round
+(`storage:raw-proofs`). At 1 MiB of ledger data a second set aside for
+storage proofs, rounds of 1,000 Pulses at 4 seconds keep about 200,000
+deals; a million deals a day of proofs is about 20 GiB. That is enough for
+a testnet and for agents' memory archives at first, not for billions of
+agents: the path to scale is one succinct proof per provider per round
+covering all its deals (the [succinct-proofs](succinct-proofs.md) plan),
+which turns kilobytes per deal into a constant per provider.
+
+The design for archival custody:
+
 1. **Registration.** `RegisterNode { kind, bond }`, before an epoch
    begins. The bond is the price of each identity.
 2. **Assignment by bond.** The beacon of a Pulse a few Pulses after the
@@ -901,11 +924,12 @@ round with 7 validators. A desktop community node needs no server at all.
 | Specification v1.8 | Agent identities and subagents | Built |
 | v1.9 | Memory logs kept append-only by the ledger; the `sion-memory` library with the 4D index, its proofs and RMP; a demo of robots sharing a warehouse | Built |
 | v1.10 | Task Charters: task escrows with acceptance fixed at posting, adjudicators on result claims, batch claims with beacon-chosen samples | Built, except batch claims |
-| v1.11 | Non-custodial delegation; node registration, bond-weighted archival assignments and custody challenges; the light-client accumulator | Delegation built; the rest planned |
-| v1.12 | Amortized authorization: batch roots and a verification fee, cohorts, keyless children, lineage ids, token buckets, overlays | Planned |
-| Later | Certificate stamps, once the consensus simulator can test lagging and Byzantine committees; aggregators, curators and storage proofs for memory | Design |
-| In parallel | Networking between machines, phase by phase | Under way |
-| In parallel | The app: one Rust core with desktop and mobile shells | Planned |
+| v1.11 | Non-custodial delegation (pooled stake) | Built |
+| v1.12 | Storage deals: devices paid by clients to keep data and prove it every round, with challenges from recorded beacons | Built |
+| v1.13 | Amortized authorization: batch roots and a verification fee, cohorts, keyless children, lineage ids, token buckets, overlays | Planned (next) |
+| Later | Node registration, bond-weighted archival assignments and custody challenges paid from fees (§6.3); the light-client accumulator; certificate stamps, once the consensus simulator can test lagging and Byzantine committees; aggregators and curators for memory; storage proofs aggregated per provider | Design |
+| In parallel | Networking between machines, phase by phase | Simplified: QUIC between processes, peers from files |
+| In parallel | The app: one Rust core with desktop and mobile shells | Desktop built and run; mobile configured, not built |
 
 Each specification version is built twice, once in each proof stack, with
 differential tests, as every version so far has been.

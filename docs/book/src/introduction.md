@@ -14,12 +14,14 @@ yet. The design it implements is described in the architecture paper
 - Source: [github.com/ColdAI-org/siontology](https://github.com/ColdAI-org/siontology)
 - Licence: Apache-2.0 OR MIT
 
-> **Status.** Siontology is a devnet-scale reference implementation. It runs
-> every validator in one process, its validity proofs are *replay proofs*
-> that simulate succinct ones, and its devnet keys can be derived by
-> anyone. It secures nothing of value and has no production deployment.
-> [What exists today](#what-exists-today) below says exactly what is built,
-> simplified, simulated or missing, and every chapter follows it.
+> **Status.** Siontology is a devnet-scale reference implementation. Its
+> devnet runs every validator in one process (separate `sion node`
+> processes also talk over QUIC, tested on one machine), its validity
+> proofs are *replay proofs* that simulate succinct ones, and its devnet
+> keys can be derived by anyone. It secures nothing of value and has no
+> production deployment. [What exists today](#what-exists-today) below
+> says exactly what is built, simplified, simulated or missing, and every
+> chapter follows it.
 
 ## Why
 
@@ -78,7 +80,8 @@ change only at epoch boundaries, by rules the World Proof covers
 
 The repository's
 [implementation status](https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md)
-is the authority on what is built. This table copies its summary.
+is the authority on what is built. This table copies the main rows of its
+summary.
 
 - **Built**: implemented as the architecture describes, at devnet scale,
   with tests.
@@ -94,6 +97,7 @@ is the authority on what is built. This table copies its summary.
 | Identity: post-quantum accounts | Built |
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
+| Identity: agent identities and subagents | Built (devnet scale) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -112,11 +116,15 @@ is the authority on what is built. This table copies its summary.
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
+| Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
+| Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
+| Orchestration: Task Charters, escrowed work with acceptance fixed at posting (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
+| Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale) |
 | Economics: payments to provers, value-in-flight cap | Not built |
-| Networking between machines | Simulated (in-process channels) |
+| Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
 
 The implementation also adds trust assumptions of its own, such as
 `impl:replay-proofs` and `impl:devnet-keys`. They are listed in
@@ -134,8 +142,8 @@ From the architecture paper, stated plainly:
   conflicting spends, and only stake decides which history is canonical.
 - **It is not proven at scale.** The paper's capacity figures (100,000
   operations a second on a testnet, 1.6 million at maturity) are design
-  targets. This implementation is a single-process devnet and has not been
-  measured against them.
+  targets. This implementation has run as a devnet in one process and as a
+  few processes on one machine, and has not been measured against them.
 
 ## How to read this book
 

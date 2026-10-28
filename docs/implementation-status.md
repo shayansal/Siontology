@@ -49,7 +49,7 @@ live.
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
-| Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale; stack B pending, see below) |
+| Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale) |
 | Economics: payments to provers, value-in-flight cap | Not built |
 | Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
 
@@ -349,18 +349,24 @@ node: it keeps the device's key (`key.seed`, mode 0600), verifies the
 latest certified Pulse every eight seconds the way `sion verify --no-world`
 does (chain identity pinned on first use, committee certificate followed
 from the pin, receipts, a state proof when the node is at that Pulse, 16
-random data shares), proves the receipt of every transaction it signs, and
-pays and pools stake (v1.11) through `sion_cli`. It is `Send + Sync`, takes
-`&self` and holds no lock while it talks to a node. It can also run a
-storage provider (v1.12) that takes open deals, keeps the data and proves
-every round, and that keeps proving deals it holds when turned off. Tested
-against a devnet over HTTP (`crates/sion-app-core/tests/devnet.rs`). The Tauri 2
-shell in `apps/sion-app` (its own Cargo workspace) builds and runs on
-Linux; it was run under a virtual display against a devnet and its four
-tabs captured. **Not built:** the Android and iOS builds (configured, not
-attempted: no SDK here), a key in the platform's keystore (`app:plain-key`),
-proofs of the balances it shows (`app:unproven-balances`), storage or
-bandwidth served by devices, and installers or code signing.
+random data shares), proves the receipt of every transaction it signs
+(waiting for the digest it computed, and showing only what the proven
+receipt says), and pays (to 64-digit accounts only) and delegates stake
+(v1.11) through `sion_cli`. It is `Send + Sync`, takes `&self` and holds no
+lock while it talks to a node. It can also run a storage provider (v1.12)
+that takes open deals on modest terms, fetches their data in the
+background from the internet only (not from the device or its network,
+unless told), keeps the data and proves every round, and that keeps
+proving deals it holds when turned off. Settings are written atomically;
+unreadable ones are kept aside and nothing is pinned on first use without
+the person's say. Tested against a devnet over HTTP
+(`crates/sion-app-core/tests/devnet.rs`). The Tauri 2 shell in
+`apps/sion-app` (its own Cargo workspace) builds and runs on Linux; it was
+run under a virtual display against a devnet and its tabs captured.
+**Not built:** the Android and iOS builds (configured, not attempted: no
+SDK here), a key in the platform's keystore (`app:plain-key`), proofs of
+the balances it shows (`app:unproven-balances`), bandwidth served by
+devices, and installers or code signing.
 
 ### Payments
 
@@ -473,21 +479,31 @@ budget, compounding.
 for keeping data whose Merkle root it fixes (`PostDeal`), for a named
 provider or any; the provider accepts with collateral and gets a custody
 record it owns; each round it proves, owned-linear and many deals per
-transaction, the leaves a challenge picks from a seed that the beacon of
-every proof's Pulse changes; it collects per proven round; the close
-refunds unproven rounds to the client and returns the collateral less
-`⌊bond / rounds⌋` per missed round, or forfeits all of it to the treasury
-if the client closes a deal abandoned for three rounds. Commands
-`sion storage …` (including `serve`, a provider loop that fetches, checks,
-accepts, proves, collects and closes), MCP tools `sion_storage_*`, the
+transaction, the leaves the beacon of the round's first Pulse picks (the
+deferred phase records the beacon of every eighth Pulse in one of 12,500
+beacon records, §6.3); it collects per proven round; the close refunds
+unproven rounds to the client and returns the collateral less
+`⌊bond × missed / rounds⌋`, or forfeits all of it to the treasury if the
+client closes a deal abandoned for three rounds. Both proof stacks
+implement it, and the differential tests run every operation and failure
+through both. Commands `sion storage …` (including `serve`, a provider
+loop that proves, collects and closes, then accepts deals whose data it
+fetched in the background on its terms), MCP tools `sion_storage_*`, the
 `storage` demo (an agent's memory archive kept by a laptop; a phone that
-kept half of its data caught and its collateral forfeited), and
-`GET /v1/deals`, and the app's Storage tab, which turns a device into a
-provider (tested against a devnet; run on the desktop build). **Not
-built:** proof of replication (a provider may fetch challenged leaves from
-elsewhere: `storage:no-replication`), retrieval (`storage:no-retrieval`),
-repair or re-assignment of a failed deal, and deals funded from an agent's
-budget.
+kept half of its data caught and its collateral forfeited),
+`GET /v1/deals` (`?open=1` from an index), and the app's Storage tab,
+which turns a device into a provider (tested against a devnet; run on the
+desktop build). Outbound HTTP goes through `sion-http`: TLS with
+X25519MLKEM768 first, deadlines, bounded bodies, no redirects, no local or
+private addresses. An independent review changed the challenge, the
+forfeit, open deals' collateral and the provider before release
+([Reviews](book/src/security/reviews.md)). **Not built:** proof of
+replication (a provider may fetch challenged leaves from elsewhere:
+`storage:no-replication`), retrieval (`storage:no-retrieval`), repair or
+re-assignment of a failed deal, deals funded from an agent's budget,
+encryption in the tooling (proofs publish the challenged leaves: a client
+encrypts private data itself), and storage proofs aggregated across deals
+(each round's leaves go on the ledger: `storage:raw-proofs`).
 
 **Not built:** payments to provers, a value-in-flight cap.
 
@@ -564,6 +580,7 @@ the architecture's own:
 | `impl:memory-index` | The ledger stores a memory log's index root without checking it: a memory query proof is complete relative to that root, and nothing on the ledger yet acts on evidence that an index leaves an atom out. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
 | `storage:no-replication` | A storage proof shows that the provider could produce the challenged leaves during the round, not that it keeps a copy of its own: it could fetch them from another copy (or from the client) when challenged. Two deals with two providers are not proof of two copies. |
+| `storage:raw-proofs` | Every storage proof carries its challenged leaves and paths on the ledger, about 17 to 22 KiB a deal a round with 4 challenges. Proofs are not aggregated across deals or rounds, so ledger bandwidth bounds how many deals a network can keep. |
 | `storage:no-retrieval` | Getting data back is not part of the protocol: a provider proves custody, and returning the data to its client is up to them. |
 | `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
 | `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |

@@ -38,6 +38,11 @@ attestations of verifiers the task names.
 reveals. It seals market batches, breaks clearing ties and seeds lane
 committees.
 
+**Beacon record.** The beacon of a Pulse that is a multiple of 8, kept by
+the chain in one of 12,500 reusable slots, so a transaction can read the
+beacon of a Pulse fixed in advance for 100,000 Pulses (specification
+§6.3). Storage challenges use it.
+
 **Bond.** Money posted behind an atom, slashed if a challenge against it
 is upheld.
 
@@ -61,8 +66,8 @@ lets the payee settle by a jump. See
 [Payment streams](../concepts/payment-streams.md).
 
 **Challenge (storage).** The leaves a storage deal's provider must show in
-a round, drawn from its custody record's seed, which the beacon changes
-with every proof. See Storage deal.
+a round, drawn from the beacon of the round's first Pulse, which the chain
+records (see Beacon record). See Storage deal.
 
 **Chunk.** A run of transactions (16 by default), or the deferred phase,
 with a statement and a witness; the unit a proof stack proves.

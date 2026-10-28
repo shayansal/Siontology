@@ -10,34 +10,67 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Fixes from the review of storage deals, pooled stake and the app
+
+An independent review of storage deals and the app, and a review of the
+staking incentives, found defects that were fixed before release ([Reviews and
+fixes](docs/book/src/security/reviews.md)):
+
+- **Storage challenges** (spec v1.12): a round's challenge now comes from
+  the beacon of its first Pulse, fixed at acceptance, instead of the beacon
+  of the previous proof's Pulse, which a provider working with a validator
+  could time. The deferred phase records the beacon of every eighth Pulse
+  in one of 12,500 beacon records (`sion_exec::beacons`); rounds start and
+  last multiples of 8 Pulses; the longest round is 100,000 Pulses. Missed
+  rounds forfeit `⌊bond × missed / rounds⌋`; open deals must ask for
+  collateral.
+- **The reporter's share** (spec v1.11) is of the offender's own stake and
+  rewards only: a share of the pool's slashed tenth made reporting
+  yourself profitable once your pool was about 190 times your stake.
+- **Proof stack B** implements storage deals and beacon records; the
+  storage differential tests run again.
+- **The provider** proves first and fetches in the background with
+  deadlines; refuses `file://` locators unless allowed and private
+  addresses always; batches proofs by size; takes modest deals by default;
+  writes copies only after acceptance and deletes them at the close. A
+  refused submission releases its coins. New crate `sion-http`: bounded,
+  guarded outbound HTTP with X25519MLKEM768 first.
+- **The app** shows outcomes from proven receipts only, waits for the
+  digest it computed, pays 64-digit accounts only, writes settings
+  atomically and pins nothing on first use after a reset; test money is
+  labelled test USD, and the wording is neutral.
+- `GET /v1/deals?open=1`, from an index; `sion storage post` needs
+  `--locator` or `--local`.
+
 ### Storage deals (specification v1.12)
 
 - `PostDeal` escrows `price × rounds` for keeping data whose Merkle root
   the deal fixes (leaves of at most 4 KiB, RFC 9162 tree), for a named
-  provider or for any. `AcceptDeal` posts the provider's collateral and
-  creates a custody record the provider owns. `ProveStorage` proves the
+  provider or for any (then with collateral). `AcceptDeal` posts the
+  provider's collateral and creates a custody record the provider owns;
+  rounds start on the next multiple of 8 Pulses. `ProveStorage` proves the
   round under way for many deals at once, owned-linear: for each, the
-  leaves a challenge picks (from a seed the beacon changes with every
-  proof) with their Merkle paths. `SettleDeal` pays the provider for
-  proven rounds; `CloseDeal` refunds unproven rounds to the client,
-  returns the collateral less `⌊bond / rounds⌋` per missed round, or
-  forfeits all of it to the treasury when the client closes a deal its
-  provider abandoned for three rounds. The supply counts deal escrow and
-  collateral.
+  leaves the beacon of the round's first Pulse picks, with their Merkle
+  paths. `SettleDeal` pays the provider for proven rounds; `CloseDeal`
+  refunds unproven rounds to the client, returns the collateral less
+  `⌊bond × missed / rounds⌋`, or forfeits all of it to the treasury when
+  the client closes a deal its provider abandoned for three rounds. The
+  supply counts deal escrow and collateral. Both proof stacks implement it.
 - `sion storage prepare | post | deals | show | accept | prove | settle |
-  close | serve`; `serve` runs a provider that fetches data from a deal's
-  locator (`file://` or `http(s)://`), checks it against the root, accepts,
-  proves every round, collects and closes. MCP tools `sion_storage_post`,
-  `sion_storage_deals` and `sion_storage_close`. `GET /v1/deals`; account
-  views list custody records.
+  close | serve`; `serve` runs a provider that proves every round, collects
+  and closes, and accepts deals whose data it fetched (`https://`, or
+  `file://` when allowed) and checked against the root. MCP tools
+  `sion_storage_post`, `sion_storage_deals` and `sion_storage_close`.
+  `GET /v1/deals`; account views list custody records.
 - The `storage` demo: a robot commits its memory log with its archive's
   root as the manifest and pays a laptop to keep the archive; a phone that
   kept only half of the camera footage it accepted cannot answer the
   challenges and forfeits its collateral.
 - The app's Storage tab turns a device into a provider: it takes open deals
-  it can fetch, keeps the data, proves every round (each proof expiring at
-  the end of its round, so a late one costs nothing), collects and closes;
-  turned off, it keeps proving the deals it holds.
+  on modest terms whose data it can fetch, keeps the data, proves every
+  round (each proof expiring at the end of its round, so a late one costs
+  nothing), collects and closes; turned off, it keeps proving the deals it
+  holds.
 
 ### The app: a light node on every device
 
@@ -116,7 +149,8 @@ Commit messages before the rename use the working name, Fold.
 - A delegation is refused if it would give its validator more than twice
   an equal share of the bonded stake (never less than a tenth).
 - An equivocation also slashes a tenth of the offender's pool, unbonding
-  delegations included; the reporter's share is of both. Validators rank
+  delegations included; the reporter's share is of the offender's own
+  stake only (as first written, of both). Validators rank
   for the active set by their own plus their pool's earning stake.
 - Both proof stacks implement v1.11. The differential tests run every rule
   and failure through both, check every epoch end's split against a third,

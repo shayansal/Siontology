@@ -11,8 +11,9 @@ a validity proof folded over every Pulse, and a knowledge layer in which
 every claim states what it would cost to falsify.
 
 This is a devnet-scale reference implementation in Rust. Some parts of the
-architecture are simulated or left out, most importantly succinct proofs
-and networking between machines.
+architecture are simulated, simplified or left out, most importantly
+succinct proofs (simulated by replay proofs) and networking between
+machines (simplified: QUIC between processes, tested on one machine).
 [`docs/implementation-status.md`](docs/implementation-status.md) lists every
 simplification.
 
@@ -77,6 +78,16 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   payments a second executed with every signature checked (measured; see
   [the research note](docs/book/src/research/billion-scale.md) for what
   this does and does not mean).
+- **Agent identities, memory and tasks.** An agent launches subagents,
+  each with its own identity, account and budget, and suspending one stops
+  its whole tree. Agents and robots keep memory in single-writer logs whose
+  heads are on the ledger, so a reader can check that an answer is
+  complete and a rewrite is refused. Task Charters escrow work whose
+  acceptance is fixed when it is posted.
+- **Storage deals.** A client escrows payment to have data kept; the
+  provider posts collateral and proves every round, by answering random
+  challenges drawn from the beacon, that it can still produce the data,
+  and forfeits collateral for the rounds it misses.
 - **Agent-native interfaces.** A CLI, a JSON HTTP API and a Model Context
   Protocol server, so AI agents can pay, issue claims, price a claim's
   trustworthiness before relying on it, and verify the chain. An x402
@@ -150,6 +161,10 @@ availability and proving) and narrates what the ledger established.
 |---|---|
 | `invoice` | Trade finance on insured knowledge: a buyer's acceptance of invoice #1042 is a bonded claim; a financier prices it with the Assurance Algebra, relies on it within its backing, and is compensated from the slashed bond when the claim proves false. |
 | `agents` | An AI agent with a budget the ledger enforces: a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent. |
+| `swarm` | Agent identities: an orchestrator launches 12 researchers in one transaction and one of them launches 3 of its own, each with its own identity, account and budget; 15 pay at once without consensus; one suspension stops the whole tree and one resumption restarts it. |
+| `tasks` | Task Charters: an eval orchestrator posts work from its budget; a result is paid only when it rests on the environment's claim and enough attested backing, and only once; a bounty is settled and another withdrawn; an exploit in the grader is proven and the lab is compensated from the vendor's bond. |
+| `robots` | Memory for robots: two robots with their own identities and memory logs share a warehouse; a reader checks complete answers against the heads on the ledger; a rewrite is refused; a curator's refutation gives two readers two provable beliefs; an index that leaves an atom out is convicted; a camera frame is forgotten; a suspended robot's memory stops growing. |
+| `storage` | Storage deals: a robot commits its memory log with its archive's root as the manifest and pays a laptop to keep the archive, proven every round; a phone that kept only half of the footage it accepted cannot answer the challenges and forfeits its collateral. |
 | `market` | A sealed-bid GPU-hour market that clears at one price with an optimality certificate. |
 | `receipts` | Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions (trusting a TEE, distrusting it, or assuming it broken). |
 | `x402` | An AI agent pays an HTTP API per request with x402: the API answers `402`, the agent pays under its charter and retries, and the API serves once the receipt verifies; a replayed payment and an over-limit payment are refused. |
@@ -169,12 +184,16 @@ availability and proving) and narrates what the ledger established.
 | [`sion-clearing`](crates/sion-clearing) | Verifiable Clearing: sealed double auctions and assignment markets with certificates |
 | [`sion-da`](crates/sion-da) | 2D Reed–Solomon over the Goldilocks field, commitments, sampling, reconstruction, fraud proofs |
 | [`sion-consensus`](crates/sion-consensus) | Linear Lanes, certified-DAG BFT, committees and sampling, the beacon, forced inclusion, a deterministic network simulator |
-| [`sion-exec`](crates/sion-exec) | The state machine: objects, accounts, claims, bonds, Agent Charters, escrow, markets, payment streams; Pulse execution with chunk traces and witnesses |
+| [`sion-exec`](crates/sion-exec) | The state machine: objects, accounts, claims, bonds, Agent Charters, agent identities, escrow, markets, payment streams, memory log heads, tasks, the validator set, storage deals; Pulse execution with chunk traces and witnesses |
 | [`sion-spec`](crates/sion-spec) | An independent implementation of the state transition written from [the specification](docs/spec/state-transition.md) (proof stack B) |
 | [`sion-prover`](crates/sion-prover) | Proof stacks, World Proofs and their verification |
 | [`sion-light`](crates/sion-light) | The light client: chain identity, header certificates, proofs, availability sampling |
-| [`sion-node`](crates/sion-node) | The devnet: validators, gateway, prover, write-ahead log and snapshots, HTTP API |
-| [`sion-cli`](crates/sion-cli) | The `sion` command: devnet, wallets, payment streams, x402, demos, light verification, MCP server, benchmarks |
+| [`sion-memory`](crates/sion-memory) | Memory for agents and robots, off the ledger: memory atoms, single-writer logs, a 4D index with range, subject, link and omission proofs, belief as a fold, sealing and forgetting |
+| [`sion-net`](crates/sion-net) | Networking between processes: QUIC with TLS 1.3, X25519MLKEM768 and pinned ML-DSA-44 raw public keys, bounded queues and quotas |
+| [`sion-http`](crates/sion-http) | Outbound HTTPS for clients, X25519MLKEM768 offered first, refusing non-public addresses |
+| [`sion-node`](crates/sion-node) | The devnet and `sion node`: validators, gateway, prover, write-ahead log and snapshots, HTTP API |
+| [`sion-cli`](crates/sion-cli) | The `sion` command: devnet, nodes, wallets, payment streams, x402, agents, tasks, memory, storage deals, demos, light verification, MCP server, benchmarks |
+| [`sion-app-core`](crates/sion-app-core) | The app's core: the device's key, a light client that verifies the device's own receipts, payments, storage provided from the device ([apps/sion-app](apps/sion-app)) |
 
 ## Documentation
 

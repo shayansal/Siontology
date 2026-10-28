@@ -45,7 +45,7 @@ $ curl -s http://127.0.0.1:8730/v1/accounts/xyz
 | POST | `/v1/forced` | Post a forced intent, bypassing the gateway |
 | GET | `/v1/forced` | Forced-inclusion obligations |
 | GET | `/v1/committees` | The current committees and registered keys, Borsh in hex (for a gateway in another process) |
-| GET | `/v1/deals` | Every storage deal with its state |
+| GET | `/v1/deals` | Storage deals with their state (`?open=1`: only those open for acceptance) |
 | POST | `/v1/devnet/censor` | Adversary simulation: censor accounts |
 
 ## `GET /v1/status`
@@ -373,7 +373,9 @@ missed}`. An example is in [Forced inclusion](../guides/forced-inclusion.md#cens
 `{pulse, deals}`: every storage deal, each `{id, deal}` with the deal's
 terms and state (`Open`, `Active { provider, custody, start, bond, paid }`
 or `Closed { at, proven, missed, refund, forfeited }`), amounts in
-micro-units. A provider's custody records are in its account view
+micro-units. With `?open=1`, only deals still open for acceptance (state
+`Open`, `accept_by` after the latest Pulse): what providers poll. The node
+answers from an index of deal ids it keeps, not a scan of the state. A provider's custody records are in its account view
 (`GET /v1/accounts/{id}`, field `custody`). See
 [Storage deals](../concepts/storage.md).
 

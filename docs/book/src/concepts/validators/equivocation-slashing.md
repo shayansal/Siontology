@@ -43,8 +43,11 @@ withdrawn:
 2. If it has a pool of delegated stake, the pool loses a tenth of its
    stake, unbonding delegations included
    ([Pooled stake](pooled-stake.md)).
-3. The reporter receives `reporter_permille` thousandths of the stake
-   forfeited, the pool's included, and of the rewards (5 % on the devnet).
+3. The reporter receives `reporter_permille` thousandths of the
+   offender's own stake and of its rewards (5 % on the devnet), never of
+   its pool's slashed tenth, which goes to the treasury whole: a share of
+   it would let an operator with a large enough pool profit from reporting
+   itself.
 4. The rest goes to the treasury. It is not a fee, so it is never paid
    out as rewards ([Rewards](rewards.md)).
 5. The events `ValidatorSlashed { validator, amount, reporter, reward }`

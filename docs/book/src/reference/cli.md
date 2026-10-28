@@ -1254,7 +1254,7 @@ Commands:
   prove    Prove the round under way for every deal you hold
   settle   Collect for the rounds you proved
   close    Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
-  serve    Run a provider: accept open deals whose data you can fetch, prove every round, collect and close, every second until stopped
+  serve    Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1294,12 +1294,13 @@ Options:
       --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --price <PRICE>                  Paid per proven round (decimal USD)
       --rounds <ROUNDS>                Rounds
-      --round-length <ROUND_LENGTH>    Pulses per round (at least 8) [default: 20]
-      --collateral <COLLATERAL>        Collateral the provider must post (decimal USD) [default: 0]
+      --round-length <ROUND_LENGTH>    Pulses per round: a multiple of 8, from 8 to 100,000 [default: 16]
+      --collateral <COLLATERAL>        Collateral the provider must post (decimal USD). Default: the escrow, for a deal open to anyone (which must ask for some); none for a named provider
       --challenges <CHALLENGES>        Leaves challenged per round (1 to 16) [default: 4]
       --provider <PROVIDER>            The provider (wallet name or account); without it, anyone may accept
       --accept-within <ACCEPT_WITHIN>  How many Pulses the deal stays open for acceptance [default: 200]
-      --locator <LOCATOR>              Where providers fetch the data (default: file://<the file>)
+      --locator <LOCATOR>              Where providers fetch the data: an https:// URL serving the file
+      --local                          Point providers at the file itself (file://<its path>): only a provider on this machine can fetch it, and the deal publishes the path
   -h, --help                           Print help
 ```
 
@@ -1398,7 +1399,7 @@ Options:
 ## `sion storage serve`
 
 ```text
-Run a provider: accept open deals whose data you can fetch, prove every round, collect and close, every second until stopped
+Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
 
 Usage: sion storage serve [OPTIONS] <FROM>
 
@@ -1407,13 +1408,23 @@ Arguments:
 
 Options:
       --min-price <MIN_PRICE>
-          Accept only deals paying at least this per round (decimal USD) [default: 0.000001]
+          Accept only deals paying at least this per round (decimal USD), and at least twice what proving a round costs in fees [default: 0.01]
       --node <NODE>
           The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --max-collateral <MAX_COLLATERAL>
-          Accept only deals asking at most this collateral (decimal USD) [default: 1000]
+          Accept only deals asking at most this collateral (decimal USD) [default: 10]
+      --max-total-collateral <MAX_TOTAL_COLLATERAL>
+          The most collateral at stake across all deals (decimal USD) [default: 100]
       --max-mib <MAX_MIB>
           Accept only data of at most this many MiB [default: 64]
+      --max-total-mib <MAX_TOTAL_MIB>
+          Keep at most this many MiB in all [default: 1024]
+      --max-duration <MAX_DURATION>
+          Accept only deals lasting at most this many Pulses [default: 100000]
+      --allow-local
+          Fetch file:// locators (a provider on the clients' machine)
+      --allow-private
+          Fetch from local and private network addresses
       --pulses <PULSES>
           Stop after this many Pulses
   -h, --help

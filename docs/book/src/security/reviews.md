@@ -1,8 +1,9 @@
 # Reviews and fixes
 
-The code has had no external security audit. It has had three
+The code has had no external security audit. It has had four
 independent internal reviews, run by agents that had not written the code,
-and its two proof stacks test each other. This chapter lists what they found. Every
+a review of the staking incentives, and its two proof stacks test each
+other. This chapter lists what they found. Every
 item is fixed, with a regression test, unless marked **open**. The source
 is the repository's `docs/implementation-status.md`.
 
@@ -107,6 +108,86 @@ refused; approval evidence lapses with the transactions and stays within
 one lane epoch; and the executor, the node and the light client derive the
 same committees, the light client only from proven state, one boundary at
 a time.
+
+## Review of storage deals and the app
+
+The fourth review read storage deals (specification v1.12) in the
+specification, the reference executor, the provider, the node and the app,
+and the app's light-client verification, and confirmed its findings with
+tests: the simulated chain, an in-process devnet, and a lying HTTP proxy in
+front of an honest devnet. All were fixed before v1.12 was released, with
+regression tests (`crates/sion-exec/tests/storage.rs`, the differential
+storage scenario, `crates/sion-http`, `crates/sion-app-core`).
+
+- **A provider could steer its challenges** (medium). Each proof fixed
+  the next round's challenge through the beacon of the Pulse it executed
+  in, and a validator knows a Pulse's beacon before its transactions are
+  final, so a provider working with one could time its proofs. In a
+  simulation, one keeping half its data passed 20 rounds of 20 and kept
+  its collateral. Fixed in the specification: a round's challenge comes
+  from the beacon of its first Pulse, fixed at acceptance, which the chain
+  records ([beacon records](../concepts/storage.md#the-challenge)).
+- **A missed round could cost nothing** (low). Each missed round cost
+  `⌊bond / rounds⌋`, zero when the collateral was smaller than the number
+  of rounds. Fixed: `⌊bond × missed / rounds⌋`, rounded down once. Open
+  deals without collateral, which a stranger could take and sit on, are
+  refused.
+- **One stranger's deal could stall or harm every provider** (high). The
+  provider fetched a deal's data inside its loop, before proving: a
+  locator that never answered stalled every proof (a provider missed 14
+  rounds and lost its collateral in a test), a `file://` locator read any
+  path (`/dev/zero` filled a 2 GiB disk in under a second; a FIFO hung
+  forever), and an `http://` one could reach the machine itself or its
+  network. Fixed: fetching runs in the background with deadlines; outbound
+  HTTP is bounded and refuses local and private addresses; `file://` is
+  refused unless the provider is told it may read local sources, and then
+  only regular files are read.
+- **Large proof batches wedged the wallet** (high). Batches were split at
+  64 leaves only, so a full batch went over the 256 KiB transaction limit,
+  and the refused submission left its coins marked as in flight, so every
+  later transaction failed. Fixed: batches are split by size too, and a
+  refused submission releases its coins.
+- **The default provider terms were unsafe for a device** (medium):
+  1 µUSD a round against fees thousands of times larger, up to 1,000 USD
+  of collateral a deal, no limit on duration or disk, copies written
+  before acceptance and never deleted. Fixed: the defaults in
+  [Providers on people's devices](../concepts/storage.md#providers-on-peoples-devices).
+- **"The ledger never sees the data" was false** (medium). Proofs publish
+  the challenged leaves; a demo's file ended up two thirds on the ledger.
+  The specification and these pages now say so, and recommend encryption.
+- **The app could show a node's lie as proven** (high). It displayed the
+  node's account of a transaction next to "Receipt proven", and proved the
+  receipt of whatever digest the node returned: through a lying proxy, a
+  failed payment showed as a success, and a dropped one showed an earlier
+  receipt. Fixed: the app waits for the digest it computed and shows what
+  the proven receipt says, or labels the node's claim as unproven.
+- `/v1/deals` scanned every object on the validator's event loop for
+  every provider poll (low). Fixed: an index, and `?open=1`.
+- Settings that failed to parse were silently reset, dropping the pinned
+  chain identity, which the next verification then pinned again (low).
+  Fixed: settings are written atomically, an unreadable file is kept
+  aside, and nothing is pinned on first use until the person says so.
+- Also fixed (low): the verification line said signatures were checked
+  when the devnet skipped them; receipts proven against an unpinned chain
+  were shown as proven; locator text reached the terminal unescaped; and a
+  name typed as a recipient paid a devnet wallet whose keys anyone can
+  derive (the app now takes 64-digit accounts only).
+
+The review found the rest sound: the reference executor matches the
+specification step by step; money is conserved and forfeits never exceed
+the bond; proofs cannot be replayed across rounds or deals; a proof in the
+same Pulse as an abandonment close executes first; and the light client's
+pinning, epoch cache and key handling hold.
+
+## Review of the staking incentives
+
+A review of the incentives around pooled stake found that the reporter
+of an equivocation was paid a share of the slashed pool's tenth as well as
+of the offender's own stake. Header evidence never expires, so an operator
+whose pool was about 190 times its own stake could sign two conflicting
+headers and report itself through another account at a profit. Fixed in
+specification v1.11 before release: the reporter's share is of the
+offender's own stake and rewards only (`crates/sion-exec/tests/pool_slashing.rs`).
 
 ## Found by the two proof stacks
 

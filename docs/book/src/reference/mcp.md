@@ -555,7 +555,7 @@ See [Task Charters from the command line](../guides/tasks.md) for the same steps
 
 ## sion_task_attest
 
-Attest, as a verifier the task names, that an output passes: issues an attestation claim resting on the verifier's bond bond:<verifier>:verifier (or bond_label).
+Attest, as a verifier the task names, that an output passes: issues an attestation claim resting on the verifier's bond `bond:<verifier>:verifier` (or `bond_label`).
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -568,7 +568,7 @@ See [Task Charters from the command line](../guides/tasks.md) for the same steps
 
 ## sion_task_submit
 
-Submit a result for a task: issues a result claim with exactly the formula the task requires, over the attestations given (claim ids, in order). The worker needs a task bond (bond:<worker>:task-worker), however small.
+Submit a result for a task: issues a result claim with exactly the formula the task requires, over the attestations given (claim ids, in order). The worker needs a task bond (`bond:<worker>:task-worker`), however small.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -901,34 +901,35 @@ Withdraw an unbonded delegation's stake.
 
 ## sion_storage_post
 
-Have a file kept by a storage provider (spec v1.12): escrows price × rounds for data whose Merkle root the deal fixes. A provider that accepts posts collateral and must prove every round that it holds leaves picked at random; it is paid per proven round, and loses collateral for missed rounds (all of it if it abandons the deal). Without a provider, any provider may accept. Returns the deal id.
+Have a file kept by a storage provider (spec v1.12): escrows price × rounds for data whose Merkle root the deal fixes. A provider that accepts posts collateral and must prove every round that it holds leaves picked at random; it is paid per proven round, and loses collateral for missed rounds (all of it if it abandons the deal). Without a provider, any provider may accept, and the deal must ask for collateral. Proofs publish the challenged leaves: encrypt private data first. Returns the deal id.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `challenges` | integer | no | Leaves challenged per round (1 to 16; default 4) |
-| `collateral` | number | no | USD the provider must post (default 0) |
-| `locator` | string | no | Where providers fetch the data (default file://<path>) |
+| `collateral` | number | no | USD the provider must post (default: the escrow for an open deal, 0 for a named provider) |
+| `local` | boolean | no | Without a locator: point providers at the file itself (`file://<path>`), for a provider on this machine; the deal publishes the path |
+| `locator` | string | no | Where providers fetch the data: an https:// URL serving the file |
 | `path` | string | yes | The file to have kept |
 | `price` | number | yes | USD paid per proven round |
 | `provider` | string | no | Wallet name or account of the provider; omit for an open deal |
-| `round_length` | integer | no | Pulses per round (8 to 1,000,000; default 20) |
+| `round_length` | integer | no | Pulses per round: a multiple of 8, from 8 to 100,000 (default 16) |
 | `rounds` | integer | yes | Rounds (1 to 1,000,000) |
 | `wallet` | string | yes |  |
 
 Call:
 
 ```json
-{"name": "sion_storage_post", "arguments": {"wallet": "robot-7", "path": "…/patrol-archive.bin", "price": 0.25, "rounds": 4, "round_length": 10, "collateral": 1}}
+{"name": "sion_storage_post", "arguments": {"wallet": "robot-7", "path": "…/patrol-archive.bin", "price": 0.25, "rounds": 4, "round_length": 16, "collateral": 1, "local": true}}
 ```
 
 Result (`structuredContent`):
 
 ```json
 {
-  "deal": "b33840bf8bdca7c9a00b8559c4b4f48725cab1daa257c3feb05e42e41c98e68e",
+  "deal": "66f5ffa49f6703cc3b8960d145d31f81733974ead6b70a08e1504e163da4a8f7",
   "leaves": 5,
-  "pulse": 9,
-  "receipt": "Done: storage deal b33840bf posted: 5 leaves, 4 rounds at 0.25 USD each, 1 USD of collateral, open to any provider; fee 0.0012 USD.",
+  "pulse": 10,
+  "receipt": "Done: storage deal 66f5ffa4 posted: 5 leaves, 4 rounds at 0.25 USD each, 1 USD of collateral, open to any provider; fee 0.0012 USD.",
   "root": "89ba09bb4f58b297917884e1102400263c6635d0a9f26903566fc60d78cf9a7f",
   "status": "Success"
 }
@@ -955,18 +956,18 @@ Result (`structuredContent`):
 {
   "deals": [
     {
-      "accept_by": 207,
+      "accept_by": 208,
       "challenges": 4,
       "client": "2dbd6e3f6651a35a4e623838bd7e21f89b2fea15c38d66824cb72e6d111226da",
       "collateral": "1",
-      "deal": "b33840bf8bdca7c9a00b8559c4b4f48725cab1daa257c3feb05e42e41c98e68e",
+      "deal": "66f5ffa49f6703cc3b8960d145d31f81733974ead6b70a08e1504e163da4a8f7",
       "escrow": "1",
       "leaves": 5,
       "locator": "file://…/patrol-archive.bin",
       "price": "0.25",
       "provider": null,
       "root": "89ba09bb4f58b297917884e1102400263c6635d0a9f26903566fc60d78cf9a7f",
-      "round_length": 10,
+      "round_length": 16,
       "rounds": 4,
       "state": {
         "phase": "open"
@@ -979,28 +980,28 @@ Result (`structuredContent`):
 Call:
 
 ```json
-{"name": "sion_storage_deals", "arguments": {"deal": "b33840bf"}}
+{"name": "sion_storage_deals", "arguments": {"deal": "66f5ffa4"}}
 ```
 
 Result (`structuredContent`):
 
 ```json
 {
-  "accept_by": 207,
+  "accept_by": 208,
   "challenges": 4,
   "client": "2dbd6e3f6651a35a4e623838bd7e21f89b2fea15c38d66824cb72e6d111226da",
   "collateral": "1",
-  "deal": "b33840bf8bdca7c9a00b8559c4b4f48725cab1daa257c3feb05e42e41c98e68e",
+  "deal": "66f5ffa49f6703cc3b8960d145d31f81733974ead6b70a08e1504e163da4a8f7",
   "escrow": "0",
   "leaves": 5,
   "locator": "file://…/patrol-archive.bin",
   "price": "0.25",
   "provider": null,
   "root": "89ba09bb4f58b297917884e1102400263c6635d0a9f26903566fc60d78cf9a7f",
-  "round_length": 10,
+  "round_length": 16,
   "rounds": 4,
   "state": {
-    "at": 13,
+    "at": 14,
     "forfeited": "0",
     "missed": 0,
     "phase": "closed",
@@ -1022,7 +1023,7 @@ Close a storage deal: the client refunds an open deal, or ends an accepted one o
 Call:
 
 ```json
-{"name": "sion_storage_close", "arguments": {"wallet": "alice", "deal": "b33840bf"}}
+{"name": "sion_storage_close", "arguments": {"wallet": "alice", "deal": "66f5ffa4"}}
 ```
 
 Result (`structuredContent`):
@@ -1030,7 +1031,7 @@ Result (`structuredContent`):
 ```json
 {
   "events": [],
-  "pulse": 11,
+  "pulse": 12,
   "receipt": "Failed (unauthorized: only the client closes an open deal); nothing happened except the fee of 0.0011 USD.",
   "status": {
     "Failed": "unauthorized: only the client closes an open deal"
@@ -1041,7 +1042,7 @@ Result (`structuredContent`):
 Call:
 
 ```json
-{"name": "sion_storage_close", "arguments": {"wallet": "robot-7", "deal": "b33840bf"}}
+{"name": "sion_storage_close", "arguments": {"wallet": "robot-7", "deal": "66f5ffa4"}}
 ```
 
 Result (`structuredContent`):
@@ -1051,7 +1052,7 @@ Result (`structuredContent`):
   "events": [
     {
       "DealClosed": {
-        "deal": "b33840bf8bdca7c9a00b8559c4b4f48725cab1daa257c3feb05e42e41c98e68e",
+        "deal": "66f5ffa49f6703cc3b8960d145d31f81733974ead6b70a08e1504e163da4a8f7",
         "forfeited": 0,
         "missed": 0,
         "paid": 0,
@@ -1060,8 +1061,9 @@ Result (`structuredContent`):
       }
     }
   ],
-  "pulse": 13,
-  "receipt": "Done: storage deal b33840bf closed: 1 USD refunded, 0 USD paid, 0 USD of collateral returned, 0 USD forfeited, 0 round(s) missed; fee 0.0011 USD.",
+  "pulse": 14,
+  "receipt": "Done: storage deal 66f5ffa4 closed: 1 USD refunded, 0 USD paid, 0 USD of collateral returned, 0 USD forfeited, 0 round(s) missed; fee 0.0011 USD.",
   "status": "Success"
 }
 ```
+
