@@ -412,6 +412,10 @@ impl<T: Transport + 'static> Transport for FaultyTransport<T> {
         self.inner.knows(node)
     }
 
+    fn set_peers(&self, peers: &super::PeerSet) {
+        self.inner.set_peers(peers);
+    }
+
     fn stats(&self) -> TrafficStats {
         let mut stats = self.inner.stats();
         let drops = self.drops.snapshot("");

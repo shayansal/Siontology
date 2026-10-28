@@ -16,7 +16,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-use super::{ClassLimits, Delivery, NodeId, PeerMessage, TrafficCounter, TrafficStats, Transport};
+use super::{
+    ClassLimits, Delivery, NodeId, PeerMessage, PeerSet, TrafficCounter, TrafficStats, Transport,
+};
 
 #[derive(Clone)]
 struct Registered {
@@ -160,6 +162,9 @@ impl Transport for MemoryTransport {
             .map(|endpoints| endpoints.contains_key(node))
             .unwrap_or(false)
     }
+
+    /// Every endpoint of the network is reachable: nothing to change.
+    fn set_peers(&self, _peers: &PeerSet) {}
 
     fn stats(&self) -> TrafficStats {
         self.traffic.snapshot("memory")

@@ -8,19 +8,22 @@
 //! arrived on), never from the message, so a node can only ever speak as
 //! itself.
 //!
-//! Two carriers implement the trait in process:
+//! Three carriers implement the trait:
 //!
 //! - [`memory::MemoryTransport`]: the in-process devnet's channels, exactly
 //!   as before; it can also encode and decode every message, which checks
 //!   the class size limits.
 //! - [`faulty::FaultyTransport`]: wraps any transport and injects seeded
 //!   loss, delay, duplication, reordering and partitions per message class.
+//! - [`quic::QuicTransport`]: QUIC between processes and machines, through
+//!   a `sion-net` endpoint.
 //!
 //! Every transport counts what it carries per message class, per kind and
 //! per peer ([`TrafficStats`]).
 
 pub mod faulty;
 pub mod memory;
+pub mod quic;
 mod stats;
 
 use std::fmt;
@@ -198,6 +201,17 @@ impl PeerMessage {
 /// push into their inbox.
 pub type Delivery = Arc<dyn Fn(NodeId, PeerMessage) + Send + Sync>;
 
+/// The nodes a transport keeps connections to, with the network keys they
+/// must authenticate with and their addresses. Between machines these come
+/// from a network's genesis and peer files today (`net:static-peers`); the
+/// in-memory transport reaches every endpoint of its network and ignores
+/// them.
+#[derive(Clone, Debug, Default)]
+pub struct PeerSet {
+    /// The peers.
+    pub peers: Vec<sion_net::Peer>,
+}
+
 /// Carries peer messages. On the receiving side the transport delivers into
 /// the node's existing inbox, with the sender taken from the transport.
 pub trait Transport: Send + Sync + fmt::Debug {
@@ -218,6 +232,9 @@ pub trait Transport: Send + Sync + fmt::Debug {
 
     /// Whether the transport can reach `node` at all.
     fn knows(&self, node: &NodeId) -> bool;
+
+    /// Replaces the nodes this one keeps connections to.
+    fn set_peers(&self, peers: &PeerSet);
 
     /// What the transport has carried so far for this node.
     fn stats(&self) -> TrafficStats;

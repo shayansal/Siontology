@@ -346,6 +346,15 @@ impl Shared {
         self.closing.load(Ordering::Relaxed)
     }
 
+    /// The hello this node says.
+    fn greeting(&self) -> Hello {
+        Hello {
+            protocol: PROTOCOL_VERSION,
+            chain: self.chain,
+            node: self.local,
+        }
+    }
+
     fn count(&self, f: impl FnOnce(&mut Counters)) {
         if let Ok(mut counters) = self.counters.lock() {
             f(&mut counters);
@@ -453,10 +462,12 @@ impl Shared {
     }
 }
 
-/// Exchanges hellos on a fresh connection: both sides must speak this
-/// protocol version on this chain, and the other side must be `expected`.
+/// Exchanges hellos on a fresh connection: `ours` goes out, and the other
+/// side must speak this protocol version on the same chain and be
+/// `expected`.
 async fn hello(
-    shared: &Shared,
+    ours: &Hello,
+    limits: &ClassLimits,
     connection: &Connection,
     expected: NodeId,
     dialer: bool,
@@ -468,13 +479,8 @@ async fn hello(
             connection.accept_bi().await
         }
         .map_err(|e| NetError::Handshake(e.to_string()))?;
-        let ours = borsh::to_vec(&Hello {
-            protocol: PROTOCOL_VERSION,
-            chain: shared.chain,
-            node: shared.local,
-        })
-        .map_err(|e| NetError::Handshake(e.to_string()))?;
-        send.write_all(&frame(MessageClass::Control, &ours, &shared.limits)?)
+        let encoded = borsh::to_vec(ours).map_err(|e| NetError::Handshake(e.to_string()))?;
+        send.write_all(&frame(MessageClass::Control, &encoded, limits)?)
             .await
             .map_err(|e| NetError::Handshake(e.to_string()))?;
         let _ = send.finish();
@@ -482,7 +488,7 @@ async fn hello(
         recv.read_exact(&mut head)
             .await
             .map_err(|e| NetError::Handshake(e.to_string()))?;
-        let header = FrameHeader::parse(head, &shared.limits)?;
+        let header = FrameHeader::parse(head, limits)?;
         if header.class != MessageClass::Control || header.len > MAX_HELLO_BYTES {
             return Err(NetError::Handshake("malformed hello".into()));
         }
@@ -498,7 +504,7 @@ async fn hello(
                 theirs.protocol
             )));
         }
-        if theirs.chain != shared.chain {
+        if theirs.chain != ours.chain {
             return Err(NetError::Handshake(format!(
                 "the peer is on chain {}",
                 theirs.chain.short()
@@ -555,7 +561,15 @@ async fn dial_loop(shared: Arc<Shared>, slot: Arc<Slot>) {
         let mut connected = false;
         for address in &peer.addresses {
             match connect(&shared, &peer, *address).await {
-                Ok(connection) => match hello(&shared, &connection, peer.node, true).await {
+                Ok(connection) => match hello(
+                    &shared.greeting(),
+                    &shared.limits,
+                    &connection,
+                    peer.node,
+                    true,
+                )
+                .await
+                {
                     Ok(()) => {
                         shared.install(peer.node, connection);
                         connected = true;
@@ -596,7 +610,7 @@ async fn accept_loop(shared: Arc<Shared>) {
                 shared.count(|c| c.handshakes_failed += 1);
                 return;
             };
-            match hello(&shared, &connection, node, false).await {
+            match hello(&shared.greeting(), &shared.limits, &connection, node, false).await {
                 Ok(()) => shared.install(node, connection),
                 Err(_) => {
                     connection.close(VarInt::from_u32(code::PROTOCOL), b"hello");
@@ -713,6 +727,82 @@ async fn read_stream(
         });
         (shared.deliver)(slot.node, class, body);
     }
+}
+
+/// The key exchange a [`probe`] offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyExchange {
+    /// X25519MLKEM768 only, as every node offers.
+    PostQuantum,
+    /// X25519 and P-256 only, as a peer without post-quantum TLS would:
+    /// nodes refuse it.
+    ClassicalOnly,
+}
+
+/// Dials `peer` once at its first address, as node `local` of chain
+/// `chain` authenticating with `key` and offering `exchange`, and exchanges
+/// hellos. Succeeds only if the peer accepted the connection: what an
+/// operator checks a node's reachability with, and what tests check that
+/// nodes refuse with. Nothing is sent after the hellos. A successful probe
+/// briefly takes the place of the connection `peer` keeps to `local`, if
+/// it has one.
+pub fn probe(
+    chain: Hash32,
+    local: NodeId,
+    key: &NetworkKey,
+    peer: &Peer,
+    exchange: KeyExchange,
+) -> Result<(), NetError> {
+    let provider = match exchange {
+        KeyExchange::PostQuantum => tls::provider(),
+        KeyExchange::ClassicalOnly => tls::provider_with(vec![
+            rustls::crypto::aws_lc_rs::kx_group::X25519,
+            rustls::crypto::aws_lc_rs::kx_group::SECP256R1,
+        ]),
+    };
+    let tls = tls::client_config_with(key, &peer.key, provider)?;
+    let quic = QuicClientConfig::try_from(tls).map_err(|e| NetError::Tls(e.to_string()))?;
+    let mut config = quinn::ClientConfig::new(Arc::new(quic));
+    config.transport_config(transport_config());
+    let address = *peer
+        .addresses
+        .first()
+        .ok_or_else(|| NetError::Handshake("the peer has no address".into()))?;
+    let bind = if address.is_ipv6() {
+        SocketAddr::from(([0u16; 8], 0))
+    } else {
+        SocketAddr::from(([0, 0, 0, 0], 0))
+    };
+    let greeting = Hello {
+        protocol: PROTOCOL_VERSION,
+        chain,
+        node: local,
+    };
+    let expected = peer.node;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async move {
+        let client = quinn::Endpoint::client(bind)?;
+        let connecting = client
+            .connect_with(config, address, SERVER_NAME)
+            .map_err(|e| NetError::Handshake(e.to_string()))?;
+        let connection = tokio::time::timeout(HANDSHAKE_TIMEOUT, connecting)
+            .await
+            .map_err(|_| NetError::Handshake("timed out".into()))?
+            .map_err(|e| NetError::Handshake(e.to_string()))?;
+        let outcome = hello(
+            &greeting,
+            &ClassLimits::default(),
+            &connection,
+            expected,
+            true,
+        )
+        .await;
+        connection.close(VarInt::from_u32(code::SHUTDOWN), b"probe");
+        let _ = tokio::time::timeout(Duration::from_millis(300), client.wait_idle()).await;
+        outcome
+    })
 }
 
 /// A running endpoint.

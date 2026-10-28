@@ -35,7 +35,9 @@ pub mod record;
 pub mod tls;
 
 pub use class::{ClassLimits, MessageClass};
-pub use endpoint::{Deliver, Endpoint, EndpointConfig, EndpointStats, LinkStats, SendError};
+pub use endpoint::{
+    probe, Deliver, Endpoint, EndpointConfig, EndpointStats, KeyExchange, LinkStats, SendError,
+};
 pub use error::NetError;
 pub use frame::{FrameError, FrameHeader};
 pub use id::NodeId;

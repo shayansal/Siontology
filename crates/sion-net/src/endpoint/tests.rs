@@ -279,6 +279,47 @@ fn a_gateway_dials_and_gets_answers_on_its_own_connection() {
 }
 
 #[test]
+fn a_probe_gets_in_only_with_a_pinned_key_and_post_quantum_key_exchange() {
+    let v = start(validator("v"), 1, "test", Some("127.0.0.1:0"), |_| {});
+    let key = NetworkKey::from_seed(&[3; 32]);
+    let id = key.public().node_id();
+    v.endpoint.set_peers(vec![Peer {
+        node: id,
+        key: key.public().clone(),
+        addresses: Vec::new(),
+    }]);
+    let target = v.peer();
+    probe(chain("test"), id, &key, &target, KeyExchange::PostQuantum).unwrap();
+    assert!(probe(chain("test"), id, &key, &target, KeyExchange::ClassicalOnly).is_err());
+    let stranger = NetworkKey::from_seed(&[4; 32]);
+    assert!(probe(
+        chain("test"),
+        stranger.public().node_id(),
+        &stranger,
+        &target,
+        KeyExchange::PostQuantum
+    )
+    .is_err());
+    assert!(probe(chain("other"), id, &key, &target, KeyExchange::PostQuantum).is_err());
+    // A probe expecting another node at v's address fails at the hello.
+    let elsewhere = Peer {
+        node: validator("w"),
+        ..target.clone()
+    };
+    assert!(probe(
+        chain("test"),
+        id,
+        &key,
+        &elsewhere,
+        KeyExchange::PostQuantum
+    )
+    .is_err());
+    let stats = v.endpoint.stats();
+    assert!(stats.handshakes_failed >= 2, "{stats:?}");
+    assert!(stats.links[&id.to_string()].connections >= 1);
+}
+
+#[test]
 fn frames_queued_while_a_peer_is_down_arrive_when_it_returns() {
     let (a, b) = pair();
     let address = b.endpoint.local_addr().to_string();

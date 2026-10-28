@@ -48,6 +48,10 @@ pub struct TrafficStats {
     pub kinds: BTreeMap<String, Traffic>,
     /// By peer (`validator:<hex>` or `node:<hex>`).
     pub peers: BTreeMap<String, Traffic>,
+    /// Between machines: the QUIC endpoint's links (connections, queues,
+    /// quota drops) and refused handshakes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<sion_net::EndpointStats>,
 }
 
 impl TrafficStats {
@@ -147,6 +151,7 @@ impl TrafficCounter {
                 .iter()
                 .map(|(peer, traffic)| (peer.to_string(), *traffic))
                 .collect(),
+            endpoint: None,
         }
     }
 }
