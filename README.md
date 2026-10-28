@@ -213,6 +213,8 @@ linear-programming certificates and the state machine, a deterministic
 consensus simulator with adversarial network phases, scenario tests for
 every transaction kind, differential tests between the two proof stacks,
 end-to-end devnet tests with dual post-quantum signatures, and the demos.
+The demo runs take minutes, so they are `#[ignore]`d and run nightly in CI;
+`cargo test --workspace -- --include-ignored` runs everything.
 
 ## Contributing and community
 

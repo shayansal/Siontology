@@ -42,5 +42,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+That is the fast suite, the one CI runs on every push and pull request.
+Tests that take minutes (the demo runs) are marked `#[ignore]` with a
+reason, and CI runs them every night. Run them too before merging anything
+that touches the node, the CLI or a demo:
+
+```bash
+cargo test --workspace -- --include-ignored
+```
+
 Post-quantum signing is slow without optimization; the workspace profiles
 optimize dependencies even in debug builds.

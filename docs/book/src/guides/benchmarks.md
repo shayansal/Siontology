@@ -142,3 +142,8 @@ cargo build --release
 
 Use `--quick` for a short run and `--no-devnet` to skip the end-to-end
 part. Close other heavy work first: the devnet group is sensitive to load.
+
+CI runs `sion bench --quick --json bench.json` every night
+(`.github/workflows/nightly.yml`) and keeps the file as a build artifact for
+90 days, so a change in a measured number shows up between nights. Shared
+CI machines are noisy: compare trends, not single runs.

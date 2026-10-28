@@ -1,5 +1,9 @@
 //! Every demo runs end to end on a real in-process devnet, and the MCP
 //! server answers an agent's session.
+//!
+//! The demo runs take minutes, so they are `#[ignore]`d: CI runs them every
+//! night (`.github/workflows/nightly.yml`), and locally
+//! `cargo test --workspace -- --include-ignored` runs them with the rest.
 
 use serde_json::{json, Value};
 use sion_cli::demos::{self, Narrator};
@@ -42,6 +46,7 @@ fn run(devnet: &Devnet, name: &str) -> String {
 }
 
 #[test]
+#[ignore = "slow (minutes): runs nightly, or with --include-ignored"]
 fn all_demos_run_and_tell_the_truth() {
     let _serial = serial();
     let devnet = devnet();
@@ -119,6 +124,7 @@ fn all_demos_run_and_tell_the_truth() {
 }
 
 #[test]
+#[ignore = "slow (about a minute): runs nightly, or with --include-ignored"]
 fn validators_join_earn_get_slashed_and_light_clients_follow() {
     let _serial = serial();
     // No prover: the staking demo checks certificates and epoch proofs,

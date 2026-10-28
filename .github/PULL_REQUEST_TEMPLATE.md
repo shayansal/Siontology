@@ -9,7 +9,8 @@
 ## Checklist
 
 - [ ] `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`
-      and `cargo test --workspace` pass.
+      and `cargo test --workspace` pass; if the node, the CLI or a demo
+      changed, `cargo test --workspace -- --include-ignored` passes too.
 - [ ] `./scripts/check-independence.sh` passes.
 - [ ] If the state transition changes: the specification changed first (a
       new version and an entry in its **Changes** section), and both proof

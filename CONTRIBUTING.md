@@ -43,6 +43,16 @@ simulator and end-to-end devnets with dual post-quantum signatures. On a
 small machine, run one crate's tests with `cargo test -p <crate>` while you
 work, and the whole suite before you push.
 
+`cargo test --workspace` is the fast suite, which CI runs on every push and
+pull request (about six minutes on two cores, compilation included). The
+demo runs take minutes more, so they are marked `#[ignore]` and CI runs
+them every night with the quick benchmarks (`.github/workflows/nightly.yml`).
+If you change the node, the CLI or a demo, run them before you push:
+
+```bash
+cargo test --workspace -- --include-ignored
+```
+
 ## Rules
 
 [`AGENTS.md`](AGENTS.md) holds the architecture rules for anyone, human or

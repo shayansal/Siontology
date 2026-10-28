@@ -58,7 +58,9 @@ the time of writing.
 | `sion-clearing/tests`, `sion-da/tests` | Auctions and assignments; encoding, sampling, reconstruction |
 | `sion-spec/tests/differential.rs` | Stack A against stack B on random workloads, boundary probes and tampering |
 | `sion-node/tests/devnet.rs` | End-to-end devnets with dual post-quantum signatures |
-| `sion-cli/tests/demos.rs` | The demos |
+| `sion-cli/tests/demos.rs` | The demos (`#[ignore]`d: they take minutes) and an MCP session |
 | `sion-cli/tests/streams.rs` | An x402 server's stream desk on a devnet: refusals, recovery, top-ups and the close-out |
 
-Run them all with `cargo test --workspace`.
+`cargo test --workspace` runs the fast suite, as CI does on every push.
+`cargo test --workspace -- --include-ignored` adds the demo runs, as CI
+does every night.

@@ -1,0 +1,41 @@
+name: nightly
+
+# The slow suite. Pull requests and pushes run the fast one (ci.yml); this
+# runs every night and on demand: the tests marked #[ignore] because they
+# take minutes (every demo end to end, the post-quantum devnets), and the
+# quick benchmarks, kept as an artifact so a change in a measured number
+# shows up between nights.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  slow-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Every test, the slow ones included
+        run: cargo test --workspace -- --include-ignored
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Quick benchmarks
+        run: cargo run --release -p sion-cli -- bench --quick --json bench.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ github.run_number }}
+          path: bench.json
+          retention-days: 90

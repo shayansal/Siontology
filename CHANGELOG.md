@@ -10,6 +10,17 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Continuous integration
+
+- Pull requests and pushes run the fast suite: formatting, lints, the tests
+  not marked `#[ignore]`, the independence check, and now also a check that
+  the generated website pages match their sources and a build of the book.
+- The demo runs (about three minutes on two cores) are `#[ignore]`d and run
+  every night with every other test (`cargo test --workspace --
+  --include-ignored`), next to the quick benchmarks, whose JSON is kept for
+  90 days.
+- The website deploys from `master` as well as `main`.
+
 ### Node fixes found by the networking review
 
 - The gateway handed consensus every certificate of a 20 ms flush as one
