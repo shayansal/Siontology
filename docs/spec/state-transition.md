@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.8
+# The Siontology state transition — specification v1.9
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -25,7 +25,7 @@ It does **not** re-specify:
 - **Data layouts.** The Rust type definitions in `sion_core`, `sion_crypto`,
   `sion_assurance`, `sion_clearing` and the *type definitions* in
   `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
-  `stream`, `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
+  `stream`, `memory`, `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
   normative; their canonical encoding is Borsh. One rule goes beyond the
@@ -841,6 +841,56 @@ Contended, in the charter's domain. Load it (MUST be a charter);
 `s` or the charter's `backer`; set `suspended_by = None`; store; event
 `AgentResumed { agent: charter }`.
 
+### 5.40 OpenMemory { agent, policy }
+
+A **memory log** commits its writer to a log of memory atoms that only the
+writer appends to, kept off the ledger. The ledger keeps the log's head:
+its `size` in atoms, its `root`, the Merkle tree hash of `sion_core::merkle`
+(RFC 9162 shape) over leaf hashes the writer computes, and two roots it
+stores without checking, `index` and `manifest`. Constant of
+`sion_exec::memory`: `MAX_CONSISTENCY_PROOF` (128).
+
+1. If `agent = Some(a)`: load `a` (MUST be a charter with `identity` set);
+   its `agent` MUST be the sender; **chain check** it.
+2. `log = created_id(digest, next_index)`; `create(Account(sender),
+   MemoryLog { writer: sender, agent, policy, size: 0, root:
+   merkle::empty_root(), index: Hash32::ZERO, manifest: Hash32::ZERO,
+   commits: 0, opened_at: ctx.pulse, committed_at: ctx.pulse, sealed: false
+   })`.
+3. Event `MemoryOpened { log, account: sender, agent }`.
+
+The log is owned by its writer, so a commit (§5.41) needs a lane
+certificate, not consensus, and two commits of the same version of a log
+can never both execute: a log cannot fork.
+
+### 5.41 CommitMemory { size, root, index, manifest, proof, seal }
+
+1. `log_id = tx.inputs[1].id` (error if absent); load it (MUST be a memory
+   log, call it `l`); `l.writer` MUST be the sender; `l.sealed` MUST be
+   false.
+2. If `l.agent = Some(a)`: **chain check** `a`.
+3. `|proof| ≤ MAX_CONSISTENCY_PROOF`; `size ≥ l.size`; if `size = 0`, `root
+   = merkle::empty_root()`; `merkle::verify_consistency(l.root, l.size,
+   root, size, proof)` MUST succeed.
+4. `l.size = size`; `l.root = root`; `l.index = index`; `l.manifest =
+   manifest`; `l.commits = l.commits + 1` (saturating); `l.committed_at =
+   ctx.pulse`; if `seal`, `l.sealed = true`; store the log.
+5. Event `MemoryCommitted { log: log_id, size, root, commits: l.commits,
+   sealed: l.sealed }`.
+
+A commit at the same size MUST keep the root (step 3), and may move
+`index` and `manifest`. The atoms at positions `l.size … size − 1` before
+the commit have `ctx.pulse` as their **transaction time**: the ledger, not
+the writer, says when they were recorded. Anyone can prove an atom's
+transaction time from two state proofs of the log against certified
+headers: at Pulse `p − 1` the log did not exist or its size did not cover
+the atom, and at `p` it did.
+
+The ledger does not check `index` or `manifest`. Completeness proofs for
+queries are relative to the committed `index`; that the index matches the
+log is a trust atom (`impl:memory-index`) until fraud proofs for it are
+built.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -1175,6 +1225,16 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.9.** Memory logs (§5.40, §5.41). `OpenMemory` creates a memory log
+  owned by its writer, optionally for an agent identity whose agent is the
+  writer; `CommitMemory` moves the log's head to a new size and root with
+  an RFC 9162 consistency proof from the current head, which the ledger
+  checks, so a log only grows and cannot fork. The Pulse of a commit is
+  the transaction time of the atoms it adds. A suspended or revoked
+  agent's log cannot grow. New type `sion_exec::memory::MemoryLog`, object
+  `ObjectData::MemoryLog`, transaction kinds and events. The atoms, their
+  index and query proofs are off the ledger (the `sion-memory` crate).
 
 - **v1.8.** Agent identities (§5.35 to §5.39). An agent identity is a
   charter with an `identity` record: a commitment to the agent's card and

@@ -43,6 +43,7 @@ live.
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
+| Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Partly built (the ledger's part) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: payments to provers, value-in-flight cap | Not built |
@@ -358,6 +359,25 @@ execution, not proving; payers build their chain up front (one hash per
 step); unsettled payments are the payee's risk if it does not settle by the
 stream's last Pulse; a stream pays one payee in one direction.
 
+### Memory
+
+**Memory logs: built on the ledger (specification v1.9).** Not in the
+architecture paper; added so that agents' and robots' memories can be
+verified ([concept](book/src/concepts/memory.md), [design
+note](book/src/research/agent-scale.md)). A memory log is owned by its
+writer; `CommitMemory` moves its head to a new size and root only along an
+RFC 9162 consistency proof, which the ledger checks, so a log only grows
+and cannot fork, and the commit's Pulse is the transaction time of the
+atoms it adds. A log can belong to an agent identity, and then stops
+growing while the agent, or an agent above it, is suspended or revoked.
+Both proof stacks implement it, with differential tests for every rule and
+a randomized property test of honest and forged commits. **Simplified:**
+the index and manifest roots are stored unchecked (atom
+`impl:memory-index`). **Not built:** the off-ledger library (atoms, the 4D
+index and its completeness proofs, belief folding, encryption), command-
+line and MCP interfaces, aggregators that commit many logs in one claim,
+curators of shared world memory, and storage with proofs.
+
 ### Economics
 
 **Built:** fees (a base fee plus a fee per KiB) go to the treasury;
@@ -404,6 +424,7 @@ the architecture's own:
 | `impl:lock-handover` | Certificates are not drained when a lane committee changes: certificate finality for owned transactions holds within one committee's term (an owner who double-signs could get the second spend certified by a fully replaced committee). |
 | `impl:hash-chain-beacon` | The beacon is a hash-chain commit-reveal; the last validator to reveal can bias it by withholding (at the cost of being seen). |
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
+| `impl:memory-index` | The ledger stores a memory log's index root without checking it: a memory query proof is complete relative to that root, and nothing on the ledger yet acts on evidence that an index leaves an atom out. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 

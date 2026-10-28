@@ -10,6 +10,22 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Memory logs (specification v1.9)
+
+- A memory log is a log of memory atoms that only its writer appends to,
+  kept off the ledger. `OpenMemory` creates one, owned by the writer,
+  optionally for an agent identity; `CommitMemory` moves its head to a new
+  size and root along an RFC 9162 consistency proof that the ledger checks,
+  so a log only grows and cannot fork. The Pulse of a commit is the
+  transaction time of the atoms it adds.
+- An agent's log stops growing while the agent, or any agent above it, is
+  suspended or revoked.
+- Both proof stacks implement v1.9; the differential tests run every rule
+  and its failure cases, and a property test runs random commits, honest
+  and forged, by two writers through both.
+- The design note "Billions of agents" covers the memory layer's atoms,
+  4D index, completeness proofs, belief and privacy.
+
 ### Agent identities (specification v1.8)
 
 - An agent identity is a charter with an identity record: a commitment to

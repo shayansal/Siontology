@@ -22,7 +22,7 @@ use sion_core::hash::{hash_parts, Hash32};
 use sion_core::ids::{
     AccountId, AssetId, AtomId, ClaimId, ObjectId, Pulse, TxDigest, ValidatorId, Version,
 };
-use sion_core::Amount;
+use sion_core::{merkle, Amount};
 
 use crate::account::AccountState;
 use crate::assurance::AssuranceDomain;
@@ -35,6 +35,7 @@ use crate::escrow::BoundedTotal;
 use crate::market::{
     sealing_aad, BatchStatus, Market, OrderTerms, PendingOrder, Submission, SEALED_ORDER_DOMAIN,
 };
+use crate::memory::{MemoryLog, MAX_CONSISTENCY_PROOF};
 use crate::object::{
     created_id, well_known, Coin, CoordinationClass, Object, ObjectData, Owner, ScheduledEvent,
     Tombstone,
@@ -522,6 +523,30 @@ pub enum Event {
     AgentResumed {
         /// The charter.
         agent: ObjectId,
+    },
+    /// A memory log was opened (spec §5.40).
+    MemoryOpened {
+        /// The log.
+        log: ObjectId,
+        /// The account that writes it. (Not named `writer`: Borsh's derive
+        /// uses that name for its output.)
+        account: AccountId,
+        /// The agent identity it belongs to, if any.
+        agent: Option<ObjectId>,
+    },
+    /// A memory log's head moved forward (spec §5.41). The atoms it added
+    /// have this Pulse as their transaction time.
+    MemoryCommitted {
+        /// The log.
+        log: ObjectId,
+        /// Its size after the commit.
+        size: u64,
+        /// Its root after the commit.
+        root: Hash32,
+        /// The head's sequence number.
+        commits: u64,
+        /// Whether the log is now sealed.
+        sealed: bool,
     },
 }
 
@@ -2344,6 +2369,100 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 stream: *stream,
                 refund,
             });
+        }
+        TxKind::OpenMemory { agent, policy } => {
+            if let Some(agent_id) = agent {
+                let charter = load_charter(run, agent_id)?;
+                if charter.identity.is_none() {
+                    return Err(ExecError::Invalid("not an agent identity".into()));
+                }
+                if charter.agent != tx.sender {
+                    return Err(ExecError::Unauthorized(
+                        "only the agent may open a memory log for itself".into(),
+                    ));
+                }
+                check_charter_chain(run, agent_id)?;
+            }
+            let log = created_id(&run.digest, run.next_index);
+            run.create(
+                Owner::Account(tx.sender),
+                ObjectData::MemoryLog(MemoryLog {
+                    writer: tx.sender,
+                    agent: *agent,
+                    policy: *policy,
+                    size: 0,
+                    root: merkle::empty_root(),
+                    index: Hash32::ZERO,
+                    manifest: Hash32::ZERO,
+                    commits: 0,
+                    opened_at: pulse,
+                    committed_at: pulse,
+                    sealed: false,
+                }),
+            );
+            run.event(Event::MemoryOpened {
+                log,
+                account: tx.sender,
+                agent: *agent,
+            });
+        }
+        TxKind::CommitMemory {
+            size,
+            root,
+            index,
+            manifest,
+            proof,
+            seal,
+        } => {
+            let log_id = run.input(1)?;
+            let mut object = run.load(&log_id)?;
+            let ObjectData::MemoryLog(log) = &mut object.data else {
+                return Err(ExecError::Invalid("input 1 is not a memory log".into()));
+            };
+            if log.writer != tx.sender {
+                return Err(ExecError::Unauthorized(
+                    "only the writer may commit to a memory log".into(),
+                ));
+            }
+            if log.sealed {
+                return Err(ExecError::Invalid("the memory log is sealed".into()));
+            }
+            if let Some(agent) = log.agent {
+                check_charter_chain(run, &agent)?;
+            }
+            if proof.len() > MAX_CONSISTENCY_PROOF {
+                return Err(ExecError::Invalid(format!(
+                    "a consistency proof has at most {MAX_CONSISTENCY_PROOF} hashes"
+                )));
+            }
+            if *size < log.size {
+                return Err(ExecError::Invalid(format!(
+                    "a memory log only grows: it holds {} atoms, not {size}",
+                    log.size
+                )));
+            }
+            if *size == 0 && *root != merkle::empty_root() {
+                return Err(ExecError::Invalid("an empty log has the empty root".into()));
+            }
+            merkle::verify_consistency(&log.root, log.size, root, *size, proof).map_err(|e| {
+                ExecError::Invalid(format!("the new head does not extend the log: {e}"))
+            })?;
+            log.size = *size;
+            log.root = *root;
+            log.index = *index;
+            log.manifest = *manifest;
+            log.commits = log.commits.saturating_add(1);
+            log.committed_at = pulse;
+            log.sealed = *seal;
+            let event = Event::MemoryCommitted {
+                log: log_id,
+                size: *size,
+                root: *root,
+                commits: log.commits,
+                sealed: *seal,
+            };
+            run.store(object);
+            run.event(event);
         }
     }
     Ok(())

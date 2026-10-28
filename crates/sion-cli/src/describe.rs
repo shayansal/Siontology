@@ -481,6 +481,25 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             "Close stream {} and return what is left in escrow to its payer",
             stream.short()
         ),
+        TxKind::OpenMemory { agent, .. } => match agent {
+            Some(agent) => format!(
+                "Open a memory log for agent {}, which only it can append to",
+                object(agent)
+            ),
+            None => "Open a memory log that only the sender can append to".to_string(),
+        },
+        TxKind::CommitMemory { size, seal, .. } => {
+            let memory_log = tx
+                .inputs
+                .get(1)
+                .map(|input| format!("memory log {}", object(&input.id)))
+                .unwrap_or_else(|| "the memory log".to_string());
+            format!(
+                "Commit {memory_log} at {size} {}, proving it only grew{}",
+                if *size == 1 { "atom" } else { "atoms" },
+                if *seal { ", and seal it" } else { "" }
+            )
+        }
     };
     format!(
         "{body}. Fee {}; valid until Pulse {}.",
@@ -730,6 +749,26 @@ pub fn event(names: &Names, event: &Event) -> String {
             "stream {} closed: {} returned to its payer",
             stream.short(),
             names.usd(*refund)
+        ),
+        Event::MemoryOpened { log, agent, .. } => match agent {
+            Some(agent) => format!(
+                "memory log {} opened for agent {}",
+                object(log),
+                object(agent)
+            ),
+            None => format!("memory log {} opened", object(log)),
+        },
+        Event::MemoryCommitted {
+            log,
+            size,
+            commits,
+            sealed,
+            ..
+        } => format!(
+            "memory log {} now holds {size} {} (head {commits}){}",
+            object(log),
+            if *size == 1 { "atom" } else { "atoms" },
+            if *sealed { ", sealed" } else { "" }
         ),
     }
 }

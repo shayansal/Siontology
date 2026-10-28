@@ -131,6 +131,8 @@ pub enum ObjectData {
     Forced(Box<crate::validators::ForcedObligations>),
     /// A payment stream.
     Stream(crate::stream::Stream),
+    /// A memory log's head (specification v1.9).
+    MemoryLog(crate::memory::MemoryLog),
 }
 
 /// Something the protocol must do at a given Pulse.

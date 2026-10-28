@@ -34,6 +34,7 @@
 - [Agent Charters](concepts/agent-charters.md)
 - [Agent identities and subagents](concepts/agent-identities.md)
 - [Payment streams](concepts/payment-streams.md)
+- [Memory for agents and robots](concepts/memory.md)
 - [Privacy](concepts/privacy.md)
 - [Post-quantum identity](concepts/post-quantum.md)
 - [Censorship resistance](concepts/censorship-resistance.md)

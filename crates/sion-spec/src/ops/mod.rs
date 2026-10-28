@@ -10,6 +10,7 @@ mod charter;
 mod coins;
 mod knowledge;
 mod market;
+mod memory;
 mod stream;
 mod validators;
 
@@ -176,6 +177,25 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
             until,
         } => stream::top_up(run, *stream, *deposit, *until),
         TxKind::CloseStream { stream } => stream::close(run, *stream),
+        TxKind::OpenMemory { agent, policy } => memory::open(run, *agent, *policy),
+        TxKind::CommitMemory {
+            size,
+            root,
+            index,
+            manifest,
+            proof,
+            seal,
+        } => memory::commit(
+            run,
+            memory::NewHead {
+                size: *size,
+                root: *root,
+                index: *index,
+                manifest: *manifest,
+                proof,
+                seal: *seal,
+            },
+        ),
     }
 }
 
@@ -203,5 +223,7 @@ mod tests {
         assert_eq!(sion_exec::stream::MAX_CHECKPOINTS, 1 << 20);
         assert_eq!(sion_exec::stream::MAX_CHECKPOINT_DEPTH, 20);
         assert_eq!(sion_exec::stream::CHECKPOINT_TAG, b"sion/stream/checkpoint");
+        // §5.40, v1.9.
+        assert_eq!(sion_exec::memory::MAX_CONSISTENCY_PROOF, 128);
     }
 }

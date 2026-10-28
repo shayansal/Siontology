@@ -377,6 +377,30 @@ pub enum TxKind {
         /// The charter.
         charter: ObjectId,
     },
+    /// Opens a memory log that only the sender writes (spec §5.40).
+    OpenMemory {
+        /// The agent identity the log belongs to, if any; the sender must
+        /// be its agent.
+        agent: Option<ObjectId>,
+        /// A commitment to the log's policy, kept off the ledger.
+        policy: Hash32,
+    },
+    /// Moves a memory log's head forward (spec §5.41). The log is
+    /// `inputs[1]`.
+    CommitMemory {
+        /// The log's new size, in atoms.
+        size: u64,
+        /// The Merkle tree hash over the first `size` atoms' leaves.
+        root: Hash32,
+        /// The root of the log's index.
+        index: Hash32,
+        /// The root of the log's storage manifest.
+        manifest: Hash32,
+        /// A consistency proof from the current head to the new one.
+        proof: Vec<Hash32>,
+        /// Whether to seal the log after this commit.
+        seal: bool,
+    },
 }
 
 /// A transaction body (what is signed).

@@ -44,6 +44,7 @@ pub mod escrow;
 pub mod execute;
 pub mod genesis;
 pub mod market;
+pub mod memory;
 pub mod object;
 pub mod pulse;
 pub mod sim;

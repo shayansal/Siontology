@@ -151,8 +151,17 @@ fn chain_check_with(
 }
 
 /// The chain check (§5.13), suspension included.
-fn chain_check(run: &mut TxRun<'_>, start: ObjectId) -> Step<usize> {
+pub(super) fn chain_check(run: &mut TxRun<'_>, start: ObjectId) -> Step<usize> {
     chain_check_with(run, start, false)
+}
+
+/// Loads `id`, which must be a charter with an identity record (§5.35).
+pub(super) fn load_identity(run: &mut TxRun<'_>, id: ObjectId) -> Step<Charter> {
+    let charter = as_charter(&run.load(&id)?)?;
+    if charter.identity.is_none() {
+        return Err(fail("the charter is not an agent identity"));
+    }
+    Ok(charter)
 }
 
 /// **Overseers** (§5.13): whether `sender` is `charter`'s backer or

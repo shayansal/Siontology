@@ -130,6 +130,9 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::SetAgentCard { .. } => "SetAgentCard",
         TxKind::SuspendAgent { .. } => "SuspendAgent",
         TxKind::ResumeAgent { .. } => "ResumeAgent",
+        TxKind::OpenMemory { agent: Some(_), .. } => "OpenMemory(agent)",
+        TxKind::OpenMemory { .. } => "OpenMemory",
+        TxKind::CommitMemory { .. } => "CommitMemory",
     }
 }
 
@@ -2615,6 +2618,474 @@ fn agents_register_spawn_suspend_resume_and_revoke() {
 #[test]
 fn agents_many_transactions_per_chunk() {
     agents(5).summary("agents (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: memory logs (spec v1.9)
+// ---------------------------------------------------------------------------
+
+/// The leaf hashes of a writer's first `n` atoms (the ledger sees only
+/// their Merkle roots, so any distinct hashes do).
+fn memory_leaves(writer: &str, n: u64) -> Vec<Hash32> {
+    (0..n)
+        .map(|i| sion_core::merkle::leaf_hash(format!("{writer} atom {i}").as_bytes()))
+        .collect()
+}
+
+fn memory_opened(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::MemoryOpened { log, .. } => Some(*log),
+                _ => None,
+            })
+        })
+        .expect("memory log opened")
+}
+
+fn memory_log(h: &Harness, id: &ObjectId) -> sion_exec::memory::MemoryLog {
+    match &h.chain.state.objects[id].data {
+        ObjectData::MemoryLog(log) => log.clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+/// A commit of `log` from its current size to `size`, over `leaves`, with
+/// an honest consistency proof.
+fn commit_memory(
+    h: &mut Harness,
+    who: &str,
+    log: ObjectId,
+    leaves: &[Hash32],
+    size: u64,
+    seal: bool,
+) -> SignedTransaction {
+    let old = memory_log(h, &log).size;
+    let new = &leaves[..size as usize];
+    let proof = sion_core::merkle::consistency_proof(new, old as usize).expect("a prefix");
+    let kind = TxKind::CommitMemory {
+        size,
+        root: sion_core::merkle::root(new),
+        index: hash_domain("test/index", &size.to_be_bytes()),
+        manifest: hash_domain("test/manifest", &size.to_be_bytes()),
+        proof,
+        seal,
+    };
+    let input = h.reference(&log);
+    h.tx_with(who, kind, vec![input])
+}
+
+/// A commit with an explicit head, for the failure cases.
+fn commit_head(
+    h: &mut Harness,
+    who: &str,
+    log: ObjectId,
+    size: u64,
+    root: Hash32,
+    proof: Vec<Hash32>,
+) -> SignedTransaction {
+    let input = h.reference(&log);
+    h.tx_with(
+        who,
+        TxKind::CommitMemory {
+            size,
+            root,
+            index: Hash32::ZERO,
+            manifest: Hash32::ZERO,
+            proof,
+            seal: false,
+        },
+        vec![input],
+    )
+}
+
+fn memory(chunk_size: usize) -> Harness {
+    let mut h = Harness::new(
+        &["robot", "principal", "agent", "stranger", "vendor"],
+        10_000,
+        4,
+        chunk_size,
+    );
+    let (agent, vendor) = (h.id("agent"), h.id("vendor"));
+    let leaves = memory_leaves("robot", 16);
+
+    // Opening: a plain log, and a second one to probe the empty head.
+    let open = h.tx(
+        "robot",
+        TxKind::OpenMemory {
+            agent: None,
+            policy: hash_domain("test/policy", b"warehouse"),
+        },
+    );
+    let open_second = h.tx(
+        "robot",
+        TxKind::OpenMemory {
+            agent: None,
+            policy: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![open.clone(), open_second.clone()]);
+    expect(&out, &open, Outcome::Success);
+    expect(&out, &open_second, Outcome::Success);
+    let log = memory_opened(&out, &open);
+    let second = memory_opened(&out, &open_second);
+    let opened = memory_log(&h, &log);
+    assert_eq!(opened.size, 0);
+    assert_eq!(opened.root, sion_core::merkle::empty_root());
+    assert_eq!(
+        h.chain.state.objects[&log].owner,
+        Owner::Account(h.id("robot"))
+    );
+
+    // Growing: 0 → 3 → 7, each with a consistency proof.
+    let first = commit_memory(&mut h, "robot", log, &leaves, 3, false);
+    let out = h.pulse(vec![first.clone()]);
+    expect(&out, &first, Outcome::Success);
+    let committed = memory_log(&h, &log);
+    assert_eq!((committed.size, committed.commits), (3, 1));
+    assert_eq!(committed.committed_at, Pulse(h.pulse_number()));
+    let grow = commit_memory(&mut h, "robot", log, &leaves, 7, false);
+    let out = h.pulse(vec![grow.clone()]);
+    expect(&out, &grow, Outcome::Success);
+    assert_eq!(
+        memory_log(&h, &log).root,
+        sion_core::merkle::root(&leaves[..7])
+    );
+
+    // A log only grows, along a proof: shrinking, rewriting at the same
+    // size, a proof for another log, an overlong proof, a missing input and
+    // an input that is not a log all fail.
+    let shrink = commit_head(
+        &mut h,
+        "robot",
+        log,
+        5,
+        sion_core::merkle::root(&leaves[..5]),
+        Vec::new(),
+    );
+    let out = h.pulse(vec![shrink.clone()]);
+    expect(&out, &shrink, Outcome::Failed);
+    let rewrite = commit_head(&mut h, "robot", log, 7, Hash32::ZERO, Vec::new());
+    let out = h.pulse(vec![rewrite.clone()]);
+    expect(&out, &rewrite, Outcome::Failed);
+    let other = memory_leaves("impostor", 9);
+    let forged = commit_head(
+        &mut h,
+        "robot",
+        log,
+        9,
+        sion_core::merkle::root(&other),
+        sion_core::merkle::consistency_proof(&other, 7).unwrap(),
+    );
+    let out = h.pulse(vec![forged.clone()]);
+    expect(&out, &forged, Outcome::Failed);
+    let overlong = commit_head(
+        &mut h,
+        "robot",
+        log,
+        9,
+        sion_core::merkle::root(&leaves[..9]),
+        vec![Hash32::ZERO; sion_exec::memory::MAX_CONSISTENCY_PROOF + 1],
+    );
+    let out = h.pulse(vec![overlong.clone()]);
+    expect(&out, &overlong, Outcome::Failed);
+    let no_log = h.tx(
+        "robot",
+        TxKind::CommitMemory {
+            size: 1,
+            root: leaves[0],
+            index: Hash32::ZERO,
+            manifest: Hash32::ZERO,
+            proof: Vec::new(),
+            seal: false,
+        },
+    );
+    let account = h.reference(&well_known::account(&h.id("robot")));
+    let not_a_log = h.tx_with(
+        "robot",
+        TxKind::CommitMemory {
+            size: 1,
+            root: leaves[0],
+            index: Hash32::ZERO,
+            manifest: Hash32::ZERO,
+            proof: Vec::new(),
+            seal: false,
+        },
+        vec![account],
+    );
+    let out = h.pulse(vec![no_log.clone(), not_a_log.clone()]);
+    expect(&out, &no_log, Outcome::Failed);
+    expect(&out, &not_a_log, Outcome::Failed);
+
+    // Only the writer commits: anyone else naming the log is rejected,
+    // because the log is the writer's owned object.
+    let foreign = commit_head(
+        &mut h,
+        "stranger",
+        log,
+        8,
+        sion_core::merkle::root(&leaves[..8]),
+        sion_core::merkle::consistency_proof(&leaves[..8], 7).unwrap(),
+    );
+    let out = h.pulse(vec![foreign.clone()]);
+    expect(&out, &foreign, Outcome::Rejected);
+
+    // Two heads for the same version, one Pulse: one executes, the other
+    // finds the version consumed. A log cannot fork.
+    let left = commit_memory(&mut h, "robot", log, &leaves, 8, false);
+    let right = commit_head(
+        &mut h,
+        "robot",
+        log,
+        8,
+        sion_core::merkle::root(&memory_leaves("fork", 8)),
+        Vec::new(),
+    );
+    let out = h.pulse(vec![left.clone(), right.clone()]);
+    let outcomes = [
+        outcome_of(&status_of(&out, &left)),
+        outcome_of(&status_of(&out, &right)),
+    ];
+    assert!(
+        outcomes.contains(&Outcome::Rejected),
+        "one of two forks must be rejected: {outcomes:?}"
+    );
+    h.chain.wallets.get_mut("robot").unwrap().settle();
+    let size_now = memory_log(&h, &log).size;
+    if size_now == 7 {
+        // The forged fork ran first and failed its proof: grow honestly.
+        let again = commit_memory(&mut h, "robot", log, &leaves, 8, false);
+        let out = h.pulse(vec![again.clone()]);
+        expect(&out, &again, Outcome::Success);
+    }
+    assert_eq!(
+        memory_log(&h, &log).root,
+        sion_core::merkle::root(&leaves[..8])
+    );
+
+    // A commit at the same size may move the index and manifest roots.
+    let reindex = commit_memory(&mut h, "robot", log, &leaves, 8, false);
+    let out = h.pulse(vec![reindex.clone()]);
+    expect(&out, &reindex, Outcome::Success);
+    assert_eq!(memory_log(&h, &log).size, 8);
+
+    // The empty head: an empty commit with the empty root succeeds, one
+    // with any other root fails.
+    let empty_wrong = commit_head(&mut h, "robot", second, 0, Hash32::ZERO, Vec::new());
+    let out = h.pulse(vec![empty_wrong.clone()]);
+    expect(&out, &empty_wrong, Outcome::Failed);
+    let empty_ok = commit_head(
+        &mut h,
+        "robot",
+        second,
+        0,
+        sion_core::merkle::empty_root(),
+        Vec::new(),
+    );
+    let out = h.pulse(vec![empty_ok.clone()]);
+    expect(&out, &empty_ok, Outcome::Success);
+    assert_eq!(memory_log(&h, &second).commits, 1);
+
+    // Sealing: the last commit seals the log, and nothing follows it.
+    let seal = commit_memory(&mut h, "robot", log, &leaves, 10, true);
+    let out = h.pulse(vec![seal.clone()]);
+    expect(&out, &seal, Outcome::Success);
+    assert!(memory_log(&h, &log).sealed);
+    let after_seal = commit_memory(&mut h, "robot", log, &leaves, 12, false);
+    let out = h.pulse(vec![after_seal.clone()]);
+    expect(&out, &after_seal, Outcome::Failed);
+
+    // An agent's log: only the agent opens it, only for an identity, and
+    // it stops growing while the agent is suspended or revoked.
+    let register = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent,
+            card: card_commitment(b"warehouse robot"),
+            caveats: charter_caveats(vendor),
+            funding: units(10),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let plain = h.tx(
+        "principal",
+        TxKind::CreateCharter {
+            agent,
+            caveats: charter_caveats(vendor),
+            funding: units(10),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![register.clone(), plain.clone()]);
+    expect(&out, &register, Outcome::Success);
+    expect(&out, &plain, Outcome::Success);
+    let (identity, _) = agent_registered(&out, &register);
+    let (no_identity, _) = charter_created(&out, &plain);
+    let open_agent = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let open_for_other = h.tx(
+        "stranger",
+        TxKind::OpenMemory {
+            agent: Some(identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let open_plain_charter = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(no_identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let open_not_charter = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(log),
+            policy: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![
+        open_agent.clone(),
+        open_for_other.clone(),
+        open_plain_charter.clone(),
+        open_not_charter.clone(),
+    ]);
+    expect(&out, &open_agent, Outcome::Success);
+    expect(&out, &open_for_other, Outcome::Failed);
+    expect(&out, &open_plain_charter, Outcome::Failed);
+    expect(&out, &open_not_charter, Outcome::Failed);
+    let agent_log = memory_opened(&out, &open_agent);
+    assert_eq!(memory_log(&h, &agent_log).agent, Some(identity));
+    let agent_leaves = memory_leaves("agent", 6);
+    let first = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 2, false);
+    let out = h.pulse(vec![first.clone()]);
+    expect(&out, &first, Outcome::Success);
+
+    let suspend = h.tx("principal", TxKind::SuspendAgent { charter: identity });
+    let out = h.pulse(vec![suspend.clone()]);
+    expect(&out, &suspend, Outcome::Success);
+    let while_suspended = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 4, false);
+    let out = h.pulse(vec![while_suspended.clone()]);
+    expect(&out, &while_suspended, Outcome::Failed);
+    let resume = h.tx("principal", TxKind::ResumeAgent { charter: identity });
+    let out = h.pulse(vec![resume.clone()]);
+    expect(&out, &resume, Outcome::Success);
+    let resumed = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 4, false);
+    let out = h.pulse(vec![resumed.clone()]);
+    expect(&out, &resumed, Outcome::Success);
+
+    let revoke = h.tx("principal", TxKind::RevokeCharter { charter: identity });
+    let out = h.pulse(vec![revoke.clone()]);
+    expect(&out, &revoke, Outcome::Success);
+    let after_revoke = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 6, false);
+    let reopen = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![after_revoke.clone(), reopen.clone()]);
+    expect(&out, &after_revoke, Outcome::Failed);
+    expect(&out, &reopen, Outcome::Failed);
+    assert_eq!(memory_log(&h, &agent_log).size, 4);
+
+    h.assert_covered(&[
+        "OpenMemory/ok",
+        "OpenMemory(agent)/ok",
+        "OpenMemory(agent)/failed",
+        "CommitMemory/ok",
+        "CommitMemory/failed",
+        "CommitMemory/rejected",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 12,
+        ..ProptestConfig::default()
+    })]
+
+    /// Random commits by two writers, each from its own leaves or the other
+    /// writer's, to random sizes: both stacks agree on every chunk, and a
+    /// commit succeeds exactly when it extends what the log already holds.
+    #[test]
+    fn random_memory_commits_are_verified_and_only_grow(
+        chunk_size in 1usize..4,
+        steps in proptest::collection::vec((0usize..2, 0u64..24, any::<bool>()), 1..10),
+    ) {
+        let mut h = Harness::new(&["writer-0", "writer-1"], 1_000, 2, chunk_size);
+        let leaves = [memory_leaves("writer-0", 24), memory_leaves("writer-1", 24)];
+        let opens: Vec<SignedTransaction> = (0..2)
+            .map(|w| {
+                h.tx(
+                    &format!("writer-{w}"),
+                    TxKind::OpenMemory { agent: None, policy: Hash32::ZERO },
+                )
+            })
+            .collect();
+        let out = h.pulse(opens.clone());
+        let logs: Vec<ObjectId> = opens.iter().map(|tx| memory_opened(&out, tx)).collect();
+        // What each log holds, as the model sees it.
+        let mut held: [Vec<Hash32>; 2] = [Vec::new(), Vec::new()];
+        for (writer, size, own) in steps {
+            let who = format!("writer-{writer}");
+            let log = logs[writer];
+            let current = held[writer].len();
+            let source = &leaves[if own { writer } else { 1 - writer }][..size as usize];
+            let proof = if size as usize >= current {
+                sion_core::merkle::consistency_proof(source, current).unwrap()
+            } else {
+                Vec::new()
+            };
+            let tx = commit_head(
+                &mut h,
+                &who,
+                log,
+                size,
+                sion_core::merkle::root(source),
+                proof,
+            );
+            let extends = size as usize >= current && source[..current] == held[writer][..];
+            let out = h.pulse(vec![tx.clone()]);
+            let outcome = outcome_of(&status_of(&out, &tx));
+            prop_assert_eq!(
+                outcome,
+                if extends { Outcome::Success } else { Outcome::Failed },
+                "{} from {} to {} ({})",
+                who,
+                current,
+                size,
+                if own { "own leaves" } else { "the other writer's" }
+            );
+            if extends {
+                held[writer] = source.to_vec();
+            }
+            let state = memory_log(&h, &log);
+            prop_assert_eq!(state.size, held[writer].len() as u64);
+            prop_assert_eq!(state.root, sion_core::merkle::root(&held[writer]));
+        }
+        prop_assert!(h.unread.is_empty(), "{:?}", h.unread);
+    }
+}
+
+#[test]
+fn memory_logs_open_grow_seal_and_follow_their_agent() {
+    memory(1).summary("memory");
+}
+
+#[test]
+fn memory_logs_many_transactions_per_chunk() {
+    memory(4).summary("memory (chunks of 4)");
 }
 
 // ---------------------------------------------------------------------------

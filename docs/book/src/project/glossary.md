@@ -130,6 +130,14 @@ with proofs against a pinned chain identity, without executing the chain.
 **Linear Lanes.** Certifying owned-object transactions with one committee
 certificate and no consensus. See [Linear Lanes](../concepts/linear-lanes.md).
 
+**Memory atom.** One statement in a memory log: what was observed or
+asserted, when it held, where, with what confidence, and what it rests on.
+See [Memory for agents and robots](../concepts/memory.md).
+
+**Memory log.** A log of memory atoms that only its writer appends to,
+kept off the ledger. The ledger keeps its head and moves it only along a
+consistency proof, so the log only grows (specification v1.9).
+
 **Micro-unit.** 10⁻⁶ of an asset; the unit amounts are stored in.
 
 **Neo-blockchain.** A network whose product is verified knowledge, not
@@ -203,6 +211,10 @@ See [The Fold and World Proofs](../concepts/the-fold.md).
 
 **Tombstone.** What a consumed object becomes: it keeps its identifier,
 owner and version, so history stays auditable.
+
+**Transaction time.** For a memory atom: the Pulse of the commit that
+added it to its log, assigned by the ledger, not by the writer. Its valid
+time, when the statement held, is the writer's.
 
 **Two-sorted state.** Linear objects that are consumed at most once, and
 knowledge that is only appended.

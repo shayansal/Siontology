@@ -106,6 +106,15 @@ each happens.
 | `StreamToppedUp` | `stream`, `deposit`, `until` | `TopUpStream` | `stream <id> topped up by <deposit> USD, open until Pulse <until>` |
 | `StreamClosed` | `stream`, `refund` | `CloseStream` | `stream <id> closed: <refund> USD returned to its payer` |
 
+## Memory logs
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `MemoryOpened` | `log`, `account` (the writer), `agent` | `OpenMemory` | `memory log <id> opened[ for agent <id>]` |
+| `MemoryCommitted` | `log`, `size`, `root`, `commits` (the head's sequence number), `sealed` | `CommitMemory` | `memory log <id> now holds <n> atoms (head <k>)[, sealed]` |
+
+The atoms a commit adds have the commit's Pulse as their transaction time.
+
 ## Failed transactions
 
 A transaction that fails keeps no events: its receipt reads

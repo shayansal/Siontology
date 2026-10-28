@@ -130,6 +130,15 @@ See [Validators, staking and epochs](../concepts/committees.md).
 
 See [Payment streams](../concepts/payment-streams.md).
 
+## Memory logs
+
+| Kind | What it does | Class | Sentence | Sent by |
+|---|---|---|---|---|
+| `OpenMemory { agent, policy }` | Opens a memory log owned by the sender, optionally for an agent identity whose agent is the sender | owned-linear | `Open a memory log that only the sender can append to` or `Open a memory log for agent <id>, which only it can append to` | `sion memory open` |
+| `CommitMemory { size, root, index, manifest, proof, seal }` | Moves the log at `inputs[1]` to a new head; the ledger checks an RFC 9162 consistency proof from the current head, so the log only grows | owned-linear | `Commit memory log <id> at <n> atoms, proving it only grew[, and seal it]` | `sion memory commit` |
+
+See [Memory for agents and robots](../concepts/memory.md).
+
 ## Outcomes
 
 Each transaction ends as **Success**, **Failed** or **Rejected**
