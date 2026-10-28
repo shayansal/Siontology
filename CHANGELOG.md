@@ -10,6 +10,28 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Networking between machines
+
+- Validators run one per process and talk QUIC: `sion keys validator`
+  generates a validator's keys and a network record signed with both of its
+  consensus keys, `sion genesis` collects records into a genesis file and a
+  peer file, `sion node` runs a validator (with an optional embedded
+  gateway) and `sion gateway` a gateway on its own. TLS 1.3 with
+  X25519MLKEM768 only and ML-DSA-44 raw public keys only, pinned at both
+  ends; one stream per message class, bounded queues, quotas (new crate
+  `sion-net`, on quinn 0.11.9 and rustls with aws-lc-rs). Tested with four
+  node processes and a gateway on one machine. A stopped validator cannot
+  rejoin yet (`net:no-rejoin`); see the
+  [guide](docs/book/src/guides/network.md).
+- Every message between nodes now goes through a `Transport` seam that
+  stamps the sender: the devnet's in-memory transport carries exactly what
+  the old bus did, a seeded fault injector adds loss, delay, duplication,
+  reordering and partitions per message class, and status and `sion bench`
+  report traffic per class, kind and peer.
+- Lost messages are asked for again: gateways retry late lane approvals,
+  validators pull missing Pulse signatures, and the buffers peers can fill
+  are bounded in bytes or count.
+
 ### Continuous integration
 
 - Pull requests and pushes run the fast suite: formatting, lints, the tests

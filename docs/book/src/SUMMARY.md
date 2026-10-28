@@ -45,6 +45,7 @@
 # Guides
 
 - [Running a devnet](guides/devnet.md)
+- [Running a network of processes](guides/network.md)
 - [Wallets and keys](guides/wallets.md)
 - [Transfers](guides/transfers.md)
 - [Issuing and assessing claims](guides/claims.md)
