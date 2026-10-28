@@ -1,8 +1,9 @@
 //! Validators, stake and epochs, and the forced-inclusion obligations that
 //! hold shard committees to account.
 //!
-//! **Stake.** A validator joins by staking the stake asset (a stablecoin
-//! at first, a staking token later) with a proof that it holds its keys
+//! **Stake.** A validator joins by staking the stake asset (a parameter
+//! fixed at genesis; a test stablecoin on test networks) with a proof that
+//! it holds its keys
 //! ([`crate::TxKind::RegisterValidator`]) and enters the active set at the
 //! next epoch boundary. It leaves with `Unstake`, stays bonded for an
 //! unbonding period, then withdraws. Equivocation (two different consensus
@@ -74,9 +75,8 @@ pub fn share_of(amount: Amount, part: u64, whole: u64) -> Amount {
 /// Parameters fixed at genesis.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct ValidatorParams {
-    /// The asset validators stake: a stablecoin in the first phases, a
-    /// dedicated staking token later. Rewards are always paid in USD, from
-    /// fees.
+    /// The asset validators stake, fixed at genesis (a test stablecoin on
+    /// test networks). Rewards are paid in USD, from fees.
     pub stake_asset: AssetId,
     /// Pulses per epoch (at least 1).
     pub epoch_length: u64,

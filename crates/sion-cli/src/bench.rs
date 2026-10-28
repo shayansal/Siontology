@@ -21,6 +21,7 @@ use sion_da::ExtendedSquare;
 use sion_exec::pulse::{execute_pulse, execute_pulse_traced, PulseInput};
 use sion_exec::sim::{sim_beacon, Chain};
 use sion_exec::{replay_chunk, SignedTransaction, TxKind, Wallet};
+use sion_node::transport::TrafficStats;
 use sion_node::{Devnet, DevnetConfig};
 
 use crate::error::CliError;
@@ -640,6 +641,7 @@ fn devnet(r: &mut Recorder, quick: bool) -> Result<(), CliError> {
         "ms",
         "4 consensus rounds per Pulse",
     );
+    let (idle_pulse, idle_traffic) = traffic(ledger)?;
     // Each account sends four transfers at once (it holds four coins).
     // Build against one prefetched view, as a wallet with a synced cache would.
     let mut wallets: Vec<Wallet> = names.iter().map(|n| Wallet::named(n)).collect();
@@ -708,8 +710,48 @@ fn devnet(r: &mut Recorder, quick: bool) -> Result<(), CliError> {
         "ms",
         "",
     );
+    // What validator 0's transport carried during the load, per Pulse and
+    // per message class (Borsh bytes, as they would cross a network).
+    let (pulse, traffic_after) = traffic(ledger)?;
+    let pulses = pulse.0.saturating_sub(idle_pulse.0).max(1) as f64;
+    let sent = |stats: &TrafficStats, class: &str| {
+        stats.classes.get(class).map(|t| t.sent).unwrap_or_default()
+    };
+    for class in ["control", "consensus", "ingress", "bulk"] {
+        let (before, after) = (sent(&idle_traffic, class), sent(&traffic_after, class));
+        r.add(
+            "devnet",
+            &format!("validator 0 sends per Pulse, {class} class"),
+            after.bytes.saturating_sub(before.bytes) as f64 / pulses / 1e3,
+            "KB",
+            format!(
+                "{:.0} messages per Pulse, during the load",
+                after.messages.saturating_sub(before.messages) as f64 / pulses
+            ),
+        );
+    }
+    let bytes = traffic_after
+        .sent()
+        .bytes
+        .saturating_sub(idle_traffic.sent().bytes);
+    r.add(
+        "devnet",
+        "validator 0 sends per transfer, all classes",
+        bytes as f64 / total as f64 / 1e3,
+        "KB",
+        "consensus traffic of the whole load included",
+    );
     devnet.shutdown();
     Ok(())
+}
+
+/// The last executed Pulse and what validator 0's transport has carried.
+fn traffic(ledger: &dyn Ledger) -> Result<(Pulse, TrafficStats), CliError> {
+    let status = ledger.status()?;
+    let pulse = serde_json::from_value(status["pulse"].clone())
+        .map_err(|e| CliError::Protocol(e.to_string()))?;
+    let stats = serde_json::from_value(status["network"].clone()).unwrap_or_default();
+    Ok((pulse, stats))
 }
 
 /// A state view fetched once.

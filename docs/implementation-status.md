@@ -23,6 +23,7 @@ live.
 | Identity: post-quantum accounts | Built |
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
+| Identity: agent identities and subagents | Built (devnet scale) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -41,11 +42,16 @@ live.
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
+| Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
+| Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
+| Orchestration: Task Charters, escrowed work with acceptance fixed at posting (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
+| Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
+| Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale) |
 | Economics: payments to provers, value-in-flight cap | Not built |
-| Networking between machines | Simulated (in-process channels) |
+| Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
 
 ## By section
 
@@ -87,6 +93,25 @@ Revocation by the principal stops the agent and every sub-agent at once;
 allotment only the agent can write, so they need no consensus.
 Not built: the architecture's model terms (which models and providers may
 act) and a bond behind each agent's receipts beyond the agent atom.
+
+**Agent identities and subagents: built (devnet scale, specification
+v1.8).** An agent identity is a charter with an identity record (a card
+commitment and a depth); its id is the agent's id. `SpawnAgents` launches
+up to 256 subagents per transaction, each with its own account, card,
+attenuated caveats, a window limit carved from its parent's and a budget
+carved from its parent's allotment. Any overseer (the backer, the
+principal, an ancestor's agent) can suspend a subtree, the suspender or the
+backer can resume it, and the agent or any overseer can revoke it. Both
+proof stacks implement it, and the differential tests cover every
+operation and its failure cases. The `swarm` demo runs it on a devnet.
+Not built, and named in the [design note](book/src/research/agent-scale.md):
+cohorts that create a million identities in one transaction and
+materialize each on first use, identities without an account of their own
+(signed for by an ancestor in batch roots), additive token-bucket rate
+limits (window limits are fixed windows, so a subtree can spend up to twice
+its root's limit in an interval that straddles two windows), and a rule
+that makes a certified agent payment final before it executes (today a
+suspension or revocation that executes first makes it fail).
 
 ### Data availability
 
@@ -319,6 +344,30 @@ server that crashes loses what it had not settled. MCP's
 
 **Not built:** adapters for AP2, ERC-8004 and C2PA.
 
+**The app: partly built.** `sion-app-core` turns a device into a light
+node: it keeps the device's key (`key.seed`, mode 0600), verifies the
+latest certified Pulse every eight seconds the way `sion verify --no-world`
+does (chain identity pinned on first use, committee certificate followed
+from the pin, receipts, a state proof when the node is at that Pulse, 16
+random data shares), proves the receipt of every transaction it signs
+(waiting for the digest it computed, and showing only what the proven
+receipt says), and pays (to 64-digit accounts only) and delegates stake
+(v1.11) through `sion_cli`. It is `Send + Sync`, takes `&self` and holds no
+lock while it talks to a node. It can also run a storage provider (v1.12)
+that takes open deals on modest terms, fetches their data in the
+background from the internet only (not from the device or its network,
+unless told), keeps the data and proves every round, and that keeps
+proving deals it holds when turned off. Settings are written atomically;
+unreadable ones are kept aside and nothing is pinned on first use without
+the person's say. Tested against a devnet over HTTP
+(`crates/sion-app-core/tests/devnet.rs`). The Tauri 2 shell in
+`apps/sion-app` (its own Cargo workspace) builds and runs on Linux; it was
+run under a virtual display against a devnet and its tabs captured.
+**Not built:** the Android and iOS builds (configured, not attempted: no
+SDK here), a key in the platform's keystore (`app:plain-key`), proofs of
+the balances it shows (`app:unproven-balances`), bandwidth served by
+devices, and installers or code signing.
+
 ### Payments
 
 **Payment streams: built (specification v1.6 and v1.7).** Not in the
@@ -338,6 +387,64 @@ execution, not proving; payers build their chain up front (one hash per
 step); unsettled payments are the payee's risk if it does not settle by the
 stream's last Pulse; a stream pays one payee in one direction.
 
+### Memory
+
+**Memory logs: built on the ledger (specification v1.9).** Not in the
+architecture paper; added so that agents' and robots' memories can be
+verified ([concept](book/src/concepts/memory.md), [design
+note](book/src/research/agent-scale.md)). A memory log is owned by its
+writer; `CommitMemory` moves its head to a new size and root only along an
+RFC 9162 consistency proof, which the ledger checks, so a log only grows
+and cannot fork, and the commit's Pulse is the transaction time of the
+atoms it adds. A log can belong to an agent identity, and then stops
+growing while the agent, or an agent above it, is suspended or revoked.
+Both proof stacks implement it, with differential tests for every rule and
+a randomized property test of honest and forged commits.
+
+**The off-ledger library, `sion-memory`: built.** Integer-only memory
+atoms with space and two kinds of time; single-writer logs with an
+on-disk store; a canonical 4D index, specified so that another
+implementation can rebuild it (a second one, written from the
+specification alone, agrees on random logs), with complete range proofs,
+subject and link proofs, and omission proofs that convict an index that
+leaves an atom out; belief as a fold with proofs checked from heads;
+sealed payloads with forgetting by key destruction; the Reality Memory
+Protocol. Measured over 10⁶ atoms on one core: a 50 × 50 × 10 m, one-hour
+query returns 9 atoms with a 36 KiB proof verified in 0.2 ms; the index
+builds in 0.78 s. Commands `sion memory …`, MCP tools `sion_memory_*`, and
+the `robots` demo. **Simplified:** the index and manifest roots are stored
+unchecked, and the ledger does not act on omission proofs (atom
+`impl:memory-index`); the index is rebuilt for every head; logs are held
+in memory. **Not built:** compact fraud proofs for other malformed
+indexes, selective disclosure of an atom's fields, aggregators that commit
+many logs in one claim, curated world memory beyond cell digests, and
+storage with proofs.
+
+### Orchestration
+
+**Task Charters: built (specification v1.10).** Not in the architecture
+paper; added for work bought across trust boundaries
+([concept](book/src/concepts/task-charters.md), [design
+note](book/src/research/agent-scale.md)). `PostTask` escrows money for a
+task and fixes its acceptance rule: the poster's policy, the claims every
+result must rest on, the verifiers whose attestations count, the
+adjudicator, the largest detection factor and the reliance period. An
+agent posts from its allotment under its caveats. `SettleTask` pays once
+a result claim that commits to the task, and whose formula is exactly the
+worker's bond or a named verifier's attestation of the same output and
+every required claim, passes the decision rule; it reserves κ times the
+payment of the result's backing for the payer, so a falsified result
+compensates it. `CancelTask` refunds tasks released by their worker, open
+ones and expired ones. Both proof stacks implement it, with differential
+tests for every rule and failure, including an exploit proven against an
+environment claim and the compensation that follows; the CLI has
+`sion task …`, the MCP server `sion_task_*` tools, and the demo `tasks`.
+**Simplified:** settlements reserve backing in the one contended assurance
+registry, so they are ordered one after another. **Not built:** batches
+of outputs checked by beacon-chosen samples, assignment markets on the
+ledger, automatic slashing for two signed outputs of one deterministic
+task, capability leases at gateways, dataset manifests.
+
 ### Economics
 
 **Built:** fees (a base fee plus a fee per KiB) go to the treasury;
@@ -351,20 +458,99 @@ whole stake and unclaimed rewards are forfeited; the reporter receives a
 share (5 % on the devnet, so reporting oneself still costs 95 %) and the
 treasury the rest.
 
+**Pooled stake (specification v1.11): built.** Anyone may delegate stake
+to a validator without handing it over: a delegation is an object its
+delegator owns, holding shares of the validator's pool. Delegations join
+at the epoch's end; rewards are split between a validator's own and its
+pool's earning stake, the operator keeping a commission (at most 25 %,
+raised by at most 2 points at a time once anyone has delegated, effective
+at the epoch's end); a delegation may not give a validator more than twice
+an equal share of the bonded stake; an equivocation slashes a tenth of the
+pool, unbonding delegations included; validators rank by own plus pooled
+earning stake. Both proof stacks implement it, and the differential tests
+add randomized workloads checked against a third, plain-arithmetic reading
+of the split. Commands `sion stake …` and MCP tools `sion_stake_*`.
+**Simplified:** one shared object holds every pool, so delegation
+transactions are ordered one after another; a pool slash is a flat tenth.
+**Not built:** redelegation without unbonding, delegating from an agent's
+budget, compounding.
+
+**Storage deals (specification v1.12): built.** A client escrows payment
+for keeping data whose Merkle root it fixes (`PostDeal`), for a named
+provider or any; the provider accepts with collateral and gets a custody
+record it owns; each round it proves, owned-linear and many deals per
+transaction, the leaves the beacon of the round's first Pulse picks (the
+deferred phase records the beacon of every eighth Pulse in one of 12,500
+beacon records, §6.3); it collects per proven round; the close refunds
+unproven rounds to the client and returns the collateral less
+`⌊bond × missed / rounds⌋`, or forfeits all of it to the treasury if the
+client closes a deal abandoned for three rounds. Both proof stacks
+implement it, and the differential tests run every operation and failure
+through both. Commands `sion storage …` (including `serve`, a provider
+loop that proves, collects and closes, then accepts deals whose data it
+fetched in the background on its terms), MCP tools `sion_storage_*`, the
+`storage` demo (an agent's memory archive kept by a laptop; a phone that
+kept half of its data caught and its collateral forfeited),
+`GET /v1/deals` (`?open=1` from an index), and the app's Storage tab,
+which turns a device into a provider (tested against a devnet; run on the
+desktop build). Outbound HTTP goes through `sion-http`: TLS with
+X25519MLKEM768 first, deadlines, bounded bodies, no redirects, no local or
+private addresses. An independent review changed the challenge, the
+forfeit, open deals' collateral and the provider before release
+([Reviews](book/src/security/reviews.md)). **Not built:** proof of
+replication (a provider may fetch challenged leaves from elsewhere:
+`storage:no-replication`), retrieval (`storage:no-retrieval`), repair or
+re-assignment of a failed deal, deals funded from an agent's budget,
+encryption in the tooling (proofs publish the challenged leaves: a client
+encrypts private data itself), and storage proofs aggregated across deals
+(each round's leaves go on the ledger: `storage:raw-proofs`).
+
 **Not built:** payments to provers, a value-in-flight cap.
 
 ### Node and operations
 
-**Simulated:** a devnet runs every validator in one process, each on its own
-thread with its own state replica, exchanging real signed messages over
-in-memory channels. There is no peer-to-peer networking, and the client
+**Networking between machines: simplified.** `sion node` runs one
+validator per process, with its own data directory and HTTP API, and
+`sion gateway` runs a gateway on its own; nodes talk QUIC (`quinn`) with
+TLS 1.3, the hybrid key exchange X25519MLKEM768 only and ML-DSA-44
+signatures only (rustls with aws-lc-rs, `net:aws-lc`). Each node has an
+ML-DSA-44 network key, separate from a validator's dual consensus keys,
+presented as a raw public key (RFC 7250, not an X.509 certificate,
+`net:raw-public-keys`) and pinned at both ends (`net:transport-ml-dsa`). Validators generate their
+keys locally (`sion keys validator`) and sign a network record binding
+their network key and addresses with both consensus keys; `sion genesis`
+collects the records into a genesis file, and a peer file lists the
+gateways validators accept (`net:static-peers`). Every message class has
+its own stream with a size limit and a priority; queues are bounded per
+peer and class; quotas drop floods. A consensus session is the epoch (no
+restart generation). Gateways ask again for late lane approvals and
+validators pull missing Pulse signatures, so a run survives lost
+messages; the fault injector tests this in process. Tested on one
+machine: four `sion node` processes and a `sion gateway` certify, order
+and execute transfers, every node reaches the same state, a light client
+checks a certified Pulse against the pinned chain identity, unknown keys
+and classical key exchange are refused, three validators continue
+without the fourth (`crates/sion-cli/tests/network.rs`). **Simplified:** a
+validator that stops cannot rejoin (`net:no-rejoin`); a standalone gateway
+trusts the node it follows (`net:gateway-trusts-node`); there is no drain
+window at epoch boundaries (`impl:reliable-handover`), no lane-lock
+hand-over (`impl:lock-handover`), no TCP fallback, no HTTPS on the API, no
+stake-weighted bandwidth, and peers do not follow committee changes. Not
+yet tested across machines, under `netem`, or by fuzzing the decoders.
+
+**Simulated (devnet):** `sion devnet` runs every validator in one
+process, each on its own thread with its own state replica, exchanging
+real signed messages through the same `Transport` seam over in-memory
+channels, optionally through a seeded fault injector (loss, delay,
+duplication, reordering and partitions per message class); the client
 gateway is a single component that collects lane approvals.
 
 **Built:** a segmented write-ahead log with checksums and torn-tail
 truncation, periodic snapshots, replay that re-checks every commitment,
-restart into a new consensus session, state sync for validators that fell
-behind, and epoch boundary proofs kept on disk for light clients
-(`GET /v1/epochs/{e}`).
+restart into a new consensus session and state sync for validators that
+fell behind (on a devnet, whose validators restart together; see
+`net:no-rejoin` for networks), and epoch boundary proofs kept on disk for
+light clients (`GET /v1/epochs/{e}`).
 
 ## Trust assumptions this implementation adds
 
@@ -376,15 +562,29 @@ the architecture's own:
 | `impl:replay-proofs` | World Proofs are checked by re-execution, so "proof finality" costs a verifier as much as executing; succinctness is assumed, not delivered. |
 | `impl:shared-primitives` | Both proof stacks use the same hashing, Merkle, signature, Assurance Algebra and clearing-certificate code; a bug there is common-mode. |
 | `impl:devnet-keys` | Devnet validator keys are derived from the chain name; anyone can derive them. A devnet secures nothing of value. |
-| `impl:in-process-network` | Validators share a machine and a process; network faults are not exercised by the devnet (they are by the consensus simulator). |
-| `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period. |
+| `impl:in-process-network` | `sion devnet` only: validators share a machine and a process; network faults are exercised only through the in-process fault injector and the consensus simulator. A network of `sion node` processes does not carry this atom. |
+| `impl:reliable-handover` | At an epoch boundary each validator starts a new consensus session; a validator that has not reached the boundary finishes the old session from messages already sent, which the in-process network always delivers. A real network needs a drain period: on a network of processes, a validator that misses old-session messages at a boundary can stall. |
+| `net:transport-ml-dsa` | Networks: transport authentication rests on ML-DSA-44 alone (each node's network key, presented as an RFC 7250 raw public key and pinned at both ends). A forger could impersonate a peer at the transport layer (delay, drop, eclipse), not sign consensus messages, which carry dual signatures. |
+| `net:aws-lc` | Networks: the TLS provider is aws-lc-rs, C code outside the workspace's audit scope (the workspace's own post-quantum code is pure Rust). |
+| `net:raw-public-keys` | Networks: TLS authenticates nodes with RFC 7250 raw public keys (an ML-DSA-44 SubjectPublicKeyInfo, signed for in the handshake's CertificateVerify), not the self-signed ML-DSA X.509 certificates the design proposed, and with no channel-binding fallback. Both ends pin the exact key, so no certificate path is validated; the handshake relies on rustls's raw-public-key support, newer and less used than its certificate path. |
+| `net:static-peers` | Networks: peers come from a genesis file and a peer file of signed records, read when a node starts, not from the state. A validator that joins by staking is reachable only by nodes started with its record in their peer file. |
+| `net:partial-synchrony` | Networks: liveness needs message delays to become bounded after some time (assumed by the architecture; named because a real network now exercises it). |
+| `net:gateway-trusts-node` | Networks: a gateway running alone learns committees and answers state queries from one node it trusts. A lying node can make it ask the wrong validators or show wrong balances; it cannot get a transaction certified that a committee did not approve. |
+| `net:no-rejoin` | Networks: a validator that stops cannot rejoin. Restarting in a session it signed in needs the consensus signing log, and catching up to a later session needs Pulse sync; neither is built, so it refuses to start rather than risk equivocation. Each stopped validator is a permanent fault; more than a third of the stake stopped halts the chain. |
 | `impl:slashed-seat` | A slashed validator keeps its seat, and its weight in quorums, until the epoch ends. |
 | `impl:active-floor` | Validators can leave until one remains: nothing keeps the active set large enough to tolerate a faulty member, so the operators of the other validators can leave a single validator forming every quorum. |
 | `impl:evidence-scope` | Equivocation evidence is not bound to this chain: a validator's keys must not be used on another network. |
 | `impl:lock-handover` | Certificates are not drained when a lane committee changes: certificate finality for owned transactions holds within one committee's term (an owner who double-signs could get the second spend certified by a fully replaced committee). |
 | `impl:hash-chain-beacon` | The beacon is a hash-chain commit-reveal; the last validator to reveal can bias it by withholding (at the cost of being seen). |
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
+| `impl:memory-index` | The ledger stores a memory log's index root without checking it: a memory query proof is complete relative to that root, and nothing on the ledger yet acts on evidence that an index leaves an atom out. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
+| `storage:no-replication` | A storage proof shows that the provider could produce the challenged leaves during the round, not that it keeps a copy of its own: it could fetch them from another copy (or from the client) when challenged. Two deals with two providers are not proof of two copies. |
+| `storage:raw-proofs` | Every storage proof carries its challenged leaves and paths on the ledger, about 17 to 22 KiB a deal a round with 4 challenges. Proofs are not aggregated across deals or rounds, so ledger bandwidth bounds how many deals a network can keep. |
+| `storage:no-retrieval` | Getting data back is not part of the protocol: a provider proves custody, and returning the data to its client is up to them. |
+| `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
+| `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |
+| `app:unproven-balances` | The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

@@ -1,8 +1,8 @@
 # Glossary
 
 **Active set.** The validators that hold seats in the current epoch, each
-with a weight equal to its stake in whole units. See
-[Validators, staking and epochs](../concepts/committees.md).
+with a weight equal to its own plus its pool's earning stake, in whole
+units. See [Validators, staking and epochs](../concepts/committees.md).
 
 **Adjudicator.** A bonded party a claim names to rule on challenges. A
 ruling cannot be trusted beyond the adjudicator's own bond.
@@ -10,6 +10,11 @@ ruling cannot be trusted beyond the adjudicator's own bond.
 **Agent Charter.** A grant that lets an AI agent spend a principal's money
 within caveats the protocol enforces on every payment. See
 [Agent Charters](../concepts/agent-charters.md).
+
+**Agent identity.** A charter with an identity record: a card commitment
+and a depth in its tree. Its id is the agent's id, written
+`did:sion:<chain>:<id>`. See [Agent identities and
+subagents](../concepts/agent-identities.md).
 
 **Allotment.** A single-writer share of a bounded total, spent without
 consensus. See [Escrow Lanes](../concepts/escrow-lanes.md).
@@ -25,12 +30,24 @@ of corruption, the decision rule, reservations and slashing. See
 bond, a piece of hardware, an institution. Each has a class and, if
 bonded, a bond.
 
+**Attestation.** A verifier's claim (`task.attestation/v1`) that a task's
+output passes, resting on the verifier's bond. A result may rest on the
+attestations of verifiers the task names.
+
 **Beacon.** Public randomness for each Pulse, from validators' hash-chain
 reveals. It seals market batches, breaks clearing ties and seeds lane
 committees.
 
+**Beacon record.** The beacon of a Pulse that is a multiple of 8, kept by
+the chain in one of 12,500 reusable slots, so a transaction can read the
+beacon of a Pulse fixed in advance for 100,000 Pulses (specification
+§6.3). Storage challenges use it.
+
 **Bond.** Money posted behind an atom, slashed if a challenge against it
 is upheld.
+
+**Bounty.** A task that names no worker: anyone may settle it with an
+acceptable result, and its poster may withdraw it until then.
 
 **Certificate.** Signatures from more than two thirds of a committee's
 weight: on a transaction's inputs (a lane certificate), or on a Pulse
@@ -48,12 +65,20 @@ broken, ruled on by the claim's adjudicator.
 lets the payee settle by a jump. See
 [Payment streams](../concepts/payment-streams.md).
 
+**Challenge (storage).** The leaves a storage deal's provider must show in
+a round, drawn from the beacon of the round's first Pulse, which the chain
+records (see Beacon record). See Storage deal.
+
 **Chunk.** A run of transactions (16 by default), or the deferred phase,
 with a statement and a witness; the unit a proof stack proves.
 
 **Claim.** A statement with a formula of the atoms and other claims it
 rests on, appended to the knowledge log. See
 [Claims and the knowledge log](../concepts/claims.md).
+
+**Commission.** The share of its pool's rewards a validator's operator
+keeps: at most 25 %, effective at the epoch's end. See
+[Pooled stake](../concepts/validators/pooled-stake.md).
 
 **Committee.** The validators that certify something: the consensus
 committee (the active set) certifies Pulse headers and orders contended
@@ -72,6 +97,10 @@ from what it touches: knowledge, owned-linear, bounded or contended. See
 make a claim false, under a consumer's policy. See
 [Cost of corruption](../concepts/assurance/cost-of-corruption.md).
 
+**Custody record.** The object a storage provider owns for each deal it
+accepted: what proving needs (root, leaves, rounds, seed) and the rounds
+proven. Proofs touch only it, so proving is owned-linear.
+
 **Data-availability sampling.** Checking random shares of a Pulse's
 erasure-coded data so withholding is detected with high probability. See
 [Data availability](../concepts/data-availability.md).
@@ -80,6 +109,10 @@ erasure-coded data so withholding is detected with high probability. See
 corruption, discounted for detection and capped by the adjudicator, is at
 least κ·V, and that much backing is unreserved. See
 [The decision rule](../concepts/assurance/decision-rule.md).
+
+**Delegation.** An object its delegator owns that holds shares of a
+validator's pool: stake added to the validator's weight without handing
+it over. See [Pooled stake](../concepts/validators/pooled-stake.md).
 
 **Deferred phase.** The last part of a Pulse: commutative effects in
 canonical order, forced-intent posting, and scheduled events such as batch
@@ -119,11 +152,22 @@ hashes, however many payments it covers.
 epoch and the shard's rotations in it. Approvals from one lane epoch never
 count in another.
 
+**Leaf.** One piece of a storage deal's data, at most 4 KiB; the deal
+commits to the Merkle root over the leaves' hashes.
+
 **Light client.** A client that checks headers, receipts, state and data
 with proofs against a pinned chain identity, without executing the chain.
 
 **Linear Lanes.** Certifying owned-object transactions with one committee
 certificate and no consensus. See [Linear Lanes](../concepts/linear-lanes.md).
+
+**Memory atom.** One statement in a memory log: what was observed or
+asserted, when it held, where, with what confidence, and what it rests on.
+See [Memory for agents and robots](../concepts/memory.md).
+
+**Memory log.** A log of memory atoms that only its writer appends to,
+kept off the ledger. The ledger keeps its head and moves it only along a
+consistency proof, so the log only grows (specification v1.9).
 
 **Micro-unit.** 10⁻⁶ of an asset; the unit amounts are stored in.
 
@@ -136,9 +180,16 @@ deadline.
 **Operator.** The account that stakes for a validator and receives its
 rewards and withdrawals.
 
+**Overseer.** For an agent identity: its backer, its principal, or the
+agent of any charter above it. Any overseer may suspend or revoke it.
+
 **Payment stream.** Escrow from one payer for one payee, paid off the
 ledger by revealing a hash chain's elements, one per payment, and settled
 by the payee in batches. See [Payment streams](../concepts/payment-streams.md).
+
+**Pool.** A validator's delegated stake, divided into shares, in the
+delegation book. Earning shares share the validator's rewards; all shares
+share its slashing.
 
 **Policy.** A consumer's view of which atoms and classes to trust,
 distrust or assume broken, and its κ.
@@ -159,6 +210,9 @@ receipts root; for agent payments, also a receipt claim.
 when it relies on the claim, so no claim is relied on beyond its backing.
 See [Reservations](../concepts/assurance/reservations.md).
 
+**Result claim.** A worker's claim (`task.result/v1`) that commits to a
+task and its output, with exactly the formula the task requires.
+
 **Rotation.** Replacing a shard's lane committee after it misses a
 forced-inclusion deadline.
 
@@ -170,6 +224,11 @@ boundary and every restart.
 **Slashing.** Forfeiting a bond (for a false claim) or a validator's stake
 (for equivocation).
 
+**Storage deal.** Escrow from a client for a provider who keeps data
+whose Merkle root the deal fixes and proves each round that it still holds
+it; paid per proven round, with collateral forfeited for missed or
+abandoned rounds. See [Storage deals](../concepts/storage.md).
+
 **Specification.** `docs/spec/state-transition.md`, the normative
 description of the state transition. See
 [The state transition specification](../specification.md).
@@ -178,7 +237,8 @@ description of the state transition. See
 its operator stakes for it.
 
 **Stake.** What a validator deposits to join; its weight in committees and
-what it forfeits if it equivocates.
+what it forfeits if it equivocates. Delegators add stake to a validator's
+pool (see Delegation).
 
 **State root.** The root of the sparse Merkle tree over every object.
 
@@ -186,17 +246,29 @@ what it forfeits if it equivocates.
 checks each payment with one hash, decides when to settle, and settles by
 walk or jump.
 
+**Subagent.** An agent launched by another with `SpawnAgents`: its own
+identity, account, card and budget, with caveats and a window limit carved
+from its parent's.
+
+**Task.** Escrow for a piece of work, with the rule a result must pass
+fixed when it is posted (specification v1.10). See [Task
+Charters](../concepts/task-charters.md).
+
 **The Fold.** Folding every chunk proof of a Pulse into one World Proof.
 See [The Fold and World Proofs](../concepts/the-fold.md).
 
 **Tombstone.** What a consumed object becomes: it keeps its identifier,
 owner and version, so history stays auditable.
 
+**Transaction time.** For a memory atom: the Pulse of the commit that
+added it to its log, assigned by the ledger, not by the writer. Its valid
+time, when the statement held, is the writer's.
+
 **Two-sorted state.** Linear objects that are consumed at most once, and
 knowledge that is only appended.
 
-**Unbonding.** The Pulses an exited validator's stake stays locked before it
-can be withdrawn.
+**Unbonding.** The Pulses an exited validator's stake, or an undelegated
+delegation's, stays locked, and slashable, before it can be withdrawn.
 
 **Validator set.** The state object holding every validator's record, the
 active set, the epoch and its parameters.
@@ -205,8 +277,8 @@ active set, the epoch and its parameters.
 that no better allocation exists. See
 [Verifiable Clearing](../concepts/verifiable-clearing.md).
 
-**Weight.** A validator's stake in whole units of the stake asset, its
-voting weight in the consensus committee.
+**Weight.** A validator's own plus its pool's earning stake in whole
+units of the stake asset: its voting weight in the consensus committee.
 
 **Witness.** The objects a chunk touches, with state proofs, plus the
 knowledge log's frontier: what a stateless verifier needs to re-execute it.

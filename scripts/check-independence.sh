@@ -42,6 +42,20 @@ forbidden = [
      "sion_exec::stream helpers (only the Stream, Checkpoints and Jump types and the §5.31 constants are allowed)"),
     (r"\bPayerChain\b|\bextends\s*\(|\bcheckpoint_leaf\b|\bverify_jump\b|\bjump_hashes\b|\bcheckpoint_count\b|\bwalk\s*\(",
      "sion_exec::stream helpers"),
+    (r"\bresult_formula\b|\bworker_bond\b|TaskResult::payload\b",
+     "sion_exec::task helpers (result_formula, worker_bond, TaskResult::payload)"),
+    (r"sion_exec::delegation::(?!\{|DelegationBook\b|Pool\b|Join\b|Delegation\b|DelegationState\b|REWARD_SCALE\b|MIN_DELEGATION\b|COMMISSION_CEILING_PERMILLE\b|COMMISSION_STEP_PERMILLE\b|DELEGATION_SLASH_PERMILLE\b|CAP_FLOOR_PERMILLE\b)\w+",
+     "sion_exec::delegation helpers (only the types and the §5.45 constants are allowed)"),
+    (r"\bmul_div\b|\bcap_permille\b|\bwithin_cap\b|\bStanding\b|\bresolve\s*\(|\.(shares|value_of|shares_for|bonded|earning_value|owed)\s*\(|Pool::\w+\s*\(",
+     "sion_exec::delegation helpers (mul_div, cap_permille, within_cap, resolve, Pool methods)"),
+    (r"sion_exec::storage::(?!\{|Deal\b|DealState\b|Custody\b|CustodyProof\b|LeafProof\b|MAX_DEAL_LEAVES\b|MAX_LEAF_BYTES\b|MAX_PATH\b|MAX_CHALLENGES\b|MAX_ROUNDS\b|MIN_ROUND_LENGTH\b|MAX_ROUND_LENGTH\b|MAX_LOCATOR\b|MAX_PROOF_LEAVES\b|ABANDON_ROUNDS\b|SEED_DOMAIN\b|CHALLENGE_DOMAIN\b)\w+",
+     "sion_exec::storage helpers (only the types and the §5.50 constants are allowed)"),
+    (r"\bchallenge_index\b|\bround_seed\b|\bcurrent_round\b|\bDataTree\b|\bsplit_leaves\b|Deal::end\b|\.end\s*\(\s*\)|\.round_start\s*\(",
+     "sion_exec::storage helpers (challenge_index, round_seed, current_round, DataTree, split_leaves, Deal::end, Custody::round_start)"),
+    (r"sion_exec::beacons::(?!\{|BeaconRecord\b|BEACON_INTERVAL\b|BEACON_SLOTS\b)\w+",
+     "sion_exec::beacons helpers (only the type and the constants are allowed)"),
+    (r"\bslot_of\b|\bnext_boundary\b",
+     "sion_exec::beacons helpers (slot_of, next_boundary)"),
 ]
 
 # The sion_exec::pulse items the library may use: type definitions only

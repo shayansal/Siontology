@@ -10,6 +10,229 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Fixes from the review of storage deals, pooled stake and the app
+
+An independent review of storage deals and the app, and a review of the
+staking incentives, found defects that were fixed before release ([Reviews and
+fixes](docs/book/src/security/reviews.md)):
+
+- **Storage challenges** (spec v1.12): a round's challenge now comes from
+  the beacon of its first Pulse, fixed at acceptance, instead of the beacon
+  of the previous proof's Pulse, which a provider working with a validator
+  could time. The deferred phase records the beacon of every eighth Pulse
+  in one of 12,500 beacon records (`sion_exec::beacons`); rounds start and
+  last multiples of 8 Pulses; the longest round is 100,000 Pulses. Missed
+  rounds forfeit `⌊bond × missed / rounds⌋`; open deals must ask for
+  collateral.
+- **The reporter's share** (spec v1.11) is of the offender's own stake and
+  rewards only: a share of the pool's slashed tenth made reporting
+  yourself profitable once your pool was about 190 times your stake.
+- **Proof stack B** implements storage deals and beacon records; the
+  storage differential tests run again.
+- **The provider** proves first and fetches in the background with
+  deadlines; refuses `file://` locators unless allowed and private
+  addresses always; batches proofs by size; takes modest deals by default;
+  writes copies only after acceptance and deletes them at the close. A
+  refused submission releases its coins. New crate `sion-http`: bounded,
+  guarded outbound HTTP with X25519MLKEM768 first.
+- **The app** shows outcomes from proven receipts only, waits for the
+  digest it computed, pays 64-digit accounts only, writes settings
+  atomically and pins nothing on first use after a reset; test money is
+  labelled test USD, and the wording is neutral.
+- `GET /v1/deals?open=1`, from an index; `sion storage post` needs
+  `--locator` or `--local`.
+
+### Storage deals (specification v1.12)
+
+- `PostDeal` escrows `price × rounds` for keeping data whose Merkle root
+  the deal fixes (leaves of at most 4 KiB, RFC 9162 tree), for a named
+  provider or for any (then with collateral). `AcceptDeal` posts the
+  provider's collateral and creates a custody record the provider owns;
+  rounds start on the next multiple of 8 Pulses. `ProveStorage` proves the
+  round under way for many deals at once, owned-linear: for each, the
+  leaves the beacon of the round's first Pulse picks, with their Merkle
+  paths. `SettleDeal` pays the provider for proven rounds; `CloseDeal`
+  refunds unproven rounds to the client, returns the collateral less
+  `⌊bond × missed / rounds⌋`, or forfeits all of it to the treasury when
+  the client closes a deal its provider abandoned for three rounds. The
+  supply counts deal escrow and collateral. Both proof stacks implement it.
+- `sion storage prepare | post | deals | show | accept | prove | settle |
+  close | serve`; `serve` runs a provider that proves every round, collects
+  and closes, and accepts deals whose data it fetched (`https://`, or
+  `file://` when allowed) and checked against the root. MCP tools
+  `sion_storage_post`, `sion_storage_deals` and `sion_storage_close`.
+  `GET /v1/deals`; account views list custody records.
+- The `storage` demo: a robot commits its memory log with its archive's
+  root as the manifest and pays a laptop to keep the archive; a phone that
+  kept only half of the camera footage it accepted cannot answer the
+  challenges and forfeits its collateral.
+- The app's Storage tab turns a device into a provider: it takes open deals
+  on modest terms whose data it can fetch, keeps the data, proves every
+  round (each proof expiring at the end of its round, so a late one costs
+  nothing), collects and closes; turned off, it keeps proving the deals it
+  holds.
+
+### The app: a light node on every device
+
+- New crate `sion-app-core`, shared by the app's desktop and mobile
+  shells: the device's key, a light client that verifies the latest
+  certified Pulse every eight seconds (chain identity pinned on first use
+  or by its user, committee certificate, receipts, a state proof, 16 random
+  data shares), receipts proven for every transaction the device signs,
+  payments and pooled stake, over any node's HTTP API. `Send + Sync`, and
+  no lock held while it talks to a node.
+- A Tauri 2 shell in `apps/sion-app` (its own Cargo workspace) with four
+  tabs (Node, Wallet, Stake, Settings) in the brand's type and colours.
+  Built and run on Linux against a devnet; Android and iOS are configured
+  but not built yet. See the [app page](docs/book/src/getting-started/app.md).
+- `sion_cli::verify::verify_pulse_report` returns the chain identity and
+  Pulse a verification checked, so a client pinning on first use pins the
+  identity it verified against.
+
+### Networking between machines
+
+- Validators run one per process and talk QUIC: `sion keys validator`
+  generates a validator's keys and a network record signed with both of its
+  consensus keys, `sion genesis` collects records into a genesis file and a
+  peer file, `sion node` runs a validator (with an optional embedded
+  gateway) and `sion gateway` a gateway on its own. TLS 1.3 with
+  X25519MLKEM768 only and ML-DSA-44 raw public keys only, pinned at both
+  ends; one stream per message class, bounded queues, quotas (new crate
+  `sion-net`, on quinn 0.11.9 and rustls with aws-lc-rs). Tested with four
+  node processes and a gateway on one machine. A stopped validator cannot
+  rejoin yet (`net:no-rejoin`); see the
+  [guide](docs/book/src/guides/network.md).
+- Every message between nodes now goes through a `Transport` seam that
+  stamps the sender: the devnet's in-memory transport carries exactly what
+  the old bus did, a seeded fault injector adds loss, delay, duplication,
+  reordering and partitions per message class, and status and `sion bench`
+  report traffic per class, kind and peer.
+- Lost messages are asked for again: gateways retry late lane approvals,
+  validators pull missing Pulse signatures, and the buffers peers can fill
+  are bounded in bytes or count.
+
+### Memory for agents and robots: the library, commands and demo
+
+- New crate `sion-memory`, the off-ledger half of memory logs: integer-only
+  memory atoms with space and two kinds of time, single-writer logs with an
+  on-disk store, a canonical 4D index (hourly Merkle R-trees per frame, a
+  long-lived tree, subject and link maps) specified for independent
+  rebuilding, complete range proofs including empty answers, subject and
+  link proofs, omission proofs that convict an index leaving an atom out,
+  belief as a fold with proofs checked from heads, sealed payloads with
+  forgetting by key destruction, and the Reality Memory Protocol. 84
+  tests, including a second implementation of the index written from its
+  specification. Over 10⁶ atoms, a 50 × 50 × 10 m, one-hour query returns
+  9 atoms with a 36 KiB proof, verified in 0.2 ms.
+- `sion memory open`, `remember`, `commit`, `recall` and `show`, and the
+  MCP tools `sion_memory_open`, `sion_memory_remember`,
+  `sion_memory_commit` and `sion_memory_recall`: recall answers are
+  checked against the index root the ledger holds.
+- The `robots` demo: two robots with their own agent identities and memory
+  logs share a warehouse; a rewrite is refused; a curator's refutation
+  gives two readers two provable beliefs; an omitting index is convicted; a
+  camera frame is forgotten; a suspended robot's memory stops growing.
+
+### Pooled stake (specification v1.11)
+
+- `DelegateStake` adds stake to a validator's pool without handing it
+  over: the delegator keeps a delegation object holding pool shares. It
+  joins at the epoch's end, then counts towards the validator's weight and
+  earns a share of its rewards. `Undelegate` pays what is owed and starts
+  unbonding (the stake stays slashable), `WithdrawDelegation` returns the
+  stake, and `ClaimDelegatorRewards` pays the rewards credited so far.
+- At each epoch's end a validator's reward is split between its own stake
+  and its pool's earning stake; the operator keeps a commission on the
+  pool's part, set with `SetCommission`: at most 25 %, effective at the
+  epoch's end, and, once anyone has delegated, raised by at most 2 points
+  at a time. The rest is credited per share with an exact accumulator.
+- A delegation is refused if it would give its validator more than twice
+  an equal share of the bonded stake (never less than a tenth).
+- An equivocation also slashes a tenth of the offender's pool, unbonding
+  delegations included; the reporter's share is of the offender's own
+  stake only (as first written, of both). Validators rank
+  for the active set by their own plus their pool's earning stake.
+- Both proof stacks implement v1.11. The differential tests run every rule
+  and failure through both, check every epoch end's split against a third,
+  plain-arithmetic reading, and run randomized workloads of delegations,
+  claims, commission changes, fees and slashings, checking the pools
+  against the delegations they hold after every Pulse.
+- New `sion stake` commands (`pools`, `delegate`, `show`, `claim`,
+  `undelegate`, `withdraw`, `commission`), MCP tools `sion_stake_pools`,
+  `sion_stake_delegate`, `sion_stake_show`, `sion_stake_claim`,
+  `sion_stake_undelegate` and `sion_stake_withdraw`, and the guide
+  *Delegating stake*. The node's account view lists an account's
+  delegations. The supply invariant counts pooled stake and unclaimed
+  delegator rewards.
+
+### Task Charters (specification v1.10)
+
+- `PostTask` escrows money for a task and fixes, at posting, the rule a
+  result must pass: the poster's policy, the claims every result must rest
+  on (an environment's bonded "no known exploit" claim, say), the
+  verifiers whose attestations count, the adjudicator, the largest
+  detection factor and how long the poster relies on a paid result. An
+  agent can post from its own budget, under its caveats.
+- `SettleTask` pays the worker once, when a result claim that commits to
+  the task, with exactly the formula the task requires (the worker's bond
+  or a named verifier's attestation of the same output, and every required
+  claim), passes the decision rule. It reserves κ times the payment of the
+  result's backing for whoever paid, so if a required claim is later
+  falsified (an exploit in the environment), that party is compensated
+  from the slashed bonds and the challenger is paid a share.
+- `CancelTask` refunds a task its worker releases, a bounty its poster
+  withdraws, or one past its deadline. A named worker can count on its
+  task until the deadline.
+- Both proof stacks implement v1.10; the differential tests run every rule
+  and failure, posting from an agent's budget, bounties, cancellation and
+  an exploit's compensation. New `sion task` commands (`post`, `attest`,
+  `submit`, `settle`, `cancel`, `show`), MCP tools `sion_task_post`,
+  `sion_task_attest`, `sion_task_submit`, `sion_task_settle` and
+  `sion_task_show`, and the `tasks` demo.
+- The supply invariant counts open task escrow.
+
+### Memory logs (specification v1.9)
+
+- A memory log is a log of memory atoms that only its writer appends to,
+  kept off the ledger. `OpenMemory` creates one, owned by the writer,
+  optionally for an agent identity; `CommitMemory` moves its head to a new
+  size and root along an RFC 9162 consistency proof that the ledger checks,
+  so a log only grows and cannot fork. The Pulse of a commit is the
+  transaction time of the atoms it adds.
+- An agent's log stops growing while the agent, or any agent above it, is
+  suspended or revoked.
+- Both proof stacks implement v1.9; the differential tests run every rule
+  and its failure cases, and a property test runs random commits, honest
+  and forged, by two writers through both.
+- The design note "Billions of agents" covers the memory layer's atoms,
+  4D index, completeness proofs, belief and privacy.
+
+### Agent identities (specification v1.8)
+
+- An agent identity is a charter with an identity record: a commitment to
+  the agent's card and its depth in the tree. The charter's id is the
+  agent's id (`did:sion:<chain>:<id>`).
+- `RegisterAgent` registers one. `SpawnAgents` launches up to 256
+  subagents in one transaction, each with its own account, card, caveats
+  at least as strict as its parent's, and a budget carved from the parent's
+  allotment. `SetAgentCard` replaces a card.
+- `SuspendAgent` and `ResumeAgent` pause and resume a charter and
+  everything below it; any overseer (the backer, the principal or an
+  ancestor's agent) may suspend, the suspender or the backer may resume.
+  `RevokeCharter` may now be sent by the agent itself or any overseer.
+- Window limits are carved like budgets, for `Delegate` too: allotments
+  gain `carved_window`, and an agent's own limit is what it has not handed
+  down. Until v1.7 each child could spend its parent's whole window limit,
+  so many children multiplied the parent's rate. An independent design
+  review found this.
+- Both proof stacks implement v1.8; the differential tests run every
+  operation and its failure cases through both. New `sion agent` commands
+  (`register`, `spawn`, `show`, `card`, `card-template`, `suspend`,
+  `resume`, `revoke`, `reclaim`) and the `swarm` demo.
+- The wallet now puts an operation's extra inputs (an allotment, the
+  account object) right after the gas coin, so `inputs[1]` holds them
+  however many coins pay the fee.
+
 ### Continuous integration
 
 - Pull requests and pushes run the fast suite: formatting, lints, the tests

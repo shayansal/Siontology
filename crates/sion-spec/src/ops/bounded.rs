@@ -31,6 +31,7 @@ fn bounded_allotment(
         caveats: None,
         window_start: run.ctx.pulse,
         spent_in_window: Amount::ZERO,
+        carved_window: Amount::ZERO,
     })
 }
 

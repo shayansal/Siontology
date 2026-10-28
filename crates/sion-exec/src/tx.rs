@@ -21,11 +21,13 @@ use sion_crypto::{
     AuthPolicy, Authorization, CryptoError, DualKeypair, KemPublicKey, KeyShare, PublicKey,
 };
 
-use crate::charter::Caveats;
+use crate::charter::{Caveats, Spawn};
 use crate::claim::ClaimBody;
 use crate::market::Submission;
 use crate::object::{well_known, CoordinationClass, ObjectRef};
 use crate::state::ChainConfig;
+use crate::storage::CustodyProof;
+use crate::task::Acceptance;
 use crate::validators::Equivocation;
 
 /// The signing domain for transactions.
@@ -338,6 +340,171 @@ pub enum TxKind {
         /// The stream.
         stream: ObjectId,
     },
+    /// Registers an agent identity: a charter with an identity record
+    /// (spec §5.35).
+    RegisterAgent {
+        /// The agent's own account.
+        agent: AccountId,
+        /// Commitment to the agent's card.
+        card: Hash32,
+        /// The caveats.
+        caveats: Caveats,
+        /// Budget in USD.
+        funding: Amount,
+        /// Bond behind the agent's receipts, in USD.
+        agent_bond: Amount,
+    },
+    /// An agent launches subagents, each with its own identity, account,
+    /// narrower caveats and budget (spec §5.36).
+    SpawnAgents {
+        /// The parent's charter.
+        charter: ObjectId,
+        /// The subagents, at most `MAX_SPAWN_BATCH`.
+        children: Vec<Spawn>,
+    },
+    /// An agent replaces its card commitment (spec §5.37).
+    SetAgentCard {
+        /// The agent's charter.
+        charter: ObjectId,
+        /// The new commitment.
+        card: Hash32,
+    },
+    /// An overseer suspends a charter and everything below it (spec §5.38).
+    SuspendAgent {
+        /// The charter.
+        charter: ObjectId,
+    },
+    /// The suspender or the backer lifts a suspension (spec §5.39).
+    ResumeAgent {
+        /// The charter.
+        charter: ObjectId,
+    },
+    /// Opens a memory log that only the sender writes (spec §5.40).
+    OpenMemory {
+        /// The agent identity the log belongs to, if any; the sender must
+        /// be its agent.
+        agent: Option<ObjectId>,
+        /// A commitment to the log's policy, kept off the ledger.
+        policy: Hash32,
+    },
+    /// Moves a memory log's head forward (spec §5.41). The log is
+    /// `inputs[1]`.
+    CommitMemory {
+        /// The log's new size, in atoms.
+        size: u64,
+        /// The Merkle tree hash over the first `size` atoms' leaves.
+        root: Hash32,
+        /// The root of the log's index.
+        index: Hash32,
+        /// The root of the log's storage manifest.
+        manifest: Hash32,
+        /// A consistency proof from the current head to the new one.
+        proof: Vec<Hash32>,
+        /// Whether to seal the log after this commit.
+        seal: bool,
+    },
+    /// Escrows `amount` for a task whose acceptance is fixed now (spec
+    /// §5.42). With `charter`, the escrow comes from that agent's
+    /// allotment (`inputs[1]`), under its caveats; otherwise from coins.
+    PostTask {
+        /// A commitment to the task's specification.
+        spec: Hash32,
+        /// The rule a result must pass.
+        acceptance: Acceptance,
+        /// The worker, or `None` for an open task.
+        worker: Option<AccountId>,
+        /// The escrow.
+        amount: Amount,
+        /// The last Pulse a result may be settled.
+        deadline: Pulse,
+        /// The agent's charter whose allotment pays, if any.
+        charter: Option<ObjectId>,
+    },
+    /// A worker settles a task with its result claim and the attestations
+    /// it rests on (spec §5.43).
+    SettleTask {
+        /// The task.
+        task: ObjectId,
+        /// The body of the sender's result claim.
+        result: ClaimBody,
+        /// Verifiers' attestations: each verifier and its claim's body.
+        attestations: Vec<(AccountId, ClaimBody)>,
+    },
+    /// Cancels an open task and refunds its escrow (spec §5.44).
+    CancelTask {
+        /// The task.
+        task: ObjectId,
+    },
+    /// Delegates stake to a validator's pool without handing it over (spec
+    /// §5.45): the sender keeps a delegation object holding pool shares.
+    DelegateStake {
+        /// The validator.
+        validator: ValidatorId,
+        /// Stake, in the stake asset.
+        amount: Amount,
+    },
+    /// Stops a delegation (`inputs[1]`) earning, pays out its rewards and
+    /// starts its unbonding (spec §5.46).
+    Undelegate,
+    /// Withdraws an unbonded delegation's stake (`inputs[1]`) (spec §5.47).
+    WithdrawDelegation,
+    /// Collects a delegation's rewards (`inputs[1]`) (spec §5.48).
+    ClaimDelegatorRewards,
+    /// The operator sets its pool's commission from the next epoch's end
+    /// (spec §5.49).
+    SetCommission {
+        /// The validator.
+        validator: ValidatorId,
+        /// The commission, in thousandths.
+        permille: u16,
+    },
+    /// Escrows `price × rounds` for keeping data whose Merkle root is
+    /// `root` (spec §5.50).
+    PostDeal {
+        /// The Merkle tree hash over the data's leaf hashes.
+        root: Hash32,
+        /// Leaves.
+        size: u64,
+        /// Leaves challenged per round.
+        challenges: u8,
+        /// Paid per proven round.
+        price: Amount,
+        /// Rounds.
+        rounds: u32,
+        /// Pulses per round.
+        round_length: u64,
+        /// Collateral the provider posts when it accepts.
+        collateral: Amount,
+        /// The provider, or `None` for a deal anyone may accept.
+        provider: Option<AccountId>,
+        /// The last Pulse the deal may be accepted.
+        accept_by: Pulse,
+        /// Where providers can fetch the data (not checked).
+        locator: String,
+    },
+    /// A provider accepts a deal with its collateral and gets a custody
+    /// record (spec §5.51).
+    AcceptDeal {
+        /// The deal.
+        deal: ObjectId,
+    },
+    /// Proves the current round of the deals whose custody records are
+    /// `inputs[1..]`, one proof each, in order (spec §5.52).
+    ProveStorage {
+        /// One proof per custody record.
+        proofs: Vec<CustodyProof>,
+    },
+    /// The provider collects for the rounds it proved (spec §5.53).
+    SettleDeal {
+        /// The deal.
+        deal: ObjectId,
+    },
+    /// Closes a deal: refunds an open one, or ends an accepted one at its
+    /// end or once abandoned (spec §5.54).
+    CloseDeal {
+        /// The deal.
+        deal: ObjectId,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -393,9 +560,11 @@ impl Transaction {
             | TxKind::Challenge { .. }
             | TxKind::Rule { .. }
             | TxKind::WithdrawBond { .. } => Some(well_known::assurance_domain()),
-            TxKind::RevokeCharter { charter } | TxKind::ReclaimCharter { charter } => {
-                Some(object_domain("charter", charter))
-            }
+            TxKind::RevokeCharter { charter }
+            | TxKind::ReclaimCharter { charter }
+            | TxKind::SetAgentCard { charter, .. }
+            | TxKind::SuspendAgent { charter }
+            | TxKind::ResumeAgent { charter } => Some(object_domain("charter", charter)),
             TxKind::Rebalance { bounded, .. } => Some(object_domain("bounded", bounded)),
             TxKind::RevealBatch { market, .. } | TxKind::ClearBatch { market, .. } => {
                 Some(object_domain("market", market))
@@ -404,10 +573,20 @@ impl Transaction {
             | TxKind::Unstake { .. }
             | TxKind::WithdrawStake { .. }
             | TxKind::ClaimRewards { .. }
-            | TxKind::ReportEquivocation { .. } => Some(well_known::validators_domain()),
+            | TxKind::ReportEquivocation { .. }
+            | TxKind::DelegateStake { .. }
+            | TxKind::Undelegate
+            | TxKind::WithdrawDelegation
+            | TxKind::ClaimDelegatorRewards
+            | TxKind::SetCommission { .. } => Some(well_known::validators_domain()),
             TxKind::SettleStream { stream, .. }
             | TxKind::TopUpStream { stream, .. }
             | TxKind::CloseStream { stream } => Some(object_domain("stream", stream)),
+            TxKind::SettleTask { .. } => Some(well_known::assurance_domain()),
+            TxKind::CancelTask { task } => Some(object_domain("task", task)),
+            TxKind::AcceptDeal { deal }
+            | TxKind::SettleDeal { deal }
+            | TxKind::CloseDeal { deal } => Some(object_domain("deal", deal)),
             _ => None,
         }
     }
@@ -424,7 +603,11 @@ impl Transaction {
             TxKind::AgentPay { .. }
             | TxKind::SpendAllotment { .. }
             | TxKind::ReturnAllotment
-            | TxKind::Delegate { .. } => CoordinationClass::Bounded,
+            | TxKind::Delegate { .. }
+            | TxKind::SpawnAgents { .. }
+            | TxKind::PostTask {
+                charter: Some(_), ..
+            } => CoordinationClass::Bounded,
             _ => CoordinationClass::OwnedLinear,
         }
     }

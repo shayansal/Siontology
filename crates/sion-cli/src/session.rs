@@ -116,6 +116,8 @@ pub struct Session<'a> {
     /// The payment streams this session pays from (in memory unless the
     /// caller points it at a directory).
     pub streams: crate::stream::PayerBook,
+    /// Names for assets in this session's sentences, over the usual ones.
+    asset_labels: BTreeMap<AssetId, String>,
 }
 
 impl std::fmt::Debug for Session<'_> {
@@ -135,7 +137,15 @@ impl<'a> Session<'a> {
             timeout: Duration::from_secs(90),
             verbose: false,
             streams: crate::stream::PayerBook::in_memory(),
+            asset_labels: BTreeMap::new(),
         })
+    }
+
+    /// Names `asset` as `label` in this session's sentences: an app on a
+    /// test network calls the devnet's USD "test USD", so that no amount it
+    /// shows reads as money.
+    pub fn label_asset(&mut self, asset: AssetId, label: &str) {
+        self.asset_labels.insert(asset, label.to_string());
     }
 
     /// An address book: the devnet's usual accounts and every wallet this
@@ -145,7 +155,17 @@ impl<'a> Session<'a> {
         for (name, wallet) in &self.wallets {
             names.add_account(wallet.id, name);
         }
+        for (asset, label) in &self.asset_labels {
+            names.add_asset(*asset, label);
+        }
         names
+    }
+
+    /// Uses `wallet` for `name` in this session, instead of a seed file or
+    /// the deterministic devnet wallet of that name (for apps that keep
+    /// their own key).
+    pub fn add_wallet(&mut self, name: &str, wallet: Wallet) {
+        self.wallets.insert(name.to_string(), wallet);
     }
 
     /// The wallet for `name`.
@@ -192,8 +212,27 @@ impl<'a> Session<'a> {
                 crate::describe::sentence(&self.names(), &tx.tx)
             );
         }
-        let receipt = ledger.submit(&tx)?;
-        let result = self.wait(receipt.digest);
+        // A submission refused outright leaves its coins free: release
+        // them, or every later transaction would see them in flight.
+        let receipt = match ledger.submit(&tx) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.wallet(name).settle();
+                return Err(error);
+            }
+        };
+        // Wait for the transaction signed here, whatever digest the node
+        // answered with.
+        let digest = tx.digest();
+        if receipt.digest != digest {
+            self.wallet(name).settle();
+            return Err(CliError::Protocol(format!(
+                "the node acknowledged transaction {} instead of {}",
+                receipt.digest.short(),
+                digest.short()
+            )));
+        }
+        let result = self.wait(digest);
         self.wallet(name).settle();
         result
     }
@@ -216,7 +255,13 @@ impl<'a> Session<'a> {
                 crate::describe::sentence(&self.names(), &tx.tx)
             );
         }
-        let receipt = ledger.force(&tx)?;
+        let receipt = match ledger.force(&tx) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.wallet(name).settle();
+                return Err(error);
+            }
+        };
         let result = self.wait(receipt.digest);
         self.wallet(name).settle();
         result

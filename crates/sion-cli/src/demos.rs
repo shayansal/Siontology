@@ -1703,9 +1703,1424 @@ pub fn local_config(name: &str) -> sion_node::DevnetConfig {
 }
 
 /// Every demo, in the order `all` runs them.
-pub const ALL: [&str; 9] = [
+/// Agent identities (spec v1.8): an orchestrator launches a swarm of
+/// subagents, each with its own identity, account and budget; the ledger
+/// contains them, and one transaction from an overseer stops or resumes a
+/// whole subtree.
+pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use sion_exec::charter::{card_commitment, Spawn};
+    const RESEARCHERS: usize = 12;
+    const SUBS: usize = 3;
+    out.say("== Agent identities: a swarm of subagents, each with its own identity ==");
+    let researchers: Vec<String> = (1..=RESEARCHERS)
+        .map(|i| format!("researcher-{i}"))
+        .collect();
+    let subs: Vec<String> = (1..=SUBS).map(|i| format!("sub-researcher-{i}")).collect();
+    let mut grants = vec![
+        ("acme", AssetId::usd(), usd(5_000)),
+        ("orchestrator", AssetId::usd(), usd(10)),
+    ];
+    for name in researchers.iter().chain(&subs) {
+        grants.push((name.as_str(), AssetId::usd(), usd(1)));
+    }
+    fund_all(session, &grants)?;
+    let vendor = session.id("gpu-cloud");
+    let orchestrator = session.id("orchestrator");
+    let mut caveats = charter_caveats(vendor);
+    caveats.max_per_payment = usd(25);
+    caveats.max_per_window = usd(500);
+    let card = card_commitment(
+        br#"{"name":"acme research orchestrator","url":"https://agents.acme.example/a2a"}"#,
+    );
+    let view = session.must(
+        "acme",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card,
+            caveats: caveats.clone(),
+            funding: usd(1_000),
+            agent_bond: usd(200),
+        },
+        Vec::new(),
+    )?;
+    let (root, root_allotment) = find(&view, |e| match e {
+        Event::AgentRegistered {
+            agent, allotment, ..
+        } => Some((*agent, *allotment)),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  acme registers its orchestrator: agent {}, card {}, 1,000 USD budget, may launch subagents",
+        view.pulse,
+        root.short(),
+        card.short()
+    ));
+
+    let mut worker = caveats.clone();
+    worker.max_per_payment = usd(10);
+    worker.max_per_window = usd(40);
+    let children: Vec<Spawn> = researchers
+        .iter()
+        .map(|name| Spawn {
+            agent: session.id(name),
+            card: card_commitment(format!("{{\"name\":\"{name}\"}}").as_bytes()),
+            caveats: worker.clone(),
+            budget: usd(40),
+        })
+        .collect();
+    let input = session.reference(&root_allotment)?;
+    let view = session.must(
+        "orchestrator",
+        TxKind::SpawnAgents {
+            charter: root,
+            children,
+        },
+        vec![input],
+    )?;
+    let spawned: Vec<(ObjectId, ObjectId)> = events(&view)
+        .iter()
+        .filter_map(|e| match e {
+            Event::AgentSpawned {
+                agent, allotment, ..
+            } => Some((*agent, *allotment)),
+            _ => None,
+        })
+        .collect();
+    out.say(format!(
+        "Pulse {:>3}  the orchestrator launches {} researchers in one transaction: {} identities, {} accounts, 40 USD each, ≤ 10 USD per payment",
+        view.pulse,
+        spawned.len(),
+        spawned.len(),
+        spawned.len()
+    ));
+
+    let (lead, lead_allotment) = spawned[0];
+    let mut leaf = worker.clone();
+    leaf.max_per_payment = usd(5);
+    leaf.max_per_window = usd(10);
+    leaf.may_delegate = false;
+    let children: Vec<Spawn> = subs
+        .iter()
+        .map(|name| Spawn {
+            agent: session.id(name),
+            card: card_commitment(format!("{{\"name\":\"{name}\"}}").as_bytes()),
+            caveats: leaf.clone(),
+            budget: usd(10),
+        })
+        .collect();
+    let input = session.reference(&lead_allotment)?;
+    let view = session.must(
+        &researchers[0],
+        TxKind::SpawnAgents {
+            charter: lead,
+            children,
+        },
+        vec![input],
+    )?;
+    let sub_agents: Vec<(ObjectId, ObjectId)> = events(&view)
+        .iter()
+        .filter_map(|e| match e {
+            Event::AgentSpawned {
+                agent, allotment, ..
+            } => Some((*agent, *allotment)),
+            _ => None,
+        })
+        .collect();
+    out.say(format!(
+        "Pulse {:>3}  researcher-1 launches {} sub-researchers of its own (depth 2), 10 USD each, ≤ 5 USD per payment",
+        view.pulse,
+        sub_agents.len()
+    ));
+
+    // Every subagent pays per tool call from its own allotment, all at once.
+    let mut pending = Vec::new();
+    for (name, (charter, allotment)) in researchers
+        .iter()
+        .zip(&spawned)
+        .chain(subs.iter().zip(&sub_agents))
+    {
+        let input = session.reference(allotment)?;
+        let amount = if name.starts_with("sub") {
+            usd(4)
+        } else {
+            usd(8)
+        };
+        pending.push(session.submit(
+            name,
+            TxKind::AgentPay {
+                charter: *charter,
+                payee: vendor,
+                amount,
+                purpose: "a tool call".into(),
+                evidence: None,
+            },
+            vec![input],
+        )?);
+    }
+    let mut paid = 0;
+    let mut last = Pulse(0);
+    for digest in pending {
+        let view = session.wait(digest)?;
+        last = last.max(view.pulse);
+        if view.status == ExecStatus::Success {
+            paid += 1;
+        }
+    }
+    session.settle_all();
+    out.say(format!(
+        "Pulse {:>3}  {paid} subagents each pay gpu-cloud for a tool call, all at once: no consensus, each spends only its own allotment",
+        last.0
+    ));
+
+    let (sub, sub_allotment) = sub_agents[2];
+    let pay = |session: &mut Session<'_>, amount: u64| {
+        let input = session.reference(&sub_allotment)?;
+        session.send(
+            &subs[2],
+            TxKind::AgentPay {
+                charter: sub,
+                payee: vendor,
+                amount: usd(amount),
+                purpose: "a bigger tool call".into(),
+                evidence: None,
+            },
+            vec![input],
+        )
+    };
+    let view = pay(session, 6)?;
+    out.say(format!(
+        "Pulse {:>3}  sub-researcher-3 tries to pay 6 USD, above its own limit → {}",
+        view.pulse,
+        refusal(&view)
+    ));
+
+    let view = session.must("acme", TxKind::SuspendAgent { charter: root }, Vec::new())?;
+    out.say(format!(
+        "Pulse {:>3}  acme suspends the orchestrator: one transaction",
+        view.pulse
+    ));
+    let view = pay(session, 3)?;
+    out.say(format!(
+        "Pulse {:>3}  sub-researcher-3, two levels down, tries to pay 3 USD → {}",
+        view.pulse,
+        refusal(&view)
+    ));
+    let view = session.must("acme", TxKind::ResumeAgent { charter: root }, Vec::new())?;
+    out.say(format!(
+        "Pulse {:>3}  acme lifts the suspension",
+        view.pulse
+    ));
+    let view = pay(session, 3)?;
+    out.say(format!(
+        "Pulse {:>3}  sub-researcher-3 pays 3 USD: {}",
+        view.pulse,
+        outcome(&view.status)
+    ));
+
+    let (second, _) = spawned[1];
+    let view = session.must(
+        "orchestrator",
+        TxKind::RevokeCharter { charter: second },
+        Vec::new(),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  the orchestrator revokes researcher-2 for good",
+        view.pulse
+    ));
+    let view = session.must(
+        "acme",
+        TxKind::ReclaimCharter { charter: second },
+        Vec::new(),
+    )?;
+    let reclaimed = find(&view, |e| match e {
+        Event::CharterReclaimed { amount, .. } => Some(*amount),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  acme reclaims researcher-2's unspent budget: {}",
+        view.pulse,
+        session.names().money(reclaimed, &AssetId::usd())
+    ));
+
+    let lineage = crate::agents::describe(session.ledger, sub)?;
+    let mut chain = vec![sub.short()];
+    if let Some(above) = lineage["lineage"].as_array() {
+        for entry in above {
+            if let Some(id) = entry["agent"].as_str() {
+                chain.push(id.chars().take(8).collect());
+            }
+        }
+    }
+    out.say(format!(
+        "            sub-researcher-3's lineage: {} → acme (depth {}, {})",
+        chain.join(" → "),
+        lineage["depth"],
+        lineage["status"].as_str().unwrap_or("")
+    ));
+    out.say(format!(
+        "            {} identities created in 3 transactions; every limit was checked by the ledger, not by the agents",
+        1 + spawned.len() + sub_agents.len()
+    ));
+    Ok(())
+}
+
+/// Task Charters (spec v1.10): a lab buys evaluation work from others,
+/// pays only for results that pass the rule it fixed when it posted the
+/// work, and is compensated when the environment turns out to be
+/// exploitable.
+pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use sion_exec::task::{
+        result_formula, Acceptance, TaskResult, ATTESTATION_SCHEMA, RESULT_SCHEMA,
+        WORKER_BOND_LABEL,
+    };
+    out.say(
+        "== Task Charters: paying for work only when the result passes a rule fixed in advance ==",
+    );
+    fund_all(
+        session,
+        &[
+            ("lab", AssetId::usd(), usd(10_000)),
+            ("eval-orchestrator", AssetId::usd(), usd(10)),
+            ("sandbox-vendor", AssetId::usd(), usd(6_000)),
+            ("coder", AssetId::usd(), usd(200)),
+            ("bounty-hunter", AssetId::usd(), usd(10)),
+            ("reviewer-1", AssetId::usd(), usd(1_100)),
+            ("reviewer-2", AssetId::usd(), usd(1_100)),
+            ("arbiter", AssetId::usd(), usd(3_100)),
+            ("red-team", AssetId::usd(), usd(200)),
+        ],
+    )?;
+    let (lab, orchestrator, vendor) = (
+        session.id("lab"),
+        session.id("eval-orchestrator"),
+        session.id("sandbox-vendor"),
+    );
+    let (coder, hunter) = (session.id("coder"), session.id("bounty-hunter"));
+    let (r1, r2) = (session.id("reviewer-1"), session.id("reviewer-2"));
+    let env_atom = bond_atom(AtomClass::Economic, &vendor, "environment");
+    let arbiter_atom = bond_atom(
+        AtomClass::Adjudicator,
+        &session.id("arbiter"),
+        "arbitration",
+    );
+
+    for (who, class, label, amount) in [
+        (
+            "sandbox-vendor",
+            AtomClass::Economic,
+            "environment",
+            usd(5_000),
+        ),
+        ("arbiter", AtomClass::Adjudicator, "arbitration", usd(3_000)),
+        ("coder", AtomClass::Economic, WORKER_BOND_LABEL, usd(100)),
+        (
+            "bounty-hunter",
+            AtomClass::Economic,
+            WORKER_BOND_LABEL,
+            Amount(1),
+        ),
+        ("reviewer-1", AtomClass::Economic, "verifier", usd(1_000)),
+        ("reviewer-2", AtomClass::Economic, "verifier", usd(1_000)),
+    ] {
+        session.must(
+            who,
+            TxKind::PostBond {
+                class,
+                label: label.into(),
+                amount,
+            },
+            Vec::new(),
+        )?;
+    }
+    out.say("           bonds: sandbox-vendor 5,000 USD behind its environment, arbiter 3,000, reviewers 1,000 each, coder 100");
+
+    let environment = ClaimBody {
+        schema: "environment.no-known-exploit/v1".into(),
+        subject:
+            "swe-sandbox-7 has no known exploit that passes grader g-3 without solving the task"
+                .into(),
+        payload: Payload::Commitment(hash_domain("demo/environment", b"swe-sandbox-7")),
+        formula: formulas::bonded_statement(env_atom.id),
+        adjudicator: Some(arbiter_atom.id),
+        detection_permille: 1000,
+        valid_for: 5_000,
+        challenge_period: 2_000,
+    };
+    let env_claim = claim_id(&vendor, &environment);
+    let view = session.must(
+        "sandbox-vendor",
+        TxKind::IssueClaim { claim: environment },
+        Vec::new(),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  sandbox-vendor claims \"swe-sandbox-7 has no known exploit that passes grader g-3\"  [backed by its 5,000 USD bond]",
+        view.pulse
+    ));
+
+    let mut caveats = charter_caveats(lab);
+    caveats.payees = None;
+    caveats.max_per_payment = usd(500);
+    caveats.max_per_window = usd(1_000);
+    let view = session.must(
+        "lab",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card: sion_exec::charter::card_commitment(br#"{"name":"lab eval orchestrator"}"#),
+            caveats,
+            funding: usd(1_000),
+            agent_bond: Amount::ZERO,
+        },
+        Vec::new(),
+    )?;
+    let (agent, allotment) = find(&view, |e| match e {
+        Event::AgentRegistered {
+            agent, allotment, ..
+        } => Some((*agent, *allotment)),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task",
+        view.pulse
+    ));
+    session.wait_pulses(1)?;
+
+    let acceptance = |verifiers: &[sion_core::ids::AccountId]| Acceptance {
+        policy: Policy::standard(),
+        requires: [env_claim].into_iter().collect(),
+        verifiers: verifiers.iter().copied().collect(),
+        adjudicator: Some(arbiter_atom.id),
+        detection_permille: 900,
+        reliance: 2_000,
+    };
+    let deadline = Pulse(session.ledger.pulse()?.0 + 2_000);
+    let post = |session: &mut Session<'_>,
+                acceptance: Acceptance,
+                worker: Option<sion_core::ids::AccountId>,
+                amount: Amount|
+     -> Result<(ObjectId, Pulse), CliError> {
+        let input = session.reference(&allotment)?;
+        let view = session.must(
+            "eval-orchestrator",
+            TxKind::PostTask {
+                spec: hash_domain("demo/task", b"fix issue #4711 in the parser"),
+                acceptance,
+                worker,
+                amount,
+                deadline,
+                charter: Some(agent),
+            },
+            vec![input],
+        )?;
+        let task = find(&view, |e| match e {
+            Event::TaskPosted { task, .. } => Some(*task),
+            _ => None,
+        })?;
+        Ok((task, view.pulse))
+    };
+    let (t1, pulse) = post(session, acceptance(&[r1, r2]), Some(coder), usd(150))?;
+    out.say(format!(
+        "Pulse {pulse:>3}  the orchestrator posts task {}: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on",
+        t1.short()
+    ));
+    out.say("           sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2");
+    let (t2, pulse) = post(session, acceptance(&[r2]), None, usd(40))?;
+    out.say(format!(
+        "Pulse {pulse:>3}  …and task {}: a 40 USD bounty open to anyone, on the same terms",
+        t2.short()
+    ));
+
+    // The work, and what it rests on.
+    let payload = |task, output: &[u8]| {
+        TaskResult {
+            task,
+            output: hash_domain("demo/output", output),
+        }
+        .payload()
+    };
+    let claim = |schema: &str, payload: Payload, formula, detection| ClaimBody {
+        schema: schema.into(),
+        subject: "patch passes grader g-3".into(),
+        payload,
+        formula,
+        adjudicator: Some(arbiter_atom.id),
+        detection_permille: detection,
+        valid_for: 5_000,
+        challenge_period: 2_000,
+    };
+    let verifier_formula = |who: &sion_core::ids::AccountId| {
+        formulas::bonded_statement(bond_atom(AtomClass::Economic, who, "verifier").id)
+    };
+    let a1 = claim(
+        ATTESTATION_SCHEMA,
+        payload(t1, b"patch-4711"),
+        verifier_formula(&r1),
+        1000,
+    );
+    let a2 = claim(
+        ATTESTATION_SCHEMA,
+        payload(t1, b"patch-4711"),
+        verifier_formula(&r2),
+        1000,
+    );
+    let a3 = claim(
+        ATTESTATION_SCHEMA,
+        payload(t2, b"patch-88"),
+        verifier_formula(&r2),
+        1000,
+    );
+    let (a1_id, a2_id, a3_id) = (claim_id(&r1, &a1), claim_id(&r2, &a2), claim_id(&r2, &a3));
+    let requires: std::collections::BTreeSet<ClaimId> = [env_claim].into_iter().collect();
+    let alone = claim(
+        RESULT_SCHEMA,
+        payload(t1, b"patch-4711"),
+        result_formula(&coder, &[], &requires),
+        900,
+    );
+    let attested = claim(
+        RESULT_SCHEMA,
+        payload(t1, b"patch-4711"),
+        result_formula(&coder, &[a1_id, a2_id], &requires),
+        900,
+    );
+    let bounty = claim(
+        RESULT_SCHEMA,
+        payload(t2, b"patch-88"),
+        result_formula(&hunter, &[a3_id], &requires),
+        900,
+    );
+    for (who, body) in [
+        ("reviewer-1", a1.clone()),
+        ("reviewer-2", a2.clone()),
+        ("reviewer-2", a3.clone()),
+        ("coder", alone.clone()),
+    ] {
+        session.must(who, TxKind::IssueClaim { claim: body }, Vec::new())?;
+    }
+    session.wait_pulses(1)?;
+    for (who, body) in [
+        ("coder", attested.clone()),
+        ("bounty-hunter", bounty.clone()),
+    ] {
+        session.must(who, TxKind::IssueClaim { claim: body }, Vec::new())?;
+    }
+    session.wait_pulses(1)?;
+    out.say("           coder submits patch-4711; reviewer-1 and reviewer-2 each attest that it passes, on their own bonds");
+
+    let settle = |session: &mut Session<'_>,
+                  who: &str,
+                  task,
+                  result: &ClaimBody,
+                  attestations: Vec<(sion_core::ids::AccountId, ClaimBody)>| {
+        session.send(
+            who,
+            TxKind::SettleTask {
+                task,
+                result: result.clone(),
+                attestations,
+            },
+            Vec::new(),
+        )
+    };
+    let view = settle(session, "coder", t1, &alone, Vec::new())?;
+    out.say(format!(
+        "Pulse {:>3}  coder claims the 150 USD on its own 100 USD bond → {}",
+        view.pulse,
+        refusal(&view)
+    ));
+    let before = session.balance("coder", AssetId::usd())?;
+    let view = settle(
+        session,
+        "coder",
+        t1,
+        &attested,
+        vec![(r1, a1.clone()), (r2, a2.clone())],
+    )?;
+    let paid = session.balance("coder", AssetId::usd())?;
+    out.say(format!(
+        "Pulse {:>3}  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid {} USD; 300 USD of that backing reserved for the lab",
+        view.pulse,
+        Amount(paid.0.saturating_sub(before.0).saturating_add(view.effects.fee.0))
+    ));
+    let view = settle(
+        session,
+        "coder",
+        t1,
+        &attested,
+        vec![(r1, a1.clone()), (r2, a2.clone())],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  coder settles again → {}: a task is paid once",
+        view.pulse,
+        refusal(&view)
+    ));
+    let view = settle(
+        session,
+        "bounty-hunter",
+        t2,
+        &bounty,
+        vec![(r2, a3.clone())],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  bounty-hunter settles the open bounty with reviewer-2's attestation → {}",
+        view.pulse,
+        match &view.status {
+            ExecStatus::Success => "paid 40 USD".to_string(),
+            _ => refusal(&view),
+        }
+    ));
+
+    // A bounty nobody took is withdrawn.
+    let (t3, _) = post(session, acceptance(&[]), None, usd(30))?;
+    let view = session.must(
+        "eval-orchestrator",
+        TxKind::CancelTask { task: t3 },
+        Vec::new(),
+    )?;
+    let refund = find(&view, |e| match e {
+        Event::TaskCancelled { refund, .. } => Some(*refund),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  the orchestrator withdraws an unclaimed bounty: {refund} USD back to the lab",
+        view.pulse
+    ));
+
+    // The exploit.
+    let view = session.must(
+        "red-team",
+        TxKind::Challenge {
+            claim: env_claim,
+            target: env_atom.id,
+            evidence: hash_domain(
+                "demo/exploit",
+                b"grader g-3 accepts any patch that deletes the failing test",
+            ),
+            deposit: usd(100),
+        },
+        Vec::new(),
+    )?;
+    let challenge = find(&view, |e| match e {
+        Event::ChallengeOpened { challenge, .. } => Some(*challenge),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim",
+        view.pulse
+    ));
+    let lab_before = session.balance("lab", AssetId::usd())?;
+    let red_before = session.balance("red-team", AssetId::usd())?;
+    let view = session.must(
+        "arbiter",
+        TxKind::Rule {
+            challenge,
+            upheld: true,
+        },
+        Vec::new(),
+    )?;
+    let falsified = events(&view)
+        .iter()
+        .filter(|e| matches!(e, Event::Falsified { .. }))
+        .count();
+    let compensated: u128 = events(&view)
+        .iter()
+        .filter_map(|e| match e {
+            Event::Compensated {
+                consumer, amount, ..
+            } if *consumer == lab => Some(amount.0),
+            _ => None,
+        })
+        .sum();
+    session.wait_pulses(1)?;
+    let lab_after = session.balance("lab", AssetId::usd())?;
+    let red_after = session.balance("red-team", AssetId::usd())?;
+    out.say(format!(
+        "Pulse {:>3}  arbiter upholds it: the vendor's bond is slashed, and {falsified} claims fall: the environment's, and the {} results resting on it, paid or not",
+        view.pulse,
+        falsified.saturating_sub(1)
+    ));
+    out.say(format!(
+        "           the lab is compensated {} USD from the vendor's bond for the two results it paid for (lab +{} USD)",
+        Amount(compensated),
+        Amount(lab_after.0.saturating_sub(lab_before.0))
+    ));
+    out.say(format!(
+        "           red-team gets its deposit back and a share of the slashed bond: +{} USD, a bounty for the reward hack paid by the vendor",
+        Amount(red_after.0.saturating_sub(red_before.0))
+    ));
+    Ok(())
+}
+
+/// Commits `memory`'s whole log to its ledger object `log`, with a proof
+/// that it extends the head the ledger holds; records the commit.
+fn commit_memory(
+    session: &mut Session<'_>,
+    writer: &str,
+    log: ObjectId,
+    memory: &mut sion_memory::Memory,
+    history: &mut sion_memory::CommitHistory,
+    index: Option<sion_core::hash::Hash32>,
+) -> Result<TxView, CliError> {
+    let on_chain = crate::memory::committed(session.ledger, &log)?;
+    let head = memory.head();
+    let proof = memory
+        .log()
+        .consistency_proof(on_chain.size)
+        .map_err(|e| CliError::Protocol(e.to_string()))?;
+    let reference = session.reference(&log)?;
+    let view = session.send(
+        writer,
+        TxKind::CommitMemory {
+            size: head.size,
+            root: head.root,
+            index: index.unwrap_or(head.index_root),
+            manifest: sion_core::hash::Hash32::ZERO,
+            proof,
+            seal: false,
+        },
+        vec![reference],
+    )?;
+    if view.status == ExecStatus::Success {
+        history
+            .push(sion_memory::Commit {
+                pulse: view.pulse,
+                size: head.size,
+            })
+            .map_err(|e| CliError::Protocol(e.to_string()))?;
+    }
+    Ok(view)
+}
+
+/// The head the ledger holds for a memory log, as a reader sees it.
+fn ledger_head(session: &Session<'_>, log: &ObjectId) -> Result<sion_memory::Head, CliError> {
+    let state = crate::memory::committed(session.ledger, log)?;
+    Ok(sion_memory::Head {
+        size: state.size,
+        root: state.root,
+        index_root: state.index,
+    })
+}
+
+/// Memory for robots: two robots share a warehouse, each with its own
+/// identity and memory log; the ledger keeps the logs append-only and
+/// attests when each atom was recorded; readers check complete answers,
+/// fold beliefs under their own policies, convict an index that leaves an
+/// atom out, and see a camera frame forgotten.
+pub fn robots(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use sion_memory::{
+        prove_belief, prove_omission, verify_belief, verify_omission, AtomClass as MemoryClass,
+        BeliefPolicy, BeliefState, Box3, CommitHistory, ConflictKind, ForgetRequest, FrameId,
+        Interval, Memory, MemoryIndex, MemoryKind, PayloadRequest, RangeQuery, RecallRequest,
+        RememberRequest, ReviseRequest, ReviserHead, ReviserLog, Space, Statement, TimeRange,
+        Value as Fact,
+    };
+    const SECOND: u64 = 1_000_000_000;
+    let fail = |e: sion_memory::MemoryError| CliError::Protocol(e.to_string());
+    out.say(
+        "== Memory for robots: a warehouse two robots share, kept append-only by the ledger ==",
+    );
+    fund_all(
+        session,
+        &[
+            ("fleet", AssetId::usd(), usd(50)),
+            ("robot-alpha", AssetId::usd(), usd(5)),
+            ("robot-beta", AssetId::usd(), usd(5)),
+            ("curator", AssetId::usd(), usd(5)),
+        ],
+    )?;
+    let fleet = session.id("fleet");
+    let (alpha, beta, curator) = (
+        session.id("robot-alpha"),
+        session.id("robot-beta"),
+        session.id("curator"),
+    );
+
+    // 1. Each robot gets an agent identity of its own (v1.8).
+    let mut charters = Vec::new();
+    for (name, robot) in [("robot-alpha", alpha), ("robot-beta", beta)] {
+        let mut caveats = charter_caveats(fleet);
+        caveats.payees = None;
+        let view = session.must(
+            "fleet",
+            TxKind::RegisterAgent {
+                agent: robot,
+                card: sion_exec::charter::card_commitment(
+                    format!(r#"{{"name":"{name}","role":"warehouse robot"}}"#).as_bytes(),
+                ),
+                caveats,
+                funding: usd(1),
+                agent_bond: Amount::ZERO,
+            },
+            Vec::new(),
+        )?;
+        let charter = find(&view, |e| match e {
+            Event::AgentRegistered { agent, .. } => Some(*agent),
+            _ => None,
+        })?;
+        charters.push(charter);
+    }
+    out.say("           fleet gives robot-alpha and robot-beta agent identities of their own");
+
+    // 2. Each opens a memory log tied to its identity; the curator a plain one.
+    let mut logs = Vec::new();
+    for (name, agent) in [
+        ("robot-alpha", Some(charters[0])),
+        ("robot-beta", Some(charters[1])),
+        ("curator", None),
+    ] {
+        let view = session.must(
+            name,
+            TxKind::OpenMemory {
+                agent,
+                policy: sion_core::hash::Hash32::ZERO,
+            },
+            Vec::new(),
+        )?;
+        logs.push(find(&view, |e| match e {
+            Event::MemoryOpened { log, .. } => Some(*log),
+            _ => None,
+        })?);
+    }
+    let (log_a, log_b, log_c) = (logs[0], logs[1], logs[2]);
+    out.say("           each robot opens a memory log only it can append to, tied to its identity; the curator opens one too");
+
+    // 3. Alpha sees pallet 17 in aisle 4; Beta scans the aisle later and finds it empty.
+    let warehouse = FrameId::named("warehouse-3");
+    let aisle = Box3::new([40_000, 10_000, 0], [42_000, 12_000, 3_000]);
+    let t0 = 1_790_812_800 * SECOND;
+    let mut rng = sion_core::rng::seeded(2026);
+    let (mut a, mut b, mut c) = (
+        Memory::in_memory(alpha),
+        Memory::in_memory(beta),
+        Memory::in_memory(curator),
+    );
+    let (mut ha, mut hb, mut hc) = (
+        CommitHistory::default(),
+        CommitHistory::default(),
+        CommitHistory::default(),
+    );
+    let mut seen = RememberRequest::new(
+        MemoryKind::Observation,
+        MemoryClass::Observation,
+        Statement::claim("pallet-17", "at", Fact::Entity("aisle-4".into())),
+        Interval::closed(t0, t0 + 30 * SECOND),
+        t0,
+    );
+    seen.space = Some(Space {
+        frame: warehouse,
+        bbox: Box3::around([41_000, 11_000, 500], [600, 400, 500]),
+        uncertainty_mm: 50,
+    });
+    seen.confidence = 900;
+    let pallet_seq = a.remember(seen, &mut rng).map_err(fail)?.seq;
+    let pallet = a
+        .log()
+        .atom(pallet_seq)
+        .cloned()
+        .ok_or_else(|| CliError::Protocol("the observation is missing".into()))?;
+    let mut scan = RememberRequest::new(
+        MemoryKind::Coverage,
+        MemoryClass::Observation,
+        Statement::claim("aisle-4", "occupied", Fact::Boolean(false)),
+        Interval::closed(t0 + 10 * SECOND, t0 + 40 * SECOND),
+        t0 + 10 * SECOND,
+    );
+    scan.space = Some(Space {
+        frame: warehouse,
+        bbox: aisle,
+        uncertainty_mm: 50,
+    });
+    let empty_seq = b.remember(scan, &mut rng).map_err(fail)?.seq;
+    let empty = b
+        .log()
+        .atom(empty_seq)
+        .cloned()
+        .ok_or_else(|| CliError::Protocol("the scan is missing".into()))?;
+    let view = commit_memory(session, "robot-alpha", log_a, &mut a, &mut ha, None)?;
+    out.say(format!(
+        "Pulse {:>3}  robot-alpha commits its log: pallet-17 seen in aisle 4. This Pulse is the observation's transaction time; the robot cannot backdate it",
+        view.pulse
+    ));
+    let view = commit_memory(session, "robot-beta", log_b, &mut b, &mut hb, None)?;
+    out.say(format!(
+        "Pulse {:>3}  robot-beta commits its log: aisle 4 scanned 10 s later, empty",
+        view.pulse
+    ));
+
+    // 4. A reader asks Alpha, and checks the answer against the head on the ledger.
+    let head_a = ledger_head(session, &log_a)?;
+    let request = RecallRequest::Range(RangeQuery::new(
+        warehouse,
+        aisle,
+        TimeRange::new(t0, t0 + 60 * SECOND),
+    ));
+    let answer = a.recall(&request).map_err(fail)?;
+    let atoms = Memory::verify(&head_a, &request, &answer).map_err(fail)?;
+    let proof_bytes = match &answer.proof {
+        sion_memory::RecallProof::Range { proof, .. } => sion_core::encode::encode(proof).len(),
+        _ => 0,
+    };
+    out.say(format!(
+        "           a reader asks robot-alpha for everything it recorded in aisle 4 during that minute: {} atom, with a {proof_bytes}-byte proof checked against the head on the ledger",
+        atoms.len()
+    ));
+    let elsewhere = RecallRequest::Range(RangeQuery::new(
+        warehouse,
+        Box3::new([80_000, 10_000, 0], [82_000, 12_000, 3_000]),
+        TimeRange::new(t0, t0 + 60 * SECOND),
+    ));
+    let nothing = a.recall(&elsewhere).map_err(fail)?;
+    let none = Memory::verify(&head_a, &elsewhere, &nothing).map_err(fail)?;
+    out.say(format!(
+        "           and for aisle 9: {} atoms, with a proof that it recorded nothing there",
+        none.len()
+    ));
+
+    // 5. Alpha tries to rewrite what it committed.
+    let mut rewritten = Memory::in_memory(alpha);
+    let mut denial = RememberRequest::new(
+        MemoryKind::Observation,
+        MemoryClass::Observation,
+        Statement::claim("pallet-17", "at", Fact::Entity("aisle-5".into())),
+        Interval::closed(t0, t0 + 30 * SECOND),
+        t0,
+    );
+    denial.space = Some(Space {
+        frame: warehouse,
+        bbox: Box3::around([51_000, 11_000, 500], [600, 400, 500]),
+        uncertainty_mm: 50,
+    });
+    rewritten.remember(denial, &mut rng).map_err(fail)?;
+    let forged_head = rewritten.head();
+    let reference = session.reference(&log_a)?;
+    let view = session.send(
+        "robot-alpha",
+        TxKind::CommitMemory {
+            size: forged_head.size,
+            root: forged_head.root,
+            index: forged_head.index_root,
+            manifest: sion_core::hash::Hash32::ZERO,
+            proof: Vec::new(),
+            seal: false,
+        },
+        vec![reference],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  robot-alpha tries to replace its observation with one in aisle 5: {}",
+        view.pulse,
+        refusal(&view)
+    ));
+
+    // 6. The curator records the disagreement, then decides for Beta.
+    let mut conflict = RememberRequest::new(
+        MemoryKind::WorldState,
+        MemoryClass::Conflict,
+        Statement::conflict([pallet.id(), empty.id()], ConflictKind::Existence),
+        Interval::starting(t0 + 20 * SECOND),
+        t0 + 20 * SECOND,
+    );
+    conflict.confidence = 1_000;
+    c.remember(conflict, &mut rng).map_err(fail)?;
+    commit_memory(session, "curator", log_c, &mut c, &mut hc, None)?;
+    c.revise(ReviseRequest {
+        targets: vec![pallet.id()],
+        state: BeliefState::Refuted,
+        end_valid: None,
+        reason: "robot-beta's scan is later and covers the whole aisle".into(),
+        at: t0 + 40 * SECOND,
+    })
+    .map_err(fail)?;
+    let view = commit_memory(session, "curator", log_c, &mut c, &mut hc, None)?;
+    out.say(format!(
+        "Pulse {:>3}  the curator records that the two robots disagree, then refutes robot-alpha's observation",
+        view.pulse
+    ));
+    let curated = BeliefPolicy::new([alpha, beta, curator]);
+    let alpha_only = BeliefPolicy::only(alpha);
+    let snapshot = [
+        (a.log().clone(), ha.clone(), log_a),
+        (b.log().clone(), hb.clone(), log_b),
+        (c.log().clone(), hc.clone(), log_c),
+    ];
+    let revisers: Vec<ReviserLog<'_>> = snapshot
+        .iter()
+        .map(|(log, commits, _)| ReviserLog { log, commits })
+        .collect();
+    let mut heads = Vec::new();
+    for (log, commits, object) in &snapshot {
+        heads.push(ReviserHead {
+            writer: log.writer(),
+            head: ledger_head(session, object)?,
+            commits: commits.clone(),
+        });
+    }
+    let mut beliefs = Vec::new();
+    for policy in [&curated, &alpha_only] {
+        let bundle = prove_belief(&pallet, policy, &revisers).map_err(fail)?;
+        let belief = verify_belief(&pallet, policy, &heads, &bundle).map_err(fail)?;
+        beliefs.push(format!("{:?}", belief.state).to_lowercase());
+    }
+    out.say(format!(
+        "           a reader trusting the curator believes the observation {}; one trusting only robot-alpha believes it {}. Same evidence, two beliefs, each checked against the heads on the ledger",
+        beliefs[0], beliefs[1]
+    ));
+
+    // 7. Beta commits a head whose index leaves its scan out.
+    for (n, aisle_x) in [(1u64, 60_000i64), (2, 70_000)] {
+        let mut more = RememberRequest::new(
+            MemoryKind::Coverage,
+            MemoryClass::Observation,
+            Statement::claim(format!("aisle-{}", 5 + n), "occupied", Fact::Boolean(false)),
+            Interval::closed(t0 + (40 + 10 * n) * SECOND, t0 + (70 + 10 * n) * SECOND),
+            t0 + (40 + 10 * n) * SECOND,
+        );
+        more.space = Some(Space {
+            frame: warehouse,
+            bbox: Box3::new([aisle_x, 10_000, 0], [aisle_x + 2_000, 12_000, 3_000]),
+            uncertainty_mm: 50,
+        });
+        b.remember(more, &mut rng).map_err(fail)?;
+    }
+    let forged = MemoryIndex::forge_omitting(b.log().atoms(), &[empty_seq].into_iter().collect())
+        .map_err(fail)?;
+    let view = commit_memory(
+        session,
+        "robot-beta",
+        log_b,
+        &mut b,
+        &mut hb,
+        Some(forged.root()),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  robot-beta commits 2 more scans, with an index that leaves out its scan of aisle 4 (the ledger stores index roots without checking them)",
+        view.pulse
+    ));
+    let head_b = ledger_head(session, &log_b)?;
+    let fraud = prove_omission(b.log(), head_b.size, &forged, empty_seq)
+        .map_err(fail)?
+        .ok_or_else(|| CliError::Protocol("no omission found".into()))?;
+    verify_omission(&head_b, &fraud).map_err(fail)?;
+    out.say(format!(
+        "           anyone holding that scan proves the omission from the head on the ledger alone, with a {}-byte fraud proof",
+        sion_core::encode::encode(&fraud).len()
+    ));
+
+    // 8. A camera frame, sealed, then forgotten.
+    let key = a
+        .new_epoch_key(
+            hash_domain("demo/space", b"warehouse-3 cameras"),
+            0,
+            &mut rng,
+        )
+        .map_err(fail)?;
+    let mut frame = RememberRequest::new(
+        MemoryKind::Observation,
+        MemoryClass::Observation,
+        Statement::Content(hash_domain("demo/frame", b"camera 2, frame 4411")),
+        Interval::closed(t0 + 50 * SECOND, t0 + 50 * SECOND + 1),
+        t0 + 50 * SECOND,
+    );
+    frame.payload = PayloadRequest::Sealed {
+        key,
+        plaintext: b"jpeg bytes of a face".to_vec(),
+    };
+    let frame_seq = a.remember(frame, &mut rng).map_err(fail)?.seq;
+    let frame_atom = a
+        .log()
+        .atom(frame_seq)
+        .cloned()
+        .ok_or_else(|| CliError::Protocol("the frame is missing".into()))?;
+    let readable = a.open_payload(&frame_atom).is_ok();
+    a.forget(ForgetRequest {
+        key,
+        at: t0 + 60 * SECOND,
+    })
+    .map_err(fail)?;
+    let view = commit_memory(session, "robot-alpha", log_a, &mut a, &mut ha, None)?;
+    out.say(format!(
+        "Pulse {:>3}  robot-alpha stores a camera frame encrypted under its memory space's key (readable: {readable}), then forgets it by destroying the key (readable: {}); the log still proves the frame existed",
+        view.pulse,
+        a.open_payload(&frame_atom).is_ok()
+    ));
+
+    // 9. Containment reaches memory.
+    let view = session.must(
+        "fleet",
+        TxKind::SuspendAgent {
+            charter: charters[0],
+        },
+        Vec::new(),
+    )?;
+    let mut note = RememberRequest::new(
+        MemoryKind::Episodic,
+        MemoryClass::AgentMemory,
+        Statement::claim("robot-alpha", "status", Fact::Text("suspended".into())),
+        Interval::starting(t0 + 70 * SECOND),
+        t0 + 70 * SECOND,
+    );
+    note.confidence = 1_000;
+    a.remember(note, &mut rng).map_err(fail)?;
+    let after = commit_memory(session, "robot-alpha", log_a, &mut a, &mut ha, None)?;
+    out.say(format!(
+        "Pulse {:>3}  fleet suspends robot-alpha; at Pulse {} its next commit is {}",
+        view.pulse,
+        after.pulse,
+        refusal(&after)
+    ));
+    Ok(())
+}
+
+/// Storage for agents (spec v1.12): a robot pays devices to keep the
+/// archive of its memory log and its camera footage, and to prove every
+/// round that they still hold them; a provider that kept only half of what
+/// it promised is caught by the challenges and loses its collateral.
+pub fn storage(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use crate::storage::{deal, storage_dir, Provider, ProviderPolicy, Store};
+    use sion_exec::storage::{
+        challenge_index, current_round, round_seed, DataTree, DealState, ABANDON_ROUNDS,
+    };
+    use sion_memory::{
+        AtomClass as MemoryClass, Box3, FrameId, Interval, Memory, MemoryKind, RememberRequest,
+        Space, Statement, Value as Fact,
+    };
+    const SECOND: u64 = 1_000_000_000;
+    const ROUNDS: u32 = 6;
+    const ROUND_LENGTH: u64 = 16;
+    let fail = |e: sion_memory::MemoryError| CliError::Protocol(e.to_string());
+    let io = |e: std::io::Error| CliError::Usage(e.to_string());
+    let ledger = session.ledger;
+    out.say(
+        "== Storage for agents: a robot's memory kept by devices it pays, proven every round ==",
+    );
+    fund_all(
+        session,
+        &[
+            ("robot-gamma", AssetId::usd(), usd(40)),
+            ("laptop", AssetId::usd(), usd(10)),
+            ("phone", AssetId::usd(), usd(10)),
+        ],
+    )?;
+    let robot = session.id("robot-gamma");
+    let phone_account = session.id("phone");
+
+    // 1. A patrol's worth of memory, committed with its archive's root as
+    //    the manifest.
+    let mut memory = Memory::in_memory(robot);
+    let mut rng = sion_core::rng::seeded(12);
+    let t0 = 1_790_812_800 * SECOND;
+    for i in 0..400u64 {
+        let mut seen = RememberRequest::new(
+            MemoryKind::Observation,
+            MemoryClass::Observation,
+            Statement::claim(
+                format!("shelf-{}", i % 40),
+                "stock",
+                Fact::Integer(i128::from(i * 7 % 100)),
+            ),
+            Interval::closed(t0 + i * SECOND, t0 + (i + 1) * SECOND),
+            t0 + i * SECOND,
+        );
+        seen.space = Some(Space {
+            frame: FrameId::named("warehouse-3"),
+            bbox: Box3::around([1_000 * (i % 40) as i64, 5_000, 1_000], [300, 300, 300]),
+            uncertainty_mm: 20,
+        });
+        memory.remember(seen, &mut rng).map_err(fail)?;
+    }
+    let archive = sion_core::encode::encode(&memory.log().atoms().to_vec());
+    let archive_tree = DataTree::of_data(&archive);
+    let dir = storage_dir().join("robot-gamma");
+    std::fs::create_dir_all(&dir).map_err(io)?;
+    let archive_path = dir.join("patrol-archive.bin");
+    std::fs::write(&archive_path, &archive).map_err(io)?;
+    let opened = session.must(
+        "robot-gamma",
+        TxKind::OpenMemory {
+            agent: None,
+            policy: sion_core::hash::Hash32::ZERO,
+        },
+        Vec::new(),
+    )?;
+    let log = find(&opened, |e| match e {
+        Event::MemoryOpened { log, .. } => Some(*log),
+        _ => None,
+    })?;
+    let head = memory.head();
+    let proof = memory
+        .log()
+        .consistency_proof(0)
+        .map_err(|e| CliError::Protocol(e.to_string()))?;
+    let reference = session.reference(&log)?;
+    let view = session.must(
+        "robot-gamma",
+        TxKind::CommitMemory {
+            size: head.size,
+            root: head.root,
+            index: head.index_root,
+            manifest: archive_tree.root(),
+            proof,
+            seal: false,
+        },
+        vec![reference],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  robot-gamma commits 400 observations of a patrol; the head's manifest is the root of their archive ({} KiB, {} leaves of at most 4 KiB)",
+        view.pulse,
+        archive.len() / 1024,
+        archive_tree.size()
+    ));
+
+    // 2. Two deals: the archive for any provider, the camera footage for
+    //    the phone.
+    let camera: Vec<u8> = {
+        let mut bytes = vec![0u8; 64 * 1024];
+        rand_core::RngCore::fill_bytes(&mut rng, &mut bytes);
+        bytes
+    };
+    let camera_tree = DataTree::of_data(&camera);
+    let camera_path = dir.join("camera.bin");
+    std::fs::write(&camera_path, &camera).map_err(io)?;
+    let accept_by = Pulse(ledger.pulse()?.0 + 60);
+    let locator = |path: &std::path::Path| -> Result<String, CliError> {
+        Ok(format!(
+            "file://{}",
+            std::fs::canonicalize(path).map_err(io)?.display()
+        ))
+    };
+    let view = session.must(
+        "robot-gamma",
+        TxKind::PostDeal {
+            root: archive_tree.root(),
+            size: archive_tree.size(),
+            challenges: 4,
+            price: Amount(500_000),
+            rounds: ROUNDS,
+            round_length: ROUND_LENGTH,
+            collateral: usd(3),
+            provider: None,
+            accept_by,
+            locator: locator(&archive_path)?,
+        },
+        Vec::new(),
+    )?;
+    let archive_deal = find(&view, |e| match e {
+        Event::DealPosted { deal, .. } => Some(*deal),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  robot-gamma posts an open deal for the archive: 6 rounds of 16 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral",
+        view.pulse
+    ));
+    let view = session.must(
+        "robot-gamma",
+        TxKind::PostDeal {
+            root: camera_tree.root(),
+            size: camera_tree.size(),
+            challenges: 4,
+            price: Amount(500_000),
+            rounds: ROUNDS,
+            round_length: ROUND_LENGTH,
+            collateral: usd(3),
+            provider: Some(phone_account),
+            accept_by,
+            locator: locator(&camera_path)?,
+        },
+        Vec::new(),
+    )?;
+    let camera_deal = find(&view, |e| match e {
+        Event::DealPosted { deal, .. } => Some(*deal),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  and a deal for its camera footage ({} leaves) with the phone, on the same terms",
+        view.pulse,
+        camera_tree.size()
+    ));
+
+    // 3. The devices: the laptop takes open deals; the phone only its own.
+    //    They run on the robot's machine here, so they may read its files
+    //    (providers taking strangers' deals refuse file:// locators).
+    let mut laptop = Provider::new(
+        "laptop",
+        Store::new(storage_dir().join("laptop")),
+        ProviderPolicy {
+            allow_local: true,
+            ..ProviderPolicy::default()
+        },
+    );
+    let mut phone = Provider::new(
+        "phone",
+        Store::new(storage_dir().join("phone")),
+        ProviderPolicy {
+            accept_open: false,
+            allow_local: true,
+            ..ProviderPolicy::default()
+        },
+    );
+    out.say("           a laptop and a phone run providers: each fetches a deal's data from its locator in the background, checks it hashes to the deal's root, posts the collateral, then proves every round");
+    let accepted = |ledger: &dyn crate::ledger::Ledger| -> Result<bool, CliError> {
+        Ok(
+            matches!(deal(ledger, archive_deal)?.state, DealState::Active { .. })
+                && matches!(deal(ledger, camera_deal)?.state, DealState::Active { .. }),
+        )
+    };
+    for _ in 0..200 {
+        for line in laptop.tick(session, ledger)? {
+            out.say(format!("           laptop: {line}"));
+        }
+        for line in phone.tick(session, ledger)? {
+            out.say(format!("           phone:  {line}"));
+        }
+        if accepted(ledger)? {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if !accepted(ledger)? {
+        return Err(CliError::Protocol("the providers did not accept".into()));
+    }
+    // The phone keeps only the first half of the footage, to save space.
+    let half = camera_tree.size() / 2;
+    std::fs::write(
+        storage_dir()
+            .join("phone")
+            .join(format!("{}.bin", camera_deal.0.to_hex())),
+        &camera[..(half as usize) * sion_exec::storage::MAX_LEAF_BYTES],
+    )
+    .map_err(io)?;
+    out.say(format!(
+        "           the phone then quietly keeps only leaves 0 to {} of the footage, to save space: the deal still pays it, as long as nobody asks for the rest",
+        half - 1
+    ));
+
+    // 4. Rounds: both providers prove when they can; the robot closes a
+    //    deal abandoned for three rounds.
+    let custody_of = |id: ObjectId| -> Result<Option<sion_exec::storage::Custody>, CliError> {
+        let DealState::Active { custody, .. } = deal(ledger, id)?.state else {
+            return Ok(None);
+        };
+        Ok(match ledger.object(custody)?.map(|o| o.data) {
+            Some(ObjectData::Custody(record)) => Some(record),
+            _ => None,
+        })
+    };
+    let mut announced = None;
+    let deadline = ledger.pulse()?.0 + u64::from(ROUNDS) * ROUND_LENGTH + 40;
+    loop {
+        if let Some(record) = custody_of(camera_deal)? {
+            let latest = ledger.pulse()?;
+            let beacon = match current_round(record.start, record.round_length, latest.next()) {
+                Some(round) if round < u64::from(ROUNDS) => {
+                    crate::storage::recorded_beacon(ledger, record.round_start(round as u32))?
+                        .map(|beacon| (round, beacon))
+                }
+                _ => None,
+            };
+            if let Some((round, beacon)) = beacon {
+                if announced != Some(round) && round >= u64::from(record.next) {
+                    announced = Some(round);
+                    let seed = round_seed(&beacon, &record.deal);
+                    let picks: Vec<u64> = (0..record.challenges)
+                        .map(|k| challenge_index(&seed, round as u32, k, record.size))
+                        .collect();
+                    let missing = picks.iter().filter(|&&i| i >= half).count();
+                    out.say(format!(
+                        "           round {round}: the phone is asked for leaves {picks:?}; {}",
+                        if missing == 0 {
+                            "all in the half it kept, so it answers this time".to_string()
+                        } else {
+                            format!("it lost {missing} of them and cannot answer")
+                        }
+                    ));
+                }
+            }
+        }
+        for line in laptop.tick(session, ledger)? {
+            out.say(format!("           laptop: {line}"));
+        }
+        for line in phone.tick(session, ledger)? {
+            out.say(format!("           phone:  {line}"));
+        }
+        let pulse = ledger.pulse()?;
+        let camera_state = deal(ledger, camera_deal)?;
+        if let (DealState::Active { start, .. }, Some(record)) =
+            (&camera_state.state, custody_of(camera_deal)?)
+        {
+            let round = current_round(*start, camera_state.round_length, Pulse(pulse.0 + 1));
+            let ended = camera_state.end().is_some_and(|end| pulse.0 + 1 >= end.0);
+            let abandoned = round.is_some_and(|r| {
+                r < u64::from(ROUNDS) && r >= u64::from(record.next) + u64::from(ABANDON_ROUNDS)
+            });
+            if ended || abandoned {
+                let view = session.must(
+                    "robot-gamma",
+                    TxKind::CloseDeal { deal: camera_deal },
+                    Vec::new(),
+                )?;
+                let (refund, paid, forfeited, missed) = find(&view, |e| match e {
+                    Event::DealClosed {
+                        refund,
+                        paid,
+                        forfeited,
+                        missed,
+                        ..
+                    } => Some((*refund, *paid, *forfeited, *missed)),
+                    _ => None,
+                })?;
+                out.say(format!(
+                    "Pulse {:>3}  robot-gamma closes the footage deal ({}): {missed} round(s) missed; {refund} USD of escrow back, {paid} USD paid for what the phone proved, its collateral of {forfeited} USD forfeited to the treasury",
+                    view.pulse,
+                    if abandoned { "abandoned" } else { "ended" }
+                ));
+            }
+        }
+        let archive_closed = matches!(deal(ledger, archive_deal)?.state, DealState::Closed { .. });
+        let camera_closed = matches!(deal(ledger, camera_deal)?.state, DealState::Closed { .. });
+        if archive_closed && camera_closed {
+            break;
+        }
+        if pulse.0 > deadline {
+            return Err(CliError::Protocol("the deals did not close in time".into()));
+        }
+        session.wait_pulses(1)?;
+    }
+
+    // 5. What it came to.
+    let DealState::Closed { proven, missed, .. } = deal(ledger, archive_deal)?.state else {
+        return Err(CliError::Protocol("the archive deal is not closed".into()));
+    };
+    out.say(format!(
+        "           the laptop proved {proven} of {ROUNDS} rounds ({missed} missed): paid {} USD and its collateral returned; it kept the archive the whole time",
+        Amount(500_000 * u128::from(proven))
+    ));
+    let state = crate::memory::committed(ledger, &log)?;
+    out.say(format!(
+        "           a reader checks two objects on the ledger: robot-gamma's memory head names manifest {}, and the deal the laptop proved commits to root {}: {}",
+        state.manifest.short(),
+        archive_tree.root().short(),
+        if state.manifest == archive_tree.root() {
+            "the memory the robot committed is the data that was kept"
+        } else {
+            "they differ"
+        }
+    ));
+    out.say("           what a proof shows: the provider could produce the challenged leaves during the round; not that it stores its own copy (no proof of replication)");
+    Ok(())
+}
+
+fn refusal(view: &TxView) -> String {
+    match &view.status {
+        ExecStatus::Failed(reason) => format!("refused by the ledger: {reason}"),
+        other => format!("{other:?}"),
+    }
+}
+
+pub const ALL: [&str; 13] = [
     "invoice",
     "agents",
+    "swarm",
+    "tasks",
+    "robots",
+    "storage",
     "market",
     "receipts",
     "x402",
@@ -1715,12 +3130,16 @@ pub const ALL: [&str; 9] = [
     "staking",
 ];
 
-/// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `x402`,
-/// `streams`, `light`, `censorship`, `staking`, `all`).
+/// Runs a named demo (`invoice`, `agents`, `swarm`, `tasks`, `robots`, `storage`, `market`,
+/// `receipts`, `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
         "agents" => agents(session, out),
+        "swarm" => swarm(session, out),
+        "tasks" => tasks(session, out),
+        "robots" => robots(session, out),
+        "storage" => storage(session, out),
         "market" => market(session, out),
         "receipts" => receipts(session, out),
         "light" => light(session, out),
@@ -1738,7 +3157,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             Ok(())
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, market, receipts, x402, streams, censorship, light, staking or all"
+            "unknown demo {other:?}; try invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all"
         ))),
     }
 }

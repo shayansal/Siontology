@@ -139,17 +139,42 @@ impl Wallet {
                 funding,
                 agent_bond,
                 ..
+            }
+            | TxKind::RegisterAgent {
+                funding,
+                agent_bond,
+                ..
             } => {
                 vec![(AssetId::usd(), Amount(funding.0 + agent_bond.0))]
             }
             TxKind::CreateBounded { asset, total, .. } => vec![(*asset, *total)],
             TxKind::OpenStream { asset, deposit, .. } => vec![(*asset, *deposit)],
+            TxKind::PostTask {
+                amount,
+                charter: None,
+                ..
+            } => vec![(AssetId::usd(), *amount)],
             TxKind::TopUpStream {
                 stream, deposit, ..
             } if *deposit > Amount::ZERO => match view.object(stream).map(|o| o.data) {
                 Some(ObjectData::Stream(state)) => vec![(state.asset, *deposit)],
                 _ => Vec::new(),
             },
+            TxKind::PostDeal { price, rounds, .. } => vec![(
+                AssetId::usd(),
+                Amount(price.0.saturating_mul(u128::from(*rounds))),
+            )],
+            TxKind::AcceptDeal { deal } => match view.object(deal).map(|o| o.data) {
+                Some(ObjectData::Deal(state)) => vec![(AssetId::usd(), state.collateral)],
+                _ => Vec::new(),
+            },
+            TxKind::DelegateStake { amount, .. } => {
+                let asset = match view.object(&well_known::validators()).map(|o| o.data) {
+                    Some(ObjectData::Validators(set)) => set.params.stake_asset,
+                    _ => AssetId::usd(),
+                };
+                vec![(asset, *amount)]
+            }
             TxKind::RegisterValidator { stake, .. } => {
                 let asset = match view.object(&well_known::validators()).map(|o| o.data) {
                     Some(ObjectData::Validators(set)) => set.params.stake_asset,
@@ -274,7 +299,12 @@ impl Wallet {
                     });
                 }
             }
+            // Operations that name an owned object (an allotment, the
+            // account object) find it at `inputs[1]`, right after the gas
+            // coin, however many coins follow.
+            let tail = inputs.split_off(1);
             inputs.extend(extra.iter().copied());
+            inputs.extend(tail);
             let tx = Transaction {
                 sender: self.id,
                 genesis_policy: genesis_policy.clone(),

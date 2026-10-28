@@ -22,9 +22,13 @@ it says so.
 
 ## Out of scope for this implementation
 
-- **The network.** Validators exchange messages over in-process channels
-  (`impl:in-process-network`). Network-level attacks (eclipse, partition,
-  flooding) are exercised only by the consensus simulator.
+- **The network.** In `sion devnet`, validators exchange messages over
+  in-process channels (`impl:in-process-network`). Separate `sion node`
+  processes talk QUIC with bounded queues and quotas, tested on one
+  machine; network-level attacks (eclipse, partition, flooding) are
+  exercised only by the in-process fault injector and the consensus
+  simulator, and the `net:` atoms name what a network of processes
+  assumes.
 - **Side channels.** The post-quantum crates are unaudited, pure Rust, and
   not hardened against timing or power analysis
   (`impl:unaudited-pq-crates`).

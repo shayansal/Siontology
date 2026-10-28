@@ -23,6 +23,8 @@
 //!
 //! - [`object`], [`account`], [`claim`], [`charter`], [`escrow`], [`market`],
 //!   [`stream`], [`assurance`]: the sorts of state.
+//! - [`beacons`]: the beacons of recorded Pulses, for randomness fixed in
+//!   advance.
 //! - [`validators`]: stake, epochs, committees, equivocation evidence and
 //!   forced-inclusion obligations.
 //! - [`tx`]: transactions and their derived coordination classes.
@@ -37,20 +39,25 @@
 
 pub mod account;
 pub mod assurance;
+pub mod beacons;
 pub mod charter;
 pub mod claim;
+pub mod delegation;
 pub mod error;
 pub mod escrow;
 pub mod execute;
 pub mod genesis;
 pub mod market;
+pub mod memory;
 pub mod object;
 pub mod pulse;
 pub mod sim;
 pub mod state;
 pub mod stateless;
+pub mod storage;
 pub mod store;
 pub mod stream;
+pub mod task;
 pub mod tx;
 pub mod validators;
 pub mod wallet;

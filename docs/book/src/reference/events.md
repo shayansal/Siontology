@@ -54,6 +54,11 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 | `CharterRevoked` | `charter` | `RevokeCharter` | `charter <id> revoked` |
 | `CharterReclaimed` | `charter`, `amount` | `ReclaimCharter` | `<amount> USD returned from charter <id>` |
 | `AgentPaid` | `charter`, `payee`, `amount`, `receipt` | `AgentPay` | `agent paid <amount> USD to <payee>[ (receipt claim <id>)]` |
+| `AgentRegistered` | `agent`, `account`, `allotment` | `RegisterAgent` | `agent <id> registered, signing as <account>` |
+| `AgentSpawned` | `agent`, `parent`, `account`, `allotment` | `SpawnAgents` (one per subagent) | `subagent <id> launched by <parent>, signing as <account>` |
+| `AgentCardSet` | `agent`, `card` | `SetAgentCard` | `agent <id>'s card is now <hash>` |
+| `AgentSuspended` | `agent`, `by` | `SuspendAgent` | `agent <id> suspended by <account>, with everything below it` |
+| `AgentResumed` | `agent` | `ResumeAgent` | `agent <id> resumed` |
 | `BoundedCreated` | `bounded`, `allotments` | `CreateBounded` | `shared total created with <n> allotments` |
 | `AllotmentUsed` | `allotment`, `amount` | `SpendAllotment`, `ReturnAllotment`, `Rebalance` | `<amount> USD used from an allotment` |
 
@@ -76,7 +81,8 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 | `ValidatorLeaving` | `validator` | `Unstake` | `validator <id> is leaving the active set` |
 | `StakeWithdrawn` | `validator`, `amount` (stake returned) | `WithdrawStake` | `<amount> USD of stake withdrawn from validator <id>` |
 | `RewardsClaimed` | `validator`, `amount` | `ClaimRewards` | `<amount> USD of rewards claimed for validator <id>` |
-| `ValidatorSlashed` | `validator`, `amount` (stake forfeited), `reporter`, `reward` (reporter's share of the stake) | `ReportEquivocation` | `validator <id> slashed: <amount> USD forfeited, <reward> USD of it to <reporter> for the report` |
+| `ValidatorSlashed` | `validator`, `amount` (its own stake forfeited), `reporter`, `reward` (reporter's share of the stake forfeited, its pool's included) | `ReportEquivocation` | `validator <id> slashed: <amount> USD forfeited, <reward> USD of it to <reporter> for the report` |
+| `PoolSlashed` | `validator`, `amount` (forfeited from its pool) | `ReportEquivocation`, when the offender has a pool | `validator <id>'s pool lost <amount> USD of its delegated stake` |
 | `EpochChanged` | `epoch` (the new one), `active` (size of its active set), `rewards` (paid from the fees of the epoch that ended) | deferred phase (epoch's last Pulse) | `epoch <e> began with <n> active validators; <rewards> USD paid in rewards` |
 
 ## Forced inclusion
@@ -100,6 +106,54 @@ each happens.
 | `StreamSettled` | `stream`, `position`, `head` (the element at `position`), `amount` | `SettleStream` | `stream <id> settled to step <p>: <amount> USD paid` |
 | `StreamToppedUp` | `stream`, `deposit`, `until` | `TopUpStream` | `stream <id> topped up by <deposit> USD, open until Pulse <until>` |
 | `StreamClosed` | `stream`, `refund` | `CloseStream` | `stream <id> closed: <refund> USD returned to its payer` |
+
+## Memory logs
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `MemoryOpened` | `log`, `account` (the writer), `agent` | `OpenMemory` | `memory log <id> opened[ for agent <id>]` |
+| `MemoryCommitted` | `log`, `size`, `root`, `commits` (the head's sequence number), `sealed` | `CommitMemory` | `memory log <id> now holds <n> atoms (head <k>)[, sealed]` |
+
+The atoms a commit adds have the commit's Pulse as their transaction time.
+
+## Task Charters
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `TaskPosted` | `task`, `poster`, `worker`, `amount`, `deadline` | `PostTask` | `task <id> posted with <amount> USD in escrow, for <worker>\|open to anyone, until Pulse <deadline>` |
+| `TaskSettled` | `task`, `worker`, `result`, `amount`, `reservation` | `SettleTask` | `task <id> settled: <amount> USD paid to <worker> for result <id>, its backing reserved` |
+| `TaskCancelled` | `task`, `refund`, `to` | `CancelTask` | `task <id> cancelled: <refund> USD refunded to <account>` |
+
+If a claim a paid result rests on is later falsified, the payer's
+compensation appears as `Compensated` events of the `Rule` that broke it.
+
+## Pooled stake
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `Delegated` | `delegation`, `validator`, `owner`, `amount`, `shares` | `DelegateStake` | `<owner> delegated <amount> USD to validator <id> as delegation <id>, earning from the epoch's end` |
+| `Undelegated` | `delegation`, `rewards` (paid now), `withdrawable_at` | `Undelegate` | `delegation <id> stopped earning (<rewards> USD of rewards paid) and is withdrawable from Pulse <p>` |
+| `DelegationWithdrawn` | `delegation`, `amount` (stake returned) | `WithdrawDelegation` | `<amount> USD withdrawn from delegation <id>` |
+| `DelegatorRewardsClaimed` | `delegation`, `amount` | `ClaimDelegatorRewards` | `<amount> USD of rewards collected from delegation <id>` |
+| `CommissionSet` | `validator`, `permille` | `SetCommission` | `validator <id>'s commission becomes <p>% at the epoch's end` |
+
+Rewards reach pools at epoch ends, in the deferred phase, without an event
+of their own: `EpochChanged`'s `rewards` is the total paid to validators
+and their pools together. `sion stake show` prints what each delegation is
+owed.
+
+## Storage deals
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `DealPosted` | `deal`, `client`, `provider` (or none: open), `size`, `price`, `rounds`, `collateral` | `PostDeal` | `storage deal <id> posted: <n> leaves, <r> rounds at <price> USD each, <collateral> USD of collateral, for <provider>\|open to any provider` |
+| `DealAccepted` | `deal`, `provider`, `custody`, `start` | `AcceptDeal` | `<provider> accepted storage deal <id> (custody record <id>); rounds start at Pulse <p>` |
+| `StorageProven` | `deal`, `custody`, `round` | `ProveStorage`, one per deal | `round <i> of storage deal <id> proven` |
+| `DealSettled` | `deal`, `rounds`, `amount` | `SettleDeal` | `<amount> USD paid for <n> proven round(s) of storage deal <id>` |
+| `DealClosed` | `deal`, `refund`, `paid`, `returned`, `forfeited`, `missed` | `CloseDeal` | `storage deal <id> closed: <refund> USD refunded, <paid> USD paid, <returned> USD of collateral returned, <forfeited> USD forfeited, <m> round(s) missed` |
+
+Forfeited collateral reaches the treasury in the deferred phase, as a
+`Treasury` item, without an event of its own.
 
 ## Failed transactions
 

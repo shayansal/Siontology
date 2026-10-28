@@ -69,7 +69,8 @@ impl Names {
         format!("{amount} {}", self.asset(asset))
     }
 
-    fn usd(&self, amount: Amount) -> String {
+    /// An amount of USD, as sentences show it.
+    pub fn usd(&self, amount: Amount) -> String {
         self.money(amount, &AssetId::usd())
     }
 }
@@ -79,6 +80,15 @@ fn list(items: Vec<String>) -> String {
         0 => "nothing".into(),
         1 => items[0].clone(),
         n => format!("{} and {}", items[..n - 1].join(", "), items[n - 1]),
+    }
+}
+
+/// " with card <short>" for a set card commitment, nothing for none.
+fn card_phrase(card: &sion_core::hash::Hash32) -> String {
+    if *card == sion_core::hash::Hash32::ZERO {
+        String::new()
+    } else {
+        format!(" with card {}", card.short())
     }
 }
 
@@ -280,6 +290,46 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             "Return what is left in dead charter {}'s allotments to its backer",
             object(charter)
         ),
+        TxKind::RegisterAgent {
+            agent,
+            card,
+            caveats: k,
+            funding,
+            agent_bond,
+        } => format!(
+            "Register {} as an agent{}, funded with {}{}: {}",
+            names.account(agent),
+            card_phrase(card),
+            names.usd(*funding),
+            if *agent_bond > Amount::ZERO {
+                format!(" and a {} bond behind its receipts", names.usd(*agent_bond))
+            } else {
+                String::new()
+            },
+            caveats(names, k)
+        ),
+        TxKind::SpawnAgents { charter, children } => {
+            let budget = Amount(children.iter().map(|c| c.budget.0).sum());
+            let n = children.len();
+            format!(
+                "As agent {}, launch {n} {} with their own identities, {} in budgets in all",
+                object(charter),
+                if n == 1 { "subagent" } else { "subagents" },
+                names.usd(budget)
+            )
+        }
+        TxKind::SetAgentCard { charter, card } => format!(
+            "Set agent {}'s card to {}",
+            object(charter),
+            card.short()
+        ),
+        TxKind::SuspendAgent { charter } => format!(
+            "Suspend agent {} and every agent below it",
+            object(charter)
+        ),
+        TxKind::ResumeAgent { charter } => {
+            format!("Lift the suspension of agent {}", object(charter))
+        }
         TxKind::CreateBounded {
             label,
             asset,
@@ -432,6 +482,120 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             "Close stream {} and return what is left in escrow to its payer",
             stream.short()
         ),
+        TxKind::OpenMemory { agent, .. } => match agent {
+            Some(agent) => format!(
+                "Open a memory log for agent {}, which only it can append to",
+                object(agent)
+            ),
+            None => "Open a memory log that only the sender can append to".to_string(),
+        },
+        TxKind::CommitMemory { size, seal, .. } => {
+            let memory_log = tx
+                .inputs
+                .get(1)
+                .map(|input| format!("memory log {}", object(&input.id)))
+                .unwrap_or_else(|| "the memory log".to_string());
+            format!(
+                "Commit {memory_log} at {size} {}, proving it only grew{}",
+                if *size == 1 { "atom" } else { "atoms" },
+                if *seal { ", and seal it" } else { "" }
+            )
+        }
+        TxKind::PostTask {
+            acceptance,
+            worker,
+            amount,
+            deadline,
+            charter,
+            ..
+        } => format!(
+            "Escrow {} for a task {}, paid {} for a result resting on {} required {} and accepted under your policy, settled by Pulse {deadline}{}",
+            names.usd(*amount),
+            match worker {
+                Some(worker) => format!("for {}", names.account(worker)),
+                None => "open to anyone".to_string(),
+            },
+            if worker.is_some() { "to them" } else { "to the first worker" },
+            acceptance.requires.len(),
+            if acceptance.requires.len() == 1 { "claim" } else { "claims" },
+            match charter {
+                Some(charter) => format!(", from agent {}'s budget", object(charter)),
+                None => String::new(),
+            }
+        ),
+        TxKind::SettleTask {
+            task, attestations, ..
+        } => format!(
+            "Settle task {} with your result{}",
+            object(task),
+            match attestations.len() {
+                0 => String::new(),
+                1 => " and 1 attestation".to_string(),
+                n => format!(" and {n} attestations"),
+            }
+        ),
+        TxKind::CancelTask { task } => format!(
+            "Cancel task {} and refund its escrow",
+            object(task)
+        ),
+        TxKind::DelegateStake { validator, amount } => format!(
+            "Delegate {} to validator {}'s pool; you keep the delegation, which earns from the epoch's end",
+            names.usd(*amount),
+            validator.short()
+        ),
+        TxKind::Undelegate => {
+            "Stop a delegation earning, collect its rewards and start unbonding".into()
+        }
+        TxKind::WithdrawDelegation => "Withdraw an unbonded delegation's stake".into(),
+        TxKind::ClaimDelegatorRewards => "Collect a delegation's rewards".into(),
+        TxKind::SetCommission {
+            validator,
+            permille,
+        } => format!(
+            "Set validator {}'s commission to {} from the epoch's end",
+            validator.short(),
+            percent(*permille)
+        ),
+        TxKind::PostDeal {
+            root,
+            size,
+            challenges,
+            price,
+            rounds,
+            round_length,
+            collateral,
+            provider,
+            ..
+        } => format!(
+            "Escrow {} to have data {} ({size} leaves) kept by {} for {rounds} rounds of {round_length} Pulses: {} per round proven by {challenges} random leaves, with {} of collateral at stake",
+            names.usd(Amount(price.0.saturating_mul(u128::from(*rounds)))),
+            root.short(),
+            match provider {
+                Some(provider) => names.account(provider),
+                None => "any provider".to_string(),
+            },
+            names.usd(*price),
+            names.usd(*collateral)
+        ),
+        TxKind::AcceptDeal { deal } => format!(
+            "Accept storage deal {}, posting its collateral; prove each round or lose it",
+            object(deal)
+        ),
+        TxKind::ProveStorage { proofs } => {
+            let leaves: usize = proofs.iter().map(|p| p.leaves.len()).sum();
+            format!(
+                "Prove custody of {} storage deal(s) for the round under way with {leaves} challenged leaves",
+                proofs.len()
+            )
+        }
+        TxKind::SettleDeal { deal } => format!(
+            "Collect for the proven rounds of storage deal {}",
+            object(deal)
+        ),
+        TxKind::CloseDeal { deal } => format!(
+            "Close storage deal {}: pay what is due, refund the escrow of unproven rounds, settle the collateral",
+            object(deal)
+        ),
     };
     format!(
         "{body}. Fee {}; valid until Pulse {}.",
@@ -512,6 +676,31 @@ pub fn event(names: &Names, event: &Event) -> String {
         }
         Event::CharterCreated { charter, .. } => format!("charter {} created", object(charter)),
         Event::CharterRevoked { charter } => format!("charter {} revoked", object(charter)),
+        Event::AgentRegistered { agent, account, .. } => format!(
+            "agent {} registered, signing as {}",
+            object(agent),
+            names.account(account)
+        ),
+        Event::AgentSpawned {
+            agent,
+            parent,
+            account,
+            ..
+        } => format!(
+            "subagent {} launched by {}, signing as {}",
+            object(agent),
+            object(parent),
+            names.account(account)
+        ),
+        Event::AgentCardSet { agent, card } => {
+            format!("agent {}'s card is now {}", object(agent), card.short())
+        }
+        Event::AgentSuspended { agent, by } => format!(
+            "agent {} suspended by {}, with everything below it",
+            object(agent),
+            names.account(by)
+        ),
+        Event::AgentResumed { agent } => format!("agent {} resumed", object(agent)),
         Event::CharterReclaimed { charter, amount } => format!(
             "{} returned from charter {}",
             names.usd(*amount),
@@ -657,6 +846,171 @@ pub fn event(names: &Names, event: &Event) -> String {
             stream.short(),
             names.usd(*refund)
         ),
+        Event::MemoryOpened { log, agent, .. } => match agent {
+            Some(agent) => format!(
+                "memory log {} opened for agent {}",
+                object(log),
+                object(agent)
+            ),
+            None => format!("memory log {} opened", object(log)),
+        },
+        Event::MemoryCommitted {
+            log,
+            size,
+            commits,
+            sealed,
+            ..
+        } => format!(
+            "memory log {} now holds {size} {} (head {commits}){}",
+            object(log),
+            if *size == 1 { "atom" } else { "atoms" },
+            if *sealed { ", sealed" } else { "" }
+        ),
+        Event::TaskPosted {
+            task,
+            worker,
+            amount,
+            deadline,
+            ..
+        } => format!(
+            "task {} posted with {} in escrow, {}, until Pulse {deadline}",
+            object(task),
+            names.usd(*amount),
+            match worker {
+                Some(worker) => format!("for {}", names.account(worker)),
+                None => "open to anyone".to_string(),
+            }
+        ),
+        Event::TaskSettled {
+            task,
+            worker,
+            result,
+            amount,
+            ..
+        } => format!(
+            "task {} settled: {} paid to {} for result {}, its backing reserved",
+            object(task),
+            names.usd(*amount),
+            names.account(worker),
+            result.short()
+        ),
+        Event::TaskCancelled { task, refund, to } => format!(
+            "task {} cancelled: {} refunded to {}",
+            object(task),
+            names.usd(*refund),
+            names.account(to)
+        ),
+        Event::Delegated {
+            delegation,
+            validator,
+            owner,
+            amount,
+            ..
+        } => format!(
+            "{} delegated {} to validator {} as delegation {}, earning from the epoch's end",
+            names.account(owner),
+            names.usd(*amount),
+            validator.short(),
+            object(delegation)
+        ),
+        Event::Undelegated {
+            delegation,
+            rewards,
+            withdrawable_at,
+        } => format!(
+            "delegation {} stopped earning ({} of rewards paid) and is withdrawable from Pulse {}",
+            object(delegation),
+            names.usd(*rewards),
+            withdrawable_at
+        ),
+        Event::DelegationWithdrawn { delegation, amount } => format!(
+            "{} withdrawn from delegation {}",
+            names.usd(*amount),
+            object(delegation)
+        ),
+        Event::DelegatorRewardsClaimed { delegation, amount } => format!(
+            "{} of rewards collected from delegation {}",
+            names.usd(*amount),
+            object(delegation)
+        ),
+        Event::CommissionSet {
+            validator,
+            permille,
+        } => format!(
+            "validator {}'s commission becomes {} at the epoch's end",
+            validator.short(),
+            percent(*permille)
+        ),
+        Event::PoolSlashed { validator, amount } => format!(
+            "validator {}'s pool lost {} of its delegated stake",
+            validator.short(),
+            names.usd(*amount)
+        ),
+        Event::DealPosted {
+            deal,
+            provider,
+            size,
+            price,
+            rounds,
+            collateral,
+            ..
+        } => format!(
+            "storage deal {} posted: {size} leaves, {rounds} rounds at {} each, {} of collateral, {}",
+            object(deal),
+            names.usd(*price),
+            names.usd(*collateral),
+            match provider {
+                Some(provider) => format!("for {}", names.account(provider)),
+                None => "open to any provider".to_string(),
+            }
+        ),
+        Event::DealAccepted {
+            deal,
+            provider,
+            custody,
+            start,
+        } => format!(
+            "{} accepted storage deal {} (custody record {}); rounds start at Pulse {start}",
+            names.account(provider),
+            object(deal),
+            object(custody)
+        ),
+        Event::StorageProven { deal, round, .. } => format!(
+            "round {round} of storage deal {} proven",
+            object(deal)
+        ),
+        Event::DealSettled {
+            deal,
+            rounds,
+            amount,
+        } => format!(
+            "{} paid for {rounds} proven round(s) of storage deal {}",
+            names.usd(*amount),
+            object(deal)
+        ),
+        Event::DealClosed {
+            deal,
+            refund,
+            paid,
+            returned,
+            forfeited,
+            missed,
+        } => format!(
+            "storage deal {} closed: {} refunded, {} paid, {} of collateral returned, {} forfeited, {missed} round(s) missed",
+            object(deal),
+            names.usd(*refund),
+            names.usd(*paid),
+            names.usd(*returned),
+            names.usd(*forfeited)
+        ),
+    }
+}
+
+/// Thousandths as a percentage: 100 → "10%", 125 → "12.5%".
+pub fn percent(permille: u16) -> String {
+    match permille % 10 {
+        0 => format!("{}%", permille / 10),
+        tenth => format!("{}.{tenth}%", permille / 10),
     }
 }
 

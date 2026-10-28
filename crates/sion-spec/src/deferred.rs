@@ -10,10 +10,12 @@
 //! Protocol objects are read lazily: the schedule always and first; the
 //! assurance domain, the treasury, the validator set and the
 //! forced-inclusion obligations only when an item, an intent or an event
-//! needs them; a market only when an item or event needs it. Each is written
-//! back at the end only if something obtained it (the schedule: only if its
-//! entries changed), in the order markets (by identifier), assurance,
-//! treasury, validator set, obligations, schedule.
+//! needs them; a market only when an item or event needs it; the
+//! delegation book only at an epoch's end, and only if it exists. Each is
+//! written back at the end only if something obtained it (the schedule:
+//! only if its entries changed), in the order markets (by identifier),
+//! assurance, treasury, validator set, delegation book, obligations,
+//! schedule.
 //!
 //! Errors (§6.3, "Errors"): the arithmetic §6.3 marks saturating saturates;
 //! any remaining error — a missing or malformed protocol object, an
@@ -33,7 +35,9 @@ use sion_core::ids::{AccountId, AssetId, ObjectId, Pulse, Version};
 use sion_core::merkle::Frontier;
 use sion_core::Amount;
 use sion_exec::assurance::AssuranceDomain;
+use sion_exec::beacons::{BeaconRecord, BEACON_INTERVAL, BEACON_SLOTS};
 use sion_exec::claim::{claim_id, knowledge_leaf, ClaimBody, StoredClaim};
+use sion_exec::delegation::DelegationBook;
 use sion_exec::execute::{bond_owner, Deferred, Event};
 use sion_exec::market::{BatchStatus, Market, MarketBatch, PendingOrder, MAX_BATCH_ORDERS};
 use sion_exec::object::{
@@ -124,6 +128,9 @@ struct DeferredRun<'v> {
     treasury: Option<(Object, Treasury)>,
     /// The validator set object and its contents, once obtained.
     validators: Option<(Object, ValidatorSet)>,
+    /// The delegation book, once obtained (v1.11): `Some(None)` if it does
+    /// not exist.
+    delegations: Option<Option<(Object, DelegationBook)>>,
     /// The forced-inclusion obligations object and its contents, once
     /// obtained.
     obligations: Option<(Object, ForcedObligations)>,
@@ -158,6 +165,7 @@ impl<'v> DeferredRun<'v> {
             assurance: None,
             treasury: None,
             validators: None,
+            delegations: None,
             obligations: None,
             markets: BTreeMap::new(),
             frontier,
@@ -214,6 +222,34 @@ impl<'v> DeferredRun<'v> {
             Some((_, set)) => Ok(set),
             None => Err(broken("validator set unavailable")),
         }
+    }
+
+    /// The delegation book, reading it (`try_load`) the first time; `None`
+    /// if no delegation created it.
+    fn delegation_book(&mut self) -> Result<Option<&mut DelegationBook>, SpecError> {
+        if self.delegations.is_none() {
+            let found = match self
+                .book
+                .try_load(&well_known::delegations())
+                .map_err(rejected)?
+            {
+                None => None,
+                Some(object) => {
+                    let ObjectData::Delegations(book) = &object.data else {
+                        return Err(broken(
+                            "the delegation book object is not a delegation book",
+                        ));
+                    };
+                    let book = (**book).clone();
+                    Some((object, book))
+                }
+            };
+            self.delegations = Some(found);
+        }
+        Ok(match &mut self.delegations {
+            Some(Some((_, book))) => Some(book),
+            _ => None,
+        })
     }
 
     /// The forced-inclusion obligations, loading them the first time.
@@ -563,6 +599,39 @@ impl<'v> DeferredRun<'v> {
         Ok(())
     }
 
+    /// The beacon record (§6.3, v1.12), last: a Pulse that is a multiple of
+    /// `BEACON_INTERVAL` records its beacon in slot `(pulse /
+    /// BEACON_INTERVAL) mod BEACON_SLOTS`, replacing the record there or
+    /// creating it.
+    fn record_beacon(&mut self) -> Result<(), SpecError> {
+        let pulse = self.ctx.pulse;
+        if pulse.0 % BEACON_INTERVAL != 0 {
+            return Ok(());
+        }
+        let slot = u32::try_from((pulse.0 / BEACON_INTERVAL) % BEACON_SLOTS)
+            .map_err(|_| broken("beacon slot out of range"))?;
+        let id = well_known::beacon(slot);
+        let data = ObjectData::Beacon(BeaconRecord {
+            pulse,
+            beacon: self.ctx.beacon,
+        });
+        let object = match self.book.try_load(&id).map_err(rejected)? {
+            Some(existing) => {
+                if !matches!(existing.data, ObjectData::Beacon(_)) {
+                    return Err(broken("a beacon slot holds something else"));
+                }
+                Object { data, ..existing }
+            }
+            None => Object {
+                id,
+                version: Version(0),
+                owner: Owner::Shared(well_known::beacons_domain()),
+                data,
+            },
+        };
+        self.book.store(object).map_err(rejected)
+    }
+
     /// Writes back what was used: markets in identifier order, then the
     /// assurance domain, the treasury, the validator set, the obligations,
     /// and the schedule (if its entries changed).
@@ -600,6 +669,14 @@ impl<'v> DeferredRun<'v> {
                 })
                 .map_err(rejected)?;
         }
+        if let Some(Some((object, book))) = self.delegations.take() {
+            self.book
+                .store(Object {
+                    data: ObjectData::Delegations(Box::new(book)),
+                    ..object
+                })
+                .map_err(rejected)?;
+        }
         if let Some((object, obligations)) = self.obligations.take() {
             self.book
                 .store(Object {
@@ -615,6 +692,7 @@ impl<'v> DeferredRun<'v> {
             };
             self.book.store(object).map_err(rejected)?;
         }
+        self.record_beacon()?;
         let parts = self.book.finish();
         Ok(DeferredOutcome {
             writes: parts.writes,
@@ -887,6 +965,74 @@ mod tests {
     /// §6.3 Fee: a fee credits both the balance and the running total of
     /// fees, each saturating; a Treasury credit (a slashing remainder)
     /// leaves the fee total alone.
+    #[test]
+    fn every_eighth_pulse_records_its_beacon_last() {
+        let beacon = Hash32([0x5b; 32]);
+        let mut ctx = context(16);
+        ctx.beacon = beacon;
+        let slot = well_known::beacon(2);
+        // A new slot (the witness shows it absent): created at version 0 in
+        // the beacons' domain.
+        let schedule_object = schedule(BTreeMap::new());
+        let absent = ChunkView::new(
+            [
+                (schedule_object.id, Some(schedule_object.clone())),
+                (slot, None),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let outcome = run_deferred_phase(&ctx, &absent, Frontier::default(), &[], &[]).unwrap();
+        let written = &outcome.writes[&slot];
+        assert_eq!(written.version, Version(0));
+        assert_eq!(written.owner, Owner::Shared(well_known::beacons_domain()));
+        assert_eq!(
+            written.data,
+            ObjectData::Beacon(BeaconRecord {
+                pulse: Pulse(16),
+                beacon
+            })
+        );
+        // A slot in use is replaced, a version up.
+        let mut old = written.clone();
+        old.version = Version(6);
+        old.data = ObjectData::Beacon(BeaconRecord {
+            pulse: Pulse(16),
+            beacon: Hash32::ZERO,
+        });
+        let mut later = context(16 + BEACON_INTERVAL * BEACON_SLOTS);
+        later.beacon = beacon;
+        let outcome = run_deferred_phase(
+            &later,
+            &view(vec![schedule(BTreeMap::new()), old]),
+            Frontier::default(),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(outcome.writes[&slot].version, Version(7));
+        // Between recorded Pulses nothing is written.
+        let outcome = run_deferred_phase(
+            &context(17),
+            &view(vec![schedule(BTreeMap::new())]),
+            Frontier::default(),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(outcome.writes.is_empty());
+        // A slot holding anything else is a broken state.
+        let wrong = shared(slot, ObjectData::Schedule(Schedule::default()));
+        assert!(run_deferred_phase(
+            &ctx,
+            &view(vec![schedule(BTreeMap::new()), wrong]),
+            Frontier::default(),
+            &[],
+            &[],
+        )
+        .is_err());
+    }
+
     #[test]
     fn fees_credit_the_balance_and_the_running_total() {
         let usd = AssetId::usd();

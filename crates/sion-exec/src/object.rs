@@ -131,6 +131,22 @@ pub enum ObjectData {
     Forced(Box<crate::validators::ForcedObligations>),
     /// A payment stream.
     Stream(crate::stream::Stream),
+    /// A memory log's head (specification v1.9).
+    MemoryLog(crate::memory::MemoryLog),
+    /// An escrowed task (specification v1.10).
+    Task(Box<crate::task::Task>),
+    /// Every validator's pool of delegated stake (specification v1.11).
+    Delegations(Box<crate::delegation::DelegationBook>),
+    /// A delegation, owned by its delegator (specification v1.11).
+    Delegation(crate::delegation::Delegation),
+    /// A storage deal (specification v1.12).
+    Deal(Box<crate::storage::Deal>),
+    /// A provider's custody record of a storage deal, owned by the
+    /// provider (specification v1.12).
+    Custody(crate::storage::Custody),
+    /// The beacon of a recorded Pulse, in one of the reusable slots
+    /// (specification v1.12, §6.3).
+    Beacon(crate::beacons::BeaconRecord),
 }
 
 /// Something the protocol must do at a given Pulse.
@@ -303,6 +319,23 @@ pub mod well_known {
     /// The validator set's contention domain.
     pub fn validators_domain() -> DomainId {
         DomainId::derive(b"validators")
+    }
+
+    /// The validators' pools of delegated stake (in the validators'
+    /// domain; created by the first delegation).
+    pub fn delegations() -> ObjectId {
+        ObjectId::derive(b"well-known/delegations")
+    }
+
+    /// The `slot`-th beacon record (`crate::beacons`): it holds the beacon
+    /// of the latest recorded Pulse whose slot it is.
+    pub fn beacon(slot: u32) -> ObjectId {
+        ObjectId::derive_parts(&[b"well-known/beacon", &slot.to_be_bytes()])
+    }
+
+    /// The beacon records' domain.
+    pub fn beacons_domain() -> DomainId {
+        DomainId::derive(b"beacons")
     }
 
     /// The forced-inclusion obligations.

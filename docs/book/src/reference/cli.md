@@ -36,20 +36,24 @@ guides show the commands in use.
 
 | Area | Commands |
 |---|---|
-| Network | `devnet`, `status`, `pulse`, `events`, `forced`, `censor` |
-| Wallets and money | `keys new`, `keys show`, `balance`, `faucet`, `send` |
+| Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
+| Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `mcp`, `x402 serve`, `x402 fetch` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `mcp`, `x402 serve`, `x402 fetch` |
+| Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
+| Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
+| Stake | `stake pools`, `stake delegate`, `stake show`, `stake claim`, `stake undelegate`, `stake withdraw`, `stake commission` |
 | Markets | `market create`, `market order`, `market clear`, `market show` |
 | Payment streams | `stream open`, `stream pay`, `stream jump`, `stream check`, `stream settle`, `stream top-up`, `stream close`, `stream show` |
 | Verification | `tx`, `receipt`, `verify` |
 | Other | `demo`, `bench` |
 
-There is no command yet for staking, unstaking, withdrawing stake,
-claiming rewards, reporting equivocation, withdrawing a bond, releasing a
-reservation, rotating keys, delegating or reclaiming a charter, escrow
-lanes, or sealed market orders. Those transactions are available through
-the Rust API ([Transaction kinds](transactions.md)).
+There is no command yet for registering a validator on a running chain,
+unstaking, withdrawing stake, claiming a validator's rewards, reporting
+equivocation, withdrawing a bond, releasing a reservation, rotating keys,
+escrow lanes, sealed market orders, or memory revisions, sealing and
+forgetting. Those transactions are available through the Rust API
+([Transaction kinds](transactions.md)) and the demos.
 
 ## `sion`
 
@@ -60,6 +64,9 @@ Usage: sion [OPTIONS] <COMMAND>
 
 Commands:
   devnet     Run a devnet and serve its API
+  genesis    Collect validators' entries into a network's genesis file
+  node       Run one validator of a network, in this process
+  gateway    Run a gateway of a network, in this process
   status     Chain status
   keys       Wallet keys
   balance    An account's balances and coins
@@ -73,6 +80,11 @@ Commands:
   challenge  Challenge a bonded atom a claim rests on
   rule       Rule on a challenge as the claim's adjudicator
   charter    Agent Charters
+  agent      Agent identities: register agents, launch subagents with their own identities, suspend, resume and revoke whole subtrees
+  task       Task Charters: escrow work whose acceptance rule is fixed when it is posted; attest, submit and settle results; cancel
+  stake      Pooled stake: delegate to a validator without handing the stake over, collect rewards, leave; set a validator's commission
+  memory     Memory logs for agents and robots: open a log, record atoms locally, commit heads the ledger keeps append-only, and recall with proofs of completeness
+  storage    Storage deals: have data kept by a provider who proves every round that it still holds it, or provide storage and be paid for it
   market     Markets
   stream     Payment streams: escrow once, pay per request with one hash each, settle thousands of payments in one transaction
   tx         A transaction's status and effects
@@ -80,7 +92,7 @@ Commands:
   pulse      A Pulse's header, certificate and summary
   events     Recent events
   verify     Verify a Pulse as a light client
-  demo       Run a scripted demo: invoice, agents, market, receipts, x402, streams, censorship, light, staking or all
+  demo       Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
   mcp        Serve the Model Context Protocol on stdio (for AI agents)
   x402       Sell or buy HTTP resources with x402 (HTTP 402 payments settled on Siontology)
   bench      Measure primitives, execution, proving, clearing and a devnet
@@ -140,6 +152,92 @@ Options:
 
 See [Running a devnet](../guides/devnet.md).
 
+## `sion genesis`
+
+```text
+Collect validators' entries into a network's genesis file
+
+Usage: sion genesis [OPTIONS] --validator <VALIDATORS>
+
+Options:
+      --node <NODE>
+          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --validator <VALIDATORS>
+          A validator's entry (`validator.json`, written by `sion keys validator`); repeat for each
+      --gateway <GATEWAYS>
+          A gateway's entry (`gateway.json`, written by `sion keys gateway`); repeat for each
+      --chain <CHAIN>
+          The chain's name (default: the one the entries name)
+      --stake <STAKE>
+          Each validator's stake, in USD, minted at genesis [default: 100000]
+      --accounts <ACCOUNTS>
+          TEST NETWORKS ONLY: named accounts funded at genesis, whose keys anyone can derive from their names
+      --demo-usd <DEMO_USD>
+          USD each named account starts with [default: 100000]
+      --faucet
+          TEST NETWORKS ONLY: fund the devnet faucet, whose keys anyone can derive from its name
+      --shards <SHARDS>
+          Lane shards (default: as `sion devnet`, 2)
+      --seats <SEATS>
+          Seats per lane committee (default: as `sion devnet`, 4)
+      --rounds-per-pulse <ROUNDS_PER_PULSE>
+          Consensus rounds per Pulse (default: as `sion devnet`, 4)
+      --epoch-length <EPOCH_LENGTH>
+          Pulses per epoch (default: as `sion devnet`, 0: one epoch that never ends)
+      --out <OUT>
+          Where to write `genesis.json` and `peers.json` [default: .]
+  -h, --help
+          Print help
+```
+
+Checks every record's dual signature. See [Running a network of processes](../guides/network.md).
+
+## `sion node`
+
+```text
+Run one validator of a network, in this process
+
+Usage: sion node [OPTIONS] --dir <DIR> --genesis <GENESIS>
+
+Options:
+      --dir <DIR>            The validator's directory (its keys; its log and snapshots go to `data/` inside)
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --genesis <GENESIS>    The network's genesis file
+      --peers <PEERS>        The peer file (default: `peers.json` next to the genesis file, if there is one)
+      --listen <LISTEN>      Where to listen for QUIC (default: the first address of its record)
+      --api <API>            Where to serve the HTTP API [default: 127.0.0.1:8730]
+      --gateway              Host a gateway too: accept transactions on the API and get them certified
+      --prove                Run the prover (a World Proof for every Pulse)
+      --chunk <CHUNK>        Transactions per proof chunk, with --prove [default: 16]
+      --no-fsync             Do not fsync log records (faster, loses the last records on a power failure)
+      --duration <DURATION>  Stop after this many seconds (0: run until interrupted) [default: 0]
+      --report <REPORT>      Print status every this many seconds (0: silent) [default: 5]
+  -h, --help                 Print help
+```
+
+One validator per process. A validator that stops cannot rejoin yet (`net:no-rejoin`). See [Running a network of processes](../guides/network.md).
+
+## `sion gateway`
+
+```text
+Run a gateway of a network, in this process
+
+Usage: sion gateway [OPTIONS] --dir <DIR> --genesis <GENESIS> --follow <FOLLOW>
+
+Options:
+      --dir <DIR>            The gateway's directory (its network key)
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --genesis <GENESIS>    The network's genesis file
+      --peers <PEERS>        The peer file, which must list this gateway (default: `peers.json` next to the genesis file)
+      --follow <FOLLOW>      The API of the node this gateway trusts for the state and the committees
+      --api <API>            Where to serve the HTTP API [default: 127.0.0.1:8740]
+      --duration <DURATION>  Stop after this many seconds (0: run until interrupted) [default: 0]
+      --report <REPORT>      Print status every this many seconds (0: silent) [default: 5]
+  -h, --help                 Print help
+```
+
+Trusts the node it follows (`net:gateway-trusts-node`). See [Running a network of processes](../guides/network.md).
+
 ## `sion status`
 
 ```text
@@ -162,9 +260,11 @@ Wallet keys
 Usage: sion keys [OPTIONS] <COMMAND>
 
 Commands:
-  new   Create a wallet with a random seed
-  show  Show a wallet's account and public keys
-  help  Print this message or the help of the given subcommand(s)
+  new        Create a wallet with a random seed
+  show       Show a wallet's account and public keys
+  validator  Generate a network validator's keys and its signed network record
+  gateway    Generate a network gateway's key
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -204,6 +304,40 @@ Options:
 ```
 
 Works for deterministic devnet wallets too: any name without a seed file.
+
+## `sion keys validator`
+
+```text
+Generate a network validator's keys and its signed network record
+
+Usage: sion keys validator [OPTIONS] --dir <DIR> --address <ADDRESSES> --operator <OPERATOR>
+
+Options:
+      --dir <DIR>            The validator's directory (created; it must not hold keys yet)
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --chain <CHAIN>        The chain's name [default: sion-localnet]
+      --address <ADDRESSES>  Where other nodes reach it, `host:port` (repeat for several)
+      --operator <OPERATOR>  The wallet name or account ID that operates it (stakes for it and receives its rewards)
+  -h, --help                 Print help
+```
+
+Writes secret keys (mode 0600) and the public `validator.json`; refuses to overwrite. See [Running a network of processes](../guides/network.md).
+
+## `sion keys gateway`
+
+```text
+Generate a network gateway's key
+
+Usage: sion keys gateway [OPTIONS] --dir <DIR>
+
+Options:
+      --dir <DIR>    The gateway's directory (created; it must not hold a key yet)
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --name <NAME>  A name for people [default: gateway]
+  -h, --help         Print help
+```
+
+See [Running a network of processes](../guides/network.md).
 
 ## `sion balance`
 
@@ -532,6 +666,771 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion agent`
+
+```text
+Agent identities: register agents, launch subagents with their own identities, suspend, resume and revoke whole subtrees
+
+Usage: sion agent [OPTIONS] <COMMAND>
+
+Commands:
+  register       Register an agent identity: a charter with a card, funded by the principal
+  spawn          Launch subagents, each with its own identity, account, caveats and budget carved from the parent's allotment
+  show           Show an agent: account, principal, lineage, card, status, budget
+  card           Replace an agent's card with a file's commitment
+  card-template  Print an agent card template (A2A-style JSON with a `sion` section)
+  suspend        Suspend an agent and everything below it (an overseer: the backer, the principal or an ancestor's agent)
+  resume         Lift a suspension (the suspender or the backer)
+  revoke         Revoke an agent and everything below it, for good (the agent itself or an overseer)
+  reclaim        Return a revoked or expired agent's unspent budget to its backer (its principal or its backer)
+  help           Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Agent identities from the command line](../guides/agents.md).
+
+## `sion agent register`
+
+```text
+Register an agent identity: a charter with a card, funded by the principal
+
+Usage: sion agent register [OPTIONS] <PRINCIPAL> <AGENT>
+
+Arguments:
+  <PRINCIPAL>  The principal's wallet (who answers for the agent)
+  <AGENT>      The agent's wallet or account
+
+Options:
+      --card <CARD>                The agent card file (its exact bytes are committed)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --payees <PAYEES>            Allowed payees (comma-separated; empty: any)
+      --max-payment <MAX_PAYMENT>  Largest payment (USD) [default: 100]
+      --max-window <MAX_WINDOW>    Largest total per window (USD) [default: 500]
+      --window <WINDOW>            Window (Pulses) [default: 1000]
+      --funding <FUNDING>          Budget (USD) [default: 1000]
+      --bond <BOND>                Bond behind the agent's receipts (USD) [default: 0]
+      --lifetime <LIFETIME>        Lifetime (Pulses) [default: 100000]
+      --no-spawn                   The agent may not launch subagents
+  -h, --help                       Print help
+```
+
+## `sion agent spawn`
+
+```text
+Launch subagents, each with its own identity, account, caveats and budget carved from the parent's allotment
+
+Usage: sion agent spawn [OPTIONS] <PARENT> <AGENT> <ALLOTMENT>
+
+Arguments:
+  <PARENT>     The parent agent's wallet
+  <AGENT>      The parent's agent id (its charter)
+  <ALLOTMENT>  The parent's allotment
+
+Options:
+      --count <COUNT>              How many subagents [default: 1]
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --budget <BUDGET>            Budget of each (USD) [default: 10]
+      --prefix <PREFIX>            Wallet names are `<prefix>-1`, `<prefix>-2`, …; a wallet that does not exist yet is created with a random seed [default: subagent]
+      --card <CARD>                The subagents' card file
+      --max-payment <MAX_PAYMENT>  Largest payment of each (USD); default: the parent's
+      --max-window <MAX_WINDOW>    Largest total per window of each (USD); default: an equal share of the window allowance the parent has not carved out yet
+      --may-spawn                  The subagents may launch subagents of their own
+  -h, --help                       Print help
+```
+
+## `sion agent show`
+
+```text
+Show an agent: account, principal, lineage, card, status, budget
+
+Usage: sion agent show [OPTIONS] <AGENT>
+
+Arguments:
+  <AGENT>  Agent id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent card`
+
+```text
+Replace an agent's card with a file's commitment
+
+Usage: sion agent card [OPTIONS] <WALLET> <AGENT> <FILE>
+
+Arguments:
+  <WALLET>  The agent's wallet
+  <AGENT>   Agent id
+  <FILE>    The card file
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent card-template`
+
+```text
+Print an agent card template (A2A-style JSON with a `sion` section)
+
+Usage: sion agent card-template [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The agent's name
+
+Options:
+      --description <DESCRIPTION>  What it does [default: ""]
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --url <URL>                  Where it is served [default: ""]
+  -h, --help                       Print help
+```
+
+## `sion agent suspend`
+
+```text
+Suspend an agent and everything below it (an overseer: the backer, the principal or an ancestor's agent)
+
+Usage: sion agent suspend [OPTIONS] <WALLET> <AGENT>
+
+Arguments:
+  <WALLET>  The overseer's wallet
+  <AGENT>   Agent id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent resume`
+
+```text
+Lift a suspension (the suspender or the backer)
+
+Usage: sion agent resume [OPTIONS] <WALLET> <AGENT>
+
+Arguments:
+  <WALLET>  Wallet
+  <AGENT>   Agent id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent revoke`
+
+```text
+Revoke an agent and everything below it, for good (the agent itself or an overseer)
+
+Usage: sion agent revoke [OPTIONS] <WALLET> <AGENT>
+
+Arguments:
+  <WALLET>  Wallet
+  <AGENT>   Agent id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent reclaim`
+
+```text
+Return a revoked or expired agent's unspent budget to its backer (its principal or its backer)
+
+Usage: sion agent reclaim [OPTIONS] <WALLET> <AGENT>
+
+Arguments:
+  <WALLET>  Wallet
+  <AGENT>   Agent id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion task`
+
+```text
+Task Charters: escrow work whose acceptance rule is fixed when it is posted; attest, submit and settle results; cancel
+
+Usage: sion task [OPTIONS] <COMMAND>
+
+Commands:
+  post    Post a task: escrow money for work whose acceptance rule is fixed now. Without --worker, anyone may settle it (a bounty)
+  attest  Attest a task's output as a verifier, on your bond `bond:<you>:verifier`
+  submit  Submit a result claim for a task, as its worker, resting on your task bond, the attestations given, and the task's required claims
+  settle  Settle a task with your result claim and its attestations
+  cancel  Cancel a task: a worker releases it, or the poster withdraws an open or expired one. The escrow is refunded
+  show    Show a task: its terms, escrow and state
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Task Charters from the command line](../guides/tasks.md).
+
+## `sion task post`
+
+```text
+Post a task: escrow money for work whose acceptance rule is fixed now. Without --worker, anyone may settle it (a bounty)
+
+Usage: sion task post [OPTIONS] <POSTER> <AMOUNT>
+
+Arguments:
+  <POSTER>  The poster's wallet (with --agent, the agent's wallet)
+  <AMOUNT>  Escrow (USD), paid in full for an accepted result
+
+Options:
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --worker <WORKER>            The worker (wallet or account); omit for an open bounty
+      --spec <SPEC>                A file describing the task (its exact bytes are committed)
+      --requires <REQUIRES>        Claims every result must rest on (comma-separated ids)
+      --verifiers <VERIFIERS>      Verifiers whose attestations count (comma-separated wallets or accounts)
+      --adjudicator <ADJUDICATOR>  The adjudicator atom results must name (hex)
+      --detection <DETECTION>      The largest detection factor results may declare, in permille [default: 900]
+      --reliance <RELIANCE>        Pulses of reliance on a paid result (its backing stays reserved) [default: 1000]
+      --kappa <KAPPA>              Safety factor κ of the lab's policy [default: 2]
+      --deadline <DEADLINE>        Pulses until the deadline [default: 1000]
+      --agent <AGENT>              Post from this agent's budget (its id); needs --allotment
+      --allotment <ALLOTMENT>      The agent's allotment
+  -h, --help                       Print help
+```
+
+## `sion task attest`
+
+```text
+Attest a task's output as a verifier, on your bond `bond:<you>:verifier`
+
+Usage: sion task attest [OPTIONS] <VERIFIER> <TASK> <OUTPUT>
+
+Arguments:
+  <VERIFIER>  The verifier's wallet
+  <TASK>      The task
+  <OUTPUT>    The output file (its exact bytes are committed)
+
+Options:
+      --bond <BOND>  The bond label the attestation rests on [default: verifier]
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion task submit`
+
+```text
+Submit a result claim for a task, as its worker, resting on your task bond, the attestations given, and the task's required claims
+
+Usage: sion task submit [OPTIONS] <WORKER> <TASK> <OUTPUT>
+
+Arguments:
+  <WORKER>  The worker's wallet
+  <TASK>    The task
+  <OUTPUT>  The output file (its exact bytes are committed)
+
+Options:
+      --attestations <ATTESTATIONS>  Attestation claim ids (comma-separated), in order
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help                         Print help
+```
+
+## `sion task settle`
+
+```text
+Settle a task with your result claim and its attestations
+
+Usage: sion task settle [OPTIONS] <WORKER> <TASK> <RESULT>
+
+Arguments:
+  <WORKER>  The worker's wallet
+  <TASK>    The task
+  <RESULT>  The result claim id
+
+Options:
+      --attestations <ATTESTATIONS>  Attestation claim ids (comma-separated), in the order the result lists them
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help                         Print help
+```
+
+## `sion task cancel`
+
+```text
+Cancel a task: a worker releases it, or the poster withdraws an open or expired one. The escrow is refunded
+
+Usage: sion task cancel [OPTIONS] <WALLET> <TASK>
+
+Arguments:
+  <WALLET>  Wallet
+  <TASK>    The task
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion task show`
+
+```text
+Show a task: its terms, escrow and state
+
+Usage: sion task show [OPTIONS] <TASK>
+
+Arguments:
+  <TASK>  The task
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stake`
+
+```text
+Pooled stake: delegate to a validator without handing the stake over, collect rewards, leave; set a validator's commission
+
+Usage: sion stake [OPTIONS] <COMMAND>
+
+Commands:
+  pools       Every validator: its own stake, its pool, its commission and its weight in the active set
+  delegate    Delegate stake to a validator's pool. You keep the delegation: the stake counts towards the validator's weight and earns from the end of this epoch, and you can leave whenever you like
+  show        An account's delegations: shares, the stake behind them, their state and the rewards they are owed
+  claim       Collect a delegation's rewards
+  undelegate  Stop a delegation earning: collect its rewards and start unbonding. The stake stays slashable until you withdraw it
+  withdraw    Withdraw an unbonded delegation's stake
+  commission  Set your validator's commission on its pool's rewards, in percent (at most 25; once anyone has delegated, a raise of at most 2 points at a time). It takes effect at the epoch's end
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Delegating stake](../guides/delegation.md).
+
+## `sion stake pools`
+
+```text
+Every validator: its own stake, its pool, its commission and its weight in the active set
+
+Usage: sion stake pools [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stake delegate`
+
+```text
+Delegate stake to a validator's pool. You keep the delegation: the stake counts towards the validator's weight and earns from the end of this epoch, and you can leave whenever you like
+
+Usage: sion stake delegate [OPTIONS] <FROM> <VALIDATOR> <AMOUNT>
+
+Arguments:
+  <FROM>       Your wallet
+  <VALIDATOR>  The validator (its id, or a unique prefix of it)
+  <AMOUNT>     Stake (decimal, in the stake asset), at least 1
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stake show`
+
+```text
+An account's delegations: shares, the stake behind them, their state and the rewards they are owed
+
+Usage: sion stake show [OPTIONS] <ACCOUNT>
+
+Arguments:
+  <ACCOUNT>  Wallet name or account ID
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stake claim`
+
+```text
+Collect a delegation's rewards
+
+Usage: sion stake claim [OPTIONS] <FROM> <DELEGATION>
+
+Arguments:
+  <FROM>        Your wallet
+  <DELEGATION>  The delegation (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stake undelegate`
+
+```text
+Stop a delegation earning: collect its rewards and start unbonding. The stake stays slashable until you withdraw it
+
+Usage: sion stake undelegate [OPTIONS] <FROM> <DELEGATION>
+
+Arguments:
+  <FROM>        Your wallet
+  <DELEGATION>  The delegation (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stake withdraw`
+
+```text
+Withdraw an unbonded delegation's stake
+
+Usage: sion stake withdraw [OPTIONS] <FROM> <DELEGATION>
+
+Arguments:
+  <FROM>        Your wallet
+  <DELEGATION>  The delegation (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion stake commission`
+
+```text
+Set your validator's commission on its pool's rewards, in percent (at most 25; once anyone has delegated, a raise of at most 2 points at a time). It takes effect at the epoch's end
+
+Usage: sion stake commission [OPTIONS] <FROM> <VALIDATOR> <PERCENT>
+
+Arguments:
+  <FROM>       The operator's wallet
+  <VALIDATOR>  The validator (its id, or a unique prefix of it)
+  <PERCENT>    The commission in percent, with at most one decimal (for example 10 or 12.5)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion memory`
+
+```text
+Memory logs for agents and robots: open a log, record atoms locally, commit heads the ledger keeps append-only, and recall with proofs of completeness
+
+Usage: sion memory [OPTIONS] <COMMAND>
+
+Commands:
+  open      Open a memory log on the ledger, owned by the wallet (for an agent identity with --agent, whose agent must be the wallet), and a local store for its atoms
+  remember  Record an atom in a log's local store. It reaches the ledger's commitment with the next `sion memory commit`
+  commit    Commit the local log's head to the ledger, with a proof that it extends the head the ledger holds
+  recall    Everything the log had recorded in a box during an interval, as of its committed head, with a proof checked against the index root the ledger holds
+  show      A log's head on the ledger and its local store
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Memory from the command line](../guides/memory.md).
+
+## `sion memory open`
+
+```text
+Open a memory log on the ledger, owned by the wallet (for an agent identity with --agent, whose agent must be the wallet), and a local store for its atoms
+
+Usage: sion memory open [OPTIONS] <WALLET>
+
+Arguments:
+  <WALLET>  The writer's wallet
+
+Options:
+      --agent <AGENT>  The agent identity the log belongs to (its id)
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help           Print help
+```
+
+## `sion memory remember`
+
+```text
+Record an atom in a log's local store. It reaches the ledger's commitment with the next `sion memory commit`
+
+Usage: sion memory remember [OPTIONS] <WALLET> <LOG> <SUBJECT> <PREDICATE> <VALUE>
+
+Arguments:
+  <WALLET>     The writer's wallet
+  <LOG>        The log (its id, or a unique prefix of it)
+  <SUBJECT>    What the statement is about, for example pallet-17
+  <PREDICATE>  The relation, for example at
+  <VALUE>      The value: true or false, an integer, @name for an entity, or text
+
+Options:
+      --kind <KIND>              observation, coverage, semantic, episodic, procedural, … [default: observation]
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --frame <FRAME>            The frame its place is in, for example warehouse-3
+      --at <AT>                  Its place in the frame, in millimetres: x,y,z
+      --size <SIZE>              Half the size of its box around `at`, in millimetres: dx,dy,dz
+      --from <FROM>              When it began to hold, in seconds since the Unix epoch (default: now)
+      --seconds <SECONDS>        For how many seconds it held (default: open-ended)
+      --confidence <CONFIDENCE>  Confidence, in thousandths [default: 1000]
+  -h, --help                     Print help
+```
+
+## `sion memory commit`
+
+```text
+Commit the local log's head to the ledger, with a proof that it extends the head the ledger holds
+
+Usage: sion memory commit [OPTIONS] <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet
+  <LOG>     The log (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --seal         Close the log for good
+  -h, --help         Print help
+```
+
+## `sion memory recall`
+
+```text
+Everything the log had recorded in a box during an interval, as of its committed head, with a proof checked against the index root the ledger holds
+
+Usage: sion memory recall [OPTIONS] --min <MIN> --max <MAX> --from <FROM> --until <UNTIL> <LOG> <FRAME>
+
+Arguments:
+  <LOG>    The log (its id, or a unique prefix of it)
+  <FRAME>  The frame, for example warehouse-3
+
+Options:
+      --min <MIN>      The box's lower corner, in millimetres: x,y,z
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --max <MAX>      The box's upper corner, in millimetres: x,y,z
+      --from <FROM>    The interval's start, in seconds since the Unix epoch
+      --until <UNTIL>  The interval's end, in seconds since the Unix epoch (exclusive)
+  -h, --help           Print help
+```
+
+## `sion memory show`
+
+```text
+A log's head on the ledger and its local store
+
+Usage: sion memory show [OPTIONS] <LOG>
+
+Arguments:
+  <LOG>  The log (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage`
+
+```text
+Storage deals: have data kept by a provider who proves every round that it still holds it, or provide storage and be paid for it
+
+Usage: sion storage [OPTIONS] <COMMAND>
+
+Commands:
+  prepare  Split a file into leaves and print the root a deal would commit to
+  post     Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
+  deals    List storage deals
+  show     One deal: its terms, its state and its provider's progress
+  accept   Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
+  prove    Prove the round under way for every deal you hold
+  settle   Collect for the rounds you proved
+  close    Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
+  serve    Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Storage from the command line](../guides/storage.md).
+
+## `sion storage prepare`
+
+```text
+Split a file into leaves and print the root a deal would commit to
+
+Usage: sion storage prepare [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  The file
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage post`
+
+```text
+Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
+
+Usage: sion storage post [OPTIONS] --price <PRICE> --rounds <ROUNDS> <FROM> <FILE>
+
+Arguments:
+  <FROM>  Your wallet (the client)
+  <FILE>  The file to have kept
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --price <PRICE>                  Paid per proven round (decimal USD)
+      --rounds <ROUNDS>                Rounds
+      --round-length <ROUND_LENGTH>    Pulses per round: a multiple of 8, from 8 to 100,000 [default: 16]
+      --collateral <COLLATERAL>        Collateral the provider must post (decimal USD). Default: the escrow, for a deal open to anyone (which must ask for some); none for a named provider
+      --challenges <CHALLENGES>        Leaves challenged per round (1 to 16) [default: 4]
+      --provider <PROVIDER>            The provider (wallet name or account); without it, anyone may accept
+      --accept-within <ACCEPT_WITHIN>  How many Pulses the deal stays open for acceptance [default: 200]
+      --locator <LOCATOR>              Where providers fetch the data: an https:// URL serving the file
+      --local                          Point providers at the file itself (file://<its path>): only a provider on this machine can fetch it, and the deal publishes the path
+  -h, --help                           Print help
+```
+
+## `sion storage deals`
+
+```text
+List storage deals
+
+Usage: sion storage deals [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --open         Only deals still open for acceptance
+  -h, --help         Print help
+```
+
+## `sion storage show`
+
+```text
+One deal: its terms, its state and its provider's progress
+
+Usage: sion storage show [OPTIONS] <DEAL>
+
+Arguments:
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage accept`
+
+```text
+Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
+
+Usage: sion storage accept [OPTIONS] <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --file <FILE>  Take the data from this file instead of the locator
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage prove`
+
+```text
+Prove the round under way for every deal you hold
+
+Usage: sion storage prove [OPTIONS] <FROM>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage settle`
+
+```text
+Collect for the rounds you proved
+
+Usage: sion storage settle [OPTIONS] <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage close`
+
+```text
+Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
+
+Usage: sion storage close [OPTIONS] <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage serve`
+
+```text
+Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
+
+Usage: sion storage serve [OPTIONS] <FROM>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+
+Options:
+      --min-price <MIN_PRICE>
+          Accept only deals paying at least this per round (decimal USD), and at least twice what proving a round costs in fees [default: 0.01]
+      --node <NODE>
+          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --max-collateral <MAX_COLLATERAL>
+          Accept only deals asking at most this collateral (decimal USD) [default: 10]
+      --max-total-collateral <MAX_TOTAL_COLLATERAL>
+          The most collateral at stake across all deals (decimal USD) [default: 100]
+      --max-mib <MAX_MIB>
+          Accept only data of at most this many MiB [default: 64]
+      --max-total-mib <MAX_TOTAL_MIB>
+          Keep at most this many MiB in all [default: 1024]
+      --max-duration <MAX_DURATION>
+          Accept only deals lasting at most this many Pulses [default: 100000]
+      --allow-local
+          Fetch file:// locators (a provider on the clients' machine)
+      --allow-private
+          Fetch from local and private network addresses
+      --pulses <PULSES>
+          Stop after this many Pulses
+  -h, --help
+          Print help
+```
+
 ## `sion market`
 
 ```text
@@ -647,7 +1546,7 @@ Options:
   -h, --help         Print help
 ```
 
-See [Payment streams](../concepts/payment-streams.md) and [Streams from the command line](../guides/streams.md).
+See [Streams from the command line](../guides/streams.md).
 
 ## `sion stream open`
 
@@ -670,8 +1569,6 @@ Options:
   -h, --help               Print help
 ```
 
-The chain's secret seed goes in `$SION_HOME/streams/<stream>.json`, with the position revealed so far. Building the chain costs one hash per step, once (about 0.4 s per million steps on a release build).
-
 ## `sion stream pay`
 
 ```text
@@ -687,8 +1584,6 @@ Options:
       --steps <STEPS>  Steps to pay [default: 1]
   -h, --help           Print help
 ```
-
-Writes the new position to disk before it prints the payment, so it never reveals the same position for two payments. A second line, `jump <index>:<path>`, follows when the payment is the first past a checkpoint.
 
 ## `sion stream jump`
 
@@ -722,8 +1617,6 @@ Options:
   -h, --help         Print help
 ```
 
-Without `--jump`, walks from the settled head down to the payment (for a settled payment) or from the payment down to the head (for an unsettled one): one hash per step in between. With `--jump`, at most the spacing plus 21 hashes.
-
 ## `sion stream settle`
 
 ```text
@@ -740,8 +1633,6 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
-
-Without `--jump`, a settlement covers at most 65,536 steps.
 
 ## `sion stream top-up`
 
@@ -881,7 +1772,7 @@ See [Verify as a light client](../getting-started/light-client.md).
 ## `sion demo`
 
 ```text
-Run a scripted demo: invoice, agents, market, receipts, x402, streams, censorship, light, staking or all
+Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
 
 Usage: sion demo [OPTIONS] [NAME]
 
@@ -894,12 +1785,7 @@ Options:
   -h, --help         Print help
 ```
 
-Demos: `invoice`, `agents`, `market`, `receipts`, `x402`, `streams`,
-`censorship`, `light`, `staking`, and `all`, which runs them in that order. With
-`--local`, the staking demo gets its own devnet with a standby validator
-and 24-Pulse epochs; the others share a default devnet. `sion demo light
---local` on its own fails, because its fresh devnet has no proven Pulse
-yet. See [Run the demos](../getting-started/demos.md).
+See [Run the demos](../getting-started/demos.md).
 
 ## `sion mcp`
 
@@ -996,4 +1882,3 @@ Options:
 ```
 
 See [Benchmarks](../guides/benchmarks.md).
-

@@ -125,6 +125,12 @@ impl DevnetArgs {
 enum Command {
     /// Run a devnet and serve its API.
     Devnet(DevnetArgs),
+    /// Collect validators' entries into a network's genesis file.
+    Genesis(sion_cli::network::GenesisArgs),
+    /// Run one validator of a network, in this process.
+    Node(sion_cli::network::NodeArgs),
+    /// Run a gateway of a network, in this process.
+    Gateway(sion_cli::network::GatewayArgs),
     /// Chain status.
     Status,
     /// Wallet keys.
@@ -234,6 +240,27 @@ enum Command {
     /// Agent Charters.
     #[command(subcommand)]
     Charter(CharterCommand),
+    /// Agent identities: register agents, launch subagents with their own
+    /// identities, suspend, resume and revoke whole subtrees.
+    #[command(subcommand)]
+    Agent(sion_cli::agents::AgentCommand),
+    /// Task Charters: escrow work whose acceptance rule is fixed when it is
+    /// posted; attest, submit and settle results; cancel.
+    #[command(subcommand)]
+    Task(sion_cli::tasks::TaskCommand),
+    /// Pooled stake: delegate to a validator without handing the stake
+    /// over, collect rewards, leave; set a validator's commission.
+    #[command(subcommand)]
+    Stake(sion_cli::stake::StakeCommand),
+    /// Memory logs for agents and robots: open a log, record atoms
+    /// locally, commit heads the ledger keeps append-only, and recall with
+    /// proofs of completeness.
+    #[command(subcommand)]
+    Memory(sion_cli::memory::MemoryCommand),
+    /// Storage deals: have data kept by a provider who proves every round
+    /// that it still holds it, or provide storage and be paid for it.
+    #[command(subcommand)]
+    Storage(sion_cli::storage::StorageCommand),
     /// Markets.
     #[command(subcommand)]
     Market(MarketCommand),
@@ -284,7 +311,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, market, receipts, x402, streams, censorship, light, staking or all.
+    /// Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -487,6 +514,10 @@ enum KeysCommand {
         /// Name.
         name: String,
     },
+    /// Generate a network validator's keys and its signed network record.
+    Validator(sion_cli::network::ValidatorKeysArgs),
+    /// Generate a network gateway's key.
+    Gateway(sion_cli::network::GatewayKeysArgs),
 }
 
 #[derive(Subcommand)]
@@ -748,11 +779,17 @@ fn run_devnet(args: &DevnetArgs) -> Result<(), CliError> {
 }
 
 fn run(cli: Cli) -> Result<(), CliError> {
-    if let Command::Devnet(args) = &cli.command {
-        return run_devnet(args);
+    match &cli.command {
+        Command::Devnet(args) => return run_devnet(args),
+        Command::Genesis(args) => return sion_cli::network::genesis(args).map(|_| ()),
+        Command::Node(args) => return sion_cli::network::run_node(args),
+        Command::Gateway(args) => return sion_cli::network::run_gateway(args),
+        _ => {}
     }
     if let Command::Keys(command) = &cli.command {
         return match command {
+            KeysCommand::Validator(args) => sion_cli::network::validator_keys(args).map(|_| ()),
+            KeysCommand::Gateway(args) => sion_cli::network::gateway_keys(args).map(|_| ()),
             KeysCommand::New { name } => {
                 let wallet = create_wallet(name)?;
                 println!("created {name}: account {}", wallet.id);
@@ -833,7 +870,13 @@ fn run(cli: Cli) -> Result<(), CliError> {
     // Show what each command signs, as a sentence (demos narrate instead).
     session.verbose = !matches!(cli.command, Command::Demo { .. });
     match cli.command {
-        Command::Devnet(_) | Command::Keys(_) | Command::Mcp | Command::Bench { .. } => {
+        Command::Devnet(_)
+        | Command::Genesis(_)
+        | Command::Node(_)
+        | Command::Gateway(_)
+        | Command::Keys(_)
+        | Command::Mcp
+        | Command::Bench { .. } => {
             unreachable!("handled above")
         }
         Command::X402(X402Command::Serve {
@@ -1195,6 +1238,11 @@ fn run(cli: Cli) -> Result<(), CliError> {
             )?;
             show_tx(&session.names(), &view);
         }
+        Command::Agent(command) => sion_cli::agents::run(&mut session, ledger, command)?,
+        Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
+        Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
+        Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
+        Command::Storage(command) => sion_cli::storage::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,
             agent,

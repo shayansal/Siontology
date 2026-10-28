@@ -10,6 +10,7 @@
 - [Your first transfer](getting-started/first-transfer.md)
 - [Verify as a light client](getting-started/light-client.md)
 - [Connect an AI agent over MCP](getting-started/mcp.md)
+- [The app: a light node on every device](getting-started/app.md)
 
 # Concepts
 
@@ -32,7 +33,11 @@
   - [Insurance](concepts/assurance/insurance.md)
 - [Verifiable Clearing](concepts/verifiable-clearing.md)
 - [Agent Charters](concepts/agent-charters.md)
+- [Agent identities and subagents](concepts/agent-identities.md)
 - [Payment streams](concepts/payment-streams.md)
+- [Memory for agents and robots](concepts/memory.md)
+- [Storage deals](concepts/storage.md)
+- [Task Charters](concepts/task-charters.md)
 - [Privacy](concepts/privacy.md)
 - [Post-quantum identity](concepts/post-quantum.md)
 - [Censorship resistance](concepts/censorship-resistance.md)
@@ -41,18 +46,25 @@
   - [Epochs and committees](concepts/validators/epochs.md)
   - [Rewards](concepts/validators/rewards.md)
   - [Slashing for equivocation](concepts/validators/equivocation-slashing.md)
+  - [Pooled stake](concepts/validators/pooled-stake.md)
 
 # Guides
 
 - [Running a devnet](guides/devnet.md)
+- [Running a network of processes](guides/network.md)
 - [Wallets and keys](guides/wallets.md)
 - [Transfers](guides/transfers.md)
 - [Issuing and assessing claims](guides/claims.md)
 - [Bonds and challenges](guides/bonds-and-challenges.md)
 - [Charters for AI agents](guides/charters.md)
+- [Agent identities from the command line](guides/agents.md)
+- [Task Charters from the command line](guides/tasks.md)
+- [Memory from the command line](guides/memory.md)
+- [Storage from the command line](guides/storage.md)
 - [Markets and clearing](guides/markets.md)
 - [Forced inclusion and the censorship demo](guides/forced-inclusion.md)
 - [Staking and epochs](guides/staking.md)
+- [Delegating stake](guides/delegation.md)
 - [x402: selling and buying an API](guides/x402.md)
 - [Streams from the command line](guides/streams.md)
 - [Light-client verification](guides/light-client.md)
@@ -88,6 +100,7 @@
 
 - [Research](research/index.md)
   - [Billions of payments a second](research/billion-scale.md)
+  - [Billions of agents](research/agent-scale.md)
   - [Succinct validity proofs](research/succinct-proofs.md)
   - [Networking between machines](research/networking.md)
 

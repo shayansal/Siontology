@@ -43,8 +43,9 @@ Every validator derives the committees from this object after every
 Pulse. Nothing about committees is configured:
 
 - The **consensus committee** is the active set. Each validator's weight is
-  its stake in whole units of the stake asset: 100,000 USD of stake is
-  weight 100,000.
+  its stake in whole units of the stake asset, its own plus its pool's
+  earning stake ([Pooled stake](validators/pooled-stake.md)): 100,000 USD
+  of its own and 5,000 USD delegated is weight 105,000.
 - Each shard's **lane committee** is `seats` validators drawn, by stake and
   without replacement, from the active set with the epoch's seed. Each
   member holds one seat. A shard that misses a forced-inclusion deadline
@@ -64,7 +65,7 @@ certifies.
 | Status | How it gets there | Holds a seat |
 |---|---|---|
 | Joining | `RegisterValidator`: stake plus a proof that the operator's validator holds its keys | No; at the next epoch boundary it becomes Active |
-| Active | The epoch boundary after joining (genesis validators start Active) | Yes, if its stake ranks among the top `max_active` |
+| Active | The epoch boundary after joining (genesis validators start Active) | Yes, if its own plus pooled earning stake ranks among the top `max_active` |
 | Leaving | `Unstake` while Active | Yes, until the next epoch boundary |
 | Exited | The boundary after Leaving (withdrawable `unbonding` Pulses later), or `Unstake` while Joining (withdrawable at once) | No |
 | Withdrawn | `WithdrawStake` after unbonding: stake and unclaimed rewards return to the operator | No |
@@ -79,6 +80,9 @@ The sub-chapters cover each step:
 - [Rewards](validators/rewards.md): how fees reach validators.
 - [Slashing for equivocation](validators/equivocation-slashing.md): the
   evidence, the penalty and the reporter's share.
+- [Pooled stake](validators/pooled-stake.md): delegating to a validator
+  without handing the stake over, the reward split, the commission and the
+  shared risk.
 
 ### The devnet's values
 
@@ -119,10 +123,12 @@ The guide [Staking and epochs](../guides/staking.md) walks through both.
   (`impl:reliable-handover`).
 - **Evidence is not bound to a chain or a time.** An operator must not use
   a validator's keys on more than one network (`impl:evidence-scope`).
-- **No command stakes yet.** The CLI, the HTTP API and the MCP server have
-  no command for `RegisterValidator`, `Unstake`, `WithdrawStake`,
-  `ClaimRewards` or `ReportEquivocation`. They are transaction kinds in the
-  Rust API (`sion_exec::TxKind`), and `sion demo staking` uses them.
+- **No command registers a validator yet.** The CLI, the HTTP API and the
+  MCP server have no command for `RegisterValidator`, `Unstake`,
+  `WithdrawStake`, `ClaimRewards` or `ReportEquivocation`. They are
+  transaction kinds in the Rust API (`sion_exec::TxKind`), and `sion demo
+  staking` uses them. Delegating has commands: `sion stake …`
+  ([Delegating stake](../guides/delegation.md)).
 - **Equivocation is reported by hand.** A validator that sees two headers
   from one author for one round logs it but does not submit the report;
   anyone holding the two signed messages can.

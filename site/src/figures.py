@@ -364,6 +364,69 @@ CODE.update({
         'Result: one uniform, certified-optimal price; a place in the batch is worth nothing, so there is nothing to front-run.'),
 })
 
+# Real output of the demos added with tasks, memory and storage.
+CODE.update({
+    'demo-tasks': ('sion demo tasks --local: real output',
+        '== Task Charters: paying for work only when the result passes a rule fixed in advance ==\n'
+        '           bonds: sandbox-vendor 5,000 USD behind its environment, arbiter 3,000, reviewers 1,000 each, coder 100\n'
+        'Pulse  17  sandbox-vendor claims "swe-sandbox-7 has no known exploit that passes grader g-3"  [backed by its 5,000 USD bond]\n'
+        'Pulse  19  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task\n'
+        'Pulse  22  the orchestrator posts task 7243db20: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on\n'
+        "           sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2\n"
+        'Pulse  24  …and task 0e88a347: a 40 USD bounty open to anyone, on the same terms\n'
+        '           coder submits patch-4711; reviewer-1 and reviewer-2 each attest that it passes, on their own bonds\n'
+        'Pulse  41  coder claims the 150 USD on its own 100 USD bond → refused by the ledger: invalid transaction: result not accepted: cost of corruption 90 (after detection discount 900/1000) is below κ·V = 300; only 100 of backing is unreserved; κ·V = 300 is needed\n'
+        'Pulse  43  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid 150 USD; 300 USD of that backing reserved for the lab\n'
+        'Pulse  46  coder settles again → refused by the ledger: invalid transaction: the task is not open: a task is paid once\n'
+        "Pulse  49  bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD\n"
+        'Pulse  54  the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab\n'
+        "Pulse  56  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim\n"
+        "Pulse  58  arbiter upholds it: the vendor's bond is slashed, and 4 claims fall: the environment's, and the 3 results resting on it, paid or not\n"
+        "           the lab is compensated 190 USD from the vendor's bond for the two results it paid for (lab +190 USD)\n"
+        '           red-team gets its deposit back and a share of the slashed bond: +2,505 USD, a bounty for the reward hack paid by the vendor'),
+    'demo-robots': ('sion demo robots --local: real output',
+        '== Memory for robots: a warehouse two robots share, kept append-only by the ledger ==\n'
+        '           fleet gives robot-alpha and robot-beta agent identities of their own\n'
+        '           each robot opens a memory log only it can append to, tied to its identity; the curator opens one too\n'
+        "Pulse  15  robot-alpha commits its log: pallet-17 seen in aisle 4. This Pulse is the observation's transaction time; the robot cannot backdate it\n"
+        'Pulse  17  robot-beta commits its log: aisle 4 scanned 10 s later, empty\n'
+        '           a reader asks robot-alpha for everything it recorded in aisle 4 during that minute: 1 atom, with a 263-byte proof checked against the head on the ledger\n'
+        '           and for aisle 9: 0 atoms, with a proof that it recorded nothing there\n'
+        'Pulse  19  robot-alpha tries to replace its observation with one in aisle 5: refused by the ledger: invalid transaction: the new head does not extend the log: invalid proof: equal sizes require equal roots\n'
+        "Pulse  23  the curator records that the two robots disagree, then refutes robot-alpha's observation\n"
+        '           a reader trusting the curator believes the observation refuted; one trusting only robot-alpha believes it accepted. Same evidence, two beliefs, each checked against the heads on the ledger\n'
+        'Pulse  25  robot-beta commits 2 more scans, with an index that leaves out its scan of aisle 4 (the ledger stores index roots without checking them)\n'
+        '           anyone holding that scan proves the omission from the head on the ledger alone, with a 517-byte fraud proof\n'
+        "Pulse  27  robot-alpha stores a camera frame encrypted under its memory space's key (readable: true), then forgets it by destroying the key (readable: false); the log still proves the frame existed\n"
+        'Pulse  29  fleet suspends robot-alpha; at Pulse 31 its next commit is refused by the ledger: charter caveat violated: charter suspended'),
+    'demo-storage': ('sion demo storage --local: real output',
+        "== Storage for agents: a robot's memory kept by devices it pays, proven every round ==\n"
+        "Pulse   7  robot-gamma commits 400 observations of a patrol; the head's manifest is the root of their archive (88 KiB, 23 leaves of at most 4 KiB)\n"
+        'Pulse   9  robot-gamma posts an open deal for the archive: 6 rounds of 16 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral\n'
+        'Pulse  11  and a deal for its camera footage (16 leaves) with the phone, on the same terms\n'
+        "           a laptop and a phone run providers: each fetches a deal's data from its locator in the background, checks it hashes to the deal's root, posts the collateral, then proves every round\n"
+        '           laptop: fetching deal 54fef09d from file://…/storage/robot-gamma/patrol-archive.bin\n'
+        '           phone:  fetching deal e6c488cb from file://…/storage/robot-gamma/camera.bin\n'
+        '           laptop: Pulse 16: Done: laptop accepted storage deal 54fef09d (custody record 1a9dc946); rounds start at Pulse 24; fee 0.0012 USD.\n'
+        '           phone:  Pulse 18: Done: phone accepted storage deal e6c488cb (custody record a86a1d8b); rounds start at Pulse 24; fee 0.0012 USD.\n'
+        '           the phone then quietly keeps only leaves 0 to 7 of the footage, to save space: the deal still pays it, as long as nobody asks for the rest\n'
+        '           round 0: the phone is asked for leaves [7, 0, 8, 11]; it lost 2 of them and cannot answer\n'
+        '           laptop: Pulse 28: Done: round 0 of storage deal 54fef09d proven; fee 0.0027 USD.\n'
+        '           round 1: the phone is asked for leaves [9, 0, 8, 5]; it lost 2 of them and cannot answer\n'
+        '           laptop: Pulse 43: Done: round 1 of storage deal 54fef09d proven; fee 0.0027 USD.\n'
+        '           round 2: the phone is asked for leaves [2, 2, 10, 6]; it lost 1 of them and cannot answer\n'
+        '           laptop: Pulse 58: Done: round 2 of storage deal 54fef09d proven; fee 0.0027 USD.\n'
+        'Pulse  74  robot-gamma closes the footage deal (abandoned): 3 round(s) missed; 3 USD of escrow back, 0 USD paid for what the phone proved, its collateral of 3 USD forfeited to the treasury\n'
+        '           laptop: Pulse 77: Done: round 3 of storage deal 54fef09d proven; fee 0.0027 USD.\n'
+        '           laptop: Pulse 79: Done: 2 USD paid for 4 proven round(s) of storage deal 54fef09d; fee 0.0011 USD.\n'
+        '           laptop: Pulse 90: Done: round 4 of storage deal 54fef09d proven; fee 0.0027 USD.\n'
+        '           laptop: Pulse 107: Done: round 5 of storage deal 54fef09d proven; fee 0.0027 USD.\n'
+        '           laptop: Pulse 122: Done: storage deal 54fef09d closed: 0 USD refunded, 1 USD paid, 3 USD of collateral returned, 0 USD forfeited, 0 round(s) missed; fee 0.0011 USD.\n'
+        '           the laptop proved 6 of 6 rounds (0 missed): paid 3 USD and its collateral returned; it kept the archive the whole time\n'
+        "           a reader checks two objects on the ledger: robot-gamma's memory head names manifest 86cfe894, and the deal the laptop proved commits to root 86cfe894: the memory the robot committed is the data that was kept\n"
+        '           what a proof shows: the provider could produce the challenged leaves during the round; not that it stores its own copy (no proof of replication)'),
+})
+
 
 # Pictograms for the use cases, drawn on a 32-unit grid in the diagram
 # vocabulary (brand/guidelines.md, Iconography): a diamond is an AI agent, a
@@ -397,4 +460,7 @@ ICONS = {
                    '<path d="M7 11h6M7 15h6" ' + _S + '/>'
                    '<rect x="19" y="8" width="10" height="19" rx="2.5" ' + _S + '/>'
                    '<path d="M21.5 18l2 2 3.5-4.5" ' + _S + '/>'),
+    'tasks': '<rect x="2" y="12" width="9" height="9" fill="currentColor"/><path d="M13 16.5h6M16.5 14l2.5 2.5-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="21" y="6" width="9" height="21" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M23 17l2 2 3.5-4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+    'memory': '<rect x="3" y="4" width="20" height="5" fill="currentColor"/><rect x="3" y="11" width="20" height="5" fill="currentColor"/><rect x="3" y="18" width="20" height="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 27h20" fill="none" stroke="currentColor" stroke-width="1.6"/><path class="pict-signal" d="M25 4l5 5M30 4l-5 5" fill="none" stroke-width="1.6"/>',
+    'storage': '<rect x="3" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="3" width="7" height="7" fill="currentColor"/><rect x="22" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="12.5" width="7" height="7" fill="currentColor"/><rect x="3" y="22" width="7" height="7" fill="currentColor"/><rect x="12.5" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/>',
 }

@@ -760,6 +760,173 @@ fn agent_charters_enforce_caveats_delegation_and_revocation() {
     assert!(chain.state.objects[&allotment].is_tombstone());
 }
 
+/// The (agent, allotment) pairs an output's events created, in order.
+fn spawned_agents(out: &PulseOutput) -> Vec<(ObjectId, ObjectId)> {
+    all_events(out)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::AgentSpawned {
+                agent, allotment, ..
+            } => Some((agent, allotment)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_agent_swarm_is_contained_and_stopped_from_any_ancestor() {
+    use sion_exec::charter::{card_commitment, Spawn};
+    let mut chain = Chain::new(
+        &["acme", "orchestrator", "w1", "w2", "s1", "vendor"],
+        10_000,
+        4,
+    );
+    let ids: Vec<AccountId> = ["orchestrator", "w1", "w2", "s1", "vendor"]
+        .iter()
+        .map(|n| chain.id(n))
+        .collect();
+    let (orchestrator, w1, w2, s1, vendor) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    let register = chain
+        .tx(
+            "acme",
+            TxKind::RegisterAgent {
+                agent: orchestrator,
+                card: card_commitment(b"orchestrator"),
+                caveats: charter_caveats(vendor),
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+        .unwrap();
+    let out = chain.pulse(vec![register.clone()]).unwrap();
+    assert_success(&out, &register);
+    let (root, root_allotment) = all_events(&out)
+        .into_iter()
+        .find_map(|e| match e {
+            Event::AgentRegistered {
+                agent, allotment, ..
+            } => Some((agent, allotment)),
+            _ => None,
+        })
+        .unwrap();
+
+    let spawn = |chain: &mut Chain, who: &str, parent, allotment, children: Vec<Spawn>| {
+        let input = reference(chain, &allotment);
+        chain
+            .tx_with(
+                who,
+                TxKind::SpawnAgents {
+                    charter: parent,
+                    children,
+                },
+                vec![input],
+            )
+            .unwrap()
+    };
+    // Window limits are carved like budgets: 100 + 50 of the root's 250,
+    // then 40 of w1's 100.
+    let child = |agent, budget: u64, window: u64| {
+        let mut caveats = charter_caveats(vendor);
+        caveats.max_per_window = units(window);
+        Spawn {
+            agent,
+            card: card_commitment(b"worker"),
+            caveats,
+            budget: units(budget),
+        }
+    };
+    let tx = spawn(
+        &mut chain,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![child(w1, 200, 100), child(w2, 100, 50)],
+    );
+    let out = chain.pulse(vec![tx.clone()]).unwrap();
+    assert_success(&out, &tx);
+    let workers = spawned_agents(&out);
+    let ((a, a_allotment), (b, b_allotment)) = (workers[0], workers[1]);
+    let tx = spawn(&mut chain, "w1", a, a_allotment, vec![child(s1, 50, 40)]);
+    let out = chain.pulse(vec![tx.clone()]).unwrap();
+    assert_success(&out, &tx);
+    let (s, s_allotment) = spawned_agents(&out)[0];
+
+    let pay = |chain: &mut Chain, who: &str, charter, allotment, amount: u64| {
+        let input = reference(chain, &allotment);
+        chain
+            .tx_with(
+                who,
+                TxKind::AgentPay {
+                    charter,
+                    payee: vendor,
+                    amount: units(amount),
+                    purpose: "a tool call".into(),
+                    evidence: None,
+                },
+                vec![input],
+            )
+            .unwrap()
+    };
+    // Siblings and a grandchild pay in the same Pulse: they write only their
+    // own allotments, so all of them execute.
+    let txs = vec![
+        pay(&mut chain, "w1", a, a_allotment, 10),
+        pay(&mut chain, "w2", b, b_allotment, 10),
+        pay(&mut chain, "s1", s, s_allotment, 10),
+    ];
+    let out = chain.pulse(txs.clone()).unwrap();
+    for tx in &txs {
+        assert_success(&out, tx);
+    }
+
+    // A suspension takes effect when it executes: a payment in the same
+    // Pulse runs first (owned transactions before contended ones); the next
+    // one fails, two levels down.
+    let suspend = chain
+        .tx("acme", TxKind::SuspendAgent { charter: root })
+        .unwrap();
+    let racing = pay(&mut chain, "s1", s, s_allotment, 1);
+    let out = chain.pulse(vec![suspend.clone(), racing.clone()]).unwrap();
+    assert_success(&out, &suspend);
+    assert_success(&out, &racing);
+    let stopped = pay(&mut chain, "s1", s, s_allotment, 1);
+    let out = chain.pulse(vec![stopped.clone()]).unwrap();
+    assert_failed(&out, &stopped, "suspended");
+    let resume = chain
+        .tx("acme", TxKind::ResumeAgent { charter: root })
+        .unwrap();
+    chain.pulse(vec![resume]).unwrap();
+    let again = pay(&mut chain, "s1", s, s_allotment, 1);
+    let out = chain.pulse(vec![again.clone()]).unwrap();
+    assert_success(&out, &again);
+
+    // The backer revokes w2, which it is not the principal of, and takes its
+    // unspent budget back.
+    let revoke = chain
+        .tx("acme", TxKind::RevokeCharter { charter: b })
+        .unwrap();
+    chain.pulse(vec![revoke]).unwrap();
+    let before = chain.balance("acme", &usd());
+    let reclaim = chain
+        .tx("acme", TxKind::ReclaimCharter { charter: b })
+        .unwrap();
+    let out = chain.pulse(vec![reclaim.clone()]).unwrap();
+    assert_success(&out, &reclaim);
+    assert_eq!(
+        chain.balance("acme", &usd()),
+        minus(plus(before, units(90)), reclaim.tx.fee),
+        "w2's 100 USD budget less its 10 USD payment"
+    );
+    match &chain.state.objects[&s].data {
+        ObjectData::Charter(c) => {
+            let identity = c.identity.as_ref().expect("an identity");
+            assert_eq!(identity.depth, 2);
+            assert_eq!(c.parent, Some(a));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn bounded_totals_split_into_single_writer_allotments() {
     let mut chain = Chain::new(&["manager", "w1", "w2", "shop"], 10_000, 2);
@@ -1423,8 +1590,11 @@ fn bounds_keep_user_chosen_numbers_far_from_overflow() {
     let (mut charter, mut allotment) = (root, root_allotment);
     let mut levels = vec![(charter, allotment)];
     for level in 1..=MAX_CHARTER_CHAIN as u64 {
-        // Each level keeps 5 USD and passes the rest down.
+        // Each level keeps 5 USD, and 5 USD of its window limit (which is
+        // carved like the budget), and passes the rest down.
         let passed = 5 * (MAX_CHARTER_CHAIN as u64 + 1 - level) + 10;
+        let mut narrower = caveats.clone();
+        narrower.max_per_window = minus(caveats.max_per_window, units(5 * level));
         let input = reference(&chain, &allotment);
         let delegate = chain
             .tx_with(
@@ -1432,7 +1602,7 @@ fn bounds_keep_user_chosen_numbers_far_from_overflow() {
                 TxKind::Delegate {
                     charter,
                     sub_agent: agent,
-                    caveats: caveats.clone(),
+                    caveats: narrower,
                     amount: units(passed),
                 },
                 vec![input],

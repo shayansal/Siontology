@@ -44,6 +44,7 @@ use sion_core::Amount;
 
 use crate::assurance::AssuranceDomain;
 use crate::claim::{claim_id, knowledge_leaf, ClaimBody, StoredClaim};
+use crate::delegation::{mul_div, DelegationBook, Join, REWARD_SCALE};
 use crate::error::ExecError;
 use crate::execute::{
     bond_owner, execute_transaction, Deferred, Event, ExecStatus, PulseContext, TxEffects,
@@ -668,6 +669,8 @@ struct Protocol {
     assurance: Option<(Object, AssuranceDomain, bool)>,
     treasury: Option<(Object, Treasury, bool)>,
     validators: Option<(Object, ValidatorSet, bool)>,
+    /// Not loaded yet, or loaded: `None` if no delegation created the book.
+    delegations: Option<Option<(Object, DelegationBook, bool)>>,
     forced: Option<(Object, ForcedObligations, bool)>,
     schedule: (Object, Schedule, bool),
     markets: BTreeMap<ObjectId, (Object, bool)>,
@@ -729,6 +732,36 @@ impl Protocol {
         let (_, set, dirty) = self.validators.as_mut().expect("loaded above");
         *dirty = true;
         Ok(set)
+    }
+
+    /// The validator set and the delegation book, if one exists.
+    fn staking<S: ObjectStore>(
+        &mut self,
+        run: &mut DeferredRun<'_, '_, S>,
+    ) -> Result<(&mut ValidatorSet, Option<&mut DelegationBook>), ExecError> {
+        self.validators(run)?;
+        if self.delegations.is_none() {
+            let loaded = match run.load(&well_known::delegations())? {
+                Some(object) => {
+                    let ObjectData::Delegations(book) = &object.data else {
+                        return Err(ExecError::Invalid("delegation book corrupted".into()));
+                    };
+                    let book = (**book).clone();
+                    Some((object, book, false))
+                }
+                None => None,
+            };
+            self.delegations = Some(loaded);
+        }
+        let (_, set, _) = self.validators.as_mut().expect("loaded above");
+        let book = match self.delegations.as_mut().expect("loaded above") {
+            Some((_, book, dirty)) => {
+                *dirty = true;
+                Some(book)
+            }
+            None => None,
+        };
+        Ok((set, book))
     }
 
     fn forced<S: ObjectStore>(
@@ -797,6 +830,10 @@ impl Protocol {
             object.data = ObjectData::Validators(Box::new(set));
             run.store(object);
         }
+        if let Some(Some((mut object, book, true))) = self.delegations {
+            object.data = ObjectData::Delegations(Box::new(book));
+            run.store(object);
+        }
         if let Some((mut object, obligations, true)) = self.forced {
             object.data = ObjectData::Forced(Box::new(obligations));
             run.store(object);
@@ -859,6 +896,7 @@ pub fn apply_deferred<S: ObjectStore>(
         assurance: None,
         treasury: None,
         validators: None,
+        delegations: None,
         forced: None,
         schedule: (schedule_object, schedule, false),
         markets: BTreeMap::new(),
@@ -1179,8 +1217,8 @@ pub fn apply_deferred<S: ObjectStore>(
                         .get(&AssetId::usd())
                         .copied()
                         .unwrap_or(Amount::ZERO);
-                    let set = protocol.validators(&mut run)?;
-                    let paid = end_epoch(set, ctx, collected)?;
+                    let (set, book) = protocol.staking(&mut run)?;
+                    let paid = end_epoch(set, book, ctx, collected)?;
                     let (epoch, active, next) = (set.epoch, set.active.len(), set.epoch_end());
                     let treasury = protocol.treasury(&mut run)?;
                     let entry = treasury
@@ -1219,7 +1257,42 @@ pub fn apply_deferred<S: ObjectStore>(
     }
 
     protocol.write_back(&mut run);
+    record_beacon(&mut run, ctx)?;
     Ok(outcome)
+}
+
+/// Records the beacon of a Pulse that is a multiple of
+/// [`crate::beacons::BEACON_INTERVAL`] in its slot (spec §6.3), last in the
+/// deferred phase.
+fn record_beacon<S: ObjectStore>(
+    run: &mut DeferredRun<'_, '_, S>,
+    ctx: &PulseContext,
+) -> Result<(), ExecError> {
+    let Some(slot) = crate::beacons::slot_of(ctx.pulse) else {
+        return Ok(());
+    };
+    let id = well_known::beacon(slot);
+    let data = ObjectData::Beacon(crate::beacons::BeaconRecord {
+        pulse: ctx.pulse,
+        beacon: ctx.beacon,
+    });
+    let object = match run.load(&id)? {
+        Some(mut object) => {
+            if !matches!(object.data, ObjectData::Beacon(_)) {
+                return Err(ExecError::Invalid("beacon record corrupted".into()));
+            }
+            object.data = data;
+            object
+        }
+        None => Object {
+            id,
+            version: Version(0),
+            owner: Owner::Shared(well_known::beacons_domain()),
+            data,
+        },
+    };
+    run.store(object);
+    Ok(())
 }
 
 /// Whether a forced intent may become an obligation: everything `prepare`
@@ -1381,9 +1454,11 @@ fn rotate(
 /// Returns the rewards paid (to be taken from the treasury).
 fn end_epoch(
     set: &mut ValidatorSet,
+    mut book: Option<&mut DelegationBook>,
     ctx: &PulseContext,
     collected: Amount,
 ) -> Result<Amount, ExecError> {
+    let overflow = || ExecError::Core(sion_core::CoreError::Overflow("pool rewards"));
     let gain = collected.saturating_sub(set.fees_mark);
     let pool = crate::validators::permille_of(gain, set.params.reward_permille);
     let total: u64 = set.active.iter().map(|(_, w)| *w).sum();
@@ -1399,8 +1474,56 @@ fn end_epoch(
             continue;
         }
         let share = share_of(pool, w, total);
-        record.rewards = record.rewards.checked_add(share)?;
+        // The pool's earning stake takes its proportional part, less the
+        // operator's commission, credited per earning share.
+        let mut operator = share;
+        if let Some(delegated) = book
+            .as_deref_mut()
+            .and_then(|b| b.pools.get_mut(&validator))
+        {
+            let earning = delegated.earning_value().ok_or_else(overflow)?;
+            if delegated.earning > 0 && earning > Amount::ZERO {
+                let part = mul_div(share.0, earning.0, record.stake.checked_add(earning)?.0)
+                    .ok_or_else(overflow)?;
+                let commission =
+                    crate::validators::permille_of(Amount(part), delegated.commission_permille);
+                let delegators = Amount(part).checked_sub(commission)?;
+                let credit =
+                    mul_div(delegators.0, REWARD_SCALE, delegated.earning).ok_or_else(overflow)?;
+                delegated.reward_per_share = delegated
+                    .reward_per_share
+                    .checked_add(credit)
+                    .ok_or_else(overflow)?;
+                delegated.rewards_held = delegated.rewards_held.checked_add(delegators)?;
+                operator = share.checked_sub(delegators)?;
+            }
+        }
+        record.rewards = record.rewards.checked_add(operator)?;
         paid = paid.checked_add(share)?;
+    }
+    // Delegations made this epoch join, from the accumulator after its
+    // rewards; commission changes take effect.
+    if let Some(book) = book.as_deref_mut() {
+        for delegated in book.pools.values_mut() {
+            if delegated.pending_delegations > 0 {
+                delegated.joins.insert(
+                    set.epoch,
+                    Join {
+                        reward_per_share: delegated.reward_per_share,
+                        waiting: delegated.pending_delegations,
+                    },
+                );
+            }
+            delegated.earning = delegated
+                .earning
+                .checked_add(delegated.pending)
+                .ok_or_else(overflow)?;
+            delegated.pending = 0;
+            delegated.pending_delegations = 0;
+            if let Some(next) = delegated.next_commission.take() {
+                delegated.commission_permille = next;
+            }
+        }
     }
     let unbonded = Pulse(ctx.pulse.0.saturating_add(set.params.unbonding));
     for record in set.validators.values_mut() {
@@ -1412,12 +1535,19 @@ fn end_epoch(
             other => other,
         };
     }
-    let mut candidates: Vec<(Amount, sion_core::ids::ValidatorId)> = set
+    // Validators rank by their own stake plus their pool's earning stake.
+    let mut candidates: Vec<(Amount, sion_core::ids::ValidatorId)> = Vec::new();
+    for record in set
         .validators
         .values()
         .filter(|r| r.status == ValidatorStatus::Active)
-        .map(|r| (r.stake, r.id))
-        .collect();
+    {
+        let pooled = match book.as_deref().and_then(|b| b.pools.get(&record.id)) {
+            Some(delegated) => delegated.earning_value().ok_or_else(overflow)?,
+            None => Amount::ZERO,
+        };
+        candidates.push((record.stake.checked_add(pooled)?, record.id));
+    }
     candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     candidates.truncate(usize::from(set.params.max_active.max(1)));
     let mut active: Vec<(sion_core::ids::ValidatorId, u64)> = candidates

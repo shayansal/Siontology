@@ -32,8 +32,9 @@ use sion_core::Amount;
 use sion_crypto::{
     validator_id, CommitteeEnvelope, DualKeypair, KemKeypair, Scheme, VALIDATOR_DOMAIN,
 };
-use sion_exec::charter::Caveats;
+use sion_exec::charter::{card_commitment, Caveats, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH};
 use sion_exec::claim::{claim_id, formulas, ClaimBody, Payload};
+use sion_exec::delegation::{Delegation, DelegationBook, DelegationState, Join, Pool};
 use sion_exec::execute::{bond_atom, registered_atom, Deferred, Event, ExecStatus};
 use sion_exec::market::{BatchStatus, Market, OrderTerms, Submission, SEALED_ORDER_DOMAIN};
 use sion_exec::object::{
@@ -125,6 +126,37 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::SettleStream { .. } => "SettleStream",
         TxKind::TopUpStream { .. } => "TopUpStream",
         TxKind::CloseStream { .. } => "CloseStream",
+        TxKind::RegisterAgent { .. } => "RegisterAgent",
+        TxKind::SpawnAgents { .. } => "SpawnAgents",
+        TxKind::SetAgentCard { .. } => "SetAgentCard",
+        TxKind::SuspendAgent { .. } => "SuspendAgent",
+        TxKind::ResumeAgent { .. } => "ResumeAgent",
+        TxKind::OpenMemory { agent: Some(_), .. } => "OpenMemory(agent)",
+        TxKind::OpenMemory { .. } => "OpenMemory",
+        TxKind::CommitMemory { .. } => "CommitMemory",
+        TxKind::PostTask {
+            charter: Some(_),
+            worker: Some(_),
+            ..
+        } => "PostTask(agent)",
+        TxKind::PostTask {
+            charter: Some(_), ..
+        } => "PostTask(agent, open)",
+        TxKind::PostTask { worker: None, .. } => "PostTask(open)",
+        TxKind::PostTask { .. } => "PostTask",
+        TxKind::SettleTask { .. } => "SettleTask",
+        TxKind::CancelTask { .. } => "CancelTask",
+        TxKind::DelegateStake { .. } => "DelegateStake",
+        TxKind::Undelegate => "Undelegate",
+        TxKind::WithdrawDelegation => "WithdrawDelegation",
+        TxKind::ClaimDelegatorRewards => "ClaimDelegatorRewards",
+        TxKind::SetCommission { .. } => "SetCommission",
+        TxKind::PostDeal { provider: None, .. } => "PostDeal(open)",
+        TxKind::PostDeal { .. } => "PostDeal",
+        TxKind::AcceptDeal { .. } => "AcceptDeal",
+        TxKind::ProveStorage { .. } => "ProveStorage",
+        TxKind::SettleDeal { .. } => "SettleDeal",
+        TxKind::CloseDeal { .. } => "CloseDeal",
     }
 }
 
@@ -498,6 +530,7 @@ impl Harness {
                                 _ => None,
                             });
                     if let Some(rewards) = rewards {
+                        check_pool_split(trace, &mut self.coverage);
                         let check = check_epoch_rewards(trace, rewards, self.epoch_balance);
                         self.epoch_balance = check.balance_after;
                         self.epochs += 1;
@@ -767,6 +800,181 @@ fn check_epoch_rewards(trace: &ChunkTrace, rewards: Amount, last_balance: Amount
         balance_after,
         gain,
         other_income: Amount(income.0 - gain.0),
+    }
+}
+
+/// The v1.11 split, checked against stack A's deferred phase from its
+/// witness and writes with plain integer arithmetic (a third reading of
+/// §6.3): each paid validator's pool takes `⌊share·e / (stake + e)⌋` of its
+/// share, less commission, credited per earning share; the operator keeps
+/// the rest; delegations made in the epoch join; commission changes take
+/// effect; validators rank by their own plus their pool's earning stake.
+fn check_pool_split(trace: &ChunkTrace, coverage: &mut BTreeSet<String>) {
+    let pulse = trace.statement.pulse.0;
+    let witnessed = |id: ObjectId| {
+        trace
+            .witness
+            .objects
+            .iter()
+            .find(|(entry, _, _)| *entry == id)
+            .and_then(|(_, object, _)| object.clone())
+            .map(|object| object.data)
+    };
+    let written = |id: ObjectId| {
+        trace
+            .writes
+            .iter()
+            .find(|object| object.id == id)
+            .map(|object| object.data.clone())
+    };
+    let Some(ObjectData::Delegations(before)) = witnessed(well_known::delegations()) else {
+        assert!(
+            written(well_known::delegations()).is_none(),
+            "pulse {pulse}: an epoch end writes no book it did not read"
+        );
+        return;
+    };
+    let Some(ObjectData::Delegations(after)) = written(well_known::delegations()) else {
+        panic!("pulse {pulse}: an epoch end writes the delegation book it read");
+    };
+    let Some(ObjectData::Validators(set)) = witnessed(well_known::validators()) else {
+        panic!("pulse {pulse}: an epoch end reads the validator set");
+    };
+    let Some(ObjectData::Validators(set_after)) = written(well_known::validators()) else {
+        panic!("pulse {pulse}: an epoch end writes the validator set");
+    };
+    let Some(ObjectData::Treasury(treasury)) = witnessed(well_known::treasury()) else {
+        panic!("pulse {pulse}: an epoch end reads the treasury");
+    };
+    let fees_in_phase: u128 = trace
+        .deferred_items
+        .iter()
+        .filter_map(|item| match item {
+            Deferred::Fee { asset, amount } if *asset == usd() => Some(amount.0),
+            _ => None,
+        })
+        .sum();
+    let collected = treasury.fees.get(&usd()).copied().unwrap_or(Amount::ZERO).0 + fees_in_phase;
+    let gain = collected.saturating_sub(set.fees_mark.0);
+    let reward_pool = gain * u128::from(set.params.reward_permille) / 1000;
+    let total: u128 = set
+        .active
+        .iter()
+        .map(|(_, weight)| u128::from(*weight))
+        .sum();
+    let earning_stake = |pool: &Pool| {
+        let shares = pool.earning + pool.pending + pool.unbonding;
+        (pool.earning * pool.value.0)
+            .checked_div(shares)
+            .unwrap_or(0)
+    };
+    let mut delegated: BTreeMap<ValidatorId, u128> = BTreeMap::new();
+    for (validator, weight) in &set.active {
+        let record = &set.validators[validator];
+        if !matches!(
+            record.status,
+            ValidatorStatus::Active | ValidatorStatus::Leaving
+        ) {
+            continue;
+        }
+        let share = reward_pool * u128::from(*weight) / total;
+        let to_pool = match before.pools.get(validator) {
+            Some(pool) if pool.earning > 0 && earning_stake(pool) > 0 => {
+                let e = earning_stake(pool);
+                let part = share * e / (record.stake.0 + e);
+                part - part * u128::from(pool.commission_permille) / 1000
+            }
+            _ => 0,
+        };
+        assert_eq!(
+            set_after.validators[validator].rewards.0,
+            record.rewards.0 + share - to_pool,
+            "pulse {pulse}: validator {validator} keeps its share less its pool's part"
+        );
+        if to_pool > 0 {
+            coverage.insert("epoch/pool-rewards-split".into());
+        }
+        delegated.insert(*validator, to_pool);
+    }
+    assert_eq!(
+        before.pools.keys().collect::<Vec<_>>(),
+        after.pools.keys().collect::<Vec<_>>(),
+        "pulse {pulse}: an epoch end adds or removes no pool"
+    );
+    for (validator, pool) in &before.pools {
+        let now = &after.pools[validator];
+        let credit = delegated.get(validator).copied().unwrap_or(0);
+        let per_share = if credit > 0 {
+            credit * 1_000_000_000_000 / pool.earning
+        } else {
+            0
+        };
+        assert_eq!(
+            now.reward_per_share,
+            pool.reward_per_share + per_share,
+            "pulse {pulse}: pool {validator}'s accumulator"
+        );
+        assert_eq!(now.rewards_held.0, pool.rewards_held.0 + credit);
+        assert_eq!(now.earning, pool.earning + pool.pending);
+        assert_eq!((now.pending, now.pending_delegations), (0, 0));
+        assert_eq!((now.value, now.unbonding), (pool.value, pool.unbonding));
+        let mut joins = pool.joins.clone();
+        if pool.pending_delegations > 0 {
+            joins.insert(
+                set.epoch,
+                Join {
+                    reward_per_share: now.reward_per_share,
+                    waiting: pool.pending_delegations,
+                },
+            );
+            coverage.insert("epoch/delegations-join".into());
+        }
+        assert_eq!(now.joins, joins, "pulse {pulse}: pool {validator}'s joins");
+        assert_eq!(
+            (now.commission_permille, now.next_commission),
+            (
+                pool.next_commission.unwrap_or(pool.commission_permille),
+                None
+            )
+        );
+        if pool.next_commission.is_some() {
+            coverage.insert("epoch/commission-takes-effect".into());
+        }
+    }
+    // The ranking: Active records after the epoch's status changes, by own
+    // stake plus the pool's earning stake after the joins.
+    let mut ranked: Vec<(u128, ValidatorId)> = set
+        .validators
+        .values()
+        .filter(|record| {
+            matches!(
+                record.status,
+                ValidatorStatus::Active | ValidatorStatus::Joining
+            )
+        })
+        .map(|record| {
+            let pooled = after.pools.get(&record.id).map(earning_stake).unwrap_or(0);
+            (record.stake.0 + pooled, record.id)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked.truncate(usize::from(set.params.max_active.max(1)));
+    let mut expected: Vec<(ValidatorId, u64)> = ranked
+        .into_iter()
+        .map(|(stake, id)| (id, sion_exec::validators::weight(Amount(stake))))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        set_after.active, expected,
+        "pulse {pulse}: the next active set"
+    );
+    if expected.iter().any(|(id, _)| {
+        after
+            .pools
+            .get(id)
+            .is_some_and(|pool| earning_stake(pool) > 0)
+    }) {
+        coverage.insert("epoch/pooled-stake-ranks".into());
     }
 }
 
@@ -2140,6 +2348,2156 @@ fn charters(chunk_size: usize) -> Harness {
 #[test]
 fn charters_create_pay_delegate_revoke_reclaim() {
     charters(1).summary("charters");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: agent identities (spec v1.8)
+// ---------------------------------------------------------------------------
+
+fn agent_registered(out: &PulseOutput, tx: &SignedTransaction) -> (ObjectId, ObjectId) {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::AgentRegistered {
+                    agent, allotment, ..
+                } => Some((*agent, *allotment)),
+                _ => None,
+            })
+        })
+        .expect("agent registered")
+}
+
+/// The (agent, allotment) pairs a spawn created, in order.
+fn agents_spawned(out: &PulseOutput, tx: &SignedTransaction) -> Vec<(ObjectId, ObjectId)> {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .map(|e| {
+            e.events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::AgentSpawned {
+                        agent, allotment, ..
+                    } => Some((*agent, *allotment)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn charter_state(h: &Harness, id: &ObjectId) -> sion_exec::charter::Charter {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Charter(charter) => charter.clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn spawn_child(agent: AccountId, caveats: Caveats, budget: Amount, card: &[u8]) -> Spawn {
+    Spawn {
+        agent,
+        card: card_commitment(card),
+        caveats,
+        budget,
+    }
+}
+
+fn spawn(
+    h: &mut Harness,
+    who: &str,
+    charter: ObjectId,
+    allotment: ObjectId,
+    children: Vec<Spawn>,
+) -> SignedTransaction {
+    let input = h.reference(&allotment);
+    h.tx_with(who, TxKind::SpawnAgents { charter, children }, vec![input])
+}
+
+fn agent_pay(
+    h: &mut Harness,
+    who: &str,
+    charter: ObjectId,
+    allotment: ObjectId,
+    payee: AccountId,
+    amount: Amount,
+) -> SignedTransaction {
+    let input = h.reference(&allotment);
+    h.tx_with(
+        who,
+        TxKind::AgentPay {
+            charter,
+            payee,
+            amount,
+            purpose: "a tool call".into(),
+            evidence: None,
+        },
+        vec![input],
+    )
+}
+
+fn agents(chunk_size: usize) -> Harness {
+    let mut h = Harness::new(
+        &[
+            "principal",
+            "orchestrator",
+            "worker-a",
+            "worker-b",
+            "sub-a",
+            "vendor",
+            "stranger",
+            "deep",
+        ],
+        10_000,
+        4,
+        chunk_size,
+    );
+    let (orchestrator, worker_a, worker_b, sub_a, vendor, deep) = (
+        h.id("orchestrator"),
+        h.id("worker-a"),
+        h.id("worker-b"),
+        h.id("sub-a"),
+        h.id("vendor"),
+        h.id("deep"),
+    );
+
+    // Registration, and a registration whose caveats have already expired.
+    let register = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card: card_commitment(b"orchestrator card v1"),
+            caveats: charter_caveats(vendor),
+            funding: units(1_000),
+            agent_bond: units(100),
+        },
+    );
+    let mut expired = charter_caveats(vendor);
+    expired.expires_at = Pulse(0);
+    let stillborn = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card: Hash32::ZERO,
+            caveats: expired,
+            funding: units(1),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![register.clone(), stillborn.clone()]);
+    expect(&out, &register, Outcome::Success);
+    expect(&out, &stillborn, Outcome::Failed);
+    let (root, root_allotment) = agent_registered(&out, &register);
+    let identity = charter_state(&h, &root).identity.expect("an identity");
+    assert_eq!(identity.depth, 0);
+    assert_eq!(identity.card, card_commitment(b"orchestrator card v1"));
+
+    // Spawning: widening caveats, budgets above the allotment, an empty and
+    // an oversized batch all fail; then two workers launch.
+    let mut wide = charter_caveats(vendor);
+    wide.max_per_payment = units(500);
+    let widening = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![spawn_child(worker_a, wide, units(10), b"a")],
+    );
+    let out = h.pulse(vec![widening.clone()]);
+    expect(&out, &widening, Outcome::Failed);
+    let greedy = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![
+            spawn_child(worker_a, charter_caveats(vendor), units(600), b"a"),
+            spawn_child(worker_b, charter_caveats(vendor), units(600), b"b"),
+        ],
+    );
+    let out = h.pulse(vec![greedy.clone()]);
+    expect(&out, &greedy, Outcome::Failed);
+    let empty = spawn(&mut h, "orchestrator", root, root_allotment, Vec::new());
+    let out = h.pulse(vec![empty.clone()]);
+    expect(&out, &empty, Outcome::Failed);
+    let oversized: Vec<Spawn> = (0..=MAX_SPAWN_BATCH)
+        .map(|i| {
+            spawn_child(
+                AccountId::derive(format!("swarm-{i}").as_bytes()),
+                charter_caveats(vendor),
+                Amount::ZERO,
+                b"swarm",
+            )
+        })
+        .collect();
+    let too_many = spawn(&mut h, "orchestrator", root, root_allotment, oversized);
+    let out = h.pulse(vec![too_many.clone()]);
+    expect(&out, &too_many, Outcome::Failed);
+
+    let mut leaf = charter_caveats(vendor);
+    leaf.max_per_payment = units(20);
+    leaf.max_per_window = units(40);
+    leaf.may_delegate = false;
+    let mut lead = charter_caveats(vendor);
+    lead.max_per_window = units(100);
+    // Window limits are carved too: two children asking for 200 of a
+    // 250 USD window between them fail, whatever their budgets.
+    let mut half = charter_caveats(vendor);
+    half.max_per_window = units(200);
+    let too_fast = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![
+            spawn_child(worker_a, half.clone(), units(1), b"a"),
+            spawn_child(worker_b, half, units(1), b"b"),
+        ],
+    );
+    let out = h.pulse(vec![too_fast.clone()]);
+    expect(&out, &too_fast, Outcome::Failed);
+    let workers = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![
+            spawn_child(worker_a, lead.clone(), units(200), b"worker-a card"),
+            spawn_child(worker_b, leaf.clone(), units(100), b"worker-b card"),
+        ],
+    );
+    let out = h.pulse(vec![workers.clone()]);
+    expect(&out, &workers, Outcome::Success);
+    let spawned = agents_spawned(&out, &workers);
+    assert_eq!(spawned.len(), 2);
+    let ((a, a_allotment), (b, b_allotment)) = (spawned[0], spawned[1]);
+    assert_eq!(charter_state(&h, &a).identity.unwrap().depth, 1);
+    assert_eq!(charter_state(&h, &a).parent, Some(root));
+
+    // A worker that may delegate launches its own subagent; one that may
+    // not, fails.
+    let subs = spawn(
+        &mut h,
+        "worker-a",
+        a,
+        a_allotment,
+        vec![spawn_child(sub_a, leaf.clone(), units(50), b"sub-a card")],
+    );
+    let barred = spawn(
+        &mut h,
+        "worker-b",
+        b,
+        b_allotment,
+        vec![spawn_child(sub_a, leaf.clone(), units(5), b"x")],
+    );
+    let out = h.pulse(vec![subs.clone(), barred.clone()]);
+    expect(&out, &subs, Outcome::Success);
+    expect(&out, &barred, Outcome::Failed);
+    let (sub, sub_allotment) = agents_spawned(&out, &subs)[0];
+    assert_eq!(charter_state(&h, &sub).identity.unwrap().depth, 2);
+    let paid = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(10));
+    let out = h.pulse(vec![paid.clone()]);
+    expect(&out, &paid, Outcome::Success);
+
+    // Cards: only the agent sets its own.
+    let card = h.tx(
+        "orchestrator",
+        TxKind::SetAgentCard {
+            charter: root,
+            card: card_commitment(b"orchestrator card v2"),
+        },
+    );
+    let forged_card = h.tx(
+        "stranger",
+        TxKind::SetAgentCard {
+            charter: root,
+            card: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![card.clone(), forged_card.clone()]);
+    expect(&out, &card, Outcome::Success);
+    expect(&out, &forged_card, Outcome::Failed);
+    assert_eq!(
+        charter_state(&h, &root).identity.unwrap().card,
+        card_commitment(b"orchestrator card v2")
+    );
+
+    // Suspension: a stranger may not; the orchestrator (worker-a's
+    // principal) may, and the whole subtree stops; the backer's second
+    // suspension keeps the first suspender; a suspended charter is not dead.
+    let stranger_suspends = h.tx("stranger", TxKind::SuspendAgent { charter: a });
+    let suspend = h.tx("orchestrator", TxKind::SuspendAgent { charter: a });
+    let out = h.pulse(vec![stranger_suspends.clone(), suspend.clone()]);
+    expect(&out, &stranger_suspends, Outcome::Failed);
+    expect(&out, &suspend, Outcome::Success);
+    let halted = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(1));
+    let halted_spawn = spawn(
+        &mut h,
+        "worker-a",
+        a,
+        a_allotment,
+        vec![spawn_child(sub_a, leaf.clone(), units(1), b"y")],
+    );
+    let again = h.tx("principal", TxKind::SuspendAgent { charter: a });
+    let reclaim_suspended = h.tx("orchestrator", TxKind::ReclaimCharter { charter: a });
+    let out = h.pulse(vec![
+        halted.clone(),
+        halted_spawn.clone(),
+        again.clone(),
+        reclaim_suspended.clone(),
+    ]);
+    expect(&out, &halted, Outcome::Failed);
+    expect(&out, &halted_spawn, Outcome::Failed);
+    expect(&out, &again, Outcome::Success);
+    expect(&out, &reclaim_suspended, Outcome::Failed);
+    assert_eq!(charter_state(&h, &a).suspended_by, Some(orchestrator));
+
+    // Resumption: neither the subagent nor a sibling may lift it; the backer
+    // may; resuming what is not suspended fails.
+    let by_sub = h.tx("sub-a", TxKind::ResumeAgent { charter: a });
+    let by_sibling = h.tx("worker-b", TxKind::ResumeAgent { charter: a });
+    let resume = h.tx("principal", TxKind::ResumeAgent { charter: a });
+    let out = h.pulse(vec![by_sub.clone(), by_sibling.clone(), resume.clone()]);
+    expect(&out, &by_sub, Outcome::Failed);
+    expect(&out, &by_sibling, Outcome::Failed);
+    expect(&out, &resume, Outcome::Success);
+    let twice = h.tx("principal", TxKind::ResumeAgent { charter: a });
+    let pays_again = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(1));
+    let out = h.pulse(vec![twice.clone(), pays_again.clone()]);
+    expect(&out, &twice, Outcome::Failed);
+    expect(&out, &pays_again, Outcome::Success);
+
+    // An ancestor two levels up suspends the grandchild directly; a
+    // suspension held by the backer is lifted only by the backer.
+    let by_grandparent = h.tx("orchestrator", TxKind::SuspendAgent { charter: sub });
+    let out = h.pulse(vec![by_grandparent.clone()]);
+    expect(&out, &by_grandparent, Outcome::Success);
+    let resume_own = h.tx("orchestrator", TxKind::ResumeAgent { charter: sub });
+    let out = h.pulse(vec![resume_own.clone()]);
+    expect(&out, &resume_own, Outcome::Success);
+    let by_backer = h.tx("principal", TxKind::SuspendAgent { charter: sub });
+    let out = h.pulse(vec![by_backer.clone()]);
+    expect(&out, &by_backer, Outcome::Success);
+    let not_theirs = h.tx("orchestrator", TxKind::ResumeAgent { charter: sub });
+    let backer_resumes = h.tx("principal", TxKind::ResumeAgent { charter: sub });
+    let out = h.pulse(vec![not_theirs.clone(), backer_resumes.clone()]);
+    expect(&out, &not_theirs, Outcome::Failed);
+    expect(&out, &backer_resumes, Outcome::Success);
+
+    // Revocation: the subagent retires itself; the backer revokes a worker
+    // it is not the principal of; a stranger may not revoke; a revoked
+    // charter's funds go back to the backer.
+    let retire = h.tx("sub-a", TxKind::RevokeCharter { charter: sub });
+    let stranger_revokes = h.tx("stranger", TxKind::RevokeCharter { charter: b });
+    let backer_revokes = h.tx("principal", TxKind::RevokeCharter { charter: b });
+    let out = h.pulse(vec![
+        retire.clone(),
+        stranger_revokes.clone(),
+        backer_revokes.clone(),
+    ]);
+    expect(&out, &retire, Outcome::Success);
+    expect(&out, &stranger_revokes, Outcome::Failed);
+    expect(&out, &backer_revokes, Outcome::Success);
+    let retired_pays = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(1));
+    let revoked_card = h.tx(
+        "worker-b",
+        TxKind::SetAgentCard {
+            charter: b,
+            card: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![retired_pays.clone(), revoked_card.clone()]);
+    expect(&out, &retired_pays, Outcome::Failed);
+    expect(&out, &revoked_card, Outcome::Failed);
+    let before = h.balance("principal", &usd());
+    let reclaim = h.tx("orchestrator", TxKind::ReclaimCharter { charter: b });
+    let out = h.pulse(vec![reclaim.clone()]);
+    expect(&out, &reclaim, Outcome::Success);
+    assert_eq!(
+        h.balance("principal", &usd()),
+        before.checked_add(units(100)).unwrap(),
+        "worker-b's whole budget goes back to the backer"
+    );
+
+    // A full batch of 64 subagents in one transaction.
+    let mut quiet = leaf.clone();
+    quiet.max_per_window = Amount::ZERO;
+    let swarm: Vec<Spawn> = (0..MAX_SPAWN_BATCH)
+        .map(|i| {
+            spawn_child(
+                AccountId::derive(format!("swarm-{i}").as_bytes()),
+                quiet.clone(),
+                cents(1),
+                b"swarm card",
+            )
+        })
+        .collect();
+    let launch = spawn(&mut h, "orchestrator", root, root_allotment, swarm);
+    let out = h.pulse(vec![launch.clone()]);
+    expect(&out, &launch, Outcome::Success);
+    assert_eq!(agents_spawned(&out, &launch).len(), MAX_SPAWN_BATCH);
+
+    // Depth: one account spawns itself generation after generation; the
+    // charter that is the sixteenth of its chain cannot spawn.
+    let register_deep = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: deep,
+            card: Hash32::ZERO,
+            caveats: charter_caveats(vendor),
+            funding: units(100),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![register_deep.clone()]);
+    let (mut current, mut current_allotment) = agent_registered(&out, &register_deep);
+    for generation in 1..MAX_CHARTER_CHAIN {
+        let tx = spawn(
+            &mut h,
+            "deep",
+            current,
+            current_allotment,
+            vec![spawn_child(
+                deep,
+                charter_caveats(vendor),
+                units(1),
+                b"deep",
+            )],
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Success);
+        (current, current_allotment) = agents_spawned(&out, &tx)[0];
+        assert_eq!(
+            usize::from(charter_state(&h, &current).identity.unwrap().depth),
+            generation
+        );
+    }
+    let too_deep = spawn(
+        &mut h,
+        "deep",
+        current,
+        current_allotment,
+        vec![spawn_child(
+            deep,
+            charter_caveats(vendor),
+            units(1),
+            b"deep",
+        )],
+    );
+    let out = h.pulse(vec![too_deep.clone()]);
+    expect(&out, &too_deep, Outcome::Failed);
+
+    h.assert_covered(&[
+        "RegisterAgent/ok",
+        "RegisterAgent/failed",
+        "SpawnAgents/ok",
+        "SpawnAgents/failed",
+        "SetAgentCard/ok",
+        "SetAgentCard/failed",
+        "SuspendAgent/ok",
+        "SuspendAgent/failed",
+        "ResumeAgent/ok",
+        "ResumeAgent/failed",
+        "RevokeCharter/ok",
+        "RevokeCharter/failed",
+        "ReclaimCharter/ok",
+        "ReclaimCharter/failed",
+        "AgentPay/ok",
+        "AgentPay/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn agents_register_spawn_suspend_resume_and_revoke() {
+    agents(1).summary("agents");
+}
+
+#[test]
+fn agents_many_transactions_per_chunk() {
+    agents(5).summary("agents (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: memory logs (spec v1.9)
+// ---------------------------------------------------------------------------
+
+/// The leaf hashes of a writer's first `n` atoms (the ledger sees only
+/// their Merkle roots, so any distinct hashes do).
+fn memory_leaves(writer: &str, n: u64) -> Vec<Hash32> {
+    (0..n)
+        .map(|i| sion_core::merkle::leaf_hash(format!("{writer} atom {i}").as_bytes()))
+        .collect()
+}
+
+fn memory_opened(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::MemoryOpened { log, .. } => Some(*log),
+                _ => None,
+            })
+        })
+        .expect("memory log opened")
+}
+
+fn memory_log(h: &Harness, id: &ObjectId) -> sion_exec::memory::MemoryLog {
+    match &h.chain.state.objects[id].data {
+        ObjectData::MemoryLog(log) => log.clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+/// A commit of `log` from its current size to `size`, over `leaves`, with
+/// an honest consistency proof.
+fn commit_memory(
+    h: &mut Harness,
+    who: &str,
+    log: ObjectId,
+    leaves: &[Hash32],
+    size: u64,
+    seal: bool,
+) -> SignedTransaction {
+    let old = memory_log(h, &log).size;
+    let new = &leaves[..size as usize];
+    let proof = sion_core::merkle::consistency_proof(new, old as usize).expect("a prefix");
+    let kind = TxKind::CommitMemory {
+        size,
+        root: sion_core::merkle::root(new),
+        index: hash_domain("test/index", &size.to_be_bytes()),
+        manifest: hash_domain("test/manifest", &size.to_be_bytes()),
+        proof,
+        seal,
+    };
+    let input = h.reference(&log);
+    h.tx_with(who, kind, vec![input])
+}
+
+/// A commit with an explicit head, for the failure cases.
+fn commit_head(
+    h: &mut Harness,
+    who: &str,
+    log: ObjectId,
+    size: u64,
+    root: Hash32,
+    proof: Vec<Hash32>,
+) -> SignedTransaction {
+    let input = h.reference(&log);
+    h.tx_with(
+        who,
+        TxKind::CommitMemory {
+            size,
+            root,
+            index: Hash32::ZERO,
+            manifest: Hash32::ZERO,
+            proof,
+            seal: false,
+        },
+        vec![input],
+    )
+}
+
+fn memory(chunk_size: usize) -> Harness {
+    let mut h = Harness::new(
+        &["robot", "principal", "agent", "stranger", "vendor"],
+        10_000,
+        4,
+        chunk_size,
+    );
+    let (agent, vendor) = (h.id("agent"), h.id("vendor"));
+    let leaves = memory_leaves("robot", 16);
+
+    // Opening: a plain log, and a second one to probe the empty head.
+    let open = h.tx(
+        "robot",
+        TxKind::OpenMemory {
+            agent: None,
+            policy: hash_domain("test/policy", b"warehouse"),
+        },
+    );
+    let open_second = h.tx(
+        "robot",
+        TxKind::OpenMemory {
+            agent: None,
+            policy: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![open.clone(), open_second.clone()]);
+    expect(&out, &open, Outcome::Success);
+    expect(&out, &open_second, Outcome::Success);
+    let log = memory_opened(&out, &open);
+    let second = memory_opened(&out, &open_second);
+    let opened = memory_log(&h, &log);
+    assert_eq!(opened.size, 0);
+    assert_eq!(opened.root, sion_core::merkle::empty_root());
+    assert_eq!(
+        h.chain.state.objects[&log].owner,
+        Owner::Account(h.id("robot"))
+    );
+
+    // Growing: 0 → 3 → 7, each with a consistency proof.
+    let first = commit_memory(&mut h, "robot", log, &leaves, 3, false);
+    let out = h.pulse(vec![first.clone()]);
+    expect(&out, &first, Outcome::Success);
+    let committed = memory_log(&h, &log);
+    assert_eq!((committed.size, committed.commits), (3, 1));
+    assert_eq!(committed.committed_at, Pulse(h.pulse_number()));
+    let grow = commit_memory(&mut h, "robot", log, &leaves, 7, false);
+    let out = h.pulse(vec![grow.clone()]);
+    expect(&out, &grow, Outcome::Success);
+    assert_eq!(
+        memory_log(&h, &log).root,
+        sion_core::merkle::root(&leaves[..7])
+    );
+
+    // A log only grows, along a proof: shrinking, rewriting at the same
+    // size, a proof for another log, an overlong proof, a missing input and
+    // an input that is not a log all fail.
+    let shrink = commit_head(
+        &mut h,
+        "robot",
+        log,
+        5,
+        sion_core::merkle::root(&leaves[..5]),
+        Vec::new(),
+    );
+    let out = h.pulse(vec![shrink.clone()]);
+    expect(&out, &shrink, Outcome::Failed);
+    let rewrite = commit_head(&mut h, "robot", log, 7, Hash32::ZERO, Vec::new());
+    let out = h.pulse(vec![rewrite.clone()]);
+    expect(&out, &rewrite, Outcome::Failed);
+    let other = memory_leaves("impostor", 9);
+    let forged = commit_head(
+        &mut h,
+        "robot",
+        log,
+        9,
+        sion_core::merkle::root(&other),
+        sion_core::merkle::consistency_proof(&other, 7).unwrap(),
+    );
+    let out = h.pulse(vec![forged.clone()]);
+    expect(&out, &forged, Outcome::Failed);
+    let overlong = commit_head(
+        &mut h,
+        "robot",
+        log,
+        9,
+        sion_core::merkle::root(&leaves[..9]),
+        vec![Hash32::ZERO; sion_exec::memory::MAX_CONSISTENCY_PROOF + 1],
+    );
+    let out = h.pulse(vec![overlong.clone()]);
+    expect(&out, &overlong, Outcome::Failed);
+    let no_log = h.tx(
+        "robot",
+        TxKind::CommitMemory {
+            size: 1,
+            root: leaves[0],
+            index: Hash32::ZERO,
+            manifest: Hash32::ZERO,
+            proof: Vec::new(),
+            seal: false,
+        },
+    );
+    let account = h.reference(&well_known::account(&h.id("robot")));
+    let not_a_log = h.tx_with(
+        "robot",
+        TxKind::CommitMemory {
+            size: 1,
+            root: leaves[0],
+            index: Hash32::ZERO,
+            manifest: Hash32::ZERO,
+            proof: Vec::new(),
+            seal: false,
+        },
+        vec![account],
+    );
+    let out = h.pulse(vec![no_log.clone(), not_a_log.clone()]);
+    expect(&out, &no_log, Outcome::Failed);
+    expect(&out, &not_a_log, Outcome::Failed);
+
+    // Only the writer commits: anyone else naming the log is rejected,
+    // because the log is the writer's owned object.
+    let foreign = commit_head(
+        &mut h,
+        "stranger",
+        log,
+        8,
+        sion_core::merkle::root(&leaves[..8]),
+        sion_core::merkle::consistency_proof(&leaves[..8], 7).unwrap(),
+    );
+    let out = h.pulse(vec![foreign.clone()]);
+    expect(&out, &foreign, Outcome::Rejected);
+
+    // Two heads for the same version, one Pulse: one executes, the other
+    // finds the version consumed. A log cannot fork.
+    let left = commit_memory(&mut h, "robot", log, &leaves, 8, false);
+    let right = commit_head(
+        &mut h,
+        "robot",
+        log,
+        8,
+        sion_core::merkle::root(&memory_leaves("fork", 8)),
+        Vec::new(),
+    );
+    let out = h.pulse(vec![left.clone(), right.clone()]);
+    let outcomes = [
+        outcome_of(&status_of(&out, &left)),
+        outcome_of(&status_of(&out, &right)),
+    ];
+    assert!(
+        outcomes.contains(&Outcome::Rejected),
+        "one of two forks must be rejected: {outcomes:?}"
+    );
+    h.chain.wallets.get_mut("robot").unwrap().settle();
+    let size_now = memory_log(&h, &log).size;
+    if size_now == 7 {
+        // The forged fork ran first and failed its proof: grow honestly.
+        let again = commit_memory(&mut h, "robot", log, &leaves, 8, false);
+        let out = h.pulse(vec![again.clone()]);
+        expect(&out, &again, Outcome::Success);
+    }
+    assert_eq!(
+        memory_log(&h, &log).root,
+        sion_core::merkle::root(&leaves[..8])
+    );
+
+    // A commit at the same size may move the index and manifest roots.
+    let reindex = commit_memory(&mut h, "robot", log, &leaves, 8, false);
+    let out = h.pulse(vec![reindex.clone()]);
+    expect(&out, &reindex, Outcome::Success);
+    assert_eq!(memory_log(&h, &log).size, 8);
+
+    // The empty head: an empty commit with the empty root succeeds, one
+    // with any other root fails.
+    let empty_wrong = commit_head(&mut h, "robot", second, 0, Hash32::ZERO, Vec::new());
+    let out = h.pulse(vec![empty_wrong.clone()]);
+    expect(&out, &empty_wrong, Outcome::Failed);
+    let empty_ok = commit_head(
+        &mut h,
+        "robot",
+        second,
+        0,
+        sion_core::merkle::empty_root(),
+        Vec::new(),
+    );
+    let out = h.pulse(vec![empty_ok.clone()]);
+    expect(&out, &empty_ok, Outcome::Success);
+    assert_eq!(memory_log(&h, &second).commits, 1);
+
+    // Sealing: the last commit seals the log, and nothing follows it.
+    let seal = commit_memory(&mut h, "robot", log, &leaves, 10, true);
+    let out = h.pulse(vec![seal.clone()]);
+    expect(&out, &seal, Outcome::Success);
+    assert!(memory_log(&h, &log).sealed);
+    let after_seal = commit_memory(&mut h, "robot", log, &leaves, 12, false);
+    let out = h.pulse(vec![after_seal.clone()]);
+    expect(&out, &after_seal, Outcome::Failed);
+
+    // An agent's log: only the agent opens it, only for an identity, and
+    // it stops growing while the agent is suspended or revoked.
+    let register = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent,
+            card: card_commitment(b"warehouse robot"),
+            caveats: charter_caveats(vendor),
+            funding: units(10),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let plain = h.tx(
+        "principal",
+        TxKind::CreateCharter {
+            agent,
+            caveats: charter_caveats(vendor),
+            funding: units(10),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![register.clone(), plain.clone()]);
+    expect(&out, &register, Outcome::Success);
+    expect(&out, &plain, Outcome::Success);
+    let (identity, _) = agent_registered(&out, &register);
+    let (no_identity, _) = charter_created(&out, &plain);
+    let open_agent = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let open_for_other = h.tx(
+        "stranger",
+        TxKind::OpenMemory {
+            agent: Some(identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let open_plain_charter = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(no_identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let open_not_charter = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(log),
+            policy: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![
+        open_agent.clone(),
+        open_for_other.clone(),
+        open_plain_charter.clone(),
+        open_not_charter.clone(),
+    ]);
+    expect(&out, &open_agent, Outcome::Success);
+    expect(&out, &open_for_other, Outcome::Failed);
+    expect(&out, &open_plain_charter, Outcome::Failed);
+    expect(&out, &open_not_charter, Outcome::Failed);
+    let agent_log = memory_opened(&out, &open_agent);
+    assert_eq!(memory_log(&h, &agent_log).agent, Some(identity));
+    let agent_leaves = memory_leaves("agent", 6);
+    let first = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 2, false);
+    let out = h.pulse(vec![first.clone()]);
+    expect(&out, &first, Outcome::Success);
+
+    let suspend = h.tx("principal", TxKind::SuspendAgent { charter: identity });
+    let out = h.pulse(vec![suspend.clone()]);
+    expect(&out, &suspend, Outcome::Success);
+    let while_suspended = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 4, false);
+    let out = h.pulse(vec![while_suspended.clone()]);
+    expect(&out, &while_suspended, Outcome::Failed);
+    let resume = h.tx("principal", TxKind::ResumeAgent { charter: identity });
+    let out = h.pulse(vec![resume.clone()]);
+    expect(&out, &resume, Outcome::Success);
+    let resumed = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 4, false);
+    let out = h.pulse(vec![resumed.clone()]);
+    expect(&out, &resumed, Outcome::Success);
+
+    let revoke = h.tx("principal", TxKind::RevokeCharter { charter: identity });
+    let out = h.pulse(vec![revoke.clone()]);
+    expect(&out, &revoke, Outcome::Success);
+    let after_revoke = commit_memory(&mut h, "agent", agent_log, &agent_leaves, 6, false);
+    let reopen = h.tx(
+        "agent",
+        TxKind::OpenMemory {
+            agent: Some(identity),
+            policy: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![after_revoke.clone(), reopen.clone()]);
+    expect(&out, &after_revoke, Outcome::Failed);
+    expect(&out, &reopen, Outcome::Failed);
+    assert_eq!(memory_log(&h, &agent_log).size, 4);
+
+    h.assert_covered(&[
+        "OpenMemory/ok",
+        "OpenMemory(agent)/ok",
+        "OpenMemory(agent)/failed",
+        "CommitMemory/ok",
+        "CommitMemory/failed",
+        "CommitMemory/rejected",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 12,
+        ..ProptestConfig::default()
+    })]
+
+    /// Random commits by two writers, each from its own leaves or the other
+    /// writer's, to random sizes: both stacks agree on every chunk, and a
+    /// commit succeeds exactly when it extends what the log already holds.
+    #[test]
+    fn random_memory_commits_are_verified_and_only_grow(
+        chunk_size in 1usize..4,
+        steps in proptest::collection::vec((0usize..2, 0u64..24, any::<bool>()), 1..10),
+    ) {
+        let mut h = Harness::new(&["writer-0", "writer-1"], 1_000, 2, chunk_size);
+        let leaves = [memory_leaves("writer-0", 24), memory_leaves("writer-1", 24)];
+        let opens: Vec<SignedTransaction> = (0..2)
+            .map(|w| {
+                h.tx(
+                    &format!("writer-{w}"),
+                    TxKind::OpenMemory { agent: None, policy: Hash32::ZERO },
+                )
+            })
+            .collect();
+        let out = h.pulse(opens.clone());
+        let logs: Vec<ObjectId> = opens.iter().map(|tx| memory_opened(&out, tx)).collect();
+        // What each log holds, as the model sees it.
+        let mut held: [Vec<Hash32>; 2] = [Vec::new(), Vec::new()];
+        for (writer, size, own) in steps {
+            let who = format!("writer-{writer}");
+            let log = logs[writer];
+            let current = held[writer].len();
+            let source = &leaves[if own { writer } else { 1 - writer }][..size as usize];
+            let proof = if size as usize >= current {
+                sion_core::merkle::consistency_proof(source, current).unwrap()
+            } else {
+                Vec::new()
+            };
+            let tx = commit_head(
+                &mut h,
+                &who,
+                log,
+                size,
+                sion_core::merkle::root(source),
+                proof,
+            );
+            let extends = size as usize >= current && source[..current] == held[writer][..];
+            let out = h.pulse(vec![tx.clone()]);
+            let outcome = outcome_of(&status_of(&out, &tx));
+            prop_assert_eq!(
+                outcome,
+                if extends { Outcome::Success } else { Outcome::Failed },
+                "{} from {} to {} ({})",
+                who,
+                current,
+                size,
+                if own { "own leaves" } else { "the other writer's" }
+            );
+            if extends {
+                held[writer] = source.to_vec();
+            }
+            let state = memory_log(&h, &log);
+            prop_assert_eq!(state.size, held[writer].len() as u64);
+            prop_assert_eq!(state.root, sion_core::merkle::root(&held[writer]));
+        }
+        prop_assert!(h.unread.is_empty(), "{:?}", h.unread);
+    }
+}
+
+#[test]
+fn memory_logs_open_grow_seal_and_follow_their_agent() {
+    memory(1).summary("memory");
+}
+
+#[test]
+fn memory_logs_many_transactions_per_chunk() {
+    memory(4).summary("memory (chunks of 4)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: Task Charters (spec v1.10)
+// ---------------------------------------------------------------------------
+
+fn task_posted(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::TaskPosted { task, .. } => Some(*task),
+                _ => None,
+            })
+        })
+        .expect("task posted")
+}
+
+fn task_state(h: &Harness, id: &ObjectId) -> sion_exec::task::Task {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Task(task) => (**task).clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn acceptance(
+    requires: &[ClaimId],
+    verifiers: &[AccountId],
+    adjudicator: sion_core::ids::AtomId,
+) -> sion_exec::task::Acceptance {
+    sion_exec::task::Acceptance {
+        policy: Policy::standard(),
+        requires: requires.iter().copied().collect(),
+        verifiers: verifiers.iter().copied().collect(),
+        adjudicator: Some(adjudicator),
+        detection_permille: 900,
+        reliance: 100,
+    }
+}
+
+/// A result or attestation body committing to `task` and `output`.
+fn task_claim(
+    schema: &str,
+    task: ObjectId,
+    output: &[u8],
+    formula: Formula,
+    adjudicator: sion_core::ids::AtomId,
+    detection_permille: u16,
+) -> ClaimBody {
+    ClaimBody {
+        schema: schema.into(),
+        subject: format!("work for task {}", task.0.short()),
+        payload: sion_exec::task::TaskResult {
+            task,
+            output: hash_domain("test/output", output),
+        }
+        .payload(),
+        formula,
+        adjudicator: Some(adjudicator),
+        detection_permille,
+        valid_for: 500,
+        challenge_period: 200,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn post_task(
+    h: &mut Harness,
+    who: &str,
+    acceptance: sion_exec::task::Acceptance,
+    worker: Option<AccountId>,
+    amount: Amount,
+    deadline: Pulse,
+    charter: Option<(ObjectId, ObjectId)>,
+) -> SignedTransaction {
+    let kind = TxKind::PostTask {
+        spec: hash_domain("test/spec", who.as_bytes()),
+        acceptance,
+        worker,
+        amount,
+        deadline,
+        charter: charter.map(|(c, _)| c),
+    };
+    match charter {
+        Some((_, allotment)) => {
+            let input = h.reference(&allotment);
+            h.tx_with(who, kind, vec![input])
+        }
+        None => h.tx(who, kind),
+    }
+}
+
+fn settle_task(
+    h: &mut Harness,
+    who: &str,
+    task: ObjectId,
+    result: &ClaimBody,
+    attestations: &[(&str, &ClaimBody)],
+) -> SignedTransaction {
+    let attestations = attestations
+        .iter()
+        .map(|(name, body)| (h.id(name), (*body).clone()))
+        .collect();
+    h.tx(
+        who,
+        TxKind::SettleTask {
+            task,
+            result: result.clone(),
+            attestations,
+        },
+    )
+}
+
+const TASK_NAMES: [&str; 11] = [
+    "lab",
+    "orchestrator",
+    "narrow",
+    "vendor",
+    "worker",
+    "hunter",
+    "verifier-1",
+    "verifier-2",
+    "judge",
+    "challenger",
+    "stranger",
+];
+
+fn tasks(chunk_size: usize) -> Harness {
+    use sion_exec::task::{result_formula, worker_bond, ATTESTATION_SCHEMA, RESULT_SCHEMA};
+
+    let mut h = Harness::new(&TASK_NAMES, 100_000, 8, chunk_size);
+    let id = |h: &Harness, name: &str| h.id(name);
+    let (orchestrator, narrow, worker, hunter) = (
+        id(&h, "orchestrator"),
+        id(&h, "narrow"),
+        id(&h, "worker"),
+        id(&h, "hunter"),
+    );
+    let (v1, v2) = (id(&h, "verifier-1"), id(&h, "verifier-2"));
+    let env_atom = bond_atom(AtomClass::Economic, &id(&h, "vendor"), "environment");
+    let judge_atom = bond_atom(AtomClass::Adjudicator, &id(&h, "judge"), "arbitration");
+    let verifier_atom = |who: &AccountId| bond_atom(AtomClass::Economic, who, "verifier");
+
+    // Bonds, and two agents: an orchestrator that may pay anyone, and one
+    // limited to paying the worker.
+    let bond = |h: &mut Harness, who: &str, class, label: &str, amount| {
+        h.tx(
+            who,
+            TxKind::PostBond {
+                class,
+                label: label.into(),
+                amount: units(amount),
+            },
+        )
+    };
+    let mut wide = charter_caveats(worker);
+    wide.payees = None;
+    wide.max_per_payment = units(500);
+    let register = |h: &mut Harness, agent: AccountId, caveats: Caveats| {
+        h.tx(
+            "lab",
+            TxKind::RegisterAgent {
+                agent,
+                card: card_commitment(b"agent"),
+                caveats,
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+    };
+    let txs = vec![
+        bond(&mut h, "vendor", AtomClass::Economic, "environment", 5_000),
+        bond(
+            &mut h,
+            "judge",
+            AtomClass::Adjudicator,
+            "arbitration",
+            3_000,
+        ),
+        bond(&mut h, "worker", AtomClass::Economic, "task-worker", 100),
+        // The bounty hunter's bond is nominal: its result rests on an
+        // attestation.
+        h.tx(
+            "hunter",
+            TxKind::PostBond {
+                class: AtomClass::Economic,
+                label: "task-worker".into(),
+                amount: Amount(1),
+            },
+        ),
+        bond(&mut h, "verifier-1", AtomClass::Economic, "verifier", 1_000),
+        bond(&mut h, "verifier-2", AtomClass::Economic, "verifier", 1_000),
+    ];
+    let reg_orchestrator = register(&mut h, orchestrator, wide);
+    let reg_narrow = register(&mut h, narrow, charter_caveats(worker));
+    let mut all = txs;
+    all.push(reg_orchestrator.clone());
+    all.push(reg_narrow.clone());
+    let out = h.pulse(all);
+    let orchestrator_agent = agent_registered(&out, &reg_orchestrator);
+    let narrow_agent = agent_registered(&out, &reg_narrow);
+
+    // The environment vendor's bonded claim that its environment has no
+    // known exploit passing its grader.
+    let environment = ClaimBody {
+        schema: "environment.no-known-exploit/v1".into(),
+        subject: "environment sandbox-7 has no known exploit passing grader g-3".into(),
+        payload: Payload::Commitment(hash_domain("test/environment", b"sandbox-7")),
+        formula: formulas::bonded_statement(env_atom.id),
+        adjudicator: Some(judge_atom.id),
+        detection_permille: 1000,
+        valid_for: 500,
+        challenge_period: 200,
+    };
+    let env_claim = claim_id(&id(&h, "vendor"), &environment);
+    let tx = h.tx("vendor", TxKind::IssueClaim { claim: environment });
+    h.pulse(vec![tx]);
+
+    let terms = |verifiers: &[AccountId]| acceptance(&[env_claim], verifiers, judge_atom.id);
+
+    // Posting: a direct task from the orchestrator's budget, and failures
+    // that change nothing but the fee.
+    let base = h.pulse_number();
+    let t1_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[v1, v2]),
+        Some(worker),
+        units(150),
+        Pulse(base + 60),
+        Some(orchestrator_agent),
+    );
+    let zero = post_task(
+        &mut h,
+        "lab",
+        terms(&[]),
+        Some(worker),
+        Amount::ZERO,
+        Pulse(base + 60),
+        None,
+    );
+    let past = post_task(
+        &mut h,
+        "lab",
+        terms(&[]),
+        Some(worker),
+        units(1),
+        Pulse(0),
+        None,
+    );
+    let mut reckless = terms(&[]);
+    reckless.reliance = 0;
+    let no_reliance = post_task(
+        &mut h,
+        "lab",
+        reckless,
+        Some(worker),
+        units(1),
+        Pulse(base + 9),
+        None,
+    );
+    let narrow_open = post_task(
+        &mut h,
+        "narrow",
+        terms(&[]),
+        None,
+        units(10),
+        Pulse(base + 9),
+        Some(narrow_agent),
+    );
+    let out = h.pulse(vec![
+        t1_tx.clone(),
+        zero.clone(),
+        past.clone(),
+        no_reliance.clone(),
+        narrow_open.clone(),
+    ]);
+    expect(&out, &t1_tx, Outcome::Success);
+    expect(&out, &zero, Outcome::Failed);
+    expect(&out, &past, Outcome::Failed);
+    expect(&out, &no_reliance, Outcome::Failed);
+    expect(&out, &narrow_open, Outcome::Failed);
+    let t1 = task_posted(&out, &t1_tx);
+    assert_eq!(task_state(&h, &t1).refund_to, id(&h, "lab"));
+    assert_eq!(task_state(&h, &t1).funder, Some(orchestrator_agent.0));
+
+    // An open bounty from the budget; one above the per-payment limit; one
+    // from an allotment that is not the poster's charter's.
+    let base = h.pulse_number();
+    let t2_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[v2]),
+        None,
+        units(40),
+        Pulse(base + 60),
+        Some(orchestrator_agent),
+    );
+    let mismatched = post_task(
+        &mut h,
+        "narrow",
+        terms(&[]),
+        Some(worker),
+        units(5),
+        Pulse(base + 9),
+        Some((orchestrator_agent.0, narrow_agent.1)),
+    );
+    let out = h.pulse(vec![t2_tx.clone(), mismatched.clone()]);
+    expect(&out, &t2_tx, Outcome::Success);
+    expect(&out, &mismatched, Outcome::Failed);
+    let t2 = task_posted(&out, &t2_tx);
+    let base = h.pulse_number();
+    let over_limit = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[]),
+        Some(worker),
+        units(600),
+        Pulse(base + 9),
+        Some(orchestrator_agent),
+    );
+    let out = h.pulse(vec![over_limit.clone()]);
+    expect(&out, &over_limit, Outcome::Failed);
+
+    // Attestations of the outputs, then results.
+    let attest = |task, output: &[u8], who: &AccountId| {
+        task_claim(
+            ATTESTATION_SCHEMA,
+            task,
+            output,
+            formulas::bonded_statement(verifier_atom(who).id),
+            judge_atom.id,
+            1000,
+        )
+    };
+    let a1 = attest(t1, b"t1 output", &v1);
+    let a2 = attest(t1, b"t1 output", &v2);
+    let a3 = attest(t2, b"t2 output", &v2);
+    let unnamed = attest(t2, b"t2 output", &v1);
+    let txs = vec![
+        h.tx("verifier-1", TxKind::IssueClaim { claim: a1.clone() }),
+        h.tx("verifier-2", TxKind::IssueClaim { claim: a2.clone() }),
+        h.tx("verifier-2", TxKind::IssueClaim { claim: a3.clone() }),
+        h.tx(
+            "verifier-1",
+            TxKind::IssueClaim {
+                claim: unnamed.clone(),
+            },
+        ),
+    ];
+    h.pulse(txs);
+    let (a1_id, a2_id, a3_id) = (claim_id(&v1, &a1), claim_id(&v2, &a2), claim_id(&v2, &a3));
+
+    let requires = task_state(&h, &t1).acceptance.requires.clone();
+    let result = |task, output: &[u8], formula| {
+        task_claim(RESULT_SCHEMA, task, output, formula, judge_atom.id, 900)
+    };
+    let good = result(
+        t1,
+        b"t1 output",
+        result_formula(&worker, &[a1_id, a2_id], &requires),
+    );
+    let without_environment = result(
+        t1,
+        b"t1 output",
+        result_formula(&worker, &[a1_id, a2_id], &BTreeSet::new()),
+    );
+    let bond_only = result(t1, b"t1 output", result_formula(&worker, &[], &requires));
+    let elsewhere = result(
+        t2,
+        b"t1 output",
+        result_formula(&worker, &[a1_id, a2_id], &requires),
+    );
+    let bounty = result(
+        t2,
+        b"t2 output",
+        result_formula(&hunter, &[a3_id], &requires),
+    );
+    assert!(h
+        .chain
+        .state
+        .registry()
+        .atom(&worker_bond(&hunter))
+        .is_some());
+    let txs = vec![
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: good.clone(),
+            },
+        ),
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: without_environment.clone(),
+            },
+        ),
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: bond_only.clone(),
+            },
+        ),
+        h.tx(
+            "worker",
+            TxKind::IssueClaim {
+                claim: elsewhere.clone(),
+            },
+        ),
+        h.tx(
+            "hunter",
+            TxKind::IssueClaim {
+                claim: bounty.clone(),
+            },
+        ),
+    ];
+    h.pulse(txs);
+
+    // Settling: every way a result can fail the rule fixed at posting.
+    let wrong_worker = settle_task(
+        &mut h,
+        "stranger",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let missing_environment = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &without_environment,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let too_weak = settle_task(&mut h, "worker", t1, &bond_only, &[]);
+    let other_task = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &elsewhere,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let unnamed_verifier = settle_task(&mut h, "hunter", t2, &bounty, &[("verifier-1", &unnamed)]);
+    let missing_attestation = settle_task(&mut h, "worker", t1, &good, &[("verifier-1", &a1)]);
+    let twice = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-1", &a1)],
+    );
+    let out = h.pulse(vec![
+        wrong_worker.clone(),
+        missing_environment.clone(),
+        too_weak.clone(),
+        other_task.clone(),
+        unnamed_verifier.clone(),
+        missing_attestation.clone(),
+        twice.clone(),
+    ]);
+    for (tx, why) in [
+        (&wrong_worker, "only the task's worker"),
+        (
+            &missing_environment,
+            "formula is not the one the task requires",
+        ),
+        (&too_weak, "not accepted"),
+        (&other_task, "does not commit to this task"),
+        (&unnamed_verifier, "verifier the task does not name"),
+        (
+            &missing_attestation,
+            "formula is not the one the task requires",
+        ),
+        (&twice, "one attestation per verifier"),
+    ] {
+        match status_of(&out, tx) {
+            ExecStatus::Failed(reason) => assert!(reason.contains(why), "{reason}"),
+            other => panic!("expected a failure ({why}), got {other:?}"),
+        }
+    }
+
+    // The honest settlement pays the worker once; a second one fails.
+    let before = h.balance("worker", &usd());
+    let settle = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let out = h.pulse(vec![settle.clone()]);
+    expect(&out, &settle, Outcome::Success);
+    let fee = out
+        .effects
+        .iter()
+        .find(|e| e.digest == settle.digest())
+        .map(|e| e.fee)
+        .unwrap();
+    assert_eq!(
+        h.balance("worker", &usd()),
+        before
+            .checked_add(units(150))
+            .unwrap()
+            .checked_sub(fee)
+            .unwrap()
+    );
+    assert!(matches!(
+        task_state(&h, &t1).state,
+        sion_exec::task::TaskState::Settled { .. }
+    ));
+    let again = settle_task(
+        &mut h,
+        "worker",
+        t1,
+        &good,
+        &[("verifier-1", &a1), ("verifier-2", &a2)],
+    );
+    let out = h.pulse(vec![again.clone()]);
+    expect(&out, &again, Outcome::Failed);
+
+    // An open bounty: anyone may settle it with an acceptable result, here
+    // a hunter with a nominal bond whose output a named verifier attested.
+    let hunted = settle_task(&mut h, "hunter", t2, &bounty, &[("verifier-2", &a3)]);
+    let out = h.pulse(vec![hunted.clone()]);
+    expect(&out, &hunted, Outcome::Success);
+
+    // Cancelling: a named worker can count on its task until the deadline;
+    // only it can release it. Open tasks can be withdrawn; expired ones
+    // refunded.
+    let base = h.pulse_number();
+    let t3_tx = post_task(
+        &mut h,
+        "lab",
+        terms(&[]),
+        Some(worker),
+        units(100),
+        Pulse(base + 30),
+        None,
+    );
+    let t4_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[]),
+        None,
+        units(30),
+        Pulse(base + 30),
+        Some(orchestrator_agent),
+    );
+    let out = h.pulse(vec![t3_tx.clone(), t4_tx.clone()]);
+    let (t3, t4) = (task_posted(&out, &t3_tx), task_posted(&out, &t4_tx));
+    let base = h.pulse_number();
+    let t5_tx = post_task(
+        &mut h,
+        "orchestrator",
+        terms(&[]),
+        Some(worker),
+        units(20),
+        Pulse(base + 2),
+        Some(orchestrator_agent),
+    );
+    let out = h.pulse(vec![t5_tx.clone()]);
+    let t5 = task_posted(&out, &t5_tx);
+    let lab_cancels = h.tx("lab", TxKind::CancelTask { task: t3 });
+    let stranger_cancels = h.tx("stranger", TxKind::CancelTask { task: t4 });
+    let out = h.pulse(vec![lab_cancels.clone(), stranger_cancels.clone()]);
+    expect(&out, &lab_cancels, Outcome::Failed);
+    expect(&out, &stranger_cancels, Outcome::Failed);
+    let lab_before = h.balance("lab", &usd());
+    let release = h.tx("worker", TxKind::CancelTask { task: t3 });
+    let withdraw = h.tx("orchestrator", TxKind::CancelTask { task: t4 });
+    let out = h.pulse(vec![release.clone(), withdraw.clone()]);
+    expect(&out, &release, Outcome::Success);
+    expect(&out, &withdraw, Outcome::Success);
+    assert_eq!(
+        h.balance("lab", &usd()),
+        lab_before.checked_add(units(130)).unwrap()
+    );
+    h.advance(3);
+    let late = settle_task(&mut h, "worker", t5, &bond_only, &[]);
+    let expire = h.tx("orchestrator", TxKind::CancelTask { task: t5 });
+    let settled_cancel = h.tx("orchestrator", TxKind::CancelTask { task: t1 });
+    let out = h.pulse(vec![late.clone(), expire.clone(), settled_cancel.clone()]);
+    expect(&out, &late, Outcome::Failed);
+    expect(&out, &expire, Outcome::Success);
+    expect(&out, &settled_cancel, Outcome::Failed);
+
+    // An exploit in the environment is proven: the vendor's bond is
+    // slashed, the environment claim and every result resting on it fall,
+    // and the lab, which relied on the paid result, is compensated.
+    let challenge = h.tx(
+        "challenger",
+        TxKind::Challenge {
+            claim: env_claim,
+            target: env_atom.id,
+            evidence: hash_domain("test/exploit", b"grader g-3 accepts an empty patch"),
+            deposit: units(100),
+        },
+    );
+    let out = h.pulse(vec![challenge.clone()]);
+    expect(&out, &challenge, Outcome::Success);
+    let opened = all_events(&out)
+        .into_iter()
+        .find_map(|event| match event {
+            Event::ChallengeOpened { challenge, .. } => Some(challenge),
+            _ => None,
+        })
+        .expect("challenge opened");
+    let lab_before = h.balance("lab", &usd());
+    let rule = h.tx(
+        "judge",
+        TxKind::Rule {
+            challenge: opened,
+            upheld: true,
+        },
+    );
+    let out = h.pulse(vec![rule.clone()]);
+    expect(&out, &rule, Outcome::Success);
+    let events = all_events(&out);
+    let good_id = claim_id(&worker, &good);
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Falsified { claim, .. } if *claim == good_id
+    )));
+    let compensated: Amount = Amount(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Compensated {
+                    consumer, amount, ..
+                } if *consumer == id(&h, "lab") => Some(amount.0),
+                _ => None,
+            })
+            .sum(),
+    );
+    assert_eq!(compensated, units(190));
+    assert_eq!(
+        h.balance("lab", &usd()),
+        lab_before.checked_add(compensated).unwrap()
+    );
+
+    h.assert_covered(&[
+        "PostTask/ok",
+        "PostTask/failed",
+        "PostTask(agent)/ok",
+        "PostTask(agent)/failed",
+        "PostTask(agent, open)/ok",
+        "PostTask(agent, open)/failed",
+        "SettleTask/ok",
+        "SettleTask/failed",
+        "CancelTask/ok",
+        "CancelTask/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn tasks_post_settle_once_cancel_and_compensate_an_exploit() {
+    tasks(1).summary("tasks");
+}
+
+#[test]
+fn tasks_many_transactions_per_chunk() {
+    tasks(5).summary("tasks (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: storage deals (spec v1.12)
+// ---------------------------------------------------------------------------
+
+const STORAGE_NAMES: [&str; 5] = ["client", "keeper", "lazy", "named", "stranger"];
+
+/// A body of data of `leaves` leaves (the last one short), distinct per
+/// `tag`.
+fn storage_data(tag: u8, leaves: usize) -> Vec<u8> {
+    let length = sion_exec::storage::MAX_LEAF_BYTES * (leaves - 1) + 100;
+    (0..length)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(tag))
+        .collect()
+}
+
+fn deal_posted(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::DealPosted { deal, .. } => Some(*deal),
+                _ => None,
+            })
+        })
+        .expect("deal posted")
+}
+
+fn deal_state(h: &Harness, id: &ObjectId) -> sion_exec::storage::Deal {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Deal(deal) => (**deal).clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn custody_of(h: &Harness, deal: &ObjectId) -> (ObjectId, sion_exec::storage::Custody) {
+    let sion_exec::storage::DealState::Active { custody, .. } = deal_state(h, deal).state else {
+        panic!("deal {deal} is not active");
+    };
+    match &h.chain.state.objects[&custody].data {
+        ObjectData::Custody(record) => (custody, record.clone()),
+        other => panic!("{custody} holds {other:?}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn post_deal(
+    h: &mut Harness,
+    client: &str,
+    data: &[u8],
+    challenges: u8,
+    price: Amount,
+    rounds: u32,
+    collateral: Amount,
+    provider: Option<AccountId>,
+) -> SignedTransaction {
+    let tree = sion_exec::storage::DataTree::of_data(data);
+    let accept_by = Pulse(h.pulse_number() + 20);
+    h.tx(
+        client,
+        TxKind::PostDeal {
+            root: tree.root(),
+            size: tree.size(),
+            challenges,
+            price,
+            rounds,
+            round_length: 8,
+            collateral,
+            provider,
+            accept_by,
+            locator: "https://example.org/data".into(),
+        },
+    )
+}
+
+/// The round under way in the next Pulse for `deal`'s custody record.
+fn next_round(h: &Harness, custody: &sion_exec::storage::Custody) -> u32 {
+    let next = h.pulse_number() + 1;
+    assert!(next >= custody.start.0, "the deal has not started");
+    ((next - custody.start.0) / custody.round_length) as u32
+}
+
+/// The beacon a round's challenge is drawn from: that of its first Pulse
+/// (the simulated chain's beacons are known in advance).
+fn round_beacon(custody: &sion_exec::storage::Custody, round: u32) -> Hash32 {
+    sion_exec::sim::sim_beacon(Pulse(
+        custody.start.0 + u64::from(round) * custody.round_length,
+    ))
+}
+
+/// The provider's honest answer to the round under way in the next Pulse.
+fn answer(
+    h: &Harness,
+    deal: &ObjectId,
+    data: &[u8],
+) -> (ObjectRef, sion_exec::storage::CustodyProof) {
+    let (custody_id, custody) = custody_of(h, deal);
+    let round = next_round(h, &custody);
+    let proof = sion_exec::storage::DataTree::of_data(data)
+        .answer(data, &custody, round, &round_beacon(&custody, round))
+        .expect("the provider holds the data");
+    (h.reference(&custody_id), proof)
+}
+
+/// The provider's honest answer from a custody record, whatever its deal's
+/// state.
+fn answer_record(
+    h: &Harness,
+    custody_id: &ObjectId,
+    data: &[u8],
+) -> (ObjectRef, sion_exec::storage::CustodyProof) {
+    let ObjectData::Custody(custody) = &h.chain.state.objects[custody_id].data else {
+        panic!("{custody_id} is not a custody record");
+    };
+    let round = next_round(h, custody);
+    let proof = sion_exec::storage::DataTree::of_data(data)
+        .answer(data, custody, round, &round_beacon(custody, round))
+        .expect("the provider holds the data");
+    (h.reference(custody_id), proof)
+}
+
+/// Advances so that the next Pulse is in round `round` of `deal`.
+fn advance_to_round(h: &mut Harness, deal: &ObjectId, round: u64) {
+    let (_, custody) = custody_of(h, deal);
+    let target = custody.start.0 + round * custody.round_length;
+    if h.pulse_number() + 1 < target {
+        h.advance_to(target - 1);
+    }
+}
+
+fn storage(chunk_size: usize) -> Harness {
+    use sion_exec::storage::{DealState, LeafProof, MAX_LOCATOR, MAX_PROOF_LEAVES};
+
+    let mut h = Harness::new(&STORAGE_NAMES, 100_000, 16, chunk_size);
+    let (keeper, lazy, named) = (h.id("keeper"), h.id("lazy"), h.id("named"));
+    let open_data = storage_data(1, 9);
+    let keeper_data = storage_data(2, 3);
+    let lazy_data = storage_data(3, 40);
+    let tiny_data = vec![42u8; 10];
+
+    // Posting: an open deal, one for the keeper, one for the lazy provider,
+    // one for a provider that never accepts, one nobody accepts.
+    let open = post_deal(
+        &mut h,
+        "client",
+        &open_data,
+        4,
+        units(10),
+        3,
+        units(30),
+        None,
+    );
+    let for_keeper = post_deal(
+        &mut h,
+        "client",
+        &keeper_data,
+        2,
+        units(7),
+        3,
+        units(9),
+        Some(keeper),
+    );
+    let for_lazy = post_deal(
+        &mut h,
+        "client",
+        &lazy_data,
+        3,
+        units(5),
+        8,
+        units(40),
+        Some(lazy),
+    );
+    let for_named = post_deal(
+        &mut h,
+        "client",
+        &tiny_data,
+        1,
+        units(1),
+        2,
+        Amount::ZERO,
+        Some(named),
+    );
+    let unwanted = post_deal(&mut h, "client", &tiny_data, 1, units(2), 2, units(1), None);
+    // Malformed terms fail: built honestly, then edited and signed again.
+    let edit = |h: &mut Harness, f: &dyn Fn(&mut TxKind)| {
+        let base = post_deal(h, "stranger", &tiny_data, 1, units(1), 1, units(1), None);
+        let mut body = base.tx.clone();
+        f(&mut body.kind);
+        h.resign("stranger", body)
+    };
+    let set = |field: &'static str| {
+        move |kind: &mut TxKind| {
+            let TxKind::PostDeal {
+                size,
+                challenges,
+                price,
+                rounds,
+                round_length,
+                collateral,
+                accept_by,
+                locator,
+                ..
+            } = kind
+            else {
+                unreachable!()
+            };
+            match field {
+                "size" => *size = 0,
+                "challenges" => *challenges = 17,
+                "price" => *price = Amount::ZERO,
+                "rounds" => *rounds = 0,
+                "round_length" => *round_length = 4,
+                "round_length_multiple" => *round_length = 12,
+                "round_length_long" => *round_length = 100_008,
+                "collateral" => *collateral = Amount::ZERO,
+                "accept_by" => *accept_by = Pulse(0),
+                "locator" => *locator = "x".repeat(MAX_LOCATOR + 1),
+                "overflow" => *price = Amount(u128::MAX / 2),
+                _ => unreachable!(),
+            }
+        }
+    };
+    let malformed: Vec<SignedTransaction> = [
+        "size",
+        "challenges",
+        "price",
+        "rounds",
+        "round_length",
+        "round_length_multiple",
+        "round_length_long",
+        "collateral",
+        "accept_by",
+        "locator",
+        "overflow",
+    ]
+    .iter()
+    .map(|field| edit(&mut h, &set(field)))
+    .collect();
+    let out = h.pulse(vec![
+        open.clone(),
+        for_keeper.clone(),
+        for_lazy.clone(),
+        for_named.clone(),
+        unwanted.clone(),
+    ]);
+    for tx in [&open, &for_keeper, &for_lazy, &for_named, &unwanted] {
+        expect(&out, tx, Outcome::Success);
+    }
+    let (open, for_keeper, for_lazy, for_named, unwanted) = (
+        deal_posted(&out, &open),
+        deal_posted(&out, &for_keeper),
+        deal_posted(&out, &for_lazy),
+        deal_posted(&out, &for_named),
+        deal_posted(&out, &unwanted),
+    );
+    // One malformed posting per Pulse: each builds on the same coins.
+    for tx in malformed {
+        h.settle();
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Failed);
+    }
+
+    // Accepting: a stranger cannot take a named deal; providers accept.
+    let stranger_takes = h.tx("stranger", TxKind::AcceptDeal { deal: for_keeper });
+    let out = h.pulse(vec![stranger_takes.clone()]);
+    expect(&out, &stranger_takes, Outcome::Failed);
+    let txs = vec![
+        h.tx("keeper", TxKind::AcceptDeal { deal: open }),
+        h.tx("keeper", TxKind::AcceptDeal { deal: for_keeper }),
+        h.tx("lazy", TxKind::AcceptDeal { deal: for_lazy }),
+        h.tx("named", TxKind::AcceptDeal { deal: for_named }),
+    ];
+    let out = h.pulse(txs.clone());
+    for tx in &txs {
+        expect(&out, tx, Outcome::Success);
+    }
+    let again = h.tx("stranger", TxKind::AcceptDeal { deal: open });
+    let out = h.pulse(vec![again.clone()]);
+    expect(&out, &again, Outcome::Failed);
+    assert!(matches!(
+        deal_state(&h, &open).state,
+        DealState::Active { provider, .. } if provider == keeper
+    ));
+
+    // Round 0: the keeper proves two deals in one transaction; the lazy
+    // provider proves its deal; the named provider proves its own.
+    advance_to_round(&mut h, &open, 0);
+    let (open_ref, open_proof) = answer(&h, &open, &open_data);
+    let (keeper_ref, keeper_proof) = answer(&h, &for_keeper, &keeper_data);
+    let (lazy_ref, lazy_proof) = answer(&h, &for_lazy, &lazy_data);
+    let (named_ref, named_proof) = answer(&h, &for_named, &tiny_data);
+    let both = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![open_proof.clone(), keeper_proof.clone()],
+        },
+        vec![open_ref, keeper_ref],
+    );
+    let lazy_once = h.tx_with(
+        "lazy",
+        TxKind::ProveStorage {
+            proofs: vec![lazy_proof],
+        },
+        vec![lazy_ref],
+    );
+    let named_once = h.tx_with(
+        "named",
+        TxKind::ProveStorage {
+            proofs: vec![named_proof],
+        },
+        vec![named_ref],
+    );
+    let out = h.pulse(vec![both.clone(), lazy_once.clone(), named_once.clone()]);
+    for tx in [&both, &lazy_once, &named_once] {
+        expect(&out, tx, Outcome::Success);
+    }
+    assert_eq!(custody_of(&h, &open).1.proven, 1);
+
+    // Bad proofs fail: a round proven twice, a tampered leaf, a wrong
+    // count, a future round, too many leaves in one transaction.
+    let (open_ref, mut proof) = answer(&h, &open, &open_data);
+    let twice = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![proof.clone()],
+        },
+        vec![open_ref],
+    );
+    let out = h.pulse(vec![twice.clone()]);
+    expect(&out, &twice, Outcome::Failed);
+    advance_to_round(&mut h, &open, 1);
+    let (open_ref, honest) = answer(&h, &open, &open_data);
+    proof = honest.clone();
+    proof.leaves[0].data[0] ^= 1;
+    let tampered = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![proof.clone()],
+        },
+        vec![open_ref],
+    );
+    let out = h.pulse(vec![tampered.clone()]);
+    expect(&out, &tampered, Outcome::Failed);
+    // An answer to the challenge the beacon of the proof's own Pulse would
+    // pick (what each proof chose before rounds took the beacon of their
+    // first Pulse) fails, unless it happens to pick the same leaves.
+    let (open_ref, honest) = answer(&h, &open, &open_data);
+    {
+        let (_, custody) = custody_of(&h, &open);
+        let own = sion_exec::sim::sim_beacon(Pulse(h.pulse_number() + 1));
+        let steered = sion_exec::storage::DataTree::of_data(&open_data)
+            .answer(&open_data, &custody, honest.round, &own)
+            .unwrap();
+        if steered.leaves != honest.leaves {
+            let tx = h.tx_with(
+                "keeper",
+                TxKind::ProveStorage {
+                    proofs: vec![steered],
+                },
+                vec![open_ref],
+            );
+            let out = h.pulse(vec![tx.clone()]);
+            expect(&out, &tx, Outcome::Failed);
+        }
+    }
+    let (open_ref, honest) = answer(&h, &open, &open_data);
+    let mut short = honest.clone();
+    short.leaves.pop();
+    let mut future = honest.clone();
+    future.round += 1;
+    let mut flood = honest.clone();
+    flood.leaves = vec![
+        LeafProof {
+            data: vec![0],
+            path: Vec::new(),
+        };
+        MAX_PROOF_LEAVES + 1
+    ];
+    for bad in [short, future, flood] {
+        let (open_ref, _) = answer(&h, &open, &open_data);
+        let tx = h.tx_with(
+            "keeper",
+            TxKind::ProveStorage { proofs: vec![bad] },
+            vec![open_ref],
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Failed);
+    }
+    let _ = open_ref;
+    // The keeper proves round 1 of the open deal only; its own deal's
+    // round 1 passes unproven.
+    let (open_ref, proof) = answer(&h, &open, &open_data);
+    let round_one = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![proof],
+        },
+        vec![open_ref],
+    );
+    let out = h.pulse(vec![round_one.clone()]);
+    expect(&out, &round_one, Outcome::Success);
+
+    // Settling: the keeper collects; nothing left to collect fails; the
+    // client cannot collect.
+    let settle = h.tx("keeper", TxKind::SettleDeal { deal: open });
+    let client_settles = h.tx("client", TxKind::SettleDeal { deal: for_keeper });
+    let out = h.pulse(vec![settle.clone(), client_settles.clone()]);
+    expect(&out, &settle, Outcome::Success);
+    expect(&out, &client_settles, Outcome::Failed);
+    let nothing = h.tx("keeper", TxKind::SettleDeal { deal: open });
+    let out = h.pulse(vec![nothing.clone()]);
+    expect(&out, &nothing, Outcome::Failed);
+
+    // The client cannot close an active deal early unless it is abandoned.
+    let early = h.tx("client", TxKind::CloseDeal { deal: for_lazy });
+    let out = h.pulse(vec![early.clone()]);
+    expect(&out, &early, Outcome::Failed);
+
+    // Round 2: the keeper proves both of its deals.
+    advance_to_round(&mut h, &open, 2);
+    let (open_ref, open_proof) = answer(&h, &open, &open_data);
+    let (keeper_ref, keeper_proof) = answer(&h, &for_keeper, &keeper_data);
+    let both = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![open_proof, keeper_proof],
+        },
+        vec![open_ref, keeper_ref],
+    );
+    let out = h.pulse(vec![both.clone()]);
+    expect(&out, &both, Outcome::Success);
+
+    // The lazy provider has proven nothing since round 0: from round 4 the
+    // client may close its deal, and its whole collateral is forfeited.
+    advance_to_round(&mut h, &for_lazy, 3);
+    let too_soon = h.tx("client", TxKind::CloseDeal { deal: for_lazy });
+    let out = h.pulse(vec![too_soon.clone()]);
+    expect(&out, &too_soon, Outcome::Failed);
+    advance_to_round(&mut h, &for_lazy, 4);
+    let lazy_custody = custody_of(&h, &for_lazy).0;
+    let treasury_before = match &h.chain.state.objects[&well_known::treasury()].data {
+        ObjectData::Treasury(t) => t.balances.get(&usd()).copied().unwrap_or(Amount::ZERO),
+        _ => unreachable!(),
+    };
+    let abandon = h.tx("client", TxKind::CloseDeal { deal: for_lazy });
+    let out = h.pulse(vec![abandon.clone()]);
+    expect(&out, &abandon, Outcome::Success);
+    assert!(all_events(&out).iter().any(|e| matches!(
+        e,
+        Event::DealClosed { forfeited, returned, paid, .. }
+            if *forfeited == units(40) && *returned == Amount::ZERO && *paid == units(5)
+    )));
+    let treasury_after = match &h.chain.state.objects[&well_known::treasury()].data {
+        ObjectData::Treasury(t) => t.balances.get(&usd()).copied().unwrap_or(Amount::ZERO),
+        _ => unreachable!(),
+    };
+    assert!(treasury_after.checked_sub(treasury_before).unwrap() >= units(40));
+    // Its custody record still takes a proof; the closed deal pays nothing.
+    let (lazy_ref, lazy_proof) = answer_record(&h, &lazy_custody, &lazy_data);
+    let after_close = h.tx_with(
+        "lazy",
+        TxKind::ProveStorage {
+            proofs: vec![lazy_proof],
+        },
+        vec![lazy_ref],
+    );
+    let lazy_settles = h.tx("lazy", TxKind::SettleDeal { deal: for_lazy });
+    let out = h.pulse(vec![after_close.clone(), lazy_settles.clone()]);
+    expect(&out, &after_close, Outcome::Success);
+    expect(&out, &lazy_settles, Outcome::Failed);
+
+    // The end: no proof after the last round; a stranger cannot close; the
+    // keeper closes its own deal (one round missed), the client the open
+    // one (all proven) and the named one (one round missed, no
+    // collateral); the client refunds the deal nobody accepted.
+    let end = deal_state(&h, &for_keeper).end().unwrap();
+    h.advance_to(end.0);
+    let (keeper_ref, mut late) = answer(&h, &open, &open_data);
+    late.round = 3;
+    let late_proof = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage { proofs: vec![late] },
+        vec![keeper_ref],
+    );
+    let stranger_closes = h.tx("stranger", TxKind::CloseDeal { deal: open });
+    let out = h.pulse(vec![late_proof.clone(), stranger_closes.clone()]);
+    expect(&out, &late_proof, Outcome::Failed);
+    expect(&out, &stranger_closes, Outcome::Failed);
+    let closes = vec![
+        h.tx("keeper", TxKind::CloseDeal { deal: for_keeper }),
+        h.tx("client", TxKind::CloseDeal { deal: open }),
+        h.tx("client", TxKind::CloseDeal { deal: for_named }),
+        h.tx("client", TxKind::CloseDeal { deal: unwanted }),
+    ];
+    let out = h.pulse(closes.clone());
+    for tx in &closes {
+        expect(&out, tx, Outcome::Success);
+    }
+    let closed: Vec<(Amount, Amount, Amount, Amount, u32)> = all_events(&out)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::DealClosed {
+                refund,
+                paid,
+                returned,
+                forfeited,
+                missed,
+                ..
+            } => Some((refund, paid, returned, forfeited, missed)),
+            _ => None,
+        })
+        .collect();
+    assert!(closed.contains(&(units(7), units(14), units(6), units(3), 1)));
+    assert!(closed.contains(&(Amount::ZERO, units(10), units(30), Amount::ZERO, 0)));
+    assert!(closed.contains(&(units(4), Amount::ZERO, Amount::ZERO, Amount::ZERO, 0)));
+    let reclose = h.tx("client", TxKind::CloseDeal { deal: unwanted });
+    let named_late = h.tx("named", TxKind::AcceptDeal { deal: unwanted });
+    let out = h.pulse(vec![reclose.clone(), named_late.clone()]);
+    expect(&out, &reclose, Outcome::Failed);
+    expect(&out, &named_late, Outcome::Failed);
+
+    h.assert_covered(&[
+        "PostDeal/ok",
+        "PostDeal(open)/ok",
+        "PostDeal(open)/failed",
+        "AcceptDeal/ok",
+        "AcceptDeal/failed",
+        "ProveStorage/ok",
+        "ProveStorage/failed",
+        "SettleDeal/ok",
+        "SettleDeal/failed",
+        "CloseDeal/ok",
+        "CloseDeal/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn storage_deals_post_accept_prove_settle_and_close() {
+    storage(1).summary("storage deals");
+}
+
+#[test]
+fn storage_deals_many_transactions_per_chunk() {
+    storage(4).summary("storage deals (chunks of 4)");
 }
 
 // ---------------------------------------------------------------------------
@@ -3853,12 +6211,15 @@ fn probe_delegation_chain_depth_limit() {
     for depth in 1..=18u64 {
         let (charter, allotment) = *chain.last().unwrap();
         let input = h.reference(&allotment);
+        // Each level keeps 5 USD of its window limit (carved like budgets).
+        let mut narrower = caveats.clone();
+        narrower.max_per_window = Amount(caveats.max_per_window.0 - units(5 * depth).0);
         let delegate = h.tx_with(
             "agent",
             TxKind::Delegate {
                 charter,
                 sub_agent: agent,
-                caveats: caveats.clone(),
+                caveats: narrower,
                 amount: units(1_000 - 50 * depth),
             },
             vec![input],
@@ -4932,13 +7293,15 @@ fn probe_charter_boundaries_and_attenuation() {
 
     // Attenuation, one dimension at a time.
     let parent = base.clone();
+    // Window limits are carved out of the parent's (v1.8), so the probes
+    // that should pass ask for none of it; "identical" takes all of it last.
     let narrower = |change: fn(&mut Caveats)| {
         let mut caveats = parent.clone();
+        caveats.max_per_window = Amount::ZERO;
         change(&mut caveats);
         caveats
     };
     let delegations: Vec<(&str, Caveats, Outcome)> = vec![
-        ("identical", parent.clone(), Outcome::Success),
         ("any payee", narrower(|c| c.payees = None), Outcome::Failed),
         (
             "more payees",
@@ -5003,6 +7366,12 @@ fn probe_charter_boundaries_and_attenuation() {
             "no delegation",
             narrower(|c| c.may_delegate = false),
             Outcome::Success,
+        ),
+        ("identical", parent.clone(), Outcome::Success),
+        (
+            "window allowance exhausted",
+            narrower(|c| c.max_per_window = Amount(1)),
+            Outcome::Failed,
         ),
     ];
     let mut parent_with_receipts = parent.clone();
@@ -5545,13 +7914,16 @@ fn stack_a_bounds_scenario_verifies() {
     let mut levels = vec![(charter, allotment)];
     for level in 1..=MAX_CHARTER_CHAIN as u64 {
         let passed = 5 * (MAX_CHARTER_CHAIN as u64 + 1 - level) + 10;
+        // Each level keeps 5 USD of its window limit (carved like budgets).
+        let mut narrower = caveats.clone();
+        narrower.max_per_window = Amount(caveats.max_per_window.0 - units(5 * level).0);
         let input = h.reference(&allotment);
         let delegate = h.tx_with(
             "agent",
             TxKind::Delegate {
                 charter,
                 sub_agent: agent,
-                caveats: caveats.clone(),
+                caveats: narrower,
                 amount: units(passed),
             },
             vec![input],
@@ -8589,4 +10961,858 @@ fn probe_fees_across_epochs() {
         "epoch/non-fee-income-kept",
     ]);
     h.assert_minimal_witnesses();
+}
+
+// ---------------------------------------------------------------------------
+// Scenario (v1.11): pooled stake
+// ---------------------------------------------------------------------------
+
+fn delegation_made(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::Delegated { delegation, .. } => Some(*delegation),
+                _ => None,
+            })
+        })
+        .expect("delegation made")
+}
+
+fn delegation_of(h: &Harness, id: &ObjectId) -> Delegation {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Delegation(delegation) => delegation.clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn delegation_book(h: &Harness) -> Option<DelegationBook> {
+    match h.chain.state.objects.get(&well_known::delegations()) {
+        None => None,
+        Some(Object {
+            data: ObjectData::Delegations(book),
+            ..
+        }) => Some((**book).clone()),
+        Some(other) => panic!("the delegation book object holds {other:?}"),
+    }
+}
+
+fn pool_of(h: &Harness, validator: &ValidatorId) -> Pool {
+    delegation_book(h)
+        .and_then(|book| book.pools.get(validator).cloned())
+        .unwrap_or_default()
+}
+
+fn delegate(
+    h: &mut Harness,
+    name: &str,
+    validator: ValidatorId,
+    amount: Amount,
+) -> SignedTransaction {
+    h.tx(name, TxKind::DelegateStake { validator, amount })
+}
+
+/// `name`'s transaction of `kind` on `delegation` (its second input).
+fn on_delegation(
+    h: &mut Harness,
+    name: &str,
+    kind: TxKind,
+    delegation: &ObjectId,
+) -> SignedTransaction {
+    let reference = h.reference(delegation);
+    h.tx_with(name, kind, vec![reference])
+}
+
+/// The event a transaction emitted, by name.
+fn event_of(out: &PulseOutput, tx: &SignedTransaction, name: &str) -> Event {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| e.events.iter().find(|event| event_name(event) == name))
+        .cloned()
+        .unwrap_or_else(|| panic!("no {name} event"))
+}
+
+/// What an earning delegation is owed now, from the pool's accumulator.
+fn owed_now(h: &Harness, delegation: &ObjectId) -> u128 {
+    let d = delegation_of(h, delegation);
+    let pool = pool_of(h, &d.validator);
+    let entry = match d.state {
+        DelegationState::Earning { entry } => entry,
+        DelegationState::Pending { epoch } => pool.joins[&epoch].reward_per_share,
+        DelegationState::Unbonding { .. } => panic!("unbonding"),
+    };
+    d.shares * (pool.reward_per_share - entry) / 1_000_000_000_000
+}
+
+fn pooled_stake(chunk_size: usize) -> Harness {
+    let mut h = Harness::with_params(
+        &["alice", "bob", "carol", "dave", "erin", "vic"],
+        400_000,
+        8,
+        chunk_size,
+        validator_params(4),
+        forced_params(3, 8),
+    );
+    let genesis = h.genesis_validators();
+    let ids: Vec<ValidatorId> = genesis.iter().map(|(_, id)| *id).collect();
+    let (g0, g1, g2) = (ids[0], ids[1], ids[2]);
+    let vic_keys = pool_keys(3);
+    let v = key_id(vic_keys);
+    let nobody = ValidatorId::derive(b"no such validator");
+
+    // Pulse 1: the faucet, which operates the genesis validators, gets gas.
+    h.fund(&[
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+        (FAUCET_NAME, usd(), units(1_000)),
+    ]);
+    assert!(delegation_book(&h).is_none(), "no book before a delegation");
+
+    // Pulse 2: a commission on a pool nobody has joined may jump to any
+    // value up to the ceiling; it creates the book. Above the ceiling, by
+    // someone else or for an unknown validator, it fails. Vic registers a
+    // validator.
+    let commission = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 100,
+        },
+    );
+    let too_high = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g1,
+            permille: 251,
+        },
+    );
+    let not_operator = h.tx(
+        "alice",
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 50,
+        },
+    );
+    let unknown = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: nobody,
+            permille: 10,
+        },
+    );
+    let register = {
+        let kind = registration(&h, "vic", vic_keys, units(1_000));
+        h.tx("vic", kind)
+    };
+    let out = h.pulse(vec![
+        commission.clone(),
+        too_high.clone(),
+        not_operator.clone(),
+        unknown.clone(),
+        register.clone(),
+    ]);
+    expect(&out, &commission, Outcome::Success);
+    for tx in [&too_high, &not_operator, &unknown] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    expect(&out, &register, Outcome::Success);
+    let pool = pool_of(&h, &g0);
+    assert_eq!(
+        (pool.commission_permille, pool.next_commission),
+        (0, Some(100))
+    );
+
+    // Pulse 3 (epoch 0): alice delegates to g0 and carol to vic's joining
+    // validator; below the minimum or to an unknown validator fails.
+    let alice_in = delegate(&mut h, "alice", g0, units(10_000));
+    let below = delegate(&mut h, "bob", g0, Amount(999_999));
+    let nowhere = delegate(&mut h, "carol", nobody, units(10));
+    let carol_in = delegate(&mut h, "carol", v, units(2_000));
+    let out = h.pulse(vec![
+        alice_in.clone(),
+        below.clone(),
+        nowhere.clone(),
+        carol_in.clone(),
+    ]);
+    expect(&out, &alice_in, Outcome::Success);
+    expect(&out, &carol_in, Outcome::Success);
+    expect(&out, &below, Outcome::Failed);
+    expect(&out, &nowhere, Outcome::Failed);
+    let a = delegation_made(&out, &alice_in);
+    let c = delegation_made(&out, &carol_in);
+    let alice_d = delegation_of(&h, &a);
+    assert_eq!(alice_d.state, DelegationState::Pending { epoch: 0 });
+    assert_eq!(
+        alice_d.shares,
+        units(10_000).0,
+        "an empty pool sells one share per micro-unit"
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!(
+        (pool.pending, pool.pending_delegations, pool.value),
+        (units(10_000).0, 1, units(10_000))
+    );
+
+    // Pulse 4, epoch 0's last: a pending delegation has nothing to claim;
+    // dave delegates to g1. The epoch ends: the pending delegations join,
+    // from an accumulator still at 0, and count towards the ranking.
+    let pending_claim = on_delegation(&mut h, "alice", TxKind::ClaimDelegatorRewards, &a);
+    let dave_in = delegate(&mut h, "dave", g1, units(100_000));
+    let mut txs = fee_traffic(&mut h, "bob", "erin", 3);
+    txs.extend([pending_claim.clone(), dave_in.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &pending_claim, Outcome::Failed);
+    expect(&out, &dave_in, Outcome::Success);
+    let d = delegation_made(&out, &dave_in);
+    assert_eq!(count_events(&out, "EpochChanged"), 1);
+    let pool = pool_of(&h, &g0);
+    assert_eq!(
+        (pool.earning, pool.pending, pool.commission_permille),
+        (units(10_000).0, 0, 100)
+    );
+    assert_eq!(
+        pool.joins[&0],
+        Join {
+            reward_per_share: 0,
+            waiting: 1
+        }
+    );
+    let set = h.validator_set();
+    let weight_of = |validator: ValidatorId| {
+        set.active
+            .iter()
+            .find(|(id, _)| *id == validator)
+            .map(|(_, weight)| *weight)
+    };
+    assert_eq!(weight_of(g0), Some(110_000));
+    assert_eq!(weight_of(g1), Some(200_000));
+    assert_eq!(
+        weight_of(v),
+        Some(3_000),
+        "vic's own 1,000 and carol's 2,000"
+    );
+
+    // Pulse 5 (epoch 1): five eligible validators, so the cap is 400 ‰ of
+    // the bonded stake (513,000). g1 holds 200,000: erin may add at most
+    // 8,666.666666 units. One micro-unit more fails; exactly that succeeds.
+    // Alice's delegation is earning now, but nothing has been credited.
+    let over = delegate(&mut h, "erin", g1, Amount(8_666_666_667));
+    let exact = delegate(&mut h, "erin", g1, Amount(8_666_666_666));
+    let nothing_yet = on_delegation(&mut h, "alice", TxKind::ClaimDelegatorRewards, &a);
+    let mut txs = fee_traffic(&mut h, "bob", "carol", 3);
+    txs.extend([over.clone(), exact.clone(), nothing_yet.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &over, Outcome::Failed);
+    expect(&out, &exact, Outcome::Success);
+    expect(&out, &nothing_yet, Outcome::Failed);
+    let e = delegation_made(&out, &exact);
+
+    // Pulse 6: g0 has delegators now, so its commission rises by at most
+    // 20 ‰ at a time (100 → 120, not 121).
+    let jump = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 121,
+        },
+    );
+    let step = h.tx(
+        FAUCET_NAME,
+        TxKind::SetCommission {
+            validator: g0,
+            permille: 120,
+        },
+    );
+    let mut txs = fee_traffic(&mut h, "bob", "carol", 3);
+    txs.extend([jump.clone(), step.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &jump, Outcome::Failed);
+    expect(&out, &step, Outcome::Success);
+    assert_eq!(pool_of(&h, &g0).next_commission, Some(120));
+
+    // Pulse 7: an earning delegation cannot be withdrawn, and a coin is not
+    // a delegation.
+    let not_unbonding = on_delegation(&mut h, "alice", TxKind::WithdrawDelegation, &a);
+    let coin = h.coins("alice", &usd())[0];
+    let not_a_delegation = h.tx_with("alice", TxKind::ClaimDelegatorRewards, vec![coin]);
+    let mut txs = fee_traffic(&mut h, "bob", "carol", 3);
+    txs.extend([not_unbonding.clone(), not_a_delegation.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &not_unbonding, Outcome::Failed);
+    expect(&out, &not_a_delegation, Outcome::Failed);
+
+    // Pulse 8, epoch 1's last: the pools earn their part of their
+    // validators' rewards (the oracle checks every split); erin joins g1;
+    // g0's commission becomes 120.
+    let txs = fee_traffic(&mut h, "bob", "carol", 3);
+    h.pulse(txs);
+    let pool = pool_of(&h, &g0);
+    assert!(pool.reward_per_share > 0 && pool.rewards_held > Amount::ZERO);
+    assert_eq!(
+        (pool.commission_permille, pool.next_commission),
+        (120, None)
+    );
+    let g1_pool = pool_of(&h, &g1);
+    assert_eq!(g1_pool.joins[&1].waiting, 1, "erin joined at epoch 1's end");
+    assert!(
+        pool_of(&h, &v).reward_per_share > 0,
+        "carol's pool earned too"
+    );
+
+    // Pulse 9 (epoch 2): alice and dave collect; erin joined after the
+    // rewards, so she has nothing; bob cannot spend alice's delegation.
+    let alice_owed = owed_now(&h, &a);
+    let dave_owed = owed_now(&h, &d);
+    assert!(alice_owed > 0 && dave_owed > 0);
+    assert_eq!(owed_now(&h, &e), 0);
+    let alice_claim = on_delegation(&mut h, "alice", TxKind::ClaimDelegatorRewards, &a);
+    let dave_claim = on_delegation(&mut h, "dave", TxKind::ClaimDelegatorRewards, &d);
+    let erin_claim = on_delegation(&mut h, "erin", TxKind::ClaimDelegatorRewards, &e);
+    let theft = {
+        let reference = h.reference(&a);
+        by_hand(
+            &mut h,
+            "bob",
+            TxKind::ClaimDelegatorRewards,
+            vec![reference],
+        )
+    };
+    let held = pool_of(&h, &g0).rewards_held;
+    let out = h.pulse(vec![
+        alice_claim.clone(),
+        dave_claim.clone(),
+        erin_claim.clone(),
+        theft.clone(),
+    ]);
+    expect(&out, &alice_claim, Outcome::Success);
+    expect(&out, &dave_claim, Outcome::Success);
+    expect(&out, &erin_claim, Outcome::Failed);
+    expect(&out, &theft, Outcome::Rejected);
+    assert_eq!(
+        event_of(&out, &alice_claim, "DelegatorRewardsClaimed"),
+        Event::DelegatorRewardsClaimed {
+            delegation: a,
+            amount: Amount(alice_owed)
+        }
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!(pool.rewards_held.0, held.0 - alice_owed);
+    assert!(
+        pool.joins.is_empty(),
+        "alice used the last of epoch 0's join"
+    );
+    assert_eq!(
+        delegation_of(&h, &a).state,
+        DelegationState::Earning {
+            entry: pool.reward_per_share
+        }
+    );
+
+    // Pulse 10: alice undelegates (nothing new to collect); without its
+    // delegation, an undelegation fails; bob delegates to g2.
+    let alice_out = on_delegation(&mut h, "alice", TxKind::Undelegate, &a);
+    let missing = h.tx("dave", TxKind::Undelegate);
+    let bob_in = delegate(&mut h, "bob", g2, units(5_000));
+    let out = h.pulse(vec![alice_out.clone(), missing.clone(), bob_in.clone()]);
+    expect(&out, &alice_out, Outcome::Success);
+    expect(&out, &missing, Outcome::Failed);
+    expect(&out, &bob_in, Outcome::Success);
+    let b = delegation_made(&out, &bob_in);
+    assert_eq!(
+        event_of(&out, &alice_out, "Undelegated"),
+        Event::Undelegated {
+            delegation: a,
+            rewards: Amount::ZERO,
+            withdrawable_at: Pulse(13)
+        }
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!((pool.earning, pool.unbonding), (0, units(10_000).0));
+
+    // Pulse 11: bob leaves in the epoch he joined (his shares never earn);
+    // alice cannot withdraw before Pulse 13; vic takes his validator out
+    // (it leaves at the epoch's end).
+    let bob_out = on_delegation(&mut h, "bob", TxKind::Undelegate, &b);
+    let early = on_delegation(&mut h, "alice", TxKind::WithdrawDelegation, &a);
+    let leave = h.tx("vic", TxKind::Unstake { validator: v });
+    let mut txs = fee_traffic(&mut h, "dave", "carol", 3);
+    txs.extend([bob_out.clone(), early.clone(), leave.clone()]);
+    let out = h.pulse(txs);
+    expect(&out, &bob_out, Outcome::Success);
+    expect(&out, &early, Outcome::Failed);
+    expect(&out, &leave, Outcome::Success);
+    let pool = pool_of(&h, &g2);
+    assert_eq!(
+        (pool.pending, pool.pending_delegations, pool.unbonding),
+        (0, 0, units(5_000).0)
+    );
+
+    // Pulse 12, epoch 2's last: alice cannot undelegate twice. g0's pool
+    // has no earning shares left, so its operator keeps all; vic's leaving
+    // validator is paid once more, its pool included, and exits.
+    let twice = on_delegation(&mut h, "alice", TxKind::Undelegate, &a);
+    let mut txs = fee_traffic(&mut h, "dave", "carol", 3);
+    txs.push(twice.clone());
+    let out = h.pulse(txs);
+    expect(&out, &twice, Outcome::Failed);
+    assert!(pool_of(&h, &g2).joins.is_empty());
+    assert_eq!(
+        h.record(&v).status,
+        ValidatorStatus::Exited {
+            withdrawable_at: Pulse(15)
+        }
+    );
+
+    // Pulse 13: alice withdraws her 10,000 exactly when she may; erin
+    // leaves g1 with epoch 2's rewards; carol leaves vic's exited
+    // validator with hers.
+    let erin_owed = owed_now(&h, &e);
+    let carol_owed = owed_now(&h, &c);
+    assert!(erin_owed > 0 && carol_owed > 0);
+    let withdraw = on_delegation(&mut h, "alice", TxKind::WithdrawDelegation, &a);
+    let erin_out = on_delegation(&mut h, "erin", TxKind::Undelegate, &e);
+    let carol_out = on_delegation(&mut h, "carol", TxKind::Undelegate, &c);
+    let out = h.pulse(vec![withdraw.clone(), erin_out.clone(), carol_out.clone()]);
+    for tx in [&withdraw, &erin_out, &carol_out] {
+        expect(&out, tx, Outcome::Success);
+    }
+    assert_eq!(
+        event_of(&out, &withdraw, "DelegationWithdrawn"),
+        Event::DelegationWithdrawn {
+            delegation: a,
+            amount: units(10_000)
+        }
+    );
+    assert!(h.chain.state.objects[&a].is_tombstone());
+    assert_eq!(
+        event_of(&out, &erin_out, "Undelegated"),
+        Event::Undelegated {
+            delegation: e,
+            rewards: Amount(erin_owed),
+            withdrawable_at: Pulse(16)
+        }
+    );
+    assert_eq!(
+        event_of(&out, &carol_out, "Undelegated"),
+        Event::Undelegated {
+            delegation: c,
+            rewards: Amount(carol_owed),
+            withdrawable_at: Pulse(16)
+        }
+    );
+    let pool = pool_of(&h, &g0);
+    assert_eq!((pool.unbonding, pool.value), (0, Amount::ZERO));
+
+    // Pulse 14: bob withdraws; an exited validator takes no delegation.
+    let bob_back = on_delegation(&mut h, "bob", TxKind::WithdrawDelegation, &b);
+    let to_exited = delegate(&mut h, "carol", v, units(10));
+    let out = h.pulse(vec![bob_back.clone(), to_exited.clone()]);
+    expect(&out, &bob_back, Outcome::Success);
+    expect(&out, &to_exited, Outcome::Failed);
+
+    // Pulse 15: g1 equivocates. Its own stake is forfeited, and its pool
+    // (dave earning, erin unbonding) loses a tenth, all of it to the
+    // treasury: the reporter's share is of the validator's own stake only.
+    // A slashed validator takes no delegation.
+    let auth = KeyAuth::of(&genesis[1].0);
+    let report = h.tx(
+        "carol",
+        report_headers(
+            signed_header(&auth, 7, 0, b"a"),
+            signed_header(&auth, 7, 0, b"b"),
+        ),
+    );
+    let after_slash = delegate(&mut h, "dave", g1, units(10));
+    let value = pool_of(&h, &g1).value;
+    let out = h.pulse(vec![report.clone(), after_slash.clone()]);
+    expect(&out, &report, Outcome::Success);
+    expect(&out, &after_slash, Outcome::Failed);
+    let slashed = value.0 / 10;
+    assert_eq!(
+        event_of(&out, &report, "PoolSlashed"),
+        Event::PoolSlashed {
+            validator: g1,
+            amount: Amount(slashed)
+        }
+    );
+    assert_eq!(
+        event_of(&out, &report, "ValidatorSlashed"),
+        Event::ValidatorSlashed {
+            validator: g1,
+            amount: units(100_000),
+            reporter: h.id("carol"),
+            reward: Amount(units(100_000).0 / 2)
+        }
+    );
+    let pool = pool_of(&h, &g1);
+    assert_eq!(pool.value.0, value.0 - slashed);
+
+    // Pulse 16, epoch 3's last: erin withdraws 90 % of her stake; dave
+    // collects epoch 2's rewards, which the slash left alone.
+    let erin_shares = delegation_of(&h, &e).shares;
+    let erin_expected = erin_shares * pool.value.0 / (pool.earning + pool.unbonding);
+    let dave_owed = owed_now(&h, &d);
+    assert!(dave_owed > 0);
+    let erin_back = on_delegation(&mut h, "erin", TxKind::WithdrawDelegation, &e);
+    let dave_claim = on_delegation(&mut h, "dave", TxKind::ClaimDelegatorRewards, &d);
+    let out = h.pulse(vec![erin_back.clone(), dave_claim.clone()]);
+    expect(&out, &erin_back, Outcome::Success);
+    expect(&out, &dave_claim, Outcome::Success);
+    assert_eq!(
+        event_of(&out, &erin_back, "DelegationWithdrawn"),
+        Event::DelegationWithdrawn {
+            delegation: e,
+            amount: Amount(erin_expected)
+        }
+    );
+    assert_eq!(
+        erin_expected * 10 / 9 / 1_000,
+        Amount(8_666_666_666).0 / 1_000
+    );
+
+    // Pulses 17–20: dave leaves the slashed pool and takes what is left.
+    let dave_out = on_delegation(&mut h, "dave", TxKind::Undelegate, &d);
+    let out = h.pulse(vec![dave_out.clone()]);
+    expect(&out, &dave_out, Outcome::Success);
+    h.advance_to(19);
+    let left = pool_of(&h, &g1).value;
+    let dave_back = on_delegation(&mut h, "dave", TxKind::WithdrawDelegation, &d);
+    let out = h.pulse(vec![dave_back.clone()]);
+    expect(&out, &dave_back, Outcome::Success);
+    assert_eq!(
+        event_of(&out, &dave_back, "DelegationWithdrawn"),
+        Event::DelegationWithdrawn {
+            delegation: d,
+            amount: left
+        }
+    );
+    let pool = pool_of(&h, &g1);
+    assert_eq!(
+        (pool.value, pool.earning, pool.unbonding),
+        (Amount::ZERO, 0, 0)
+    );
+
+    // More epochs.
+    let txs = fee_traffic(&mut h, "bob", "carol", 2);
+    h.pulse(txs);
+    h.advance_to(28);
+
+    h.assert_covered(&[
+        "SetCommission/ok",
+        "SetCommission/failed",
+        "DelegateStake/ok",
+        "DelegateStake/failed",
+        "Undelegate/ok",
+        "Undelegate/failed",
+        "WithdrawDelegation/ok",
+        "WithdrawDelegation/failed",
+        "ClaimDelegatorRewards/ok",
+        "ClaimDelegatorRewards/failed",
+        "ClaimDelegatorRewards/rejected",
+        "ReportEquivocation/ok",
+        "deferred-event/EpochChanged",
+        "epoch/pool-rewards-split",
+        "epoch/delegations-join",
+        "epoch/commission-takes-effect",
+        "epoch/pooled-stake-ranks",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn pooled_stake_delegate_earn_claim_leave_and_share_a_slash() {
+    pooled_stake(1).summary("pooled stake (1 per chunk)");
+}
+
+#[test]
+fn pooled_stake_many_transactions_per_chunk() {
+    pooled_stake(4).summary("pooled stake (4 per chunk)");
+}
+
+/// §5.45 step 4 at its boundary: with the four genesis validators (100,000
+/// each), the cap is 500 ‰, so one validator may gain exactly 200,000.
+#[test]
+fn probe_delegation_cap_boundary() {
+    let mut h = Harness::with_params(
+        &["alice", "bob"],
+        1_000_000,
+        8,
+        2,
+        validator_params(4),
+        forced_params(3, 8),
+    );
+    let ids: Vec<ValidatorId> = h.genesis_validators().iter().map(|(_, id)| *id).collect();
+    let over = delegate(&mut h, "alice", ids[0], Amount(units(200_000).0 + 1));
+    let exact = delegate(&mut h, "alice", ids[0], units(200_000));
+    let more = delegate(&mut h, "bob", ids[0], units(1));
+    let elsewhere = delegate(&mut h, "bob", ids[1], units(1));
+    let out = h.pulse(vec![
+        over.clone(),
+        exact.clone(),
+        more.clone(),
+        elsewhere.clone(),
+    ]);
+    expect(&out, &over, Outcome::Failed);
+    expect(&out, &exact, Outcome::Success);
+    expect(&out, &more, Outcome::Failed);
+    expect(&out, &elsewhere, Outcome::Success);
+    h.advance_to(4);
+    let set = h.validator_set();
+    assert!(set.active.contains(&(ids[0], 300_000)));
+    h.assert_minimal_witnesses();
+}
+
+/// A random operation on pooled stake.
+#[derive(Clone, Debug)]
+enum PoolOp {
+    /// Delegator `who` delegates `units` (0: just below the minimum) to
+    /// validator `validator` (4: one that does not exist).
+    Delegate {
+        who: usize,
+        validator: usize,
+        units: u64,
+    },
+    Undelegate {
+        who: usize,
+        pick: usize,
+    },
+    Withdraw {
+        who: usize,
+        pick: usize,
+    },
+    Claim {
+        who: usize,
+        pick: usize,
+    },
+    Commission {
+        validator: usize,
+        permille: u16,
+    },
+    Fees {
+        count: usize,
+    },
+    Slash {
+        validator: usize,
+    },
+}
+
+fn pool_op() -> impl Strategy<Value = PoolOp> {
+    prop_oneof![
+        4 => (0usize..4, 0usize..5, 0u64..60_000)
+            .prop_map(|(who, validator, units)| PoolOp::Delegate { who, validator, units }),
+        3 => (0usize..4, any::<usize>()).prop_map(|(who, pick)| PoolOp::Undelegate { who, pick }),
+        3 => (0usize..4, any::<usize>()).prop_map(|(who, pick)| PoolOp::Withdraw { who, pick }),
+        2 => (0usize..4, any::<usize>()).prop_map(|(who, pick)| PoolOp::Claim { who, pick }),
+        1 => (0usize..4, 0u16..=300)
+            .prop_map(|(validator, permille)| PoolOp::Commission { validator, permille }),
+        3 => (1usize..4).prop_map(|count| PoolOp::Fees { count }),
+        1 => (0usize..4).prop_map(|validator| PoolOp::Slash { validator }),
+    ]
+}
+
+/// The pools' bookkeeping against every live delegation: shares by state,
+/// pending counts, joins, and that what is owed and withdrawable never
+/// exceeds what the pool holds.
+fn check_pools_against_delegations(h: &Harness) {
+    let Some(book) = delegation_book(h) else {
+        return;
+    };
+    let epoch = h.validator_set().epoch;
+    let mut by_pool: BTreeMap<ValidatorId, Vec<Delegation>> = BTreeMap::new();
+    for object in h.chain.state.objects.values() {
+        if let ObjectData::Delegation(d) = &object.data {
+            by_pool.entry(d.validator).or_default().push(d.clone());
+        }
+    }
+    for (validator, pool) in &book.pools {
+        let live = by_pool.remove(validator).unwrap_or_default();
+        let (mut earning, mut pending, mut unbonding, mut count) = (0u128, 0u128, 0u128, 0u64);
+        let mut waiting: BTreeMap<u64, u64> = BTreeMap::new();
+        let (mut owed, mut worth) = (0u128, 0u128);
+        let shares = pool.earning + pool.pending + pool.unbonding;
+        for d in &live {
+            let entry = match d.state {
+                DelegationState::Pending { epoch: made } if made == epoch => {
+                    pending += d.shares;
+                    count += 1;
+                    None
+                }
+                DelegationState::Pending { epoch: made } => {
+                    earning += d.shares;
+                    *waiting.entry(made).or_default() += 1;
+                    Some(pool.joins[&made].reward_per_share)
+                }
+                DelegationState::Earning { entry } => {
+                    earning += d.shares;
+                    Some(entry)
+                }
+                DelegationState::Unbonding { .. } => {
+                    unbonding += d.shares;
+                    None
+                }
+            };
+            if let Some(entry) = entry {
+                owed += d.shares * (pool.reward_per_share - entry) / 1_000_000_000_000;
+            }
+            worth += d.shares * pool.value.0 / shares.max(1);
+        }
+        assert_eq!(
+            (
+                pool.earning,
+                pool.pending,
+                pool.unbonding,
+                pool.pending_delegations
+            ),
+            (earning, pending, unbonding, count),
+            "pool {validator}"
+        );
+        let joins: BTreeMap<u64, u64> = pool.joins.iter().map(|(e, j)| (*e, j.waiting)).collect();
+        assert_eq!(
+            joins, waiting,
+            "pool {validator}: joins wait for exactly the delegations that joined"
+        );
+        assert!(
+            owed <= pool.rewards_held.0,
+            "pool {validator}: owed {owed} > held {}",
+            pool.rewards_held
+        );
+        assert!(
+            worth <= pool.value.0,
+            "pool {validator}: worth {worth} > value {}",
+            pool.value
+        );
+    }
+    assert!(
+        by_pool.is_empty(),
+        "delegations without a pool: {by_pool:?}"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 16,
+        ..ProptestConfig::default()
+    })]
+
+    /// Random delegations, undelegations, withdrawals, claims, commission
+    /// changes, fees and slashings over many short epochs: stack B verifies
+    /// every chunk, the split oracle checks every epoch end, the supply is
+    /// conserved, and the pools agree with the delegations they hold.
+    #[test]
+    fn random_pooled_stake_workloads_are_verified(
+        chunk_size in 1usize..4,
+        pulses in proptest::collection::vec(proptest::collection::vec(pool_op(), 1..6), 10..30),
+    ) {
+        let mut h = Harness::with_params(
+            &["d0", "d1", "d2", "d3", "payer", "payee"],
+            400_000,
+            8,
+            chunk_size,
+            validator_params(3),
+            forced_params(3, 8),
+        );
+        let genesis = h.genesis_validators();
+        let mut validators: Vec<ValidatorId> = genesis.iter().map(|(_, id)| *id).collect();
+        validators.push(ValidatorId::derive(b"no such validator"));
+        h.fund(&[
+            (FAUCET_NAME, usd(), units(1_000)),
+            (FAUCET_NAME, usd(), units(1_000)),
+            (FAUCET_NAME, usd(), units(1_000)),
+            (FAUCET_NAME, usd(), units(1_000)),
+        ]);
+        let mut held: Vec<Vec<ObjectId>> = vec![Vec::new(); 4];
+        let mut slashes = 0u64;
+        for ops in pulses {
+            let mut txs: Vec<SignedTransaction> = Vec::new();
+            let mut delegating: Vec<(usize, TxDigest)> = Vec::new();
+            for op in ops {
+                match op {
+                    PoolOp::Delegate { who, validator, units: n } => {
+                        let amount = if n == 0 { Amount(999_999) } else { units(n) };
+                        let kind = TxKind::DelegateStake { validator: validators[validator], amount };
+                        if let Ok(tx) = h.chain.tx(&format!("d{who}"), kind) {
+                            delegating.push((who, tx.digest()));
+                            txs.push(tx);
+                        }
+                    }
+                    PoolOp::Undelegate { who, pick }
+                    | PoolOp::Withdraw { who, pick }
+                    | PoolOp::Claim { who, pick } => {
+                        if held[who].is_empty() {
+                            continue;
+                        }
+                        let id = held[who][pick % held[who].len()];
+                        let kind = match op {
+                            PoolOp::Undelegate { .. } => TxKind::Undelegate,
+                            PoolOp::Withdraw { .. } => TxKind::WithdrawDelegation,
+                            _ => TxKind::ClaimDelegatorRewards,
+                        };
+                        let reference = h.reference(&id);
+                        if let Ok(tx) = h.chain.tx_with(&format!("d{who}"), kind, vec![reference]) {
+                            txs.push(tx);
+                        }
+                    }
+                    PoolOp::Commission { validator, permille } => {
+                        let kind = TxKind::SetCommission { validator: validators[validator], permille };
+                        if let Ok(tx) = h.chain.tx(FAUCET_NAME, kind) {
+                            txs.push(tx);
+                        }
+                    }
+                    PoolOp::Fees { count } => {
+                        let to = h.id("payee");
+                        for n in 0..count {
+                            let kind = TxKind::Transfer {
+                                asset: usd(),
+                                outputs: vec![(to, units(n as u64 + 1))],
+                            };
+                            if let Ok(tx) = h.chain.tx("payer", kind) {
+                                txs.push(tx);
+                            }
+                        }
+                    }
+                    PoolOp::Slash { validator } => {
+                        slashes += 1;
+                        let auth = KeyAuth::of(&genesis[validator].0);
+                        let kind = report_headers(
+                            signed_header(&auth, slashes, 0, b"a"),
+                            signed_header(&auth, slashes, 0, b"b"),
+                        );
+                        if let Ok(tx) = h.chain.tx("payee", kind) {
+                            txs.push(tx);
+                        }
+                    }
+                }
+            }
+            let out = h.pulse(txs);
+            for (who, digest) in delegating {
+                let made = out
+                    .effects
+                    .iter()
+                    .find(|e| e.digest == digest)
+                    .and_then(|e| e.events.iter().find_map(|event| match event {
+                        Event::Delegated { delegation, .. } => Some(*delegation),
+                        _ => None,
+                    }));
+                if let Some(id) = made {
+                    held[who].push(id);
+                }
+            }
+            h.settle();
+            check_pools_against_delegations(&h);
+        }
+        // Two more epochs, so the last delegations join and earn.
+        let txs = fee_traffic(&mut h, "payer", "payee", 2);
+        h.pulse(txs);
+        let end = h.pulse_number() + 6;
+        h.advance_to(end);
+        check_pools_against_delegations(&h);
+        h.assert_minimal_witnesses();
+        if std::env::var_os("SION_POOL_STATS").is_some() {
+            let pools = delegation_book(&h).map(|b| b.pools.len()).unwrap_or(0);
+            eprintln!("pools {pools}, slashes {slashes}, coverage {:?}", h.coverage);
+        }
+    }
 }

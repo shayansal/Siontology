@@ -37,12 +37,12 @@ use sion_prover::{PulseData, ValidatorsWitness};
 
 use crate::committees::{CommitteeView, Committees};
 use crate::config::DevnetConfig;
-use crate::gateway::GatewayInput;
 use crate::keys::{NodeAuthenticator, NodeVerifier};
 use crate::owners::{AlreadyChecked, Authorized, StateOwners};
 use crate::payload::{expand, lane_inputs, PayloadItem, MAX_GROUP_BATCHES};
 use crate::pulses::{Carry, ClosedPulse, PulseBuilder};
 use crate::storage::{LaneLog, PulseRecord, Snapshot, Wal};
+use crate::transport::{NodeId, PeerMessage, Transport, EXECUTED_CHUNK};
 use crate::view::{AccountView, EventView, PulseView, Query, StatusView, TxView};
 
 /// Everything validators share, fixed for a run.
@@ -102,46 +102,43 @@ const DA_HISTORY: u64 = 64;
 /// kept until it gets there (at most).
 const MAX_FUTURE_MESSAGES: usize = 20_000;
 
+/// Bytes of future-session messages kept per sender: they are kept
+/// unverified, so a single peer must not fill memory with them.
+const MAX_FUTURE_BYTES_PER_SENDER: usize = 32 * 1024 * 1024;
+
+/// Lane requests waiting for this validator to catch up, at most.
+const MAX_PARKED: usize = 16_384;
+
+/// A Pulse still uncertified this long after it executed: ask the members
+/// whose signatures are missing for them.
+const SIGNATURE_PULL_AFTER: Duration = Duration::from_secs(2);
+
+/// How often to look for Pulses to pull signatures for.
+const SIGNATURE_PULL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Uncertified Pulses asked about per look, newest first (any Pulse still
+/// in the history qualifies).
+const SIGNATURE_PULLS_PER_TICK: usize = 64;
+
+/// Gateways a validator reports executions to, at most, and how long one
+/// stays without sending anything.
+const MAX_SUBSCRIBERS: usize = 64;
+const SUBSCRIBER_TTL: Duration = Duration::from_secs(600);
+
 /// Messages to a validator.
 #[derive(Debug)]
 pub enum Input {
-    /// A consensus message from another validator.
-    Consensus {
+    /// A message from another node, with the sender as the transport
+    /// stamped it.
+    Peer {
         /// Sender.
-        from: ValidatorId,
+        from: NodeId,
         /// Message.
-        message: Message,
+        message: PeerMessage,
     },
-    /// A payload item to propose.
+    /// A payload item to propose, from this process (the devnet's API posts
+    /// forced intents this way).
     Submit(Vec<u8>),
-    /// A lane approval request.
-    Lane {
-        /// The shard.
-        shard: ShardId,
-        /// The request.
-        request: LaneRequest,
-    },
-    /// Another validator's signature on its Pulse header.
-    PulseSignature {
-        /// Signer.
-        from: ValidatorId,
-        /// Pulse.
-        pulse: Pulse,
-        /// Digest of the header it signed.
-        header: Hash32,
-        /// Signature over the header's signing digest.
-        signature: Vec<u8>,
-    },
-    /// Another validator's approval of a forced intent (validators collect
-    /// these themselves, without the gateway).
-    ForcedApproval {
-        /// The shard.
-        shard: ShardId,
-        /// The intent.
-        tx: TxDigest,
-        /// The sealed approval.
-        proof: ApprovalProof,
-    },
     /// **Adversary simulation (devnet only).** Makes this validator censor
     /// (or stop censoring) these accounts: it ignores their lane requests
     /// and drops their transactions from its proposals.
@@ -157,33 +154,16 @@ pub enum Input {
     Shutdown,
 }
 
-/// The in-process network.
-#[derive(Clone, Debug)]
-pub struct Bus {
-    /// Validator inboxes by index.
-    pub validators: Vec<Sender<Input>>,
-    /// Validator indices.
-    pub index: BTreeMap<ValidatorId, usize>,
-    /// The gateway's inbox.
-    pub gateway: Sender<GatewayInput>,
-}
-
-impl Bus {
-    /// Sends to one validator (dropped if it has stopped).
-    pub fn send(&self, to: &ValidatorId, input: Input) {
-        if let Some(index) = self.index.get(to) {
-            let _ = self.validators[*index].send(input);
-        }
-    }
-
-    /// Sends to every validator except `from`.
-    pub fn broadcast(&self, from: usize, make: impl Fn() -> Input) {
-        for (index, sender) in self.validators.iter().enumerate() {
-            if index != from {
-                let _ = sender.send(make());
-            }
-        }
-    }
+/// Whom a validator tells which transactions a Pulse executed, so gateways
+/// stop handing them to consensus again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecutedReports {
+    /// These nodes (the devnet: validator 0 reports to its gateway, the
+    /// others to nobody).
+    To(Vec<NodeId>),
+    /// Every node that sent this validator a lane request or a payload in
+    /// the last ten minutes: the gateways that use it (between machines).
+    Subscribers,
 }
 
 /// A job for the prover.
@@ -208,6 +188,19 @@ enum Timer {
     /// A consensus timer of a session.
     Core(u64, TimerKind),
     LaneBatch,
+    /// Ask for signatures of Pulses that are slow to certify.
+    SignaturePull,
+}
+
+/// A lane request waiting for this validator to catch up.
+#[derive(Debug)]
+struct Parked {
+    shard: ShardId,
+    request: LaneRequest,
+    /// Pulses it has waited.
+    waited: u64,
+    /// The node that asked, which gets the answer.
+    requester: NodeId,
 }
 
 #[derive(Debug)]
@@ -217,6 +210,10 @@ struct Collector {
     committee: Committee,
     signatures: BTreeMap<ValidatorId, Vec<u8>>,
     certificate: Option<PulseCertificate>,
+    /// When this validator executed the Pulse.
+    executed_at: Instant,
+    /// When it last asked for the missing signatures.
+    pulled_at: Option<Instant>,
 }
 
 /// An epoch boundary: its last Pulse, the validator set after it and, once
@@ -314,7 +311,8 @@ pub struct Validator {
     auth: NodeAuthenticator,
     core: Core<NodeAuthenticator, NodeVerifier>,
     lanes: BTreeMap<ShardId, LaneValidator<NodeAuthenticator>>,
-    lane_waiters: BTreeSet<TxDigest>,
+    /// Who asked for an approval that waits for the next sealed batch.
+    lane_waiters: BTreeMap<TxDigest, BTreeSet<NodeId>>,
     state: State,
     builder: PulseBuilder,
     /// What the builder carried past the close of the state's Pulse.
@@ -323,13 +321,25 @@ pub struct Validator {
     dropped_items: u64,
     chain: HashChain,
     wal: Option<Wal>,
-    bus: Bus,
+    net: Arc<dyn Transport>,
+    /// Every other validator of the network, in index order: whom a
+    /// broadcast reaches.
+    peers: Vec<NodeId>,
+    executed_to: ExecutedReports,
+    /// Nodes that sent lane requests or payloads, and when they last did.
+    subscribers: BTreeMap<NodeId, Instant>,
+    /// Signature requests answered lately: (Pulse, requester) → when.
+    answered: BTreeMap<(Pulse, ValidatorId), Instant>,
     inbox: Receiver<Input>,
     timers: BinaryHeap<Reverse<(Instant, u64)>>,
     timer_kinds: BTreeMap<u64, Timer>,
     timer_seq: u64,
     history: BTreeMap<Pulse, Executed>,
     tx_index: BTreeMap<TxDigest, (Pulse, u64)>,
+    /// Every storage deal's id, for `Query::Deals`: built by the first such
+    /// query from the state, then kept up to date from each Pulse's
+    /// created objects.
+    deal_index: Option<std::collections::BTreeSet<sion_core::ids::ObjectId>>,
     collectors: BTreeMap<Pulse, Collector>,
     early_signatures: BTreeMap<Pulse, Vec<(ValidatorId, Hash32, Vec<u8>)>>,
     certified: Pulse,
@@ -339,14 +349,20 @@ pub struct Validator {
     verifier: NodeVerifier,
     authorized: Authorized,
     squares: VecDeque<(Pulse, ExtendedSquare)>,
-    parked: Vec<(ShardId, LaneRequest, u64)>,
+    parked: Vec<Parked>,
     lock_expiry: BTreeMap<TxDigest, (ShardId, Pulse)>,
     lane_log: Option<LaneLog>,
     lane_log_pending: Vec<(ShardId, LaneRequest)>,
     committees: Committees,
-    future: Vec<(ValidatorId, Message)>,
+    /// Consensus messages of sessions not reached yet: sender, session,
+    /// message.
+    future: Vec<(ValidatorId, u64, Message)>,
+    /// Their encoded bytes, by sender.
+    future_bytes: BTreeMap<ValidatorId, usize>,
     boundaries: BTreeMap<u64, Boundary>,
     boundary_dir: Option<PathBuf>,
+    /// Where it records each consensus session before signing in it.
+    session_guard: Option<PathBuf>,
     forced_txs: BTreeMap<TxDigest, SignedTransaction>,
     forced_waiters: BTreeSet<TxDigest>,
     forced_builders: BTreeMap<TxDigest, CertificateBuilder>,
@@ -385,8 +401,11 @@ pub struct ValidatorSetup {
     pub wal: Option<Wal>,
     /// Its inbox.
     pub inbox: Receiver<Input>,
-    /// The network.
-    pub bus: Bus,
+    /// What carries its messages to other nodes (and delivers theirs into
+    /// its inbox).
+    pub transport: Arc<dyn Transport>,
+    /// Whom it tells what each Pulse executed.
+    pub executed_to: ExecutedReports,
     /// Where to send traces, if this validator feeds the prover.
     pub prover: Option<std::sync::mpsc::SyncSender<ProverJob>>,
     /// Verified World Proofs (written by the prover).
@@ -399,6 +418,11 @@ pub struct ValidatorSetup {
     pub lane_log: Option<LaneLog>,
     /// Locks to restore (approved before a restart, not yet executed).
     pub lane_locks: Vec<(ShardId, LaneRequest)>,
+    /// A node of a network: the directory where it records each consensus
+    /// session before it signs anything in it ([`crate::node::claim_session`];
+    /// the session it starts in is claimed before it starts). A devnet,
+    /// whose sessions change with every restart, needs none.
+    pub session_guard: Option<PathBuf>,
 }
 
 impl Validator {
@@ -464,20 +488,31 @@ impl Validator {
             .into_iter()
             .map(|tx| (tx.digest(), tx))
             .collect();
+        let peers = shared
+            .validators
+            .iter()
+            .filter(|validator| **validator != id)
+            .map(|validator| NodeId::Validator(*validator))
+            .collect();
         Validator {
             index: setup.index,
             id,
             auth: setup.auth,
             core,
             lanes,
-            lane_waiters: BTreeSet::new(),
+            lane_waiters: BTreeMap::new(),
             state: setup.state,
             builder,
             last_carry,
             dropped_items: 0,
             chain: setup.chain,
             wal: setup.wal,
-            bus: setup.bus,
+            net: setup.transport,
+            peers,
+            executed_to: setup.executed_to,
+            subscribers: BTreeMap::new(),
+            deal_index: None,
+            answered: BTreeMap::new(),
             inbox: setup.inbox,
             timers: BinaryHeap::new(),
             timer_kinds: BTreeMap::new(),
@@ -499,8 +534,10 @@ impl Validator {
             lane_log_pending: Vec::new(),
             committees,
             future: Vec::new(),
+            future_bytes: BTreeMap::new(),
             boundaries,
             boundary_dir: setup.boundary_dir,
+            session_guard: setup.session_guard,
             forced_txs,
             forced_waiters: BTreeSet::new(),
             forced_builders: BTreeMap::new(),
@@ -552,6 +589,7 @@ impl Validator {
             Duration::from_millis(self.shared.config.batch_interval_ms),
             Timer::LaneBatch,
         );
+        self.schedule(SIGNATURE_PULL_INTERVAL, Timer::SignaturePull);
         loop {
             let timeout = self
                 .timers
@@ -604,6 +642,10 @@ impl Validator {
                         Timer::LaneBatch,
                     );
                 }
+                Some(Timer::SignaturePull) => {
+                    self.pull_signatures();
+                    self.schedule(SIGNATURE_PULL_INTERVAL, Timer::SignaturePull);
+                }
                 None => {}
             }
         }
@@ -611,46 +653,12 @@ impl Validator {
 
     fn handle(&mut self, input: Input) {
         match input {
-            Input::Consensus { from, message } => {
-                match message_session(&message) {
-                    Some(session) if session > self.committees.session => {
-                        // From a session this validator reaches at its next
-                        // epoch boundary: keep it until then.
-                        if self.future.len() < MAX_FUTURE_MESSAGES {
-                            self.future.push((from, message));
-                        }
-                        return;
-                    }
-                    Some(session) if session < self.committees.session => return,
-                    _ => {}
-                }
-                let actions = self
-                    .core
-                    .handle(sion_consensus::Event::Message { from, message });
-                self.apply(actions.into());
-            }
-            Input::Submit(item) => {
-                if self.censors(&item) {
-                    return;
-                }
-                let actions = self.core.handle(sion_consensus::Event::Submit(item));
-                self.apply(actions.into());
-            }
-            Input::Lane { shard, request } => self.on_lane_request(shard, request),
-            Input::ForcedApproval { shard, tx, proof } => {
-                let actions = self.on_forced_approval(shard, tx, proof);
-                self.apply(actions.into());
-            }
+            Input::Peer { from, message } => self.on_peer(from, message),
+            Input::Submit(item) => self.submit_item(item),
             Input::Adversary { censored, censor } => {
                 self.censored = censored;
                 self.censoring = censor;
             }
-            Input::PulseSignature {
-                from,
-                pulse,
-                header,
-                signature,
-            } => self.on_pulse_signature(from, pulse, header, signature),
             Input::Query(query, reply) => {
                 let _ = reply.send(self.answer(query));
             }
@@ -658,33 +666,123 @@ impl Validator {
         }
     }
 
-    fn apply(&mut self, mut actions: VecDeque<Action>) {
-        while let Some(action) = actions.pop_front() {
+    /// A message from another node. Who sent it is the transport's word,
+    /// never the message's: consensus messages, Pulse signatures and forced
+    /// approvals count only from validators.
+    fn on_peer(&mut self, from: NodeId, message: PeerMessage) {
+        match message {
+            PeerMessage::Consensus { session, message } => {
+                if let Some(validator) = from.validator() {
+                    self.on_consensus(validator, session, message);
+                }
+            }
+            PeerMessage::Payload { item } => {
+                self.subscribe(from);
+                self.submit_item(item);
+            }
+            PeerMessage::Lane { shard, request } => {
+                self.subscribe(from);
+                self.handle_lane_request(shard, request, 0, from);
+            }
+            PeerMessage::PulseSignature {
+                pulse,
+                header,
+                signature,
+            } => {
+                if let Some(validator) = from.validator() {
+                    self.on_pulse_signature(validator, pulse, header, signature);
+                }
+            }
+            PeerMessage::PulseSignatureRequest { pulse } => {
+                if let Some(validator) = from.validator() {
+                    self.answer_signature_request(validator, pulse);
+                }
+            }
+            PeerMessage::ForcedApproval { shard, tx, proof } => {
+                if from.is_validator() {
+                    let actions = self.on_forced_approval(shard, tx, proof);
+                    self.apply(actions.into());
+                }
+            }
+            // For gateways.
+            PeerMessage::Approval { .. }
+            | PeerMessage::LaneRejected { .. }
+            | PeerMessage::Executed { .. } => {}
+        }
+    }
+
+    /// A consensus message in the envelope of `session`. Headers and
+    /// certificates name their session themselves, and the envelope must
+    /// agree; votes and sync requests are routed by the envelope alone.
+    fn on_consensus(&mut self, from: ValidatorId, session: u64, message: Message) {
+        if message_session(&message).is_some_and(|own| own != session) {
+            return;
+        }
+        if session > self.committees.session {
+            // From a session this validator reaches at its next epoch
+            // boundary: keep it until then, within a byte budget per sender
+            // (it is not verified yet).
+            let bytes = borsh::object_length(&message).unwrap_or(usize::MAX);
+            let held = self.future_bytes.entry(from).or_default();
+            if self.future.len() < MAX_FUTURE_MESSAGES
+                && held.saturating_add(bytes) <= MAX_FUTURE_BYTES_PER_SENDER
+            {
+                *held += bytes;
+                self.future.push((from, session, message));
+            }
+            return;
+        }
+        if session < self.committees.session {
+            return;
+        }
+        let actions = self
+            .core
+            .handle(sion_consensus::Event::Message { from, message });
+        self.apply(actions.into());
+    }
+
+    /// A payload item to propose, unless this validator censors it.
+    fn submit_item(&mut self, item: Vec<u8>) {
+        if self.censors(&item) {
+            return;
+        }
+        let actions = self.core.handle(sion_consensus::Event::Submit(item));
+        self.apply(actions.into());
+    }
+
+    /// Sends to every other validator of the network.
+    fn broadcast(&self, message: PeerMessage) {
+        self.net.send_all(&self.peers, &message);
+    }
+
+    /// Carries out actions of the current session's core.
+    fn apply(&mut self, actions: VecDeque<Action>) {
+        let session = self.committees.session;
+        self.apply_tagged(actions.into_iter().map(|a| (session, a)).collect());
+    }
+
+    /// Carries out actions, each tagged with the session of the core that
+    /// produced it: a message an old session's core still sends after the
+    /// boundary goes out in that session's envelope.
+    fn apply_tagged(&mut self, mut actions: VecDeque<(u64, Action)>) {
+        while let Some((session, action)) = actions.pop_front() {
             match action {
                 Action::Broadcast(message) => {
-                    let from = self.id;
-                    self.bus.broadcast(self.index, || Input::Consensus {
-                        from,
-                        message: message.clone(),
-                    });
+                    self.broadcast(PeerMessage::Consensus { session, message })
                 }
-                Action::Send { to, message } => self.bus.send(
-                    &to,
-                    Input::Consensus {
-                        from: self.id,
-                        message,
-                    },
+                Action::Send { to, message } => self.net.send(
+                    NodeId::Validator(to),
+                    PeerMessage::Consensus { session, message },
                 ),
-                Action::SetTimer { timer, after_ms } => self.schedule(
-                    Duration::from_millis(after_ms),
-                    Timer::Core(self.committees.session, timer),
-                ),
+                Action::SetTimer { timer, after_ms } => {
+                    self.schedule(Duration::from_millis(after_ms), Timer::Core(session, timer))
+                }
                 Action::Commit(commit) => {
                     self.anchors += 1;
-                    let session = self.committees.session;
                     for closed in self.builder.on_commit(&commit) {
                         let next = self.execute(closed);
-                        if self.committees.session != session {
+                        let current = self.committees.session;
+                        if current != session {
                             // The epoch's last Pulse executed and a new
                             // consensus session began. What the old session's
                             // core still asked for is stale: its later commits
@@ -693,16 +791,17 @@ impl Validator {
                             // for validators that have not reached the
                             // boundary yet.
                             let mut carried = Vec::new();
-                            for action in std::mem::take(&mut actions) {
+                            for (tag, action) in std::mem::take(&mut actions) {
                                 match action {
                                     Action::Commit(late) => carried.extend(late.items),
                                     Action::SetTimer { .. } => {}
-                                    other => actions.push_back(other),
+                                    other => actions.push_back((tag, other)),
                                 }
                             }
-                            actions.extend(self.propose_again(carried));
+                            let again = self.propose_again(carried);
+                            actions.extend(again.into_iter().map(|a| (current, a)));
                         }
-                        actions.extend(next);
+                        actions.extend(next.into_iter().map(|a| (current, a)));
                     }
                 }
                 Action::Evidence(evidence) => {
@@ -722,22 +821,24 @@ impl Validator {
 
     // ----- Lanes ----------------------------------------------------------
 
-    fn on_lane_request(&mut self, shard: ShardId, request: LaneRequest) {
-        self.handle_lane_request(shard, request, 0);
-    }
-
-    /// Checks a lane request and approves it. A request that fails only
-    /// because this validator is behind (an input it has not seen created
-    /// yet) waits up to [`PARK_PULSES`] Pulses instead of being refused, so
-    /// lagging validators do not split an object's locks.
-    fn handle_lane_request(&mut self, shard: ShardId, request: LaneRequest, parked_for: u64) {
+    /// Checks a lane request and approves it; the answer goes to
+    /// `requester`, the node that asked. A request that fails only because
+    /// this validator is behind (an input it has not seen created yet) waits
+    /// up to [`PARK_PULSES`] Pulses instead of being refused, so lagging
+    /// validators do not split an object's locks.
+    fn handle_lane_request(
+        &mut self,
+        shard: ShardId,
+        request: LaneRequest,
+        parked_for: u64,
+        requester: NodeId,
+    ) {
         let tx = request.tx;
         let Some(lane) = self.lanes.get_mut(&shard) else {
-            let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
-                tx,
-                validator: self.id,
-                reason: "not a member of this shard's committee".into(),
-            });
+            self.net.send(
+                requester,
+                PeerMessage::rejected(tx, "not a member of this shard's committee"),
+            );
             return;
         };
         let owners = StateOwners { state: &self.state };
@@ -756,13 +857,30 @@ impl Validator {
                         .map(|signed| owners.is_behind(&signed))
                         .unwrap_or(false);
                 if behind && parked_for < PARK_PULSES {
-                    self.parked.push((shard, request, parked_for + 1));
-                } else {
-                    let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
-                        tx,
-                        validator: self.id,
-                        reason,
+                    // A request asked again while it waits is already
+                    // waiting.
+                    if self
+                        .parked
+                        .iter()
+                        .any(|p| p.request.tx == tx && p.requester == requester)
+                    {
+                        return;
+                    }
+                    if self.parked.len() >= MAX_PARKED {
+                        self.net.send(
+                            requester,
+                            PeerMessage::rejected(tx, "this validator is behind; try again"),
+                        );
+                        return;
+                    }
+                    self.parked.push(Parked {
+                        shard,
+                        request,
+                        waited: parked_for + 1,
+                        requester,
                     });
+                } else {
+                    self.net.send(requester, PeerMessage::rejected(tx, reason));
                 }
                 return;
             }
@@ -771,21 +889,18 @@ impl Validator {
         let logged = request.clone();
         match lane.approve(request, &AlreadyChecked) {
             Ok(ApprovalStatus::Pending) => {
-                self.lane_waiters.insert(tx);
+                self.lane_waiters.entry(tx).or_default().insert(requester);
                 self.lane_log_pending.push((shard, logged));
             }
             Ok(ApprovalStatus::Sealed(proof)) => {
-                let _ = self
-                    .bus
-                    .gateway
-                    .send(GatewayInput::Approval { shard, tx, proof });
+                self.net
+                    .send(requester, PeerMessage::Approval { shard, tx, proof });
             }
             Err(rejection) => {
-                let _ = self.bus.gateway.send(GatewayInput::LaneRejected {
-                    tx,
-                    validator: self.id,
-                    reason: rejection.error.to_string(),
-                });
+                self.net.send(
+                    requester,
+                    PeerMessage::rejected(tx, rejection.error.to_string()),
+                );
             }
         }
     }
@@ -817,13 +932,15 @@ impl Validator {
                 continue;
             };
             for (tx, _) in &batch.approvals {
-                if self.lane_waiters.remove(tx) {
+                if let Some(requesters) = self.lane_waiters.remove(tx) {
                     if let Some(proof) = lane.approval_proof(tx) {
-                        let _ = self.bus.gateway.send(GatewayInput::Approval {
+                        let approval = PeerMessage::Approval {
                             shard: *shard,
                             tx: *tx,
                             proof: proof.clone(),
-                        });
+                        };
+                        let requesters: Vec<NodeId> = requesters.into_iter().collect();
+                        self.net.send_all(&requesters, &approval);
                     }
                 }
                 if self.forced_waiters.remove(tx) {
@@ -850,7 +967,7 @@ impl Validator {
         tx: TxDigest,
         proof: ApprovalProof,
     ) -> Vec<Action> {
-        self.bus.broadcast(self.index, || Input::ForcedApproval {
+        self.broadcast(PeerMessage::ForcedApproval {
             shard,
             tx,
             proof: proof.clone(),
@@ -1058,6 +1175,16 @@ impl Validator {
             }
         };
         self.last_carry = closed.carry;
+        if let Some(index) = &mut self.deal_index {
+            for id in output.effects.iter().flat_map(|e| e.created.iter()) {
+                if matches!(
+                    self.state.objects.get(id).map(|o| &o.data),
+                    Some(ObjectData::Deal(_))
+                ) {
+                    index.insert(*id);
+                }
+            }
+        }
         let (s, f, r) = output.status_counts();
         self.executed = (
             self.executed.0 + s as u64,
@@ -1209,15 +1336,15 @@ impl Validator {
                 committee: self.committees.signers.clone(),
                 signatures: BTreeMap::new(),
                 certificate: None,
+                executed_at: Instant::now(),
+                pulled_at: None,
             };
             collector.signatures.insert(self.id, signature.clone());
             self.collectors.insert(input.pulse, collector);
-            let (from, pulse) = (self.id, input.pulse);
-            self.bus.broadcast(self.index, || Input::PulseSignature {
-                from,
-                pulse,
+            self.broadcast(PeerMessage::PulseSignature {
+                pulse: input.pulse,
                 header: digest,
-                signature: signature.clone(),
+                signature,
             });
             for (from, header, signature) in self
                 .early_signatures
@@ -1246,12 +1373,7 @@ impl Validator {
                 validators,
             });
         }
-        if self.index == 0 {
-            let _ = self.bus.gateway.send(GatewayInput::Executed {
-                pulse: input.pulse,
-                digests: executed_digests.clone(),
-            });
-        }
+        self.report_executed(input.pulse, &executed_digests);
 
         self.history.insert(
             input.pulse,
@@ -1305,8 +1427,13 @@ impl Validator {
             self.lane_waiters.remove(digest);
         }
         // Requests that waited for this validator to catch up get another try.
-        for (shard, request, parked_for) in std::mem::take(&mut self.parked) {
-            self.handle_lane_request(shard, request, parked_for);
+        for parked in std::mem::take(&mut self.parked) {
+            self.handle_lane_request(
+                parked.shard,
+                parked.request,
+                parked.waited,
+                parked.requester,
+            );
         }
 
         // Committees follow the state: lane committees may have rotated, and
@@ -1324,6 +1451,125 @@ impl Validator {
         // Reveal for the next Pulse.
         actions.extend(self.submit_reveal());
         actions
+    }
+
+    /// Tells the nodes this validator reports to which transactions `pulse`
+    /// executed (one message per [`EXECUTED_CHUNK`] digests, and one even
+    /// when it executed none).
+    fn report_executed(&self, pulse: Pulse, digests: &[TxDigest]) {
+        let nodes: Vec<NodeId> = match &self.executed_to {
+            ExecutedReports::To(nodes) => nodes.clone(),
+            ExecutedReports::Subscribers => self.subscribers.keys().copied().collect(),
+        };
+        if nodes.is_empty() {
+            return;
+        }
+        if digests.is_empty() {
+            self.net.send_all(
+                &nodes,
+                &PeerMessage::Executed {
+                    pulse,
+                    digests: Vec::new(),
+                },
+            );
+        }
+        for chunk in digests.chunks(EXECUTED_CHUNK) {
+            self.net.send_all(
+                &nodes,
+                &PeerMessage::Executed {
+                    pulse,
+                    digests: chunk.to_vec(),
+                },
+            );
+        }
+    }
+
+    /// Remembers a node that hands this validator work, to report
+    /// executions to (only between machines: the devnet names its gateway).
+    fn subscribe(&mut self, node: NodeId) {
+        if self.executed_to != ExecutedReports::Subscribers {
+            return;
+        }
+        let now = Instant::now();
+        self.subscribers.insert(node, now);
+        if self.subscribers.len() > MAX_SUBSCRIBERS {
+            if let Some(stalest) = self
+                .subscribers
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(node, _)| *node)
+            {
+                self.subscribers.remove(&stalest);
+            }
+        }
+    }
+
+    /// Asks the committee members whose signatures are missing for those of
+    /// the Pulses that have stayed uncertified a while (newest first, any
+    /// Pulse still in the history): a lost signature would otherwise leave
+    /// this validator without the certificate.
+    fn pull_signatures(&mut self) {
+        let now = Instant::now();
+        let mut requests = Vec::new();
+        let due = self
+            .collectors
+            .iter_mut()
+            .rev()
+            .filter(|(_, collector)| {
+                collector.certificate.is_none()
+                    && now.duration_since(collector.executed_at) >= SIGNATURE_PULL_AFTER
+                    && collector
+                        .pulled_at
+                        .map_or(true, |at| now.duration_since(at) >= SIGNATURE_PULL_AFTER)
+            })
+            .take(SIGNATURE_PULLS_PER_TICK);
+        for (pulse, collector) in due {
+            collector.pulled_at = Some(now);
+            for (member, _) in collector.committee.members() {
+                if *member != self.id && !collector.signatures.contains_key(member) {
+                    requests.push((NodeId::Validator(*member), *pulse));
+                }
+            }
+        }
+        for (member, pulse) in requests {
+            self.net
+                .send(member, PeerMessage::PulseSignatureRequest { pulse });
+        }
+        self.answered
+            .retain(|_, at| now.duration_since(*at) < SIGNATURE_PULL_AFTER);
+        self.subscribers
+            .retain(|_, at| now.duration_since(*at) < SUBSCRIBER_TTL);
+    }
+
+    /// Sends `requester` this validator's signature on a Pulse it executed
+    /// and still holds, at most once per pull interval.
+    fn answer_signature_request(&mut self, requester: ValidatorId, pulse: Pulse) {
+        let Some(collector) = self.collectors.get(&pulse) else {
+            return;
+        };
+        let Some(signature) = collector.signatures.get(&self.id) else {
+            return;
+        };
+        if !collector.committee.contains(&requester) {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .answered
+            .get(&(pulse, requester))
+            .is_some_and(|at| now.duration_since(*at) < SIGNATURE_PULL_AFTER)
+        {
+            return;
+        }
+        self.answered.insert((pulse, requester), now);
+        self.net.send(
+            NodeId::Validator(requester),
+            PeerMessage::PulseSignature {
+                pulse,
+                header: collector.header.digest(),
+                signature: signature.clone(),
+            },
+        );
     }
 
     // ----- Committees and epochs ---------------------------------------------
@@ -1358,6 +1604,19 @@ impl Validator {
                 return actions;
             }
         };
+        if next.session != self.committees.session {
+            if let Some(dir) = &self.session_guard {
+                // Nothing is signed in a session before it is recorded: a
+                // validator that cannot record it stops here.
+                if let Err(error) = crate::node::claim_session(dir, next.session) {
+                    eprintln!(
+                        "validator {}: stops before session {}: {error}",
+                        self.index, next.session
+                    );
+                    return actions;
+                }
+            }
+        }
         for (shard, committee) in &next.lanes {
             if self.committees.lanes.get(shard) == Some(committee) {
                 continue;
@@ -1419,16 +1678,17 @@ impl Validator {
             carried.extend(old_core.take_mempool());
             self.dropped_items += old_core.oversized_items();
             actions.extend(self.propose_again(carried));
-            for (from, message) in std::mem::take(&mut self.future) {
-                match message_session(&message) {
-                    Some(session) if session == self.committees.session => actions.extend(
+            self.future_bytes.clear();
+            for (from, session, message) in std::mem::take(&mut self.future) {
+                if session == self.committees.session {
+                    actions.extend(
                         self.core
                             .handle(sion_consensus::Event::Message { from, message }),
-                    ),
-                    Some(session) if session > self.committees.session => {
-                        self.future.push((from, message))
-                    }
-                    _ => {}
+                    );
+                } else if session > self.committees.session {
+                    *self.future_bytes.entry(from).or_default() +=
+                        borsh::object_length(&message).unwrap_or(0);
+                    self.future.push((from, session, message));
                 }
             }
             // Light clients cross the boundary with the certificate of this
@@ -1629,6 +1889,7 @@ impl Validator {
                     forced_pending: summary.pending,
                     forced_overdue: summary.overdue,
                     dropped_items: self.dropped_items + self.core.oversized_items(),
+                    network: Some(self.net.stats()),
                 };
                 Ok(to_json(&status))
             }
@@ -1643,14 +1904,30 @@ impl Validator {
                 for coin in coins.iter().filter_map(|o| o.as_coin()) {
                     *balances.entry(coin.asset).or_default() += coin.amount.0;
                 }
+                let owned =
+                    |object: &&sion_exec::object::Object| object.owner == Owner::Account(account);
                 let allotments = self
                     .state
                     .objects
                     .values()
-                    .filter(|o| {
-                        o.owner == Owner::Account(account)
-                            && matches!(o.data, ObjectData::Allotment(_))
-                    })
+                    .filter(owned)
+                    .filter(|o| matches!(o.data, ObjectData::Allotment(_)))
+                    .cloned()
+                    .collect();
+                let delegations = self
+                    .state
+                    .objects
+                    .values()
+                    .filter(owned)
+                    .filter(|o| matches!(o.data, ObjectData::Delegation(_)))
+                    .cloned()
+                    .collect();
+                let custody = self
+                    .state
+                    .objects
+                    .values()
+                    .filter(owned)
+                    .filter(|o| matches!(o.data, ObjectData::Custody(_)))
                     .cloned()
                     .collect();
                 let view = AccountView {
@@ -1659,6 +1936,8 @@ impl Validator {
                     coins,
                     balances: balances.into_iter().map(|(a, v)| (a, Amount(v))).collect(),
                     allotments,
+                    delegations,
+                    custody,
                     pulse: self.state.pulse,
                 };
                 Ok(to_json(&view))
@@ -1857,6 +2136,37 @@ impl Validator {
                 "digest": self.shared.genesis_digest,
                 "spec": self.shared.genesis,
             })),
+            Query::Committees => Ok(crate::committees::encode_view(
+                self.state.pulse,
+                &self.committees,
+                &crate::committees::registered_keys(self.state.validators()),
+            )),
+            Query::Deals { open } => {
+                let pulse = self.state.pulse;
+                let index = self.deal_index.get_or_insert_with(|| {
+                    self.state
+                        .objects
+                        .values()
+                        .filter(|o| matches!(o.data, ObjectData::Deal(_)))
+                        .map(|o| o.id)
+                        .collect()
+                });
+                let objects = &self.state.objects;
+                let deals: Vec<Value> = index
+                    .iter()
+                    .filter_map(|id| match objects.get(id).map(|o| &o.data) {
+                        Some(ObjectData::Deal(deal))
+                            if !open
+                                || deal.state == sion_exec::storage::DealState::Open
+                                    && deal.accept_by > pulse =>
+                        {
+                            Some(json!({ "id": id, "deal": deal }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                Ok(json!({ "pulse": pulse, "deals": deals }))
+            }
             Query::Forced => {
                 let obligations = self.state.forced();
                 Ok(json!({

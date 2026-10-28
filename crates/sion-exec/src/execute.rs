@@ -22,23 +22,41 @@ use sion_core::hash::{hash_parts, Hash32};
 use sion_core::ids::{
     AccountId, AssetId, AtomId, ClaimId, ObjectId, Pulse, TxDigest, ValidatorId, Version,
 };
-use sion_core::Amount;
+use sion_core::{merkle, Amount};
 
 use crate::account::AccountState;
 use crate::assurance::AssuranceDomain;
-use crate::charter::{Allotment, Caveats, Charter, MAX_CHARTER_CHAIN};
+use crate::beacons::{next_boundary, slot_of, BEACON_INTERVAL};
+use crate::charter::{
+    AgentIdentity, Allotment, Caveats, Charter, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH,
+};
 use crate::claim::{claim_id, formulas, ClaimBody, Payload};
+use crate::delegation::{
+    cap_permille, resolve, within_cap, Delegation, DelegationBook, DelegationState, Standing,
+    COMMISSION_CEILING_PERMILLE, COMMISSION_STEP_PERMILLE, DELEGATION_SLASH_PERMILLE,
+    MIN_DELEGATION,
+};
 use crate::error::ExecError;
 use crate::escrow::BoundedTotal;
 use crate::market::{
     sealing_aad, BatchStatus, Market, OrderTerms, PendingOrder, Submission, SEALED_ORDER_DOMAIN,
 };
+use crate::memory::{MemoryLog, MAX_CONSISTENCY_PROOF};
 use crate::object::{
     created_id, well_known, Coin, CoordinationClass, Object, ObjectData, Owner, ScheduledEvent,
     Tombstone,
 };
 use crate::state::ChainConfig;
+use crate::storage::{
+    challenge_index, current_round, round_seed, Custody, CustodyProof, Deal, DealState,
+    ABANDON_ROUNDS, MAX_CHALLENGES, MAX_DEAL_LEAVES, MAX_LEAF_BYTES, MAX_LOCATOR, MAX_PATH,
+    MAX_PROOF_LEAVES, MAX_ROUNDS, MAX_ROUND_LENGTH, MIN_ROUND_LENGTH,
+};
 use crate::store::{ObjectStore, Overlay};
+use crate::task::{
+    result_formula, Task, TaskResult, TaskState, ATTESTATION_SCHEMA, MAX_REQUIRED, MAX_VERIFIERS,
+    RESULT_SCHEMA,
+};
 use crate::tx::{
     object_domain, signing_context, SignedTransaction, Transaction, TxKind, MAX_GRANT, MAX_INPUTS,
 };
@@ -481,6 +499,217 @@ pub enum Event {
         stream: ObjectId,
         /// Returned to the payer.
         refund: Amount,
+    },
+    /// An agent identity was registered (spec §5.35).
+    AgentRegistered {
+        /// The agent's id (its charter).
+        agent: ObjectId,
+        /// The account that signs for it.
+        account: AccountId,
+        /// Its allotment.
+        allotment: ObjectId,
+    },
+    /// A subagent was launched (spec §5.36).
+    AgentSpawned {
+        /// The subagent's id (its charter).
+        agent: ObjectId,
+        /// Its parent's charter.
+        parent: ObjectId,
+        /// The account that signs for it.
+        account: AccountId,
+        /// Its allotment.
+        allotment: ObjectId,
+    },
+    /// An agent replaced its card commitment (spec §5.37).
+    AgentCardSet {
+        /// The agent.
+        agent: ObjectId,
+        /// The new commitment.
+        card: Hash32,
+    },
+    /// A charter and its subtree were suspended (spec §5.38).
+    AgentSuspended {
+        /// The charter.
+        agent: ObjectId,
+        /// Who holds the suspension.
+        by: AccountId,
+    },
+    /// A suspension was lifted (spec §5.39).
+    AgentResumed {
+        /// The charter.
+        agent: ObjectId,
+    },
+    /// A memory log was opened (spec §5.40).
+    MemoryOpened {
+        /// The log.
+        log: ObjectId,
+        /// The account that writes it. (Not named `writer`: Borsh's derive
+        /// uses that name for its output.)
+        account: AccountId,
+        /// The agent identity it belongs to, if any.
+        agent: Option<ObjectId>,
+    },
+    /// A memory log's head moved forward (spec §5.41). The atoms it added
+    /// have this Pulse as their transaction time.
+    MemoryCommitted {
+        /// The log.
+        log: ObjectId,
+        /// Its size after the commit.
+        size: u64,
+        /// Its root after the commit.
+        root: Hash32,
+        /// The head's sequence number.
+        commits: u64,
+        /// Whether the log is now sealed.
+        sealed: bool,
+    },
+    /// A task was posted (spec §5.42).
+    TaskPosted {
+        /// The task.
+        task: ObjectId,
+        /// Who posted it.
+        poster: AccountId,
+        /// Its worker, or `None` for an open task.
+        worker: Option<AccountId>,
+        /// The escrow.
+        amount: Amount,
+        /// The last Pulse a result may be settled.
+        deadline: Pulse,
+    },
+    /// A task was settled: its worker was paid, and κ times the payment of
+    /// the result's backing reserved for the poster (spec §5.43).
+    TaskSettled {
+        /// The task.
+        task: ObjectId,
+        /// Who was paid.
+        worker: AccountId,
+        /// The result claim.
+        result: ClaimId,
+        /// What was paid.
+        amount: Amount,
+        /// The reservation.
+        reservation: Hash32,
+    },
+    /// A task was cancelled and its escrow refunded (spec §5.44).
+    TaskCancelled {
+        /// The task.
+        task: ObjectId,
+        /// What was refunded.
+        refund: Amount,
+        /// To whom.
+        to: AccountId,
+    },
+    /// Stake was delegated to a validator's pool (spec §5.45).
+    Delegated {
+        /// The delegation.
+        delegation: ObjectId,
+        /// The validator.
+        validator: ValidatorId,
+        /// The delegator.
+        owner: AccountId,
+        /// Stake added, in the stake asset.
+        amount: Amount,
+        /// Pool shares received.
+        shares: u128,
+    },
+    /// A delegation stopped earning and began unbonding (spec §5.46).
+    Undelegated {
+        /// The delegation.
+        delegation: ObjectId,
+        /// Rewards paid out, in USD.
+        rewards: Amount,
+        /// The first Pulse its stake can be withdrawn.
+        withdrawable_at: Pulse,
+    },
+    /// An unbonded delegation's stake was withdrawn (spec §5.47).
+    DelegationWithdrawn {
+        /// The delegation.
+        delegation: ObjectId,
+        /// Stake returned, in the stake asset.
+        amount: Amount,
+    },
+    /// A delegator collected its rewards (spec §5.48).
+    DelegatorRewardsClaimed {
+        /// The delegation.
+        delegation: ObjectId,
+        /// Rewards paid, in USD.
+        amount: Amount,
+    },
+    /// A validator set its pool's commission from the epoch's end (spec
+    /// §5.49).
+    CommissionSet {
+        /// The validator.
+        validator: ValidatorId,
+        /// The commission, in thousandths.
+        permille: u16,
+    },
+    /// An equivocating validator's pool lost part of its stake (spec §5.30).
+    PoolSlashed {
+        /// The offender.
+        validator: ValidatorId,
+        /// Stake forfeited from the pool, in the stake asset.
+        amount: Amount,
+    },
+    /// A storage deal was posted (spec §5.50).
+    DealPosted {
+        /// The deal.
+        deal: ObjectId,
+        /// Who pays.
+        client: AccountId,
+        /// The provider named, or `None` for an open deal.
+        provider: Option<AccountId>,
+        /// Leaves.
+        size: u64,
+        /// Paid per proven round.
+        price: Amount,
+        /// Rounds.
+        rounds: u32,
+        /// Collateral required.
+        collateral: Amount,
+    },
+    /// A provider accepted a deal (spec §5.51).
+    DealAccepted {
+        /// The deal.
+        deal: ObjectId,
+        /// The provider.
+        provider: AccountId,
+        /// Its custody record.
+        custody: ObjectId,
+        /// The first Pulse of round 0.
+        start: Pulse,
+    },
+    /// A provider proved a round of a deal (spec §5.52).
+    StorageProven {
+        /// The deal.
+        deal: ObjectId,
+        /// The custody record.
+        custody: ObjectId,
+        /// The round.
+        round: u32,
+    },
+    /// A provider collected for the rounds it proved (spec §5.53).
+    DealSettled {
+        /// The deal.
+        deal: ObjectId,
+        /// Rounds paid for.
+        rounds: u32,
+        /// What was paid.
+        amount: Amount,
+    },
+    /// A deal was closed (spec §5.54).
+    DealClosed {
+        /// The deal.
+        deal: ObjectId,
+        /// Escrow returned to the client.
+        refund: Amount,
+        /// Paid to the provider for proven rounds not yet paid.
+        paid: Amount,
+        /// Collateral returned to the provider.
+        returned: Amount,
+        /// Collateral forfeited to the treasury.
+        forfeited: Amount,
+        /// Rounds missed.
+        missed: u32,
     },
 }
 
@@ -1203,65 +1432,26 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             funding,
             agent_bond,
         } => {
-            if caveats.expires_at <= pulse {
-                return Err(ExecError::Invalid(
-                    "charter would already be expired".into(),
-                ));
-            }
-            if caveats.window == 0 {
-                return Err(ExecError::Invalid(
-                    "window must be at least one Pulse".into(),
-                ));
-            }
-            run.draw(AssetId::usd(), funding.checked_add(*agent_bond)?)?;
-            let charter_id = created_id(&run.digest, run.next_index);
-            let label = format!("charter:{charter_id}");
-            let agent_atom = bond_atom(AtomClass::Economic, &tx.sender, &label);
-            let domain = object_domain("charter", &charter_id);
-            let created = run.create(
-                Owner::Shared(domain),
-                ObjectData::Charter(Charter {
-                    principal: tx.sender,
-                    agent: *agent,
-                    caveats: caveats.clone(),
-                    agent_atom: agent_atom.id,
-                    backer: tx.sender,
-                    revoked_at: None,
-                    parent: None,
-                    allotments: BTreeSet::new(),
-                    created_at: pulse,
-                }),
-            );
-            debug_assert_eq!(created, charter_id);
-            let allotment = run.create(
-                Owner::Account(*agent),
-                ObjectData::Allotment(Allotment {
-                    source: charter_id,
-                    writer: *agent,
-                    asset: AssetId::usd(),
-                    remaining: *funding,
-                    caveats: Some(caveats.clone()),
-                    window_start: pulse,
-                    spent_in_window: Amount::ZERO,
-                }),
-            );
-            let mut charter = run.load(&charter_id)?;
-            if let ObjectData::Charter(c) = &mut charter.data {
-                c.allotments.insert(allotment);
-            }
-            run.store(charter);
-            run.effects.deferred.push(Deferred::RegisterAtom {
-                atom: agent_atom.clone(),
-            });
-            if *agent_bond > Amount::ZERO {
-                run.effects.deferred.push(Deferred::PostBond {
-                    atom: agent_atom,
-                    owner: tx.sender,
-                    amount: *agent_bond,
-                });
-            }
-            run.event(Event::CharterCreated {
-                charter: charter_id,
+            let (charter, allotment) =
+                create_root_charter(run, agent, caveats, *funding, *agent_bond, None)?;
+            run.event(Event::CharterCreated { charter, allotment });
+        }
+        TxKind::RegisterAgent {
+            agent,
+            card,
+            caveats,
+            funding,
+            agent_bond,
+        } => {
+            let identity = AgentIdentity {
+                card: *card,
+                depth: 0,
+            };
+            let (charter, allotment) =
+                create_root_charter(run, agent, caveats, *funding, *agent_bond, Some(identity))?;
+            run.event(Event::AgentRegistered {
+                agent: charter,
+                account: *agent,
                 allotment,
             });
         }
@@ -1295,6 +1485,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     "delegated caveats must be at least as strict".into(),
                 ));
             }
+            carve_window(&mut allotment, &parent_caveats, &caveats.max_per_window)?;
             allotment.remaining = allotment.remaining.checked_sub(*amount).map_err(|_| {
                 ExecError::InsufficientFunds {
                     need: amount.to_string(),
@@ -1316,6 +1507,8 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     parent: Some(*charter),
                     allotments: BTreeSet::new(),
                     created_at: pulse,
+                    suspended_by: None,
+                    identity: None,
                 }),
             );
             let child_allotment = run.create(
@@ -1328,6 +1521,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     caveats: Some(caveats.clone()),
                     window_start: pulse,
                     spent_in_window: Amount::ZERO,
+                    carved_window: Amount::ZERO,
                 }),
             );
             let mut child = run.load(&child_id)?;
@@ -1403,17 +1597,17 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             });
         }
         TxKind::RevokeCharter { charter } => {
-            let mut object = run.load(charter)?;
-            let ObjectData::Charter(state) = &mut object.data else {
-                return Err(ExecError::Invalid("not a charter".into()));
-            };
-            if state.principal != tx.sender {
+            let state = load_charter(run, charter)?;
+            if state.agent != tx.sender && !is_overseer(run, &state, &tx.sender)? {
                 return Err(ExecError::Unauthorized(
-                    "only the principal may revoke".into(),
+                    "only the agent or an overseer (its backer, principal or an ancestor's agent) may revoke".into(),
                 ));
             }
-            if state.revoked_at.is_none() {
-                state.revoked_at = Some(pulse);
+            let mut object = run.load(charter)?;
+            if let ObjectData::Charter(state) = &mut object.data {
+                if state.revoked_at.is_none() {
+                    state.revoked_at = Some(pulse);
+                }
             }
             run.store(object);
             run.event(Event::CharterRevoked { charter: *charter });
@@ -1427,7 +1621,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             }
             let dead = state.revoked_at.is_some()
                 || pulse > state.caveats.expires_at
-                || check_charter_chain(run, charter).is_err();
+                || charter_chain(run, charter, false).is_err();
             if !dead {
                 return Err(ExecError::Invalid(
                     "the charter is still live; revoke it first".into(),
@@ -1446,6 +1640,113 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 charter: *charter,
                 amount: total,
             });
+        }
+        TxKind::SpawnAgents { charter, children } => {
+            if children.is_empty() || children.len() > MAX_SPAWN_BATCH {
+                return Err(ExecError::Invalid(format!(
+                    "between 1 and {MAX_SPAWN_BATCH} subagents per transaction"
+                )));
+            }
+            let allotment_id = run.input(1)?;
+            let mut allotment = load_allotment(run, &allotment_id)?;
+            let parent = load_charter(run, charter)?;
+            let depth = check_charter_chain(run, charter)?;
+            if depth >= MAX_CHARTER_CHAIN {
+                return Err(ExecError::Invalid("delegation chain too deep".into()));
+            }
+            if allotment.source != *charter
+                || allotment.writer != tx.sender
+                || parent.agent != tx.sender
+            {
+                return Err(ExecError::Invalid(
+                    "allotment does not belong to this charter's agent".into(),
+                ));
+            }
+            let own = allotment
+                .caveats
+                .clone()
+                .ok_or_else(|| ExecError::Invalid("not a charter allotment".into()))?;
+            if !own.may_delegate {
+                return Err(ExecError::Caveat("delegation not allowed".into()));
+            }
+            for child in children {
+                if !child.caveats.attenuates(&own) {
+                    return Err(ExecError::Caveat(
+                        "a subagent's caveats must be at least as strict as its parent's".into(),
+                    ));
+                }
+                carve_window(&mut allotment, &own, &child.caveats.max_per_window)?;
+                allotment.remaining =
+                    allotment.remaining.checked_sub(child.budget).map_err(|_| {
+                        ExecError::InsufficientFunds {
+                            need: child.budget.to_string(),
+                            have: allotment.remaining.to_string(),
+                        }
+                    })?;
+            }
+            store_allotment(run, allotment_id, allotment)?;
+            for child in children {
+                spawn_one(run, charter, &parent, child, depth)?;
+            }
+        }
+        TxKind::SetAgentCard { charter, card } => {
+            let state = load_charter(run, charter)?;
+            if state.identity.is_none() {
+                return Err(ExecError::Invalid("not an agent identity".into()));
+            }
+            if state.agent != tx.sender {
+                return Err(ExecError::Unauthorized(
+                    "only the agent may set its card".into(),
+                ));
+            }
+            check_charter_chain(run, charter)?;
+            let mut object = run.load(charter)?;
+            if let ObjectData::Charter(c) = &mut object.data {
+                if let Some(identity) = &mut c.identity {
+                    identity.card = *card;
+                }
+            }
+            run.store(object);
+            run.event(Event::AgentCardSet {
+                agent: *charter,
+                card: *card,
+            });
+        }
+        TxKind::SuspendAgent { charter } => {
+            let state = load_charter(run, charter)?;
+            if !is_overseer(run, &state, &tx.sender)? {
+                return Err(ExecError::Unauthorized(
+                    "only an overseer (its backer, principal or an ancestor's agent) may suspend"
+                        .into(),
+                ));
+            }
+            let mut object = run.load(charter)?;
+            let mut by = tx.sender;
+            if let ObjectData::Charter(c) = &mut object.data {
+                by = *c.suspended_by.get_or_insert(tx.sender);
+            }
+            run.store(object);
+            run.event(Event::AgentSuspended {
+                agent: *charter,
+                by,
+            });
+        }
+        TxKind::ResumeAgent { charter } => {
+            let state = load_charter(run, charter)?;
+            let Some(by) = state.suspended_by else {
+                return Err(ExecError::Invalid("the charter is not suspended".into()));
+            };
+            if tx.sender != by && tx.sender != state.backer {
+                return Err(ExecError::Unauthorized(
+                    "only the suspender or the backer may resume".into(),
+                ));
+            }
+            let mut object = run.load(charter)?;
+            if let ObjectData::Charter(c) = &mut object.data {
+                c.suspended_by = None;
+            }
+            run.store(object);
+            run.event(Event::AgentResumed { agent: *charter });
         }
         TxKind::CreateBounded {
             label,
@@ -1490,6 +1791,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                         caveats: None,
                         window_start: pulse,
                         spent_in_window: Amount::ZERO,
+                        carved_window: Amount::ZERO,
                     }),
                 );
                 record.insert(id, (*writer, *amount));
@@ -1577,6 +1879,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     caveats: None,
                     window_start: pulse,
                     spent_in_window: Amount::ZERO,
+                    carved_window: Amount::ZERO,
                 }),
             );
             run.event(Event::AllotmentUsed {
@@ -1970,20 +2273,36 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 ));
             }
             // Stake and unclaimed rewards are forfeited; the reporter gets
-            // its share of each, the treasury the rest.
+            // its share of each, the treasury the rest and the pool's
+            // slashed part (a share of the pool would pay an operator with
+            // a large pool for reporting itself).
             let (stake, rewards) = (record.stake, record.rewards);
             record.stake = Amount::ZERO;
             record.rewards = Amount::ZERO;
             record.status = ValidatorStatus::Slashed { at: pulse };
             run.store_validators(object, set);
+            // Its pool loses a share of its stake, pending and unbonding
+            // delegations included: every share is worth less.
+            let mut pool_slashed = None;
+            if let Some((book_object, mut book)) = load_book(run)? {
+                if let Some(pool) = book.pools.get_mut(&offender) {
+                    let slashed = permille_of(pool.value, DELEGATION_SLASH_PERMILLE);
+                    pool.value = pool.value.checked_sub(slashed)?;
+                    pool_slashed = Some(slashed);
+                    store_book(run, book_object, book);
+                }
+            }
             let mut paid = [Amount::ZERO; 2];
-            for (index, (asset, forfeited)) in [(asset, stake), (AssetId::usd(), rewards)]
-                .into_iter()
-                .enumerate()
+            for (index, (asset, own, pooled)) in [
+                (asset, stake, pool_slashed.unwrap_or(Amount::ZERO)),
+                (AssetId::usd(), rewards, Amount::ZERO),
+            ]
+            .into_iter()
+            .enumerate()
             {
-                paid[index] = permille_of(forfeited, share);
+                paid[index] = permille_of(own, share);
                 run.mint_coin(tx.sender, asset, paid[index]);
-                let rest = forfeited.checked_sub(paid[index])?;
+                let rest = own.checked_add(pooled)?.checked_sub(paid[index])?;
                 if rest > Amount::ZERO {
                     run.effects.deferred.push(Deferred::Treasury {
                         asset,
@@ -1996,6 +2315,221 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 amount: stake,
                 reporter: tx.sender,
                 reward: paid[0],
+            });
+            if let Some(amount) = pool_slashed {
+                run.event(Event::PoolSlashed {
+                    validator: offender,
+                    amount,
+                });
+            }
+        }
+        TxKind::DelegateStake { validator, amount } => {
+            if *amount < MIN_DELEGATION {
+                return Err(ExecError::Invalid(format!(
+                    "a delegation must be at least {MIN_DELEGATION}"
+                )));
+            }
+            let (_, set) = run.validators()?;
+            match set.validators.get(validator) {
+                Some(record) if eligible(record) => {}
+                Some(_) => {
+                    return Err(ExecError::Invalid(
+                        "the validator is neither active nor joining".into(),
+                    ))
+                }
+                None => return Err(ExecError::Invalid("unknown validator".into())),
+            }
+            run.draw(set.params.stake_asset, *amount)?;
+            let (book_object, mut book) = match load_book(run)? {
+                Some(loaded) => loaded,
+                None => (new_book(), DelegationBook::default()),
+            };
+            // No validator may hold more than the weight cap.
+            let mut total = Amount::ZERO;
+            let mut count = 0u64;
+            for record in set.validators.values().filter(|r| eligible(r)) {
+                count += 1;
+                total = total.checked_add(bonded_stake(record, &book)?)?;
+            }
+            let own = bonded_stake(&set.validators[validator], &book)?.checked_add(*amount)?;
+            let all = total.checked_add(*amount)?;
+            if !within_cap(own, all, count).ok_or_else(overflow)? {
+                return Err(ExecError::Invalid(format!(
+                    "the delegation would give the validator more than {}‰ of the bonded stake",
+                    cap_permille(count)
+                )));
+            }
+            let pool = book.pools.entry(*validator).or_default();
+            let shares = pool
+                .shares_for(*amount)
+                .ok_or_else(|| ExecError::Invalid("the pool has shares but no stake".into()))?;
+            if shares == 0 {
+                return Err(ExecError::Invalid("the delegation buys no shares".into()));
+            }
+            pool.pending = pool.pending.checked_add(shares).ok_or_else(overflow)?;
+            pool.pending_delegations = pool
+                .pending_delegations
+                .checked_add(1)
+                .ok_or_else(overflow)?;
+            pool.value = pool.value.checked_add(*amount)?;
+            let delegation = run.create(
+                Owner::Account(tx.sender),
+                ObjectData::Delegation(Delegation {
+                    owner: tx.sender,
+                    validator: *validator,
+                    shares,
+                    state: DelegationState::Pending { epoch: set.epoch },
+                    since: pulse,
+                }),
+            );
+            store_book(run, book_object, book);
+            run.event(Event::Delegated {
+                delegation,
+                validator: *validator,
+                owner: tx.sender,
+                amount: *amount,
+                shares,
+            });
+        }
+        TxKind::Undelegate => {
+            let id = run.input(1)?;
+            let (mut object, mut delegation) = load_delegation(run, &id, &tx.sender)?;
+            let (_, set) = run.validators()?;
+            let (book_object, mut book) = existing_book(run)?;
+            let pool = book
+                .pools
+                .get_mut(&delegation.validator)
+                .ok_or_else(|| ExecError::Invalid("the validator has no pool".into()))?;
+            let shares = delegation.shares;
+            let rewards = match resolve(&mut delegation, pool, set.epoch)
+                .map_err(|e| ExecError::Invalid(e.into()))?
+            {
+                Standing::Pending => {
+                    pool.pending = pool.pending.checked_sub(shares).ok_or_else(overflow)?;
+                    pool.pending_delegations = pool
+                        .pending_delegations
+                        .checked_sub(1)
+                        .ok_or_else(overflow)?;
+                    Amount::ZERO
+                }
+                Standing::Earning { entry } => {
+                    let owed = pool.owed(shares, entry).ok_or_else(overflow)?;
+                    pool.earning = pool.earning.checked_sub(shares).ok_or_else(overflow)?;
+                    pool.rewards_held = pool.rewards_held.checked_sub(owed)?;
+                    owed
+                }
+            };
+            pool.unbonding = pool.unbonding.checked_add(shares).ok_or_else(overflow)?;
+            let withdrawable_at = Pulse(pulse.0.saturating_add(set.params.unbonding));
+            delegation.state = DelegationState::Unbonding {
+                at: withdrawable_at,
+            };
+            object.data = ObjectData::Delegation(delegation);
+            run.store(object);
+            store_book(run, book_object, book);
+            run.mint_coin(tx.sender, AssetId::usd(), rewards);
+            run.event(Event::Undelegated {
+                delegation: id,
+                rewards,
+                withdrawable_at,
+            });
+        }
+        TxKind::WithdrawDelegation => {
+            let id = run.input(1)?;
+            let (_, delegation) = load_delegation(run, &id, &tx.sender)?;
+            match delegation.state {
+                DelegationState::Unbonding { at } if at <= pulse => {}
+                DelegationState::Unbonding { at } => {
+                    return Err(ExecError::Invalid(format!(
+                        "the delegation is withdrawable from Pulse {at}"
+                    )))
+                }
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "only an unbonding delegation can be withdrawn".into(),
+                    ))
+                }
+            }
+            let (_, set) = run.validators()?;
+            let (book_object, mut book) = existing_book(run)?;
+            let pool = book
+                .pools
+                .get_mut(&delegation.validator)
+                .ok_or_else(|| ExecError::Invalid("the validator has no pool".into()))?;
+            let amount = pool.value_of(delegation.shares).ok_or_else(overflow)?;
+            pool.unbonding = pool
+                .unbonding
+                .checked_sub(delegation.shares)
+                .ok_or_else(overflow)?;
+            pool.value = pool.value.checked_sub(amount)?;
+            store_book(run, book_object, book);
+            run.consume(&id)?;
+            run.mint_coin(tx.sender, set.params.stake_asset, amount);
+            run.event(Event::DelegationWithdrawn {
+                delegation: id,
+                amount,
+            });
+        }
+        TxKind::ClaimDelegatorRewards => {
+            let id = run.input(1)?;
+            let (mut object, mut delegation) = load_delegation(run, &id, &tx.sender)?;
+            let (_, set) = run.validators()?;
+            let (book_object, mut book) = existing_book(run)?;
+            let pool = book
+                .pools
+                .get_mut(&delegation.validator)
+                .ok_or_else(|| ExecError::Invalid("the validator has no pool".into()))?;
+            let Standing::Earning { entry } = resolve(&mut delegation, pool, set.epoch)
+                .map_err(|e| ExecError::Invalid(e.into()))?
+            else {
+                return Err(ExecError::Invalid(
+                    "the delegation earns from the epoch's end".into(),
+                ));
+            };
+            let amount = pool.owed(delegation.shares, entry).ok_or_else(overflow)?;
+            if amount == Amount::ZERO {
+                return Err(ExecError::Invalid("no rewards to claim".into()));
+            }
+            pool.rewards_held = pool.rewards_held.checked_sub(amount)?;
+            delegation.state = DelegationState::Earning {
+                entry: pool.reward_per_share,
+            };
+            object.data = ObjectData::Delegation(delegation);
+            run.store(object);
+            store_book(run, book_object, book);
+            run.mint_coin(tx.sender, AssetId::usd(), amount);
+            run.event(Event::DelegatorRewardsClaimed {
+                delegation: id,
+                amount,
+            });
+        }
+        TxKind::SetCommission {
+            validator,
+            permille,
+        } => {
+            let (_, mut set) = run.validators()?;
+            operated(&mut set, validator, &tx.sender)?;
+            if *permille > COMMISSION_CEILING_PERMILLE {
+                return Err(ExecError::Invalid(format!(
+                    "the commission may be at most {COMMISSION_CEILING_PERMILLE}‰"
+                )));
+            }
+            let (book_object, mut book) = match load_book(run)? {
+                Some(loaded) => loaded,
+                None => (new_book(), DelegationBook::default()),
+            };
+            let pool = book.pools.entry(*validator).or_default();
+            let current = pool.commission_permille;
+            if pool.shares() > 0 && *permille > current.saturating_add(COMMISSION_STEP_PERMILLE) {
+                return Err(ExecError::Invalid(format!(
+                    "a commission rises by at most {COMMISSION_STEP_PERMILLE}‰ at a time"
+                )));
+            }
+            pool.next_commission = Some(*permille);
+            store_book(run, book_object, book);
+            run.event(Event::CommissionSet {
+                validator: *validator,
+                permille: *permille,
             });
         }
         TxKind::OpenStream {
@@ -2230,8 +2764,876 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 refund,
             });
         }
+        TxKind::OpenMemory { agent, policy } => {
+            if let Some(agent_id) = agent {
+                let charter = load_charter(run, agent_id)?;
+                if charter.identity.is_none() {
+                    return Err(ExecError::Invalid("not an agent identity".into()));
+                }
+                if charter.agent != tx.sender {
+                    return Err(ExecError::Unauthorized(
+                        "only the agent may open a memory log for itself".into(),
+                    ));
+                }
+                check_charter_chain(run, agent_id)?;
+            }
+            let log = created_id(&run.digest, run.next_index);
+            run.create(
+                Owner::Account(tx.sender),
+                ObjectData::MemoryLog(MemoryLog {
+                    writer: tx.sender,
+                    agent: *agent,
+                    policy: *policy,
+                    size: 0,
+                    root: merkle::empty_root(),
+                    index: Hash32::ZERO,
+                    manifest: Hash32::ZERO,
+                    commits: 0,
+                    opened_at: pulse,
+                    committed_at: pulse,
+                    sealed: false,
+                }),
+            );
+            run.event(Event::MemoryOpened {
+                log,
+                account: tx.sender,
+                agent: *agent,
+            });
+        }
+        TxKind::CommitMemory {
+            size,
+            root,
+            index,
+            manifest,
+            proof,
+            seal,
+        } => {
+            let log_id = run.input(1)?;
+            let mut object = run.load(&log_id)?;
+            let ObjectData::MemoryLog(log) = &mut object.data else {
+                return Err(ExecError::Invalid("input 1 is not a memory log".into()));
+            };
+            if log.writer != tx.sender {
+                return Err(ExecError::Unauthorized(
+                    "only the writer may commit to a memory log".into(),
+                ));
+            }
+            if log.sealed {
+                return Err(ExecError::Invalid("the memory log is sealed".into()));
+            }
+            if let Some(agent) = log.agent {
+                check_charter_chain(run, &agent)?;
+            }
+            if proof.len() > MAX_CONSISTENCY_PROOF {
+                return Err(ExecError::Invalid(format!(
+                    "a consistency proof has at most {MAX_CONSISTENCY_PROOF} hashes"
+                )));
+            }
+            if *size < log.size {
+                return Err(ExecError::Invalid(format!(
+                    "a memory log only grows: it holds {} atoms, not {size}",
+                    log.size
+                )));
+            }
+            if *size == 0 && *root != merkle::empty_root() {
+                return Err(ExecError::Invalid("an empty log has the empty root".into()));
+            }
+            merkle::verify_consistency(&log.root, log.size, root, *size, proof).map_err(|e| {
+                ExecError::Invalid(format!("the new head does not extend the log: {e}"))
+            })?;
+            log.size = *size;
+            log.root = *root;
+            log.index = *index;
+            log.manifest = *manifest;
+            log.commits = log.commits.saturating_add(1);
+            log.committed_at = pulse;
+            log.sealed = *seal;
+            let event = Event::MemoryCommitted {
+                log: log_id,
+                size: *size,
+                root: *root,
+                commits: log.commits,
+                sealed: *seal,
+            };
+            run.store(object);
+            run.event(event);
+        }
+        TxKind::PostTask {
+            spec,
+            acceptance,
+            worker,
+            amount,
+            deadline,
+            charter,
+        } => {
+            if *amount == Amount::ZERO {
+                return Err(ExecError::Invalid("a task needs a positive escrow".into()));
+            }
+            let latest = pulse.0.saturating_add(crate::market::MAX_PERIOD);
+            if deadline.0 <= pulse.0 || deadline.0 > latest {
+                return Err(ExecError::Invalid(format!(
+                    "a task's deadline must be 1 to {} Pulses away",
+                    crate::market::MAX_PERIOD
+                )));
+            }
+            if acceptance.requires.len() > MAX_REQUIRED
+                || acceptance.verifiers.len() > MAX_VERIFIERS
+            {
+                return Err(ExecError::Invalid(format!(
+                    "a task requires at most {MAX_REQUIRED} claims and names at most {MAX_VERIFIERS} verifiers"
+                )));
+            }
+            if acceptance.detection_permille > 1000 {
+                return Err(ExecError::Invalid("detection factor above one".into()));
+            }
+            if acceptance.reliance == 0 || acceptance.reliance > crate::market::MAX_PERIOD {
+                return Err(ExecError::Invalid(format!(
+                    "reliance must last 1 to {} Pulses",
+                    crate::market::MAX_PERIOD
+                )));
+            }
+            let (funder, refund_to) = match charter {
+                None => {
+                    run.draw(AssetId::usd(), *amount)?;
+                    (None, tx.sender)
+                }
+                Some(charter_id) => {
+                    let allotment_id = run.input(1)?;
+                    let mut allotment = load_allotment(run, &allotment_id)?;
+                    let state = load_charter(run, charter_id)?;
+                    check_charter_chain(run, charter_id)?;
+                    if allotment.source != *charter_id
+                        || allotment.writer != tx.sender
+                        || state.agent != tx.sender
+                    {
+                        return Err(ExecError::Invalid(
+                            "allotment does not belong to this charter's agent".into(),
+                        ));
+                    }
+                    let caveats = allotment
+                        .caveats
+                        .clone()
+                        .ok_or_else(|| ExecError::Invalid("not a charter allotment".into()))?;
+                    if worker.is_none() && caveats.payees.is_some() {
+                        return Err(ExecError::Caveat(
+                            "an agent limited to listed payees cannot post an open task".into(),
+                        ));
+                    }
+                    let evidence_ok = caveats.evidence_policy == acceptance.policy;
+                    let payee = worker.unwrap_or(tx.sender);
+                    allotment.spend(&payee, *amount, pulse, Some(evidence_ok))?;
+                    store_allotment(run, allotment_id, allotment)?;
+                    (Some(*charter_id), state.backer)
+                }
+            };
+            let task = created_id(&run.digest, run.next_index);
+            run.create(
+                Owner::Shared(object_domain("task", &task)),
+                ObjectData::Task(Box::new(Task {
+                    poster: tx.sender,
+                    funder,
+                    refund_to,
+                    spec: *spec,
+                    acceptance: acceptance.clone(),
+                    worker: *worker,
+                    amount: *amount,
+                    deadline: *deadline,
+                    posted_at: pulse,
+                    state: TaskState::Open,
+                })),
+            );
+            run.event(Event::TaskPosted {
+                task,
+                poster: tx.sender,
+                worker: *worker,
+                amount: *amount,
+                deadline: *deadline,
+            });
+        }
+        TxKind::SettleTask {
+            task,
+            result,
+            attestations,
+        } => {
+            let mut task_object = run.load(task)?;
+            let ObjectData::Task(state) = &task_object.data else {
+                return Err(ExecError::Invalid(format!("{task} is not a task")));
+            };
+            let mut state = (**state).clone();
+            if state.state != TaskState::Open {
+                return Err(ExecError::Invalid("the task is not open".into()));
+            }
+            if pulse > state.deadline {
+                return Err(ExecError::Invalid("the task's deadline has passed".into()));
+            }
+            if let Some(worker) = state.worker {
+                if worker != tx.sender {
+                    return Err(ExecError::Unauthorized(
+                        "only the task's worker may settle it".into(),
+                    ));
+                }
+            }
+            let result_id = claim_id(&tx.sender, result);
+            let (registry_object, mut domain) = run.assurance()?;
+            let record = match domain.registry.claim(&result_id) {
+                Some(record) if record.status == ClaimStatus::Active => record.clone(),
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "the result is not an active claim of the sender".into(),
+                    ))
+                }
+            };
+            if result.schema != RESULT_SCHEMA {
+                return Err(ExecError::Invalid(format!(
+                    "a result claim has schema {RESULT_SCHEMA}"
+                )));
+            }
+            let Payload::Public(bytes) = &result.payload else {
+                return Err(ExecError::Invalid("a result's payload is public".into()));
+            };
+            match decode::<TaskResult>(bytes) {
+                Ok(committed) if committed.task == *task => {}
+                _ => {
+                    return Err(ExecError::Invalid(
+                        "the result does not commit to this task".into(),
+                    ))
+                }
+            }
+            if attestations.len() > MAX_VERIFIERS {
+                return Err(ExecError::Invalid(format!(
+                    "at most {MAX_VERIFIERS} attestations"
+                )));
+            }
+            let mut verifiers = BTreeSet::new();
+            let mut attested = Vec::with_capacity(attestations.len());
+            for (verifier, body) in attestations {
+                if !verifiers.insert(*verifier) {
+                    return Err(ExecError::Invalid("one attestation per verifier".into()));
+                }
+                if !state.acceptance.verifiers.contains(verifier) {
+                    return Err(ExecError::Invalid(
+                        "an attestation from a verifier the task does not name".into(),
+                    ));
+                }
+                let id = claim_id(verifier, body);
+                match domain.registry.claim(&id) {
+                    Some(record) if record.status == ClaimStatus::Active => {}
+                    _ => {
+                        return Err(ExecError::Invalid(
+                            "an attestation is not an active claim".into(),
+                        ))
+                    }
+                }
+                if body.schema != ATTESTATION_SCHEMA || body.payload != result.payload {
+                    return Err(ExecError::Invalid(
+                        "an attestation must attest this result's output".into(),
+                    ));
+                }
+                attested.push(id);
+            }
+            let expected = result_formula(&tx.sender, &attested, &state.acceptance.requires);
+            if record.formula != expected {
+                return Err(ExecError::Invalid(
+                    "the result's formula is not the one the task requires".into(),
+                ));
+            }
+            if record.adjudicator != state.acceptance.adjudicator {
+                return Err(ExecError::Invalid(
+                    "the result must name the task's adjudicator".into(),
+                ));
+            }
+            if result.detection_permille > state.acceptance.detection_permille {
+                return Err(ExecError::Invalid(
+                    "the result declares a detection factor above the task's".into(),
+                ));
+            }
+            let until = Pulse(pulse.0.saturating_add(state.acceptance.reliance));
+            let (decision, reservation) = accept_and_reserve(
+                &mut domain.registry,
+                &state.acceptance.policy,
+                state.refund_to,
+                &result_id,
+                state.amount,
+                until,
+                task.0.prefix_u64(),
+            )?;
+            let Some(reservation) = reservation else {
+                return Err(ExecError::Invalid(format!(
+                    "result not accepted: {}",
+                    decision.reasons.join("; ")
+                )));
+            };
+            run.store_assurance(registry_object, domain);
+            run.effects.deferred.push(Deferred::Schedule {
+                at: until,
+                event: ScheduledEvent::RegistryTick,
+            });
+            run.mint_coin(tx.sender, AssetId::usd(), state.amount);
+            let amount = state.amount;
+            state.state = TaskState::Settled {
+                worker: tx.sender,
+                result: result_id,
+                reservation,
+                at: pulse,
+            };
+            task_object.data = ObjectData::Task(Box::new(state));
+            run.store(task_object);
+            run.event(Event::TaskSettled {
+                task: *task,
+                worker: tx.sender,
+                result: result_id,
+                amount,
+                reservation,
+            });
+        }
+        TxKind::CancelTask { task } => {
+            let mut task_object = run.load(task)?;
+            let ObjectData::Task(state) = &task_object.data else {
+                return Err(ExecError::Invalid(format!("{task} is not a task")));
+            };
+            let mut state = (**state).clone();
+            if state.state != TaskState::Open {
+                return Err(ExecError::Invalid("the task is not open".into()));
+            }
+            let released = state.worker == Some(tx.sender);
+            let withdrawn = (tx.sender == state.poster || tx.sender == state.refund_to)
+                && (state.worker.is_none() || pulse > state.deadline);
+            if !released && !withdrawn {
+                return Err(ExecError::Unauthorized(
+                    "only the worker, or the poster once the task is open to all or expired, may cancel it"
+                        .into(),
+                ));
+            }
+            let (refund, to) = (state.amount, state.refund_to);
+            run.mint_coin(to, AssetId::usd(), refund);
+            state.state = TaskState::Cancelled {
+                by: tx.sender,
+                at: pulse,
+            };
+            task_object.data = ObjectData::Task(Box::new(state));
+            run.store(task_object);
+            run.event(Event::TaskCancelled {
+                task: *task,
+                refund,
+                to,
+            });
+        }
+        TxKind::PostDeal {
+            root,
+            size,
+            challenges,
+            price,
+            rounds,
+            round_length,
+            collateral,
+            provider,
+            accept_by,
+            locator,
+        } => post_deal(
+            run,
+            Deal {
+                client: tx.sender,
+                provider: *provider,
+                root: *root,
+                size: *size,
+                challenges: *challenges,
+                price: *price,
+                rounds: *rounds,
+                round_length: *round_length,
+                collateral: *collateral,
+                accept_by: *accept_by,
+                locator: locator.clone(),
+                escrow: Amount::ZERO,
+                posted_at: pulse,
+                state: DealState::Open,
+            },
+        )?,
+        TxKind::AcceptDeal { deal } => accept_deal(run, deal)?,
+        TxKind::ProveStorage { proofs } => prove_storage(run, proofs)?,
+        TxKind::SettleDeal { deal } => settle_deal(run, deal)?,
+        TxKind::CloseDeal { deal } => close_deal(run, deal)?,
     }
     Ok(())
+}
+
+/// Loads a storage deal.
+fn load_deal<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+) -> Result<(Object, Deal), ExecError> {
+    let object = run.load(id)?;
+    let ObjectData::Deal(deal) = &object.data else {
+        return Err(ExecError::Invalid(format!("{id} is not a storage deal")));
+    };
+    let deal = (**deal).clone();
+    Ok((object, deal))
+}
+
+/// Loads the custody record of `deal`.
+fn load_custody<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+    deal: &ObjectId,
+) -> Result<Custody, ExecError> {
+    let object = run.load(id)?;
+    match &object.data {
+        ObjectData::Custody(custody) if custody.deal == *deal => Ok(custody.clone()),
+        _ => Err(ExecError::Invalid(format!(
+            "{id} is not the custody record of {deal}"
+        ))),
+    }
+}
+
+fn store_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, mut object: Object, deal: Deal) {
+    object.data = ObjectData::Deal(Box::new(deal));
+    run.store(object);
+}
+
+/// `PostDeal` (spec §5.50). `terms` carries the deal as posted, with an
+/// empty escrow.
+fn post_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, mut terms: Deal) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    if terms.size == 0 || terms.size > MAX_DEAL_LEAVES {
+        return Err(ExecError::Invalid(format!(
+            "a deal covers 1 to {MAX_DEAL_LEAVES} leaves"
+        )));
+    }
+    if terms.challenges == 0 || terms.challenges > MAX_CHALLENGES {
+        return Err(ExecError::Invalid(format!(
+            "a deal challenges 1 to {MAX_CHALLENGES} leaves a round"
+        )));
+    }
+    if terms.price == Amount::ZERO {
+        return Err(ExecError::Invalid(
+            "a deal pays a positive price per round".into(),
+        ));
+    }
+    if terms.rounds == 0 || terms.rounds > MAX_ROUNDS {
+        return Err(ExecError::Invalid(format!(
+            "a deal has 1 to {MAX_ROUNDS} rounds"
+        )));
+    }
+    if !(MIN_ROUND_LENGTH..=MAX_ROUND_LENGTH).contains(&terms.round_length)
+        || terms.round_length % BEACON_INTERVAL != 0
+    {
+        return Err(ExecError::Invalid(format!(
+            "a round lasts a multiple of {BEACON_INTERVAL} Pulses, from {MIN_ROUND_LENGTH} to {MAX_ROUND_LENGTH}"
+        )));
+    }
+    if terms.provider.is_none() && terms.collateral == Amount::ZERO {
+        return Err(ExecError::Invalid(
+            "an open deal asks for collateral".into(),
+        ));
+    }
+    let latest = pulse.0.saturating_add(crate::market::MAX_PERIOD);
+    if terms.accept_by.0 <= pulse.0 || terms.accept_by.0 > latest {
+        return Err(ExecError::Invalid(format!(
+            "a deal must be acceptable for 1 to {} Pulses",
+            crate::market::MAX_PERIOD
+        )));
+    }
+    if terms.locator.len() > MAX_LOCATOR {
+        return Err(ExecError::Invalid(format!(
+            "a locator is at most {MAX_LOCATOR} bytes"
+        )));
+    }
+    let escrow = terms
+        .price
+        .0
+        .checked_mul(u128::from(terms.rounds))
+        .map(Amount)
+        .ok_or(ExecError::Core(sion_core::CoreError::Overflow(
+            "deal escrow",
+        )))?;
+    run.draw(AssetId::usd(), escrow)?;
+    terms.escrow = escrow;
+    let deal = created_id(&run.digest, run.next_index);
+    let event = Event::DealPosted {
+        deal,
+        client: terms.client,
+        provider: terms.provider,
+        size: terms.size,
+        price: terms.price,
+        rounds: terms.rounds,
+        collateral: terms.collateral,
+    };
+    run.create(
+        Owner::Shared(object_domain("deal", &deal)),
+        ObjectData::Deal(Box::new(terms)),
+    );
+    run.event(event);
+    Ok(())
+}
+
+/// `AcceptDeal` (spec §5.51).
+fn accept_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    let (object, mut deal) = load_deal(run, id)?;
+    if deal.state != DealState::Open {
+        return Err(ExecError::Invalid("the deal is not open".into()));
+    }
+    if pulse > deal.accept_by {
+        return Err(ExecError::Invalid(
+            "the deal can no longer be accepted".into(),
+        ));
+    }
+    if deal.provider.is_some_and(|p| p != sender) {
+        return Err(ExecError::Unauthorized(
+            "the deal names another provider".into(),
+        ));
+    }
+    run.draw(AssetId::usd(), deal.collateral)?;
+    let start = next_boundary(pulse);
+    let custody = run.create(
+        Owner::Account(sender),
+        ObjectData::Custody(Custody {
+            deal: *id,
+            root: deal.root,
+            size: deal.size,
+            challenges: deal.challenges,
+            start,
+            round_length: deal.round_length,
+            rounds: deal.rounds,
+            next: 0,
+            proven: 0,
+        }),
+    );
+    deal.state = DealState::Active {
+        provider: sender,
+        custody,
+        start,
+        bond: deal.collateral,
+        paid: 0,
+    };
+    store_deal(run, object, deal);
+    run.event(Event::DealAccepted {
+        deal: *id,
+        provider: sender,
+        custody,
+        start,
+    });
+    Ok(())
+}
+
+/// `ProveStorage` (spec §5.52).
+fn prove_storage<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    proofs: &[CustodyProof],
+) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    if proofs.is_empty() || run.tx.inputs.len() <= proofs.len() {
+        return Err(ExecError::Invalid(
+            "a storage proof needs one custody record per proof, after the gas coin".into(),
+        ));
+    }
+    let leaves: usize = proofs.iter().map(|p| p.leaves.len()).sum();
+    if leaves > MAX_PROOF_LEAVES {
+        return Err(ExecError::Invalid(format!(
+            "one transaction proves at most {MAX_PROOF_LEAVES} leaves"
+        )));
+    }
+    for (j, proof) in proofs.iter().enumerate() {
+        let id = run.input(j + 1)?;
+        let mut object = run.load(&id)?;
+        let ObjectData::Custody(custody) = &object.data else {
+            return Err(ExecError::Invalid(format!("{id} is not a custody record")));
+        };
+        let mut custody = custody.clone();
+        let round = proof.round;
+        if current_round(custody.start, custody.round_length, pulse) != Some(u64::from(round)) {
+            return Err(ExecError::Invalid(format!(
+                "round {round} is not under way"
+            )));
+        }
+        if round >= custody.rounds || round < custody.next {
+            return Err(ExecError::Invalid(format!(
+                "round {round} cannot be proven"
+            )));
+        }
+        if proof.leaves.len() != usize::from(custody.challenges) {
+            return Err(ExecError::Invalid(format!(
+                "the deal challenges {} leaves a round",
+                custody.challenges
+            )));
+        }
+        let beacon = beacon_at(run, custody.round_start(round))?;
+        let seed = round_seed(&beacon, &custody.deal);
+        for (k, leaf) in proof.leaves.iter().enumerate() {
+            let k = u8::try_from(k).map_err(|_| ExecError::Invalid("too many leaves".into()))?;
+            let index = challenge_index(&seed, round, k, custody.size);
+            if leaf.data.len() > MAX_LEAF_BYTES || leaf.path.len() > MAX_PATH {
+                return Err(ExecError::Invalid("a leaf or its path is too long".into()));
+            }
+            merkle::verify_inclusion(
+                &custody.root,
+                custody.size,
+                index,
+                &merkle::leaf_hash(&leaf.data),
+                &leaf.path,
+            )
+            .map_err(|_| {
+                ExecError::Invalid(format!("leaf {index} does not match the deal's root"))
+            })?;
+        }
+        custody.proven = custody.proven.saturating_add(1);
+        custody.next = round.saturating_add(1);
+        let deal = custody.deal;
+        object.data = ObjectData::Custody(custody);
+        run.store(object);
+        run.event(Event::StorageProven {
+            deal,
+            custody: id,
+            round,
+        });
+    }
+    Ok(())
+}
+
+/// The beacon of a recorded Pulse `at ≤ ctx.pulse` (spec §5.52): the
+/// current Pulse's own, or its beacon record's.
+fn beacon_at<S: ObjectStore>(run: &mut Run<'_, '_, S>, at: Pulse) -> Result<Hash32, ExecError> {
+    if at == run.ctx.pulse {
+        return Ok(run.ctx.beacon);
+    }
+    let slot = slot_of(at)
+        .filter(|_| at < run.ctx.pulse)
+        .ok_or_else(|| ExecError::Invalid(format!("Pulse {at} has no beacon record")))?;
+    let record = run.load(&well_known::beacon(slot))?;
+    match record.data {
+        ObjectData::Beacon(record) if record.pulse == at => Ok(record.beacon),
+        _ => Err(ExecError::Invalid(format!(
+            "the beacon of Pulse {at} is no longer recorded"
+        ))),
+    }
+}
+
+/// What `rounds` proven rounds cost at `price`.
+fn rounds_cost(price: Amount, rounds: u32) -> Result<Amount, ExecError> {
+    price
+        .0
+        .checked_mul(u128::from(rounds))
+        .map(Amount)
+        .ok_or(ExecError::Core(sion_core::CoreError::Overflow(
+            "deal payment",
+        )))
+}
+
+/// `SettleDeal` (spec §5.53).
+fn settle_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Result<(), ExecError> {
+    let (object, mut deal) = load_deal(run, id)?;
+    let DealState::Active {
+        provider,
+        custody,
+        start,
+        bond,
+        paid,
+    } = deal.state
+    else {
+        return Err(ExecError::Invalid("the deal is not active".into()));
+    };
+    if run.tx.sender != provider {
+        return Err(ExecError::Unauthorized(
+            "only the deal's provider collects for it".into(),
+        ));
+    }
+    let record = load_custody(run, &custody, id)?;
+    let due = record.proven.saturating_sub(paid);
+    if due == 0 {
+        return Err(ExecError::Invalid("no proven round is unpaid".into()));
+    }
+    let amount = rounds_cost(deal.price, due)?;
+    deal.escrow = deal.escrow.checked_sub(amount)?;
+    deal.state = DealState::Active {
+        provider,
+        custody,
+        start,
+        bond,
+        paid: record.proven,
+    };
+    store_deal(run, object, deal);
+    run.mint_coin(provider, AssetId::usd(), amount);
+    run.event(Event::DealSettled {
+        deal: *id,
+        rounds: due,
+        amount,
+    });
+    Ok(())
+}
+
+/// `CloseDeal` (spec §5.54).
+fn close_deal<S: ObjectStore>(run: &mut Run<'_, '_, S>, id: &ObjectId) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    let (object, mut deal) = load_deal(run, id)?;
+    let (proven, missed, paid_now, returned, forfeited) = match deal.state.clone() {
+        DealState::Open => {
+            if sender != deal.client {
+                return Err(ExecError::Unauthorized(
+                    "only the client closes an open deal".into(),
+                ));
+            }
+            (0, 0, Amount::ZERO, Amount::ZERO, Amount::ZERO)
+        }
+        DealState::Active {
+            provider,
+            custody,
+            start,
+            bond,
+            paid,
+        } => {
+            let record = load_custody(run, &custody, id)?;
+            let proven = record.proven;
+            let end = start
+                .0
+                .saturating_add(u64::from(deal.rounds).saturating_mul(deal.round_length));
+            let (missed, returned, forfeited) = if pulse.0 >= end {
+                if sender != deal.client && sender != provider {
+                    return Err(ExecError::Unauthorized(
+                        "only the client or the provider closes a deal".into(),
+                    ));
+                }
+                let missed = deal.rounds.saturating_sub(proven);
+                let forfeited = Amount(
+                    crate::delegation::mul_div(bond.0, u128::from(missed), u128::from(deal.rounds))
+                        .ok_or(ExecError::Core(sion_core::CoreError::Overflow(
+                            "forfeited collateral",
+                        )))?,
+                );
+                (missed, bond.checked_sub(forfeited)?, forfeited)
+            } else {
+                if sender != deal.client {
+                    return Err(ExecError::Unauthorized(
+                        "only the client closes a deal before its end".into(),
+                    ));
+                }
+                let round = current_round(start, deal.round_length, pulse);
+                let abandoned =
+                    round.is_some_and(|r| r >= u64::from(record.next) + u64::from(ABANDON_ROUNDS));
+                if !abandoned {
+                    return Err(ExecError::Invalid(format!(
+                        "the deal runs until Pulse {end} and its provider has not missed {ABANDON_ROUNDS} rounds in a row"
+                    )));
+                }
+                let r = u32::try_from(round.unwrap_or(0)).unwrap_or(u32::MAX);
+                (r.saturating_sub(proven), Amount::ZERO, bond)
+            };
+            let due = proven.saturating_sub(paid);
+            let paid_now = rounds_cost(deal.price, due)?;
+            deal.escrow = deal.escrow.checked_sub(paid_now)?;
+            run.mint_coin(provider, AssetId::usd(), paid_now.checked_add(returned)?);
+            (proven, missed, paid_now, returned, forfeited)
+        }
+        DealState::Closed { .. } => {
+            return Err(ExecError::Invalid("the deal is closed".into()));
+        }
+    };
+    let refund = deal.escrow;
+    run.mint_coin(deal.client, AssetId::usd(), refund);
+    if forfeited > Amount::ZERO {
+        run.effects.deferred.push(Deferred::Treasury {
+            asset: AssetId::usd(),
+            amount: forfeited,
+        });
+    }
+    deal.escrow = Amount::ZERO;
+    deal.state = DealState::Closed {
+        at: pulse,
+        proven,
+        missed,
+        refund,
+        forfeited,
+    };
+    store_deal(run, object, deal);
+    run.event(Event::DealClosed {
+        deal: *id,
+        refund,
+        paid: paid_now,
+        returned,
+        forfeited,
+        missed,
+    });
+    Ok(())
+}
+
+/// Pool-share arithmetic overflowed (only on corrupt state or absurd
+/// amounts).
+fn overflow() -> ExecError {
+    ExecError::Core(sion_core::CoreError::Overflow("pool shares"))
+}
+
+/// Whether a validator may receive delegations and counts towards the
+/// weight cap: joining or active.
+fn eligible(record: &ValidatorRecord) -> bool {
+    matches!(
+        record.status,
+        ValidatorStatus::Joining | ValidatorStatus::Active
+    )
+}
+
+/// A validator's bonded stake: its own plus its pool's earning and pending
+/// stake.
+fn bonded_stake(record: &ValidatorRecord, book: &DelegationBook) -> Result<Amount, ExecError> {
+    let pooled = match book.pools.get(&record.id) {
+        Some(pool) => pool.bonded().ok_or_else(overflow)?,
+        None => Amount::ZERO,
+    };
+    Ok(record.stake.checked_add(pooled)?)
+}
+
+/// The delegation book's object for its first write.
+fn new_book() -> Object {
+    Object {
+        id: well_known::delegations(),
+        version: Version(0),
+        owner: Owner::Shared(well_known::validators_domain()),
+        data: ObjectData::Delegations(Box::default()),
+    }
+}
+
+/// The delegation book, if any delegation or commission created it.
+fn load_book<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+) -> Result<Option<(Object, DelegationBook)>, ExecError> {
+    let Some(object) = run.try_load(&well_known::delegations())? else {
+        return Ok(None);
+    };
+    let ObjectData::Delegations(book) = &object.data else {
+        return Err(ExecError::Invalid("delegation book corrupted".into()));
+    };
+    let book = (**book).clone();
+    Ok(Some((object, book)))
+}
+
+/// The delegation book, which must exist.
+fn existing_book<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+) -> Result<(Object, DelegationBook), ExecError> {
+    load_book(run)?.ok_or_else(|| ExecError::Invalid("no delegation book".into()))
+}
+
+fn store_book<S: ObjectStore>(run: &mut Run<'_, '_, S>, mut object: Object, book: DelegationBook) {
+    object.data = ObjectData::Delegations(Box::new(book));
+    run.store(object);
+}
+
+/// Loads a delegation the sender owns.
+fn load_delegation<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+    sender: &AccountId,
+) -> Result<(Object, Delegation), ExecError> {
+    let object = run.load(id)?;
+    let ObjectData::Delegation(delegation) = &object.data else {
+        return Err(ExecError::Invalid("not a delegation".into()));
+    };
+    let delegation = delegation.clone();
+    if delegation.owner != *sender {
+        return Err(ExecError::Unauthorized(
+            "only the delegator may do this".into(),
+        ));
+    }
+    Ok((object, delegation))
 }
 
 /// The record of `validator`, which `operator` must operate.
@@ -2334,13 +3736,23 @@ fn load_charter<S: ObjectStore>(
     }
 }
 
-/// A charter and all its ancestors must be unrevoked. At most
-/// [`MAX_CHARTER_CHAIN`] charters are loaded: if the last of them still has
-/// a parent, the check fails without reading it.
+/// A charter and all its ancestors must be unrevoked and unsuspended
+/// (spec §5.13). At most [`MAX_CHARTER_CHAIN`] charters are loaded: if the
+/// last of them still has a parent, the check fails. Returns how many
+/// charters it loaded.
 fn check_charter_chain<S: ObjectStore>(
     run: &mut Run<'_, '_, S>,
     id: &ObjectId,
-) -> Result<(), ExecError> {
+) -> Result<usize, ExecError> {
+    charter_chain(run, id, true)
+}
+
+/// The chain check, with or without the suspension test.
+fn charter_chain<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+    suspension: bool,
+) -> Result<usize, ExecError> {
     let mut current = Some(*id);
     let mut loaded = 0;
     while let Some(charter_id) = current {
@@ -2352,9 +3764,194 @@ fn check_charter_chain<S: ObjectStore>(
         if charter.revoked_at.is_some() {
             return Err(ExecError::Caveat("charter revoked".into()));
         }
+        if suspension && charter.suspended_by.is_some() {
+            return Err(ExecError::Caveat("charter suspended".into()));
+        }
         current = charter.parent;
     }
+    Ok(loaded)
+}
+
+/// Whether `sender` oversees `charter` (spec §5.13): its backer, its
+/// principal, or the agent of a charter above it. Loads parents only when
+/// the sender is neither the backer nor the principal, and at most
+/// `MAX_CHARTER_CHAIN − 1` of them.
+fn is_overseer<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    charter: &Charter,
+    sender: &AccountId,
+) -> Result<bool, ExecError> {
+    if *sender == charter.backer || *sender == charter.principal {
+        return Ok(true);
+    }
+    let mut next = charter.parent;
+    let mut loaded = 0;
+    while let Some(id) = next {
+        if loaded == MAX_CHARTER_CHAIN - 1 {
+            return Ok(false);
+        }
+        let ancestor = load_charter(run, &id)?;
+        loaded += 1;
+        if ancestor.agent == *sender {
+            return Ok(true);
+        }
+        next = ancestor.parent;
+    }
+    Ok(false)
+}
+
+/// Carves a child's window limit out of its parent's allotment (spec
+/// §5.13 **carve**): the child's limit must fit in what the parent has not
+/// carved yet, and is then carved too.
+fn carve_window(
+    allotment: &mut Allotment,
+    caveats: &Caveats,
+    child_limit: &Amount,
+) -> Result<(), ExecError> {
+    let left = caveats
+        .max_per_window
+        .checked_sub(allotment.carved_window)?;
+    if *child_limit > left {
+        return Err(ExecError::Caveat(format!(
+            "window allowance left to carve is {left}, below the child's {child_limit}"
+        )));
+    }
+    allotment.carved_window = allotment.carved_window.checked_add(*child_limit)?;
     Ok(())
+}
+
+/// Launches one subagent under `parent_id` (spec §5.36 step 8): its
+/// charter with an identity at `depth`, and its allotment.
+fn spawn_one<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    parent_id: &ObjectId,
+    parent: &Charter,
+    child: &Spawn,
+    depth: usize,
+) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    let depth = u8::try_from(depth).map_err(|_| ExecError::Invalid("too deep".into()))?;
+    let child_id = created_id(&run.digest, run.next_index);
+    run.create(
+        Owner::Shared(object_domain("charter", &child_id)),
+        ObjectData::Charter(Charter {
+            principal: sender,
+            agent: child.agent,
+            caveats: child.caveats.clone(),
+            agent_atom: parent.agent_atom,
+            backer: parent.backer,
+            revoked_at: None,
+            parent: Some(*parent_id),
+            allotments: BTreeSet::new(),
+            created_at: pulse,
+            suspended_by: None,
+            identity: Some(AgentIdentity {
+                card: child.card,
+                depth,
+            }),
+        }),
+    );
+    let allotment = run.create(
+        Owner::Account(child.agent),
+        ObjectData::Allotment(Allotment {
+            source: child_id,
+            writer: child.agent,
+            asset: AssetId::usd(),
+            remaining: child.budget,
+            caveats: Some(child.caveats.clone()),
+            window_start: pulse,
+            spent_in_window: Amount::ZERO,
+            carved_window: Amount::ZERO,
+        }),
+    );
+    let mut object = run.load(&child_id)?;
+    if let ObjectData::Charter(c) = &mut object.data {
+        c.allotments.insert(allotment);
+    }
+    run.store(object);
+    run.event(Event::AgentSpawned {
+        agent: child_id,
+        parent: *parent_id,
+        account: child.agent,
+        allotment,
+    });
+    Ok(())
+}
+
+/// Creates a root charter and its allotment (CreateCharter, RegisterAgent):
+/// spec §5.12 steps 1 to 7. Returns the charter and the allotment.
+fn create_root_charter<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    agent: &AccountId,
+    caveats: &Caveats,
+    funding: Amount,
+    agent_bond: Amount,
+    identity: Option<AgentIdentity>,
+) -> Result<(ObjectId, ObjectId), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    if caveats.expires_at <= pulse {
+        return Err(ExecError::Invalid(
+            "charter would already be expired".into(),
+        ));
+    }
+    if caveats.window == 0 {
+        return Err(ExecError::Invalid(
+            "window must be at least one Pulse".into(),
+        ));
+    }
+    run.draw(AssetId::usd(), funding.checked_add(agent_bond)?)?;
+    let charter_id = created_id(&run.digest, run.next_index);
+    let label = format!("charter:{charter_id}");
+    let agent_atom = bond_atom(AtomClass::Economic, &sender, &label);
+    let domain = object_domain("charter", &charter_id);
+    let created = run.create(
+        Owner::Shared(domain),
+        ObjectData::Charter(Charter {
+            principal: sender,
+            agent: *agent,
+            caveats: caveats.clone(),
+            agent_atom: agent_atom.id,
+            backer: sender,
+            revoked_at: None,
+            parent: None,
+            allotments: BTreeSet::new(),
+            created_at: pulse,
+            suspended_by: None,
+            identity,
+        }),
+    );
+    debug_assert_eq!(created, charter_id);
+    let allotment = run.create(
+        Owner::Account(*agent),
+        ObjectData::Allotment(Allotment {
+            source: charter_id,
+            writer: *agent,
+            asset: AssetId::usd(),
+            remaining: funding,
+            caveats: Some(caveats.clone()),
+            window_start: pulse,
+            spent_in_window: Amount::ZERO,
+            carved_window: Amount::ZERO,
+        }),
+    );
+    let mut charter = run.load(&charter_id)?;
+    if let ObjectData::Charter(c) = &mut charter.data {
+        c.allotments.insert(allotment);
+    }
+    run.store(charter);
+    run.effects.deferred.push(Deferred::RegisterAtom {
+        atom: agent_atom.clone(),
+    });
+    if agent_bond > Amount::ZERO {
+        run.effects.deferred.push(Deferred::PostBond {
+            atom: agent_atom,
+            owner: sender,
+            amount: agent_bond,
+        });
+    }
+    Ok((charter_id, allotment))
 }
 
 fn evidence_passes<S: ObjectStore>(

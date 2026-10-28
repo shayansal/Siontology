@@ -8,12 +8,22 @@
 //! when it commits (payments certified before then still execute).
 //! Delegation only narrows: a sub-charter's caveats must attenuate its
 //! parent's.
+//!
+//! **Agent identities** (spec v1.8). A charter with an [`AgentIdentity`]
+//! is an agent's identity: its id is the agent's id, its account signs for
+//! the agent, and its card commitment says what the agent is. An agent
+//! launches subagents with [`Spawn`]s, each getting its own identity,
+//! account, narrower caveats and a budget carved from the parent's
+//! allotment, so siblings never contend. Revoking or suspending any
+//! charter stops everything below it, because every check walks the chain
+//! up to the root.
 
 use std::collections::BTreeSet;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use sion_assurance::Policy;
+use sion_core::hash::Hash32;
 use sion_core::ids::{AccountId, AssetId, AtomId, ObjectId, Pulse};
 use sion_core::Amount;
 
@@ -22,6 +32,39 @@ use crate::error::ExecError;
 /// The most charters a delegation chain may hold, root included
 /// (spec §5.13).
 pub const MAX_CHARTER_CHAIN: usize = 16;
+
+/// The most subagents one `SpawnAgents` may launch (spec §5.36).
+pub const MAX_SPAWN_BATCH: usize = 256;
+
+/// An agent's identity record on its charter (spec v1.8).
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct AgentIdentity {
+    /// Commitment to the agent's card ([`card_commitment`] of its bytes);
+    /// all zero for none.
+    pub card: Hash32,
+    /// Generation in its tree: 0 for a registered agent, and for a spawned
+    /// one the number of charters above it.
+    pub depth: u8,
+}
+
+/// One subagent to launch (spec §5.36).
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct Spawn {
+    /// The subagent's own account, which signs for it.
+    pub agent: AccountId,
+    /// Commitment to its card.
+    pub card: Hash32,
+    /// Its caveats, which must attenuate the parent's.
+    pub caveats: Caveats,
+    /// Carved from the parent's allotment into the subagent's own.
+    pub budget: Amount,
+}
+
+/// The commitment an identity stores for an agent card: a domain-separated
+/// SHA3-256 of the card's exact bytes, as published.
+pub fn card_commitment(card: &[u8]) -> Hash32 {
+    sion_core::hash::hash_domain("sion/agent/card", card)
+}
 
 /// The limits an agent operates within.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -93,6 +136,10 @@ pub struct Charter {
     pub allotments: BTreeSet<ObjectId>,
     /// Creation Pulse.
     pub created_at: Pulse,
+    /// Who suspended it, while it is suspended (spec v1.8).
+    pub suspended_by: Option<AccountId>,
+    /// Its identity record, if it is an agent identity (spec v1.8).
+    pub identity: Option<AgentIdentity>,
 }
 
 /// A single-writer allotment: part of a charter's budget or of a bounded
@@ -113,6 +160,10 @@ pub struct Allotment {
     pub window_start: Pulse,
     /// Spent in the current window.
     pub spent_in_window: Amount,
+    /// Window allowance carved out for subagents (spec v1.8): the writer's
+    /// own window limit is `max_per_window − carved_window`, so a subtree's
+    /// limits never add up to more than its root's.
+    pub carved_window: Amount,
 }
 
 impl Allotment {
@@ -151,10 +202,11 @@ impl Allotment {
                 self.spent_in_window = Amount::ZERO;
             }
             let window_total = self.spent_in_window.checked_add(amount)?;
-            if window_total > caveats.max_per_window {
+            let own_limit = caveats.max_per_window.checked_sub(self.carved_window)?;
+            if window_total > own_limit {
                 return Err(ExecError::Caveat(format!(
                     "window total {} above limit {}",
-                    window_total, caveats.max_per_window
+                    window_total, own_limit
                 )));
             }
             if let Some(threshold) = caveats.evidence_above {
@@ -198,6 +250,7 @@ mod tests {
             caveats: Some(caveats()),
             window_start: Pulse(0),
             spent_in_window: Amount::ZERO,
+            carved_window: Amount::ZERO,
         }
     }
 

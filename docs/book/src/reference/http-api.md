@@ -30,7 +30,7 @@ $ curl -s http://127.0.0.1:8730/v1/accounts/xyz
 | GET | `/v1/validators` | The chain specification, the validator set and the current committees |
 | GET | `/v1/epochs/{e}` | The proof linking epoch `e − 1` to `e` |
 | GET | `/v1/genesis` | The genesis specification and its digest |
-| GET | `/v1/accounts/{id}` | An account's coins, balances and allotments |
+| GET | `/v1/accounts/{id}` | An account's coins, balances, allotments, delegations and custody records |
 | GET | `/v1/objects/{id}` | An object with a state proof |
 | GET | `/v1/claims/{id}` | A claim, its status, cost of corruption and inclusion proof |
 | POST | `/v1/claims/{id}/decide` | The decision rule for a value at risk |
@@ -44,6 +44,8 @@ $ curl -s http://127.0.0.1:8730/v1/accounts/xyz
 | GET | `/v1/events?from=&limit=` | Events from a Pulse on |
 | POST | `/v1/forced` | Post a forced intent, bypassing the gateway |
 | GET | `/v1/forced` | Forced-inclusion obligations |
+| GET | `/v1/committees` | The current committees and registered keys, Borsh in hex (for a gateway in another process) |
+| GET | `/v1/deals` | Storage deals with their state (`?open=1`: only those open for acceptance) |
 | POST | `/v1/devnet/censor` | Adversary simulation: censor accounts |
 
 ## `GET /v1/status`
@@ -365,6 +367,17 @@ See [Forced inclusion](../guides/forced-inclusion.md).
 latest Pulse, the summary its header commits to, and this epoch's shard
 rotations. Each pending entry is `{digest, shard, posted_at, deadline,
 missed}`. An example is in [Forced inclusion](../guides/forced-inclusion.md#censoring-validators).
+
+## `GET /v1/deals`
+
+`{pulse, deals}`: every storage deal, each `{id, deal}` with the deal's
+terms and state (`Open`, `Active { provider, custody, start, bond, paid }`
+or `Closed { at, proven, missed, refund, forfeited }`), amounts in
+micro-units. With `?open=1`, only deals still open for acceptance (state
+`Open`, `accept_by` after the latest Pulse): what providers poll. The node
+answers from an index of deal ids it keeps, not a scan of the state. A provider's custody records are in its account view
+(`GET /v1/accounts/{id}`, field `custody`). See
+[Storage deals](../concepts/storage.md).
 
 ## `POST /v1/devnet/censor`
 

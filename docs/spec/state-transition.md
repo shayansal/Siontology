@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.7
+# The Siontology state transition — specification v1.12
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -25,7 +25,10 @@ It does **not** re-specify:
 - **Data layouts.** The Rust type definitions in `sion_core`, `sion_crypto`,
   `sion_assurance`, `sion_clearing` and the *type definitions* in
   `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
-  `stream`, `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
+  `stream`, `memory`, `task`, `delegation` (its types and constants),
+  `storage` (its types and constants), `beacons` (its types and
+  constants),
+  `assurance`, `tx`, `state`, `validators` (its types), `pulse::{ChunkStatement,
   ChunkTrace, Witness, PulseInput}`, `execute::{Deferred, Event, ExecStatus,
   TxEffects}`) are
   normative; their canonical encoding is Borsh. One rule goes beyond the
@@ -51,7 +54,14 @@ logic: `sion_exec::execute`, `sion_exec::pulse` (other than the type
 definitions and the commitment helpers named in §7), `sion_exec::stateless`,
 `sion_exec::wallet`, `sion_exec::sim`, `sion_exec::genesis`, the
 `sion_exec::stream` helpers (`step`, `walk`, `extends`, `checkpoint_leaf`,
-`jump_hashes`, `verify_jump`, `PayerChain`, `Stream::checkpoint_count`), nor
+`jump_hashes`, `verify_jump`, `PayerChain`, `Stream::checkpoint_count`), the
+`sion_exec::task` helpers (`result_formula`, `worker_bond`,
+`TaskResult::payload`), the `sion_exec::delegation` helpers (`mul_div`,
+`cap_permille`, `within_cap`, `resolve`, `Pool::{shares, value_of,
+shares_for, bonded, earning_value, owed}`), the `sion_exec::storage`
+helpers (`challenge_index`, `round_seed`, `current_round`,
+`DataTree`, `split_leaves`, `Deal::end`), the `sion_exec::beacons` helpers
+(`slot_of`, `next_boundary`), nor
 the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
@@ -364,10 +374,10 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 4. `create(Shared(object_domain("charter", charter_id)), Charter {
    principal: sender, agent, caveats, agent_atom: agent_atom.id, backer:
    sender, revoked_at: None, parent: None, allotments: ∅, created_at:
-   ctx.pulse })`.
+   ctx.pulse, suspended_by: None, identity: None })`.
 5. `allotment = create(Account(agent), Allotment { source: charter_id,
    writer: agent, asset: USD, remaining: funding, caveats: Some(caveats),
-   window_start: ctx.pulse, spent_in_window: 0 })`.
+   window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`.
 6. Load the charter, insert `allotment` into `allotments`, store it.
 7. Defer `RegisterAtom { atom: agent_atom }`; if `agent_bond > 0`, defer
    `PostBond { atom: agent_atom, owner: sender, amount: agent_bond }`.
@@ -376,10 +386,23 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 ### 5.13 Charter checks
 
 - **Chain check** of charter `c`: follow `c, c.parent, …`, loading each
-  (MUST be a charter); any with `revoked_at` set fails ("revoked"). At most
+  (MUST be a charter); for each in turn, `revoked_at` set fails
+  ("revoked"), then `suspended_by` set fails ("suspended"). At most
   `MAX_CHARTER_CHAIN` (16, `sion_exec::charter::MAX_CHARTER_CHAIN`)
   charters are loaded: if the last one loaded still has a parent, the check
-  fails without loading that parent.
+  fails without loading that parent. A chain check **ignoring suspension**
+  skips the `suspended_by` test. A passing check also yields `n`, the
+  number of charters it loaded.
+- **carve(allotment, k, limit)**: `limit > k.max_per_window −
+  allotment.carved_window` fails ("window allowance exhausted"); otherwise
+  `carved_window += limit`. A child's window limit is carved out of its
+  parent's, as its budget is out of the parent's allotment, so the window
+  limits of a whole subtree add up to at most its root's.
+- **Overseers** of charter `c`, for a sender `s`: `s` is an overseer if
+  `s = c.backer` or `s = c.principal`; otherwise load `c.parent`, then its
+  parent, and so on (each MUST be a charter), stopping as soon as one has
+  `agent = s` (an overseer), or has no parent, or `MAX_CHARTER_CHAIN − 1`
+  have been loaded (not an overseer).
 - **attenuates(child, parent)** holds when: `parent.payees = None`, or both
   are sets and `child.payees ⊆ parent.payees`; `parent.evidence_above =
   None`, or both are set and `child ≤ parent`; `child.max_per_payment ≤
@@ -394,7 +417,7 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
      k.max_per_payment` fails; if `ctx.pulse ≥ window_start + k.window`
      (saturating, so a window that would end after `u64::MAX` never
      resets), set `window_start = ctx.pulse` and `spent_in_window = 0`;
-     `spent_in_window + amount > k.max_per_window` fails; if
+     `spent_in_window + amount > k.max_per_window − carved_window` fails; if
      `k.evidence_above = Some(t)` and `amount > t` and `evidence_ok ≠
      Some(true)` fails; then `spent_in_window += amount`.
   3. `remaining -= amount`.
@@ -407,16 +430,18 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 3. The allotment's `source` MUST be `charter`, its `writer` and the
    charter's `agent` MUST be the sender.
 4. The allotment MUST have caveats `k`; `k.may_delegate`;
-   `attenuates(caveats, k)`.
+   `attenuates(caveats, k)`; **carve**(allotment, k,
+   `caveats.max_per_window`).
 5. `remaining -= amount` (error if insufficient); store the allotment.
 6. `child_id = created_id(digest, next_index)`;
    `create(Shared(object_domain("charter", child_id)), Charter { principal:
    sender, agent: sub_agent, caveats, agent_atom: parent.agent_atom,
    backer: parent.backer, revoked_at: None, parent: Some(charter),
-   allotments: ∅, created_at: ctx.pulse })`.
+   allotments: ∅, created_at: ctx.pulse, suspended_by: None, identity:
+   None })`.
 7. `child_allotment = create(Account(sub_agent), Allotment { source:
    child_id, writer: sub_agent, asset: USD, remaining: amount, caveats:
-   Some(caveats), window_start: ctx.pulse, spent_in_window: 0 })`.
+   Some(caveats), window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`.
 8. Load the child charter, insert `child_allotment`, store it.
 9. Event `CharterCreated { charter: child_id, allotment: child_allotment }`.
 
@@ -445,18 +470,23 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 
 ### 5.16 RevokeCharter { charter }
 
-Load it (MUST be a charter); `principal` MUST be the sender; if
-`revoked_at` is unset set it to `ctx.pulse`; store; event
-`CharterRevoked { charter }`.
+Load it (MUST be a charter); the sender MUST be its `agent` (an agent may
+retire itself) or one of its **overseers** (§5.13): the agent is compared
+first, so the overseer search loads nothing when the agent revokes. If
+`revoked_at` is unset set it to `ctx.pulse`; store; event `CharterRevoked
+{ charter }`. Every charter below a revoked one fails its chain check, so
+one revocation stops a whole subtree.
 
 ### 5.17 ReclaimCharter { charter }
 
 1. Load it (MUST be a charter, call it `s`); the sender MUST be
    `s.principal` or `s.backer`.
 2. The charter MUST be dead: `s.revoked_at` set, or `ctx.pulse >
-   s.caveats.expires_at`, or its **chain check** fails. (Evaluate in this
-   order and stop at the first that holds; the chain check is only run if
-   the first two do not hold.)
+   s.caveats.expires_at`, or its **chain check ignoring suspension** fails.
+   (Evaluate in this order and stop at the first that holds; the chain
+   check is only run if the first two do not hold.) A suspended charter is
+   not dead: its funds wait for the suspension to be lifted or for a
+   revocation.
 3. `total = 0`; for each id in `s.allotments`, in order: load it; if it is
    an allotment, `total += remaining` and **consume** it.
 4. `mint(s.backer, USD, total)`; event `CharterReclaimed { charter, amount:
@@ -473,7 +503,7 @@ Load it (MUST be a charter); `principal` MUST be the sender; if
    allotments: ∅, returned: 0 })`.
 4. For each `(writer, amount)` in order: `id = create(Account(writer),
    Allotment { source: bounded_id, writer, asset, remaining: amount,
-   caveats: None, window_start: ctx.pulse, spent_in_window: 0 })`; record
+   caveats: None, window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`; record
    `id → (writer, amount)`.
 5. Load the bounded total, set `allotments` to the record, store it.
 6. Event `BoundedCreated { bounded: bounded_id, allotments: [ids in
@@ -499,7 +529,7 @@ Load `bounded` (MUST be a bounded total); `manager` MUST be the sender;
 created_id(digest, next_index)`; insert `allotment → (holder, amount)`
 into its `allotments`; store it; `create(Account(holder), Allotment {
 source: bounded, writer: holder, asset: <bounded asset>, remaining: amount,
-caveats: None, window_start: ctx.pulse, spent_in_window: 0 })`; event
+caveats: None, window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`; event
 `AllotmentUsed { allotment, amount }`.
 
 ### 5.22 CreateMarket { label, good, numeraire, batch_length, clear_deadline, committee, threshold }
@@ -640,12 +670,22 @@ USD, rewards)`. Event `RewardsClaimed { validator, amount: rewards }`.
    `Withdrawn`.
 3. Take `stake` and `rewards` from the record, set both to 0 and the status
    to `Slashed { at: ctx.pulse }`; store the set.
-4. For `(asset, forfeited)` in `[(params.stake_asset, stake), (USD,
-   rewards)]`, in that order: `paid = permille_of(forfeited,
-   params.reporter_permille)`; `mint(sender, asset, paid)`; if `forfeited −
-   paid > 0`, defer `Treasury { asset, amount: forfeited − paid }`.
-5. Event `ValidatorSlashed { validator: offender, amount: stake, reporter:
-   sender, reward: <paid of the stake> }`.
+4. **The pool** (v1.11, §5.45): `try_load(well_known::delegations())`; if
+   it exists (it MUST be a delegation book) and has a pool for the
+   offender: `slashed = permille_of(value, DELEGATION_SLASH_PERMILLE)`;
+   `value −= slashed`; store the book. Otherwise `slashed = 0`. Every
+   share of the pool, pending and unbonding ones included, is worth less.
+5. For `(asset, own, pooled)` in `[(params.stake_asset, stake, slashed),
+   (USD, rewards, 0)]`, in that order: `paid = permille_of(own,
+   params.reporter_permille)`; `mint(sender, asset, paid)`; if `own +
+   pooled − paid > 0`, defer `Treasury { asset, amount: own + pooled −
+   paid }`. The reporter's share is of the offender's own stake and
+   rewards, never of its pool: a share of the pool would let an operator
+   whose pool is large enough against its own stake profit from reporting
+   itself through another account, since header evidence never expires.
+6. Event `ValidatorSlashed { validator: offender, amount: stake, reporter:
+   sender, reward: <paid of the stake> }`; then, if the offender had a
+   pool, event `PoolSlashed { validator: offender, amount: slashed }`.
 
 Evidence is checked against itself, not against this chain or a time: the
 two messages must agree on `chain`, but nothing requires it to be this
@@ -749,6 +789,536 @@ check that it was paid once a settlement reaches a position `c ≥ p`:
 A stream is never deleted: once closed it keeps its last `position` and
 `head`, so items it paid stay checkable.
 
+### 5.35 RegisterAgent { agent, card, caveats, funding, agent_bond }
+
+Registers an agent identity: a charter whose `identity` is set. Exactly
+§5.12 CreateCharter, with two differences: the charter is created with
+`identity: Some(AgentIdentity { card, depth: 0 })`, and the event is
+`AgentRegistered { agent: charter_id, account: agent, allotment }` instead
+of `CharterCreated`. The charter's id is the agent's id (`did:sion:` and
+the id's 64 hex digits, in the off-ledger card).
+
+### 5.36 SpawnAgents { charter, children }
+
+An agent launches subagents, each with its own identity, account, caveats
+and budget.
+
+1. `1 ≤ |children| ≤ MAX_SPAWN_BATCH` (256,
+   `sion_exec::charter::MAX_SPAWN_BATCH`).
+2. `allotment_id = tx.inputs[1].id` (error if absent); load it (MUST be an
+   allotment).
+3. Load `charter` (MUST be a charter, call it `p`); **chain check** it,
+   yielding `n`; `n < MAX_CHARTER_CHAIN` ("too deep").
+4. The allotment's `source` MUST be `charter`; its `writer` and `p.agent`
+   MUST be the sender.
+5. The allotment MUST have caveats `k`; `k.may_delegate`.
+6. For each child, in order: `attenuates(child.caveats, k)`; then
+   **carve**(allotment, k, `child.caveats.max_per_window`); then
+   `remaining −= child.budget` (error if insufficient).
+7. Store the allotment.
+8. For each child, in order:
+   1. `child_id = created_id(digest, next_index)`;
+      `create(Shared(object_domain("charter", child_id)), Charter {
+      principal: sender, agent: child.agent, caveats: child.caveats,
+      agent_atom: p.agent_atom, backer: p.backer, revoked_at: None, parent:
+      Some(charter), allotments: ∅, created_at: ctx.pulse, suspended_by:
+      None, identity: Some(AgentIdentity { card: child.card, depth: n })
+      })`.
+   2. `a = create(Account(child.agent), Allotment { source: child_id,
+      writer: child.agent, asset: USD, remaining: child.budget, caveats:
+      Some(child.caveats), window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`.
+   3. Load the child charter, insert `a` into `allotments`, store it.
+   4. Event `AgentSpawned { agent: child_id, parent: charter, account:
+      child.agent, allotment: a }`.
+
+Siblings share nothing they write: each spends from its own allotment, so
+their payments need no consensus.
+
+A suspension or revocation takes effect when it executes. An agent's
+payment certified before then, but executed after, fails: for agent
+operations a lane certificate guarantees that the inputs are locked, not
+that the operation will succeed.
+
+### 5.37 SetAgentCard { charter, card }
+
+Contended, in the charter's domain. Load `charter` (MUST be a charter with
+`identity = Some(i)`); the sender MUST be its `agent`; **chain check** it;
+`i.card = card`; store; event `AgentCardSet { agent: charter, card }`.
+
+### 5.38 SuspendAgent { charter }
+
+Contended, in the charter's domain. Load it (MUST be a charter); the
+sender MUST be one of its **overseers** (§5.13). If `suspended_by` is
+unset, set it to the sender (the first suspension is kept); store; event
+`AgentSuspended { agent: charter, by: suspended_by }`. Until the
+suspension is lifted, the chain check of the charter and of every charter
+below it fails, so nothing in the subtree can pay or spawn.
+
+### 5.39 ResumeAgent { charter }
+
+Contended, in the charter's domain. Load it (MUST be a charter);
+`suspended_by = Some(s)` ("not suspended" otherwise); the sender MUST be
+`s` or the charter's `backer`; set `suspended_by = None`; store; event
+`AgentResumed { agent: charter }`.
+
+### 5.40 OpenMemory { agent, policy }
+
+A **memory log** commits its writer to a log of memory atoms that only the
+writer appends to, kept off the ledger. The ledger keeps the log's head:
+its `size` in atoms, its `root`, the Merkle tree hash of `sion_core::merkle`
+(RFC 9162 shape) over leaf hashes the writer computes, and two roots it
+stores without checking, `index` and `manifest`. Constant of
+`sion_exec::memory`: `MAX_CONSISTENCY_PROOF` (128).
+
+1. If `agent = Some(a)`: load `a` (MUST be a charter with `identity` set);
+   its `agent` MUST be the sender; **chain check** it.
+2. `log = created_id(digest, next_index)`; `create(Account(sender),
+   MemoryLog { writer: sender, agent, policy, size: 0, root:
+   merkle::empty_root(), index: Hash32::ZERO, manifest: Hash32::ZERO,
+   commits: 0, opened_at: ctx.pulse, committed_at: ctx.pulse, sealed: false
+   })`.
+3. Event `MemoryOpened { log, account: sender, agent }`.
+
+The log is owned by its writer, so a commit (§5.41) needs a lane
+certificate, not consensus, and two commits of the same version of a log
+can never both execute: a log cannot fork.
+
+### 5.41 CommitMemory { size, root, index, manifest, proof, seal }
+
+1. `log_id = tx.inputs[1].id` (error if absent); load it (MUST be a memory
+   log, call it `l`); `l.writer` MUST be the sender; `l.sealed` MUST be
+   false.
+2. If `l.agent = Some(a)`: **chain check** `a`.
+3. `|proof| ≤ MAX_CONSISTENCY_PROOF`; `size ≥ l.size`; if `size = 0`, `root
+   = merkle::empty_root()`; `merkle::verify_consistency(l.root, l.size,
+   root, size, proof)` MUST succeed.
+4. `l.size = size`; `l.root = root`; `l.index = index`; `l.manifest =
+   manifest`; `l.commits = l.commits + 1` (saturating); `l.committed_at =
+   ctx.pulse`; if `seal`, `l.sealed = true`; store the log.
+5. Event `MemoryCommitted { log: log_id, size, root, commits: l.commits,
+   sealed: l.sealed }`.
+
+A commit at the same size MUST keep the root (step 3), and may move
+`index` and `manifest`. The atoms at positions `l.size … size − 1` before
+the commit have `ctx.pulse` as their **transaction time**: the ledger, not
+the writer, says when they were recorded. Anyone can prove an atom's
+transaction time from two state proofs of the log against certified
+headers: at Pulse `p − 1` the log did not exist or its size did not cover
+the atom, and at `p` it did.
+
+The ledger does not check `index` or `manifest`. Completeness proofs for
+queries are relative to the committed `index`; that the index matches the
+log is a trust atom (`impl:memory-index`). The index a writer commits is
+meant to be the canonical index of the log's first `size` atoms, version 1,
+specified in the documentation of `sion_memory::index` (a client
+specification, not part of this state transition): a reader holding the
+atoms can rebuild it and compare roots, and anyone holding an atom it
+leaves out can prove the omission from the head alone
+(`sion_memory::verify_omission`). Nothing on the ledger acts on such a
+proof yet.
+
+### 5.42 PostTask { spec, acceptance, worker, amount, deadline, charter }
+
+A **task** escrows `amount` for work whose result must pass an acceptance
+rule fixed now, when the task is posted. Owned-linear, or bounded with
+`charter`; the task is a shared object in its own domain. Constants of
+`sion_exec::task`:
+`RESULT_SCHEMA` (`task.result/v1`), `ATTESTATION_SCHEMA`
+(`task.attestation/v1`), `WORKER_BOND_LABEL` (`task-worker`),
+`MAX_REQUIRED` (16) and `MAX_VERIFIERS` (16).
+
+1. `amount > 0`; `ctx.pulse < deadline ≤ ctx.pulse + MAX_PERIOD`
+   (saturating); `|acceptance.requires| ≤ MAX_REQUIRED`;
+   `|acceptance.verifiers| ≤ MAX_VERIFIERS`;
+   `acceptance.detection_permille ≤ 1000`; `1 ≤ acceptance.reliance ≤
+   MAX_PERIOD`.
+2. Funding:
+   - `charter = None`: `draw(USD, amount)`; `funder = None`; `refund_to =
+     sender`.
+   - `charter = Some(c)`: `allotment_id = tx.inputs[1].id` (error if
+     absent); load it (MUST be an allotment), then load `c` (MUST be a
+     charter); **chain check** `c`; the allotment's `source` MUST be `c`,
+     and its `writer` and `c.agent` MUST be the sender; it MUST have
+     caveats `k`. If `worker = None`, `k.payees` MUST be `None`: an agent
+     limited to listed payees cannot post work anyone may take.
+     `evidence_ok = (acceptance.policy = k.evidence_policy)`;
+     **spend**(allotment, `worker` or, for an open task, the sender,
+     `amount`, `Some(evidence_ok)`) (§5.13), so the escrow counts against
+     the agent's balance, payees, per-payment and window limits, and a task
+     above the evidence threshold must be accepted under the charter's own
+     policy; store the allotment; `funder = Some(c)`; `refund_to =
+     c.backer`.
+3. `task = created_id(digest, next_index)`; `create(Shared(object_domain(
+   "task", task)), Task { poster: sender, funder, refund_to, spec,
+   acceptance, worker, amount, deadline, posted_at: ctx.pulse, state: Open
+   })`.
+4. Event `TaskPosted { task, poster: sender, worker, amount, deadline }`.
+
+### 5.43 SettleTask { task, result, attestations }
+
+Contended, in the assurance domain. `result` is the body of the sender's
+result claim; `attestations` lists `(verifier, body)` pairs.
+
+1. Load `task` (MUST be a task, call it `t`); `t.state = Open`;
+   `ctx.pulse ≤ t.deadline`; if `t.worker = Some(w)`, the sender MUST be
+   `w` (an open task may be settled by anyone).
+2. `r = claim_id(sender, result)`. Load the assurance object; the registry
+   MUST hold `r` with status Active.
+3. `result.schema = RESULT_SCHEMA`; `result.payload = Public(bytes)` with
+   `decode::<TaskResult>(bytes) = TaskResult { task, output }` for this
+   `task` and some `output`.
+4. `|attestations| ≤ MAX_VERIFIERS`; their verifiers are distinct. For
+   each `(v, body)`: `v ∈ t.acceptance.verifiers`; `a = claim_id(v,
+   body)` is Active in the registry; `body.schema = ATTESTATION_SCHEMA`;
+   `body.payload = result.payload`.
+5. The result's formula MUST be exactly
+   `Formula::and([dual_signature(), Formula::or(alternatives),
+   Formula::claim(q₁), …, Formula::claim(qⱼ)])`, where `alternatives` is
+   `Formula::atom(bond_atom(Economic, sender, WORKER_BOND_LABEL).id)`
+   followed by `Formula::claim(a)` for each attestation in the order
+   listed, and `q₁ < … < qⱼ` are
+   `t.acceptance.requires`. The registry's record of `r` MUST name
+   `t.acceptance.adjudicator` as its adjudicator, and
+   `result.detection_permille ≤ t.acceptance.detection_permille`.
+6. `(decision, reservation) = accept_and_reserve(&mut registry,
+   t.acceptance.policy, t.refund_to, r, t.amount, ctx.pulse +
+   t.acceptance.reliance (saturating), nonce)`, where `nonce` is the
+   first 8 bytes of `task`'s identifier read as a big-endian integer;
+   `reservation = None` is an error ("not accepted").
+7. Store the assurance object; defer `Schedule { at: ctx.pulse +
+   reliance, event: RegistryTick }`.
+8. `mint(sender, USD, t.amount)`; `t.state = Settled { worker: sender,
+   result: r, reservation, at: ctx.pulse }`; store the task.
+9. Event `TaskSettled { task, worker: sender, result: r, amount, reservation }`.
+
+Step 5 fixes what a result rests on: the worker's own task bond, or any
+named verifier's attestation of the same output, and every required
+claim. A worker therefore needs a task bond, however small, to issue a
+result at all (a claim's atoms must be registered, §5.4). A worker cannot make a result look harder to fake by citing
+unrelated claims, and cannot leave out the environment's. Because the
+reservation is made for `t.refund_to`, if a required claim is later
+proven false (an exploit in the environment, say), the result falls with
+it, and the party whose money paid for it is compensated from the slashed
+bonds the reservation holds (§5.10).
+
+A task is paid at most once: settling it closes it.
+
+### 5.44 CancelTask { task }
+
+Contended, in the task's domain.
+
+1. Load `task` (MUST be a task, `t`); `t.state = Open`.
+2. The sender MUST be `t.worker` (a worker releases its task), or `t.poster`
+   or `t.refund_to` when `t.worker = None` (an open task) or `ctx.pulse >
+   t.deadline` (an expired one). A worker named by a task can therefore
+   count on it until the deadline, whoever posted it.
+3. `mint(t.refund_to, USD, t.amount)`; `t.state = Cancelled { by: sender,
+   at: ctx.pulse }`; store.
+4. Event `TaskCancelled { task, refund: t.amount, to: t.refund_to }`.
+
+### 5.45 DelegateStake { validator, amount }
+
+**Pooled stake.** Anyone may add stake to a validator's weight without
+handing it over. A **delegation** is an object its delegator owns, holding
+**shares** of the validator's **pool**; the pool holds the stake. Pools
+live in the **delegation book**, a shared object at
+`well_known::delegations()` owned by `Shared(validators_domain())`; the
+first `DelegateStake` or `SetCommission` creates it. All five delegation
+kinds are contended, in the validators' domain. Constants of
+`sion_exec::delegation`: `REWARD_SCALE` (10¹²), `MIN_DELEGATION`
+(`Amount(1_000_000)`), `COMMISSION_CEILING_PERMILLE` (250),
+`COMMISSION_STEP_PERMILLE` (20), `DELEGATION_SLASH_PERMILLE` (100) and
+`CAP_FLOOR_PERMILLE` (100).
+
+**Arithmetic**, in `u128`, every step an error on overflow or division
+by zero: `mul_div(a, b, c) = (a / c) × b + (a mod c) × b / c` with integer
+division (equal to `⌊a·b/c⌋`). For a pool `p`: `shares(p) = earning +
+pending + unbonding` (saturating); `value_of(p, s) = 0` if `shares(p) =
+0`, else `mul_div(s, value, shares(p))`; the shares `amount` buys are
+`amount` if `shares(p) = 0`, else `mul_div(amount, shares(p), value)`. A
+validator's **bonded stake** is its record's `stake` plus, if it has a
+pool, `value_of(p, earning + pending)` (`earning + pending` saturating).
+
+1. `amount ≥ MIN_DELEGATION`. Load the validator set; `validator` MUST be
+   a record with status `Joining` or `Active`.
+2. `draw(params.stake_asset, amount)`.
+3. `try_load(well_known::delegations())`: if it exists it MUST be a
+   delegation book; otherwise start an empty one.
+4. **Cap.** With `n` the number of records whose status is `Joining` or
+   `Active`, `T` the sum of their bonded stakes and `B` the bonded stake
+   of `validator`: `(B + amount) × 1000 ≤ cap × (T + amount)`, where `cap =
+   max(⌊2000 / n⌋, CAP_FLOOR_PERMILLE)`. No validator may gain, by
+   delegation, more than twice an equal share of the bonded stake, and the
+   cap is never below a tenth.
+5. Let `p` be `validator`'s pool (a default pool, all zero, if it has
+   none) and `s` the shares `amount` buys; `s > 0`. `p.pending += s`;
+   `p.pending_delegations += 1`; `p.value += amount`.
+6. `d = create(Account(sender), Delegation { owner: sender, validator,
+   shares: s, state: Pending { epoch: set.epoch }, since: ctx.pulse })`;
+   store the book (with `p` in it).
+7. Event `Delegated { delegation: d, validator, owner: sender, amount,
+   shares: s }`.
+
+A delegation made during an epoch earns, and counts towards its
+validator's weight, from that epoch's end (§6.3): delegating just before
+an epoch ends earns nothing for that epoch.
+
+**Resolving** a delegation `d` of pool `p`, with `E` the validator set's
+current `epoch`:
+
+- `Pending { epoch: e }` with `e < E`: it joined at the end of epoch `e`.
+  `j = p.joins[e]` (an error if absent); `j.waiting −= 1` (an error if it
+  was 0), and the entry is removed if `waiting` is now 0; `d.state =
+  Earning { entry: j.reward_per_share }`. It resolves as **earning** from
+  that entry.
+- `Pending { epoch: E }`: it resolves as **pending**.
+- `Earning { entry }`: it resolves as **earning** from `entry`.
+- `Unbonding`: an error.
+
+An earning delegation of `s` shares from `entry` is **owed**
+`mul_div(s, p.reward_per_share − entry, REWARD_SCALE)` (an error if
+`entry > p.reward_per_share`).
+
+### 5.46 Undelegate
+
+`tx.inputs[1]` is the delegation.
+
+1. Load `tx.inputs[1].id` (an error if absent; it MUST be a delegation
+   `d`); `d.owner` MUST be the sender. Load the validator set. Load
+   `well_known::delegations()` (it MUST exist and be a delegation book)
+   and take `d.validator`'s pool `p` (it MUST exist).
+2. Resolve `d`. Pending: `p.pending −= d.shares`; `p.pending_delegations
+   −= 1`; `owed = 0`. Earning from `entry`: `owed` as above; `p.earning −=
+   d.shares`; `p.rewards_held −= owed`. Then `p.unbonding += d.shares`;
+   `d.state = Unbonding { at: ctx.pulse + params.unbonding }`
+   (saturating).
+3. Store `d`, then the book; `mint(sender, USD, owed)`.
+4. Event `Undelegated { delegation: d, rewards: owed, withdrawable_at:
+   <at> }`.
+
+An unbonding delegation earns nothing and no longer counts towards its
+validator's weight from the next epoch's end, but its stake stays in the
+pool, where it is slashed with the pool (§5.30), until it is withdrawn.
+
+### 5.47 WithdrawDelegation
+
+1. Load `tx.inputs[1].id` (an error if absent; it MUST be a delegation
+   `d`); `d.owner` MUST be the sender; `d.state` MUST be `Unbonding { at
+   }` with `at ≤ ctx.pulse`.
+2. Load the validator set; load the delegation book (it MUST exist) and
+   take `d.validator`'s pool `p` (it MUST exist).
+3. `amount = value_of(p, d.shares)`; `p.unbonding −= d.shares`; `p.value
+   −= amount`; store the book.
+4. `consume(d)`; `mint(sender, params.stake_asset, amount)`.
+5. Event `DelegationWithdrawn { delegation: d, amount }`.
+
+### 5.48 ClaimDelegatorRewards
+
+1. Load `tx.inputs[1].id` (an error if absent; it MUST be a delegation
+   `d`); `d.owner` MUST be the sender. Load the validator set; load the
+   delegation book (it MUST exist) and take `d.validator`'s pool `p` (it
+   MUST exist).
+2. Resolve `d`; it MUST resolve as earning, from `entry`, and be owed
+   `owed > 0`.
+3. `p.rewards_held −= owed`; `d.state = Earning { entry:
+   p.reward_per_share }`; store `d`, then the book; `mint(sender, USD,
+   owed)`.
+4. Event `DelegatorRewardsClaimed { delegation: d, amount: owed }`.
+
+### 5.49 SetCommission { validator, permille }
+
+1. Load the validator set; `validator` MUST be operated by the sender
+   (§5.26); `permille ≤ COMMISSION_CEILING_PERMILLE`.
+2. `try_load(well_known::delegations())` (if it exists it MUST be a
+   delegation book; otherwise start an empty one); take `validator`'s
+   pool `p` (a default pool if it has none). If `shares(p) > 0`, `permille
+   ≤ p.commission_permille + COMMISSION_STEP_PERMILLE`.
+3. `p.next_commission = Some(permille)`; store the book.
+4. Event `CommissionSet { validator, permille }`.
+
+The commission takes effect at the epoch's end (§6.3), after that epoch's
+rewards, so delegators see every change at least an epoch before it costs
+them anything, and a pool with delegators sees its commission rise by at
+most 2 percentage points per epoch. A pool nobody has delegated to yet may
+set any commission up to the ceiling.
+
+### 5.50 PostDeal { root, size, challenges, price, rounds, round_length, collateral, provider, accept_by, locator }
+
+A **storage deal** pays a provider, round by round, for keeping a body of
+data whose Merkle root is fixed when the deal is posted, and for proving in
+each round that it still holds pieces of it that nobody could predict.
+The data is `size` **leaves**, byte strings of at most `MAX_LEAF_BYTES`
+bytes each, and `root = merkle::root([leaf_hash(d₀), …, leaf_hash(d_{size−1})])`
+(`sion_core::merkle`, RFC 9162 shape). The ledger does not store the
+data: `locator` only tells providers where to fetch it. Proofs do publish
+the leaves they answer with (§5.52), so data that must stay private
+should be encrypted before its root is computed.
+
+Money stays in the deal, a shared object in its own domain
+(`object_domain("deal", deal)`): the client's escrow, and the provider's
+collateral once it accepts. Proofs go to a **custody record** the provider
+owns (§5.51), so proving is owned-linear: it needs a lane certificate, not
+consensus, and one transaction can prove many deals (§5.52). Money moves
+only when a deal is settled or closed (§5.53, §5.54).
+
+Owned-linear. Constants of `sion_exec::storage`: `MAX_DEAL_LEAVES` (2⁴⁰),
+`MAX_LEAF_BYTES` (4,096), `MAX_PATH` (40), `MAX_CHALLENGES` (16),
+`MAX_ROUNDS` (1,000,000), `MIN_ROUND_LENGTH` (8), `MAX_ROUND_LENGTH`
+(100,000), `MAX_LOCATOR` (256), `MAX_PROOF_LEAVES` (64),
+`ABANDON_ROUNDS` (3), `SEED_DOMAIN` (`sion/storage/seed`) and
+`CHALLENGE_DOMAIN` (`sion/storage/challenge`); and of `sion_exec::beacons`
+(§6.3): `BEACON_INTERVAL` (8) and `BEACON_SLOTS` (12,500).
+
+1. `1 ≤ size ≤ MAX_DEAL_LEAVES`; `1 ≤ challenges ≤ MAX_CHALLENGES`; `price
+   > 0`; `1 ≤ rounds ≤ MAX_ROUNDS`; `MIN_ROUND_LENGTH ≤ round_length ≤
+   MAX_ROUND_LENGTH` and `round_length mod BEACON_INTERVAL = 0`; if
+   `provider = None`, `collateral > 0`; `ctx.pulse < accept_by ≤ ctx.pulse
+   + MAX_PERIOD` (saturating; `sion_exec::market::MAX_PERIOD`); `locator`
+   is at most `MAX_LOCATOR` bytes long (UTF-8).
+2. `escrow = price × rounds` (an error if it overflows); `draw(USD,
+   escrow)`.
+3. `deal = created_id(digest, next_index)`; `create(Shared(object_domain(
+   "deal", deal)), Deal { client: sender, provider, root, size, challenges,
+   price, rounds, round_length, collateral, accept_by, locator, escrow,
+   posted_at: ctx.pulse, state: Open })`.
+4. Event `DealPosted { deal, client: sender, provider, size, price,
+   rounds, collateral }`.
+
+`provider = None` posts an **open** deal: any account may accept it, so
+it must ask for collateral; without any, a stranger could accept it, never
+prove a round, and hold the client's escrow until the deal is abandoned. A
+provider should accept only once it holds data whose leaves hash to
+`root`: it can check that before it accepts, and from then on its
+collateral is at stake.
+
+### 5.51 AcceptDeal { deal }
+
+Contended, in the deal's domain.
+
+1. Load `deal` (MUST be a deal, `d`); `d.state = Open`; `ctx.pulse ≤
+   d.accept_by`; if `d.provider = Some(p)`, the sender MUST be `p`.
+2. `draw(USD, d.collateral)`.
+3. `start = BEACON_INTERVAL × (⌊ctx.pulse / BEACON_INTERVAL⌋ + 1)`
+   (saturating): the first multiple of `BEACON_INTERVAL` after this Pulse.
+4. `custody = create(Account(sender), Custody { deal, root: d.root, size:
+   d.size, challenges: d.challenges, start, round_length: d.round_length,
+   rounds: d.rounds, next: 0, proven: 0 })`.
+5. `d.state = Active { provider: sender, custody, start, bond:
+   d.collateral, paid: 0 }`; store `d`.
+6. Event `DealAccepted { deal, provider: sender, custody, start }`.
+
+Round `i` (from 0) of the deal is the Pulses `start + i × round_length` to
+`start + (i + 1) × round_length − 1`; the deal **ends** at `end = start +
+rounds × round_length` (saturating), the first Pulse after its last round.
+Since `start` and `round_length` are multiples of `BEACON_INTERVAL`, so is
+the first Pulse of every round, and the chain records its beacon (§6.3).
+
+### 5.52 ProveStorage { proofs }
+
+Owned-linear. `proofs[j]` is a `CustodyProof { round, leaves }` for the
+custody record `tx.inputs[j + 1]`, and `leaves[k]` is a `LeafProof { data,
+path }`.
+
+1. `|proofs| ≥ 1`; `|tx.inputs| > |proofs|`; `Σ |proofs[j].leaves| ≤
+   MAX_PROOF_LEAVES`.
+2. For each `j`, in order, with `id = tx.inputs[j + 1].id` and `p =
+   proofs[j]`: load `id` (MUST be a custody record, `c`; prepare has
+   checked that the sender owns it). With `i = p.round`: `ctx.pulse ≥
+   c.start`; `i = (ctx.pulse − c.start) / c.round_length` (the round under
+   way: a round is proven during the round); `i < c.rounds`; `i ≥ c.next`;
+   `|p.leaves| = c.challenges`. With `b = c.start + i × c.round_length`,
+   the round's first Pulse, `seed = hash_parts(SEED_DOMAIN, [beacon_at(b),
+   c.deal])`, each part its 32 bytes. For each `k` from 0 to
+   `c.challenges − 1`:
+   - `index = challenge(seed, i, k) mod c.size`, where `challenge(seed,
+     i, k)` is the first 8 bytes, read big-endian, of
+     `hash_parts(CHALLENGE_DOMAIN, [seed (32 bytes), i (4 bytes,
+     big-endian), k (1 byte)])`;
+   - with `(data, path) = p.leaves[k]`: `|data| ≤ MAX_LEAF_BYTES`; `|path|
+     ≤ MAX_PATH`; `merkle::verify_inclusion(c.root, c.size, index,
+     leaf_hash(data), path)` MUST succeed.
+
+   Then `c.proven += 1`; `c.next = i + 1`; store `c`; event
+   `StorageProven { deal: c.deal, custody: id, round: i }`.
+
+**beacon_at(b)**, for a Pulse `b ≤ ctx.pulse` with `b mod
+BEACON_INTERVAL = 0`: if `b = ctx.pulse`, `ctx.beacon`; otherwise `load(
+well_known::beacon((b / BEACON_INTERVAL) mod BEACON_SLOTS))`, which MUST
+be a beacon record with `pulse = b`, and its `beacon`. Every round's first
+Pulse is a multiple of `BEACON_INTERVAL`, and a proof executes less than
+`MAX_ROUND_LENGTH = BEACON_INTERVAL × BEACON_SLOTS` Pulses after it, so the
+record is still there.
+
+A round's challenge is fixed by the beacon of its first Pulse, a Pulse
+fixed when the deal was accepted. A provider learns it only when that Pulse
+executes, so it must hold every leaf until then, and it cannot change the
+challenge by choosing when its proof executes. (Before this was settled,
+each proof fixed the next round's challenge through the beacon of the Pulse
+it executed in; a provider that could time its proofs, with a validator's
+help, could steer its challenges towards the leaves it kept.) What remains
+is the beacon's own bias: a validator that withholds its reveal for the
+round's first Pulse chooses between two beacons, and `m` colluding
+validators among `2^m`. A round passes unproven if no proof of it executes
+during it. A custody record does not know whether its deal is still
+active: proofs after a deal is closed change nothing but the record.
+
+### 5.53 SettleDeal { deal }
+
+Contended, in the deal's domain.
+
+1. Load `deal` (MUST be a deal, `d`); `d.state = Active { provider,
+   custody, … , paid }`; the sender MUST be `provider`.
+2. Load `custody` (MUST be a custody record, `c`, with `c.deal = deal`).
+3. `due = c.proven − paid` (MUST be positive); `amount = due × d.price`
+   (an error if it overflows); `d.escrow −= amount` (an error if it would
+   be negative); `paid = c.proven`; store `d`; `mint(provider, USD,
+   amount)`.
+4. Event `DealSettled { deal, rounds: due, amount }`.
+
+### 5.54 CloseDeal { deal }
+
+Contended, in the deal's domain.
+
+1. Load `deal` (MUST be a deal, `d`).
+2. If `d.state = Open`: the sender MUST be `d.client`; `proven = 0`,
+   `missed = 0`, `paid_now = 0`, `returned = 0`, `forfeited = 0`.
+3. If `d.state = Active { provider, custody, start, bond, paid }`: load
+   `custody` (MUST be a custody record, `c`, with `c.deal = deal`);
+   `proven = c.proven`; `end = start + d.rounds × d.round_length`
+   (saturating).
+   - **At the end**, `ctx.pulse ≥ end`: the sender MUST be `d.client` or
+     `provider`; `missed = d.rounds − proven`; `forfeited = ⌊bond × missed
+     / d.rounds⌋`, computed exactly in `u128` as `mul_div(bond, missed,
+     d.rounds)` (§5.45; at most `bond`, since `missed ≤ d.rounds`);
+     `returned = bond − forfeited`.
+   - **Abandoned**, `ctx.pulse < end`: the sender MUST be `d.client`;
+     `ctx.pulse ≥ start`; with `r = (ctx.pulse − start) / d.round_length`,
+     `r ≥ c.next + ABANDON_ROUNDS` (the provider proved none of the last
+     `ABANDON_ROUNDS` rounds or more); `missed = r − proven`; `forfeited =
+     bond`; `returned = 0`.
+
+   Then `due = proven − paid`; `paid_now = due × d.price` (an error if it
+   overflows); `d.escrow −= paid_now` (an error if it would be negative);
+   `mint(provider, USD, paid_now + returned)`.
+4. Otherwise (`Closed`): an error.
+5. `refund = d.escrow`; `mint(d.client, USD, refund)`; if `forfeited >
+   0`, defer `Treasury { asset: USD, amount: forfeited }`.
+6. `d.escrow = 0`; `d.state = Closed { at: ctx.pulse, proven, missed,
+   refund, forfeited }`; store `d`.
+7. Event `DealClosed { deal, refund, paid: paid_now, returned, forfeited,
+   missed }`.
+
+The provider is paid for every round it proved, whoever closes. A
+provider that proves every round gets its whole collateral back; the
+rounds it missed cost it their share of it, `bond × missed / rounds`
+rounded down once (rounding each round's share down instead would let a
+collateral smaller than the number of rounds escape entirely); one that
+stops proving for
+`ABANDON_ROUNDS` rounds may lose all of it as soon as the client closes.
+Forfeited collateral goes to the treasury, not to the client, so that
+nobody profits from making a provider fail (by flooding its network, say).
+The client gets back the escrow of every round not proven.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -784,14 +1354,27 @@ counter `k = 0` for payouts: **pay(owner, asset, amount)**: if `amount =
 **Protocol objects.** The schedule object is always loaded first. The
 assurance object, the treasury, the validator set and the forced-inclusion
 obligations are loaded the first time something needs them (and only
-then); a market is loaded the first time an item or event needs it. Each of
-these is written back at the end **only if** something used it mutably
-(assurance, treasury, validator set, obligations, markets: anything that
-obtained it; schedule: any change to its entries, including removing due
-entries). Write-back order: markets in id order, then assurance, treasury,
-validator set, obligations, schedule. Other objects (bounded totals, coins)
-are stored when changed. Reads of other objects in this phase are
-`try_load`s.
+then); a market is loaded the first time an item or event needs it; the
+delegation book (v1.11) is read, with `try_load`, only by EpochEnd, and
+may not exist. Each of these is written back at the end **only if**
+something used it mutably (assurance, treasury, validator set, delegation
+book, obligations, markets: anything that obtained it; schedule: any
+change to its entries, including removing due entries). Write-back order:
+markets in id order, then assurance, treasury, validator set, delegation
+book, obligations, schedule, then the beacon record. Other objects (bounded
+totals, coins) are stored when changed. Reads of other objects in this
+phase are `try_load`s.
+
+**The beacon record** (v1.12). If `pulse mod BEACON_INTERVAL = 0`, the
+phase ends by recording the Pulse's beacon: with `slot = (pulse /
+BEACON_INTERVAL) mod BEACON_SLOTS` and `id = well_known::beacon(slot)`,
+`try_load(id)`; if it exists it MUST be a beacon record, and it is stored
+with its data replaced by `Beacon(BeaconRecord { pulse, beacon })`;
+otherwise a new object `Object { id, version: 0, owner:
+Shared(well_known::beacons_domain()), data: Beacon(BeaconRecord { pulse,
+beacon }) }` is stored. (Each slot is reused every `BEACON_INTERVAL ×
+BEACON_SLOTS` Pulses; the beacons themselves stay in the certified Pulse
+headers.) No other Pulse writes a beacon record.
 
 **Sorting.** Items are sorted by the key `(rank, natural, enc(item))`,
 where `natural` and `enc(item)` compare as byte strings (so Schedule items,
@@ -930,7 +1513,7 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   expires_at)` (saturating), increment `missed` (saturating), and schedule
   `ForcedDeadline { intent }` at the new deadline.
 - **Rotate** a shard `s` (with `window` as above): skip if the active set
-  is empty (the chain has halted: EpochEnd step 3), or if `rotations[s]`
+  is empty (the chain has halted: EpochEnd step 4), or if `rotations[s]`
   exists and `ctx.pulse < rotations[s].at + window` (saturating). Otherwise `previous` = the shard's **lane members**
   (`rotations[s].members` if present, else the members of
   `sample_committee(active, seats, seed, Epoch(epoch), s)`); `count =
@@ -943,25 +1526,42 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   `collected = fees[USD]` (or 0). Validators are paid from fees only: what
   else reaches the treasury (slashing remainders, released pools) stays
   there.
+  Then obtain the delegation book: `try_load(well_known::delegations())`
+  (if it exists it MUST be a delegation book, and it is written back).
   1. `gain = collected − fees_mark` (0 if negative); `pool =
      permille_of(gain, reward_permille)`; `total` = the sum of the active
      set's weights. For each `(v, w)` of the active set, in order, whose
      record is `Active` or `Leaving`: `share = share_of(pool, w, total)`;
-     `rewards += share`; `paid += share`.
-  2. Every record, in id order: `Joining` becomes `Active`; `Leaving`
+     `paid += share`. If the book has a pool `p` for `v` with `p.earning >
+     0` and `e = value_of(p, p.earning) > 0` (§5.45): `part = mul_div(share,
+     e, stake + e)`, with `stake` the record's; `commission =
+     permille_of(part, p.commission_permille)`; `delegated = part −
+     commission`; `p.reward_per_share += mul_div(delegated, REWARD_SCALE,
+     p.earning)`; `p.rewards_held += delegated`; the record's `rewards +=
+     share − delegated`. Otherwise the record's `rewards += share`. (The
+     rounding left over by the accumulator stays in `rewards_held`.)
+  2. Every pool of the book, in validator order: if `pending_delegations
+     > 0`, `joins[epoch] = Join { reward_per_share, waiting:
+     pending_delegations }`, with `epoch` the ending epoch; `earning +=
+     pending`; `pending = 0`; `pending_delegations = 0`; if
+     `next_commission = Some(c)`, `commission_permille = c` and
+     `next_commission = None`.
+  3. Every record, in id order: `Joining` becomes `Active`; `Leaving`
      becomes `Exited { withdrawable_at: ctx.pulse + unbonding }`
      (saturating).
-  3. The next active set: the `Active` records, sorted by stake descending
-     then id ascending, the first `max(max_active, 1)`, as `(id,
-     weight(stake))` sorted by id. It may be empty: if every validator that
-     could serve was slashed, the next epoch has no active set, no
-     committee can certify its Pulses, and the chain **halts** rather than
-     run on proven equivocators with nothing at stake. (§5.27 keeps the
-     last validator from leaving, so only slashing empties the set.)
-  4. `epoch += 1` (saturating); `epoch_start = ctx.pulse + 1` (an error at
+  4. The next active set: the `Active` records, ranked by `stake +
+     value_of(p, p.earning)` for their pool `p` (just `stake` without one),
+     descending, then id ascending; the first `max(max_active, 1)`, as
+     `(id, weight(<that sum>))` sorted by id. It may be empty: if every
+     validator that could serve was slashed, the next epoch has no active
+     set, no committee can certify its Pulses, and the chain **halts**
+     rather than run on proven equivocators with nothing at stake. (§5.27
+     keeps the last validator from leaving, so only slashing empties the
+     set.)
+  5. `epoch += 1` (saturating); `epoch_start = ctx.pulse + 1` (an error at
      Pulse `u64::MAX`, which no chain reaches); `seed = ctx.beacon`;
      `rotations` emptied; `fees_mark = collected`.
-  5. Set `balances[USD]` to `balance − paid` (an error if `paid > balance`,
+  6. Set `balances[USD]` to `balance − paid` (an error if `paid > balance`,
      which no reachable state allows: rewards are a share of fees the
      treasury already holds, and nothing else leaves it). The entry is
      written even when nothing is paid and the treasury had no USD entry
@@ -1084,6 +1684,106 @@ carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
 
+- **v1.12.** Storage deals (§5.50 to §5.54). A client escrows payment for
+  keeping data whose Merkle root it fixes at posting (`PostDeal`), for a
+  named provider or for any; the provider accepts with collateral
+  (`AcceptDeal`) and gets a custody record it owns. In each round it
+  proves, from its record, that it holds leaves picked by a challenge
+  derived from the beacon of the round's first Pulse (`ProveStorage`,
+  owned-linear, many deals per transaction). Rounds start on multiples of
+  `BEACON_INTERVAL` (8), and the deferred phase of every such Pulse records
+  its beacon in one of `BEACON_SLOTS` (12,500) beacon records, so a proof
+  can read the beacon of its round's first Pulse for up to
+  `MAX_ROUND_LENGTH` (100,000) Pulses. The provider collects for proven
+  rounds (`SettleDeal`); closing (`CloseDeal`) pays what is due, refunds the
+  escrow of unproven rounds to the client, returns the collateral less
+  `⌊bond × missed / rounds⌋`, and forfeits all of it to the treasury if the
+  client closes a deal its provider has abandoned for `ABANDON_ROUNDS`
+  rounds. An open deal asks for collateral. New types
+  `sion_exec::storage::{Deal, DealState, Custody, CustodyProof,
+  LeafProof}` and `sion_exec::beacons::BeaconRecord`, objects
+  `ObjectData::{Deal, Custody, Beacon}` and `well_known::beacon(slot)`,
+  transaction kinds and events; the supply counts deal escrow and
+  collateral. Before release, an independent review changed three things:
+  as first written, each proof fixed the next round's challenge through the
+  beacon of the Pulse it executed in, so a provider that could time its
+  proofs could steer its challenges (one keeping half its data passed 20
+  rounds of 20 in a simulation); a missed round cost `⌊bond / rounds⌋`,
+  nothing when the collateral was smaller than the number of rounds; and
+  open deals could ask for no collateral.
+
+- **v1.11.** Pooled stake (§5.45 to §5.49). Anyone may delegate stake to a
+  validator without handing it over: a delegation is an object its
+  delegator owns, holding shares of the validator's pool, which counts
+  towards the validator's weight and shares its rewards from the end of the
+  epoch the delegation was made in. At each epoch's end a validator's
+  reward is split between its own stake and its pool's earning stake in
+  proportion; the operator keeps its commission (at most 25 %, raised by at
+  most 2 points per epoch once anyone has delegated, every change taking
+  effect at the epoch's end) and the rest is credited per share, exactly,
+  for delegators to claim. Validators rank for the active set by their own
+  plus their pools' earning stake. No validator may gain more than twice
+  an equal share of the bonded stake by delegation (never less than a
+  tenth). An equivocation now also slashes a tenth of the offender's pool,
+  unbonding delegations included, all of it to the treasury: the reporter's
+  share is of the offender's own stake and rewards only. (As first written,
+  v1.11 paid the reporter a share of the pool's tenth too, which made
+  reporting yourself profitable once your pool was about 190 times your
+  stake; a review of the economics found it, and it was changed before
+  release.) New
+  types `sion_exec::delegation::{DelegationBook, Pool, Join, Delegation,
+  DelegationState}`, objects `ObjectData::{Delegations, Delegation}` and
+  `well_known::delegations()`, transaction kinds and events; the supply
+  counts pooled stake and delegators' unclaimed rewards; the epoch end
+  reads and writes the delegation book (§6.3).
+
+- **v1.10.** Task Charters (§5.42 to §5.44). `PostTask` escrows money for
+  a task whose acceptance is fixed when it is posted: the policy the
+  decision rule runs under, the claims every result must rest on (an
+  environment's bonded "no known exploit" claim, say), the verifiers whose
+  attestations count, the adjudicator, the largest detection factor and how
+  long the poster relies on a paid result. An agent posts from its
+  allotment, under its caveats. `SettleTask` pays the worker once a result
+  claim whose payload commits to the task, and whose formula is exactly
+  the worker's bond or a named verifier's attestation of the same output
+  and every required claim, passes the decision rule; κ times the payment
+  of its backing is reserved for the party whose money paid, so a result
+  later proven false compensates it. `CancelTask` refunds an open task, an
+  expired one, or one its worker releases. New types
+  `sion_exec::task::{Task, TaskState, Acceptance, TaskResult}`, object
+  `ObjectData::Task`, transaction kinds and events; the supply counts open
+  task escrow.
+
+- **v1.9.** Memory logs (§5.40, §5.41). `OpenMemory` creates a memory log
+  owned by its writer, optionally for an agent identity whose agent is the
+  writer; `CommitMemory` moves the log's head to a new size and root with
+  an RFC 9162 consistency proof from the current head, which the ledger
+  checks, so a log only grows and cannot fork. The Pulse of a commit is
+  the transaction time of the atoms it adds. A suspended or revoked
+  agent's log cannot grow. New type `sion_exec::memory::MemoryLog`, object
+  `ObjectData::MemoryLog`, transaction kinds and events. The atoms, their
+  index and query proofs are off the ledger (the `sion-memory` crate).
+
+- **v1.8.** Agent identities (§5.35 to §5.39). An agent identity is a
+  charter with an `identity` record: a commitment to the agent's card and
+  its depth in the delegation tree; the charter's id is the agent's id.
+  `RegisterAgent` registers one; `SpawnAgents` launches up to 256
+  subagents in one transaction, each with its own account, card,
+  attenuated caveats and budget carved from the parent's allotment;
+  `SetAgentCard` replaces a card; `SuspendAgent` and `ResumeAgent` pause and resume a charter and
+  everything below it. Charters gain `suspended_by` and `identity`; the
+  chain check fails on a suspended charter (§5.13), except when
+  `ReclaimCharter` asks whether a charter is dead. `RevokeCharter` may now
+  be sent by the agent itself or by any overseer: the backer, the
+  principal, or the agent of any charter above (§5.16), so one transaction
+  from any ancestor stops a whole subtree. Window limits are carved like
+  budgets (§5.13 **carve**, used by `Delegate` and `SpawnAgents`):
+  allotments gain `carved_window`, and an agent's own window limit is
+  `max_per_window − carved_window`. Until v1.7, each child could spend its
+  parent's whole window limit, so *k* children could spend *k* times the
+  parent's rate. New types `sion_exec::charter::{AgentIdentity, Spawn}`,
+  transaction kinds and events.
+
 - **v1.7.** Stream checkpoints (§5.31, §5.32): a payer may commit, when it
   opens a stream, to a Merkle tree over every `spacing`-th element of its
   chain, and a payee may then settle by a jump to the checkpoint below its
@@ -1104,7 +1804,7 @@ carries the validator set with a state proof against `before.state_root`.
 
 - **v1.5.** From an independent review of the staking machinery: at an
   epoch's end, slashed validators lose their seats even if no other
-  validator is eligible (§6.3, EpochEnd step 3). Until v1.4 the old active
+  validator is eligible (§6.3, EpochEnd step 4). Until v1.4 the old active
   set was kept when the next one would be empty, so a committee whose every
   member had been slashed carried on into the next epoch with nothing at
   stake; now the next active set is empty and the chain halts, and a

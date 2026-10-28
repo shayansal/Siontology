@@ -32,7 +32,7 @@ pub(super) fn load_assurance(run: &mut TxRun<'_>) -> Step<Loaded> {
 }
 
 /// Stores the assurance object with its updated domain.
-fn store_assurance(run: &mut TxRun<'_>, loaded: Loaded) -> Step {
+pub(super) fn store_assurance(run: &mut TxRun<'_>, loaded: Loaded) -> Step {
     let Loaded { object, domain } = loaded;
     run.store(Object {
         data: ObjectData::Assurance(Box::new(domain)),

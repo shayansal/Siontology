@@ -8,9 +8,13 @@ mod assurance;
 mod bounded;
 mod charter;
 mod coins;
+pub(crate) mod delegation;
 mod knowledge;
 mod market;
+mod memory;
+mod storage;
 mod stream;
+mod task;
 mod validators;
 
 use sion_exec::tx::TxKind;
@@ -74,6 +78,17 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
         } => charter::agent_pay(run, *charter, *payee, *amount, purpose, *evidence),
         TxKind::RevokeCharter { charter } => charter::revoke_charter(run, *charter),
         TxKind::ReclaimCharter { charter } => charter::reclaim_charter(run, *charter),
+        TxKind::RegisterAgent {
+            agent,
+            card,
+            caveats,
+            funding,
+            agent_bond,
+        } => charter::register_agent(run, *agent, *card, caveats, *funding, *agent_bond),
+        TxKind::SpawnAgents { charter, children } => charter::spawn_agents(run, *charter, children),
+        TxKind::SetAgentCard { charter, card } => charter::set_agent_card(run, *charter, *card),
+        TxKind::SuspendAgent { charter } => charter::suspend_agent(run, *charter),
+        TxKind::ResumeAgent { charter } => charter::resume_agent(run, *charter),
         TxKind::CreateBounded {
             label,
             asset,
@@ -165,6 +180,89 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
             until,
         } => stream::top_up(run, *stream, *deposit, *until),
         TxKind::CloseStream { stream } => stream::close(run, *stream),
+        TxKind::OpenMemory { agent, policy } => memory::open(run, *agent, *policy),
+        TxKind::CommitMemory {
+            size,
+            root,
+            index,
+            manifest,
+            proof,
+            seal,
+        } => memory::commit(
+            run,
+            memory::NewHead {
+                size: *size,
+                root: *root,
+                index: *index,
+                manifest: *manifest,
+                proof,
+                seal: *seal,
+            },
+        ),
+        TxKind::PostTask {
+            spec,
+            acceptance,
+            worker,
+            amount,
+            deadline,
+            charter,
+        } => task::post(
+            run,
+            task::Posting {
+                spec: *spec,
+                acceptance,
+                worker: *worker,
+                amount: *amount,
+                deadline: *deadline,
+                charter: *charter,
+            },
+        ),
+        TxKind::SettleTask {
+            task,
+            result,
+            attestations,
+        } => task::settle(run, *task, result, attestations),
+        TxKind::CancelTask { task } => task::cancel(run, *task),
+        TxKind::DelegateStake { validator, amount } => {
+            delegation::delegate_stake(run, validator, *amount)
+        }
+        TxKind::Undelegate => delegation::undelegate(run),
+        TxKind::WithdrawDelegation => delegation::withdraw_delegation(run),
+        TxKind::ClaimDelegatorRewards => delegation::claim_delegator_rewards(run),
+        TxKind::SetCommission {
+            validator,
+            permille,
+        } => delegation::set_commission(run, validator, *permille),
+        TxKind::PostDeal {
+            root,
+            size,
+            challenges,
+            price,
+            rounds,
+            round_length,
+            collateral,
+            provider,
+            accept_by,
+            locator,
+        } => storage::post(
+            run,
+            storage::Terms {
+                root: *root,
+                size: *size,
+                challenges: *challenges,
+                price: *price,
+                rounds: *rounds,
+                round_length: *round_length,
+                collateral: *collateral,
+                provider: *provider,
+                accept_by: *accept_by,
+                locator,
+            },
+        ),
+        TxKind::AcceptDeal { deal } => storage::accept(run, *deal),
+        TxKind::ProveStorage { proofs } => storage::prove(run, proofs),
+        TxKind::SettleDeal { deal } => storage::settle(run, *deal),
+        TxKind::CloseDeal { deal } => storage::close(run, *deal),
     }
 }
 
@@ -174,7 +272,7 @@ mod tests {
 
     /// The bounds this crate takes from sion-exec's data layout are the
     /// values the specification states (§4.1, §5.2, §5.13, §5.18, §5.22,
-    /// §6.3).
+    /// §5.31, §5.40, §5.42, §5.45, §5.50, §6.3).
     #[test]
     fn shared_bounds_are_the_specified_values() {
         assert_eq!(sion_exec::tx::MAX_GRANT, Amount::units(1_000_000_000));
@@ -192,5 +290,39 @@ mod tests {
         assert_eq!(sion_exec::stream::MAX_CHECKPOINTS, 1 << 20);
         assert_eq!(sion_exec::stream::MAX_CHECKPOINT_DEPTH, 20);
         assert_eq!(sion_exec::stream::CHECKPOINT_TAG, b"sion/stream/checkpoint");
+        // §5.40, v1.9.
+        assert_eq!(sion_exec::memory::MAX_CONSISTENCY_PROOF, 128);
+        // §5.42, v1.10.
+        assert_eq!(sion_exec::task::RESULT_SCHEMA, "task.result/v1");
+        assert_eq!(sion_exec::task::ATTESTATION_SCHEMA, "task.attestation/v1");
+        assert_eq!(sion_exec::task::WORKER_BOND_LABEL, "task-worker");
+        assert_eq!(sion_exec::task::MAX_REQUIRED, 16);
+        assert_eq!(sion_exec::task::MAX_VERIFIERS, 16);
+        // §5.45, v1.11.
+        assert_eq!(sion_exec::delegation::REWARD_SCALE, 1_000_000_000_000);
+        assert_eq!(sion_exec::delegation::MIN_DELEGATION, Amount::units(1));
+        assert_eq!(sion_exec::delegation::COMMISSION_CEILING_PERMILLE, 250);
+        assert_eq!(sion_exec::delegation::COMMISSION_STEP_PERMILLE, 20);
+        assert_eq!(sion_exec::delegation::DELEGATION_SLASH_PERMILLE, 100);
+        assert_eq!(sion_exec::delegation::CAP_FLOOR_PERMILLE, 100);
+        // §5.50, v1.12.
+        assert_eq!(sion_exec::storage::MAX_DEAL_LEAVES, 1 << 40);
+        assert_eq!(sion_exec::storage::MAX_LEAF_BYTES, 4_096);
+        assert_eq!(sion_exec::storage::MAX_PATH, 40);
+        assert_eq!(sion_exec::storage::MAX_CHALLENGES, 16);
+        assert_eq!(sion_exec::storage::MAX_ROUNDS, 1_000_000);
+        assert_eq!(sion_exec::storage::MIN_ROUND_LENGTH, 8);
+        assert_eq!(sion_exec::storage::MAX_ROUND_LENGTH, 100_000);
+        assert_eq!(sion_exec::storage::MAX_LOCATOR, 256);
+        assert_eq!(sion_exec::storage::MAX_PROOF_LEAVES, 64);
+        assert_eq!(sion_exec::storage::ABANDON_ROUNDS, 3);
+        assert_eq!(sion_exec::storage::SEED_DOMAIN, "sion/storage/seed");
+        assert_eq!(
+            sion_exec::storage::CHALLENGE_DOMAIN,
+            "sion/storage/challenge"
+        );
+        // §6.3, v1.12.
+        assert_eq!(sion_exec::beacons::BEACON_INTERVAL, 8);
+        assert_eq!(sion_exec::beacons::BEACON_SLOTS, 12_500);
     }
 }

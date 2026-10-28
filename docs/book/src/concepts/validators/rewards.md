@@ -24,10 +24,17 @@ deferred phase of an epoch's last Pulse:
    new fees.
 
 Other money reaches the treasury too: the treasury's share of a slashed
-bond, the remainder of a slashed stake after the reporter's share, and
+bond, the remainder of a slashed stake after the reporter's share, a
+slashed pool's tenth, forfeited storage collateral, and
 slashed-bond funds no longer needed to compensate anyone. It stays there.
 It is never paid out as rewards, so slashing a validator does not enrich
 the others.
+
+**Pooled stake** (specification v1.11). A validator with delegators
+shares its reward with its pool, in proportion to their earning stake
+against its own, and keeps a commission on the pool's part; see
+[Pooled stake](pooled-stake.md). The total paid is unchanged: the pool's
+part comes out of the validator's share.
 
 Rewards accrue on the validator's record. The operator collects them with
 `ClaimRewards { validator }`, or receives them with the stake on

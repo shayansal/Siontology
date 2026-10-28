@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 67609b075949944db597c2937f4ee7a1aa88a444388470eb8db7aaa9cb30b4d9 # shrinks to chunk_size = 1, steps = [(0, 1, false), (0, 1, false)]
+cc 062e77eb04b99855e2b3ddde9dcf788a5407cfca36898025185c6656a33a1ba0 # shrinks to chunk_size = 1, pulses = [[Fees { count: 3 }, Fees { count: 3 }, Fees { count: 3 }]]

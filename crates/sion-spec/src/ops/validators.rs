@@ -2,7 +2,8 @@
 //! (§5.28), ClaimRewards (§5.29) and ReportEquivocation (§5.30).
 //!
 //! Each operation loads the validator set (`well_known::validators()`), the
-//! only object these operations read besides the inputs `draw` spends.
+//! only object these operations read besides the inputs `draw` spends and,
+//! for ReportEquivocation, the delegation book (v1.11).
 //! Signatures in equivocation evidence are checked with the keys the set
 //! records for the signer, through the shared consensus message formats.
 
@@ -348,16 +349,26 @@ pub(super) fn report_equivocation(run: &mut TxRun<'_>, evidence: &Equivocation) 
     record.rewards = Amount::ZERO;
     record.status = ValidatorStatus::Slashed { at: pulse };
     store_set(run, loaded)?;
-    // 4.
+    // 4. The pool (v1.11).
+    let pool_slashed = super::delegation::slash_pool(run, &offender)?;
+    // 5. The reporter's share is of the offender's own stake and rewards;
+    // the pool's slashed part goes to the treasury whole.
     let sender = run.sender();
     let mut reward = Amount::ZERO;
-    for (position, (asset, forfeited)) in [(params.stake_asset, stake), (usd(), rewards)]
-        .into_iter()
-        .enumerate()
+    for (position, (asset, own, pooled)) in [
+        (
+            params.stake_asset,
+            stake,
+            pool_slashed.unwrap_or(Amount::ZERO),
+        ),
+        (usd(), rewards, Amount::ZERO),
+    ]
+    .into_iter()
+    .enumerate()
     {
-        let paid = permille_of(forfeited, params.reporter_permille);
+        let paid = permille_of(own, params.reporter_permille);
         run.mint(sender, asset, paid)?;
-        let rest = forfeited.checked_sub(paid)?;
+        let rest = own.checked_add(pooled)?.checked_sub(paid)?;
         if rest > Amount::ZERO {
             run.defer(Deferred::Treasury {
                 asset,
@@ -368,12 +379,18 @@ pub(super) fn report_equivocation(run: &mut TxRun<'_>, evidence: &Equivocation) 
             reward = paid;
         }
     }
-    // 5.
+    // 6.
     run.event(Event::ValidatorSlashed {
         validator: offender,
         amount: stake,
         reporter: sender,
         reward,
     });
+    if let Some(amount) = pool_slashed {
+        run.event(Event::PoolSlashed {
+            validator: offender,
+            amount,
+        });
+    }
     Ok(())
 }

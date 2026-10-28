@@ -1,6 +1,6 @@
 # Run the demos
 
-Nine scripted demos drive real transactions through the whole protocol
+Twelve scripted demos drive real transactions through the whole protocol
 (lane certificates, consensus, Pulse execution, header certificates, data
 availability and proving) and narrate what the ledger established.
 
@@ -12,7 +12,7 @@ sion demo all --local
 validators, 2 shards, dual post-quantum signatures, proving on) and stops it
 at the end. The staking demo needs epochs that end, so it gets a devnet of
 its own with a standby validator and 24-Pulse epochs: `sion demo all
---local` runs the first eight demos on one default devnet, then starts a
+--local` runs the first eleven demos on one default devnet, then starts a
 second devnet for the staking demo.
 
 Without `--local`, a demo runs against the node at `--node` (default
@@ -28,6 +28,10 @@ seconds against a running devnet.
 |---|---|
 | `invoice` | Trade finance on insured knowledge: a bonded invoice claim, priced with the Assurance Algebra, relied on within its backing, and repaid from slashed bonds when it proves false |
 | `agents` | An AI agent with a budget the ledger enforces: an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent |
+| `swarm` | Agent identities: an orchestrator launches 12 researchers in one transaction and one of them launches 3 of its own, each with its own identity, account and budget; 15 pay at once without consensus; one suspension stops the whole tree and one resumption restarts it |
+| `tasks` | Task Charters: an eval orchestrator posts work from its budget; a result is paid only when it rests on the environment's claim and enough attested backing, and only once; a bounty is settled and another withdrawn; an exploit in the grader is proven and the lab is compensated from the vendor's bond |
+| `robots` | Memory for robots: two robots with their own identities and memory logs share a warehouse; a reader checks complete answers against the heads on the ledger; a rewrite is refused; a curator's refutation gives two readers two provable beliefs; an index that leaves an atom out is convicted; a camera frame is forgotten; a suspended robot's memory stops growing |
+| `storage` | Storage deals: a robot commits its memory log with its archive's root as the manifest and pays a laptop to keep the archive, proven every round; a phone that kept only half of the footage it accepted cannot answer the challenges and forfeits its collateral |
 | `market` | A GPU-hour market that clears at one price with an optimality certificate |
 | `receipts` | An AI inference receipt priced under three policies: trusting a TEE, distrusting it, or assuming it broken |
 | `x402` | An AI agent pays an HTTP API per request: `402`, payment under its charter, `200`; a replayed payment and an over-limit payment are refused |
@@ -40,9 +44,9 @@ Run one with `sion demo <name> --local`, except `light`, which needs a
 devnet that has already proven a Pulse ([light](#light) below).
 
 What follows is real output: the first five demos from one run of
-`sion demo all --local`, and the streams, censorship, light and staking
-demos from runs of their own on later versions, so chain identities differ
-between them. Account names such as `supplier` and `judge` are deterministic devnet
+`sion demo all --local`, and the swarm, tasks, robots, storage, streams,
+censorship, light and staking demos from runs of their own on later versions, so chain identities
+differ between them. Account names such as `supplier` and `judge` are deterministic devnet
 wallets: anyone who knows the name can derive the keys.
 
 ## invoice
@@ -90,6 +94,124 @@ Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived i
 ```
 
 See [Agent Charters](../concepts/agent-charters.md).
+
+## swarm
+
+```text
+== Agent identities: a swarm of subagents, each with its own identity ==
+Pulse   6  acme registers its orchestrator: agent 90d88d8b, card 94efec04, 1,000 USD budget, may launch subagents
+Pulse   8  the orchestrator launches 12 researchers in one transaction: 12 identities, 12 accounts, 40 USD each, ≤ 10 USD per payment
+Pulse  10  researcher-1 launches 3 sub-researchers of its own (depth 2), 10 USD each, ≤ 5 USD per payment
+Pulse  17  15 subagents each pay gpu-cloud for a tool call, all at once: no consensus, each spends only its own allotment
+Pulse  19  sub-researcher-3 tries to pay 6 USD, above its own limit → refused by the ledger: charter caveat violated: payment 6 above per-payment limit 5
+Pulse  21  acme suspends the orchestrator: one transaction
+Pulse  23  sub-researcher-3, two levels down, tries to pay 3 USD → refused by the ledger: charter caveat violated: charter suspended
+Pulse  25  acme lifts the suspension
+Pulse  28  sub-researcher-3 pays 3 USD: accepted
+Pulse  30  the orchestrator revokes researcher-2 for good
+Pulse  32  acme reclaims researcher-2's unspent budget: 32 USD
+            sub-researcher-3's lineage: f62d720f → 2c022b22 → 90d88d8b → acme (depth 2, active)
+            16 identities created in 3 transactions; every limit was checked by the ledger, not by the agents
+```
+
+Each Pulse line is one transaction, except the payments line, which is
+fifteen transactions certified together. Every refusal comes from the
+ledger: the subagents' code is not involved. See [Agent identities and
+subagents](../concepts/agent-identities.md).
+
+## tasks
+
+```text
+== Task Charters: paying for work only when the result passes a rule fixed in advance ==
+           bonds: sandbox-vendor 5,000 USD behind its environment, arbiter 3,000, reviewers 1,000 each, coder 100
+Pulse  17  sandbox-vendor claims "swe-sandbox-7 has no known exploit that passes grader g-3"  [backed by its 5,000 USD bond]
+Pulse  19  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task
+Pulse  22  the orchestrator posts task 7243db20: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on
+           sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2
+Pulse  24  …and task 0e88a347: a 40 USD bounty open to anyone, on the same terms
+           coder submits patch-4711; reviewer-1 and reviewer-2 each attest that it passes, on their own bonds
+Pulse  41  coder claims the 150 USD on its own 100 USD bond → refused by the ledger: invalid transaction: result not accepted: cost of corruption 90 (after detection discount 900/1000) is below κ·V = 300; only 100 of backing is unreserved; κ·V = 300 is needed
+Pulse  43  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid 150 USD; 300 USD of that backing reserved for the lab
+Pulse  46  coder settles again → refused by the ledger: invalid transaction: the task is not open: a task is paid once
+Pulse  49  bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD
+Pulse  54  the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab
+Pulse  56  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim
+Pulse  58  arbiter upholds it: the vendor's bond is slashed, and 4 claims fall: the environment's, and the 3 results resting on it, paid or not
+           the lab is compensated 190 USD from the vendor's bond for the two results it paid for (lab +190 USD)
+           red-team gets its deposit back and a share of the slashed bond: +2,505 USD, a bounty for the reward hack paid by the vendor
+```
+
+The lab never sees the coder's work: it sees a result claim committed to
+the task and the output, two reviewers' attestations on their own bonds,
+and the vendor's claim about its environment. The ledger pays only when
+those add up to the rule the lab fixed at posting, pays once, and keeps
+the lab's reliance backed until the reliance period ends; the red team is
+paid by the vendor for finding the exploit. See [Task
+Charters](../concepts/task-charters.md).
+
+## robots
+
+```text
+== Memory for robots: a warehouse two robots share, kept append-only by the ledger ==
+           fleet gives robot-alpha and robot-beta agent identities of their own
+           each robot opens a memory log only it can append to, tied to its identity; the curator opens one too
+Pulse  15  robot-alpha commits its log: pallet-17 seen in aisle 4. This Pulse is the observation's transaction time; the robot cannot backdate it
+Pulse  17  robot-beta commits its log: aisle 4 scanned 10 s later, empty
+           a reader asks robot-alpha for everything it recorded in aisle 4 during that minute: 1 atom, with a 263-byte proof checked against the head on the ledger
+           and for aisle 9: 0 atoms, with a proof that it recorded nothing there
+Pulse  19  robot-alpha tries to replace its observation with one in aisle 5: refused by the ledger: invalid transaction: the new head does not extend the log: invalid proof: equal sizes require equal roots
+Pulse  23  the curator records that the two robots disagree, then refutes robot-alpha's observation
+           a reader trusting the curator believes the observation refuted; one trusting only robot-alpha believes it accepted. Same evidence, two beliefs, each checked against the heads on the ledger
+Pulse  25  robot-beta commits 2 more scans, with an index that leaves out its scan of aisle 4 (the ledger stores index roots without checking them)
+           anyone holding that scan proves the omission from the head on the ledger alone, with a 517-byte fraud proof
+Pulse  27  robot-alpha stores a camera frame encrypted under its memory space's key (readable: true), then forgets it by destroying the key (readable: false); the log still proves the frame existed
+Pulse  29  fleet suspends robot-alpha; at Pulse 31 its next commit is refused by the ledger: charter caveat violated: charter suspended
+```
+
+The robots' atoms never touch the ledger: it holds each log's size, root
+and index root, and moves them only along proofs that the log grew. That
+is enough for a reader to check a complete answer, for the ledger to refuse
+a rewritten past, and for anyone to convict a robot whose index hides
+something it recorded. Belief is computed by the reader, under the reader's
+own policy. See [Memory for agents and robots](../concepts/memory.md).
+
+## storage
+
+```text
+== Storage for agents: a robot's memory kept by devices it pays, proven every round ==
+Pulse   7  robot-gamma commits 400 observations of a patrol; the head's manifest is the root of their archive (88 KiB, 23 leaves of at most 4 KiB)
+Pulse   9  robot-gamma posts an open deal for the archive: 6 rounds of 16 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral
+Pulse  11  and a deal for its camera footage (16 leaves) with the phone, on the same terms
+           a laptop and a phone run providers: each fetches a deal's data from its locator in the background, checks it hashes to the deal's root, posts the collateral, then proves every round
+           laptop: fetching deal 54fef09d from file://…/storage/robot-gamma/patrol-archive.bin
+           phone:  fetching deal e6c488cb from file://…/storage/robot-gamma/camera.bin
+           laptop: Pulse 16: Done: laptop accepted storage deal 54fef09d (custody record 1a9dc946); rounds start at Pulse 24; fee 0.0012 USD.
+           phone:  Pulse 18: Done: phone accepted storage deal e6c488cb (custody record a86a1d8b); rounds start at Pulse 24; fee 0.0012 USD.
+           the phone then quietly keeps only leaves 0 to 7 of the footage, to save space: the deal still pays it, as long as nobody asks for the rest
+           round 0: the phone is asked for leaves [7, 0, 8, 11]; it lost 2 of them and cannot answer
+           laptop: Pulse 28: Done: round 0 of storage deal 54fef09d proven; fee 0.0027 USD.
+           round 1: the phone is asked for leaves [9, 0, 8, 5]; it lost 2 of them and cannot answer
+           laptop: Pulse 43: Done: round 1 of storage deal 54fef09d proven; fee 0.0027 USD.
+           round 2: the phone is asked for leaves [2, 2, 10, 6]; it lost 1 of them and cannot answer
+           laptop: Pulse 58: Done: round 2 of storage deal 54fef09d proven; fee 0.0027 USD.
+Pulse  74  robot-gamma closes the footage deal (abandoned): 3 round(s) missed; 3 USD of escrow back, 0 USD paid for what the phone proved, its collateral of 3 USD forfeited to the treasury
+           laptop: Pulse 77: Done: round 3 of storage deal 54fef09d proven; fee 0.0027 USD.
+           laptop: Pulse 79: Done: 2 USD paid for 4 proven round(s) of storage deal 54fef09d; fee 0.0011 USD.
+           laptop: Pulse 90: Done: round 4 of storage deal 54fef09d proven; fee 0.0027 USD.
+           laptop: Pulse 107: Done: round 5 of storage deal 54fef09d proven; fee 0.0027 USD.
+           laptop: Pulse 122: Done: storage deal 54fef09d closed: 0 USD refunded, 1 USD paid, 3 USD of collateral returned, 0 USD forfeited, 0 round(s) missed; fee 0.0011 USD.
+           the laptop proved 6 of 6 rounds (0 missed): paid 3 USD and its collateral returned; it kept the archive the whole time
+           a reader checks two objects on the ledger: robot-gamma's memory head names manifest 86cfe894, and the deal the laptop proved commits to root 86cfe894: the memory the robot committed is the data that was kept
+           what a proof shows: the provider could produce the challenged leaves during the round; not that it stores its own copy (no proof of replication)
+```
+
+Each round's challenge is drawn from the beacon of the round's first
+Pulse, which the ledger records, so the phone cannot know which leaves it
+will be asked for before the round starts, nor pick them by timing its
+proof. With half its leaves gone it answers a round only when all four
+challenges fall in the half it kept (one round in 16). The ledger never
+sees the data: it checks four leaves and their Merkle paths a round. See
+[Storage deals](../concepts/storage.md).
 
 ## market
 

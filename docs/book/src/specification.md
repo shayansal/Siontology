@@ -5,7 +5,7 @@ repository:
 [`docs/spec/state-transition.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md).
 This page says what it covers and how to read it; it does not copy it.
 
-The current version is **v1.7**.
+The current version is **v1.12**.
 
 ## What it specifies
 
@@ -54,6 +54,11 @@ differential tests exist to find out which. See
 | v1.5 | From an independent review of the validator machinery: slashed validators lose their seats at the epoch boundary even if nobody else is eligible, so a chain whose every eligible validator was slashed halts instead of running on them; the reasoning behind approval evidence is spelled out (an approval holds its inputs until its transaction succeeds, fails or expires; a rejection is none of these) |
 | v1.6 | Payment streams (§5.31–5.34): a payer escrows funds for one payee and pays it off the ledger by revealing a hash chain's elements, one hash to check per payment; the payee settles many payments in one transaction, which walks one hash per step and pays a fee per hash |
 | v1.7 | Stream checkpoints: a payer may commit to a Merkle tree over every `spacing`-th element of its chain, and the payee may settle by a jump to a checkpoint, for at most `spacing + 21` hashes however many payments it covers ([Payment streams](concepts/payment-streams.md)) |
+| v1.8 | Agent identities (§5.35–5.39): registered agents and subagents launched 256 at a time, each with its own account, card commitment, caveats and budget; suspension and resumption of whole subtrees; revocation by the agent or any overseer; window limits carved from the parent's like budgets ([Agent identities and subagents](concepts/agent-identities.md)) |
+| v1.9 | Memory logs (§5.40–5.41): logs of memory atoms kept off the ledger, whose heads the ledger moves only along RFC 9162 consistency proofs, so a log only grows and cannot fork; the Pulse of a commit is the transaction time of the atoms it adds ([Memory for agents and robots](concepts/memory.md)) |
+| v1.10 | Task Charters (§5.42–5.44): escrowed tasks whose acceptance rule is fixed at posting; results bound to their task, with exactly the formula the task requires; settlement once, with κ times the payment of backing reserved for the payer, so a result later proven false compensates it; bounties, cancellation, and posting from an agent's budget ([Task Charters](concepts/task-charters.md)) |
+| v1.11 | Pooled stake (§5.45–5.49): delegations owned by their delegators, holding shares of a validator's pool; joining at the epoch's end; rewards split between a validator's own and pooled earning stake, less a commission of at most 25 % that rises by at most 2 points at a time; a cap of twice an equal share; a tenth of the pool slashed on equivocation; ranking by own plus pooled stake ([Pooled stake](concepts/validators/pooled-stake.md)) |
+| v1.12 | Storage deals (§5.50–5.54): a client escrows payment for keeping data whose Merkle root the deal fixes; a provider accepts with collateral and proves, from a custody record it owns, the leaves the beacon of each round's first Pulse picks, many deals per owned-linear transaction; the chain records the beacon of every eighth Pulse for that (§6.3); the provider is paid per proven round, refunds go to the client for unproven rounds, and collateral is lost in proportion to missed rounds, or all of it if the deal is abandoned ([Storage deals](concepts/storage.md)). An independent review changed the challenge, the forfeit and open deals' collateral before release, and v1.11's reporter share |
 
 The **Changes** section of the document has the full entries.
 

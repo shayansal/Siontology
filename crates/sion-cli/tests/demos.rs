@@ -116,6 +116,66 @@ fn all_demos_run_and_tell_the_truth() {
             "streams: missing {expected:?}:\n{text}"
         );
     }
+    for expected in [
+        "the orchestrator launches 12 researchers in one transaction",
+        "researcher-1 launches 3 sub-researchers of its own (depth 2)",
+        "15 subagents each pay gpu-cloud for a tool call, all at once",
+        "payment 6 above per-payment limit 5",
+        "two levels down, tries to pay 3 USD → refused by the ledger: charter caveat violated: charter suspended",
+        "acme reclaims researcher-2's unspent budget: 32 USD",
+        "16 identities created in 3 transactions",
+    ] {
+        assert!(
+            text.contains(expected),
+            "swarm: missing {expected:?}:\n{text}"
+        );
+    }
+    for expected in [
+        "coder claims the 150 USD on its own 100 USD bond → refused by the ledger",
+        "is below κ·V = 300",
+        "→ paid 150 USD; 300 USD of that backing reserved for the lab",
+        "a task is paid once",
+        "bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD",
+        "the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab",
+        "the lab is compensated 190 USD from the vendor's bond",
+    ] {
+        assert!(
+            text.contains(expected),
+            "tasks: missing {expected:?}:\n{text}"
+        );
+    }
+    for expected in [
+        "fleet gives robot-alpha and robot-beta agent identities of their own",
+        "everything it recorded in aisle 4 during that minute: 1 atom, with a",
+        "and for aisle 9: 0 atoms, with a proof that it recorded nothing there",
+        "robot-alpha tries to replace its observation with one in aisle 5: refused by the ledger",
+        "equal sizes require equal roots",
+        "a reader trusting the curator believes the observation refuted; one trusting only robot-alpha believes it accepted",
+        "anyone holding that scan proves the omission from the head on the ledger alone",
+        "(readable: true), then forgets it by destroying the key (readable: false)",
+        "its next commit is refused by the ledger: charter caveat violated: charter suspended",
+    ] {
+        assert!(
+            text.contains(expected),
+            "robots: missing {expected:?}:\n{text}"
+        );
+    }
+    for expected in [
+        "the head's manifest is the root of their archive",
+        "robot-gamma posts an open deal for the archive",
+        "laptop accepted storage deal",
+        "the phone is asked for leaves",
+        "robot-gamma closes the footage deal",
+        "forfeited to the treasury",
+        "the laptop proved",
+        "the memory the robot committed is the data that was kept",
+    ] {
+        assert!(
+            text.contains(expected),
+            "storage: missing {expected:?}:
+{text}"
+        );
+    }
     assert!(
         text.contains("this devnet has no standby validator"),
         "the staking demo explains what it needs: {text}"
