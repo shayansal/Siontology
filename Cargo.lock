@@ -1088,6 +1088,8 @@ dependencies = [
  "borsh",
  "hex",
  "proptest",
+ "rand_chacha",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sion-assurance",

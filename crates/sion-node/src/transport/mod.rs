@@ -8,13 +8,18 @@
 //! arrived on), never from the message, so a node can only ever speak as
 //! itself.
 //!
-//! [`memory::MemoryTransport`] carries the in-process devnet's messages
-//! exactly as its channels did; it can also encode and decode every
-//! message, which checks the class size limits.
+//! Two carriers implement the trait in process:
+//!
+//! - [`memory::MemoryTransport`]: the in-process devnet's channels, exactly
+//!   as before; it can also encode and decode every message, which checks
+//!   the class size limits.
+//! - [`faulty::FaultyTransport`]: wraps any transport and injects seeded
+//!   loss, delay, duplication, reordering and partitions per message class.
 //!
 //! Every transport counts what it carries per message class, per kind and
 //! per peer ([`TrafficStats`]).
 
+pub mod faulty;
 pub mod memory;
 mod stats;
 

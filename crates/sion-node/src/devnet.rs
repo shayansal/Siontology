@@ -37,7 +37,8 @@ use crate::keys::{NodeVerifier, SignatureMode, ValidatorKeys};
 use crate::prover::{self, ProverHandle};
 use crate::pulses::Carry;
 use crate::storage::{replay, LaneLog, Snapshot, Wal};
-use crate::transport::memory::MemoryNetwork;
+use crate::transport::faulty::FaultNet;
+use crate::transport::memory::{MemoryNetwork, MemoryTransport};
 use crate::transport::{ClassLimits, Delivery, NodeId, Transport};
 use crate::validator::{ExecutedReports, Input, Shared, Validator, ValidatorSetup};
 use crate::view::{Query, SubmitReceipt, TxStatus, TxView};
@@ -60,6 +61,18 @@ pub struct DevnetNetwork {
     /// everything the protocol sends round-trips through its canonical
     /// encoding within its class's size limit.
     pub encode: bool,
+    /// Pass every message through this fault injector (seeded loss, delay,
+    /// duplication, reordering and partitions).
+    pub faults: Option<Arc<FaultNet>>,
+}
+
+impl DevnetNetwork {
+    fn wrap(&self, endpoint: MemoryTransport) -> Arc<dyn Transport> {
+        match &self.faults {
+            Some(faults) => Arc::new(faults.wrap(endpoint)),
+            None => Arc::new(endpoint),
+        }
+    }
 }
 
 /// The local control channels: queries, the adversary simulation,
@@ -463,12 +476,12 @@ impl Devnet {
                 let deliver: Delivery = Arc::new(move |from, message| {
                     let _ = inbox.send(Input::Peer { from, message });
                 });
-                Arc::new(memory.endpoint(NodeId::Validator(*id), deliver)) as Arc<dyn Transport>
+                network.wrap(memory.endpoint(NodeId::Validator(*id), deliver))
             })
             .collect();
         let gateway_id = gateway_node(&config.chain_id);
         let gateway_inbox = control.gateway.clone();
-        let gateway_transport: Arc<dyn Transport> = Arc::new(memory.endpoint(
+        let gateway_transport = network.wrap(memory.endpoint(
             gateway_id,
             Arc::new(move |from, message| {
                 let _ = gateway_inbox.send(GatewayInput::Peer {

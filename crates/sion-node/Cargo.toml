@@ -26,6 +26,8 @@ serde_json.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tiny_http.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
