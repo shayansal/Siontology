@@ -10,6 +10,32 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Agent identities (specification v1.8)
+
+- An agent identity is a charter with an identity record: a commitment to
+  the agent's card and its depth in the tree. The charter's id is the
+  agent's id (`did:sion:<chain>:<id>`).
+- `RegisterAgent` registers one. `SpawnAgents` launches up to 256
+  subagents in one transaction, each with its own account, card, caveats
+  at least as strict as its parent's, and a budget carved from the parent's
+  allotment. `SetAgentCard` replaces a card.
+- `SuspendAgent` and `ResumeAgent` pause and resume a charter and
+  everything below it; any overseer (the backer, the principal or an
+  ancestor's agent) may suspend, the suspender or the backer may resume.
+  `RevokeCharter` may now be sent by the agent itself or any overseer.
+- Window limits are carved like budgets, for `Delegate` too: allotments
+  gain `carved_window`, and an agent's own limit is what it has not handed
+  down. Until v1.7 each child could spend its parent's whole window limit,
+  so many children multiplied the parent's rate. An independent design
+  review found this.
+- Both proof stacks implement v1.8; the differential tests run every
+  operation and its failure cases through both. New `sion agent` commands
+  (`register`, `spawn`, `show`, `card`, `card-template`, `suspend`,
+  `resume`, `revoke`, `reclaim`) and the `swarm` demo.
+- The wallet now puts an operation's extra inputs (an allotment, the
+  account object) right after the gas coin, so `inputs[1]` holds them
+  however many coins pay the fee.
+
 ### Continuous integration
 
 - Pull requests and pushes run the fast suite: formatting, lints, the tests

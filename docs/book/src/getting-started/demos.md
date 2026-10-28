@@ -1,6 +1,6 @@
 # Run the demos
 
-Nine scripted demos drive real transactions through the whole protocol
+Ten scripted demos drive real transactions through the whole protocol
 (lane certificates, consensus, Pulse execution, header certificates, data
 availability and proving) and narrate what the ledger established.
 
@@ -12,7 +12,7 @@ sion demo all --local
 validators, 2 shards, dual post-quantum signatures, proving on) and stops it
 at the end. The staking demo needs epochs that end, so it gets a devnet of
 its own with a standby validator and 24-Pulse epochs: `sion demo all
---local` runs the first eight demos on one default devnet, then starts a
+--local` runs the first nine demos on one default devnet, then starts a
 second devnet for the staking demo.
 
 Without `--local`, a demo runs against the node at `--node` (default
@@ -28,6 +28,7 @@ seconds against a running devnet.
 |---|---|
 | `invoice` | Trade finance on insured knowledge: a bonded invoice claim, priced with the Assurance Algebra, relied on within its backing, and repaid from slashed bonds when it proves false |
 | `agents` | An AI agent with a budget the ledger enforces: an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent |
+| `swarm` | Agent identities: an orchestrator launches 12 researchers in one transaction and one of them launches 3 of its own, each with its own identity, account and budget; 15 pay at once without consensus; one suspension stops the whole tree and one resumption restarts it |
 | `market` | A GPU-hour market that clears at one price with an optimality certificate |
 | `receipts` | An AI inference receipt priced under three policies: trusting a TEE, distrusting it, or assuming it broken |
 | `x402` | An AI agent pays an HTTP API per request: `402`, payment under its charter, `200`; a replayed payment and an over-limit payment are refused |
@@ -40,9 +41,9 @@ Run one with `sion demo <name> --local`, except `light`, which needs a
 devnet that has already proven a Pulse ([light](#light) below).
 
 What follows is real output: the first five demos from one run of
-`sion demo all --local`, and the streams, censorship, light and staking
-demos from runs of their own on later versions, so chain identities differ
-between them. Account names such as `supplier` and `judge` are deterministic devnet
+`sion demo all --local`, and the swarm, streams, censorship, light and
+staking demos from runs of their own on later versions, so chain identities
+differ between them. Account names such as `supplier` and `judge` are deterministic devnet
 wallets: anyone who knows the name can derive the keys.
 
 ## invoice
@@ -90,6 +91,30 @@ Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived i
 ```
 
 See [Agent Charters](../concepts/agent-charters.md).
+
+## swarm
+
+```text
+== Agent identities: a swarm of subagents, each with its own identity ==
+Pulse   6  acme registers its orchestrator: agent 90d88d8b, card 94efec04, 1,000 USD budget, may launch subagents
+Pulse   8  the orchestrator launches 12 researchers in one transaction: 12 identities, 12 accounts, 40 USD each, ≤ 10 USD per payment
+Pulse  10  researcher-1 launches 3 sub-researchers of its own (depth 2), 10 USD each, ≤ 5 USD per payment
+Pulse  17  15 subagents each pay gpu-cloud for a tool call, all at once: no consensus, each spends only its own allotment
+Pulse  19  sub-researcher-3 tries to pay 6 USD, above its own limit → refused by the ledger: charter caveat violated: payment 6 above per-payment limit 5
+Pulse  21  acme suspends the orchestrator: one transaction
+Pulse  23  sub-researcher-3, two levels down, tries to pay 3 USD → refused by the ledger: charter caveat violated: charter suspended
+Pulse  25  acme lifts the suspension
+Pulse  28  sub-researcher-3 pays 3 USD: accepted
+Pulse  30  the orchestrator revokes researcher-2 for good
+Pulse  32  acme reclaims researcher-2's unspent budget: 32 USD
+            sub-researcher-3's lineage: f62d720f → 2c022b22 → 90d88d8b → acme (depth 2, active)
+            16 identities created in 3 transactions; every limit was checked by the ledger, not by the agents
+```
+
+Each Pulse line is one transaction, except the payments line, which is
+fifteen transactions certified together. Every refusal comes from the
+ledger: the subagents' code is not involved. See [Agent identities and
+subagents](../concepts/agent-identities.md).
 
 ## market
 

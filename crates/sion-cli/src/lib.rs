@@ -1,5 +1,6 @@
 //! The `sion` command-line tool, as a library.
 //!
+//! - [`agents`]: agent identities, subagents, cards, suspension.
 //! - [`bench`]: measured costs of primitives, execution, proving and a devnet.
 //! - [`describe`]: transactions and receipts as sentences.
 //! - [`ledger`]: talking to a node over HTTP or to an in-process devnet.
@@ -10,6 +11,7 @@
 //! - [`stream`]: payment streams: the payer's chains and the payee's desk.
 //! - [`x402`]: HTTP 402 payments settled on Siontology, for servers and agents.
 
+pub mod agents;
 pub mod bench;
 pub mod demos;
 pub mod describe;

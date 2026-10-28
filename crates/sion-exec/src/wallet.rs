@@ -139,6 +139,11 @@ impl Wallet {
                 funding,
                 agent_bond,
                 ..
+            }
+            | TxKind::RegisterAgent {
+                funding,
+                agent_bond,
+                ..
             } => {
                 vec![(AssetId::usd(), Amount(funding.0 + agent_bond.0))]
             }
@@ -274,7 +279,12 @@ impl Wallet {
                     });
                 }
             }
+            // Operations that name an owned object (an allotment, the
+            // account object) find it at `inputs[1]`, right after the gas
+            // coin, however many coins follow.
+            let tail = inputs.split_off(1);
             inputs.extend(extra.iter().copied());
+            inputs.extend(tail);
             let tx = Transaction {
                 sender: self.id,
                 genesis_policy: genesis_policy.clone(),

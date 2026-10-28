@@ -81,12 +81,22 @@ only" below) can be built and signed with the Rust API
 | `CreateCharter { agent, caveats, funding, agent_bond }` | Gives an agent a charter with caveats, an allotment funded by the principal, and optionally a bond behind its receipts | owned-linear | `Give <agent> an Agent Charter funded with <funding> USD[ and a <bond> USD bond behind its receipts]: <caveats>` | `sion charter create` |
 | `Delegate { charter, sub_agent, caveats, amount }` | The agent gives a sub-agent strictly narrower caveats and part of its allotment | bounded | `Delegate <amount> USD from charter <id> to <sub-agent>: <caveats>` | `sion demo agents` |
 | `AgentPay { charter, payee, amount, purpose, evidence }` | The agent pays from its allotment, within every caveat of its charter chain | bounded | `As an agent under charter <id>, pay <amount> USD to <payee> for "<purpose>"[, citing claim <id>]` | `sion charter pay`, `sion x402 fetch --charter`, MCP `sion_agent_pay` |
-| `RevokeCharter { charter }` | The principal revokes a charter and everything delegated from it | contended (charter) | `Revoke charter <id> and every charter delegated from it` | `sion charter revoke` |
-| `ReclaimCharter { charter }` | Returns what is left in a dead charter's allotments to its root principal | contended (charter) | `Return what is left in dead charter <id>'s allotments to its backer` | Rust API only |
+| `RevokeCharter { charter }` | The agent itself or an overseer (backer, principal, an ancestor's agent) revokes a charter and everything below it | contended (charter) | `Revoke charter <id> and every charter delegated from it` | `sion charter revoke`, `sion agent revoke` |
+| `ReclaimCharter { charter }` | Returns what is left in a dead charter's allotments to its root principal | contended (charter) | `Return what is left in dead charter <id>'s allotments to its backer` | `sion agent reclaim` |
 | `CreateBounded { label, asset, total, allotments }` | Locks a shared total and splits it into single-writer allotments | owned-linear | `Lock <total> <asset> as the shared total "<label>", split into <n> single-writer allotments` | Rust API only |
 | `SpendAllotment { to, amount }` | The allotment's writer spends from it | bounded | `Spend <amount> USD from your allotment, to <account>` | Rust API only |
 | `ReturnAllotment` | The writer returns the rest of its allotment to the total | bounded | `Return the rest of your allotment to its total` | Rust API only |
 | `Rebalance { bounded, holder, amount }` | The manager issues a new allotment from the unallocated amount | contended (bounded total) | `Allot <amount> USD of shared total <id> to <account>` | Rust API only |
+
+## Agent identities
+
+| Kind | What it does | Class | Sentence | Sent by |
+|---|---|---|---|---|
+| `RegisterAgent { agent, card, caveats, funding, agent_bond }` | Registers an agent identity: a charter with a card commitment, at depth 0 | owned-linear | `Register <agent> as an agent[ with card <hash>], funded with <funding> USD[ and a <bond> USD bond behind its receipts]: <caveats>` | `sion agent register` |
+| `SpawnAgents { charter, children }` | The agent launches up to 256 subagents, each with its own account, card, attenuated caveats, carved window limit and budget | bounded | `As agent <id>, launch <n> subagents with their own identities, <total> USD in budgets in all` | `sion agent spawn` |
+| `SetAgentCard { charter, card }` | The agent replaces its card commitment | contended (charter) | `Set agent <id>'s card to <hash>` | `sion agent card` |
+| `SuspendAgent { charter }` | An overseer suspends a charter and everything below it | contended (charter) | `Suspend agent <id> and every agent below it` | `sion agent suspend` |
+| `ResumeAgent { charter }` | The suspender or the backer lifts a suspension | contended (charter) | `Lift the suspension of agent <id>` | `sion agent resume` |
 
 ## Markets
 

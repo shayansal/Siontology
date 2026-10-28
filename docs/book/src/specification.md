@@ -5,7 +5,7 @@ repository:
 [`docs/spec/state-transition.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md).
 This page says what it covers and how to read it; it does not copy it.
 
-The current version is **v1.7**.
+The current version is **v1.8**.
 
 ## What it specifies
 
@@ -54,6 +54,7 @@ differential tests exist to find out which. See
 | v1.5 | From an independent review of the validator machinery: slashed validators lose their seats at the epoch boundary even if nobody else is eligible, so a chain whose every eligible validator was slashed halts instead of running on them; the reasoning behind approval evidence is spelled out (an approval holds its inputs until its transaction succeeds, fails or expires; a rejection is none of these) |
 | v1.6 | Payment streams (§5.31–5.34): a payer escrows funds for one payee and pays it off the ledger by revealing a hash chain's elements, one hash to check per payment; the payee settles many payments in one transaction, which walks one hash per step and pays a fee per hash |
 | v1.7 | Stream checkpoints: a payer may commit to a Merkle tree over every `spacing`-th element of its chain, and the payee may settle by a jump to a checkpoint, for at most `spacing + 21` hashes however many payments it covers ([Payment streams](concepts/payment-streams.md)) |
+| v1.8 | Agent identities (§5.35–5.39): registered agents and subagents launched 256 at a time, each with its own account, card commitment, caveats and budget; suspension and resumption of whole subtrees; revocation by the agent or any overseer; window limits carved from the parent's like budgets ([Agent identities and subagents](concepts/agent-identities.md)) |
 
 The **Changes** section of the document has the full entries.
 

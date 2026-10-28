@@ -1703,9 +1703,278 @@ pub fn local_config(name: &str) -> sion_node::DevnetConfig {
 }
 
 /// Every demo, in the order `all` runs them.
-pub const ALL: [&str; 9] = [
+/// Agent identities (spec v1.8): an orchestrator launches a swarm of
+/// subagents, each with its own identity, account and budget; the ledger
+/// contains them, and one transaction from an overseer stops or resumes a
+/// whole subtree.
+pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use sion_exec::charter::{card_commitment, Spawn};
+    const RESEARCHERS: usize = 12;
+    const SUBS: usize = 3;
+    out.say("== Agent identities: a swarm of subagents, each with its own identity ==");
+    let researchers: Vec<String> = (1..=RESEARCHERS)
+        .map(|i| format!("researcher-{i}"))
+        .collect();
+    let subs: Vec<String> = (1..=SUBS).map(|i| format!("sub-researcher-{i}")).collect();
+    let mut grants = vec![
+        ("acme", AssetId::usd(), usd(5_000)),
+        ("orchestrator", AssetId::usd(), usd(10)),
+    ];
+    for name in researchers.iter().chain(&subs) {
+        grants.push((name.as_str(), AssetId::usd(), usd(1)));
+    }
+    fund_all(session, &grants)?;
+    let vendor = session.id("gpu-cloud");
+    let orchestrator = session.id("orchestrator");
+    let mut caveats = charter_caveats(vendor);
+    caveats.max_per_payment = usd(25);
+    caveats.max_per_window = usd(500);
+    let card = card_commitment(
+        br#"{"name":"acme research orchestrator","url":"https://agents.acme.example/a2a"}"#,
+    );
+    let view = session.must(
+        "acme",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card,
+            caveats: caveats.clone(),
+            funding: usd(1_000),
+            agent_bond: usd(200),
+        },
+        Vec::new(),
+    )?;
+    let (root, root_allotment) = find(&view, |e| match e {
+        Event::AgentRegistered {
+            agent, allotment, ..
+        } => Some((*agent, *allotment)),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  acme registers its orchestrator: agent {}, card {}, 1,000 USD budget, may launch subagents",
+        view.pulse,
+        root.short(),
+        card.short()
+    ));
+
+    let mut worker = caveats.clone();
+    worker.max_per_payment = usd(10);
+    worker.max_per_window = usd(40);
+    let children: Vec<Spawn> = researchers
+        .iter()
+        .map(|name| Spawn {
+            agent: session.id(name),
+            card: card_commitment(format!("{{\"name\":\"{name}\"}}").as_bytes()),
+            caveats: worker.clone(),
+            budget: usd(40),
+        })
+        .collect();
+    let input = session.reference(&root_allotment)?;
+    let view = session.must(
+        "orchestrator",
+        TxKind::SpawnAgents {
+            charter: root,
+            children,
+        },
+        vec![input],
+    )?;
+    let spawned: Vec<(ObjectId, ObjectId)> = events(&view)
+        .iter()
+        .filter_map(|e| match e {
+            Event::AgentSpawned {
+                agent, allotment, ..
+            } => Some((*agent, *allotment)),
+            _ => None,
+        })
+        .collect();
+    out.say(format!(
+        "Pulse {:>3}  the orchestrator launches {} researchers in one transaction: {} identities, {} accounts, 40 USD each, ≤ 10 USD per payment",
+        view.pulse,
+        spawned.len(),
+        spawned.len(),
+        spawned.len()
+    ));
+
+    let (lead, lead_allotment) = spawned[0];
+    let mut leaf = worker.clone();
+    leaf.max_per_payment = usd(5);
+    leaf.max_per_window = usd(10);
+    leaf.may_delegate = false;
+    let children: Vec<Spawn> = subs
+        .iter()
+        .map(|name| Spawn {
+            agent: session.id(name),
+            card: card_commitment(format!("{{\"name\":\"{name}\"}}").as_bytes()),
+            caveats: leaf.clone(),
+            budget: usd(10),
+        })
+        .collect();
+    let input = session.reference(&lead_allotment)?;
+    let view = session.must(
+        &researchers[0],
+        TxKind::SpawnAgents {
+            charter: lead,
+            children,
+        },
+        vec![input],
+    )?;
+    let sub_agents: Vec<(ObjectId, ObjectId)> = events(&view)
+        .iter()
+        .filter_map(|e| match e {
+            Event::AgentSpawned {
+                agent, allotment, ..
+            } => Some((*agent, *allotment)),
+            _ => None,
+        })
+        .collect();
+    out.say(format!(
+        "Pulse {:>3}  researcher-1 launches {} sub-researchers of its own (depth 2), 10 USD each, ≤ 5 USD per payment",
+        view.pulse,
+        sub_agents.len()
+    ));
+
+    // Every subagent pays per tool call from its own allotment, all at once.
+    let mut pending = Vec::new();
+    for (name, (charter, allotment)) in researchers
+        .iter()
+        .zip(&spawned)
+        .chain(subs.iter().zip(&sub_agents))
+    {
+        let input = session.reference(allotment)?;
+        let amount = if name.starts_with("sub") {
+            usd(4)
+        } else {
+            usd(8)
+        };
+        pending.push(session.submit(
+            name,
+            TxKind::AgentPay {
+                charter: *charter,
+                payee: vendor,
+                amount,
+                purpose: "a tool call".into(),
+                evidence: None,
+            },
+            vec![input],
+        )?);
+    }
+    let mut paid = 0;
+    let mut last = Pulse(0);
+    for digest in pending {
+        let view = session.wait(digest)?;
+        last = last.max(view.pulse);
+        if view.status == ExecStatus::Success {
+            paid += 1;
+        }
+    }
+    session.settle_all();
+    out.say(format!(
+        "Pulse {:>3}  {paid} subagents each pay gpu-cloud for a tool call, all at once: no consensus, each spends only its own allotment",
+        last.0
+    ));
+
+    let (sub, sub_allotment) = sub_agents[2];
+    let pay = |session: &mut Session<'_>, amount: u64| {
+        let input = session.reference(&sub_allotment)?;
+        session.send(
+            &subs[2],
+            TxKind::AgentPay {
+                charter: sub,
+                payee: vendor,
+                amount: usd(amount),
+                purpose: "a bigger tool call".into(),
+                evidence: None,
+            },
+            vec![input],
+        )
+    };
+    let view = pay(session, 6)?;
+    out.say(format!(
+        "Pulse {:>3}  sub-researcher-3 tries to pay 6 USD, above its own limit → {}",
+        view.pulse,
+        refusal(&view)
+    ));
+
+    let view = session.must("acme", TxKind::SuspendAgent { charter: root }, Vec::new())?;
+    out.say(format!(
+        "Pulse {:>3}  acme suspends the orchestrator: one transaction",
+        view.pulse
+    ));
+    let view = pay(session, 3)?;
+    out.say(format!(
+        "Pulse {:>3}  sub-researcher-3, two levels down, tries to pay 3 USD → {}",
+        view.pulse,
+        refusal(&view)
+    ));
+    let view = session.must("acme", TxKind::ResumeAgent { charter: root }, Vec::new())?;
+    out.say(format!(
+        "Pulse {:>3}  acme lifts the suspension",
+        view.pulse
+    ));
+    let view = pay(session, 3)?;
+    out.say(format!(
+        "Pulse {:>3}  sub-researcher-3 pays 3 USD: {}",
+        view.pulse,
+        outcome(&view.status)
+    ));
+
+    let (second, _) = spawned[1];
+    let view = session.must(
+        "orchestrator",
+        TxKind::RevokeCharter { charter: second },
+        Vec::new(),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  the orchestrator revokes researcher-2 for good",
+        view.pulse
+    ));
+    let view = session.must(
+        "acme",
+        TxKind::ReclaimCharter { charter: second },
+        Vec::new(),
+    )?;
+    let reclaimed = find(&view, |e| match e {
+        Event::CharterReclaimed { amount, .. } => Some(*amount),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  acme reclaims researcher-2's unspent budget: {}",
+        view.pulse,
+        session.names().money(reclaimed, &AssetId::usd())
+    ));
+
+    let lineage = crate::agents::describe(session.ledger, sub)?;
+    let mut chain = vec![sub.short()];
+    if let Some(above) = lineage["lineage"].as_array() {
+        for entry in above {
+            if let Some(id) = entry["agent"].as_str() {
+                chain.push(id.chars().take(8).collect());
+            }
+        }
+    }
+    out.say(format!(
+        "            sub-researcher-3's lineage: {} → acme (depth {}, {})",
+        chain.join(" → "),
+        lineage["depth"],
+        lineage["status"].as_str().unwrap_or("")
+    ));
+    out.say(format!(
+        "            {} identities created in 3 transactions; every limit was checked by the ledger, not by the agents",
+        1 + spawned.len() + sub_agents.len()
+    ));
+    Ok(())
+}
+
+fn refusal(view: &TxView) -> String {
+    match &view.status {
+        ExecStatus::Failed(reason) => format!("refused by the ledger: {reason}"),
+        other => format!("{other:?}"),
+    }
+}
+
+pub const ALL: [&str; 10] = [
     "invoice",
     "agents",
+    "swarm",
     "market",
     "receipts",
     "x402",
@@ -1715,12 +1984,13 @@ pub const ALL: [&str; 9] = [
     "staking",
 ];
 
-/// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `x402`,
-/// `streams`, `light`, `censorship`, `staking`, `all`).
+/// Runs a named demo (`invoice`, `agents`, `swarm`, `market`, `receipts`,
+/// `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
         "agents" => agents(session, out),
+        "swarm" => swarm(session, out),
         "market" => market(session, out),
         "receipts" => receipts(session, out),
         "light" => light(session, out),
@@ -1738,7 +2008,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             Ok(())
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, market, receipts, x402, streams, censorship, light, staking or all"
+            "unknown demo {other:?}; try invoice, agents, swarm, market, receipts, x402, streams, censorship, light, staking or all"
         ))),
     }
 }

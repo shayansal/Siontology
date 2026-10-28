@@ -74,6 +74,17 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
         } => charter::agent_pay(run, *charter, *payee, *amount, purpose, *evidence),
         TxKind::RevokeCharter { charter } => charter::revoke_charter(run, *charter),
         TxKind::ReclaimCharter { charter } => charter::reclaim_charter(run, *charter),
+        TxKind::RegisterAgent {
+            agent,
+            card,
+            caveats,
+            funding,
+            agent_bond,
+        } => charter::register_agent(run, *agent, *card, caveats, *funding, *agent_bond),
+        TxKind::SpawnAgents { charter, children } => charter::spawn_agents(run, *charter, children),
+        TxKind::SetAgentCard { charter, card } => charter::set_agent_card(run, *charter, *card),
+        TxKind::SuspendAgent { charter } => charter::suspend_agent(run, *charter),
+        TxKind::ResumeAgent { charter } => charter::resume_agent(run, *charter),
         TxKind::CreateBounded {
             label,
             asset,

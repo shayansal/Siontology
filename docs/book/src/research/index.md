@@ -40,11 +40,23 @@ publish it so that others can check, break or improve it. A discovery is
 something the field agrees on after scrutiny; this is a claim, ready for
 it.
 
+## Agents at scale
+
+The same separation runs through the design for billions of agents and
+robots. Their payments, memories and steps of work stay off the ledger, in
+streams and in logs that only their writers append to; the ledger holds
+identities, settlements and commitments, and checks that every log only
+grows. [Billions of agents](agent-scale.md) has the identities that are
+built, the memory layer, Task Charters for orchestration, a network that
+phones, desktops and pooled stake can join, and the arithmetic that says
+how far each is from the target.
+
 ## The notes
 
 | Note | Question | Status |
 |---|---|---|
 | [Billions of payments a second](billion-scale.md) | Can a ledger settle billions of verifiable payments a second without validating billions of anything? | Built and measured on one machine (spec v1.6 and v1.7) |
+| [Billions of agents](agent-scale.md) | What would identities, memory, orchestration and a network anyone can join take for billions of agents and robots? | Identities built (spec v1.8); memory, Task Charters, delegation and amortized signing are designs |
 | [Succinct validity proofs](succinct-proofs.md) | How do replay proofs become real succinct proofs, in two independent stacks, without giving up post-quantum security? | Plan; nothing built |
 | [Networking between machines](networking.md) | How do validators on separate machines talk, and how far does the current consensus scale? | Plan; two node fixes it found are built |
 
@@ -59,6 +71,12 @@ it.
    expensive to prove cannot be used to stall the prover.
 5. A composition theorem for the Assurance Algebra: when two claims each
    cost at least `C` to corrupt, what does a claim built on both cost?
+6. A proof that rate limits carved additively down a tree of agents bound
+   every subtree's spending in any interval.
+7. Proofs of completeness for memory queries that stay small for maps and
+   facts that span long periods.
+8. An encoding unique to each storage node that is cheap enough for a
+   desktop and costly to redo on demand.
 
 Write to the maintainers (see [Responsible disclosure](../security/disclosure.md)
 for the address) or open an issue once the repository is public.

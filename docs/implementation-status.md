@@ -23,6 +23,7 @@ live.
 | Identity: post-quantum accounts | Built |
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
+| Identity: agent identities and subagents | Built (devnet scale) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -87,6 +88,25 @@ Revocation by the principal stops the agent and every sub-agent at once;
 allotment only the agent can write, so they need no consensus.
 Not built: the architecture's model terms (which models and providers may
 act) and a bond behind each agent's receipts beyond the agent atom.
+
+**Agent identities and subagents: built (devnet scale, specification
+v1.8).** An agent identity is a charter with an identity record (a card
+commitment and a depth); its id is the agent's id. `SpawnAgents` launches
+up to 256 subagents per transaction, each with its own account, card,
+attenuated caveats, a window limit carved from its parent's and a budget
+carved from its parent's allotment. Any overseer (the backer, the
+principal, an ancestor's agent) can suspend a subtree, the suspender or the
+backer can resume it, and the agent or any overseer can revoke it. Both
+proof stacks implement it, and the differential tests cover every
+operation and its failure cases. The `swarm` demo runs it on a devnet.
+Not built, and named in the [design note](book/src/research/agent-scale.md):
+cohorts that create a million identities in one transaction and
+materialize each on first use, identities without an account of their own
+(signed for by an ancestor in batch roots), additive token-bucket rate
+limits (window limits are fixed windows, so a subtree can spend up to twice
+its root's limit in an interval that straddles two windows), and a rule
+that makes a certified agent payment final before it executes (today a
+suspension or revocation that executes first makes it fail).
 
 ### Data availability
 

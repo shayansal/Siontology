@@ -26,7 +26,9 @@ use sion_core::Amount;
 
 use crate::account::AccountState;
 use crate::assurance::AssuranceDomain;
-use crate::charter::{Allotment, Caveats, Charter, MAX_CHARTER_CHAIN};
+use crate::charter::{
+    AgentIdentity, Allotment, Caveats, Charter, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH,
+};
 use crate::claim::{claim_id, formulas, ClaimBody, Payload};
 use crate::error::ExecError;
 use crate::escrow::BoundedTotal;
@@ -481,6 +483,45 @@ pub enum Event {
         stream: ObjectId,
         /// Returned to the payer.
         refund: Amount,
+    },
+    /// An agent identity was registered (spec §5.35).
+    AgentRegistered {
+        /// The agent's id (its charter).
+        agent: ObjectId,
+        /// The account that signs for it.
+        account: AccountId,
+        /// Its allotment.
+        allotment: ObjectId,
+    },
+    /// A subagent was launched (spec §5.36).
+    AgentSpawned {
+        /// The subagent's id (its charter).
+        agent: ObjectId,
+        /// Its parent's charter.
+        parent: ObjectId,
+        /// The account that signs for it.
+        account: AccountId,
+        /// Its allotment.
+        allotment: ObjectId,
+    },
+    /// An agent replaced its card commitment (spec §5.37).
+    AgentCardSet {
+        /// The agent.
+        agent: ObjectId,
+        /// The new commitment.
+        card: Hash32,
+    },
+    /// A charter and its subtree were suspended (spec §5.38).
+    AgentSuspended {
+        /// The charter.
+        agent: ObjectId,
+        /// Who holds the suspension.
+        by: AccountId,
+    },
+    /// A suspension was lifted (spec §5.39).
+    AgentResumed {
+        /// The charter.
+        agent: ObjectId,
     },
 }
 
@@ -1203,65 +1244,26 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             funding,
             agent_bond,
         } => {
-            if caveats.expires_at <= pulse {
-                return Err(ExecError::Invalid(
-                    "charter would already be expired".into(),
-                ));
-            }
-            if caveats.window == 0 {
-                return Err(ExecError::Invalid(
-                    "window must be at least one Pulse".into(),
-                ));
-            }
-            run.draw(AssetId::usd(), funding.checked_add(*agent_bond)?)?;
-            let charter_id = created_id(&run.digest, run.next_index);
-            let label = format!("charter:{charter_id}");
-            let agent_atom = bond_atom(AtomClass::Economic, &tx.sender, &label);
-            let domain = object_domain("charter", &charter_id);
-            let created = run.create(
-                Owner::Shared(domain),
-                ObjectData::Charter(Charter {
-                    principal: tx.sender,
-                    agent: *agent,
-                    caveats: caveats.clone(),
-                    agent_atom: agent_atom.id,
-                    backer: tx.sender,
-                    revoked_at: None,
-                    parent: None,
-                    allotments: BTreeSet::new(),
-                    created_at: pulse,
-                }),
-            );
-            debug_assert_eq!(created, charter_id);
-            let allotment = run.create(
-                Owner::Account(*agent),
-                ObjectData::Allotment(Allotment {
-                    source: charter_id,
-                    writer: *agent,
-                    asset: AssetId::usd(),
-                    remaining: *funding,
-                    caveats: Some(caveats.clone()),
-                    window_start: pulse,
-                    spent_in_window: Amount::ZERO,
-                }),
-            );
-            let mut charter = run.load(&charter_id)?;
-            if let ObjectData::Charter(c) = &mut charter.data {
-                c.allotments.insert(allotment);
-            }
-            run.store(charter);
-            run.effects.deferred.push(Deferred::RegisterAtom {
-                atom: agent_atom.clone(),
-            });
-            if *agent_bond > Amount::ZERO {
-                run.effects.deferred.push(Deferred::PostBond {
-                    atom: agent_atom,
-                    owner: tx.sender,
-                    amount: *agent_bond,
-                });
-            }
-            run.event(Event::CharterCreated {
-                charter: charter_id,
+            let (charter, allotment) =
+                create_root_charter(run, agent, caveats, *funding, *agent_bond, None)?;
+            run.event(Event::CharterCreated { charter, allotment });
+        }
+        TxKind::RegisterAgent {
+            agent,
+            card,
+            caveats,
+            funding,
+            agent_bond,
+        } => {
+            let identity = AgentIdentity {
+                card: *card,
+                depth: 0,
+            };
+            let (charter, allotment) =
+                create_root_charter(run, agent, caveats, *funding, *agent_bond, Some(identity))?;
+            run.event(Event::AgentRegistered {
+                agent: charter,
+                account: *agent,
                 allotment,
             });
         }
@@ -1295,6 +1297,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     "delegated caveats must be at least as strict".into(),
                 ));
             }
+            carve_window(&mut allotment, &parent_caveats, &caveats.max_per_window)?;
             allotment.remaining = allotment.remaining.checked_sub(*amount).map_err(|_| {
                 ExecError::InsufficientFunds {
                     need: amount.to_string(),
@@ -1316,6 +1319,8 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     parent: Some(*charter),
                     allotments: BTreeSet::new(),
                     created_at: pulse,
+                    suspended_by: None,
+                    identity: None,
                 }),
             );
             let child_allotment = run.create(
@@ -1328,6 +1333,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     caveats: Some(caveats.clone()),
                     window_start: pulse,
                     spent_in_window: Amount::ZERO,
+                    carved_window: Amount::ZERO,
                 }),
             );
             let mut child = run.load(&child_id)?;
@@ -1403,17 +1409,17 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             });
         }
         TxKind::RevokeCharter { charter } => {
-            let mut object = run.load(charter)?;
-            let ObjectData::Charter(state) = &mut object.data else {
-                return Err(ExecError::Invalid("not a charter".into()));
-            };
-            if state.principal != tx.sender {
+            let state = load_charter(run, charter)?;
+            if state.agent != tx.sender && !is_overseer(run, &state, &tx.sender)? {
                 return Err(ExecError::Unauthorized(
-                    "only the principal may revoke".into(),
+                    "only the agent or an overseer (its backer, principal or an ancestor's agent) may revoke".into(),
                 ));
             }
-            if state.revoked_at.is_none() {
-                state.revoked_at = Some(pulse);
+            let mut object = run.load(charter)?;
+            if let ObjectData::Charter(state) = &mut object.data {
+                if state.revoked_at.is_none() {
+                    state.revoked_at = Some(pulse);
+                }
             }
             run.store(object);
             run.event(Event::CharterRevoked { charter: *charter });
@@ -1427,7 +1433,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
             }
             let dead = state.revoked_at.is_some()
                 || pulse > state.caveats.expires_at
-                || check_charter_chain(run, charter).is_err();
+                || charter_chain(run, charter, false).is_err();
             if !dead {
                 return Err(ExecError::Invalid(
                     "the charter is still live; revoke it first".into(),
@@ -1446,6 +1452,113 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 charter: *charter,
                 amount: total,
             });
+        }
+        TxKind::SpawnAgents { charter, children } => {
+            if children.is_empty() || children.len() > MAX_SPAWN_BATCH {
+                return Err(ExecError::Invalid(format!(
+                    "between 1 and {MAX_SPAWN_BATCH} subagents per transaction"
+                )));
+            }
+            let allotment_id = run.input(1)?;
+            let mut allotment = load_allotment(run, &allotment_id)?;
+            let parent = load_charter(run, charter)?;
+            let depth = check_charter_chain(run, charter)?;
+            if depth >= MAX_CHARTER_CHAIN {
+                return Err(ExecError::Invalid("delegation chain too deep".into()));
+            }
+            if allotment.source != *charter
+                || allotment.writer != tx.sender
+                || parent.agent != tx.sender
+            {
+                return Err(ExecError::Invalid(
+                    "allotment does not belong to this charter's agent".into(),
+                ));
+            }
+            let own = allotment
+                .caveats
+                .clone()
+                .ok_or_else(|| ExecError::Invalid("not a charter allotment".into()))?;
+            if !own.may_delegate {
+                return Err(ExecError::Caveat("delegation not allowed".into()));
+            }
+            for child in children {
+                if !child.caveats.attenuates(&own) {
+                    return Err(ExecError::Caveat(
+                        "a subagent's caveats must be at least as strict as its parent's".into(),
+                    ));
+                }
+                carve_window(&mut allotment, &own, &child.caveats.max_per_window)?;
+                allotment.remaining =
+                    allotment.remaining.checked_sub(child.budget).map_err(|_| {
+                        ExecError::InsufficientFunds {
+                            need: child.budget.to_string(),
+                            have: allotment.remaining.to_string(),
+                        }
+                    })?;
+            }
+            store_allotment(run, allotment_id, allotment)?;
+            for child in children {
+                spawn_one(run, charter, &parent, child, depth)?;
+            }
+        }
+        TxKind::SetAgentCard { charter, card } => {
+            let state = load_charter(run, charter)?;
+            if state.identity.is_none() {
+                return Err(ExecError::Invalid("not an agent identity".into()));
+            }
+            if state.agent != tx.sender {
+                return Err(ExecError::Unauthorized(
+                    "only the agent may set its card".into(),
+                ));
+            }
+            check_charter_chain(run, charter)?;
+            let mut object = run.load(charter)?;
+            if let ObjectData::Charter(c) = &mut object.data {
+                if let Some(identity) = &mut c.identity {
+                    identity.card = *card;
+                }
+            }
+            run.store(object);
+            run.event(Event::AgentCardSet {
+                agent: *charter,
+                card: *card,
+            });
+        }
+        TxKind::SuspendAgent { charter } => {
+            let state = load_charter(run, charter)?;
+            if !is_overseer(run, &state, &tx.sender)? {
+                return Err(ExecError::Unauthorized(
+                    "only an overseer (its backer, principal or an ancestor's agent) may suspend"
+                        .into(),
+                ));
+            }
+            let mut object = run.load(charter)?;
+            let mut by = tx.sender;
+            if let ObjectData::Charter(c) = &mut object.data {
+                by = *c.suspended_by.get_or_insert(tx.sender);
+            }
+            run.store(object);
+            run.event(Event::AgentSuspended {
+                agent: *charter,
+                by,
+            });
+        }
+        TxKind::ResumeAgent { charter } => {
+            let state = load_charter(run, charter)?;
+            let Some(by) = state.suspended_by else {
+                return Err(ExecError::Invalid("the charter is not suspended".into()));
+            };
+            if tx.sender != by && tx.sender != state.backer {
+                return Err(ExecError::Unauthorized(
+                    "only the suspender or the backer may resume".into(),
+                ));
+            }
+            let mut object = run.load(charter)?;
+            if let ObjectData::Charter(c) = &mut object.data {
+                c.suspended_by = None;
+            }
+            run.store(object);
+            run.event(Event::AgentResumed { agent: *charter });
         }
         TxKind::CreateBounded {
             label,
@@ -1490,6 +1603,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                         caveats: None,
                         window_start: pulse,
                         spent_in_window: Amount::ZERO,
+                        carved_window: Amount::ZERO,
                     }),
                 );
                 record.insert(id, (*writer, *amount));
@@ -1577,6 +1691,7 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     caveats: None,
                     window_start: pulse,
                     spent_in_window: Amount::ZERO,
+                    carved_window: Amount::ZERO,
                 }),
             );
             run.event(Event::AllotmentUsed {
@@ -2334,13 +2449,23 @@ fn load_charter<S: ObjectStore>(
     }
 }
 
-/// A charter and all its ancestors must be unrevoked. At most
-/// [`MAX_CHARTER_CHAIN`] charters are loaded: if the last of them still has
-/// a parent, the check fails without reading it.
+/// A charter and all its ancestors must be unrevoked and unsuspended
+/// (spec §5.13). At most [`MAX_CHARTER_CHAIN`] charters are loaded: if the
+/// last of them still has a parent, the check fails. Returns how many
+/// charters it loaded.
 fn check_charter_chain<S: ObjectStore>(
     run: &mut Run<'_, '_, S>,
     id: &ObjectId,
-) -> Result<(), ExecError> {
+) -> Result<usize, ExecError> {
+    charter_chain(run, id, true)
+}
+
+/// The chain check, with or without the suspension test.
+fn charter_chain<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    id: &ObjectId,
+    suspension: bool,
+) -> Result<usize, ExecError> {
     let mut current = Some(*id);
     let mut loaded = 0;
     while let Some(charter_id) = current {
@@ -2352,9 +2477,194 @@ fn check_charter_chain<S: ObjectStore>(
         if charter.revoked_at.is_some() {
             return Err(ExecError::Caveat("charter revoked".into()));
         }
+        if suspension && charter.suspended_by.is_some() {
+            return Err(ExecError::Caveat("charter suspended".into()));
+        }
         current = charter.parent;
     }
+    Ok(loaded)
+}
+
+/// Whether `sender` oversees `charter` (spec §5.13): its backer, its
+/// principal, or the agent of a charter above it. Loads parents only when
+/// the sender is neither the backer nor the principal, and at most
+/// `MAX_CHARTER_CHAIN − 1` of them.
+fn is_overseer<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    charter: &Charter,
+    sender: &AccountId,
+) -> Result<bool, ExecError> {
+    if *sender == charter.backer || *sender == charter.principal {
+        return Ok(true);
+    }
+    let mut next = charter.parent;
+    let mut loaded = 0;
+    while let Some(id) = next {
+        if loaded == MAX_CHARTER_CHAIN - 1 {
+            return Ok(false);
+        }
+        let ancestor = load_charter(run, &id)?;
+        loaded += 1;
+        if ancestor.agent == *sender {
+            return Ok(true);
+        }
+        next = ancestor.parent;
+    }
+    Ok(false)
+}
+
+/// Carves a child's window limit out of its parent's allotment (spec
+/// §5.13 **carve**): the child's limit must fit in what the parent has not
+/// carved yet, and is then carved too.
+fn carve_window(
+    allotment: &mut Allotment,
+    caveats: &Caveats,
+    child_limit: &Amount,
+) -> Result<(), ExecError> {
+    let left = caveats
+        .max_per_window
+        .checked_sub(allotment.carved_window)?;
+    if *child_limit > left {
+        return Err(ExecError::Caveat(format!(
+            "window allowance left to carve is {left}, below the child's {child_limit}"
+        )));
+    }
+    allotment.carved_window = allotment.carved_window.checked_add(*child_limit)?;
     Ok(())
+}
+
+/// Launches one subagent under `parent_id` (spec §5.36 step 8): its
+/// charter with an identity at `depth`, and its allotment.
+fn spawn_one<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    parent_id: &ObjectId,
+    parent: &Charter,
+    child: &Spawn,
+    depth: usize,
+) -> Result<(), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    let depth = u8::try_from(depth).map_err(|_| ExecError::Invalid("too deep".into()))?;
+    let child_id = created_id(&run.digest, run.next_index);
+    run.create(
+        Owner::Shared(object_domain("charter", &child_id)),
+        ObjectData::Charter(Charter {
+            principal: sender,
+            agent: child.agent,
+            caveats: child.caveats.clone(),
+            agent_atom: parent.agent_atom,
+            backer: parent.backer,
+            revoked_at: None,
+            parent: Some(*parent_id),
+            allotments: BTreeSet::new(),
+            created_at: pulse,
+            suspended_by: None,
+            identity: Some(AgentIdentity {
+                card: child.card,
+                depth,
+            }),
+        }),
+    );
+    let allotment = run.create(
+        Owner::Account(child.agent),
+        ObjectData::Allotment(Allotment {
+            source: child_id,
+            writer: child.agent,
+            asset: AssetId::usd(),
+            remaining: child.budget,
+            caveats: Some(child.caveats.clone()),
+            window_start: pulse,
+            spent_in_window: Amount::ZERO,
+            carved_window: Amount::ZERO,
+        }),
+    );
+    let mut object = run.load(&child_id)?;
+    if let ObjectData::Charter(c) = &mut object.data {
+        c.allotments.insert(allotment);
+    }
+    run.store(object);
+    run.event(Event::AgentSpawned {
+        agent: child_id,
+        parent: *parent_id,
+        account: child.agent,
+        allotment,
+    });
+    Ok(())
+}
+
+/// Creates a root charter and its allotment (CreateCharter, RegisterAgent):
+/// spec §5.12 steps 1 to 7. Returns the charter and the allotment.
+fn create_root_charter<S: ObjectStore>(
+    run: &mut Run<'_, '_, S>,
+    agent: &AccountId,
+    caveats: &Caveats,
+    funding: Amount,
+    agent_bond: Amount,
+    identity: Option<AgentIdentity>,
+) -> Result<(ObjectId, ObjectId), ExecError> {
+    let pulse = run.ctx.pulse;
+    let sender = run.tx.sender;
+    if caveats.expires_at <= pulse {
+        return Err(ExecError::Invalid(
+            "charter would already be expired".into(),
+        ));
+    }
+    if caveats.window == 0 {
+        return Err(ExecError::Invalid(
+            "window must be at least one Pulse".into(),
+        ));
+    }
+    run.draw(AssetId::usd(), funding.checked_add(agent_bond)?)?;
+    let charter_id = created_id(&run.digest, run.next_index);
+    let label = format!("charter:{charter_id}");
+    let agent_atom = bond_atom(AtomClass::Economic, &sender, &label);
+    let domain = object_domain("charter", &charter_id);
+    let created = run.create(
+        Owner::Shared(domain),
+        ObjectData::Charter(Charter {
+            principal: sender,
+            agent: *agent,
+            caveats: caveats.clone(),
+            agent_atom: agent_atom.id,
+            backer: sender,
+            revoked_at: None,
+            parent: None,
+            allotments: BTreeSet::new(),
+            created_at: pulse,
+            suspended_by: None,
+            identity,
+        }),
+    );
+    debug_assert_eq!(created, charter_id);
+    let allotment = run.create(
+        Owner::Account(*agent),
+        ObjectData::Allotment(Allotment {
+            source: charter_id,
+            writer: *agent,
+            asset: AssetId::usd(),
+            remaining: funding,
+            caveats: Some(caveats.clone()),
+            window_start: pulse,
+            spent_in_window: Amount::ZERO,
+            carved_window: Amount::ZERO,
+        }),
+    );
+    let mut charter = run.load(&charter_id)?;
+    if let ObjectData::Charter(c) = &mut charter.data {
+        c.allotments.insert(allotment);
+    }
+    run.store(charter);
+    run.effects.deferred.push(Deferred::RegisterAtom {
+        atom: agent_atom.clone(),
+    });
+    if agent_bond > Amount::ZERO {
+        run.effects.deferred.push(Deferred::PostBond {
+            atom: agent_atom,
+            owner: sender,
+            amount: agent_bond,
+        });
+    }
+    Ok((charter_id, allotment))
 }
 
 fn evidence_passes<S: ObjectStore>(

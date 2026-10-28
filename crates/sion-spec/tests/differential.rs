@@ -32,7 +32,7 @@ use sion_core::Amount;
 use sion_crypto::{
     validator_id, CommitteeEnvelope, DualKeypair, KemKeypair, Scheme, VALIDATOR_DOMAIN,
 };
-use sion_exec::charter::Caveats;
+use sion_exec::charter::{card_commitment, Caveats, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH};
 use sion_exec::claim::{claim_id, formulas, ClaimBody, Payload};
 use sion_exec::execute::{bond_atom, registered_atom, Deferred, Event, ExecStatus};
 use sion_exec::market::{BatchStatus, Market, OrderTerms, Submission, SEALED_ORDER_DOMAIN};
@@ -125,6 +125,11 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::SettleStream { .. } => "SettleStream",
         TxKind::TopUpStream { .. } => "TopUpStream",
         TxKind::CloseStream { .. } => "CloseStream",
+        TxKind::RegisterAgent { .. } => "RegisterAgent",
+        TxKind::SpawnAgents { .. } => "SpawnAgents",
+        TxKind::SetAgentCard { .. } => "SetAgentCard",
+        TxKind::SuspendAgent { .. } => "SuspendAgent",
+        TxKind::ResumeAgent { .. } => "ResumeAgent",
     }
 }
 
@@ -2143,6 +2148,476 @@ fn charters_create_pay_delegate_revoke_reclaim() {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario: agent identities (spec v1.8)
+// ---------------------------------------------------------------------------
+
+fn agent_registered(out: &PulseOutput, tx: &SignedTransaction) -> (ObjectId, ObjectId) {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::AgentRegistered {
+                    agent, allotment, ..
+                } => Some((*agent, *allotment)),
+                _ => None,
+            })
+        })
+        .expect("agent registered")
+}
+
+/// The (agent, allotment) pairs a spawn created, in order.
+fn agents_spawned(out: &PulseOutput, tx: &SignedTransaction) -> Vec<(ObjectId, ObjectId)> {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .map(|e| {
+            e.events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::AgentSpawned {
+                        agent, allotment, ..
+                    } => Some((*agent, *allotment)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn charter_state(h: &Harness, id: &ObjectId) -> sion_exec::charter::Charter {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Charter(charter) => charter.clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn spawn_child(agent: AccountId, caveats: Caveats, budget: Amount, card: &[u8]) -> Spawn {
+    Spawn {
+        agent,
+        card: card_commitment(card),
+        caveats,
+        budget,
+    }
+}
+
+fn spawn(
+    h: &mut Harness,
+    who: &str,
+    charter: ObjectId,
+    allotment: ObjectId,
+    children: Vec<Spawn>,
+) -> SignedTransaction {
+    let input = h.reference(&allotment);
+    h.tx_with(who, TxKind::SpawnAgents { charter, children }, vec![input])
+}
+
+fn agent_pay(
+    h: &mut Harness,
+    who: &str,
+    charter: ObjectId,
+    allotment: ObjectId,
+    payee: AccountId,
+    amount: Amount,
+) -> SignedTransaction {
+    let input = h.reference(&allotment);
+    h.tx_with(
+        who,
+        TxKind::AgentPay {
+            charter,
+            payee,
+            amount,
+            purpose: "a tool call".into(),
+            evidence: None,
+        },
+        vec![input],
+    )
+}
+
+fn agents(chunk_size: usize) -> Harness {
+    let mut h = Harness::new(
+        &[
+            "principal",
+            "orchestrator",
+            "worker-a",
+            "worker-b",
+            "sub-a",
+            "vendor",
+            "stranger",
+            "deep",
+        ],
+        10_000,
+        4,
+        chunk_size,
+    );
+    let (orchestrator, worker_a, worker_b, sub_a, vendor, deep) = (
+        h.id("orchestrator"),
+        h.id("worker-a"),
+        h.id("worker-b"),
+        h.id("sub-a"),
+        h.id("vendor"),
+        h.id("deep"),
+    );
+
+    // Registration, and a registration whose caveats have already expired.
+    let register = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card: card_commitment(b"orchestrator card v1"),
+            caveats: charter_caveats(vendor),
+            funding: units(1_000),
+            agent_bond: units(100),
+        },
+    );
+    let mut expired = charter_caveats(vendor);
+    expired.expires_at = Pulse(0);
+    let stillborn = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card: Hash32::ZERO,
+            caveats: expired,
+            funding: units(1),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![register.clone(), stillborn.clone()]);
+    expect(&out, &register, Outcome::Success);
+    expect(&out, &stillborn, Outcome::Failed);
+    let (root, root_allotment) = agent_registered(&out, &register);
+    let identity = charter_state(&h, &root).identity.expect("an identity");
+    assert_eq!(identity.depth, 0);
+    assert_eq!(identity.card, card_commitment(b"orchestrator card v1"));
+
+    // Spawning: widening caveats, budgets above the allotment, an empty and
+    // an oversized batch all fail; then two workers launch.
+    let mut wide = charter_caveats(vendor);
+    wide.max_per_payment = units(500);
+    let widening = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![spawn_child(worker_a, wide, units(10), b"a")],
+    );
+    let out = h.pulse(vec![widening.clone()]);
+    expect(&out, &widening, Outcome::Failed);
+    let greedy = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![
+            spawn_child(worker_a, charter_caveats(vendor), units(600), b"a"),
+            spawn_child(worker_b, charter_caveats(vendor), units(600), b"b"),
+        ],
+    );
+    let out = h.pulse(vec![greedy.clone()]);
+    expect(&out, &greedy, Outcome::Failed);
+    let empty = spawn(&mut h, "orchestrator", root, root_allotment, Vec::new());
+    let out = h.pulse(vec![empty.clone()]);
+    expect(&out, &empty, Outcome::Failed);
+    let oversized: Vec<Spawn> = (0..=MAX_SPAWN_BATCH)
+        .map(|i| {
+            spawn_child(
+                AccountId::derive(format!("swarm-{i}").as_bytes()),
+                charter_caveats(vendor),
+                Amount::ZERO,
+                b"swarm",
+            )
+        })
+        .collect();
+    let too_many = spawn(&mut h, "orchestrator", root, root_allotment, oversized);
+    let out = h.pulse(vec![too_many.clone()]);
+    expect(&out, &too_many, Outcome::Failed);
+
+    let mut leaf = charter_caveats(vendor);
+    leaf.max_per_payment = units(20);
+    leaf.max_per_window = units(40);
+    leaf.may_delegate = false;
+    let mut lead = charter_caveats(vendor);
+    lead.max_per_window = units(100);
+    // Window limits are carved too: two children asking for 200 of a
+    // 250 USD window between them fail, whatever their budgets.
+    let mut half = charter_caveats(vendor);
+    half.max_per_window = units(200);
+    let too_fast = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![
+            spawn_child(worker_a, half.clone(), units(1), b"a"),
+            spawn_child(worker_b, half, units(1), b"b"),
+        ],
+    );
+    let out = h.pulse(vec![too_fast.clone()]);
+    expect(&out, &too_fast, Outcome::Failed);
+    let workers = spawn(
+        &mut h,
+        "orchestrator",
+        root,
+        root_allotment,
+        vec![
+            spawn_child(worker_a, lead.clone(), units(200), b"worker-a card"),
+            spawn_child(worker_b, leaf.clone(), units(100), b"worker-b card"),
+        ],
+    );
+    let out = h.pulse(vec![workers.clone()]);
+    expect(&out, &workers, Outcome::Success);
+    let spawned = agents_spawned(&out, &workers);
+    assert_eq!(spawned.len(), 2);
+    let ((a, a_allotment), (b, b_allotment)) = (spawned[0], spawned[1]);
+    assert_eq!(charter_state(&h, &a).identity.unwrap().depth, 1);
+    assert_eq!(charter_state(&h, &a).parent, Some(root));
+
+    // A worker that may delegate launches its own subagent; one that may
+    // not, fails.
+    let subs = spawn(
+        &mut h,
+        "worker-a",
+        a,
+        a_allotment,
+        vec![spawn_child(sub_a, leaf.clone(), units(50), b"sub-a card")],
+    );
+    let barred = spawn(
+        &mut h,
+        "worker-b",
+        b,
+        b_allotment,
+        vec![spawn_child(sub_a, leaf.clone(), units(5), b"x")],
+    );
+    let out = h.pulse(vec![subs.clone(), barred.clone()]);
+    expect(&out, &subs, Outcome::Success);
+    expect(&out, &barred, Outcome::Failed);
+    let (sub, sub_allotment) = agents_spawned(&out, &subs)[0];
+    assert_eq!(charter_state(&h, &sub).identity.unwrap().depth, 2);
+    let paid = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(10));
+    let out = h.pulse(vec![paid.clone()]);
+    expect(&out, &paid, Outcome::Success);
+
+    // Cards: only the agent sets its own.
+    let card = h.tx(
+        "orchestrator",
+        TxKind::SetAgentCard {
+            charter: root,
+            card: card_commitment(b"orchestrator card v2"),
+        },
+    );
+    let forged_card = h.tx(
+        "stranger",
+        TxKind::SetAgentCard {
+            charter: root,
+            card: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![card.clone(), forged_card.clone()]);
+    expect(&out, &card, Outcome::Success);
+    expect(&out, &forged_card, Outcome::Failed);
+    assert_eq!(
+        charter_state(&h, &root).identity.unwrap().card,
+        card_commitment(b"orchestrator card v2")
+    );
+
+    // Suspension: a stranger may not; the orchestrator (worker-a's
+    // principal) may, and the whole subtree stops; the backer's second
+    // suspension keeps the first suspender; a suspended charter is not dead.
+    let stranger_suspends = h.tx("stranger", TxKind::SuspendAgent { charter: a });
+    let suspend = h.tx("orchestrator", TxKind::SuspendAgent { charter: a });
+    let out = h.pulse(vec![stranger_suspends.clone(), suspend.clone()]);
+    expect(&out, &stranger_suspends, Outcome::Failed);
+    expect(&out, &suspend, Outcome::Success);
+    let halted = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(1));
+    let halted_spawn = spawn(
+        &mut h,
+        "worker-a",
+        a,
+        a_allotment,
+        vec![spawn_child(sub_a, leaf.clone(), units(1), b"y")],
+    );
+    let again = h.tx("principal", TxKind::SuspendAgent { charter: a });
+    let reclaim_suspended = h.tx("orchestrator", TxKind::ReclaimCharter { charter: a });
+    let out = h.pulse(vec![
+        halted.clone(),
+        halted_spawn.clone(),
+        again.clone(),
+        reclaim_suspended.clone(),
+    ]);
+    expect(&out, &halted, Outcome::Failed);
+    expect(&out, &halted_spawn, Outcome::Failed);
+    expect(&out, &again, Outcome::Success);
+    expect(&out, &reclaim_suspended, Outcome::Failed);
+    assert_eq!(charter_state(&h, &a).suspended_by, Some(orchestrator));
+
+    // Resumption: neither the subagent nor a sibling may lift it; the backer
+    // may; resuming what is not suspended fails.
+    let by_sub = h.tx("sub-a", TxKind::ResumeAgent { charter: a });
+    let by_sibling = h.tx("worker-b", TxKind::ResumeAgent { charter: a });
+    let resume = h.tx("principal", TxKind::ResumeAgent { charter: a });
+    let out = h.pulse(vec![by_sub.clone(), by_sibling.clone(), resume.clone()]);
+    expect(&out, &by_sub, Outcome::Failed);
+    expect(&out, &by_sibling, Outcome::Failed);
+    expect(&out, &resume, Outcome::Success);
+    let twice = h.tx("principal", TxKind::ResumeAgent { charter: a });
+    let pays_again = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(1));
+    let out = h.pulse(vec![twice.clone(), pays_again.clone()]);
+    expect(&out, &twice, Outcome::Failed);
+    expect(&out, &pays_again, Outcome::Success);
+
+    // An ancestor two levels up suspends the grandchild directly; a
+    // suspension held by the backer is lifted only by the backer.
+    let by_grandparent = h.tx("orchestrator", TxKind::SuspendAgent { charter: sub });
+    let out = h.pulse(vec![by_grandparent.clone()]);
+    expect(&out, &by_grandparent, Outcome::Success);
+    let resume_own = h.tx("orchestrator", TxKind::ResumeAgent { charter: sub });
+    let out = h.pulse(vec![resume_own.clone()]);
+    expect(&out, &resume_own, Outcome::Success);
+    let by_backer = h.tx("principal", TxKind::SuspendAgent { charter: sub });
+    let out = h.pulse(vec![by_backer.clone()]);
+    expect(&out, &by_backer, Outcome::Success);
+    let not_theirs = h.tx("orchestrator", TxKind::ResumeAgent { charter: sub });
+    let backer_resumes = h.tx("principal", TxKind::ResumeAgent { charter: sub });
+    let out = h.pulse(vec![not_theirs.clone(), backer_resumes.clone()]);
+    expect(&out, &not_theirs, Outcome::Failed);
+    expect(&out, &backer_resumes, Outcome::Success);
+
+    // Revocation: the subagent retires itself; the backer revokes a worker
+    // it is not the principal of; a stranger may not revoke; a revoked
+    // charter's funds go back to the backer.
+    let retire = h.tx("sub-a", TxKind::RevokeCharter { charter: sub });
+    let stranger_revokes = h.tx("stranger", TxKind::RevokeCharter { charter: b });
+    let backer_revokes = h.tx("principal", TxKind::RevokeCharter { charter: b });
+    let out = h.pulse(vec![
+        retire.clone(),
+        stranger_revokes.clone(),
+        backer_revokes.clone(),
+    ]);
+    expect(&out, &retire, Outcome::Success);
+    expect(&out, &stranger_revokes, Outcome::Failed);
+    expect(&out, &backer_revokes, Outcome::Success);
+    let retired_pays = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(1));
+    let revoked_card = h.tx(
+        "worker-b",
+        TxKind::SetAgentCard {
+            charter: b,
+            card: Hash32::ZERO,
+        },
+    );
+    let out = h.pulse(vec![retired_pays.clone(), revoked_card.clone()]);
+    expect(&out, &retired_pays, Outcome::Failed);
+    expect(&out, &revoked_card, Outcome::Failed);
+    let before = h.balance("principal", &usd());
+    let reclaim = h.tx("orchestrator", TxKind::ReclaimCharter { charter: b });
+    let out = h.pulse(vec![reclaim.clone()]);
+    expect(&out, &reclaim, Outcome::Success);
+    assert_eq!(
+        h.balance("principal", &usd()),
+        before.checked_add(units(100)).unwrap(),
+        "worker-b's whole budget goes back to the backer"
+    );
+
+    // A full batch of 64 subagents in one transaction.
+    let mut quiet = leaf.clone();
+    quiet.max_per_window = Amount::ZERO;
+    let swarm: Vec<Spawn> = (0..MAX_SPAWN_BATCH)
+        .map(|i| {
+            spawn_child(
+                AccountId::derive(format!("swarm-{i}").as_bytes()),
+                quiet.clone(),
+                cents(1),
+                b"swarm card",
+            )
+        })
+        .collect();
+    let launch = spawn(&mut h, "orchestrator", root, root_allotment, swarm);
+    let out = h.pulse(vec![launch.clone()]);
+    expect(&out, &launch, Outcome::Success);
+    assert_eq!(agents_spawned(&out, &launch).len(), MAX_SPAWN_BATCH);
+
+    // Depth: one account spawns itself generation after generation; the
+    // charter that is the sixteenth of its chain cannot spawn.
+    let register_deep = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: deep,
+            card: Hash32::ZERO,
+            caveats: charter_caveats(vendor),
+            funding: units(100),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![register_deep.clone()]);
+    let (mut current, mut current_allotment) = agent_registered(&out, &register_deep);
+    for generation in 1..MAX_CHARTER_CHAIN {
+        let tx = spawn(
+            &mut h,
+            "deep",
+            current,
+            current_allotment,
+            vec![spawn_child(
+                deep,
+                charter_caveats(vendor),
+                units(1),
+                b"deep",
+            )],
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Success);
+        (current, current_allotment) = agents_spawned(&out, &tx)[0];
+        assert_eq!(
+            usize::from(charter_state(&h, &current).identity.unwrap().depth),
+            generation
+        );
+    }
+    let too_deep = spawn(
+        &mut h,
+        "deep",
+        current,
+        current_allotment,
+        vec![spawn_child(
+            deep,
+            charter_caveats(vendor),
+            units(1),
+            b"deep",
+        )],
+    );
+    let out = h.pulse(vec![too_deep.clone()]);
+    expect(&out, &too_deep, Outcome::Failed);
+
+    h.assert_covered(&[
+        "RegisterAgent/ok",
+        "RegisterAgent/failed",
+        "SpawnAgents/ok",
+        "SpawnAgents/failed",
+        "SetAgentCard/ok",
+        "SetAgentCard/failed",
+        "SuspendAgent/ok",
+        "SuspendAgent/failed",
+        "ResumeAgent/ok",
+        "ResumeAgent/failed",
+        "RevokeCharter/ok",
+        "RevokeCharter/failed",
+        "ReclaimCharter/ok",
+        "ReclaimCharter/failed",
+        "AgentPay/ok",
+        "AgentPay/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn agents_register_spawn_suspend_resume_and_revoke() {
+    agents(1).summary("agents");
+}
+
+#[test]
+fn agents_many_transactions_per_chunk() {
+    agents(5).summary("agents (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
 // Scenario: bounded totals
 // ---------------------------------------------------------------------------
 
@@ -3853,12 +4328,15 @@ fn probe_delegation_chain_depth_limit() {
     for depth in 1..=18u64 {
         let (charter, allotment) = *chain.last().unwrap();
         let input = h.reference(&allotment);
+        // Each level keeps 5 USD of its window limit (carved like budgets).
+        let mut narrower = caveats.clone();
+        narrower.max_per_window = Amount(caveats.max_per_window.0 - units(5 * depth).0);
         let delegate = h.tx_with(
             "agent",
             TxKind::Delegate {
                 charter,
                 sub_agent: agent,
-                caveats: caveats.clone(),
+                caveats: narrower,
                 amount: units(1_000 - 50 * depth),
             },
             vec![input],
@@ -4932,13 +5410,15 @@ fn probe_charter_boundaries_and_attenuation() {
 
     // Attenuation, one dimension at a time.
     let parent = base.clone();
+    // Window limits are carved out of the parent's (v1.8), so the probes
+    // that should pass ask for none of it; "identical" takes all of it last.
     let narrower = |change: fn(&mut Caveats)| {
         let mut caveats = parent.clone();
+        caveats.max_per_window = Amount::ZERO;
         change(&mut caveats);
         caveats
     };
     let delegations: Vec<(&str, Caveats, Outcome)> = vec![
-        ("identical", parent.clone(), Outcome::Success),
         ("any payee", narrower(|c| c.payees = None), Outcome::Failed),
         (
             "more payees",
@@ -5003,6 +5483,12 @@ fn probe_charter_boundaries_and_attenuation() {
             "no delegation",
             narrower(|c| c.may_delegate = false),
             Outcome::Success,
+        ),
+        ("identical", parent.clone(), Outcome::Success),
+        (
+            "window allowance exhausted",
+            narrower(|c| c.max_per_window = Amount(1)),
+            Outcome::Failed,
         ),
     ];
     let mut parent_with_receipts = parent.clone();
@@ -5545,13 +6031,16 @@ fn stack_a_bounds_scenario_verifies() {
     let mut levels = vec![(charter, allotment)];
     for level in 1..=MAX_CHARTER_CHAIN as u64 {
         let passed = 5 * (MAX_CHARTER_CHAIN as u64 + 1 - level) + 10;
+        // Each level keeps 5 USD of its window limit (carved like budgets).
+        let mut narrower = caveats.clone();
+        narrower.max_per_window = Amount(caveats.max_per_window.0 - units(5 * level).0);
         let input = h.reference(&allotment);
         let delegate = h.tx_with(
             "agent",
             TxKind::Delegate {
                 charter,
                 sub_agent: agent,
-                caveats: caveats.clone(),
+                caveats: narrower,
                 amount: units(passed),
             },
             vec![input],

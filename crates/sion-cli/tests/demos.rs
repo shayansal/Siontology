@@ -116,6 +116,20 @@ fn all_demos_run_and_tell_the_truth() {
             "streams: missing {expected:?}:\n{text}"
         );
     }
+    for expected in [
+        "the orchestrator launches 12 researchers in one transaction",
+        "researcher-1 launches 3 sub-researchers of its own (depth 2)",
+        "15 subagents each pay gpu-cloud for a tool call, all at once",
+        "payment 6 above per-payment limit 5",
+        "two levels down, tries to pay 3 USD → refused by the ledger: charter caveat violated: charter suspended",
+        "acme reclaims researcher-2's unspent budget: 32 USD",
+        "16 identities created in 3 transactions",
+    ] {
+        assert!(
+            text.contains(expected),
+            "swarm: missing {expected:?}:\n{text}"
+        );
+    }
     assert!(
         text.contains("this devnet has no standby validator"),
         "the staking demo explains what it needs: {text}"

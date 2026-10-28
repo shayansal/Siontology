@@ -234,6 +234,10 @@ enum Command {
     /// Agent Charters.
     #[command(subcommand)]
     Charter(CharterCommand),
+    /// Agent identities: register agents, launch subagents with their own
+    /// identities, suspend, resume and revoke whole subtrees.
+    #[command(subcommand)]
+    Agent(sion_cli::agents::AgentCommand),
     /// Markets.
     #[command(subcommand)]
     Market(MarketCommand),
@@ -1195,6 +1199,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             )?;
             show_tx(&session.names(), &view);
         }
+        Command::Agent(command) => sion_cli::agents::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,
             agent,

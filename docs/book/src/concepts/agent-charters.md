@@ -6,6 +6,10 @@ a bond behind the agent's receipts, and a kill switch. A hijacked or
 prompt-injected agent cannot exceed its caveats, because they are not in
 its code. The worst case is bounded and known in advance.
 
+A charter with an identity record is an agent's identity, and agents
+launch subagents with identities of their own: see [Agent identities and
+subagents](agent-identities.md).
+
 ## In the architecture
 
 | Field | What it fixes | Example |
@@ -61,8 +65,11 @@ its code. The worst case is bounded and known in advance.
   The child's caveats must attenuate the parent's: payees a subset, limits
   no higher, the window no shorter, expiry no later, receipts kept,
   delegation only if the parent allows it, and evidence required at no
-  higher threshold.
-- **`RevokeCharter { charter }`** (contended). The principal revokes. Every
+  higher threshold. The child's window limit is carved out of the parent's
+  (specification v1.8): the parent's own limit becomes what it has not
+  handed down.
+- **`RevokeCharter { charter }`** (contended). The principal revokes (since
+  v1.8 also the backer, any ancestor's agent, or the agent itself). Every
   payment under the charter, or under any charter delegated from it, that
   executes after the revocation fails. Payments in the same Pulse run
   first, because owned-path transactions execute before contended ones

@@ -82,6 +82,15 @@ fn list(items: Vec<String>) -> String {
     }
 }
 
+/// " with card <short>" for a set card commitment, nothing for none.
+fn card_phrase(card: &sion_core::hash::Hash32) -> String {
+    if *card == sion_core::hash::Hash32::ZERO {
+        String::new()
+    } else {
+        format!(" with card {}", card.short())
+    }
+}
+
 fn object(id: &ObjectId) -> String {
     id.short()
 }
@@ -280,6 +289,46 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             "Return what is left in dead charter {}'s allotments to its backer",
             object(charter)
         ),
+        TxKind::RegisterAgent {
+            agent,
+            card,
+            caveats: k,
+            funding,
+            agent_bond,
+        } => format!(
+            "Register {} as an agent{}, funded with {}{}: {}",
+            names.account(agent),
+            card_phrase(card),
+            names.usd(*funding),
+            if *agent_bond > Amount::ZERO {
+                format!(" and a {} bond behind its receipts", names.usd(*agent_bond))
+            } else {
+                String::new()
+            },
+            caveats(names, k)
+        ),
+        TxKind::SpawnAgents { charter, children } => {
+            let budget = Amount(children.iter().map(|c| c.budget.0).sum());
+            let n = children.len();
+            format!(
+                "As agent {}, launch {n} {} with their own identities, {} in budgets in all",
+                object(charter),
+                if n == 1 { "subagent" } else { "subagents" },
+                names.usd(budget)
+            )
+        }
+        TxKind::SetAgentCard { charter, card } => format!(
+            "Set agent {}'s card to {}",
+            object(charter),
+            card.short()
+        ),
+        TxKind::SuspendAgent { charter } => format!(
+            "Suspend agent {} and every agent below it",
+            object(charter)
+        ),
+        TxKind::ResumeAgent { charter } => {
+            format!("Lift the suspension of agent {}", object(charter))
+        }
         TxKind::CreateBounded {
             label,
             asset,
@@ -512,6 +561,31 @@ pub fn event(names: &Names, event: &Event) -> String {
         }
         Event::CharterCreated { charter, .. } => format!("charter {} created", object(charter)),
         Event::CharterRevoked { charter } => format!("charter {} revoked", object(charter)),
+        Event::AgentRegistered { agent, account, .. } => format!(
+            "agent {} registered, signing as {}",
+            object(agent),
+            names.account(account)
+        ),
+        Event::AgentSpawned {
+            agent,
+            parent,
+            account,
+            ..
+        } => format!(
+            "subagent {} launched by {}, signing as {}",
+            object(agent),
+            object(parent),
+            names.account(account)
+        ),
+        Event::AgentCardSet { agent, card } => {
+            format!("agent {}'s card is now {}", object(agent), card.short())
+        }
+        Event::AgentSuspended { agent, by } => format!(
+            "agent {} suspended by {}, with everything below it",
+            object(agent),
+            names.account(by)
+        ),
+        Event::AgentResumed { agent } => format!("agent {} resumed", object(agent)),
         Event::CharterReclaimed { charter, amount } => format!(
             "{} returned from charter {}",
             names.usd(*amount),

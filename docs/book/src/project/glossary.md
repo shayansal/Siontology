@@ -11,6 +11,11 @@ ruling cannot be trusted beyond the adjudicator's own bond.
 within caveats the protocol enforces on every payment. See
 [Agent Charters](../concepts/agent-charters.md).
 
+**Agent identity.** A charter with an identity record: a card commitment
+and a depth in its tree. Its id is the agent's id, written
+`did:sion:<chain>:<id>`. See [Agent identities and
+subagents](../concepts/agent-identities.md).
+
 **Allotment.** A single-writer share of a bounded total, spent without
 consensus. See [Escrow Lanes](../concepts/escrow-lanes.md).
 
@@ -133,6 +138,9 @@ ordered transactions. See [Neo-blockchains](../concepts/neo-blockchains.md).
 **Obligation.** A forced intent a shard owes, held in the state with a
 deadline.
 
+**Overseer.** For an agent identity: its backer, its principal, or the
+agent of any charter above it. Any overseer may suspend or revoke it.
+
 **Operator.** The account that stakes for a validator and receives its
 rewards and withdrawals.
 
@@ -181,6 +189,10 @@ its operator stakes for it.
 what it forfeits if it equivocates.
 
 **State root.** The root of the sparse Merkle tree over every object.
+
+**Subagent.** An agent launched by another with `SpawnAgents`: its own
+identity, account, card and budget, with caveats and a window limit carved
+from its parent's.
 
 **Stream desk.** The payee's side of payment streams in `sion_cli`: it
 checks each payment with one hash, decides when to settle, and settles by

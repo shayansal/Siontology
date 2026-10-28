@@ -21,7 +21,7 @@ use sion_crypto::{
     AuthPolicy, Authorization, CryptoError, DualKeypair, KemPublicKey, KeyShare, PublicKey,
 };
 
-use crate::charter::Caveats;
+use crate::charter::{Caveats, Spawn};
 use crate::claim::ClaimBody;
 use crate::market::Submission;
 use crate::object::{well_known, CoordinationClass, ObjectRef};
@@ -338,6 +338,45 @@ pub enum TxKind {
         /// The stream.
         stream: ObjectId,
     },
+    /// Registers an agent identity: a charter with an identity record
+    /// (spec §5.35).
+    RegisterAgent {
+        /// The agent's own account.
+        agent: AccountId,
+        /// Commitment to the agent's card.
+        card: Hash32,
+        /// The caveats.
+        caveats: Caveats,
+        /// Budget in USD.
+        funding: Amount,
+        /// Bond behind the agent's receipts, in USD.
+        agent_bond: Amount,
+    },
+    /// An agent launches subagents, each with its own identity, account,
+    /// narrower caveats and budget (spec §5.36).
+    SpawnAgents {
+        /// The parent's charter.
+        charter: ObjectId,
+        /// The subagents, at most `MAX_SPAWN_BATCH`.
+        children: Vec<Spawn>,
+    },
+    /// An agent replaces its card commitment (spec §5.37).
+    SetAgentCard {
+        /// The agent's charter.
+        charter: ObjectId,
+        /// The new commitment.
+        card: Hash32,
+    },
+    /// An overseer suspends a charter and everything below it (spec §5.38).
+    SuspendAgent {
+        /// The charter.
+        charter: ObjectId,
+    },
+    /// The suspender or the backer lifts a suspension (spec §5.39).
+    ResumeAgent {
+        /// The charter.
+        charter: ObjectId,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -393,9 +432,11 @@ impl Transaction {
             | TxKind::Challenge { .. }
             | TxKind::Rule { .. }
             | TxKind::WithdrawBond { .. } => Some(well_known::assurance_domain()),
-            TxKind::RevokeCharter { charter } | TxKind::ReclaimCharter { charter } => {
-                Some(object_domain("charter", charter))
-            }
+            TxKind::RevokeCharter { charter }
+            | TxKind::ReclaimCharter { charter }
+            | TxKind::SetAgentCard { charter, .. }
+            | TxKind::SuspendAgent { charter }
+            | TxKind::ResumeAgent { charter } => Some(object_domain("charter", charter)),
             TxKind::Rebalance { bounded, .. } => Some(object_domain("bounded", bounded)),
             TxKind::RevealBatch { market, .. } | TxKind::ClearBatch { market, .. } => {
                 Some(object_domain("market", market))
@@ -424,7 +465,8 @@ impl Transaction {
             TxKind::AgentPay { .. }
             | TxKind::SpendAllotment { .. }
             | TxKind::ReturnAllotment
-            | TxKind::Delegate { .. } => CoordinationClass::Bounded,
+            | TxKind::Delegate { .. }
+            | TxKind::SpawnAgents { .. } => CoordinationClass::Bounded,
             _ => CoordinationClass::OwnedLinear,
         }
     }

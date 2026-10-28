@@ -54,6 +54,11 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 | `CharterRevoked` | `charter` | `RevokeCharter` | `charter <id> revoked` |
 | `CharterReclaimed` | `charter`, `amount` | `ReclaimCharter` | `<amount> USD returned from charter <id>` |
 | `AgentPaid` | `charter`, `payee`, `amount`, `receipt` | `AgentPay` | `agent paid <amount> USD to <payee>[ (receipt claim <id>)]` |
+| `AgentRegistered` | `agent`, `account`, `allotment` | `RegisterAgent` | `agent <id> registered, signing as <account>` |
+| `AgentSpawned` | `agent`, `parent`, `account`, `allotment` | `SpawnAgents` (one per subagent) | `subagent <id> launched by <parent>, signing as <account>` |
+| `AgentCardSet` | `agent`, `card` | `SetAgentCard` | `agent <id>'s card is now <hash>` |
+| `AgentSuspended` | `agent`, `by` | `SuspendAgent` | `agent <id> suspended by <account>, with everything below it` |
+| `AgentResumed` | `agent` | `ResumeAgent` | `agent <id> resumed` |
 | `BoundedCreated` | `bounded`, `allotments` | `CreateBounded` | `shared total created with <n> allotments` |
 | `AllotmentUsed` | `allotment`, `amount` | `SpendAllotment`, `ReturnAllotment`, `Rebalance` | `<amount> USD used from an allotment` |
 
