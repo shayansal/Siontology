@@ -91,6 +91,20 @@ struct Pending {
     rejections: BTreeMap<ValidatorId, String>,
     /// The lane committee it is being certified by.
     lane_epoch: Epoch,
+    /// The members whose approvals arrived.
+    approved: std::collections::BTreeSet<ValidatorId>,
+    /// When to ask the members that stayed silent again.
+    retry_at: Instant,
+    /// How many times it has.
+    retries: u32,
+}
+
+/// When to ask again after `retries` retries: two batch intervals and a
+/// generous second for the answer, then twice as long each time, at most
+/// eight seconds. Approvals are idempotent, so asking twice is harmless.
+fn lane_retry_delay(batch_interval_ms: u64, retries: u32) -> Duration {
+    let first = Duration::from_millis(2 * batch_interval_ms + 1_000);
+    (first * 2u32.saturating_pow(retries.min(4))).min(Duration::from_secs(8))
 }
 
 /// A certified transaction handed to consensus, kept until it executes.
@@ -140,6 +154,10 @@ impl std::fmt::Debug for Gateway {
 const RESEND_AFTER: Duration = Duration::from_secs(4);
 
 const STATUS_LIMIT: usize = 100_000;
+
+/// Transactions being certified at most; beyond it the gateway refuses new
+/// ones until some certify, are refused or expire.
+const PENDING_LIMIT: usize = 100_000;
 
 /// Certified transactions are handed to consensus in groups at most this
 /// often, sharing their batch headers.
@@ -278,8 +296,70 @@ impl Gateway {
             if last_tick.elapsed() >= Duration::from_millis(100) {
                 last_tick = Instant::now();
                 self.follow_committees();
+                self.retry_lane_requests();
                 self.tick_faucet();
             }
+        }
+    }
+
+    /// Asks the lane committee members whose answer is late again (a request
+    /// or its approval may have been lost), and gives up on transactions
+    /// that expired before they were certified.
+    fn retry_lane_requests(&mut self) {
+        let now = Instant::now();
+        let pulse = self.shared.view.read().map(|v| v.pulse).unwrap_or_default();
+        let expired: Vec<TxDigest> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.tx.tx.expires_at <= pulse)
+            .map(|(d, _)| *d)
+            .collect();
+        for digest in expired {
+            self.pending.remove(&digest);
+            self.set_status(
+                digest,
+                TxStatus::Rejected("it expired before a quorum approved it".into()),
+            );
+        }
+        let due: Vec<TxDigest> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.retry_at <= now)
+            .map(|(d, _)| *d)
+            .collect();
+        let batch_interval = self.shared.config.batch_interval_ms;
+        for digest in due {
+            let Some((shard, lane_epoch)) = self
+                .pending
+                .get(&digest)
+                .map(|pending| (pending.shard, pending.lane_epoch))
+            else {
+                continue;
+            };
+            let committee = match self.lane_committee(shard) {
+                // A replaced committee is handled by `follow_committees`.
+                Some(committee) if committee.epoch() == lane_epoch => committee,
+                _ => continue,
+            };
+            let Some(pending) = self.pending.get_mut(&digest) else {
+                continue;
+            };
+            let silent: Vec<NodeId> = committee
+                .members()
+                .iter()
+                .map(|(member, _)| *member)
+                .filter(|m| !pending.approved.contains(m) && !pending.rejections.contains_key(m))
+                .map(NodeId::Validator)
+                .collect();
+            pending.retries += 1;
+            pending.retry_at = now + lane_retry_delay(batch_interval, pending.retries);
+            let request = LaneRequest {
+                tx: digest,
+                inputs: lane_inputs(&pending.tx.tx.inputs),
+                owner_proof: encode(&pending.tx),
+            };
+            self.net
+                .send_all(&silent, &PeerMessage::Lane { shard, request });
         }
     }
 
@@ -362,6 +442,9 @@ impl Gateway {
         if self.pending.contains_key(&digest) || self.statuses.contains_key(&digest) {
             return Ok(receipt);
         }
+        if self.pending.len() >= PENDING_LIMIT {
+            return Err("the gateway is busy; try again shortly".into());
+        }
         if self.censored.contains(&signed.tx.sender) {
             // A censoring gateway acknowledges and then does nothing.
             self.set_status(
@@ -398,6 +481,10 @@ impl Gateway {
                 approvals: 0,
                 rejections: BTreeMap::new(),
                 lane_epoch: committee.epoch(),
+                approved: Default::default(),
+                retry_at: Instant::now()
+                    + lane_retry_delay(self.shared.config.batch_interval_ms, 0),
+                retries: 0,
             },
         );
         self.set_status(
@@ -522,7 +609,12 @@ impl Gateway {
         let Some(pending) = self.pending.get_mut(&tx) else {
             return;
         };
-        match pending.builder.add(&committee, proof, &self.verifier) {
+        let approver = proof.batch.validator;
+        let added = pending.builder.add(&committee, proof, &self.verifier);
+        if added.is_ok() {
+            pending.approved.insert(approver);
+        }
+        match added {
             Ok(Some(certificate)) => {
                 let pending = self.pending.remove(&tx).expect("present");
                 self.certified.push((pending.tx, certificate));
@@ -532,7 +624,8 @@ impl Gateway {
                 }
             }
             Ok(None) => {
-                pending.approvals += 1;
+                // An approval asked for twice may arrive twice.
+                pending.approvals = pending.approved.len();
                 let approvals = pending.approvals;
                 self.set_status(
                     tx,

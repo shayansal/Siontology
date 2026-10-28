@@ -102,6 +102,29 @@ const DA_HISTORY: u64 = 64;
 /// kept until it gets there (at most).
 const MAX_FUTURE_MESSAGES: usize = 20_000;
 
+/// Bytes of future-session messages kept per sender: they are kept
+/// unverified, so a single peer must not fill memory with them.
+const MAX_FUTURE_BYTES_PER_SENDER: usize = 32 * 1024 * 1024;
+
+/// Lane requests waiting for this validator to catch up, at most.
+const MAX_PARKED: usize = 16_384;
+
+/// A Pulse still uncertified this long after it executed: ask the members
+/// whose signatures are missing for them.
+const SIGNATURE_PULL_AFTER: Duration = Duration::from_secs(2);
+
+/// How often to look for Pulses to pull signatures for.
+const SIGNATURE_PULL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Uncertified Pulses asked about per look, newest first (any Pulse still
+/// in the history qualifies).
+const SIGNATURE_PULLS_PER_TICK: usize = 64;
+
+/// Gateways a validator reports executions to, at most, and how long one
+/// stays without sending anything.
+const MAX_SUBSCRIBERS: usize = 64;
+const SUBSCRIBER_TTL: Duration = Duration::from_secs(600);
+
 /// Messages to a validator.
 #[derive(Debug)]
 pub enum Input {
@@ -138,6 +161,9 @@ pub enum ExecutedReports {
     /// These nodes (the devnet: validator 0 reports to its gateway, the
     /// others to nobody).
     To(Vec<NodeId>),
+    /// Every node that sent this validator a lane request or a payload in
+    /// the last ten minutes: the gateways that use it (between machines).
+    Subscribers,
 }
 
 /// A job for the prover.
@@ -162,6 +188,8 @@ enum Timer {
     /// A consensus timer of a session.
     Core(u64, TimerKind),
     LaneBatch,
+    /// Ask for signatures of Pulses that are slow to certify.
+    SignaturePull,
 }
 
 /// A lane request waiting for this validator to catch up.
@@ -182,6 +210,10 @@ struct Collector {
     committee: Committee,
     signatures: BTreeMap<ValidatorId, Vec<u8>>,
     certificate: Option<PulseCertificate>,
+    /// When this validator executed the Pulse.
+    executed_at: Instant,
+    /// When it last asked for the missing signatures.
+    pulled_at: Option<Instant>,
 }
 
 /// An epoch boundary: its last Pulse, the validator set after it and, once
@@ -294,6 +326,10 @@ pub struct Validator {
     /// broadcast reaches.
     peers: Vec<NodeId>,
     executed_to: ExecutedReports,
+    /// Nodes that sent lane requests or payloads, and when they last did.
+    subscribers: BTreeMap<NodeId, Instant>,
+    /// Signature requests answered lately: (Pulse, requester) → when.
+    answered: BTreeMap<(Pulse, ValidatorId), Instant>,
     inbox: Receiver<Input>,
     timers: BinaryHeap<Reverse<(Instant, u64)>>,
     timer_kinds: BTreeMap<u64, Timer>,
@@ -317,6 +353,8 @@ pub struct Validator {
     /// Consensus messages of sessions not reached yet: sender, session,
     /// message.
     future: Vec<(ValidatorId, u64, Message)>,
+    /// Their encoded bytes, by sender.
+    future_bytes: BTreeMap<ValidatorId, usize>,
     boundaries: BTreeMap<u64, Boundary>,
     boundary_dir: Option<PathBuf>,
     forced_txs: BTreeMap<TxDigest, SignedTransaction>,
@@ -461,6 +499,8 @@ impl Validator {
             net: setup.transport,
             peers,
             executed_to: setup.executed_to,
+            subscribers: BTreeMap::new(),
+            answered: BTreeMap::new(),
             inbox: setup.inbox,
             timers: BinaryHeap::new(),
             timer_kinds: BTreeMap::new(),
@@ -482,6 +522,7 @@ impl Validator {
             lane_log_pending: Vec::new(),
             committees,
             future: Vec::new(),
+            future_bytes: BTreeMap::new(),
             boundaries,
             boundary_dir: setup.boundary_dir,
             forced_txs,
@@ -535,6 +576,7 @@ impl Validator {
             Duration::from_millis(self.shared.config.batch_interval_ms),
             Timer::LaneBatch,
         );
+        self.schedule(SIGNATURE_PULL_INTERVAL, Timer::SignaturePull);
         loop {
             let timeout = self
                 .timers
@@ -587,6 +629,10 @@ impl Validator {
                         Timer::LaneBatch,
                     );
                 }
+                Some(Timer::SignaturePull) => {
+                    self.pull_signatures();
+                    self.schedule(SIGNATURE_PULL_INTERVAL, Timer::SignaturePull);
+                }
                 None => {}
             }
         }
@@ -617,9 +663,13 @@ impl Validator {
                     self.on_consensus(validator, session, message);
                 }
             }
-            PeerMessage::Payload { item } => self.submit_item(item),
+            PeerMessage::Payload { item } => {
+                self.subscribe(from);
+                self.submit_item(item);
+            }
             PeerMessage::Lane { shard, request } => {
-                self.handle_lane_request(shard, request, 0, from)
+                self.subscribe(from);
+                self.handle_lane_request(shard, request, 0, from);
             }
             PeerMessage::PulseSignature {
                 pulse,
@@ -630,7 +680,11 @@ impl Validator {
                     self.on_pulse_signature(validator, pulse, header, signature);
                 }
             }
-            PeerMessage::PulseSignatureRequest { .. } => {}
+            PeerMessage::PulseSignatureRequest { pulse } => {
+                if let Some(validator) = from.validator() {
+                    self.answer_signature_request(validator, pulse);
+                }
+            }
             PeerMessage::ForcedApproval { shard, tx, proof } => {
                 if from.is_validator() {
                     let actions = self.on_forced_approval(shard, tx, proof);
@@ -653,8 +707,14 @@ impl Validator {
         }
         if session > self.committees.session {
             // From a session this validator reaches at its next epoch
-            // boundary: keep it until then.
-            if self.future.len() < MAX_FUTURE_MESSAGES {
+            // boundary: keep it until then, within a byte budget per sender
+            // (it is not verified yet).
+            let bytes = borsh::object_length(&message).unwrap_or(usize::MAX);
+            let held = self.future_bytes.entry(from).or_default();
+            if self.future.len() < MAX_FUTURE_MESSAGES
+                && held.saturating_add(bytes) <= MAX_FUTURE_BYTES_PER_SENDER
+            {
+                *held += bytes;
                 self.future.push((from, session, message));
             }
             return;
@@ -784,6 +844,22 @@ impl Validator {
                         .map(|signed| owners.is_behind(&signed))
                         .unwrap_or(false);
                 if behind && parked_for < PARK_PULSES {
+                    // A request asked again while it waits is already
+                    // waiting.
+                    if self
+                        .parked
+                        .iter()
+                        .any(|p| p.request.tx == tx && p.requester == requester)
+                    {
+                        return;
+                    }
+                    if self.parked.len() >= MAX_PARKED {
+                        self.net.send(
+                            requester,
+                            PeerMessage::rejected(tx, "this validator is behind; try again"),
+                        );
+                        return;
+                    }
                     self.parked.push(Parked {
                         shard,
                         request,
@@ -1237,6 +1313,8 @@ impl Validator {
                 committee: self.committees.signers.clone(),
                 signatures: BTreeMap::new(),
                 certificate: None,
+                executed_at: Instant::now(),
+                pulled_at: None,
             };
             collector.signatures.insert(self.id, signature.clone());
             self.collectors.insert(input.pulse, collector);
@@ -1356,13 +1434,16 @@ impl Validator {
     /// executed (one message per [`EXECUTED_CHUNK`] digests, and one even
     /// when it executed none).
     fn report_executed(&self, pulse: Pulse, digests: &[TxDigest]) {
-        let ExecutedReports::To(nodes) = &self.executed_to;
+        let nodes: Vec<NodeId> = match &self.executed_to {
+            ExecutedReports::To(nodes) => nodes.clone(),
+            ExecutedReports::Subscribers => self.subscribers.keys().copied().collect(),
+        };
         if nodes.is_empty() {
             return;
         }
         if digests.is_empty() {
             self.net.send_all(
-                nodes,
+                &nodes,
                 &PeerMessage::Executed {
                     pulse,
                     digests: Vec::new(),
@@ -1371,13 +1452,101 @@ impl Validator {
         }
         for chunk in digests.chunks(EXECUTED_CHUNK) {
             self.net.send_all(
-                nodes,
+                &nodes,
                 &PeerMessage::Executed {
                     pulse,
                     digests: chunk.to_vec(),
                 },
             );
         }
+    }
+
+    /// Remembers a node that hands this validator work, to report
+    /// executions to (only between machines: the devnet names its gateway).
+    fn subscribe(&mut self, node: NodeId) {
+        if self.executed_to != ExecutedReports::Subscribers {
+            return;
+        }
+        let now = Instant::now();
+        self.subscribers.insert(node, now);
+        if self.subscribers.len() > MAX_SUBSCRIBERS {
+            if let Some(stalest) = self
+                .subscribers
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(node, _)| *node)
+            {
+                self.subscribers.remove(&stalest);
+            }
+        }
+    }
+
+    /// Asks the committee members whose signatures are missing for those of
+    /// the Pulses that have stayed uncertified a while (newest first, any
+    /// Pulse still in the history): a lost signature would otherwise leave
+    /// this validator without the certificate.
+    fn pull_signatures(&mut self) {
+        let now = Instant::now();
+        let mut requests = Vec::new();
+        let due = self
+            .collectors
+            .iter_mut()
+            .rev()
+            .filter(|(_, collector)| {
+                collector.certificate.is_none()
+                    && now.duration_since(collector.executed_at) >= SIGNATURE_PULL_AFTER
+                    && collector
+                        .pulled_at
+                        .map_or(true, |at| now.duration_since(at) >= SIGNATURE_PULL_AFTER)
+            })
+            .take(SIGNATURE_PULLS_PER_TICK);
+        for (pulse, collector) in due {
+            collector.pulled_at = Some(now);
+            for (member, _) in collector.committee.members() {
+                if *member != self.id && !collector.signatures.contains_key(member) {
+                    requests.push((NodeId::Validator(*member), *pulse));
+                }
+            }
+        }
+        for (member, pulse) in requests {
+            self.net
+                .send(member, PeerMessage::PulseSignatureRequest { pulse });
+        }
+        self.answered
+            .retain(|_, at| now.duration_since(*at) < SIGNATURE_PULL_AFTER);
+        self.subscribers
+            .retain(|_, at| now.duration_since(*at) < SUBSCRIBER_TTL);
+    }
+
+    /// Sends `requester` this validator's signature on a Pulse it executed
+    /// and still holds, at most once per pull interval.
+    fn answer_signature_request(&mut self, requester: ValidatorId, pulse: Pulse) {
+        let Some(collector) = self.collectors.get(&pulse) else {
+            return;
+        };
+        let Some(signature) = collector.signatures.get(&self.id) else {
+            return;
+        };
+        if !collector.committee.contains(&requester) {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .answered
+            .get(&(pulse, requester))
+            .is_some_and(|at| now.duration_since(*at) < SIGNATURE_PULL_AFTER)
+        {
+            return;
+        }
+        self.answered.insert((pulse, requester), now);
+        self.net.send(
+            NodeId::Validator(requester),
+            PeerMessage::PulseSignature {
+                pulse,
+                header: collector.header.digest(),
+                signature: signature.clone(),
+            },
+        );
     }
 
     // ----- Committees and epochs ---------------------------------------------
@@ -1473,6 +1642,7 @@ impl Validator {
             carried.extend(old_core.take_mempool());
             self.dropped_items += old_core.oversized_items();
             actions.extend(self.propose_again(carried));
+            self.future_bytes.clear();
             for (from, session, message) in std::mem::take(&mut self.future) {
                 if session == self.committees.session {
                     actions.extend(
@@ -1480,6 +1650,8 @@ impl Validator {
                             .handle(sion_consensus::Event::Message { from, message }),
                     );
                 } else if session > self.committees.session {
+                    *self.future_bytes.entry(from).or_default() +=
+                        borsh::object_length(&message).unwrap_or(0);
                     self.future.push((from, session, message));
                 }
             }
