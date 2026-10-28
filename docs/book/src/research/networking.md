@@ -723,8 +723,19 @@ state on purpose.
 The fix is to carry pending reveals in `PulseRecord` and snapshots. Pulse
 headers should also commit to them, so that a validator syncing from
 certified headers derives the same beacon. This needs a specification
-version. This note found the gap by reading the code; no test has
-reproduced it yet.
+version.
+
+The first half is done. Each closed Pulse now hands over a `Carry` (the
+beacon and the reveals waiting for later Pulses) as of its own close, and
+records and snapshots store it (storage format 4). A validator resumes
+from it with `PulseBuilder::resume`. Taking the carry at the close, not
+when the record is written, also fixes a second gap: one commit can close
+two Pulses before the first executes, and the record of the first then
+held the beacon after the second. The test
+`a_builder_resumed_from_a_carry_closes_pulses_as_if_it_never_stopped`
+shows a builder resumed with the beacon alone diverging, and one resumed
+from the carry closing the next Pulses with identical beacons. The header
+commitment is still to do.
 
 ## 5. Data availability over the network
 
@@ -930,10 +941,11 @@ Milestones:
      the Pulse or the intent is certified, and answer signature pulls.
 3. Batch announcements: approvals carry references, and each batch
    signature travels once per gateway.
-4. The gateway caps a group by bytes below `max_payload_bytes`, not only
-   at 512 transactions.
-5. Pulse sync from certified headers and `PulseRecord`s. Carry pending
-   beacon reveals in records and snapshots (specification change).
+4. ~~The gateway caps a group by bytes below `max_payload_bytes`, not
+   only at 512 transactions.~~ Done.
+5. Pulse sync from certified headers and `PulseRecord`s. Pending beacon
+   reveals are carried in records and snapshots (done); Pulse headers
+   commit to them (specification change, to do).
 6. A consensus signing log, so a single validator can restart into the
    current session. Sessions no longer include a restart generation in
    networked mode.
@@ -1161,9 +1173,9 @@ are sized for devnet-scale state and a few hundred transfers a second.
 | Risk | Signal to watch | Mitigation |
 |---|---|---|
 | Post-quantum signatures make the certified DAG too costly beyond about 10 to 20 validators (section 2) | Bytes and CPU per round in phase 3b against the model | Uncertified DAG, payloads by digest, parallel checking, round pacing. Do not plan a public testnet larger than 20 validators before these land |
-| A certified group larger than 512 KiB is dropped without a reply. `Core::submit` refuses items above `max_payload_bytes`, while the gateway limits groups to 512 transactions, and about 20 transfers fill 512 KiB. More than about 20 certifications within one 20 ms flush (about 1,000 transfers a second) would lose the group, and the gateway re-sends it every 4 s at the same size until its transactions expire. This note found it by reading the code; no test has reproduced it | Transactions stuck in `sequencing` under load | Cap groups by bytes (phase 1); count dropped submissions |
+| **Fixed.** A certified group larger than `max_payload_bytes` was dropped without a reply: the gateway limited groups to 512 transactions, and about 20 dual-signed transfers fill 512 KiB, so a burst was re-sent every 4 s at the same size until it expired. The gateway now splits groups by encoded bytes, at most half the limit (`PayloadItem::groups`), and refuses a transaction whose certificate cannot fit alone. `a_burst_larger_than_a_consensus_payload_still_executes` reproduced the loss and passes with the fix | Transactions stuck in `sequencing` under load | Count dropped submissions in consensus, so a new limit mismatch shows up as a number |
 | A validator that restarts alone equivocates and is slashed | Evidence against an honest validator in the restart tests | Consensus signing log before any send (phase 1); restart tests in every phase |
-| Pending beacon reveals are lost by a validator that restarts or syncs alone (section 4) | A restarted validator's headers differ from the certified ones | Carry them in records and snapshots, and commit to them in headers (specification) |
+| Pending beacon reveals were lost by a validator that restarts or syncs alone (section 4). **Half fixed:** records and snapshots now carry them (storage format 4) | A restarted validator's headers differ from the certified ones | Commit to them in Pulse headers, so a validator syncing from certified headers derives the same beacon (specification) |
 | Lock hand-over needs specification changes: expiry cap, grace window, lock reads. The cap restricts what wallets may sign | Differential-test failures between the stacks; wallet complaints about short expiries | One specification version with all three; both stacks; tests in the fault matrix |
 | C code in the TLS provider (aws-lc-rs) in a workspace whose post-quantum code is pure Rust | Build failures on some targets; advisories | Pin versions; track advisories; evaluate a provider built on `fips203` and `fips204` |
 | UDP blocked or throttled on some operators' networks | Connection failures by network | TCP fallback with the same frames |

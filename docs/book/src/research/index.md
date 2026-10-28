@@ -46,7 +46,7 @@ it.
 |---|---|---|
 | [Billions of payments a second](billion-scale.md) | Can a ledger settle billions of verifiable payments a second without validating billions of anything? | Built and measured on one machine (spec v1.6 and v1.7) |
 | [Succinct validity proofs](succinct-proofs.md) | How do replay proofs become real succinct proofs, in two independent stacks, without giving up post-quantum security? | Plan; nothing built |
-| [Networking between machines](networking.md) | How do validators on separate machines talk, and how far does the current consensus scale? | Plan; nothing built |
+| [Networking between machines](networking.md) | How do validators on separate machines talk, and how far does the current consensus scale? | Plan; two node fixes it found are built |
 
 ## Open problems we would like help with
 

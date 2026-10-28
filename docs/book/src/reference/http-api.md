@@ -75,6 +75,7 @@ $ curl -s http://127.0.0.1:8730/v1/status
 | `insecure_signatures` | Whether validators sign with the simulation MAC |
 | `beacon` | The latest beacon value |
 | `forced_pending`, `forced_overdue` | Forced intents within their deadline, and past one |
+| `dropped_items` | Consensus payload items this validator refused as larger than a header can carry (`max_payload_bytes`); it should stay 0 |
 
 ## `GET /v1/validators`
 

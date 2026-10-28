@@ -129,7 +129,7 @@ pub struct Gateway {
     faucet_inflight: Option<(TxDigest, Vec<Grant>, Instant)>,
     faucet_nonce: u64,
     verifier: crate::keys::NodeVerifier,
-    certified: Vec<(SignedTransaction, sion_consensus::LaneCertificate)>,
+    certified: Vec<(SignedTransaction, LaneCertificate)>,
     censored: std::collections::BTreeSet<AccountId>,
     sequencing: BTreeMap<TxDigest, Sequenced>,
     session: u64,
@@ -146,7 +146,8 @@ const STATUS_LIMIT: usize = 100_000;
 /// often, sharing their batch headers.
 const GROUP_INTERVAL_MS: u64 = 20;
 
-/// The largest group.
+/// The most transactions in one group (groups are also bounded in bytes,
+/// see [`Gateway::send_certified`]).
 const GROUP_LIMIT: usize = 512;
 
 /// Faucet grants waiting at most.
@@ -252,9 +253,7 @@ impl Gateway {
                 again.push((sequenced.tx.clone(), sequenced.certificate.clone()));
             }
         }
-        for chunk in again.chunks(GROUP_LIMIT) {
-            self.send_to_consensus(PayloadItem::group(chunk.to_vec()));
-        }
+        self.send_certified(again);
     }
 
     /// Runs until shut down.
@@ -403,8 +402,8 @@ impl Gateway {
         Ok(receipt)
     }
 
-    /// Hands every certificate collected since the last flush to consensus
-    /// as one group sharing its batch headers, and keeps them until they
+    /// Hands every certificate collected since the last flush to consensus,
+    /// in groups sharing their batch headers, and keeps them until they
     /// execute.
     fn flush_certified(&mut self) {
         if self.certified.is_empty() {
@@ -430,13 +429,46 @@ impl Gateway {
                 },
             );
         }
-        self.send_to_consensus(PayloadItem::group(certified));
+        self.send_certified(certified);
+    }
+
+    /// Hands certified transactions to consensus in groups that fit a
+    /// consensus payload, sharing batch headers within each group.
+    ///
+    /// Consensus drops an item larger than its payload limit, so a group
+    /// that big would be re-sent and dropped forever. Groups aim at half the
+    /// limit, so a header can carry two groups and the small items (beacon
+    /// reveals, forced intents) never wait behind a full one. A transaction
+    /// whose certificate cannot fit even alone is refused.
+    fn send_certified(&mut self, certified: Vec<(SignedTransaction, LaneCertificate)>) {
+        let limit = self.shared.config.core.max_payload_bytes;
+        for item in PayloadItem::groups(certified, limit / 2, GROUP_LIMIT) {
+            let bytes = item.to_bytes();
+            if bytes.len() <= limit {
+                self.send_to_consensus(bytes);
+                continue;
+            }
+            let PayloadItem::Certified { txs, .. } = item else {
+                continue;
+            };
+            for grouped in txs {
+                let digest = grouped.tx.digest();
+                eprintln!("gateway: {digest} has a certificate too large for a consensus payload");
+                self.sequencing.remove(&digest);
+                self.set_status(
+                    digest,
+                    TxStatus::Rejected(format!(
+                        "its certificate does not fit in a consensus payload of {limit} bytes"
+                    )),
+                );
+            }
+        }
     }
 
     /// Hands an item to f + 1 members of the consensus committee, so at
     /// least one honest proposer includes it (duplicates are executed once).
     /// Validators outside the active set only observe, so they are skipped.
-    fn send_to_consensus(&mut self, item: PayloadItem) {
+    fn send_to_consensus(&mut self, bytes: Vec<u8>) {
         let members: Vec<usize> = match self.committees() {
             Some(committees) => committees
                 .consensus
@@ -450,7 +482,6 @@ impl Gateway {
             return;
         }
         let copies = (members.len() - 1) / 3 + 1;
-        let bytes = item.to_bytes();
         for k in 0..copies.min(members.len()) {
             let index = members[(self.next + k) % members.len()];
             let _ = self.bus.validators[index].send(Input::Submit(bytes.clone()));

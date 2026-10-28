@@ -40,8 +40,8 @@ use crate::config::DevnetConfig;
 use crate::gateway::GatewayInput;
 use crate::keys::{NodeAuthenticator, NodeVerifier};
 use crate::owners::{AlreadyChecked, Authorized, StateOwners};
-use crate::payload::{expand, lane_inputs, PayloadItem};
-use crate::pulses::{ClosedPulse, PulseBuilder};
+use crate::payload::{expand, lane_inputs, PayloadItem, MAX_GROUP_BATCHES};
+use crate::pulses::{Carry, ClosedPulse, PulseBuilder};
 use crate::storage::{LaneLog, PulseRecord, Snapshot, Wal};
 use crate::view::{AccountView, EventView, PulseView, Query, StatusView, TxView};
 
@@ -81,9 +81,6 @@ impl Shared {
             .and_then(|view| view.committees.clone())
     }
 }
-
-/// Batch headers one certificate group may carry.
-const MAX_GROUP_BATCHES: usize = 4_096;
 
 /// The largest validator signature accepted in a certificate group (a dual
 /// post-quantum signature is about 19.5 KB).
@@ -320,6 +317,10 @@ pub struct Validator {
     lane_waiters: BTreeSet<TxDigest>,
     state: State,
     builder: PulseBuilder,
+    /// What the builder carried past the close of the state's Pulse.
+    last_carry: Carry,
+    /// Oversized payload items earlier sessions' cores refused.
+    dropped_items: u64,
     chain: HashChain,
     wal: Option<Wal>,
     bus: Bus,
@@ -375,8 +376,9 @@ pub struct ValidatorSetup {
     pub auth: NodeAuthenticator,
     /// Recovered or genesis state.
     pub state: State,
-    /// Recovered or genesis beacon.
-    pub beacon: sion_consensus::Beacon,
+    /// What the Pulse builder carried past the state's Pulse: the recovered
+    /// or genesis beacon, with the reveals committed for later Pulses.
+    pub carry: Carry,
     /// Its beacon hash chain.
     pub chain: HashChain,
     /// Its log, if persistent.
@@ -441,11 +443,13 @@ impl Validator {
             }
         }
         // The beacon follows the active set (a restart may come right after
-        // an epoch boundary).
-        let mut beacon = setup.beacon;
-        sync_beacon(&mut beacon, setup.state.validators());
+        // an epoch boundary). Reveals committed before a restart for the
+        // Pulses ahead still count.
+        let mut carry = setup.carry;
+        sync_beacon(&mut carry.beacon, setup.state.validators());
+        let last_carry = carry.clone();
         let mut builder =
-            PulseBuilder::new(shared.config.rounds_per_pulse, setup.state.pulse, beacon);
+            PulseBuilder::resume(shared.config.rounds_per_pulse, setup.state.pulse, carry);
         builder.end_after(setup.state.validators().epoch_end());
         let boundaries = setup
             .boundary_dir
@@ -469,6 +473,8 @@ impl Validator {
             lane_waiters: BTreeSet::new(),
             state: setup.state,
             builder,
+            last_carry,
+            dropped_items: 0,
             chain: setup.chain,
             wal: setup.wal,
             bus: setup.bus,
@@ -564,10 +570,13 @@ impl Validator {
         }
     }
 
+    /// A snapshot of the state with what the builder carried past the
+    /// state's Pulse (not the builder's state now: one commit can close
+    /// several Pulses before the first of them executes).
     fn snapshot_record(&self) -> Snapshot {
         Snapshot {
             state: self.state.clone(),
-            beacon: self.builder.beacon().clone(),
+            carry: self.last_carry.clone(),
             generation: self.shared.generation,
             forced: self.forced_txs.values().cloned().collect(),
         }
@@ -1048,6 +1057,7 @@ impl Validator {
                 );
             }
         };
+        self.last_carry = closed.carry;
         let (s, f, r) = output.status_counts();
         self.executed = (
             self.executed.0 + s as u64,
@@ -1148,7 +1158,7 @@ impl Validator {
             let record = PulseRecord {
                 input: input.clone(),
                 after: output.after,
-                beacon: self.builder.beacon().clone(),
+                carry: self.last_carry.clone(),
             };
             let snapshot = (input.pulse.0 % self.shared.config.snapshot_every.max(1) == 0)
                 .then(|| self.snapshot_record());
@@ -1407,6 +1417,7 @@ impl Validator {
             // again in the new one.
             let mut carried = old_builder.take_leftover();
             carried.extend(old_core.take_mempool());
+            self.dropped_items += old_core.oversized_items();
             actions.extend(self.propose_again(carried));
             for (from, message) in std::mem::take(&mut self.future) {
                 match message_session(&message) {
@@ -1617,6 +1628,7 @@ impl Validator {
                         .and_then(|p| p.keys().next_back().copied()),
                     forced_pending: summary.pending,
                     forced_overdue: summary.overdue,
+                    dropped_items: self.dropped_items + self.core.oversized_items(),
                 };
                 Ok(to_json(&status))
             }

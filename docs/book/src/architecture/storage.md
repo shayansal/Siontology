@@ -26,12 +26,16 @@ fails with `<dir> holds another chain (genesis …); use a fresh directory`.
 
 Each executed Pulse is one record: the Pulse's input (the certified owned
 and contended transactions, the forced intents, the Pulse number and the
-beacon), the resulting world commitment and the beacon state after the
-Pulse closed. Records are framed:
+beacon), the resulting world commitment, and what the Pulse builder carried
+past the Pulse's close: the beacon state and the beacon reveals consensus
+already committed for later Pulses. Validators may reveal up to 8 Pulses
+ahead, so those reveals decide later beacons; a validator restarting from
+its log without them would compute a different beacon from one that never
+stopped. Records are framed:
 
 | Bytes | Content |
 |---|---|
-| 8 | Magic tag `SIONWAL3` |
+| 8 | Magic tag `SIONWAL4` |
 | 8 | Sequence number, big-endian |
 | 4 | Payload length, big-endian |
 | 8 | Checksum: the first 8 bytes of a domain-separated SHA3-256 of the payload |
@@ -45,12 +49,17 @@ crash of the process cannot, since writes reach the operating system first.
 ## Snapshots
 
 Every 50 Pulses, and when a validator stops cleanly, it writes a snapshot:
-the full state, the beacon state, the restart generation, and the signed
-forced intents the state still holds obligations for. A snapshot is
+the full state, the Pulse builder's carry as in a record (the beacon state
+and the reveals waiting for later Pulses), the restart generation, and the
+signed forced intents the state still holds obligations for. A snapshot is
 written to a temporary file, synced and renamed into place, so it is either
-whole or absent. The two newest are kept. Framing: magic `SIONSNP3`, an
+whole or absent. The two newest are kept. Framing: magic `SIONSNP4`, an
 8-byte length, an 8-byte checksum, the payload. The sparse Merkle tree is
 never trusted from disk: it is rebuilt from the objects.
+
+A directory written by an older version (magic `SIONWAL3` or `SIONSNP3`)
+is refused with `<file> was written in an older storage format; start from
+a fresh data directory`, rather than read as a torn tail and truncated.
 
 ## The lane log
 
@@ -79,10 +88,12 @@ On start, for each validator:
    the logged world commitment. A difference stops the start-up with
    `replay of Pulse <p> diverged`: corruption or a nondeterminism bug
    cannot pass silently.
-4. If another validator logged more Pulses, adopt its state (state sync)
-   and snapshot it. Validators stop together, but one may have logged a
-   Pulse more than another.
-5. Restore live lane locks from the lane log.
+4. If another validator logged more Pulses, adopt its state and its
+   Pulse-builder carry (state sync) and snapshot them. Validators stop
+   together, but one may have logged a Pulse more than another.
+5. Resume the Pulse builder from the carry: the beacon, re-synced with the
+   active set, and the reveals already committed for the Pulses ahead.
+6. Restore live lane locks from the lane log.
 
 Each start also increments `generation`, and the validators begin a new
 consensus session numbered from it, so round numbers never repeat within

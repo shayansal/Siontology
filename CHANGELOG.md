@@ -10,6 +10,28 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Node fixes found by the networking review
+
+- The gateway handed consensus every certificate of a 20 ms flush as one
+  group, capped at 512 transactions but not in bytes. Consensus drops an
+  item above `max_payload_bytes` (512 KiB) without a reply, and about 20
+  dual-signed transfers fill it, so a burst never executed: the gateway
+  re-sent the same oversized group every 4 s until it expired. Groups are
+  now split by encoded size, at most half the payload limit
+  (`PayloadItem::groups`), in both the flush and the re-send path. A
+  transaction whose certificate cannot fit even alone is refused with a
+  reason instead of retried forever. A devnet test sends 40 dual-signed
+  transfers at once under a 128 KiB limit; it fails without the fix.
+- Beacon reveals committed ahead of their Pulse lived only in the Pulse
+  builder, so a validator restarting alone would compute a different beacon
+  for up to 8 Pulses. Log records and snapshots now carry them with the
+  beacon (storage format 4, `SIONWAL4` and `SIONSNP4`), taken as of each
+  Pulse's own close: one commit can close two Pulses, and the first one's
+  record used to hold the beacon after the second. A directory in the older
+  format is refused with a clear error instead of being truncated as a torn
+  tail. Pulse headers do not yet commit to the pending reveals; that needs a
+  specification version.
+
 ### Payment streams (specification v1.6 and v1.7)
 
 - Payment streams: a payer escrows funds for one payee and pays it off the

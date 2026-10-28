@@ -406,8 +406,9 @@ itself.
 
 Three independent reviews, run by agents that had not written the code,
 read the consensus-critical libraries, the node, and the validator
-machinery, and confirmed their findings with tests. Everything below is
-fixed, with a regression test, unless marked otherwise.
+machinery, and confirmed their findings with tests. A fourth, the
+networking plan, found two more gaps while reading the node. Everything
+below is fixed, with a regression test, unless marked otherwise.
 
 - **State machine and libraries.** An unbounded chain of claim references
   made cost-of-corruption and reservation traversals recurse once per link
@@ -473,3 +474,15 @@ fixed, with a regression test, unless marked otherwise.
     (fixed).
   - **Open:** the active set can shrink to a single validator
     (`impl:active-floor`).
+- **Networking plan** ([research note](book/src/research/networking.md)).
+  - The gateway capped certificate groups at 512 transactions but not in
+    bytes, and consensus drops an item above its payload limit without a
+    reply, so a burst of dual-signed transfers never executed (fixed:
+    groups are split by encoded size, at most half the limit; a
+    certificate too large to fit alone is refused with a reason).
+  - Beacon reveals committed ahead of their Pulse were kept only in
+    memory, so a validator restarting alone would compute a different
+    beacon (fixed in storage format 4: records and snapshots carry them,
+    as of each Pulse's close). **Open:** Pulse headers do not commit to
+    them yet, which a validator syncing from certified headers will need
+    (a specification version).
