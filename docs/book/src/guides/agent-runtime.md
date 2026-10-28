@@ -134,6 +134,93 @@ machine; `sion agent trace <session>` prints one as a single JSON line in
 the chat format with tool calls that fine-tuning tools read, with how it
 ended.
 
+## Memory
+
+`--memory` gives the agent its [memory log](memory.md), or `--memory new`
+opens one for it. The agent records facts, episodes, procedures,
+preferences, goals, plans and reflections as atoms in a log only it can
+append to; when the session ends, the session itself is recorded as an
+episode with its trajectory's digest, and the head is committed to the
+ledger:
+
+```text
+$ sion agent run agent-7 ebc55841…ded9e --task "Remember that I like invoices paid on Fridays and that Acme's terms are net 30." --model script:learn.json --memory new --autonomy L3
+Pulse 13: Done: memory log 391aa9d2 opened for agent ebc55841; fee 0.0012 USD.
+memory log 391aa9d2092afc055d43c6c0751481fbaddfcf254509322df2ab295aad7a6386
+session 2dfdae605077d42b for agent ebc55841
+  → memory_remember {"kind":"preference","relation":"prefers","subject":"user","value":"invoices paid on Fridays"}
+  ← remembered as atom 09517eb8 (1 atom(s) not committed to the ledger yet)
+  → memory_remember {"kind":"fact","relation":"terms","subject":"supplier-acme","value":"net 30"}
+  ← remembered as atom 1d49c69d (2 atom(s) not committed to the ledger yet)
+  → skill_write {"description":"Pay a supplier's invoice after checking it against the order and the supplier's terms.","instructions":"1. memory_recall the supplier's terms.\n2. Check the invoice against the order.\n3. Pay it with ledger_pay, giving the invoice number as the purpose.","name":"pay-invoices"}
+  ← wrote skill pay-invoices
+agent: Noted: you like invoices paid on Fridays, and Acme's terms are net 30. I also wrote down how I pay invoices, as a skill.
+session 2dfdae605077d42b: done
+memory committed: Pulse 17: Done: memory log 391aa9d2 now holds 3 atoms (head 1); fee 0.0011 USD.
+```
+
+Preferences, goals and procedures are the agent's **core memory**: every
+later session starts with them in its system prompt. Everything else is
+recalled when needed. `memory_recall` with a subject and a relation returns
+every atom of the committed log, proved complete against the index root on
+the ledger, so the agent knows nothing was left out; the next session does
+that before paying:
+
+```text
+$ sion agent run agent-7 ebc55841…ded9e --task "Pay Acme's invoice INV-1042 for 7.50 USD to bob, who collects for Acme." --model script:pay.json --memory 391aa9d2 --autonomy L6
+session ac81c7b0646a2d4b for agent ebc55841
+  → skill_read {"name":"pay-invoices"}
+  ← --- name: pay-invoices description: "Pay a supplier's invoice after checking it against the order and the supplier's terms." ---  1. memory_recall the supplier's terms. 2. Check the invoice against the order. 3. Pay it with ledger_pay, giving the invoice number as the purpose.
+  → memory_recall {"relation":"terms","subject":"supplier-acme"}
+  ← {"committed":[{"committed":true,"confidence_permille":1000,"id":"1d49c69d…","kind":"fact","seq":1,"statement":"supplier-acme terms \"net 30\"",…}],"complete":"proved complete against the index root on the ledger, as of 3 atoms","not_committed_yet":[],"relation":"terms","subject":"supplier-acme"}
+  → ledger_pay {"amount":"7.5","purpose":"Acme invoice INV-1042 (net 30)","to":"bob"}
+  ← Pulse 27: Done: agent paid 7.5 USD to bob (receipt claim 71125e1f); fee 0.0011 USD. Transaction 08bcdeb4….
+agent: Checked Acme's terms (net 30) and paid invoice INV-1042, 7.50 USD.
+session ac81c7b0646a2d4b: done
+memory committed: Pulse 30: Done: memory log 391aa9d2 now holds 4 atoms (head 2); fee 0.0011 USD.
+```
+
+Its prompt ended with what it remembers and the skills it has:
+
+```text
+What you remember and always keep in mind (from your memory log; use memory_recall for more):
+- (preference) user prefers "invoices paid on Fridays"
+
+Skills you have (read one with skill_read before using it; its other files with skill_file):
+- pay-invoices: Pay a supplier's invoice after checking it against the order and the supplier's terms.
+```
+
+The memory tools:
+
+| Tool | Effect | What it does |
+|---|---|---|
+| `memory_remember` | write | Records a subject, a relation and a value, of a kind: fact, episode, procedure, preference, goal, plan or reflection |
+| `memory_recall` | read | With a relation, every atom of the committed log about the subject, proved complete, and what is recorded but not committed yet; without one, a local scan |
+| `memory_search` | read | Atoms whose subject, relation or value contain the words, newest first |
+| `memory_forget` | write | Retracts an atom with a reason: the atom stays in the log, and recall and search leave it out |
+| `memory_commit` | write | Commits the head now rather than when the session ends |
+
+Nothing the agent recorded can be rewritten once committed: the ledger
+refuses a head that does not extend the last one. That includes the
+episodes, so what an agent did, and the digest of how, stays on record.
+
+## Skills
+
+A skill is a directory in the [Agent Skills](https://agentskills.io/specification)
+format: a `SKILL.md` whose front matter gives a `name` and a
+`description` (what it does and when to use it), then instructions, and
+any files the instructions refer to. An agent's skills live in
+`$SION_HOME/agents/skills/<agent>` (or `--skills <dir>`). Their names and
+descriptions are in every prompt; the model reads a skill's instructions
+with `skill_read` when it decides to use it, and its other files with
+`skill_file`. With `skill_write` the agent writes down how it did
+something, or improves a skill it has; the version it replaces is kept in
+the skill's `.history`.
+
+A skill written by the agent stays on its machine. Installing skills from
+others, with bonds behind them and audits that pay when a skill misbehaves,
+is the next step ([the plan](../research/agents.md#1-skills-with-a-supply-chain-on-todays-primitives)).
+
 ## Safety nets
 
 - **No accidental repeats.** A call that changed something is recorded
@@ -164,9 +251,12 @@ ended.
 
 ## What this does not do yet
 
-- Memory and skills, self-improvement, schedules, channels and handing
-  work to other agents are the next parts of the plan
-  ([Reliable, self-improving agents](../research/agents.md)).
+- Skills from others (releases, audits and installation through the
+  decision rule), self-improvement, schedules, channels and handing work
+  to other agents are the next parts of the plan
+  ([Reliable, self-improving agents](../research/agents.md)). Memory atoms
+  stay on the machine that wrote them: keeping the log's archive with
+  storage providers is not wired in yet.
 - Autonomy, approvals, grants and taint are enforced by the runtime on
   the machine it runs on (`agent:local-policy`); only the charter is
   enforced by the ledger.

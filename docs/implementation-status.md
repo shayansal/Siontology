@@ -24,7 +24,7 @@ live.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime core with providers and a scripted model; memory, skills, self-improvement, schedules and channels not built) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory and the agent's own skills; skills from others, self-improvement, schedules and channels not built) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -127,12 +127,22 @@ compaction; a kill switch; sessions that serialise, pause for approval and
 resume; and trajectories in chat format. `sion agent run` gives it the
 ledger as tools (balance, payments under the agent's charter, transaction
 status), files in a workspace and public web pages
-([Agents at work](book/src/guides/agent-runtime.md)). Tested with the
-scripted model and with stand-ins for the providers' APIs: this
-environment has no model provider. Not built: memory and skills,
-self-improvement with verified promotion, schedules, channels, handing
-work to other agents, a shell tool and a sandbox
-([Reliable, self-improving agents](book/src/research/agents.md)).
+([Agents at work](book/src/guides/agent-runtime.md)). With a memory log,
+the agent records facts, episodes, procedures, preferences, goals, plans
+and reflections as atoms; its preferences, goals and procedures are in
+every prompt; recall for a subject and a relation is proved complete
+against the index root on the ledger; retraction leaves atoms in the log;
+each finished session is recorded as an episode with its trajectory's
+digest and the head is committed. Its own skills, in the Agent Skills
+format, are listed in every prompt, read on use, and written and improved
+by the agent with their history kept; a skill's bundle is a canonical
+encoding of its files. Tested with the scripted model and with stand-ins
+for the providers' APIs: this environment has no model provider. Not
+built: skills from others (releases, audits, installation through the
+decision rule), self-improvement with verified promotion, search over past
+sessions, consolidation, the memory archive with storage providers,
+schedules, channels, handing work to other agents, a shell tool and a
+sandbox ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
 

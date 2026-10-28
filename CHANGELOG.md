@@ -32,6 +32,17 @@ Commit messages before the rename use the working name, Fold.
   `agent:local-policy`, `agent:provider-sees-context` and
   `agent:plain-sessions`. Guide: [Agents at
   work](docs/book/src/guides/agent-runtime.md).
+- Memory: `sion agent run --memory <log>|new` gives the agent its memory
+  log and the tools `memory_remember`, `memory_recall` (proved complete
+  against the ledger for a subject and a relation), `memory_search`,
+  `memory_forget` (a retraction; nothing is deleted) and `memory_commit`.
+  Its preferences, goals and procedures are in every prompt, and each
+  finished session is recorded as an episode with its trajectory's digest.
+- Skills in the Agent Skills format (`sion_agent::skills`): the agent's
+  skills are listed in every prompt, read on use (`skill_read`,
+  `skill_file`), and written or improved by the agent (`skill_write`),
+  which keeps the versions it replaces; a skill's bundle is a canonical
+  encoding of its files.
 
 ### Fixes from the review of storage deals, pooled stake and the app
 

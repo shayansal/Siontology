@@ -878,6 +878,8 @@ Options:
       --workspace <WORKSPACE>  A directory the agent may read and write
       --web                    Let it fetch public web pages (they taint the session: external calls and payments then wait for approval)
       --system <SYSTEM>        A file with the system prompt (default: one that tells the agent who it is and how its charter limits it)
+      --memory <MEMORY>        The agent's memory log (its id, or a unique prefix of one with a local store), or `new` to open one for it. Its preferences, goals and procedures go into the prompt; what it records is committed when the session ends, with the session as an episode
+      --skills <SKILLS>        The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
   -h, --help                   Print help
 ```
 
