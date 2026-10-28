@@ -43,6 +43,17 @@ Commit messages before the rename use the working name, Fold.
   `skill_file`), and written or improved by the agent (`skill_write`),
   which keeps the versions it replaces; a skill's bundle is a canonical
   encoding of its files.
+- Skills from others: `sion skill pack | audit | publish | show |
+  install`. A release (`skill/v1`) is a claim on the publisher's bond or
+  on audits of the same bundle (`skill.audit/v1`, each on its auditor's
+  bond), which add up. Installing checks the bundle against the release's
+  root and accepts the release with the agent's remaining budget at risk;
+  a release whose backing does not cover it is refused before anything is
+  signed. An installed skill cannot be rewritten by the agent, and one
+  whose release is falsified is taken out of use before the next run;
+  the agents that relied on it are compensated from the slashed bonds.
+  New trust atom `agent:local-skill-checks`. Guide: [Skills from
+  others](docs/book/src/guides/skills.md).
 
 ### Fixes from the review of storage deals, pooled stake and the app
 

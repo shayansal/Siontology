@@ -24,7 +24,7 @@ live.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory and the agent's own skills; skills from others, self-improvement, schedules and channels not built) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills and skills from others installed through bonds and audits; self-improvement, schedules and channels not built) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -136,10 +136,19 @@ each finished session is recorded as an episode with its trajectory's
 digest and the head is committed. Its own skills, in the Agent Skills
 format, are listed in every prompt, read on use, and written and improved
 by the agent with their history kept; a skill's bundle is a canonical
-encoding of its files. Tested with the scripted model and with stand-ins
-for the providers' APIs: this environment has no model provider. Not
-built: skills from others (releases, audits, installation through the
-decision rule), self-improvement with verified promotion, search over past
+encoding of its files, and its root is the Merkle root a storage deal over
+the bundle commits to. Skills from others
+([Skills from others](book/src/guides/skills.md)): a release is a claim
+(`skill/v1`) naming a skill, its version and its bundle root, resting on
+the publisher's bond or audits of the same root (`skill.audit/v1`, each on
+its auditor's bond); `sion skill install` checks the bundle against the
+root, accepts the release with the agent's remaining budget at risk
+(reserving κ times that of its backing), and only then writes the skill,
+which the agent cannot rewrite. Before each run, a skill whose release is
+no longer active is taken out of use. Tested with the scripted model and
+with stand-ins for the providers' APIs: this environment has no model
+provider. Not built: permissions that skills declare and the runtime
+enforces, self-improvement with verified promotion, search over past
 sessions, consolidation, the memory archive with storage providers,
 schedules, channels, handing work to other agents, a shell tool and a
 sandbox ([Reliable, self-improving agents](book/src/research/agents.md)).
@@ -619,6 +628,7 @@ the architecture's own:
 | `agent:local-policy` | An agent runtime's autonomy level, approvals, grants and taint are enforced by the runtime on the machine it runs on. Only the agent's charter (payees, limits, budget, expiry, suspension) is enforced by the ledger. |
 | `agent:provider-sees-context` | A model provider receives the conversation it is asked to continue, tool results included. |
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
+| `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

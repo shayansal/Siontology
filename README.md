@@ -85,7 +85,8 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   complete and a rewrite is refused. Task Charters escrow work whose
   acceptance is fixed when it is posted. `sion agent run` puts an agent to
   work with a model, under autonomy levels and approvals, while the
-  ledger enforces its charter.
+  ledger enforces its charter. It installs a skill from others only when
+  the bonds and audits behind the skill cover what the agent could lose.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,

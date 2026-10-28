@@ -59,6 +59,7 @@ of the architecture's own. The list is copied from the repository's
 | `agent:local-policy` | An agent runtime's autonomy level, approvals, grants and taint are enforced by the runtime on the machine it runs on. Only the agent's charter (payees, limits, budget, expiry, suspension) is enforced by the ledger |
 | `agent:provider-sees-context` | A model provider receives the conversation it is asked to continue, tool results included |
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions` |
+| `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so |
 
 ## What a light client trusts

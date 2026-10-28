@@ -1,10 +1,11 @@
 # Reliable, self-improving agents
 
-**Status: being built** (the runtime's core is built). This note sets
-out how Siontology offers what the leading open agent runtimes offer for
-building good agents, and what its primitives add. Parts are built
-already (identities, budgets, memory, tasks, storage, the runtime's
-core); the rest is the plan this note fixes. Each part says which.
+**Status: being built** (the runtime's core and skills with a supply
+chain are built). This note sets out how Siontology offers what the
+leading open agent runtimes offer for building good agents, and what its
+primitives add. Parts are built already (identities, budgets, memory,
+tasks, storage, the runtime's core, skills with a supply chain); the rest
+is the plan this note fixes. Each part says which.
 
 ## What the leading runtimes do
 
@@ -56,8 +57,10 @@ ledger.
 
 ### 1. Skills with a supply chain (on today's primitives)
 
-**Status: next.** No change to the state transition: it uses claims,
-bonds, `Accept`, `Challenge` and `Rule` as they are.
+**Status: built** (`sion skill`; see [Skills from others](../guides/skills.md)),
+except declared permissions: releases and audits do not name permissions
+yet, and nothing enforces them. No change to the state transition: it
+uses claims, bonds, `Accept`, `Challenge` and `Rule` as they are.
 
 - **A skill bundle** is an Agent Skills directory. Its files, sorted by
   path, are encoded canonically and split into leaves like any data a
@@ -83,9 +86,10 @@ bonds, `Accept`, `Challenge` and `Rule` as they are.
 - **The registry** is the knowledge log itself: every release, audit and
   falsification, with lineage from version to version.
 
-The runtime enforces the declared permissions when it runs a skill's
-scripts (a sandbox without network for a skill that declares none), so a
-skill that reaches further is caught doing something it bonded against.
+Not built yet: the runtime enforcing the declared permissions when it
+runs a skill's scripts (a sandbox without network for a skill that
+declares none), so that a skill that reaches further is caught doing
+something it bonded against. That needs the sandbox of part 2.
 
 ### 2. The runtime
 
@@ -103,7 +107,7 @@ the plan.
 | Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Not built (no shell tool yet) |
 | Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Built: atoms in the agent's memory log, preferences, goals and procedures in every prompt, recall proved complete against the ledger, search, retraction, every session an episode. Not built: search over past sessions' text, consolidation |
 | Durable memory | The log's archive kept by storage providers, proven every round | Next |
-| Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built for the agent's own skills (catalog in the prompt, read on use, written and improved with history kept); releases and installation next |
+| Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use |
 | Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Not built |
 | Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Identities built; spawning from the runtime not built |
 | Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Command line built |

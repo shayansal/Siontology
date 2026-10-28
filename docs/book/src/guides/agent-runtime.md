@@ -217,9 +217,9 @@ with `skill_read` when it decides to use it, and its other files with
 something, or improves a skill it has; the version it replaces is kept in
 the skill's `.history`.
 
-A skill written by the agent stays on its machine. Installing skills from
-others, with bonds behind them and audits that pay when a skill misbehaves,
-is the next step ([the plan](../research/agents.md#1-skills-with-a-supply-chain-on-todays-primitives)).
+A skill written by the agent stays on its machine. Skills from others
+come with bonds behind them and audits that pay when a skill misbehaves:
+see [Skills from others](skills.md).
 
 ## Safety nets
 
@@ -251,9 +251,8 @@ is the next step ([the plan](../research/agents.md#1-skills-with-a-supply-chain-
 
 ## What this does not do yet
 
-- Skills from others (releases, audits and installation through the
-  decision rule), self-improvement, schedules, channels and handing work
-  to other agents are the next parts of the plan
+- Self-improvement, schedules, channels and handing work to other agents
+  are the next parts of the plan
   ([Reliable, self-improving agents](../research/agents.md)). Memory atoms
   stay on the machine that wrote them: keeping the log's archive with
   storage providers is not wired in yet.

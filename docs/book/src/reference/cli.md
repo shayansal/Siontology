@@ -39,9 +39,11 @@ guides show the commands in use.
 | Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `mcp`, `x402 serve`, `x402 fetch` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `mcp`, `x402 serve`, `x402 fetch` |
+| Skills | `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
+| Storage | `storage prepare`, `storage post`, `storage deals`, `storage show`, `storage accept`, `storage prove`, `storage settle`, `storage close`, `storage serve` |
 | Stake | `stake pools`, `stake delegate`, `stake show`, `stake claim`, `stake undelegate`, `stake withdraw`, `stake commission` |
 | Markets | `market create`, `market order`, `market clear`, `market show` |
 | Payment streams | `stream open`, `stream pay`, `stream jump`, `stream check`, `stream settle`, `stream top-up`, `stream close`, `stream show` |
@@ -84,6 +86,7 @@ Commands:
   task       Task Charters: escrow work whose acceptance rule is fixed when it is posted; attest, submit and settle results; cancel
   stake      Pooled stake: delegate to a validator without handing the stake over, collect rewards, leave; set a validator's commission
   memory     Memory logs for agents and robots: open a log, record atoms locally, commit heads the ledger keeps append-only, and recall with proofs of completeness
+  skill      Skills with a supply chain: pack a skill, audit a bundle, publish a release on bonds and audits, show one, install one for an agent under the decision rule
   storage    Storage deals: have data kept by a provider who proves every round that it still holds it, or provide storage and be paid for it
   market     Markets
   stream     Payment streams: escrow once, pay per request with one hash each, settle thousands of payments in one transaction
@@ -1330,6 +1333,127 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
+
+## `sion skill`
+
+```text
+Skills with a supply chain: pack a skill, audit a bundle, publish a release on bonds and audits, show one, install one for an agent under the decision rule
+
+Usage: sion skill [OPTIONS] <COMMAND>
+
+Commands:
+  pack     Print a skill directory's bundle root, the commitment releases and audits name, and write its bundle file
+  audit    Audit a bundle: claim, on your bond, that it does what its description says and nothing else
+  publish  Publish a release of a skill: a claim naming it, its version and its bundle root, on your bond or the audits of that root, or both
+  show     A release: what it names, the backing behind it, and the decision rule for a value at risk
+  install  Install a release for an agent: fetch and check its bundle, accept the release with the agent's remaining budget at risk, and only then put the skill in the agent's skills
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Skills from others](../guides/skills.md).
+
+## `sion skill pack`
+
+```text
+Print a skill directory's bundle root, the commitment releases and audits name, and write its bundle file
+
+Usage: sion skill pack [OPTIONS] <DIR>
+
+Arguments:
+  <DIR>  The skill directory (with a SKILL.md)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <OUT>    Where to write the bundle (default: the local bundle store)
+  -h, --help         Print help
+```
+
+## `sion skill audit`
+
+```text
+Audit a bundle: claim, on your bond, that it does what its description says and nothing else
+
+Usage: sion skill audit [OPTIONS] --bond <BOND> --adjudicator <ADJUDICATOR> <WALLET> <BUNDLE>
+
+Arguments:
+  <WALLET>  The auditor's wallet
+  <BUNDLE>  The bundle root (64 hex digits)
+
+Options:
+      --bond <BOND>                The label of your bond the audit rests on
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --adjudicator <ADJUDICATOR>  The adjudicator atom that rules on challenges
+      --note <NOTE>                What you checked [default: ""]
+      --valid-for <VALID_FOR>      Validity in Pulses [default: 100000]
+  -h, --help                       Print help
+```
+
+## `sion skill publish`
+
+```text
+Publish a release of a skill: a claim naming it, its version and its bundle root, on your bond or the audits of that root, or both
+
+Usage: sion skill publish [OPTIONS] --version <VERSION> --adjudicator <ADJUDICATOR> <WALLET> <DIR>
+
+Arguments:
+  <WALLET>  The publisher's wallet
+  <DIR>     The skill directory (with a SKILL.md)
+
+Options:
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --version <VERSION>          The version, for example 1.0.0
+      --bond <BOND>                The label of your bond the release rests on
+      --audits <AUDITS>            Audits of the bundle the release rests on (claim ids)
+      --adjudicator <ADJUDICATOR>  The adjudicator atom that rules on challenges
+      --previous <PREVIOUS>        The release this one follows (its claim id)
+      --locator <LOCATOR>          Where installers can fetch the bundle (an https URL)
+      --valid-for <VALID_FOR>      Validity in Pulses [default: 100000]
+  -h, --help                       Print help
+```
+
+## `sion skill show`
+
+```text
+A release: what it names, the backing behind it, and the decision rule for a value at risk
+
+Usage: sion skill show [OPTIONS] <RELEASE>
+
+Arguments:
+  <RELEASE>  The release (its claim id)
+
+Options:
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --value <VALUE>  The value at risk to decide for (USD) [default: 100]
+  -h, --help           Print help
+```
+
+## `sion skill install`
+
+```text
+Install a release for an agent: fetch and check its bundle, accept the release with the agent's remaining budget at risk, and only then put the skill in the agent's skills
+
+Usage: sion skill install [OPTIONS] <WALLET> <AGENT> <RELEASE>
+
+Arguments:
+  <WALLET>   The agent's wallet
+  <AGENT>    The agent (its id)
+  <RELEASE>  The release (its claim id)
+
+Options:
+      --bundle <BUNDLE>  The bundle file (default: the local bundle store, then the release's locator)
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --value <VALUE>    The value at risk (USD; default: the agent's remaining budget)
+      --kappa <KAPPA>    κ, the margin the backing must have over the value at risk [default: 2]
+      --pulses <PULSES>  How long the agent relies on it, in Pulses [default: 10000]
+      --skills <SKILLS>  The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
+  -h, --help             Print help
+```
+
+Asks for the decision before signing: a release whose backing does not cover the value at risk is refused without a fee.
 
 ## `sion storage`
 
