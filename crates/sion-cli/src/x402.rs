@@ -1046,10 +1046,16 @@ pub fn fetch(
     fetch_with(session, payer, url, chain, max_price, None)
 }
 
+/// The HTTP client, shared so that repeated requests reuse connections.
 fn client() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(120))
-        .build()
+    static CLIENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(120))
+                .build()
+        })
+        .clone()
 }
 
 /// Like [`fetch`]; with `known` requirements (from an earlier request's

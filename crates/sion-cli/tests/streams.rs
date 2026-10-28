@@ -103,6 +103,7 @@ fn a_stream_desk_refuses_what_it_cannot_settle_and_clients_recover() {
                 seed,
                 revealed: 0,
                 spacing: 0,
+                announced: None,
             },
             payer_chain,
         )

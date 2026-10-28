@@ -1440,17 +1440,34 @@ fn stream_id(text: &str) -> Result<ObjectId, CliError> {
     Ok(ObjectId::from_hash(hex_hash(text, "stream")?))
 }
 
-fn show_stream(id: &ObjectId, stream: &sion_exec::stream::Stream) {
+/// `n` with thousands separators.
+fn grouped(n: u64) -> String {
+    Amount::units(n).to_string()
+}
+
+/// `n` and the noun, singular or plural.
+fn count(n: u64, one: &str, many: &str) -> String {
+    match n {
+        1 => format!("1 {one}"),
+        n => format!("{} {many}", grouped(n)),
+    }
+}
+
+fn show_stream(
+    names: &sion_cli::describe::Names,
+    id: &ObjectId,
+    stream: &sion_exec::stream::Stream,
+) {
     println!(
         "stream {id}\n  {} pays {} {} USD per step, {} of {} steps settled{}\n  escrow {} USD, settle by Pulse {}, {}",
-        stream.payer.short(),
-        stream.payee.short(),
+        names.account(&stream.payer),
+        names.account(&stream.payee),
         stream.unit,
-        stream.position,
-        stream.length,
+        grouped(stream.position),
+        grouped(stream.length),
         match stream.spacing {
             0 => String::new(),
-            spacing => format!(", a checkpoint every {spacing} steps"),
+            spacing => format!(", a checkpoint every {} steps", grouped(spacing)),
         },
         stream.escrow,
         stream.until,
@@ -1510,6 +1527,7 @@ fn stream_command(session: &mut Session<'_>, command: StreamCommand) -> Result<(
                     seed,
                     revealed: 0,
                     spacing,
+                    announced: None,
                 },
                 chain,
             )?;
@@ -1546,11 +1564,13 @@ fn stream_command(session: &mut Session<'_>, command: StreamCommand) -> Result<(
             };
             match result {
                 Standing::Settled { hashes } => println!(
-                    "genuine and settled: position {} is at or below the settled {} ({hashes} hashes from the head)",
-                    payment.position, stream.position
+                    "genuine and settled: the ledger has settled the stream up to position {} (checked with {})",
+                    grouped(stream.position),
+                    count(hashes, "hash", "hashes")
                 ),
                 Standing::Unsettled { steps, value } => println!(
-                    "genuine, not yet settled: {steps} steps above the settled position, worth {value} USD to the payee"
+                    "genuine, not yet settled: {} above the settled position, worth {value} USD to the payee",
+                    count(steps, "step", "steps")
                 ),
                 Standing::Forged => {
                     return Err(CliError::Usage(
@@ -1608,7 +1628,7 @@ fn stream_command(session: &mut Session<'_>, command: StreamCommand) -> Result<(
         }
         StreamCommand::Show { stream } => {
             let id = stream_id(&stream)?;
-            show_stream(&id, &load_stream(ledger, &id)?);
+            show_stream(&session.names(), &id, &load_stream(ledger, &id)?);
         }
     }
     Ok(())

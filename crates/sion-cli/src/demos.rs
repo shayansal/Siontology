@@ -1232,6 +1232,7 @@ pub fn streams(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliE
             seed,
             revealed: 0,
             spacing,
+            announced: None,
         },
         payer_chain,
     )?;

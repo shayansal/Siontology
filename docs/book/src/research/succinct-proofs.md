@@ -916,11 +916,11 @@ not used in the tables: it cites a goal of aggregating 10,000 signatures in
 one second, and reports Falcon-512 aggregation with LaBRADOR at 10,000
 signatures in 74 KB with 2.65 s of verification.
 
-[impl-status]: ../implementation-status.md
-[arch]: ../book/src/papers/architecture.md
-[bench]: ../book/src/guides/benchmarks.md
-[spec]: ../spec/state-transition.md
-[pq-book]: ../book/src/concepts/post-quantum.md
+[impl-status]: https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md
+[arch]: ../papers/architecture.md
+[bench]: ../guides/benchmarks.md
+[spec]: ../specification.md
+[pq-book]: ../concepts/post-quantum.md
 [magicians]: https://ethereum-magicians.org/t/the-real-blocker-for-post-quantum-ethereum-isn-t-the-math-it-s-aggregation-and-we-don-t-have-it-yet/27839
 [soundcalc]: https://github.com/ethereum/soundcalc/blob/main/reports/summary.md
 [soundcalc-sp1]: https://github.com/ethereum/soundcalc/blob/main/reports/sp1.md

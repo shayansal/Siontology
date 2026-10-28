@@ -109,6 +109,17 @@ only" below) can be built and signed with the Rust API
 
 See [Validators, staking and epochs](../concepts/committees.md).
 
+## Payment streams
+
+| Kind | What it does | Class | Sentence | Sent by |
+|---|---|---|---|---|
+| `OpenStream { payee, asset, unit, length, anchor, deposit, until, checkpoints }` | Escrows `deposit` for `payee`, paid off the ledger `unit` per chain element; optionally commits to a checkpoint every `spacing` steps | owned-linear | `Open a payment stream to <payee>: escrow <deposit>, paid off the ledger at <unit> a step for up to <length> steps, settled by <payee> until Pulse <until>[, with a checkpoint every <n> steps]` | `sion stream open` |
+| `SettleStream { stream, position, value, jump }` | The payee collects the steps up to `position`: by walking from the head (at most 65,536 steps), or by a `jump` to a checkpoint; pays a fee per hash checked | contended (stream) | `Settle stream <id> up to step <p>[, proven by checkpoint <j>]` | `sion stream settle`, an x402 server's stream desk |
+| `TopUpStream { stream, deposit, until }` | The payer adds escrow and may extend the last Pulse | contended (stream) | `Add <deposit> USD to stream <id> and keep it open until Pulse <until>` | `sion stream top-up` |
+| `CloseStream { stream }` | Closes the stream and returns the escrow to the payer: by the payee at any time, by the payer after the last Pulse | contended (stream) | `Close stream <id> and return what is left in escrow to its payer` | `sion stream close` |
+
+See [Payment streams](../concepts/payment-streams.md).
+
 ## Outcomes
 
 Each transaction ends as **Success**, **Failed** or **Rejected**

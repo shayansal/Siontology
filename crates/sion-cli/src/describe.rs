@@ -392,13 +392,17 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             checkpoints,
             ..
         } => format!(
-            "Open a payment stream to {}: escrow {}, paid off the ledger at {} a step for up to {length} steps, settled by {} until Pulse {until}{}",
+            "Open a payment stream to {}: escrow {}, paid off the ledger at {} a step for up to {} steps, settled by {} until Pulse {until}{}",
             names.account(payee),
             names.money(*deposit, asset),
             names.money(*unit, asset),
+            sion_core::Amount::units(*length),
             names.account(payee),
             match checkpoints {
-                Some(c) => format!(", with a checkpoint every {} steps", c.spacing),
+                Some(c) => format!(
+                    ", with a checkpoint every {} steps",
+                    sion_core::Amount::units(c.spacing)
+                ),
                 None => String::new(),
             }
         ),

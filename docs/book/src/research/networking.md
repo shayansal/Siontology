@@ -6,7 +6,7 @@ is built.*
 Today every Siontology validator is a thread of one process, and validators
 exchange real signed messages over in-memory channels. The implementation
 status calls this "Networking between machines: Simulated (in-process
-channels)" ([`docs/implementation-status.md`](../implementation-status.md)).
+channels)" ([`docs/implementation-status.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md)).
 This note maps every message that crosses between validators, or between
 the gateway and validators; recommends a transport and a topology; works out
 what has to change once messages can be lost or delayed; and lays out a
@@ -146,7 +146,7 @@ These devnet parameters set the message rates:
 One measured run gives the rates. It ran four validators with dual
 signatures on a shared 2-core virtual machine, with a load average of about
 6, in a release build of an earlier version
-([benchmarks](../book/src/guides/benchmarks.md)). The devnet closed one
+([benchmarks](../guides/benchmarks.md)). The devnet closed one
 Pulse every 3.9 s, which is about one consensus round a second. It moved
 15 transfers a second, with a median of 7.1 s from submission to
 execution. One machine's CPU set those rates, not a network.
@@ -204,7 +204,7 @@ hexadecimal inside JSON, which doubles them.
 | `GET /v1/pulses/{n}/data` | Data-availability header (axis roots) | 44 B + 128 B × *k*: 2.1 KB at *k* = 16, 66 KB at *k* = 512, 262 KB at *k* = 2,048 |
 | `GET /v1/pulses/{n}/data/{row}/{column}` | One share with a proof to its row root | 12 B + 32 B × log₂(2*k*): 172 B at *k* = 16, 332 B at *k* = 512 |
 | `GET /v1/epochs/{e}` | Certificate of the epoch's boundary and a proof of the validator set | One certificate + about 1.5 KB per registered validator + a proof path |
-| `GET /v1/pulses/{n}/world` | World Proof | Grows with witnesses: 1.7 MB of witnesses for 512 transfers (measured, [benchmarks](../book/src/guides/benchmarks.md)) |
+| `GET /v1/pulses/{n}/world` | World Proof | Grows with witnesses: 1.7 MB of witnesses for 512 transfers (measured, [benchmarks](../guides/benchmarks.md)) |
 
 ### Messages that stay inside one process
 
@@ -295,7 +295,7 @@ for each certified one. Even so it sends about 20 times fewer bytes at
   is 6.3 MB/s of egress and 0.73 s of one core.
 - To scale past that, the uncertified DAG and parallel signature checking
   are prerequisites. The architecture already plans the uncertified DAG
-  ([Contention Consensus](../book/src/concepts/contention-consensus.md)).
+  ([Contention Consensus](../concepts/contention-consensus.md)).
 
 Idle traffic matters because the core never paces itself. A validator
 proposes the next round as soon as a quorum of certificates and the
@@ -630,7 +630,7 @@ after a restart every validator starts round 1 of a session nobody has
 signed in. One machine restarting alone must rejoin the current session
 instead. If it signs a different header for a round it already signed
 before the crash, its whole stake is slashable as header equivocation
-([equivocation slashing](../book/src/concepts/validators/equivocation-slashing.md)).
+([equivocation slashing](../concepts/validators/equivocation-slashing.md)).
 Votes are safe only as long as it never votes for a second header in a
 slot.
 
@@ -748,7 +748,7 @@ light clients, archivers and reconstructors.
    checks that it reproduces the certified data root and `k`, and only
    then serves. Encoding 2 MiB took 0.24 s and committing to its rows and
    columns 8.0 s on one core (measured,
-   [benchmarks](../book/src/guides/benchmarks.md)). Full nodes need
+   [benchmarks](../guides/benchmarks.md)). Full nodes need
    parallel encoding, as the validators do. This cost is already an open
    issue.
 3. **Full nodes serve in containers, not only single shares.** Celestia's
@@ -1221,10 +1221,10 @@ Opened while writing this note, October 2026.
 
 **This repository**
 
-- [`docs/implementation-status.md`](../implementation-status.md): status words, trust atoms, the review findings
-- [`docs/book/src/papers/architecture.md`](../book/src/papers/architecture.md): ordering, committees and sharding, data availability, capacity model, latency targets
-- [`docs/book/src/guides/benchmarks.md`](../book/src/guides/benchmarks.md): measured signature, encoding and devnet costs
-- [`docs/book/src/project/operations.md`](../book/src/project/operations.md), [`architecture/validator.md`](../book/src/architecture/validator.md), [`architecture/gateway.md`](../book/src/architecture/gateway.md), [`concepts/validators/epochs.md`](../book/src/concepts/validators/epochs.md), [`concepts/data-availability.md`](../book/src/concepts/data-availability.md)
+- [`docs/implementation-status.md`](https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md): status words, trust atoms, the review findings
+- [`docs/book/src/papers/architecture.md`](../papers/architecture.md): ordering, committees and sharding, data availability, capacity model, latency targets
+- [`docs/book/src/guides/benchmarks.md`](../guides/benchmarks.md): measured signature, encoding and devnet costs
+- [`docs/book/src/project/operations.md`](../project/operations.md), [`architecture/validator.md`](../architecture/validator.md), [`architecture/gateway.md`](../architecture/gateway.md), [`concepts/validators/epochs.md`](../concepts/validators/epochs.md), [`concepts/data-availability.md`](../concepts/data-availability.md)
 - Code: `sion-node` (`devnet.rs`, `validator.rs`, `gateway.rs`, `payload.rs`, `pulses.rs`, `storage.rs`, `owners.rs`, `api.rs`, `config.rs`, `committees.rs`, `keys.rs`), `sion-consensus` (`core.rs`, `dag.rs`, `lanes.rs`, `committee.rs`, `beacon.rs`, `sim.rs`), `sion-da`, `sion-light`, `sion-crypto`
 
 **Standards**

@@ -32,6 +32,7 @@
   - [Insurance](concepts/assurance/insurance.md)
 - [Verifiable Clearing](concepts/verifiable-clearing.md)
 - [Agent Charters](concepts/agent-charters.md)
+- [Payment streams](concepts/payment-streams.md)
 - [Privacy](concepts/privacy.md)
 - [Post-quantum identity](concepts/post-quantum.md)
 - [Censorship resistance](concepts/censorship-resistance.md)
@@ -53,6 +54,7 @@
 - [Forced inclusion and the censorship demo](guides/forced-inclusion.md)
 - [Staking and epochs](guides/staking.md)
 - [x402: selling and buying an API](guides/x402.md)
+- [Streams from the command line](guides/streams.md)
 - [Light-client verification](guides/light-client.md)
 - [Benchmarks](guides/benchmarks.md)
 
@@ -81,6 +83,13 @@
 # Specification
 
 - [The state transition specification](specification.md)
+
+# Research
+
+- [Research](research/index.md)
+  - [Billions of payments a second](research/billion-scale.md)
+  - [Succinct validity proofs](research/succinct-proofs.md)
+  - [Networking between machines](research/networking.md)
 
 # Security
 

@@ -10,6 +10,35 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Payment streams (specification v1.6 and v1.7)
+
+- Payment streams: a payer escrows funds for one payee and pays it off the
+  ledger by revealing the elements of a SHA3-256 hash chain, one per
+  payment. The payee checks a payment with one hash and settles many in one
+  transaction (`OpenStream`, `SettleStream`, `TopUpStream`,
+  `CloseStream`, §5.31 to §5.34). A settlement walks from the head, one
+  hash per step, at most 65,536 steps, and pays 2 micro-USD per hash.
+- Specification v1.7, checkpoints: a payer may commit to a Merkle tree over
+  every `spacing`-th chain element, and the payee may settle by a jump to
+  the checkpoint below its position, for at most `spacing + 21` hashes
+  however many payments the settlement covers.
+- Both proof stacks implement the rules; differential tests, a randomized
+  property test and executor scenarios cover them.
+- x402 gains a `stream` scheme: a request is paid with the next chain
+  element, checked by the server with one hash, and settled in batches by
+  the server's stream desk. A refused payment names the server's position
+  so an honest client resynchronizes. The x402 client reuses HTTP
+  connections.
+- New commands `sion stream open|pay|jump|check|settle|top-up|close|show`;
+  `sion x402 serve --streams` and `sion x402 fetch --stream --count`; the
+  `streams` demo; the `streams` benchmark group.
+- Measured on one core of a 2-core sandbox: a payee checks a payment in
+  0.42 µs; settlements by checkpoint covering about 9 × 10⁸ payments a
+  second executed with every signature checked. See the research note
+  [Billions of payments a second](docs/book/src/research/billion-scale.md).
+- New research notes in the book: the billion-payment note, a plan for
+  succinct validity proofs and a plan for networking between machines.
+
 ### Review of the validator machinery (specification v1.5)
 
 - An independent review of staking, rewards, slashing and committees

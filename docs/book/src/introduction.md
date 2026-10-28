@@ -112,6 +112,7 @@ is the authority on what is built. This table copies its summary.
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
+| Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: payments to provers, value-in-flight cap | Not built |

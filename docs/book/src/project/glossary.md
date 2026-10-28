@@ -43,6 +43,11 @@ validators with stake and keys, shard layout. See
 **Challenge.** A deposit-backed assertion that a bonded atom of a claim is
 broken, ruled on by the claim's adjudicator.
 
+**Checkpoint.** A commitment, made when a payment stream opens, to every
+`spacing`-th element of the payer's chain, as leaves of a Merkle tree. It
+lets the payee settle by a jump. See
+[Payment streams](../concepts/payment-streams.md).
+
 **Chunk.** A run of transactions (16 by default), or the deferred phase,
 with a statement and a witness; the unit a proof stack proves.
 
@@ -102,6 +107,10 @@ committees and hands certificates to consensus.
 **Genesis.** The initial state and parameters; its digest is part of the
 chain identity.
 
+**Jump.** A settlement's proof by checkpoint: the checkpoint just below
+the settled position and its Merkle path. It costs at most `spacing + 21`
+hashes, however many payments it covers.
+
 **κ (kappa).** The safety factor of the decision rule; 2 by default.
 
 **Knowledge log.** The grow-only Merkle log of claims (RFC 9162).
@@ -126,6 +135,10 @@ deadline.
 
 **Operator.** The account that stakes for a validator and receives its
 rewards and withdrawals.
+
+**Payment stream.** Escrow from one payer for one payee, paid off the
+ledger by revealing a hash chain's elements, one per payment, and settled
+by the payee in batches. See [Payment streams](../concepts/payment-streams.md).
 
 **Policy.** A consumer's view of which atoms and classes to trust,
 distrust or assume broken, and its κ.
@@ -168,6 +181,10 @@ its operator stakes for it.
 what it forfeits if it equivocates.
 
 **State root.** The root of the sparse Merkle tree over every object.
+
+**Stream desk.** The payee's side of payment streams in `sion_cli`: it
+checks each payment with one hash, decides when to settle, and settles by
+walk or jump.
 
 **The Fold.** Folding every chunk proof of a Pulse into one World Proof.
 See [The Fold and World Proofs](../concepts/the-fold.md).

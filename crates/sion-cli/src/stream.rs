@@ -221,6 +221,9 @@ pub struct PayerRecord {
     /// The chain's checkpoint spacing (0: no checkpoints).
     #[serde(default)]
     pub spacing: u64,
+    /// The latest checkpoint whose jump was handed out with a payment.
+    #[serde(default)]
+    pub announced: Option<u64>,
 }
 
 /// A payer's streams: their chains and how far each has been revealed.
@@ -232,8 +235,6 @@ pub struct PayerRecord {
 pub struct PayerBook {
     dir: Option<PathBuf>,
     open: BTreeMap<ObjectId, (PayerRecord, Option<PayerChain>)>,
-    /// The latest checkpoint whose jump this book attached, per stream.
-    announced: BTreeMap<ObjectId, u64>,
 }
 
 impl PayerBook {
@@ -363,21 +364,27 @@ impl PayerBook {
     }
 
     /// Like [`PayerBook::pay`], attaching the jump for the payment's
-    /// checkpoint the first time a payment reaches it.
+    /// checkpoint the first time a payment reaches it (never for checkpoint
+    /// 0: walking down to the anchor is always cheaper).
     pub fn pay_with_jump(
         &mut self,
         stream: &ObjectId,
         steps: u64,
     ) -> Result<StreamPayment, CliError> {
         let payment = self.pay(stream, steps)?;
-        let spacing = self.open[stream].0.spacing;
-        let mut jump = None;
-        if let Some(index) = payment.position.checked_div(spacing) {
-            if self.announced.get(stream) != Some(&index) {
-                jump = self.jump(stream, index)?;
-                self.announced.insert(*stream, index);
-            }
+        let record = &self.open[stream].0;
+        let index = payment.position.checked_div(record.spacing).unwrap_or(0);
+        if index == 0 || record.announced == Some(index) {
+            return Ok(StreamPayment {
+                payment,
+                jump: None,
+            });
         }
+        let jump = self.jump(stream, index)?;
+        let mut updated = self.open[stream].0.clone();
+        updated.announced = Some(index);
+        self.save(&updated)?;
+        self.open.get_mut(stream).expect("loaded").0 = updated;
         Ok(StreamPayment { payment, jump })
     }
 
@@ -396,10 +403,10 @@ impl PayerBook {
         }
         let mut updated = record.clone();
         updated.revealed = position;
+        // The payee may have missed the jump too: attach it again.
+        updated.announced = None;
         self.save(&updated)?;
         self.open.get_mut(stream).expect("loaded").0 = updated;
-        // The payee may have missed the jump too: attach it again.
-        self.announced.remove(stream);
         Ok(())
     }
 }
@@ -886,6 +893,7 @@ mod tests {
             seed,
             revealed: 0,
             spacing: 0,
+            announced: None,
         };
         let anchor = chain.anchor();
         let mut book = PayerBook::at(dir.clone());
