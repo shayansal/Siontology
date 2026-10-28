@@ -1,0 +1,27 @@
+[package]
+name = "sion-memory"
+description = "Verifiable memory for AI agents and robots: single-writer logs of atoms with space and two kinds of time, a canonical 4D index with completeness proofs, belief as a fold, sealed payloads and the Reality Memory Protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sion-core.workspace = true
+sion-crypto.workspace = true
+borsh.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+chacha20poly1305.workspace = true
+rand_core.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

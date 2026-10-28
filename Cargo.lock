@@ -1070,6 +1070,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sion-memory"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "chacha20poly1305",
+ "proptest",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sion-core",
+ "sion-crypto",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "sion-node"
 version = "0.1.0"
 dependencies = [
