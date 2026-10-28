@@ -899,7 +899,7 @@ round with 7 validators. A desktop community node needs no server at all.
 | Step | What | Status |
 |---|---|---|
 | Specification v1.8 | Agent identities and subagents | Built |
-| v1.9 | Memory logs kept append-only by the ledger; the `sion-memory` library with the 4D index, its proofs and RMP; a demo of robots sharing a warehouse | Ledger part built; library built, being integrated |
+| v1.9 | Memory logs kept append-only by the ledger; the `sion-memory` library with the 4D index, its proofs and RMP; a demo of robots sharing a warehouse | Built |
 | v1.10 | Task Charters: task escrows with acceptance fixed at posting, adjudicators on result claims, batch claims with beacon-chosen samples | Built, except batch claims |
 | v1.11 | Non-custodial delegation; node registration, bond-weighted archival assignments and custody challenges; the light-client accumulator | Delegation built; the rest planned |
 | v1.12 | Amortized authorization: batch roots and a verification fee, cohorts, keyless children, lineage ids, token buckets, overlays | Planned |

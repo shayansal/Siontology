@@ -899,8 +899,14 @@ the atom, and at `p` it did.
 
 The ledger does not check `index` or `manifest`. Completeness proofs for
 queries are relative to the committed `index`; that the index matches the
-log is a trust atom (`impl:memory-index`) until fraud proofs for it are
-built.
+log is a trust atom (`impl:memory-index`). The index a writer commits is
+meant to be the canonical index of the log's first `size` atoms, version 1,
+specified in the documentation of `sion_memory::index` (a client
+specification, not part of this state transition): a reader holding the
+atoms can rebuild it and compare roots, and anyone holding an atom it
+leaves out can prove the omission from the head alone
+(`sion_memory::verify_omission`). Nothing on the ledger acts on such a
+proof yet.
 
 ### 5.42 PostTask { spec, acceptance, worker, amount, deadline, charter }
 

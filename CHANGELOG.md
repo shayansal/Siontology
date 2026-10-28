@@ -10,6 +10,28 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Memory for agents and robots: the library, commands and demo
+
+- New crate `sion-memory`, the off-ledger half of memory logs: integer-only
+  memory atoms with space and two kinds of time, single-writer logs with an
+  on-disk store, a canonical 4D index (hourly Merkle R-trees per frame, a
+  long-lived tree, subject and link maps) specified for independent
+  rebuilding, complete range proofs including empty answers, subject and
+  link proofs, omission proofs that convict an index leaving an atom out,
+  belief as a fold with proofs checked from heads, sealed payloads with
+  forgetting by key destruction, and the Reality Memory Protocol. 84
+  tests, including a second implementation of the index written from its
+  specification. Over 10⁶ atoms, a 50 × 50 × 10 m, one-hour query returns
+  9 atoms with a 36 KiB proof, verified in 0.2 ms.
+- `sion memory open`, `remember`, `commit`, `recall` and `show`, and the
+  MCP tools `sion_memory_open`, `sion_memory_remember`,
+  `sion_memory_commit` and `sion_memory_recall`: recall answers are
+  checked against the index root the ledger holds.
+- The `robots` demo: two robots with their own agent identities and memory
+  logs share a warehouse; a rewrite is refused; a curator's refutation
+  gives two readers two provable beliefs; an omitting index is convicted; a
+  camera frame is forgotten; a suspended robot's memory stops growing.
+
 ### Pooled stake (specification v1.11)
 
 - `DelegateStake` adds stake to a validator's pool without handing it

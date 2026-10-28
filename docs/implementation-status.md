@@ -43,7 +43,7 @@ live.
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
-| Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Partly built (the ledger's part) |
+| Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
 | Orchestration: Task Charters, escrowed work with acceptance fixed at posting (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
@@ -373,12 +373,26 @@ and cannot fork, and the commit's Pulse is the transaction time of the
 atoms it adds. A log can belong to an agent identity, and then stops
 growing while the agent, or an agent above it, is suspended or revoked.
 Both proof stacks implement it, with differential tests for every rule and
-a randomized property test of honest and forged commits. **Simplified:**
-the index and manifest roots are stored unchecked (atom
-`impl:memory-index`). **Not built:** the off-ledger library (atoms, the 4D
-index and its completeness proofs, belief folding, encryption), command-
-line and MCP interfaces, aggregators that commit many logs in one claim,
-curators of shared world memory, and storage with proofs.
+a randomized property test of honest and forged commits.
+
+**The off-ledger library, `sion-memory`: built.** Integer-only memory
+atoms with space and two kinds of time; single-writer logs with an
+on-disk store; a canonical 4D index, specified so that another
+implementation can rebuild it (a second one, written from the
+specification alone, agrees on random logs), with complete range proofs,
+subject and link proofs, and omission proofs that convict an index that
+leaves an atom out; belief as a fold with proofs checked from heads;
+sealed payloads with forgetting by key destruction; the Reality Memory
+Protocol. Measured over 10⁶ atoms on one core: a 50 × 50 × 10 m, one-hour
+query returns 9 atoms with a 36 KiB proof verified in 0.2 ms; the index
+builds in 0.78 s. Commands `sion memory …`, MCP tools `sion_memory_*`, and
+the `robots` demo. **Simplified:** the index and manifest roots are stored
+unchecked, and the ledger does not act on omission proofs (atom
+`impl:memory-index`); the index is rebuilt for every head; logs are held
+in memory. **Not built:** compact fraud proofs for other malformed
+indexes, selective disclosure of an atom's fields, aggregators that commit
+many logs in one claim, curated world memory beyond cell digests, and
+storage with proofs.
 
 ### Orchestration
 

@@ -19,6 +19,7 @@ pub mod describe;
 pub mod error;
 pub mod ledger;
 pub mod mcp;
+pub mod memory;
 pub mod session;
 pub mod stake;
 pub mod stream;

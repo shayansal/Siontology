@@ -209,6 +209,69 @@ fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": { "task": { "type": "string" } }, "required": ["task"] }
         },
         {
+            "name": "sion_memory_open",
+            "description": "Open a memory log on the ledger: an append-only log of memory atoms kept off the ledger, whose head the ledger moves only along proofs that the log grew. With agent, the log belongs to that agent identity (the wallet must be its agent) and cannot grow while the agent is suspended.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "agent": { "type": "string", "description": "Agent identity id (hex)" }
+                },
+                "required": ["wallet"]
+            }
+        },
+        {
+            "name": "sion_memory_remember",
+            "description": "Record a memory atom in a log's local store: a statement (subject, predicate, value) with when it held and, for robots, where (a box in a frame, in millimetres). It reaches the ledger's commitment at the next sion_memory_commit.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "log": { "type": "string", "description": "Memory log id (hex) or a unique prefix" },
+                    "subject": { "type": "string" },
+                    "predicate": { "type": "string" },
+                    "value": { "type": "string", "description": "true/false, an integer, @name for an entity, or text" },
+                    "kind": { "type": "string", "description": "observation (default), coverage, world-state, semantic, episodic, procedural, preference, goal, plan, …" },
+                    "frame": { "type": "string", "description": "The frame its place is in, for example warehouse-3" },
+                    "at": { "type": "array", "items": { "type": "integer" }, "description": "Its place: x, y, z in millimetres" },
+                    "size": { "type": "array", "items": { "type": "integer" }, "description": "Half the size of its box: dx, dy, dz in millimetres" },
+                    "from_s": { "type": "integer", "description": "When it began to hold, seconds since the Unix epoch (default now)" },
+                    "seconds": { "type": "integer", "description": "For how long it held (default open-ended)" },
+                    "confidence_permille": { "type": "integer", "description": "Confidence in thousandths (default 1000)" }
+                },
+                "required": ["wallet", "log", "subject", "predicate", "value"]
+            }
+        },
+        {
+            "name": "sion_memory_commit",
+            "description": "Commit a memory log's local head to the ledger with a proof that it extends the committed one. The Pulse it executes in becomes the transaction time of the atoms it adds.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "log": { "type": "string", "description": "Memory log id (hex) or a unique prefix" },
+                    "seal": { "type": "boolean", "description": "Close the log for good" }
+                },
+                "required": ["wallet", "log"]
+            }
+        },
+        {
+            "name": "sion_memory_recall",
+            "description": "Everything a memory log had recorded in a box of a frame during an interval, as of its committed head, with a proof of completeness checked against the index root the ledger holds (an empty answer is proved too).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "log": { "type": "string", "description": "Memory log id (hex) or a unique prefix" },
+                    "frame": { "type": "string" },
+                    "min": { "type": "array", "items": { "type": "integer" }, "description": "Lower corner x, y, z in millimetres" },
+                    "max": { "type": "array", "items": { "type": "integer" }, "description": "Upper corner x, y, z in millimetres" },
+                    "from_s": { "type": "integer", "description": "Interval start, seconds since the Unix epoch" },
+                    "until_s": { "type": "integer", "description": "Interval end (exclusive)" }
+                },
+                "required": ["log", "frame", "min", "max", "from_s", "until_s"]
+            }
+        },
+        {
             "name": "sion_stake_pools",
             "description": "Every validator with its own stake, its pool of delegated stake (and how much of it earns), its commission and its weight in the active set.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -698,6 +761,95 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
         "sion_task_show" => {
             let task = ObjectId::from_hash(hex_id(&args["task"], "task")?);
             crate::tasks::describe(session.ledger, task)
+        }
+        "sion_memory_open" => {
+            let wallet = text_arg(args, "wallet")?;
+            let agent = match args["agent"].as_str() {
+                Some(_) => Some(ObjectId::from_hash(hex_id(&args["agent"], "agent")?)),
+                None => None,
+            };
+            let (view, log) = crate::memory::open(session, &wallet, agent)?;
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "log": log,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
+        }
+        "sion_memory_remember" => {
+            let wallet = text_arg(args, "wallet")?;
+            let log = crate::memory::find_log(session.ledger, &text_arg(args, "log")?)?;
+            let point = |key: &str| -> Result<Option<[i64; 3]>, CliError> {
+                match args[key].as_array() {
+                    None => Ok(None),
+                    Some(items) => {
+                        let values: Vec<i64> = items.iter().filter_map(|v| v.as_i64()).collect();
+                        <[i64; 3]>::try_from(values)
+                            .map(Some)
+                            .map_err(|_| CliError::Usage(format!("{key} must be three integers")))
+                    }
+                }
+            };
+            let place = match (args["frame"].as_str(), point("at")?) {
+                (Some(frame), Some(at)) => {
+                    Some((frame.to_string(), at, point("size")?.unwrap_or([0; 3])))
+                }
+                (None, None) => None,
+                _ => return Err(CliError::Usage("frame and at go together".into())),
+            };
+            let atom = crate::memory::Remember {
+                subject: text_arg(args, "subject")?,
+                predicate: text_arg(args, "predicate")?,
+                value: crate::memory::parse_value(&text_arg(args, "value")?),
+                kind: crate::memory::parse_kind(args["kind"].as_str().unwrap_or("observation"))?,
+                place,
+                from_s: args["from_s"].as_u64(),
+                seconds: args["seconds"].as_u64(),
+                confidence: args["confidence_permille"]
+                    .as_u64()
+                    .map(|c| u16::try_from(c.min(1000)).unwrap_or(1000))
+                    .unwrap_or(1000),
+            };
+            let ledger = session.ledger;
+            crate::memory::remember(session, ledger, &wallet, &log, atom)
+        }
+        "sion_memory_commit" => {
+            let wallet = text_arg(args, "wallet")?;
+            let log = crate::memory::find_log(session.ledger, &text_arg(args, "log")?)?;
+            let seal = args["seal"].as_bool().unwrap_or(false);
+            let ledger = session.ledger;
+            let view = crate::memory::commit(session, ledger, &wallet, &log, seal)?;
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
+        }
+        "sion_memory_recall" => {
+            let log = crate::memory::find_log(session.ledger, &text_arg(args, "log")?)?;
+            let corner = |key: &str| -> Result<[i64; 3], CliError> {
+                let values: Vec<i64> = args[key]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(|v| v.as_i64()).collect())
+                    .unwrap_or_default();
+                <[i64; 3]>::try_from(values)
+                    .map_err(|_| CliError::Usage(format!("{key} must be three integers")))
+            };
+            let seconds = |key: &str| -> Result<u64, CliError> {
+                args[key]
+                    .as_u64()
+                    .ok_or_else(|| CliError::Usage(format!("{key} required")))
+            };
+            crate::memory::recall(
+                session.ledger,
+                &log,
+                &text_arg(args, "frame")?,
+                sion_memory::Box3::new(corner("min")?, corner("max")?),
+                sion_memory::TimeRange::new(
+                    seconds("from_s")?.saturating_mul(1_000_000_000),
+                    seconds("until_s")?.saturating_mul(1_000_000_000),
+                ),
+            )
         }
         "sion_stake_pools" => Ok(json!({
             "pools": crate::stake::pool_lines(session.ledger, &crate::stake::operator_names(session))?

@@ -1,6 +1,6 @@
 # Run the demos
 
-Eleven scripted demos drive real transactions through the whole protocol
+Twelve scripted demos drive real transactions through the whole protocol
 (lane certificates, consensus, Pulse execution, header certificates, data
 availability and proving) and narrate what the ledger established.
 
@@ -12,7 +12,7 @@ sion demo all --local
 validators, 2 shards, dual post-quantum signatures, proving on) and stops it
 at the end. The staking demo needs epochs that end, so it gets a devnet of
 its own with a standby validator and 24-Pulse epochs: `sion demo all
---local` runs the first ten demos on one default devnet, then starts a
+--local` runs the first eleven demos on one default devnet, then starts a
 second devnet for the staking demo.
 
 Without `--local`, a demo runs against the node at `--node` (default
@@ -30,6 +30,7 @@ seconds against a running devnet.
 | `agents` | An AI agent with a budget the ledger enforces: an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent |
 | `swarm` | Agent identities: an orchestrator launches 12 researchers in one transaction and one of them launches 3 of its own, each with its own identity, account and budget; 15 pay at once without consensus; one suspension stops the whole tree and one resumption restarts it |
 | `tasks` | Task Charters: an eval orchestrator posts work from its budget; a result is paid only when it rests on the environment's claim and enough attested backing, and only once; a bounty is settled and another withdrawn; an exploit in the grader is proven and the lab is compensated from the vendor's bond |
+| `robots` | Memory for robots: two robots with their own identities and memory logs share a warehouse; a reader checks complete answers against the heads on the ledger; a rewrite is refused; a curator's refutation gives two readers two provable beliefs; an index that leaves an atom out is convicted; a camera frame is forgotten; a suspended robot's memory stops growing |
 | `market` | A GPU-hour market that clears at one price with an optimality certificate |
 | `receipts` | An AI inference receipt priced under three policies: trusting a TEE, distrusting it, or assuming it broken |
 | `x402` | An AI agent pays an HTTP API per request: `402`, payment under its charter, `200`; a replayed payment and an over-limit payment are refused |
@@ -42,8 +43,8 @@ Run one with `sion demo <name> --local`, except `light`, which needs a
 devnet that has already proven a Pulse ([light](#light) below).
 
 What follows is real output: the first five demos from one run of
-`sion demo all --local`, and the swarm, tasks, streams, censorship, light and
-staking demos from runs of their own on later versions, so chain identities
+`sion demo all --local`, and the swarm, tasks, robots, streams, censorship,
+light and staking demos from runs of their own on later versions, so chain identities
 differ between them. Account names such as `supplier` and `judge` are deterministic devnet
 wallets: anyone who knows the name can derive the keys.
 
@@ -146,6 +147,32 @@ those add up to the rule the lab fixed at posting, pays once, and keeps
 the lab's reliance backed until the reliance period ends; the red team is
 paid by the vendor for finding the exploit. See [Task
 Charters](../concepts/task-charters.md).
+
+## robots
+
+```text
+== Memory for robots: a warehouse two robots share, kept append-only by the ledger ==
+           fleet gives robot-alpha and robot-beta agent identities of their own
+           each robot opens a memory log only it can append to, tied to its identity; the curator opens one too
+Pulse  15  robot-alpha commits its log: pallet-17 seen in aisle 4. This Pulse is the observation's transaction time; the robot cannot backdate it
+Pulse  17  robot-beta commits its log: aisle 4 scanned 10 s later, empty
+           a reader asks robot-alpha for everything it recorded in aisle 4 during that minute: 1 atom, with a 263-byte proof checked against the head on the ledger
+           and for aisle 9: 0 atoms, with a proof that it recorded nothing there
+Pulse  19  robot-alpha tries to replace its observation with one in aisle 5: refused by the ledger: invalid transaction: the new head does not extend the log: invalid proof: equal sizes require equal roots
+Pulse  23  the curator records that the two robots disagree, then refutes robot-alpha's observation
+           a reader trusting the curator believes the observation refuted; one trusting only robot-alpha believes it accepted. Same evidence, two beliefs, each checked against the heads on the ledger
+Pulse  25  robot-beta commits 2 more scans, with an index that leaves out its scan of aisle 4 (the ledger stores index roots without checking them)
+           anyone holding that scan proves the omission from the head on the ledger alone, with a 517-byte fraud proof
+Pulse  27  robot-alpha stores a camera frame encrypted under its memory space's key (readable: true), then forgets it by destroying the key (readable: false); the log still proves the frame existed
+Pulse  29  fleet suspends robot-alpha; at Pulse 31 its next commit is refused by the ledger: charter caveat violated: charter suspended
+```
+
+The robots' atoms never touch the ledger: it holds each log's size, root
+and index root, and moves them only along proofs that the log grew. That
+is enough for a reader to check a complete answer, for the ledger to refuse
+a rewritten past, and for anyone to convict a robot whose index hides
+something it recorded. Belief is computed by the reader, under the reader's
+own policy. See [Memory for agents and robots](../concepts/memory.md).
 
 ## market
 

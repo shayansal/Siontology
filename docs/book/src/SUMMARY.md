@@ -56,6 +56,7 @@
 - [Charters for AI agents](guides/charters.md)
 - [Agent identities from the command line](guides/agents.md)
 - [Task Charters from the command line](guides/tasks.md)
+- [Memory from the command line](guides/memory.md)
 - [Markets and clearing](guides/markets.md)
 - [Forced inclusion and the censorship demo](guides/forced-inclusion.md)
 - [Staking and epochs](guides/staking.md)

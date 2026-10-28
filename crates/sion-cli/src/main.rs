@@ -246,6 +246,11 @@ enum Command {
     /// over, collect rewards, leave; set a validator's commission.
     #[command(subcommand)]
     Stake(sion_cli::stake::StakeCommand),
+    /// Memory logs for agents and robots: open a log, record atoms
+    /// locally, commit heads the ledger keeps append-only, and recall with
+    /// proofs of completeness.
+    #[command(subcommand)]
+    Memory(sion_cli::memory::MemoryCommand),
     /// Markets.
     #[command(subcommand)]
     Market(MarketCommand),
@@ -296,7 +301,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, swarm, tasks, market, receipts, x402, streams, censorship, light, staking or all.
+    /// Run a scripted demo: invoice, agents, swarm, tasks, robots, market, receipts, x402, streams, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -1210,6 +1215,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Agent(command) => sion_cli::agents::run(&mut session, ledger, command)?,
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
+        Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,
             agent,

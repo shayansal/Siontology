@@ -144,6 +144,22 @@ fn all_demos_run_and_tell_the_truth() {
             "tasks: missing {expected:?}:\n{text}"
         );
     }
+    for expected in [
+        "fleet gives robot-alpha and robot-beta agent identities of their own",
+        "everything it recorded in aisle 4 during that minute: 1 atom, with a",
+        "and for aisle 9: 0 atoms, with a proof that it recorded nothing there",
+        "robot-alpha tries to replace its observation with one in aisle 5: refused by the ledger",
+        "equal sizes require equal roots",
+        "a reader trusting the curator believes the observation refuted; one trusting only robot-alpha believes it accepted",
+        "anyone holding that scan proves the omission from the head on the ledger alone",
+        "(readable: true), then forgets it by destroying the key (readable: false)",
+        "its next commit is refused by the ledger: charter caveat violated: charter suspended",
+    ] {
+        assert!(
+            text.contains(expected),
+            "robots: missing {expected:?}:\n{text}"
+        );
+    }
     assert!(
         text.contains("this devnet has no standby validator"),
         "the staking demo explains what it needs: {text}"

@@ -76,15 +76,76 @@ log's size did not cover the atom, and at it, it did.
 
 **What the ledger does not check.** The index and manifest roots are
 stored as the writer gives them. A query proof is complete relative to the
-committed index; that the index matches the log is a trust atom
-(`impl:memory-index`) until fraud proofs for it are built.
+committed index. Anyone holding an atom the index leaves out can prove the
+omission from the head alone (an omission proof, built in the library), but
+the ledger does not yet act on such proofs, and other malformations of an
+index are caught only by rebuilding it, so that the index matches the log
+remains a trust atom (`impl:memory-index`).
+
+## Off the ledger: the `sion-memory` library
+
+- **Atoms** are integers only (millimetres, nanoseconds, permille), encoded
+  canonically and addressed by their hash, with seventeen kinds (the ten
+  agent memory kinds of Hotgraph plus observation, coverage, map tile,
+  pose, trajectory, transform and skill) and validation with documented
+  limits.
+- **The index** is a deterministic function of the log, specified in the
+  library's documentation so that another implementation can rebuild it
+  and compare roots: per frame, a forest of hourly Merkle R-trees for
+  short-lived atoms and one for long-lived ones, plus a map of claims by
+  subject and a map of links by target. A second implementation, written
+  from that specification alone, agrees with it on random logs.
+- **Proofs.** A range proof answers "everything this writer had recorded
+  in this box during this interval, as of this head" completely, an empty
+  answer included; subject and link proofs list every claim about a
+  subject or every revision of an atom; an omission proof convicts a
+  writer whose committed index leaves an atom out.
+- **Belief** is a fold over the revisions and conflicts written by the
+  revisers a reader trusts, as of a Pulse, with a bundle of proofs that
+  lets the reader check the fold from heads alone. A simulation's output is
+  never treated as fact.
+- **Sealing and forgetting.** Payloads can be encrypted under per-atom keys
+  derived from a memory space's epoch keys (ChaCha20-Poly1305), shared with
+  members by wrapping the epoch key to their ML-KEM-768 keys, and forgotten
+  by destroying the key; the commitment stays in the log. Members who
+  received a key must destroy their copy too: forgetting relies on them.
+- **The Reality Memory Protocol** (remember, recall, verify, revise,
+  forget, share, audit) over all of it.
+
+**Measured** (`cargo run --release -p sion-memory --example proof_sizes --
+1000000`, one core of an Intel Xeon at 2.10 GHz, a simulated 1 km × 1 km ×
+30 m warehouse over 30 days, mean of 25 queries per row, every answer
+verified and checked against a brute-force scan):
+
+| Query, over 10⁶ atoms | Results | Proof | Verify |
+|---|---|---|---|
+| 10 × 10 × 3 m, 1 hour | 0.2 | 15.9 KiB | 0.10 ms |
+| 50 × 50 × 10 m, 1 hour | 9 | 36.0 KiB | 0.21 ms |
+| 100 × 100 × 30 m, 6 hours | 169 | 154.7 KiB | 1.0 ms |
+| 200 × 200 × 30 m, 1 day | 1,711 | 548.6 KiB | 4.2 ms |
+
+Building the index over 10⁶ atoms took 0.78 s, with 325 MiB of memory at
+peak.
 
 ## In this implementation
 
 - **Built**: memory logs on the ledger, in both proof stacks (specification
   v1.9), with differential tests that run every operation and its failure
-  cases, and random commits, honest and forged, through both.
-- **Not built yet**: the library of atoms, the 4D index and its proofs,
-  belief folding, encryption of memory spaces, the command-line and MCP
-  interfaces, aggregators that commit many logs at once, curators of shared
-  world memory, and storage with proofs.
+  cases, and random commits, honest and forged, through both; the
+  `sion-memory` library above, with 84 tests; `sion memory open`,
+  `remember`, `commit`, `recall` and `show`
+  ([Memory from the command line](../guides/memory.md)); the MCP tools
+  `sion_memory_open`, `sion_memory_remember`, `sion_memory_commit` and
+  `sion_memory_recall`; and the `robots` demo, which runs agent
+  identities, memory logs and the library together on a devnet.
+- **Simplified**: the index is rebuilt from scratch for every head (under
+  a second at 10⁶ atoms, too slow for a robot checkpointing every few
+  seconds at that size); a log is held in memory, about 1 KB per atom; the
+  command line records claims only (revisions, conflicts, sealing and
+  forgetting are in the library and the demo).
+- **Not built yet**: compact fraud proofs for an index whose node summaries
+  are inconsistent (a reader detects it, but only a full rebuild proves
+  it); proving one field of an atom without revealing the rest;
+  aggregators that commit many logs at once; curated shared world memory
+  beyond the first building block (cell digests and their omission
+  proofs); storage with proofs.

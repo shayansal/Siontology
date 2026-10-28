@@ -2350,6 +2350,425 @@ pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     Ok(())
 }
 
+/// Commits `memory`'s whole log to its ledger object `log`, with a proof
+/// that it extends the head the ledger holds; records the commit.
+fn commit_memory(
+    session: &mut Session<'_>,
+    writer: &str,
+    log: ObjectId,
+    memory: &mut sion_memory::Memory,
+    history: &mut sion_memory::CommitHistory,
+    index: Option<sion_core::hash::Hash32>,
+) -> Result<TxView, CliError> {
+    let on_chain = crate::memory::committed(session.ledger, &log)?;
+    let head = memory.head();
+    let proof = memory
+        .log()
+        .consistency_proof(on_chain.size)
+        .map_err(|e| CliError::Protocol(e.to_string()))?;
+    let reference = session.reference(&log)?;
+    let view = session.send(
+        writer,
+        TxKind::CommitMemory {
+            size: head.size,
+            root: head.root,
+            index: index.unwrap_or(head.index_root),
+            manifest: sion_core::hash::Hash32::ZERO,
+            proof,
+            seal: false,
+        },
+        vec![reference],
+    )?;
+    if view.status == ExecStatus::Success {
+        history
+            .push(sion_memory::Commit {
+                pulse: view.pulse,
+                size: head.size,
+            })
+            .map_err(|e| CliError::Protocol(e.to_string()))?;
+    }
+    Ok(view)
+}
+
+/// The head the ledger holds for a memory log, as a reader sees it.
+fn ledger_head(session: &Session<'_>, log: &ObjectId) -> Result<sion_memory::Head, CliError> {
+    let state = crate::memory::committed(session.ledger, log)?;
+    Ok(sion_memory::Head {
+        size: state.size,
+        root: state.root,
+        index_root: state.index,
+    })
+}
+
+/// Memory for robots: two robots share a warehouse, each with its own
+/// identity and memory log; the ledger keeps the logs append-only and
+/// attests when each atom was recorded; readers check complete answers,
+/// fold beliefs under their own policies, convict an index that leaves an
+/// atom out, and see a camera frame forgotten.
+pub fn robots(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use sion_memory::{
+        prove_belief, prove_omission, verify_belief, verify_omission, AtomClass as MemoryClass,
+        BeliefPolicy, BeliefState, Box3, CommitHistory, ConflictKind, ForgetRequest, FrameId,
+        Interval, Memory, MemoryIndex, MemoryKind, PayloadRequest, RangeQuery, RecallRequest,
+        RememberRequest, ReviseRequest, ReviserHead, ReviserLog, Space, Statement, TimeRange,
+        Value as Fact,
+    };
+    const SECOND: u64 = 1_000_000_000;
+    let fail = |e: sion_memory::MemoryError| CliError::Protocol(e.to_string());
+    out.say(
+        "== Memory for robots: a warehouse two robots share, kept append-only by the ledger ==",
+    );
+    fund_all(
+        session,
+        &[
+            ("fleet", AssetId::usd(), usd(50)),
+            ("robot-alpha", AssetId::usd(), usd(5)),
+            ("robot-beta", AssetId::usd(), usd(5)),
+            ("curator", AssetId::usd(), usd(5)),
+        ],
+    )?;
+    let fleet = session.id("fleet");
+    let (alpha, beta, curator) = (
+        session.id("robot-alpha"),
+        session.id("robot-beta"),
+        session.id("curator"),
+    );
+
+    // 1. Each robot gets an agent identity of its own (v1.8).
+    let mut charters = Vec::new();
+    for (name, robot) in [("robot-alpha", alpha), ("robot-beta", beta)] {
+        let mut caveats = charter_caveats(fleet);
+        caveats.payees = None;
+        let view = session.must(
+            "fleet",
+            TxKind::RegisterAgent {
+                agent: robot,
+                card: sion_exec::charter::card_commitment(
+                    format!(r#"{{"name":"{name}","role":"warehouse robot"}}"#).as_bytes(),
+                ),
+                caveats,
+                funding: usd(1),
+                agent_bond: Amount::ZERO,
+            },
+            Vec::new(),
+        )?;
+        let charter = find(&view, |e| match e {
+            Event::AgentRegistered { agent, .. } => Some(*agent),
+            _ => None,
+        })?;
+        charters.push(charter);
+    }
+    out.say("           fleet gives robot-alpha and robot-beta agent identities of their own");
+
+    // 2. Each opens a memory log tied to its identity; the curator a plain one.
+    let mut logs = Vec::new();
+    for (name, agent) in [
+        ("robot-alpha", Some(charters[0])),
+        ("robot-beta", Some(charters[1])),
+        ("curator", None),
+    ] {
+        let view = session.must(
+            name,
+            TxKind::OpenMemory {
+                agent,
+                policy: sion_core::hash::Hash32::ZERO,
+            },
+            Vec::new(),
+        )?;
+        logs.push(find(&view, |e| match e {
+            Event::MemoryOpened { log, .. } => Some(*log),
+            _ => None,
+        })?);
+    }
+    let (log_a, log_b, log_c) = (logs[0], logs[1], logs[2]);
+    out.say("           each robot opens a memory log only it can append to, tied to its identity; the curator opens one too");
+
+    // 3. Alpha sees pallet 17 in aisle 4; Beta scans the aisle later and finds it empty.
+    let warehouse = FrameId::named("warehouse-3");
+    let aisle = Box3::new([40_000, 10_000, 0], [42_000, 12_000, 3_000]);
+    let t0 = 1_790_812_800 * SECOND;
+    let mut rng = sion_core::rng::seeded(2026);
+    let (mut a, mut b, mut c) = (
+        Memory::in_memory(alpha),
+        Memory::in_memory(beta),
+        Memory::in_memory(curator),
+    );
+    let (mut ha, mut hb, mut hc) = (
+        CommitHistory::default(),
+        CommitHistory::default(),
+        CommitHistory::default(),
+    );
+    let mut seen = RememberRequest::new(
+        MemoryKind::Observation,
+        MemoryClass::Observation,
+        Statement::claim("pallet-17", "at", Fact::Entity("aisle-4".into())),
+        Interval::closed(t0, t0 + 30 * SECOND),
+        t0,
+    );
+    seen.space = Some(Space {
+        frame: warehouse,
+        bbox: Box3::around([41_000, 11_000, 500], [600, 400, 500]),
+        uncertainty_mm: 50,
+    });
+    seen.confidence = 900;
+    let pallet_seq = a.remember(seen, &mut rng).map_err(fail)?.seq;
+    let pallet = a
+        .log()
+        .atom(pallet_seq)
+        .cloned()
+        .ok_or_else(|| CliError::Protocol("the observation is missing".into()))?;
+    let mut scan = RememberRequest::new(
+        MemoryKind::Coverage,
+        MemoryClass::Observation,
+        Statement::claim("aisle-4", "occupied", Fact::Boolean(false)),
+        Interval::closed(t0 + 10 * SECOND, t0 + 40 * SECOND),
+        t0 + 10 * SECOND,
+    );
+    scan.space = Some(Space {
+        frame: warehouse,
+        bbox: aisle,
+        uncertainty_mm: 50,
+    });
+    let empty_seq = b.remember(scan, &mut rng).map_err(fail)?.seq;
+    let empty = b
+        .log()
+        .atom(empty_seq)
+        .cloned()
+        .ok_or_else(|| CliError::Protocol("the scan is missing".into()))?;
+    let view = commit_memory(session, "robot-alpha", log_a, &mut a, &mut ha, None)?;
+    out.say(format!(
+        "Pulse {:>3}  robot-alpha commits its log: pallet-17 seen in aisle 4. This Pulse is the observation's transaction time; the robot cannot backdate it",
+        view.pulse
+    ));
+    let view = commit_memory(session, "robot-beta", log_b, &mut b, &mut hb, None)?;
+    out.say(format!(
+        "Pulse {:>3}  robot-beta commits its log: aisle 4 scanned 10 s later, empty",
+        view.pulse
+    ));
+
+    // 4. A reader asks Alpha, and checks the answer against the head on the ledger.
+    let head_a = ledger_head(session, &log_a)?;
+    let request = RecallRequest::Range(RangeQuery::new(
+        warehouse,
+        aisle,
+        TimeRange::new(t0, t0 + 60 * SECOND),
+    ));
+    let answer = a.recall(&request).map_err(fail)?;
+    let atoms = Memory::verify(&head_a, &request, &answer).map_err(fail)?;
+    let proof_bytes = match &answer.proof {
+        sion_memory::RecallProof::Range { proof, .. } => sion_core::encode::encode(proof).len(),
+        _ => 0,
+    };
+    out.say(format!(
+        "           a reader asks robot-alpha for everything it recorded in aisle 4 during that minute: {} atom, with a {proof_bytes}-byte proof checked against the head on the ledger",
+        atoms.len()
+    ));
+    let elsewhere = RecallRequest::Range(RangeQuery::new(
+        warehouse,
+        Box3::new([80_000, 10_000, 0], [82_000, 12_000, 3_000]),
+        TimeRange::new(t0, t0 + 60 * SECOND),
+    ));
+    let nothing = a.recall(&elsewhere).map_err(fail)?;
+    let none = Memory::verify(&head_a, &elsewhere, &nothing).map_err(fail)?;
+    out.say(format!(
+        "           and for aisle 9: {} atoms, with a proof that it recorded nothing there",
+        none.len()
+    ));
+
+    // 5. Alpha tries to rewrite what it committed.
+    let mut rewritten = Memory::in_memory(alpha);
+    let mut denial = RememberRequest::new(
+        MemoryKind::Observation,
+        MemoryClass::Observation,
+        Statement::claim("pallet-17", "at", Fact::Entity("aisle-5".into())),
+        Interval::closed(t0, t0 + 30 * SECOND),
+        t0,
+    );
+    denial.space = Some(Space {
+        frame: warehouse,
+        bbox: Box3::around([51_000, 11_000, 500], [600, 400, 500]),
+        uncertainty_mm: 50,
+    });
+    rewritten.remember(denial, &mut rng).map_err(fail)?;
+    let forged_head = rewritten.head();
+    let reference = session.reference(&log_a)?;
+    let view = session.send(
+        "robot-alpha",
+        TxKind::CommitMemory {
+            size: forged_head.size,
+            root: forged_head.root,
+            index: forged_head.index_root,
+            manifest: sion_core::hash::Hash32::ZERO,
+            proof: Vec::new(),
+            seal: false,
+        },
+        vec![reference],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  robot-alpha tries to replace its observation with one in aisle 5: {}",
+        view.pulse,
+        refusal(&view)
+    ));
+
+    // 6. The curator records the disagreement, then decides for Beta.
+    let mut conflict = RememberRequest::new(
+        MemoryKind::WorldState,
+        MemoryClass::Conflict,
+        Statement::conflict([pallet.id(), empty.id()], ConflictKind::Existence),
+        Interval::starting(t0 + 20 * SECOND),
+        t0 + 20 * SECOND,
+    );
+    conflict.confidence = 1_000;
+    c.remember(conflict, &mut rng).map_err(fail)?;
+    commit_memory(session, "curator", log_c, &mut c, &mut hc, None)?;
+    c.revise(ReviseRequest {
+        targets: vec![pallet.id()],
+        state: BeliefState::Refuted,
+        end_valid: None,
+        reason: "robot-beta's scan is later and covers the whole aisle".into(),
+        at: t0 + 40 * SECOND,
+    })
+    .map_err(fail)?;
+    let view = commit_memory(session, "curator", log_c, &mut c, &mut hc, None)?;
+    out.say(format!(
+        "Pulse {:>3}  the curator records that the two robots disagree, then refutes robot-alpha's observation",
+        view.pulse
+    ));
+    let curated = BeliefPolicy::new([alpha, beta, curator]);
+    let alpha_only = BeliefPolicy::only(alpha);
+    let snapshot = [
+        (a.log().clone(), ha.clone(), log_a),
+        (b.log().clone(), hb.clone(), log_b),
+        (c.log().clone(), hc.clone(), log_c),
+    ];
+    let revisers: Vec<ReviserLog<'_>> = snapshot
+        .iter()
+        .map(|(log, commits, _)| ReviserLog { log, commits })
+        .collect();
+    let mut heads = Vec::new();
+    for (log, commits, object) in &snapshot {
+        heads.push(ReviserHead {
+            writer: log.writer(),
+            head: ledger_head(session, object)?,
+            commits: commits.clone(),
+        });
+    }
+    let mut beliefs = Vec::new();
+    for policy in [&curated, &alpha_only] {
+        let bundle = prove_belief(&pallet, policy, &revisers).map_err(fail)?;
+        let belief = verify_belief(&pallet, policy, &heads, &bundle).map_err(fail)?;
+        beliefs.push(format!("{:?}", belief.state).to_lowercase());
+    }
+    out.say(format!(
+        "           a reader trusting the curator believes the observation {}; one trusting only robot-alpha believes it {}. Same evidence, two beliefs, each checked against the heads on the ledger",
+        beliefs[0], beliefs[1]
+    ));
+
+    // 7. Beta commits a head whose index leaves its scan out.
+    for (n, aisle_x) in [(1u64, 60_000i64), (2, 70_000)] {
+        let mut more = RememberRequest::new(
+            MemoryKind::Coverage,
+            MemoryClass::Observation,
+            Statement::claim(format!("aisle-{}", 5 + n), "occupied", Fact::Boolean(false)),
+            Interval::closed(t0 + (40 + 10 * n) * SECOND, t0 + (70 + 10 * n) * SECOND),
+            t0 + (40 + 10 * n) * SECOND,
+        );
+        more.space = Some(Space {
+            frame: warehouse,
+            bbox: Box3::new([aisle_x, 10_000, 0], [aisle_x + 2_000, 12_000, 3_000]),
+            uncertainty_mm: 50,
+        });
+        b.remember(more, &mut rng).map_err(fail)?;
+    }
+    let forged = MemoryIndex::forge_omitting(b.log().atoms(), &[empty_seq].into_iter().collect())
+        .map_err(fail)?;
+    let view = commit_memory(
+        session,
+        "robot-beta",
+        log_b,
+        &mut b,
+        &mut hb,
+        Some(forged.root()),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  robot-beta commits 2 more scans, with an index that leaves out its scan of aisle 4 (the ledger stores index roots without checking them)",
+        view.pulse
+    ));
+    let head_b = ledger_head(session, &log_b)?;
+    let fraud = prove_omission(b.log(), head_b.size, &forged, empty_seq)
+        .map_err(fail)?
+        .ok_or_else(|| CliError::Protocol("no omission found".into()))?;
+    verify_omission(&head_b, &fraud).map_err(fail)?;
+    out.say(format!(
+        "           anyone holding that scan proves the omission from the head on the ledger alone, with a {}-byte fraud proof",
+        sion_core::encode::encode(&fraud).len()
+    ));
+
+    // 8. A camera frame, sealed, then forgotten.
+    let key = a
+        .new_epoch_key(
+            hash_domain("demo/space", b"warehouse-3 cameras"),
+            0,
+            &mut rng,
+        )
+        .map_err(fail)?;
+    let mut frame = RememberRequest::new(
+        MemoryKind::Observation,
+        MemoryClass::Observation,
+        Statement::Content(hash_domain("demo/frame", b"camera 2, frame 4411")),
+        Interval::closed(t0 + 50 * SECOND, t0 + 50 * SECOND + 1),
+        t0 + 50 * SECOND,
+    );
+    frame.payload = PayloadRequest::Sealed {
+        key,
+        plaintext: b"jpeg bytes of a face".to_vec(),
+    };
+    let frame_seq = a.remember(frame, &mut rng).map_err(fail)?.seq;
+    let frame_atom = a
+        .log()
+        .atom(frame_seq)
+        .cloned()
+        .ok_or_else(|| CliError::Protocol("the frame is missing".into()))?;
+    let readable = a.open_payload(&frame_atom).is_ok();
+    a.forget(ForgetRequest {
+        key,
+        at: t0 + 60 * SECOND,
+    })
+    .map_err(fail)?;
+    let view = commit_memory(session, "robot-alpha", log_a, &mut a, &mut ha, None)?;
+    out.say(format!(
+        "Pulse {:>3}  robot-alpha stores a camera frame encrypted under its memory space's key (readable: {readable}), then forgets it by destroying the key (readable: {}); the log still proves the frame existed",
+        view.pulse,
+        a.open_payload(&frame_atom).is_ok()
+    ));
+
+    // 9. Containment reaches memory.
+    let view = session.must(
+        "fleet",
+        TxKind::SuspendAgent {
+            charter: charters[0],
+        },
+        Vec::new(),
+    )?;
+    let mut note = RememberRequest::new(
+        MemoryKind::Episodic,
+        MemoryClass::AgentMemory,
+        Statement::claim("robot-alpha", "status", Fact::Text("suspended".into())),
+        Interval::starting(t0 + 70 * SECOND),
+        t0 + 70 * SECOND,
+    );
+    note.confidence = 1_000;
+    a.remember(note, &mut rng).map_err(fail)?;
+    let after = commit_memory(session, "robot-alpha", log_a, &mut a, &mut ha, None)?;
+    out.say(format!(
+        "Pulse {:>3}  fleet suspends robot-alpha; at Pulse {} its next commit is {}",
+        view.pulse,
+        after.pulse,
+        refusal(&after)
+    ));
+    Ok(())
+}
+
 fn refusal(view: &TxView) -> String {
     match &view.status {
         ExecStatus::Failed(reason) => format!("refused by the ledger: {reason}"),
@@ -2357,11 +2776,12 @@ fn refusal(view: &TxView) -> String {
     }
 }
 
-pub const ALL: [&str; 11] = [
+pub const ALL: [&str; 12] = [
     "invoice",
     "agents",
     "swarm",
     "tasks",
+    "robots",
     "market",
     "receipts",
     "x402",
@@ -2371,14 +2791,15 @@ pub const ALL: [&str; 11] = [
     "staking",
 ];
 
-/// Runs a named demo (`invoice`, `agents`, `swarm`, `tasks`, `market`, `receipts`,
-/// `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
+/// Runs a named demo (`invoice`, `agents`, `swarm`, `tasks`, `robots`, `market`,
+/// `receipts`, `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
         "agents" => agents(session, out),
         "swarm" => swarm(session, out),
         "tasks" => tasks(session, out),
+        "robots" => robots(session, out),
         "market" => market(session, out),
         "receipts" => receipts(session, out),
         "light" => light(session, out),
@@ -2396,7 +2817,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             Ok(())
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, swarm, tasks, market, receipts, x402, streams, censorship, light, staking or all"
+            "unknown demo {other:?}; try invoice, agents, swarm, tasks, robots, market, receipts, x402, streams, censorship, light, staking or all"
         ))),
     }
 }

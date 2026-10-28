@@ -952,6 +952,7 @@ dependencies = [
  "sion-da",
  "sion-exec",
  "sion-light",
+ "sion-memory",
  "sion-node",
  "sion-prover",
  "sion-spec",
