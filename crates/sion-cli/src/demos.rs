@@ -2769,6 +2769,321 @@ pub fn robots(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
     Ok(())
 }
 
+/// Storage for agents (spec v1.12): a robot pays devices to keep the
+/// archive of its memory log and its camera footage, and to prove every
+/// round that they still hold them; a provider that kept only half of what
+/// it promised is caught by the challenges and loses its collateral.
+pub fn storage(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use crate::storage::{deal, storage_dir, Provider, ProviderPolicy, Store};
+    use sion_exec::storage::{challenge_index, current_round, DataTree, DealState, ABANDON_ROUNDS};
+    use sion_memory::{
+        AtomClass as MemoryClass, Box3, FrameId, Interval, Memory, MemoryKind, RememberRequest,
+        Space, Statement, Value as Fact,
+    };
+    const SECOND: u64 = 1_000_000_000;
+    const ROUNDS: u32 = 6;
+    const ROUND_LENGTH: u64 = 12;
+    let fail = |e: sion_memory::MemoryError| CliError::Protocol(e.to_string());
+    let io = |e: std::io::Error| CliError::Usage(e.to_string());
+    let ledger = session.ledger;
+    out.say(
+        "== Storage for agents: a robot's memory kept by devices it pays, proven every round ==",
+    );
+    fund_all(
+        session,
+        &[
+            ("robot-gamma", AssetId::usd(), usd(40)),
+            ("laptop", AssetId::usd(), usd(10)),
+            ("phone", AssetId::usd(), usd(10)),
+        ],
+    )?;
+    let robot = session.id("robot-gamma");
+    let phone_account = session.id("phone");
+
+    // 1. A patrol's worth of memory, committed with its archive's root as
+    //    the manifest.
+    let mut memory = Memory::in_memory(robot);
+    let mut rng = sion_core::rng::seeded(12);
+    let t0 = 1_790_812_800 * SECOND;
+    for i in 0..400u64 {
+        let mut seen = RememberRequest::new(
+            MemoryKind::Observation,
+            MemoryClass::Observation,
+            Statement::claim(
+                format!("shelf-{}", i % 40),
+                "stock",
+                Fact::Integer(i128::from(i * 7 % 100)),
+            ),
+            Interval::closed(t0 + i * SECOND, t0 + (i + 1) * SECOND),
+            t0 + i * SECOND,
+        );
+        seen.space = Some(Space {
+            frame: FrameId::named("warehouse-3"),
+            bbox: Box3::around([1_000 * (i % 40) as i64, 5_000, 1_000], [300, 300, 300]),
+            uncertainty_mm: 20,
+        });
+        memory.remember(seen, &mut rng).map_err(fail)?;
+    }
+    let archive = sion_core::encode::encode(&memory.log().atoms().to_vec());
+    let archive_tree = DataTree::of_data(&archive);
+    let dir = storage_dir().join("robot-gamma");
+    std::fs::create_dir_all(&dir).map_err(io)?;
+    let archive_path = dir.join("patrol-archive.bin");
+    std::fs::write(&archive_path, &archive).map_err(io)?;
+    let opened = session.must(
+        "robot-gamma",
+        TxKind::OpenMemory {
+            agent: None,
+            policy: sion_core::hash::Hash32::ZERO,
+        },
+        Vec::new(),
+    )?;
+    let log = find(&opened, |e| match e {
+        Event::MemoryOpened { log, .. } => Some(*log),
+        _ => None,
+    })?;
+    let head = memory.head();
+    let proof = memory
+        .log()
+        .consistency_proof(0)
+        .map_err(|e| CliError::Protocol(e.to_string()))?;
+    let reference = session.reference(&log)?;
+    let view = session.must(
+        "robot-gamma",
+        TxKind::CommitMemory {
+            size: head.size,
+            root: head.root,
+            index: head.index_root,
+            manifest: archive_tree.root(),
+            proof,
+            seal: false,
+        },
+        vec![reference],
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  robot-gamma commits 400 observations of a patrol; the head's manifest is the root of their archive ({} KiB, {} leaves of at most 4 KiB)",
+        view.pulse,
+        archive.len() / 1024,
+        archive_tree.size()
+    ));
+
+    // 2. Two deals: the archive for any provider, the camera footage for
+    //    the phone.
+    let camera: Vec<u8> = {
+        let mut bytes = vec![0u8; 64 * 1024];
+        rand_core::RngCore::fill_bytes(&mut rng, &mut bytes);
+        bytes
+    };
+    let camera_tree = DataTree::of_data(&camera);
+    let camera_path = dir.join("camera.bin");
+    std::fs::write(&camera_path, &camera).map_err(io)?;
+    let accept_by = Pulse(ledger.pulse()?.0 + 60);
+    let locator = |path: &std::path::Path| -> Result<String, CliError> {
+        Ok(format!(
+            "file://{}",
+            std::fs::canonicalize(path).map_err(io)?.display()
+        ))
+    };
+    let view = session.must(
+        "robot-gamma",
+        TxKind::PostDeal {
+            root: archive_tree.root(),
+            size: archive_tree.size(),
+            challenges: 4,
+            price: Amount(500_000),
+            rounds: ROUNDS,
+            round_length: ROUND_LENGTH,
+            collateral: usd(3),
+            provider: None,
+            accept_by,
+            locator: locator(&archive_path)?,
+        },
+        Vec::new(),
+    )?;
+    let archive_deal = find(&view, |e| match e {
+        Event::DealPosted { deal, .. } => Some(*deal),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  robot-gamma posts an open deal for the archive: 6 rounds of 12 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral",
+        view.pulse
+    ));
+    let view = session.must(
+        "robot-gamma",
+        TxKind::PostDeal {
+            root: camera_tree.root(),
+            size: camera_tree.size(),
+            challenges: 4,
+            price: Amount(500_000),
+            rounds: ROUNDS,
+            round_length: ROUND_LENGTH,
+            collateral: usd(3),
+            provider: Some(phone_account),
+            accept_by,
+            locator: locator(&camera_path)?,
+        },
+        Vec::new(),
+    )?;
+    let camera_deal = find(&view, |e| match e {
+        Event::DealPosted { deal, .. } => Some(*deal),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  and a deal for its camera footage ({} leaves) with the phone, on the same terms",
+        view.pulse,
+        camera_tree.size()
+    ));
+
+    // 3. The devices: the laptop takes open deals; the phone only its own.
+    let mut laptop = Provider::new(
+        "laptop",
+        Store::new(storage_dir().join("laptop")),
+        ProviderPolicy::default(),
+    );
+    let mut phone = Provider::new(
+        "phone",
+        Store::new(storage_dir().join("phone")),
+        ProviderPolicy {
+            accept_open: false,
+            ..ProviderPolicy::default()
+        },
+    );
+    out.say("           a laptop and a phone run providers: each fetches a deal's data from its locator, checks it hashes to the deal's root, posts the collateral, then proves every round");
+    for line in laptop.tick(session, ledger)? {
+        out.say(format!("           laptop: {line}"));
+    }
+    for line in phone.tick(session, ledger)? {
+        out.say(format!("           phone:  {line}"));
+    }
+    if !matches!(deal(ledger, archive_deal)?.state, DealState::Active { .. })
+        || !matches!(deal(ledger, camera_deal)?.state, DealState::Active { .. })
+    {
+        return Err(CliError::Protocol("the providers did not accept".into()));
+    }
+    // The phone keeps only the first half of the footage, to save space.
+    let half = camera_tree.size() / 2;
+    std::fs::write(
+        storage_dir()
+            .join("phone")
+            .join(format!("{}.bin", camera_deal.0.to_hex())),
+        &camera[..(half as usize) * sion_exec::storage::MAX_LEAF_BYTES],
+    )
+    .map_err(io)?;
+    out.say(format!(
+        "           the phone then quietly keeps only leaves 0 to {} of the footage, to save space: the deal still pays it, as long as nobody asks for the rest",
+        half - 1
+    ));
+
+    // 4. Rounds: both providers prove when they can; the robot closes a
+    //    deal abandoned for three rounds.
+    let custody_of = |id: ObjectId| -> Result<Option<sion_exec::storage::Custody>, CliError> {
+        let DealState::Active { custody, .. } = deal(ledger, id)?.state else {
+            return Ok(None);
+        };
+        Ok(match ledger.object(custody)?.map(|o| o.data) {
+            Some(ObjectData::Custody(record)) => Some(record),
+            _ => None,
+        })
+    };
+    let mut announced = None;
+    let deadline = ledger.pulse()?.0 + u64::from(ROUNDS) * ROUND_LENGTH + 40;
+    loop {
+        if let Some(record) = custody_of(camera_deal)? {
+            let next = Pulse(ledger.pulse()?.0 + 1);
+            if let Some(round) = current_round(record.start, record.round_length, next) {
+                if round < u64::from(ROUNDS)
+                    && announced != Some(round)
+                    && round >= u64::from(record.next)
+                {
+                    announced = Some(round);
+                    let picks: Vec<u64> = (0..record.challenges)
+                        .map(|k| challenge_index(&record.seed, round as u32, k, record.size))
+                        .collect();
+                    let missing = picks.iter().filter(|&&i| i >= half).count();
+                    out.say(format!(
+                        "           round {round}: the phone is asked for leaves {picks:?}; {}",
+                        if missing == 0 {
+                            "all in the half it kept, so it answers this time".to_string()
+                        } else {
+                            format!("it lost {missing} of them and cannot answer")
+                        }
+                    ));
+                }
+            }
+        }
+        for line in laptop.tick(session, ledger)? {
+            out.say(format!("           laptop: {line}"));
+        }
+        for line in phone.tick(session, ledger)? {
+            out.say(format!("           phone:  {line}"));
+        }
+        let pulse = ledger.pulse()?;
+        let camera_state = deal(ledger, camera_deal)?;
+        if let (DealState::Active { start, .. }, Some(record)) =
+            (&camera_state.state, custody_of(camera_deal)?)
+        {
+            let round = current_round(*start, camera_state.round_length, Pulse(pulse.0 + 1));
+            let ended = camera_state.end().is_some_and(|end| pulse.0 + 1 >= end.0);
+            let abandoned = round.is_some_and(|r| {
+                r < u64::from(ROUNDS) && r >= u64::from(record.next) + u64::from(ABANDON_ROUNDS)
+            });
+            if ended || abandoned {
+                let view = session.must(
+                    "robot-gamma",
+                    TxKind::CloseDeal { deal: camera_deal },
+                    Vec::new(),
+                )?;
+                let (refund, paid, forfeited, missed) = find(&view, |e| match e {
+                    Event::DealClosed {
+                        refund,
+                        paid,
+                        forfeited,
+                        missed,
+                        ..
+                    } => Some((*refund, *paid, *forfeited, *missed)),
+                    _ => None,
+                })?;
+                out.say(format!(
+                    "Pulse {:>3}  robot-gamma closes the footage deal ({}): {missed} round(s) missed; {refund} USD of escrow back, {paid} USD paid for what the phone proved, its collateral of {forfeited} USD forfeited to the treasury",
+                    view.pulse,
+                    if abandoned { "abandoned" } else { "ended" }
+                ));
+            }
+        }
+        let archive_closed = matches!(deal(ledger, archive_deal)?.state, DealState::Closed { .. });
+        let camera_closed = matches!(deal(ledger, camera_deal)?.state, DealState::Closed { .. });
+        if archive_closed && camera_closed {
+            break;
+        }
+        if pulse.0 > deadline {
+            return Err(CliError::Protocol("the deals did not close in time".into()));
+        }
+        session.wait_pulses(1)?;
+    }
+
+    // 5. What it came to.
+    let DealState::Closed { proven, missed, .. } = deal(ledger, archive_deal)?.state else {
+        return Err(CliError::Protocol("the archive deal is not closed".into()));
+    };
+    out.say(format!(
+        "           the laptop proved {proven} of {ROUNDS} rounds ({missed} missed): paid {} USD and its collateral returned; it kept the archive the whole time",
+        Amount(500_000 * u128::from(proven))
+    ));
+    let state = crate::memory::committed(ledger, &log)?;
+    out.say(format!(
+        "           a reader checks two objects on the ledger: robot-gamma's memory head names manifest {}, and the deal the laptop proved commits to root {}: {}",
+        state.manifest.short(),
+        archive_tree.root().short(),
+        if state.manifest == archive_tree.root() {
+            "the memory the robot committed is the data that was kept"
+        } else {
+            "they differ"
+        }
+    ));
+    out.say("           what a proof shows: the provider could produce the challenged leaves during the round; not that it stores its own copy (no proof of replication)");
+    Ok(())
+}
+
 fn refusal(view: &TxView) -> String {
     match &view.status {
         ExecStatus::Failed(reason) => format!("refused by the ledger: {reason}"),
@@ -2776,12 +3091,13 @@ fn refusal(view: &TxView) -> String {
     }
 }
 
-pub const ALL: [&str; 12] = [
+pub const ALL: [&str; 13] = [
     "invoice",
     "agents",
     "swarm",
     "tasks",
     "robots",
+    "storage",
     "market",
     "receipts",
     "x402",
@@ -2791,7 +3107,7 @@ pub const ALL: [&str; 12] = [
     "staking",
 ];
 
-/// Runs a named demo (`invoice`, `agents`, `swarm`, `tasks`, `robots`, `market`,
+/// Runs a named demo (`invoice`, `agents`, `swarm`, `tasks`, `robots`, `storage`, `market`,
 /// `receipts`, `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
@@ -2800,6 +3116,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
         "swarm" => swarm(session, out),
         "tasks" => tasks(session, out),
         "robots" => robots(session, out),
+        "storage" => storage(session, out),
         "market" => market(session, out),
         "receipts" => receipts(session, out),
         "light" => light(session, out),
@@ -2817,7 +3134,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             Ok(())
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, swarm, tasks, robots, market, receipts, x402, streams, censorship, light, staking or all"
+            "unknown demo {other:?}; try invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all"
         ))),
     }
 }

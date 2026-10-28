@@ -84,6 +84,7 @@ Commands:
   task       Task Charters: escrow work whose acceptance rule is fixed when it is posted; attest, submit and settle results; cancel
   stake      Pooled stake: delegate to a validator without handing the stake over, collect rewards, leave; set a validator's commission
   memory     Memory logs for agents and robots: open a log, record atoms locally, commit heads the ledger keeps append-only, and recall with proofs of completeness
+  storage    Storage deals: have data kept by a provider who proves every round that it still holds it, or provide storage and be paid for it
   market     Markets
   stream     Payment streams: escrow once, pay per request with one hash each, settle thousands of payments in one transaction
   tx         A transaction's status and effects
@@ -91,7 +92,7 @@ Commands:
   pulse      A Pulse's header, certificate and summary
   events     Recent events
   verify     Verify a Pulse as a light client
-  demo       Run a scripted demo: invoice, agents, swarm, tasks, robots, market, receipts, x402, streams, censorship, light, staking or all
+  demo       Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
   mcp        Serve the Model Context Protocol on stdio (for AI agents)
   x402       Sell or buy HTTP resources with x402 (HTTP 402 payments settled on Siontology)
   bench      Measure primitives, execution, proving, clearing and a devnet
@@ -1237,6 +1238,188 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion storage`
+
+```text
+Storage deals: have data kept by a provider who proves every round that it still holds it, or provide storage and be paid for it
+
+Usage: sion storage [OPTIONS] <COMMAND>
+
+Commands:
+  prepare  Split a file into leaves and print the root a deal would commit to
+  post     Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
+  deals    List storage deals
+  show     One deal: its terms, its state and its provider's progress
+  accept   Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
+  prove    Prove the round under way for every deal you hold
+  settle   Collect for the rounds you proved
+  close    Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
+  serve    Run a provider: accept open deals whose data you can fetch, prove every round, collect and close, every second until stopped
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Storage from the command line](../guides/storage.md).
+
+## `sion storage prepare`
+
+```text
+Split a file into leaves and print the root a deal would commit to
+
+Usage: sion storage prepare [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  The file
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage post`
+
+```text
+Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
+
+Usage: sion storage post [OPTIONS] --price <PRICE> --rounds <ROUNDS> <FROM> <FILE>
+
+Arguments:
+  <FROM>  Your wallet (the client)
+  <FILE>  The file to have kept
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --price <PRICE>                  Paid per proven round (decimal USD)
+      --rounds <ROUNDS>                Rounds
+      --round-length <ROUND_LENGTH>    Pulses per round (at least 8) [default: 20]
+      --collateral <COLLATERAL>        Collateral the provider must post (decimal USD) [default: 0]
+      --challenges <CHALLENGES>        Leaves challenged per round (1 to 16) [default: 4]
+      --provider <PROVIDER>            The provider (wallet name or account); without it, anyone may accept
+      --accept-within <ACCEPT_WITHIN>  How many Pulses the deal stays open for acceptance [default: 200]
+      --locator <LOCATOR>              Where providers fetch the data (default: file://<the file>)
+  -h, --help                           Print help
+```
+
+## `sion storage deals`
+
+```text
+List storage deals
+
+Usage: sion storage deals [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --open         Only deals still open for acceptance
+  -h, --help         Print help
+```
+
+## `sion storage show`
+
+```text
+One deal: its terms, its state and its provider's progress
+
+Usage: sion storage show [OPTIONS] <DEAL>
+
+Arguments:
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage accept`
+
+```text
+Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
+
+Usage: sion storage accept [OPTIONS] <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --file <FILE>  Take the data from this file instead of the locator
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage prove`
+
+```text
+Prove the round under way for every deal you hold
+
+Usage: sion storage prove [OPTIONS] <FROM>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage settle`
+
+```text
+Collect for the rounds you proved
+
+Usage: sion storage settle [OPTIONS] <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage close`
+
+```text
+Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
+
+Usage: sion storage close [OPTIONS] <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion storage serve`
+
+```text
+Run a provider: accept open deals whose data you can fetch, prove every round, collect and close, every second until stopped
+
+Usage: sion storage serve [OPTIONS] <FROM>
+
+Arguments:
+  <FROM>  Your wallet (the provider)
+
+Options:
+      --min-price <MIN_PRICE>
+          Accept only deals paying at least this per round (decimal USD) [default: 0.000001]
+      --node <NODE>
+          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --max-collateral <MAX_COLLATERAL>
+          Accept only deals asking at most this collateral (decimal USD) [default: 1000]
+      --max-mib <MAX_MIB>
+          Accept only data of at most this many MiB [default: 64]
+      --pulses <PULSES>
+          Stop after this many Pulses
+  -h, --help
+          Print help
+```
+
 ## `sion market`
 
 ```text
@@ -1578,7 +1761,7 @@ See [Verify as a light client](../getting-started/light-client.md).
 ## `sion demo`
 
 ```text
-Run a scripted demo: invoice, agents, swarm, tasks, robots, market, receipts, x402, streams, censorship, light, staking or all
+Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
 
 Usage: sion demo [OPTIONS] [NAME]
 

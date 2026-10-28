@@ -82,6 +82,13 @@ the ledger does not yet act on such proofs, and other malformations of an
 index are caught only by rebuilding it, so that the index matches the log
 remains a trust atom (`impl:memory-index`).
 
+**Where the atoms are kept.** The ledger keeps heads, not atoms. A writer
+pays providers to keep its atoms with [storage deals](storage.md): it can
+commit, as the head's manifest, the root of an archive of its atoms and
+post a deal with that same root, so a reader can check from the ledger
+alone that the memory committed is the data a provider proves it keeps,
+round after round (the `storage` demo does this).
+
 ## Off the ledger: the `sion-memory` library
 
 - **Atoms** are integers only (millimetres, nanoseconds, permille), encoded

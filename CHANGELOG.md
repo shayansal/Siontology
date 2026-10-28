@@ -10,6 +10,35 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Storage deals (specification v1.12)
+
+- `PostDeal` escrows `price × rounds` for keeping data whose Merkle root
+  the deal fixes (leaves of at most 4 KiB, RFC 9162 tree), for a named
+  provider or for any. `AcceptDeal` posts the provider's collateral and
+  creates a custody record the provider owns. `ProveStorage` proves the
+  round under way for many deals at once, owned-linear: for each, the
+  leaves a challenge picks (from a seed the beacon changes with every
+  proof) with their Merkle paths. `SettleDeal` pays the provider for
+  proven rounds; `CloseDeal` refunds unproven rounds to the client,
+  returns the collateral less `⌊bond / rounds⌋` per missed round, or
+  forfeits all of it to the treasury when the client closes a deal its
+  provider abandoned for three rounds. The supply counts deal escrow and
+  collateral.
+- `sion storage prepare | post | deals | show | accept | prove | settle |
+  close | serve`; `serve` runs a provider that fetches data from a deal's
+  locator (`file://` or `http(s)://`), checks it against the root, accepts,
+  proves every round, collects and closes. MCP tools `sion_storage_post`,
+  `sion_storage_deals` and `sion_storage_close`. `GET /v1/deals`; account
+  views list custody records.
+- The `storage` demo: a robot commits its memory log with its archive's
+  root as the manifest and pays a laptop to keep the archive; a phone that
+  kept only half of the camera footage it accepted cannot answer the
+  challenges and forfeits its collateral.
+- The app's Storage tab turns a device into a provider: it takes open deals
+  it can fetch, keeps the data, proves every round (each proof expiring at
+  the end of its round, so a late one costs nothing), collects and closes;
+  turned off, it keeps proving the deals it holds.
+
 ### The app: a light node on every device
 
 - New crate `sion-app-core`, shared by the app's desktop and mobile

@@ -91,6 +91,7 @@ function show(view) {
   }
   if (view === "wallet") refreshWallet();
   if (view === "stake") refreshStake();
+  if (view === "storage") refreshStorage();
   if (view === "settings") refreshSettings();
 }
 
@@ -338,6 +339,80 @@ function renderMine(mine) {
   }
 }
 
+// ---------------------------------------------------------------- storage
+let storageEnabled = false;
+let storageTicking = false;
+const storageLog = [];
+
+function renderStorage(status) {
+  storageEnabled = Boolean(status.enabled);
+  $("storage-toggle").textContent = storageEnabled ? "Stop providing" : "Provide storage";
+  $("storage-toggle").classList.toggle("button--quiet", storageEnabled);
+  if (document.activeElement !== $("storage-mib")) $("storage-mib").value = status.max_mib;
+  $("st-kept").textContent = status.kept;
+  $("st-collected").textContent = status.collected;
+  $("st-due").textContent = status.due;
+  const mib = (Number(status.bytes) / (1024 * 1024)).toFixed(1);
+  $("st-note").textContent = storageEnabled
+    ? `Providing: ${mib} MiB kept, ${status.at_stake} USD of collateral at stake. Amounts in USD; on test networks, test USD.`
+    : `Off. ${mib} MiB kept for deals already taken.`;
+  const rows = $("st-deals");
+  rows.replaceChildren();
+  if (!status.deals.length) {
+    rows.append(el("p", { class: "empty" }, storageEnabled ? "Waiting for an open deal this device can fetch." : "None yet."));
+  }
+  for (const d of status.deals) {
+    const state = d.phase === "closed"
+      ? `closed: ${d.proven} of ${d.rounds} rounds proven${d.closed && Number(d.closed.forfeited) > 0 ? `, ${d.closed.forfeited} USD forfeited` : ""}`
+      : `${d.proven} of ${d.rounds} rounds proven${d.round_now !== null ? `, round ${d.round_now} under way` : ""}`;
+    rows.append(el("div", { class: "row" },
+      el("div", { class: "row-head" },
+        el("strong", {}, `${d.leaves} leaves`), el("span", { class: "mono" }, d.short),
+        el("span", { class: "weight" }, `${d.price} USD a round`)),
+      el("div", { class: "facts" }, el("span", {}, state))));
+  }
+}
+
+async function refreshStorage() {
+  const status = await invoke("storage_status").catch((error) => { toast(String(error), true); return null; });
+  if (status) renderStorage(status);
+}
+
+// One provider step every two seconds, so that a round's proof goes out
+// early in the round. The core takes new deals only while providing, and
+// keeps proving the ones it holds either way.
+async function storageTick() {
+  if (storageTicking) return;
+  storageTicking = true;
+  try {
+    const result = await invoke("storage_tick").catch((error) => ({ lines: [`Error: ${error}`] }));
+    if (!(result.lines || []).length) return;
+    for (const line of result.lines) {
+      storageLog.unshift(line);
+    }
+    storageLog.splice(20);
+    const log = $("st-log");
+    log.replaceChildren(...storageLog.map((line) => el("li", { class: line.startsWith("Error") || line.includes("Failed") ? "fail" : "" }, line)));
+    if (!$("view-storage").hidden) refreshStorage();
+  } finally {
+    storageTicking = false;
+  }
+}
+
+setInterval(storageTick, 2000);
+
+$("storage-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const maxMib = Number($("storage-mib").value);
+  const answer = await busy(event.submitter, () => invoke("set_storage", { enabled: !storageEnabled, maxMib }));
+  if (answer) {
+    toast(answer.provide_storage ? "Providing storage: open deals this device can fetch will be taken" : "No new deals; the ones kept are still proven until they end, while the app runs");
+    storageEnabled = Boolean(answer.provide_storage);
+    refreshStorage();
+    storageTick();
+  }
+});
+
 // --------------------------------------------------------------- settings
 async function refreshSettings() {
   const settings = await invoke("settings").catch(() => null);
@@ -376,4 +451,5 @@ $("unpin").addEventListener("click", async (event) => {
 
 // ------------------------------------------------------------------ start
 refreshWallet();
+refreshStorage();
 verify(null);

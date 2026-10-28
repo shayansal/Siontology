@@ -1907,6 +1907,14 @@ impl Validator {
                     .filter(|o| matches!(o.data, ObjectData::Delegation(_)))
                     .cloned()
                     .collect();
+                let custody = self
+                    .state
+                    .objects
+                    .values()
+                    .filter(owned)
+                    .filter(|o| matches!(o.data, ObjectData::Custody(_)))
+                    .cloned()
+                    .collect();
                 let view = AccountView {
                     account,
                     object,
@@ -1914,6 +1922,7 @@ impl Validator {
                     balances: balances.into_iter().map(|(a, v)| (a, Amount(v))).collect(),
                     allotments,
                     delegations,
+                    custody,
                     pulse: self.state.pulse,
                 };
                 Ok(to_json(&view))
@@ -2117,6 +2126,18 @@ impl Validator {
                 &self.committees,
                 &crate::committees::registered_keys(self.state.validators()),
             )),
+            Query::Deals => {
+                let deals: Vec<Value> = self
+                    .state
+                    .objects
+                    .values()
+                    .filter_map(|o| match &o.data {
+                        ObjectData::Deal(deal) => Some(json!({ "id": o.id, "deal": deal })),
+                        _ => None,
+                    })
+                    .collect();
+                Ok(json!({ "pulse": self.state.pulse, "deals": deals }))
+            }
             Query::Forced => {
                 let obligations = self.state.forced();
                 Ok(json!({

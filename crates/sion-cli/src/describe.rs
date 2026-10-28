@@ -69,7 +69,8 @@ impl Names {
         format!("{amount} {}", self.asset(asset))
     }
 
-    fn usd(&self, amount: Amount) -> String {
+    /// An amount of USD, as sentences show it.
+    pub fn usd(&self, amount: Amount) -> String {
         self.money(amount, &AssetId::usd())
     }
 }

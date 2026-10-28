@@ -63,6 +63,8 @@ pub enum Query {
     /// The current committees and registered keys, encoded for a gateway
     /// that runs in another process.
     Committees,
+    /// Every storage deal, with its state (spec v1.12).
+    Deals,
 }
 
 /// Chain status.
@@ -149,6 +151,10 @@ pub struct AccountView {
     /// The account's delegations of stake (spec v1.11).
     #[serde(default)]
     pub delegations: Vec<Object>,
+    /// The custody records of the storage deals the account provides
+    /// (spec v1.12).
+    #[serde(default)]
+    pub custody: Vec<Object>,
     /// The Pulse this view is from.
     pub pulse: Pulse,
 }

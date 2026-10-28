@@ -152,3 +152,106 @@ fn a_device_follows_new_epochs_without_starting_over() {
     api.stop();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_device_provides_storage_and_proves_its_rounds() {
+    use sion_cli::ledger::HttpLedger;
+    use sion_cli::session::Session;
+    use sion_exec::storage::DataTree;
+    use sion_exec::TxKind;
+
+    let devnet = Arc::new(
+        Devnet::start(DevnetConfig {
+            rounds_per_pulse: 2,
+            prove_chunk: None,
+            ..DevnetConfig::default()
+        })
+        .unwrap(),
+    );
+    let api = sion_node::api::serve(devnet.clone(), "127.0.0.1:0").unwrap();
+    let node = format!("http://{}", api.address);
+    let dir = std::env::temp_dir().join(format!("sion-app-storage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let app = AppCore::open(dir.join("app")).unwrap();
+    app.set_node(&node).unwrap();
+    app.faucet("50").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while app.balance().unwrap()["usd"] == "0" {
+        assert!(Instant::now() < deadline, "the faucet never paid");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    // Off by default: a tick does nothing.
+    assert_eq!(app.storage_tick().unwrap()["enabled"], false);
+    app.set_storage(true, 16).unwrap();
+
+    // A client posts an open deal for a file.
+    let data: Vec<u8> = (0..30_000u32).map(|i| (i % 251) as u8).collect();
+    let file = dir.join("data.bin");
+    std::fs::write(&file, &data).unwrap();
+    let tree = DataTree::of_data(&data);
+    let ledger = HttpLedger::new(&node);
+    let mut client = Session::open(&ledger).unwrap();
+    let alice = client.id("alice");
+    sion_cli::ledger::Ledger::faucet(
+        &ledger,
+        alice,
+        sion_core::ids::AssetId::usd(),
+        sion_core::Amount::units(10),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while client
+        .balance("alice", sion_core::ids::AssetId::usd())
+        .unwrap()
+        == sion_core::Amount::ZERO
+    {
+        assert!(Instant::now() < deadline, "the faucet never paid alice");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let pulse = sion_cli::ledger::LedgerExt::pulse(&ledger).unwrap();
+    let posted = client
+        .send(
+            "alice",
+            TxKind::PostDeal {
+                root: tree.root(),
+                size: tree.size(),
+                challenges: 2,
+                price: sion_core::Amount(250_000),
+                rounds: 3,
+                round_length: 8,
+                collateral: sion_core::Amount::units(1),
+                provider: None,
+                accept_by: sion_core::ids::Pulse(pulse.0 + 100),
+                locator: format!("file://{}", file.display()),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(posted.status, sion_exec::ExecStatus::Success);
+
+    // The device takes it and proves rounds until the deal is closed;
+    // turned off after the first proof, it takes nothing new but keeps
+    // proving the deal it holds.
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut on = true;
+    loop {
+        app.storage_tick().unwrap();
+        let status = app.storage_status().unwrap();
+        let deals = status["deals"].as_array().unwrap().clone();
+        if let Some(deal) = deals.first() {
+            if on && deal["proven"].as_u64().unwrap_or(0) >= 1 {
+                app.set_storage(false, 16).unwrap();
+                on = false;
+            }
+            if deal["phase"] == "closed" {
+                assert_eq!(deal["proven"], 3, "{status}");
+                assert_eq!(status["collected"], "0.75", "{status}");
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "the deal never closed: {status}");
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    api.stop();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

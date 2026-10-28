@@ -280,8 +280,6 @@ pub fn parse_percent(text: &str) -> Result<u16, CliError> {
     Ok(permille)
 }
 
-/// What a delegation stands for now: its standing in the current epoch,
-/// the stake behind its shares and what it is owed.
 /// Where a delegation stands: a sentence, a machine-readable phase
 /// (`pending`, `earning`, `unbonding` or `unknown`), its stake, and what
 /// it is owed.

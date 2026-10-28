@@ -25,6 +25,7 @@ pub mod memory;
 pub mod network;
 pub mod session;
 pub mod stake;
+pub mod storage;
 pub mod stream;
 pub mod tasks;
 pub mod verify;

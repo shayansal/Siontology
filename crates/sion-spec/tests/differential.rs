@@ -3953,6 +3953,528 @@ fn tasks_many_transactions_per_chunk() {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario: storage deals (spec v1.12)
+// ---------------------------------------------------------------------------
+
+const STORAGE_NAMES: [&str; 5] = ["client", "keeper", "lazy", "named", "stranger"];
+
+/// A body of data of `leaves` leaves (the last one short), distinct per
+/// `tag`.
+fn storage_data(tag: u8, leaves: usize) -> Vec<u8> {
+    let length = sion_exec::storage::MAX_LEAF_BYTES * (leaves - 1) + 100;
+    (0..length)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(tag))
+        .collect()
+}
+
+fn deal_posted(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::DealPosted { deal, .. } => Some(*deal),
+                _ => None,
+            })
+        })
+        .expect("deal posted")
+}
+
+fn deal_state(h: &Harness, id: &ObjectId) -> sion_exec::storage::Deal {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Deal(deal) => (**deal).clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn custody_of(h: &Harness, deal: &ObjectId) -> (ObjectId, sion_exec::storage::Custody) {
+    let sion_exec::storage::DealState::Active { custody, .. } = deal_state(h, deal).state else {
+        panic!("deal {deal} is not active");
+    };
+    match &h.chain.state.objects[&custody].data {
+        ObjectData::Custody(record) => (custody, record.clone()),
+        other => panic!("{custody} holds {other:?}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn post_deal(
+    h: &mut Harness,
+    client: &str,
+    data: &[u8],
+    challenges: u8,
+    price: Amount,
+    rounds: u32,
+    collateral: Amount,
+    provider: Option<AccountId>,
+) -> SignedTransaction {
+    let tree = sion_exec::storage::DataTree::of_data(data);
+    let accept_by = Pulse(h.pulse_number() + 20);
+    h.tx(
+        client,
+        TxKind::PostDeal {
+            root: tree.root(),
+            size: tree.size(),
+            challenges,
+            price,
+            rounds,
+            round_length: 8,
+            collateral,
+            provider,
+            accept_by,
+            locator: "https://example.org/data".into(),
+        },
+    )
+}
+
+/// The round under way in the next Pulse for `deal`'s custody record.
+fn next_round(h: &Harness, custody: &sion_exec::storage::Custody) -> u32 {
+    let next = h.pulse_number() + 1;
+    assert!(next >= custody.start.0, "the deal has not started");
+    ((next - custody.start.0) / custody.round_length) as u32
+}
+
+/// The provider's honest answer to the round under way in the next Pulse.
+fn answer(
+    h: &Harness,
+    deal: &ObjectId,
+    data: &[u8],
+) -> (ObjectRef, sion_exec::storage::CustodyProof) {
+    let (custody_id, custody) = custody_of(h, deal);
+    let round = next_round(h, &custody);
+    let proof = sion_exec::storage::DataTree::of_data(data)
+        .answer(data, &custody, round)
+        .expect("the provider holds the data");
+    (h.reference(&custody_id), proof)
+}
+
+/// The provider's honest answer from a custody record, whatever its deal's
+/// state.
+fn answer_record(
+    h: &Harness,
+    custody_id: &ObjectId,
+    data: &[u8],
+) -> (ObjectRef, sion_exec::storage::CustodyProof) {
+    let ObjectData::Custody(custody) = &h.chain.state.objects[custody_id].data else {
+        panic!("{custody_id} is not a custody record");
+    };
+    let round = next_round(h, custody);
+    let proof = sion_exec::storage::DataTree::of_data(data)
+        .answer(data, custody, round)
+        .expect("the provider holds the data");
+    (h.reference(custody_id), proof)
+}
+
+/// Advances so that the next Pulse is in round `round` of `deal`.
+fn advance_to_round(h: &mut Harness, deal: &ObjectId, round: u64) {
+    let (_, custody) = custody_of(h, deal);
+    let target = custody.start.0 + round * custody.round_length;
+    if h.pulse_number() + 1 < target {
+        h.advance_to(target - 1);
+    }
+}
+
+fn storage(chunk_size: usize) -> Harness {
+    use sion_exec::storage::{DealState, LeafProof, MAX_LOCATOR, MAX_PROOF_LEAVES};
+
+    let mut h = Harness::new(&STORAGE_NAMES, 100_000, 8, chunk_size);
+    let (keeper, lazy, named) = (h.id("keeper"), h.id("lazy"), h.id("named"));
+    let open_data = storage_data(1, 9);
+    let keeper_data = storage_data(2, 3);
+    let lazy_data = storage_data(3, 40);
+    let tiny_data = vec![42u8; 10];
+
+    // Posting: an open deal, one for the keeper, one for the lazy provider,
+    // one for a provider that never accepts, one nobody accepts.
+    let open = post_deal(
+        &mut h,
+        "client",
+        &open_data,
+        4,
+        units(10),
+        3,
+        units(30),
+        None,
+    );
+    let for_keeper = post_deal(
+        &mut h,
+        "client",
+        &keeper_data,
+        2,
+        units(7),
+        3,
+        units(9),
+        Some(keeper),
+    );
+    let for_lazy = post_deal(
+        &mut h,
+        "client",
+        &lazy_data,
+        3,
+        units(5),
+        8,
+        units(40),
+        Some(lazy),
+    );
+    let for_named = post_deal(
+        &mut h,
+        "client",
+        &tiny_data,
+        1,
+        units(1),
+        2,
+        Amount::ZERO,
+        Some(named),
+    );
+    let unwanted = post_deal(&mut h, "client", &tiny_data, 1, units(2), 2, units(1), None);
+    // Malformed terms fail: built honestly, then edited and signed again.
+    let edit = |h: &mut Harness, f: &dyn Fn(&mut TxKind)| {
+        let base = post_deal(
+            h,
+            "stranger",
+            &tiny_data,
+            1,
+            units(1),
+            1,
+            Amount::ZERO,
+            None,
+        );
+        let mut body = base.tx.clone();
+        f(&mut body.kind);
+        h.resign("stranger", body)
+    };
+    let set = |field: &'static str| {
+        move |kind: &mut TxKind| {
+            let TxKind::PostDeal {
+                size,
+                challenges,
+                price,
+                rounds,
+                round_length,
+                accept_by,
+                locator,
+                ..
+            } = kind
+            else {
+                unreachable!()
+            };
+            match field {
+                "size" => *size = 0,
+                "challenges" => *challenges = 17,
+                "price" => *price = Amount::ZERO,
+                "rounds" => *rounds = 0,
+                "round_length" => *round_length = 4,
+                "accept_by" => *accept_by = Pulse(0),
+                "locator" => *locator = "x".repeat(MAX_LOCATOR + 1),
+                "overflow" => *price = Amount(u128::MAX / 2),
+                _ => unreachable!(),
+            }
+        }
+    };
+    let malformed: Vec<SignedTransaction> = [
+        "size",
+        "challenges",
+        "price",
+        "rounds",
+        "round_length",
+        "accept_by",
+        "locator",
+        "overflow",
+    ]
+    .iter()
+    .map(|field| edit(&mut h, &set(field)))
+    .collect();
+    let out = h.pulse(vec![
+        open.clone(),
+        for_keeper.clone(),
+        for_lazy.clone(),
+        for_named.clone(),
+        unwanted.clone(),
+    ]);
+    for tx in [&open, &for_keeper, &for_lazy, &for_named, &unwanted] {
+        expect(&out, tx, Outcome::Success);
+    }
+    let (open, for_keeper, for_lazy, for_named, unwanted) = (
+        deal_posted(&out, &open),
+        deal_posted(&out, &for_keeper),
+        deal_posted(&out, &for_lazy),
+        deal_posted(&out, &for_named),
+        deal_posted(&out, &unwanted),
+    );
+    // One malformed posting per Pulse: each builds on the same coins.
+    for tx in malformed {
+        h.settle();
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Failed);
+    }
+
+    // Accepting: a stranger cannot take a named deal; providers accept.
+    let stranger_takes = h.tx("stranger", TxKind::AcceptDeal { deal: for_keeper });
+    let out = h.pulse(vec![stranger_takes.clone()]);
+    expect(&out, &stranger_takes, Outcome::Failed);
+    let txs = vec![
+        h.tx("keeper", TxKind::AcceptDeal { deal: open }),
+        h.tx("keeper", TxKind::AcceptDeal { deal: for_keeper }),
+        h.tx("lazy", TxKind::AcceptDeal { deal: for_lazy }),
+        h.tx("named", TxKind::AcceptDeal { deal: for_named }),
+    ];
+    let out = h.pulse(txs.clone());
+    for tx in &txs {
+        expect(&out, tx, Outcome::Success);
+    }
+    let again = h.tx("stranger", TxKind::AcceptDeal { deal: open });
+    let out = h.pulse(vec![again.clone()]);
+    expect(&out, &again, Outcome::Failed);
+    assert!(matches!(
+        deal_state(&h, &open).state,
+        DealState::Active { provider, .. } if provider == keeper
+    ));
+
+    // Round 0: the keeper proves two deals in one transaction; the lazy
+    // provider proves its deal; the named provider proves its own.
+    advance_to_round(&mut h, &open, 0);
+    let (open_ref, open_proof) = answer(&h, &open, &open_data);
+    let (keeper_ref, keeper_proof) = answer(&h, &for_keeper, &keeper_data);
+    let (lazy_ref, lazy_proof) = answer(&h, &for_lazy, &lazy_data);
+    let (named_ref, named_proof) = answer(&h, &for_named, &tiny_data);
+    let both = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![open_proof.clone(), keeper_proof.clone()],
+        },
+        vec![open_ref, keeper_ref],
+    );
+    let lazy_once = h.tx_with(
+        "lazy",
+        TxKind::ProveStorage {
+            proofs: vec![lazy_proof],
+        },
+        vec![lazy_ref],
+    );
+    let named_once = h.tx_with(
+        "named",
+        TxKind::ProveStorage {
+            proofs: vec![named_proof],
+        },
+        vec![named_ref],
+    );
+    let out = h.pulse(vec![both.clone(), lazy_once.clone(), named_once.clone()]);
+    for tx in [&both, &lazy_once, &named_once] {
+        expect(&out, tx, Outcome::Success);
+    }
+    assert_eq!(custody_of(&h, &open).1.proven, 1);
+
+    // Bad proofs fail: a round proven twice, a tampered leaf, a wrong
+    // count, a future round, too many leaves in one transaction.
+    let (open_ref, mut proof) = answer(&h, &open, &open_data);
+    let twice = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![proof.clone()],
+        },
+        vec![open_ref],
+    );
+    let out = h.pulse(vec![twice.clone()]);
+    expect(&out, &twice, Outcome::Failed);
+    advance_to_round(&mut h, &open, 1);
+    let (open_ref, honest) = answer(&h, &open, &open_data);
+    proof = honest.clone();
+    proof.leaves[0].data[0] ^= 1;
+    let tampered = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![proof.clone()],
+        },
+        vec![open_ref],
+    );
+    let out = h.pulse(vec![tampered.clone()]);
+    expect(&out, &tampered, Outcome::Failed);
+    let (open_ref, honest) = answer(&h, &open, &open_data);
+    let mut short = honest.clone();
+    short.leaves.pop();
+    let mut future = honest.clone();
+    future.round += 1;
+    let mut flood = honest.clone();
+    flood.leaves = vec![
+        LeafProof {
+            data: vec![0],
+            path: Vec::new(),
+        };
+        MAX_PROOF_LEAVES + 1
+    ];
+    for bad in [short, future, flood] {
+        let (open_ref, _) = answer(&h, &open, &open_data);
+        let tx = h.tx_with(
+            "keeper",
+            TxKind::ProveStorage { proofs: vec![bad] },
+            vec![open_ref],
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Failed);
+    }
+    let _ = open_ref;
+    // The keeper proves round 1 of the open deal only; its own deal's
+    // round 1 passes unproven.
+    let (open_ref, proof) = answer(&h, &open, &open_data);
+    let round_one = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![proof],
+        },
+        vec![open_ref],
+    );
+    let out = h.pulse(vec![round_one.clone()]);
+    expect(&out, &round_one, Outcome::Success);
+
+    // Settling: the keeper collects; nothing left to collect fails; the
+    // client cannot collect.
+    let settle = h.tx("keeper", TxKind::SettleDeal { deal: open });
+    let client_settles = h.tx("client", TxKind::SettleDeal { deal: for_keeper });
+    let out = h.pulse(vec![settle.clone(), client_settles.clone()]);
+    expect(&out, &settle, Outcome::Success);
+    expect(&out, &client_settles, Outcome::Failed);
+    let nothing = h.tx("keeper", TxKind::SettleDeal { deal: open });
+    let out = h.pulse(vec![nothing.clone()]);
+    expect(&out, &nothing, Outcome::Failed);
+
+    // The client cannot close an active deal early unless it is abandoned.
+    let early = h.tx("client", TxKind::CloseDeal { deal: for_lazy });
+    let out = h.pulse(vec![early.clone()]);
+    expect(&out, &early, Outcome::Failed);
+
+    // Round 2: the keeper proves both of its deals.
+    advance_to_round(&mut h, &open, 2);
+    let (open_ref, open_proof) = answer(&h, &open, &open_data);
+    let (keeper_ref, keeper_proof) = answer(&h, &for_keeper, &keeper_data);
+    let both = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage {
+            proofs: vec![open_proof, keeper_proof],
+        },
+        vec![open_ref, keeper_ref],
+    );
+    let out = h.pulse(vec![both.clone()]);
+    expect(&out, &both, Outcome::Success);
+
+    // The lazy provider has proven nothing since round 0: from round 4 the
+    // client may close its deal, and its whole collateral is forfeited.
+    advance_to_round(&mut h, &for_lazy, 3);
+    let too_soon = h.tx("client", TxKind::CloseDeal { deal: for_lazy });
+    let out = h.pulse(vec![too_soon.clone()]);
+    expect(&out, &too_soon, Outcome::Failed);
+    advance_to_round(&mut h, &for_lazy, 4);
+    let lazy_custody = custody_of(&h, &for_lazy).0;
+    let treasury_before = match &h.chain.state.objects[&well_known::treasury()].data {
+        ObjectData::Treasury(t) => t.balances.get(&usd()).copied().unwrap_or(Amount::ZERO),
+        _ => unreachable!(),
+    };
+    let abandon = h.tx("client", TxKind::CloseDeal { deal: for_lazy });
+    let out = h.pulse(vec![abandon.clone()]);
+    expect(&out, &abandon, Outcome::Success);
+    assert!(all_events(&out).iter().any(|e| matches!(
+        e,
+        Event::DealClosed { forfeited, returned, paid, .. }
+            if *forfeited == units(40) && *returned == Amount::ZERO && *paid == units(5)
+    )));
+    let treasury_after = match &h.chain.state.objects[&well_known::treasury()].data {
+        ObjectData::Treasury(t) => t.balances.get(&usd()).copied().unwrap_or(Amount::ZERO),
+        _ => unreachable!(),
+    };
+    assert!(treasury_after.checked_sub(treasury_before).unwrap() >= units(40));
+    // Its custody record still takes a proof; the closed deal pays nothing.
+    let (lazy_ref, lazy_proof) = answer_record(&h, &lazy_custody, &lazy_data);
+    let after_close = h.tx_with(
+        "lazy",
+        TxKind::ProveStorage {
+            proofs: vec![lazy_proof],
+        },
+        vec![lazy_ref],
+    );
+    let lazy_settles = h.tx("lazy", TxKind::SettleDeal { deal: for_lazy });
+    let out = h.pulse(vec![after_close.clone(), lazy_settles.clone()]);
+    expect(&out, &after_close, Outcome::Success);
+    expect(&out, &lazy_settles, Outcome::Failed);
+
+    // The end: no proof after the last round; a stranger cannot close; the
+    // keeper closes its own deal (one round missed), the client the open
+    // one (all proven) and the named one (one round missed, no
+    // collateral); the client refunds the deal nobody accepted.
+    let end = deal_state(&h, &for_keeper).end().unwrap();
+    h.advance_to(end.0);
+    let (keeper_ref, mut late) = answer(&h, &open, &open_data);
+    late.round = 3;
+    let late_proof = h.tx_with(
+        "keeper",
+        TxKind::ProveStorage { proofs: vec![late] },
+        vec![keeper_ref],
+    );
+    let stranger_closes = h.tx("stranger", TxKind::CloseDeal { deal: open });
+    let out = h.pulse(vec![late_proof.clone(), stranger_closes.clone()]);
+    expect(&out, &late_proof, Outcome::Failed);
+    expect(&out, &stranger_closes, Outcome::Failed);
+    let closes = vec![
+        h.tx("keeper", TxKind::CloseDeal { deal: for_keeper }),
+        h.tx("client", TxKind::CloseDeal { deal: open }),
+        h.tx("client", TxKind::CloseDeal { deal: for_named }),
+        h.tx("client", TxKind::CloseDeal { deal: unwanted }),
+    ];
+    let out = h.pulse(closes.clone());
+    for tx in &closes {
+        expect(&out, tx, Outcome::Success);
+    }
+    let closed: Vec<(Amount, Amount, Amount, Amount, u32)> = all_events(&out)
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::DealClosed {
+                refund,
+                paid,
+                returned,
+                forfeited,
+                missed,
+                ..
+            } => Some((refund, paid, returned, forfeited, missed)),
+            _ => None,
+        })
+        .collect();
+    assert!(closed.contains(&(units(7), units(14), units(6), units(3), 1)));
+    assert!(closed.contains(&(Amount::ZERO, units(10), units(30), Amount::ZERO, 0)));
+    assert!(closed.contains(&(units(4), Amount::ZERO, Amount::ZERO, Amount::ZERO, 0)));
+    let reclose = h.tx("client", TxKind::CloseDeal { deal: unwanted });
+    let named_late = h.tx("named", TxKind::AcceptDeal { deal: unwanted });
+    let out = h.pulse(vec![reclose.clone(), named_late.clone()]);
+    expect(&out, &reclose, Outcome::Failed);
+    expect(&out, &named_late, Outcome::Failed);
+
+    h.assert_covered(&[
+        "PostDeal/ok",
+        "PostDeal(open)/ok",
+        "PostDeal(open)/failed",
+        "AcceptDeal/ok",
+        "AcceptDeal/failed",
+        "ProveStorage/ok",
+        "ProveStorage/failed",
+        "SettleDeal/ok",
+        "SettleDeal/failed",
+        "CloseDeal/ok",
+        "CloseDeal/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+#[ignore = "until proof stack B implements specification v1.12 (its storage operations are a placeholder)"]
+fn storage_deals_post_accept_prove_settle_and_close() {
+    storage(1).summary("storage deals");
+}
+
+#[test]
+#[ignore = "until proof stack B implements specification v1.12 (its storage operations are a placeholder)"]
+fn storage_deals_many_transactions_per_chunk() {
+    storage(4).summary("storage deals (chunks of 4)");
+}
+
+// ---------------------------------------------------------------------------
 // Scenario: bounded totals
 // ---------------------------------------------------------------------------
 

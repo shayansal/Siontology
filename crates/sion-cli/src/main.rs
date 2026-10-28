@@ -257,6 +257,10 @@ enum Command {
     /// proofs of completeness.
     #[command(subcommand)]
     Memory(sion_cli::memory::MemoryCommand),
+    /// Storage deals: have data kept by a provider who proves every round
+    /// that it still holds it, or provide storage and be paid for it.
+    #[command(subcommand)]
+    Storage(sion_cli::storage::StorageCommand),
     /// Markets.
     #[command(subcommand)]
     Market(MarketCommand),
@@ -307,7 +311,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, swarm, tasks, robots, market, receipts, x402, streams, censorship, light, staking or all.
+    /// Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -1238,6 +1242,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
         Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
+        Command::Storage(command) => sion_cli::storage::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,
             agent,

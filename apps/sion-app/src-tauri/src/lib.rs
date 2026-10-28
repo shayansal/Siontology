@@ -86,6 +86,21 @@ fn delegation_action(core: State<'_, AppCore>, action: String, delegation: Strin
     flat(core.delegation_action(&action, &delegation))
 }
 
+#[tauri::command(async)]
+fn set_storage(core: State<'_, AppCore>, enabled: bool, max_mib: u64) -> Answer {
+    flat(core.set_storage(enabled, max_mib))
+}
+
+#[tauri::command(async)]
+fn storage_tick(core: State<'_, AppCore>) -> Answer {
+    flat(core.storage_tick())
+}
+
+#[tauri::command(async)]
+fn storage_status(core: State<'_, AppCore>) -> Answer {
+    flat(core.storage_status())
+}
+
 /// Starts the app.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -116,7 +131,10 @@ pub fn run() {
             pools,
             delegate,
             delegations,
-            delegation_action
+            delegation_action,
+            set_storage,
+            storage_tick,
+            storage_status
         ])
         .run(tauri::generate_context!())
         .expect("the Siontology app failed to start");

@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sion_cli::ledger::{HttpLedger, Ledger, LedgerExt};
 use sion_cli::session::Session;
+use sion_cli::storage::{Provider, ProviderPolicy, Store};
 use sion_core::hash::Hash32;
 use sion_core::ids::{AssetId, Pulse, TxDigest};
 use sion_exec::wallet::Wallet;
@@ -72,6 +73,17 @@ pub struct Settings {
     pub chain: Option<String>,
     /// Shares of each data square to sample when verifying.
     pub samples: usize,
+    /// Whether the device provides storage (spec v1.12): it takes open
+    /// storage deals it can fetch, keeps the data, and proves every round.
+    #[serde(default)]
+    pub provide_storage: bool,
+    /// The most space one deal may take, in MiB.
+    #[serde(default = "default_storage_mib")]
+    pub storage_max_mib: u64,
+}
+
+fn default_storage_mib() -> u64 {
+    256
 }
 
 impl Default for Settings {
@@ -80,6 +92,8 @@ impl Default for Settings {
             node: "http://127.0.0.1:8730".into(),
             chain: None,
             samples: DEFAULT_SAMPLES,
+            provide_storage: false,
+            storage_max_mib: default_storage_mib(),
         }
     }
 }
@@ -113,6 +127,9 @@ pub struct AppCore {
     epochs: Mutex<Option<EpochChain>>,
     /// Held while one of the device's transactions is built and submitted.
     submitting: Mutex<()>,
+    /// The device's storage provider, kept between ticks for its cache of
+    /// trees and of deals it could not fetch.
+    provider: Mutex<Option<Provider>>,
 }
 
 // A lock is only poisoned if a thread panicked while holding it; every
@@ -149,6 +166,7 @@ impl AppCore {
             history: Mutex::new(VecDeque::new()),
             epochs: Mutex::new(None),
             submitting: Mutex::new(()),
+            provider: Mutex::new(None),
         })
     }
 
@@ -418,6 +436,119 @@ impl AppCore {
         let id = sion_cli::stake::find_delegation(&ledger, self.wallet.id, delegation)?;
         let reference = session.reference(&id)?;
         self.submit(&mut session, kind, vec![reference])
+    }
+
+    /// Turns the device's storage provider on or off, and sets the most
+    /// space one deal may take.
+    pub fn set_storage(&self, enabled: bool, max_mib: u64) -> Result<Value, AppError> {
+        if max_mib == 0 {
+            return Err(AppError::Input("give a deal at least 1 MiB".into()));
+        }
+        let mut settings = write(&self.settings);
+        settings.provide_storage = enabled;
+        settings.storage_max_mib = max_mib;
+        self.save(&settings)?;
+        Ok(json!(*settings))
+    }
+
+    /// One step of the device's storage provider: when it is on, accept
+    /// deals whose data it can fetch; on or off, prove the round under way
+    /// for every deal it keeps, collect, and close deals that ended, so
+    /// that turning it off never abandons a deal. Returns what it did, a
+    /// line each.
+    pub fn storage_tick(&self) -> Result<Value, AppError> {
+        use sion_exec::storage::DealState;
+        let (settings, ledger) = self.snapshot();
+        if !settings.provide_storage {
+            let mut keeps = false;
+            for (_, record) in sion_cli::storage::custody_records(&ledger, self.wallet.id)? {
+                if matches!(
+                    sion_cli::storage::deal(&ledger, record.deal)?.state,
+                    DealState::Active { .. }
+                ) {
+                    keeps = true;
+                    break;
+                }
+            }
+            if !keeps {
+                return Ok(json!({ "enabled": false, "lines": [] }));
+            }
+        }
+        let mut slot = lock(&self.provider);
+        let provider = slot.get_or_insert_with(|| {
+            Provider::new(
+                ME,
+                Store::new(self.dir.join("storage")),
+                ProviderPolicy::default(),
+            )
+        });
+        provider.policy.accept_open = settings.provide_storage;
+        provider.policy.accept_named = settings.provide_storage;
+        provider.policy.max_bytes = settings.storage_max_mib.saturating_mul(1 << 20);
+        let _turn = lock(&self.submitting);
+        let mut session = self.session(&ledger)?;
+        let lines = provider.tick(&mut session, &ledger)?;
+        Ok(json!({ "enabled": settings.provide_storage, "lines": lines }))
+    }
+
+    /// The deals this device keeps or kept: their terms, rounds proven
+    /// and paid, and what they earned.
+    pub fn storage_status(&self) -> Result<Value, AppError> {
+        use sion_exec::storage::{current_round, DealState};
+        let (settings, ledger) = self.snapshot();
+        let pulse = ledger.pulse()?;
+        let mut deals = Vec::new();
+        let (mut collected, mut due, mut at_stake, mut kept) = (0u128, 0u128, 0u128, 0usize);
+        for (custody_id, record) in sion_cli::storage::custody_records(&ledger, self.wallet.id)? {
+            let deal = sion_cli::storage::deal(&ledger, record.deal)?;
+            let price = deal.price.0;
+            let (phase, paid) = match &deal.state {
+                DealState::Active { paid, bond, .. } => {
+                    at_stake += bond.0;
+                    kept += 1;
+                    ("active", *paid)
+                }
+                DealState::Closed { .. } => ("closed", record.proven),
+                DealState::Open => ("open", 0),
+            };
+            collected += price.saturating_mul(u128::from(paid));
+            due += price.saturating_mul(u128::from(record.proven.saturating_sub(paid)));
+            deals.push(json!({
+                "deal": record.deal,
+                "short": record.deal.short(),
+                "custody": custody_id,
+                "leaves": record.size,
+                "price": deal.price.to_string(),
+                "rounds": record.rounds,
+                "proven": record.proven,
+                "round_now": current_round(record.start, record.round_length, pulse),
+                "phase": phase,
+                "closed": match &deal.state {
+                    DealState::Closed { missed, forfeited, .. } => {
+                        Some(json!({ "missed": missed, "forfeited": forfeited.to_string() }))
+                    }
+                    _ => None,
+                },
+            }));
+        }
+        let bytes: u64 = std::fs::read_dir(self.dir.join("storage"))
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok()?.metadata().ok())
+                    .map(|m| m.len())
+                    .sum()
+            })
+            .unwrap_or(0);
+        Ok(json!({
+            "enabled": settings.provide_storage,
+            "max_mib": settings.storage_max_mib,
+            "kept": kept,
+            "bytes": bytes,
+            "collected": sion_core::Amount(collected).to_string(),
+            "due": sion_core::Amount(due).to_string(),
+            "at_stake": sion_core::Amount(at_stake).to_string(),
+            "deals": deals,
+        }))
     }
 
     /// The latest Pulse the node reports.

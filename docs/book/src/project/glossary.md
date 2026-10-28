@@ -60,6 +60,10 @@ broken, ruled on by the claim's adjudicator.
 lets the payee settle by a jump. See
 [Payment streams](../concepts/payment-streams.md).
 
+**Challenge (storage).** The leaves a storage deal's provider must show in
+a round, drawn from its custody record's seed, which the beacon changes
+with every proof. See Storage deal.
+
 **Chunk.** A run of transactions (16 by default), or the deferred phase,
 with a statement and a witness; the unit a proof stack proves.
 
@@ -87,6 +91,10 @@ from what it touches: knowledge, owned-linear, bounded or contended. See
 **Cost of corruption.** What an attacker would have to spend or forfeit to
 make a claim false, under a consumer's policy. See
 [Cost of corruption](../concepts/assurance/cost-of-corruption.md).
+
+**Custody record.** The object a storage provider owns for each deal it
+accepted: what proving needs (root, leaves, rounds, seed) and the rounds
+proven. Proofs touch only it, so proving is owned-linear.
 
 **Data-availability sampling.** Checking random shares of a Pulse's
 erasure-coded data so withholding is detected with high probability. See
@@ -138,6 +146,9 @@ hashes, however many payments it covers.
 **Lane epoch.** The identifier of a lane committee: the validator-set
 epoch and the shard's rotations in it. Approvals from one lane epoch never
 count in another.
+
+**Leaf.** One piece of a storage deal's data, at most 4 KiB; the deal
+commits to the Merkle root over the leaves' hashes.
 
 **Light client.** A client that checks headers, receipts, state and data
 with proofs against a pinned chain identity, without executing the chain.
@@ -207,6 +218,11 @@ boundary and every restart.
 
 **Slashing.** Forfeiting a bond (for a false claim) or a validator's stake
 (for equivocation).
+
+**Storage deal.** Escrow from a client for a provider who keeps data
+whose Merkle root the deal fixes and proves each round that it still holds
+it; paid per proven round, with collateral forfeited for missed or
+abandoned rounds. See [Storage deals](../concepts/storage.md).
 
 **Specification.** `docs/spec/state-transition.md`, the normative
 description of the state transition. See

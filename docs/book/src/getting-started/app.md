@@ -2,19 +2,20 @@
 
 The Siontology app turns a laptop or a phone into a **light node**. It
 holds the device's own key, and it checks every Pulse it shows instead of
-trusting the server it talks to. Its owner can pay, and can pool stake
-with a validator without handing the stake over.
+trusting the server it talks to. Its owner can pay, pool stake with a
+validator without handing the stake over, and let the device earn by
+keeping data for others ([storage deals](../concepts/storage.md)).
 
 One Rust core, `sion-app-core`, does the work. A [Tauri 2](https://v2.tauri.app)
 shell wraps it for desktop and mobile, under `apps/sion-app`.
 
 | Layer | Where | What it does |
 |---|---|---|
-| Core | `crates/sion-app-core`, in the workspace | The key, the settings, light-client verification, payments and pooled stake, against any node's HTTP API. Tested against a devnet. |
+| Core | `crates/sion-app-core`, in the workspace | The key, the settings, light-client verification, payments, pooled stake and a storage provider, against any node's HTTP API. Tested against a devnet. |
 | Shell | `apps/sion-app/src-tauri`, its own Cargo workspace | Tauri commands that forward to the core, and the platform's app-data directory. The GUI's dependencies stay out of the protocol's workspace. |
 | Interface | `apps/sion-app/ui` | Static HTML, CSS and JavaScript. It holds no key and makes no network call: its content security policy allows only the shell's IPC. |
 
-![The desktop app against a devnet: the Node tab with the checks behind the latest verified Pulse, the Wallet tab with a payment whose receipt the device proved, and the Stake tab with a delegation earning in a validator's pool](app-tabs.png)
+![The desktop app against a devnet: the Node tab with the checks behind the latest verified Pulse, the Wallet tab with a payment whose receipt the device proved, and the Storage tab with a deal the device kept and proved for all six rounds](app-tabs.png)
 
 *The desktop build on Linux, against a four-validator devnet with
 12-Pulse epochs.*
@@ -57,11 +58,11 @@ desktop's or a server's job, not a phone's.
 
 **It does not validate, store or serve the chain.** Validators run on
 servers (`sion node`, see [Running a network of
-processes](../guides/network.md)). A device earns nothing by running the
-app. Its owner earns by pooling stake with a validator from the Stake tab
-([Pooled stake](../concepts/validators/pooled-stake.md)), on test networks
-with test USD. Paying desktops to store and serve data is designed, not
-built.
+processes](../guides/network.md)). Verifying earns nothing. A device earns
+by providing storage from the Storage tab, and its owner by pooling stake
+with a validator from the Stake tab ([Pooled
+stake](../concepts/validators/pooled-stake.md)), on test networks with
+test USD.
 
 **Its balances come from the node.** The Wallet tab shows what the node
 reports for the device's account, unproven; the Node tab says whether the
@@ -98,7 +99,7 @@ cargo install tauri-cli --version "^2" --locked
 cargo tauri build
 ```
 
-## The four tabs
+## The five tabs
 
 - **Node**: the latest verified Pulse, the checks behind it, and the tally
   of verifications.
@@ -109,6 +110,15 @@ cargo tauri build
   it, its commission and its weight in the current epoch. *Delegate* puts
   stake in a validator's pool; each delegation shows its state and what it
   is owed, with *Collect*, *Leave* (undelegate) and *Withdraw*.
+- **Storage**: *Provide storage* makes the device a storage provider. Every
+  two seconds it takes open deals whose data it can fetch from their
+  locator and that fit the space it allows per deal, keeps a copy in the
+  app's directory, proves the round under way for every deal it keeps, and
+  collects and closes. Each proof expires at the end of its round, so a
+  late one is refused for free instead of failing for a fee. *Stop
+  providing* takes no new deals but keeps proving the ones it holds until
+  they end, while the app runs: turning it off never abandons a deal. The
+  tab shows the deals kept, what was collected and what is due.
 - **Settings**: the node, and the pinned chain identity.
 
 ## Pinning the chain identity

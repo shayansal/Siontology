@@ -6,8 +6,8 @@ install is a **light node**: it keeps the device's own key and verifies
 the latest certified Pulse every eight seconds (the committee certificate
 with every signature, the receipts root, a state proof and random shares
 of the Pulse's data square) against a chain identity pinned on first use
-or by its user. It pays and pools stake with validators, and proves the
-receipt of every transaction it signs.
+or by its user. It pays, pools stake with validators, provides storage,
+and proves the receipt of every transaction it signs.
 
 The book's page, [The app](../../docs/book/src/getting-started/app.md),
 covers what it checks, what it does not, and where its key lives.
@@ -64,7 +64,7 @@ laid out for phones first.
   catch a producer that withholds data. The balances it shows come from
   the node, unproven.
 - **It does not validate or store the chain.** Validators run on servers
-  (`sion node`, see the book's *Running a network of processes*); a phone
-  earns nothing by running the app. Its owner earns by pooling stake with a
-  validator from the Stake tab. Paying desktops to store and serve data is
-  designed, not built.
+  (`sion node`, see the book's *Running a network of processes*). A device
+  earns by providing storage from the Storage tab (storage deals, spec
+  v1.12: it keeps others' data and proves it every round), and its owner
+  by pooling stake with a validator from the Stake tab.

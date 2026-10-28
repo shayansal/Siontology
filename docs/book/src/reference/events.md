@@ -142,6 +142,19 @@ of their own: `EpochChanged`'s `rewards` is the total paid to validators
 and their pools together. `sion stake show` prints what each delegation is
 owed.
 
+## Storage deals
+
+| Event | Fields | Emitted by | Sentence |
+|---|---|---|---|
+| `DealPosted` | `deal`, `client`, `provider` (or none: open), `size`, `price`, `rounds`, `collateral` | `PostDeal` | `storage deal <id> posted: <n> leaves, <r> rounds at <price> USD each, <collateral> USD of collateral, for <provider>\|open to any provider` |
+| `DealAccepted` | `deal`, `provider`, `custody`, `start` | `AcceptDeal` | `<provider> accepted storage deal <id> (custody record <id>); rounds start at Pulse <p>` |
+| `StorageProven` | `deal`, `custody`, `round` | `ProveStorage`, one per deal | `round <i> of storage deal <id> proven` |
+| `DealSettled` | `deal`, `rounds`, `amount` | `SettleDeal` | `<amount> USD paid for <n> proven round(s) of storage deal <id>` |
+| `DealClosed` | `deal`, `refund`, `paid`, `returned`, `forfeited`, `missed` | `CloseDeal` | `storage deal <id> closed: <refund> USD refunded, <paid> USD paid, <returned> USD of collateral returned, <forfeited> USD forfeited, <m> round(s) missed` |
+
+Forfeited collateral reaches the treasury in the deferred phase, as a
+`Treasury` item, without an event of its own.
+
 ## Failed transactions
 
 A transaction that fails keeps no events: its receipt reads

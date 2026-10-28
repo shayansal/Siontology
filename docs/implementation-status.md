@@ -49,6 +49,7 @@ live.
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
+| Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale; stack B pending, see below) |
 | Economics: payments to provers, value-in-flight cap | Not built |
 | Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
 
@@ -350,8 +351,10 @@ does (chain identity pinned on first use, committee certificate followed
 from the pin, receipts, a state proof when the node is at that Pulse, 16
 random data shares), proves the receipt of every transaction it signs, and
 pays and pools stake (v1.11) through `sion_cli`. It is `Send + Sync`, takes
-`&self` and holds no lock while it talks to a node. Tested against a
-devnet over HTTP (`crates/sion-app-core/tests/devnet.rs`). The Tauri 2
+`&self` and holds no lock while it talks to a node. It can also run a
+storage provider (v1.12) that takes open deals, keeps the data and proves
+every round, and that keeps proving deals it holds when turned off. Tested
+against a devnet over HTTP (`crates/sion-app-core/tests/devnet.rs`). The Tauri 2
 shell in `apps/sion-app` (its own Cargo workspace) builds and runs on
 Linux; it was run under a virtual display against a devnet and its four
 tabs captured. **Not built:** the Android and iOS builds (configured, not
@@ -466,6 +469,26 @@ transactions are ordered one after another; a pool slash is a flat tenth.
 **Not built:** redelegation without unbonding, delegating from an agent's
 budget, compounding.
 
+**Storage deals (specification v1.12): built.** A client escrows payment
+for keeping data whose Merkle root it fixes (`PostDeal`), for a named
+provider or any; the provider accepts with collateral and gets a custody
+record it owns; each round it proves, owned-linear and many deals per
+transaction, the leaves a challenge picks from a seed that the beacon of
+every proof's Pulse changes; it collects per proven round; the close
+refunds unproven rounds to the client and returns the collateral less
+`⌊bond / rounds⌋` per missed round, or forfeits all of it to the treasury
+if the client closes a deal abandoned for three rounds. Commands
+`sion storage …` (including `serve`, a provider loop that fetches, checks,
+accepts, proves, collects and closes), MCP tools `sion_storage_*`, the
+`storage` demo (an agent's memory archive kept by a laptop; a phone that
+kept half of its data caught and its collateral forfeited), and
+`GET /v1/deals`, and the app's Storage tab, which turns a device into a
+provider (tested against a devnet; run on the desktop build). **Not
+built:** proof of replication (a provider may fetch challenged leaves from
+elsewhere: `storage:no-replication`), retrieval (`storage:no-retrieval`),
+repair or re-assignment of a failed deal, and deals funded from an agent's
+budget.
+
 **Not built:** payments to provers, a value-in-flight cap.
 
 ### Node and operations
@@ -540,6 +563,8 @@ the architecture's own:
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
 | `impl:memory-index` | The ledger stores a memory log's index root without checking it: a memory query proof is complete relative to that root, and nothing on the ledger yet acts on evidence that an index leaves an atom out. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
+| `storage:no-replication` | A storage proof shows that the provider could produce the challenged leaves during the round, not that it keeps a copy of its own: it could fetch them from another copy (or from the client) when challenged. Two deals with two providers are not proof of two copies. |
+| `storage:no-retrieval` | Getting data back is not part of the protocol: a provider proves custody, and returning the data to its client is up to them. |
 | `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
 | `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |
 | `app:unproven-balances` | The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven. |

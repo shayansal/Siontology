@@ -78,6 +78,29 @@
       <div id="validators" class="rows"></div>
     </section>
 
+    <!-- Storage -->
+    <section class="view" id="view-storage" hidden aria-labelledby="storage-title">
+      <p class="kicker">Spare disk</p>
+      <h1 id="storage-title">Keep data, get paid</h1>
+      <p class="lede">This device can provide storage: it takes open storage deals whose data it can fetch, keeps a copy, and proves every round that it still holds it. Each proven round pays. Its collateral is at stake: a missed round costs part of it, an abandoned deal all of it. Best on a computer that stays on.</p>
+      <form class="form" id="storage-form" autocomplete="off">
+        <label>Space for one deal, in MiB <input id="storage-mib" inputmode="numeric" value="256" required></label>
+        <div class="actions">
+          <button class="button" type="submit" id="storage-toggle">Provide storage</button>
+        </div>
+      </form>
+      <dl class="tally">
+        <div><dt>Deals kept</dt><dd id="st-kept">0</dd></div>
+        <div><dt>Collected</dt><dd id="st-collected">0</dd></div>
+        <div><dt>Due</dt><dd id="st-due">0</dd></div>
+      </dl>
+      <p class="note" id="st-note">&nbsp;</p>
+      <h2>Deals</h2>
+      <div id="st-deals" class="rows"><p class="empty">None yet.</p></div>
+      <h2>Activity</h2>
+      <ol class="checks" id="st-log"></ol>
+    </section>
+
     <!-- Settings -->
     <section class="view" id="view-settings" hidden aria-labelledby="settings-title">
       <p class="kicker">Settings</p>
@@ -106,6 +129,7 @@
     <button class="tab" data-view="node" aria-current="page">Node</button>
     <button class="tab" data-view="wallet">Wallet</button>
     <button class="tab" data-view="stake">Stake</button>
+    <button class="tab" data-view="storage">Storage</button>
     <button class="tab" data-view="settings">Settings</button>
   </nav>
 

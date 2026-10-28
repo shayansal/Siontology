@@ -21,6 +21,7 @@
 //! | POST | `/v1/forced` | post a forced intent `{tx: hex}`, bypassing the gateway |
 //! | GET | `/v1/forced` | forced-inclusion obligations: the window, a summary (pending and overdue counts, the overdue root), each pending obligation, and this epoch's shard rotations |
 //! | GET | `/v1/committees` | the current committees and registered keys, Borsh in hex (what a gateway in another process follows) |
+//! | GET | `/v1/deals` | every storage deal with its state (spec v1.12) |
 //! | POST | `/v1/devnet/censor` | **adversary simulation**: `{accounts: [hex], gateway, validators}` |
 //!
 //! The same routes serve an in-process devnet, one validator of a network
@@ -277,6 +278,7 @@ fn route<B: Backend>(backend: &B, request: &mut Request) -> Result<Value, HttpEr
         }
         (Method::Get, ["v1", "forced"]) => q(Query::Forced),
         (Method::Get, ["v1", "committees"]) => q(Query::Committees),
+        (Method::Get, ["v1", "deals"]) => q(Query::Deals),
         (Method::Post, ["v1", "devnet", "censor"]) => {
             let censor: CensorBody = body(request)?;
             let accounts = censor

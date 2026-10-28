@@ -163,6 +163,18 @@ Results and attestations are claims (`IssueClaim`, schemas `task.result/v1`
 and `task.attestation/v1`), issued with `sion task submit` and
 `sion task attest`. See [Task Charters](../concepts/task-charters.md).
 
+## Storage deals
+
+| Kind | What it does | Class | Sentence | Sent by |
+|---|---|---|---|---|
+| `PostDeal { root, size, challenges, price, rounds, round_length, collateral, provider, accept_by, locator }` | Escrows `price × rounds` for keeping `size` leaves whose Merkle root is `root`, for `provider` or, without one, for anyone | owned-linear | `Escrow <price × rounds> USD to have data <root> (<n> leaves) kept by <provider>\|any provider for <r> rounds of <l> Pulses: <price> USD per round proven by <c> random leaves, with <collateral> USD of collateral at stake` | `sion storage post`, MCP `sion_storage_post` |
+| `AcceptDeal { deal }` | The provider posts the collateral and gets a custody record it owns; rounds start at the next Pulse | contended (deal) | `Accept storage deal <id>, posting its collateral; prove each round or lose it` | `sion storage accept`, `sion storage serve` |
+| `ProveStorage { proofs }` | Proves the round under way for the custody records at `inputs[1..]`, one proof each: the challenged leaves with their Merkle paths (at most 64 leaves in all) | owned-linear | `Prove custody of <n> storage deal(s) for the round under way with <k> challenged leaves` | `sion storage prove`, `sion storage serve` |
+| `SettleDeal { deal }` | The provider is paid for the rounds it proved since the last payment | contended (deal) | `Collect for the proven rounds of storage deal <id>` | `sion storage settle`, `sion storage serve` |
+| `CloseDeal { deal }` | Refunds an open deal (client); ends an accepted one at its end (client or provider) or once abandoned for three rounds (client): pays what is due, refunds unproven rounds, returns the collateral less missed rounds, or forfeits it if abandoned | contended (deal) | `Close storage deal <id>: pay what is due, refund the escrow of unproven rounds, settle the collateral` | `sion storage close`, MCP `sion_storage_close` |
+
+See [Storage deals](../concepts/storage.md).
+
 ## Outcomes
 
 Each transaction ends as **Success**, **Failed** or **Rejected**

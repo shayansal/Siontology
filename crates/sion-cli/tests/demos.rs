@@ -160,6 +160,22 @@ fn all_demos_run_and_tell_the_truth() {
             "robots: missing {expected:?}:\n{text}"
         );
     }
+    for expected in [
+        "the head's manifest is the root of their archive",
+        "robot-gamma posts an open deal for the archive",
+        "laptop accepted storage deal",
+        "the phone is asked for leaves",
+        "robot-gamma closes the footage deal",
+        "forfeited to the treasury",
+        "the laptop proved",
+        "the memory the robot committed is the data that was kept",
+    ] {
+        assert!(
+            text.contains(expected),
+            "storage: missing {expected:?}:
+{text}"
+        );
+    }
     assert!(
         text.contains("this devnet has no standby validator"),
         "the staking demo explains what it needs: {text}"

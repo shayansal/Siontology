@@ -331,6 +331,48 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "sion_storage_post",
+            "description": "Have a file kept by a storage provider (spec v1.12): escrows price × rounds for data whose Merkle root the deal fixes. A provider that accepts posts collateral and must prove every round that it holds leaves picked at random; it is paid per proven round, and loses collateral for missed rounds (all of it if it abandons the deal). Without a provider, any provider may accept. Returns the deal id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "path": { "type": "string", "description": "The file to have kept" },
+                    "price": { "type": "number", "description": "USD paid per proven round" },
+                    "rounds": { "type": "integer", "description": "Rounds (1 to 1,000,000)" },
+                    "round_length": { "type": "integer", "description": "Pulses per round (8 to 1,000,000; default 20)" },
+                    "collateral": { "type": "number", "description": "USD the provider must post (default 0)" },
+                    "challenges": { "type": "integer", "description": "Leaves challenged per round (1 to 16; default 4)" },
+                    "provider": { "type": "string", "description": "Wallet name or account of the provider; omit for an open deal" },
+                    "locator": { "type": "string", "description": "Where providers fetch the data (default file://<path>)" }
+                },
+                "required": ["wallet", "path", "price", "rounds"]
+            }
+        },
+        {
+            "name": "sion_storage_deals",
+            "description": "Storage deals with their terms, state and, once accepted, the provider's progress (rounds proven, the round under way, the end).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "open": { "type": "boolean", "description": "Only deals still open for acceptance" },
+                    "deal": { "type": "string", "description": "One deal (id or unique prefix)" }
+                }
+            }
+        },
+        {
+            "name": "sion_storage_close",
+            "description": "Close a storage deal: the client refunds an open deal, or ends an accepted one once it is over or once its provider has missed three rounds in a row (the provider then forfeits its collateral to the treasury); the provider may close one that is over. Pays the provider for proven rounds and refunds the escrow of unproven ones.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "wallet": { "type": "string" },
+                    "deal": { "type": "string", "description": "Deal id (hex) or a unique prefix" }
+                },
+                "required": ["wallet", "deal"]
+            }
+        },
+        {
             "name": "sion_fetch_receipt",
             "description": "Fetch a transaction's receipt and verify it as a light client: the chain identity, the committee certificate of its Pulse and the receipt's inclusion proof. Pass the chain identity you trust as `chain`.",
             "inputSchema": {
@@ -891,6 +933,89 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
             };
             let reference = session.reference(&delegation)?;
             let view = session.send(&wallet, kind, vec![reference])?;
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "events": view.effects.events,
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
+        }
+        "sion_storage_post" => {
+            let wallet = text_arg(args, "wallet")?;
+            let path = text_arg(args, "path")?;
+            let data = std::fs::read(&path).map_err(|e| CliError::Usage(format!("{path}: {e}")))?;
+            let tree = sion_exec::storage::DataTree::of_data(&data);
+            let locator = match args["locator"].as_str() {
+                Some(locator) => locator.to_string(),
+                None => format!(
+                    "file://{}",
+                    std::fs::canonicalize(&path)
+                        .map_err(|e| CliError::Usage(e.to_string()))?
+                        .display()
+                ),
+            };
+            let provider = args["provider"].as_str().map(|name| session.id(name));
+            let rounds = args["rounds"]
+                .as_u64()
+                .and_then(|r| u32::try_from(r).ok())
+                .ok_or_else(|| CliError::Usage("rounds required".into()))?;
+            let collateral = match &args["collateral"] {
+                Value::Null => Amount::ZERO,
+                value => usd(value)?,
+            };
+            let accept_by = sion_core::ids::Pulse(session.ledger.pulse()?.0 + 200);
+            let view = session.send(
+                &wallet,
+                TxKind::PostDeal {
+                    root: tree.root(),
+                    size: tree.size(),
+                    challenges: args["challenges"]
+                        .as_u64()
+                        .and_then(|c| u8::try_from(c).ok())
+                        .unwrap_or(4),
+                    price: usd(&args["price"])?,
+                    rounds,
+                    round_length: args["round_length"].as_u64().unwrap_or(20),
+                    collateral,
+                    provider,
+                    accept_by,
+                    locator,
+                },
+                Vec::new(),
+            )?;
+            let deal = view.effects.events.iter().find_map(|e| match e {
+                sion_exec::Event::DealPosted { deal, .. } => Some(*deal),
+                _ => None,
+            });
+            Ok(json!({
+                "pulse": view.pulse,
+                "status": view.status,
+                "deal": deal,
+                "root": tree.root(),
+                "leaves": tree.size(),
+                "receipt": describe::receipt(&session.names(), &view.effects),
+            }))
+        }
+        "sion_storage_deals" => {
+            if let Some(text) = args["deal"].as_str() {
+                let id = crate::storage::find_deal(session.ledger, text)?;
+                let deal = crate::storage::deal(session.ledger, id)?;
+                return crate::storage::deal_json(session.ledger, id, &deal);
+            }
+            let open = args["open"].as_bool().unwrap_or(false);
+            let mut list = Vec::new();
+            for (id, deal) in crate::storage::deals(session.ledger)? {
+                if open && deal.state != sion_exec::storage::DealState::Open {
+                    continue;
+                }
+                list.push(crate::storage::deal_json(session.ledger, id, &deal)?);
+            }
+            Ok(json!({ "deals": list }))
+        }
+        "sion_storage_close" => {
+            let wallet = text_arg(args, "wallet")?;
+            let deal = crate::storage::find_deal(session.ledger, &text_arg(args, "deal")?)?;
+            let view = session.send(&wallet, TxKind::CloseDeal { deal }, Vec::new())?;
             Ok(json!({
                 "pulse": view.pulse,
                 "status": view.status,
