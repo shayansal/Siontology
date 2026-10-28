@@ -103,6 +103,7 @@
   - [Billions of agents](research/agent-scale.md)
   - [Succinct validity proofs](research/succinct-proofs.md)
   - [Networking between machines](research/networking.md)
+  - [Reliable, self-improving agents](research/agents.md)
 
 # Security
 
