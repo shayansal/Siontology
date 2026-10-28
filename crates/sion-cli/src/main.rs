@@ -9,7 +9,11 @@ use serde_json::Value;
 use sion_assurance::{AtomClass, Policy, Ratio};
 use sion_cli::demos::{self, Narrator};
 use sion_cli::ledger::{HttpLedger, Ledger, LedgerExt, TxState};
-use sion_cli::session::{create_wallet, wallet_dir, wallet_for, Session};
+use sion_cli::session::{create_wallet, stream_dir, wallet_dir, wallet_for, Session};
+use sion_cli::stream::{
+    default_spacing, format_jump, load_stream, parse_jump, standing, standing_by_jump, PayerBook,
+    PayerRecord, Payment, Standing,
+};
 use sion_cli::{mcp, verify, CliError};
 use sion_core::hash::Hash32;
 use sion_core::ids::{AssetId, AtomId, ClaimId, ObjectId, Pulse, TxDigest};
@@ -233,6 +237,10 @@ enum Command {
     /// Markets.
     #[command(subcommand)]
     Market(MarketCommand),
+    /// Payment streams: escrow once, pay per request with one hash each,
+    /// settle thousands of payments in one transaction.
+    #[command(subcommand)]
+    Stream(StreamCommand),
     /// A transaction's status and effects.
     Tx {
         /// Digest.
@@ -276,7 +284,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, market, receipts, x402, censorship, light, staking or all.
+    /// Run a scripted demo: invoice, agents, market, receipts, x402, streams, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -299,7 +307,7 @@ enum Command {
         #[arg(long)]
         no_devnet: bool,
         /// Run only these groups: signatures, state, data, clearing,
-        /// assurance, execution, devnet (comma-separated).
+        /// assurance, execution, streams, devnet (comma-separated).
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
         /// Write the measurements as JSON to this file.
@@ -330,26 +338,140 @@ enum X402Command {
         /// node vouches for itself.
         #[arg(long, env = "SION_CHAIN")]
         chain: Option<String>,
+        /// Also accept payments from streams (scheme `stream`), settled by
+        /// PAY_TO's wallet, which must be a wallet name.
+        #[arg(long)]
+        streams: bool,
+        /// With --streams: settle once a stream has this many unsettled steps.
+        #[arg(long, default_value_t = 1_000)]
+        settle_every: u64,
+        /// With --streams: settle a stream's payments at the latest this many
+        /// seconds after the first unsettled one.
+        #[arg(long, default_value_t = 30)]
+        settle_after: u64,
     },
     /// Fetch a URL, paying through x402 if the server asks.
     Fetch {
         /// The URL.
         url: String,
-        /// The paying wallet (the agent's, when paying under a charter).
-        #[arg(long)]
-        wallet: String,
+        /// The paying wallet (the agent's, when paying under a charter; not
+        /// needed with --stream).
+        #[arg(long, required_unless_present = "stream")]
+        wallet: Option<String>,
         /// Pay under this Agent Charter (ID) instead of by transfer.
         #[arg(long)]
         charter: Option<String>,
         /// The agent's allotment (ID), with --charter.
         #[arg(long)]
         allotment: Option<String>,
+        /// Pay from this payment stream (ID) instead: one chain element per
+        /// request, no transaction.
+        #[arg(long, conflicts_with_all = ["charter", "allotment"])]
+        stream: Option<String>,
+        /// Fetch this many times (with --stream, every request after the
+        /// first is paid up front).
+        #[arg(long, default_value_t = 1)]
+        count: u32,
         /// The most to pay (USD).
         #[arg(long, default_value = "1")]
         max: String,
         /// The chain identity to pay on. Without it the node vouches for itself.
         #[arg(long, env = "SION_CHAIN")]
         chain: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum StreamCommand {
+    /// Open a stream: escrow funds for one payee and keep the chain that
+    /// pays it (its secret seed goes under $SION_HOME/streams).
+    Open {
+        /// The paying wallet.
+        payer: String,
+        /// Who is paid (wallet name or account ID).
+        payee: String,
+        /// The value of one step (USD).
+        #[arg(long, default_value = "0.001")]
+        unit: String,
+        /// Steps in the chain: the most the stream can ever pay is
+        /// unit × steps.
+        #[arg(long, default_value_t = 100_000)]
+        steps: u64,
+        /// Escrow (USD).
+        #[arg(long, default_value = "10")]
+        deposit: String,
+        /// Pulses the payee has to settle (after them the payer may close
+        /// the stream and take back what is left).
+        #[arg(long, default_value_t = 10_000)]
+        pulses: u64,
+        /// Steps between checkpoints, which let the payee settle any number
+        /// of steps for a bounded number of hashes (default: every 64 steps,
+        /// fewer for very long chains; 0: no checkpoints).
+        #[arg(long)]
+        spacing: Option<u64>,
+    },
+    /// Pay from a stream: prints the next payment, `<stream>:<position>:<element>`,
+    /// to give to the payee, and the jump for its checkpoint when it is the
+    /// first payment past one.
+    Pay {
+        /// The stream.
+        stream: String,
+        /// Steps to pay.
+        #[arg(long, default_value_t = 1)]
+        steps: u64,
+    },
+    /// Print the jump for the checkpoint below a position (as the payer).
+    Jump {
+        /// The stream.
+        stream: String,
+        /// The position (default: the last one revealed).
+        #[arg(long)]
+        position: Option<u64>,
+    },
+    /// Check a payment against the stream's settled head (anyone can).
+    Check {
+        /// The payment.
+        payment: String,
+        /// Check it by this jump instead of walking from the head.
+        #[arg(long)]
+        jump: Option<String>,
+    },
+    /// Settle as the payee: everything up to the latest payment received.
+    Settle {
+        /// The payee's wallet.
+        payee: String,
+        /// The latest payment received.
+        payment: String,
+        /// Prove it by this jump (from the payer) instead of walking from
+        /// the head.
+        #[arg(long)]
+        jump: Option<String>,
+    },
+    /// Add escrow and/or time, as the payer.
+    TopUp {
+        /// The payer's wallet.
+        payer: String,
+        /// The stream.
+        stream: String,
+        /// Escrow to add (USD).
+        #[arg(long, default_value = "0")]
+        deposit: String,
+        /// Pulses to add to the stream's last.
+        #[arg(long, default_value_t = 0)]
+        pulses: u64,
+    },
+    /// Close a stream: the payee at any time, the payer after its last
+    /// Pulse. What is left in escrow goes back to the payer.
+    Close {
+        /// Who closes.
+        who: String,
+        /// The stream.
+        stream: String,
+    },
+    /// Show a stream.
+    Show {
+        /// The stream.
+        stream: String,
     },
 }
 
@@ -707,6 +829,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         return mcp::serve(ledger);
     }
     let mut session = Session::open(ledger)?;
+    session.streams = PayerBook::at(stream_dir());
     // Show what each command signs, as a sentence (demos narrate instead).
     session.verbose = !matches!(cli.command, Command::Demo { .. });
     match cli.command {
@@ -720,6 +843,9 @@ fn run(cli: Cli) -> Result<(), CliError> {
             price,
             body,
             chain,
+            streams,
+            settle_every,
+            settle_after,
         }) => {
             use sion_cli::x402::{Facilitator, PaidRoute, PaidServer};
             let pinned = parse_chain(chain)?;
@@ -734,8 +860,25 @@ fn run(cli: Cli) -> Result<(), CliError> {
                     served
                 }
             };
+            let desk = match streams {
+                true if Hash32::from_hex(&pay_to).is_ok() => {
+                    return Err(CliError::Usage(
+                        "--streams settles as PAY_TO, so PAY_TO must be a wallet name".into(),
+                    ))
+                }
+                true => {
+                    let mut desk = sion_cli::stream::StreamDesk::new(wallet_for(&pay_to));
+                    desk.settle_every = settle_every.max(1);
+                    desk.settle_after = Duration::from_secs(settle_after);
+                    Some(desk)
+                }
+                false => None,
+            };
             let pay_to = session.id(&pay_to);
-            let facilitator = Facilitator::new(ledger, chain)?;
+            let mut facilitator = Facilitator::new(ledger, chain)?;
+            if let Some(desk) = desk {
+                facilitator = facilitator.with_streams(desk);
+            }
             let server = PaidServer::bind(&listen)?;
             let price = parse_amount(&price)?;
             let routes = [PaidRoute {
@@ -746,10 +889,15 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 body: Box::new(move |_| body.clone()),
             }];
             println!(
-                "selling http://{}{path} at {price} USD per request, paid to {} on {}",
+                "selling http://{}{path} at {price} USD per request, paid to {} on {}{}",
                 server.address,
                 pay_to.short(),
-                facilitator.network()
+                facilitator.network(),
+                if facilitator.streams().is_some() {
+                    " (exact transfers, or streams settled in batches)"
+                } else {
+                    ""
+                }
             );
             let stop = std::sync::atomic::AtomicBool::new(false);
             server.serve(
@@ -765,17 +913,23 @@ fn run(cli: Cli) -> Result<(), CliError> {
             wallet,
             charter,
             allotment,
+            stream,
+            count,
             max,
             chain,
         }) => {
-            use sion_cli::x402::{fetch, Payer};
+            use sion_cli::x402::{fetch_with, Payer};
             let payer = match (charter, allotment) {
+                _ if stream.is_some() => Payer::Stream(ObjectId::from_hash(hex_hash(
+                    stream.as_deref().unwrap_or_default(),
+                    "stream",
+                )?)),
                 (Some(charter), Some(allotment)) => Payer::Charter {
-                    agent: wallet,
+                    agent: wallet.unwrap_or_default(),
                     charter: ObjectId::from_hash(hex_hash(&charter, "charter")?),
                     allotment: ObjectId::from_hash(hex_hash(&allotment, "allotment")?),
                 },
-                (None, None) => Payer::Wallet(wallet),
+                (None, None) => Payer::Wallet(wallet.unwrap_or_default()),
                 _ => {
                     return Err(CliError::Usage(
                         "--charter and --allotment go together".into(),
@@ -786,31 +940,53 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 Some(chain) => chain,
                 None => verify::served_chain(ledger)?,
             };
-            let fetched = fetch(&mut session, &payer, &url, &chain, parse_amount(&max)?)?;
-            if let Some(quoted) = &fetched.quoted {
-                for accepted in &quoted.accepts {
-                    println!(
-                        "402 Payment Required: {} USD to {} on {}",
-                        Amount(accepted.amount.parse().unwrap_or(0)),
-                        accepted.pay_to,
-                        accepted.network
-                    );
+            let max = parse_amount(&max)?;
+            let mut known = None;
+            for request in 0..count.max(1) {
+                let fetched = fetch_with(&mut session, &payer, &url, &chain, max, known.as_ref())?;
+                if let Some(quoted) = &fetched.quoted {
+                    for accepted in &quoted.accepts {
+                        println!(
+                            "402 Payment Required: {} USD to {} on {} ({})",
+                            Amount(accepted.amount.parse().unwrap_or(0)),
+                            accepted.pay_to,
+                            accepted.network,
+                            accepted.scheme
+                        );
+                    }
+                }
+                if let Some(settlement) = &fetched.settlement {
+                    let stream_position = settlement
+                        .extensions
+                        .as_ref()
+                        .and_then(|e| e["sion"]["position"].as_u64());
+                    match (settlement.success, stream_position) {
+                        (true, Some(position)) => println!(
+                            "paid from the stream: position {position}, checked by the server with one hash per step"
+                        ),
+                        (true, None) => println!(
+                            "paid: transaction {} settled and verified by the server",
+                            settlement.transaction
+                        ),
+                        (false, _) => println!(
+                            "payment refused: {}",
+                            settlement.error_reason.clone().unwrap_or_default()
+                        ),
+                    }
+                }
+                println!("{} {}", fetched.status, fetched.body);
+                if fetched.status != 200 {
+                    break;
+                }
+                if matches!(payer, Payer::Stream(_)) {
+                    known = fetched.accepted.clone();
+                } else if request + 1 < count {
+                    // An exact quote pays once: ask again.
+                    known = None;
                 }
             }
-            if let Some(settlement) = &fetched.settlement {
-                match settlement.success {
-                    true => println!(
-                        "paid: transaction {} settled and verified by the server",
-                        settlement.transaction
-                    ),
-                    false => println!(
-                        "payment refused: {}",
-                        settlement.error_reason.clone().unwrap_or_default()
-                    ),
-                }
-            }
-            println!("{} {}", fetched.status, fetched.body);
         }
+        Command::Stream(command) => stream_command(&mut session, command)?,
         Command::Status => print(&ledger.status()?),
         Command::Balance { account } => {
             let id = session.id(&account);
@@ -1256,6 +1432,184 @@ fn run(cli: Cli) -> Result<(), CliError> {
             demos::run(&name, &mut session, &mut out)?;
         }
         Command::Demo { local: true, .. } => unreachable!("handled above"),
+    }
+    Ok(())
+}
+
+fn stream_id(text: &str) -> Result<ObjectId, CliError> {
+    Ok(ObjectId::from_hash(hex_hash(text, "stream")?))
+}
+
+fn show_stream(id: &ObjectId, stream: &sion_exec::stream::Stream) {
+    println!(
+        "stream {id}\n  {} pays {} {} USD per step, {} of {} steps settled{}\n  escrow {} USD, settle by Pulse {}, {}",
+        stream.payer.short(),
+        stream.payee.short(),
+        stream.unit,
+        stream.position,
+        stream.length,
+        match stream.spacing {
+            0 => String::new(),
+            spacing => format!(", a checkpoint every {spacing} steps"),
+        },
+        stream.escrow,
+        stream.until,
+        if stream.open { "open" } else { "closed" }
+    );
+}
+
+fn stream_command(session: &mut Session<'_>, command: StreamCommand) -> Result<(), CliError> {
+    let ledger = session.ledger;
+    match command {
+        StreamCommand::Open {
+            payer,
+            payee,
+            unit,
+            steps,
+            deposit,
+            pulses,
+            spacing,
+        } => {
+            let unit = parse_amount(&unit)?;
+            let deposit = parse_amount(&deposit)?;
+            let payee_id = session.id(&payee);
+            let spacing = spacing.unwrap_or_else(|| default_spacing(steps));
+            // Building a chain costs one hash per step, once.
+            let (seed, chain) = PayerBook::new_chain(steps, spacing);
+            let view = session.send(
+                &payer,
+                TxKind::OpenStream {
+                    payee: payee_id,
+                    asset: AssetId::usd(),
+                    unit,
+                    length: steps,
+                    anchor: chain.anchor(),
+                    deposit,
+                    until: Pulse(ledger.pulse()?.0 + pulses),
+                    checkpoints: chain.checkpoints(),
+                },
+                Vec::new(),
+            )?;
+            show_tx(&session.names(), &view);
+            let stream = view
+                .effects
+                .events
+                .iter()
+                .find_map(|e| match e {
+                    Event::StreamOpened { stream, .. } => Some(*stream),
+                    _ => None,
+                })
+                .ok_or_else(|| CliError::Transaction("the stream did not open".into()))?;
+            session.streams.add(
+                PayerRecord {
+                    stream,
+                    wallet: payer,
+                    payee: payee_id,
+                    unit,
+                    length: steps,
+                    seed,
+                    revealed: 0,
+                    spacing,
+                },
+                chain,
+            )?;
+            println!(
+                "stream {stream}\nits chain's secret seed is in {}",
+                stream_dir().join(format!("{stream}.json")).display()
+            );
+        }
+        StreamCommand::Pay { stream, steps } => {
+            let paid = session.streams.pay_with_jump(&stream_id(&stream)?, steps)?;
+            println!("{}", paid.payment);
+            if let Some(jump) = &paid.jump {
+                println!("jump {}", format_jump(jump));
+            }
+        }
+        StreamCommand::Jump { stream, position } => {
+            let id = stream_id(&stream)?;
+            let record = session.streams.record(&id)?.clone();
+            if record.spacing == 0 {
+                return Err(CliError::Usage("this stream has no checkpoints".into()));
+            }
+            let position = position.unwrap_or(record.revealed);
+            match session.streams.jump(&id, position / record.spacing)? {
+                Some(jump) => println!("{}", format_jump(&jump)),
+                None => return Err(CliError::Usage("no such checkpoint".into())),
+            }
+        }
+        StreamCommand::Check { payment, jump } => {
+            let payment: Payment = payment.parse()?;
+            let stream = load_stream(ledger, &payment.stream)?;
+            let result = match jump {
+                Some(jump) => standing_by_jump(&stream, &payment, &parse_jump(&jump)?),
+                None => standing(&stream, &payment),
+            };
+            match result {
+                Standing::Settled { hashes } => println!(
+                    "genuine and settled: position {} is at or below the settled {} ({hashes} hashes from the head)",
+                    payment.position, stream.position
+                ),
+                Standing::Unsettled { steps, value } => println!(
+                    "genuine, not yet settled: {steps} steps above the settled position, worth {value} USD to the payee"
+                ),
+                Standing::Forged => {
+                    return Err(CliError::Usage(
+                        "not an element of this stream's chain".into(),
+                    ))
+                }
+            }
+        }
+        StreamCommand::Settle {
+            payee,
+            payment,
+            jump,
+        } => {
+            let payment: Payment = payment.parse()?;
+            let view = session.send(
+                &payee,
+                TxKind::SettleStream {
+                    stream: payment.stream,
+                    position: payment.position,
+                    value: payment.value,
+                    jump: jump.as_deref().map(parse_jump).transpose()?,
+                },
+                Vec::new(),
+            )?;
+            show_tx(&session.names(), &view);
+        }
+        StreamCommand::TopUp {
+            payer,
+            stream,
+            deposit,
+            pulses,
+        } => {
+            let id = stream_id(&stream)?;
+            let until = Pulse(load_stream(ledger, &id)?.until.0 + pulses);
+            let view = session.send(
+                &payer,
+                TxKind::TopUpStream {
+                    stream: id,
+                    deposit: parse_amount(&deposit)?,
+                    until,
+                },
+                Vec::new(),
+            )?;
+            show_tx(&session.names(), &view);
+        }
+        StreamCommand::Close { who, stream } => {
+            let view = session.send(
+                &who,
+                TxKind::CloseStream {
+                    stream: stream_id(&stream)?,
+                },
+                Vec::new(),
+            )?;
+            show_tx(&session.names(), &view);
+        }
+        StreamCommand::Show { stream } => {
+            let id = stream_id(&stream)?;
+            show_stream(&id, &load_stream(ledger, &id)?);
+        }
     }
     Ok(())
 }

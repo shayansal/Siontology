@@ -288,6 +288,56 @@ pub enum TxKind {
         /// The signed evidence.
         evidence: Box<Equivocation>,
     },
+    /// Escrows `deposit` from the sender's coins for `payee`, who is then
+    /// paid off the ledger, `unit` per step, by the sender revealing the
+    /// elements of a hash chain ending at `anchor` (see [`crate::stream`]).
+    OpenStream {
+        /// Who is paid.
+        payee: AccountId,
+        /// The asset escrowed and paid.
+        asset: AssetId,
+        /// The value of one step.
+        unit: Amount,
+        /// Steps in the chain.
+        length: u64,
+        /// The chain's last element, `w_0`.
+        anchor: Hash32,
+        /// The escrow.
+        deposit: Amount,
+        /// The last Pulse in which the payee may settle.
+        until: Pulse,
+        /// A commitment to every `spacing`-th chain element, which lets the
+        /// payee settle any number of steps for a bounded number of hashes.
+        checkpoints: Option<crate::stream::Checkpoints>,
+    },
+    /// The payee collects the steps up to `position`, proven by the chain
+    /// element `value` at that position: by walking down to the head, or by
+    /// a `jump` to a checkpoint.
+    SettleStream {
+        /// The stream.
+        stream: ObjectId,
+        /// The position settled to.
+        position: u64,
+        /// The chain element at `position`.
+        value: Hash32,
+        /// The checkpoint below `position` and its Merkle path.
+        jump: Option<crate::stream::Jump>,
+    },
+    /// The payer adds to the escrow and may extend the stream's last Pulse.
+    TopUpStream {
+        /// The stream.
+        stream: ObjectId,
+        /// Added to the escrow (may be zero if `until` is extended).
+        deposit: Amount,
+        /// The new last Pulse (never earlier than the current one).
+        until: Pulse,
+    },
+    /// Closes a stream and returns what is left in escrow to the payer: by
+    /// the payee at any time, or by the payer once the stream has expired.
+    CloseStream {
+        /// The stream.
+        stream: ObjectId,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -355,6 +405,9 @@ impl Transaction {
             | TxKind::WithdrawStake { .. }
             | TxKind::ClaimRewards { .. }
             | TxKind::ReportEquivocation { .. } => Some(well_known::validators_domain()),
+            TxKind::SettleStream { stream, .. }
+            | TxKind::TopUpStream { stream, .. }
+            | TxKind::CloseStream { stream } => Some(object_domain("stream", stream)),
             _ => None,
         }
     }

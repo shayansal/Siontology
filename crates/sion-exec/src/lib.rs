@@ -22,7 +22,7 @@
 //! Modules:
 //!
 //! - [`object`], [`account`], [`claim`], [`charter`], [`escrow`], [`market`],
-//!   [`assurance`]: the sorts of state.
+//!   [`stream`], [`assurance`]: the sorts of state.
 //! - [`validators`]: stake, epochs, committees, equivocation evidence and
 //!   forced-inclusion obligations.
 //! - [`tx`]: transactions and their derived coordination classes.
@@ -50,6 +50,7 @@ pub mod sim;
 pub mod state;
 pub mod stateless;
 pub mod store;
+pub mod stream;
 pub mod tx;
 pub mod validators;
 pub mod wallet;

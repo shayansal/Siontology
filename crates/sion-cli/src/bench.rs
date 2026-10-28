@@ -11,6 +11,7 @@ use sion_assurance::{
     atom::standard, Atom, AtomClass, ClaimRecord, ClaimStatus, Formula, Policy, Ratio, Registry,
 };
 use sion_clearing::{clear, verify_clearing, Batch, Order, Side};
+use sion_core::encode::encode;
 use sion_core::hash::{hash_domain, Hash32};
 use sion_core::ids::{AccountId, AssetId, ClaimId, DomainId, Pulse};
 use sion_core::smt::SparseMerkleTree;
@@ -364,6 +365,256 @@ fn execution(r: &mut Recorder, quick: bool) {
     let _ = output;
 }
 
+/// Payment streams: what one payment costs the payee, the payer and the
+/// ledger. A payee checks a payment with one hash; the ledger checks it
+/// again, one hash per step, when the payee settles a batch.
+fn streams(r: &mut Recorder, quick: bool) {
+    use sion_exec::stream::{step, PayerChain, MAX_SETTLE_STEPS};
+
+    let n = if quick { 200_000 } else { 2_000_000 };
+    let mut x = Hash32([1; 32]);
+    let start = Instant::now();
+    for _ in 0..n {
+        x = step(&x);
+    }
+    let elapsed = start.elapsed();
+    std::hint::black_box(x);
+    r.add(
+        "streams",
+        "payee checks a payment (one SHA3-256 hash)",
+        per_op(elapsed, n),
+        "µs",
+        format!(
+            "{:.2} million payments/s per core",
+            n as f64 / elapsed.as_secs_f64() / 1e6
+        ),
+    );
+
+    let length = if quick { 100_000 } else { 1_000_000 };
+    let start = Instant::now();
+    let mut chain = PayerChain::new(Hash32([2; 32]), length);
+    r.add(
+        "streams",
+        &format!("payer builds a chain of {length} steps (once)"),
+        start.elapsed().as_secs_f64() * 1e3,
+        "ms",
+        "one hash per step",
+    );
+    let start = Instant::now();
+    for position in 1..=length {
+        std::hint::black_box(chain.element(position));
+    }
+    r.add(
+        "streams",
+        "payer reveals the next element",
+        per_op(start.elapsed(), length as usize),
+        "µs",
+        "in order; checkpoints every √n steps",
+    );
+
+    // Settlement: k payees each settle s steps in one Pulse, executed with
+    // signature checks as a validator executes it: by walking from the head
+    // (one hash per step), then by a jump to a checkpoint (a bounded number
+    // of hashes, however many steps).
+    let (k, walk_steps, jump_steps) = if quick {
+        (4usize, 4_096u64, 1u64 << 16)
+    } else {
+        (16, MAX_SETTLE_STEPS, 1u64 << 20)
+    };
+    let walked = settlements(k, walk_steps, 0);
+    assert_eq!(walked.covered, walk_steps);
+    r.add(
+        "streams",
+        &format!("Pulse of {k} settlements × {walk_steps} steps, walked"),
+        walked.payments / walked.execute.as_secs_f64(),
+        "payments/s",
+        format!(
+            "{:.1} ms per Pulse with signature checks, one core; one hash per step",
+            walked.execute.as_secs_f64() * 1e3
+        ),
+    );
+    r.add(
+        "streams",
+        "stateless replay of those settlements (stack A)",
+        walked.payments / walked.replay.as_secs_f64(),
+        "payments/s",
+        format!("{:.1} ms", walked.replay.as_secs_f64() * 1e3),
+    );
+    r.add(
+        "streams",
+        "fee per payment, walked settlement",
+        walked.fee.0 as f64 / walk_steps as f64,
+        "µUSD",
+        format!("{} USD for {walk_steps} steps", walked.fee),
+    );
+    let spacing = 1_024;
+    let jumped = settlements(k, jump_steps, spacing);
+    r.add(
+        "streams",
+        &format!(
+            "Pulse of {k} settlements × {} steps, by checkpoint",
+            jumped.covered
+        ),
+        jumped.payments / jumped.execute.as_secs_f64(),
+        "payments/s",
+        format!(
+            "{:.1} ms per Pulse with signature checks, one core; {} hashes each",
+            jumped.execute.as_secs_f64() * 1e3,
+            jumped.hashes
+        ),
+    );
+    r.add(
+        "streams",
+        "stateless replay of those settlements (stack A)",
+        jumped.payments / jumped.replay.as_secs_f64(),
+        "payments/s",
+        format!("{:.1} ms", jumped.replay.as_secs_f64() * 1e3),
+    );
+    r.add(
+        "streams",
+        "fee per 1,000 payments, settlement by checkpoint",
+        jumped.fee.0 as f64 * 1_000.0 / jumped.covered as f64,
+        "µUSD",
+        format!("{} USD for {} steps", jumped.fee, jumped.covered),
+    );
+    r.add(
+        "streams",
+        "published bytes per 1,000 payments, by checkpoint",
+        jumped.body as f64 * 1_000.0 / jumped.covered as f64,
+        "B",
+        format!(
+            "{} B body; {} B with signatures, which are verified, not published",
+            jumped.body, jumped.full
+        ),
+    );
+}
+
+/// A measured Pulse of settlements.
+struct Settled {
+    /// Steps each settlement covered.
+    covered: u64,
+    payments: f64,
+    execute: Duration,
+    replay: Duration,
+    fee: Amount,
+    hashes: u64,
+    body: usize,
+    full: usize,
+}
+
+/// Opens `k` streams of `steps` steps (with checkpoints every `spacing`
+/// steps, if not 0), then measures one Pulse in which every payee settles
+/// its stream: to the top by walking, or by a jump to a typical position,
+/// half a spacing above a checkpoint (the top of a chain is its last
+/// checkpoint, whose path is shortest).
+fn settlements(k: usize, steps: u64, spacing: u64) -> Settled {
+    use sion_exec::stream::PayerChain;
+
+    let payers: Vec<String> = (0..k).map(|i| format!("payer-{i}")).collect();
+    let payees: Vec<String> = (0..k).map(|i| format!("payee-{i}")).collect();
+    let names: Vec<&str> = payers.iter().chain(&payees).map(String::as_str).collect();
+    let mut sim = Chain::new(&names, 10_000, 1);
+    let mut chains: Vec<PayerChain> = (0..k)
+        .map(|i| {
+            let seed = hash_domain("bench/stream", &(i as u64).to_be_bytes());
+            match spacing {
+                0 => PayerChain::new(seed, steps),
+                spacing => PayerChain::with_checkpoints(seed, steps, spacing),
+            }
+        })
+        .collect();
+    let opens: Vec<SignedTransaction> = (0..k)
+        .map(|i| {
+            let payee = sim.id(&payees[i]);
+            sim.tx(
+                &payers[i],
+                TxKind::OpenStream {
+                    payee,
+                    asset: AssetId::usd(),
+                    unit: Amount(1),
+                    length: steps,
+                    anchor: chains[i].anchor(),
+                    deposit: Amount::units(steps.div_ceil(1_000_000).max(1) + 1),
+                    until: Pulse(1_000),
+                    checkpoints: chains[i].checkpoints(),
+                },
+            )
+            .expect("build")
+        })
+        .collect();
+    let out = sim.pulse(opens.clone()).expect("open");
+    let streams: Vec<sion_core::ids::ObjectId> = opens
+        .iter()
+        .map(|tx| {
+            out.effects
+                .iter()
+                .find(|e| e.digest == tx.digest())
+                .and_then(|e| {
+                    e.events.iter().find_map(|event| match event {
+                        sion_exec::Event::StreamOpened { stream, .. } => Some(*stream),
+                        _ => None,
+                    })
+                })
+                .expect("opened")
+        })
+        .collect();
+    let position = match spacing {
+        0 => steps,
+        spacing => steps - spacing / 2,
+    };
+    let settles: Vec<SignedTransaction> = (0..k)
+        .map(|i| {
+            let jump = (spacing > 0).then(|| chains[i].jump(position / spacing).expect("jump"));
+            sim.tx(
+                &payees[i],
+                TxKind::SettleStream {
+                    stream: streams[i],
+                    position,
+                    value: chains[i].element(position).expect("element"),
+                    jump,
+                },
+            )
+            .expect("build")
+        })
+        .collect();
+    let hashes = match &settles[0].tx.kind {
+        TxKind::SettleStream {
+            jump: Some(jump), ..
+        } => position % spacing + 1 + jump.path.len() as u64,
+        _ => steps,
+    };
+    let mut state = sim.state.clone();
+    let pulse = state.pulse.next();
+    let input = PulseInput {
+        pulse,
+        beacon: sim_beacon(pulse),
+        owned: Vec::new(),
+        contended: settles.clone(),
+        forced: Vec::new(),
+    };
+    let start = Instant::now();
+    let output = execute_pulse(&mut state, &input, true).expect("execute");
+    let execute = start.elapsed();
+    assert_eq!(output.status_counts().0, k, "every settlement succeeds");
+    let mut state = sim.state.clone();
+    let (_, traces) = execute_pulse_traced(&mut state, &input, true, 64).expect("trace");
+    let start = Instant::now();
+    for trace in &traces {
+        replay_chunk(trace).expect("replay");
+    }
+    let replay = start.elapsed();
+    Settled {
+        covered: position,
+        payments: k as f64 * position as f64,
+        execute,
+        replay,
+        fee: settles[0].tx.fee,
+        hashes,
+        body: settles.iter().map(|t| t.tx.size()).sum::<usize>() / k,
+        full: settles.iter().map(|t| encode(t).len()).sum::<usize>() / k,
+    }
+}
+
 fn devnet(r: &mut Recorder, quick: bool) -> Result<(), CliError> {
     let accounts = if quick { 8 } else { 32 };
     let names: Vec<String> = (0..accounts).map(|i| format!("load-{i}")).collect();
@@ -509,13 +760,14 @@ impl sion_exec::StateView for Prefetched {
 }
 
 /// The benchmark groups, in the order they run.
-pub const GROUPS: [&str; 7] = [
+pub const GROUPS: [&str; 8] = [
     "signatures",
     "state",
     "data",
     "clearing",
     "assurance",
     "execution",
+    "streams",
     "devnet",
 ];
 
@@ -561,6 +813,9 @@ pub fn run(
     }
     if wanted("execution") {
         execution(&mut r, quick);
+    }
+    if wanted("streams") {
+        streams(&mut r, quick);
     }
     if with_devnet && wanted("devnet") {
         devnet(&mut r, quick)?;

@@ -32,6 +32,21 @@
 //! how much. A server cannot overcharge it, and a prompt-injected agent
 //! cannot overpay: the ledger refuses the payment and the server never sees
 //! the money.
+//!
+//! **The `stream` scheme: one hash per request.** A client that calls the
+//! same server often opens a payment stream to it once (spec §5.31) and
+//! then pays each request with the next element of its hash chain: the
+//! payload is `{ "stream", "position", "value" }` instead of a transaction.
+//! The server's [`StreamDesk`] checks the element with one hash per step
+//! against the last one it accepted, serves the request, and settles
+//! thousands of payments in one transaction later. The first payment past
+//! each of the chain's checkpoints also carries `jump`, the checkpoint's
+//! Merkle path, which lets the server settle any number of payments for a
+//! bounded number of hashes. No quote nonce is
+//! needed, because a chain element pays for one position only; a client that
+//! knows the price pays up front, without the `402` round trip. A refused
+//! payment's `PAYMENT-RESPONSE` names the position the server had accepted
+//! up to, so an honest client resynchronizes (see [`crate::stream`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -56,6 +71,7 @@ use sion_exec::{ChainConfig, ExecStatus, ObjectData, SignedTransaction, TxKind};
 use crate::error::CliError;
 use crate::ledger::{Ledger, LedgerExt, TxState};
 use crate::session::{RemoteView, Session};
+use crate::stream::{StreamDesk, StreamPayment};
 use crate::verify::{verify_receipt_of, VerifiedReceipt};
 
 /// The x402 protocol version this adapter speaks.
@@ -66,8 +82,11 @@ pub const PAYMENT_REQUIRED: &str = "PAYMENT-REQUIRED";
 pub const PAYMENT_SIGNATURE: &str = "PAYMENT-SIGNATURE";
 /// Header of a paid response: base64 JSON of [`SettleResponse`].
 pub const PAYMENT_RESPONSE: &str = "PAYMENT-RESPONSE";
-/// The scheme this adapter implements: pay exactly the quoted amount.
+/// Pay exactly the quoted amount with one signed transaction.
 pub const SCHEME_EXACT: &str = "exact";
+/// Pay the quoted amount from a payment stream, one chain element per
+/// request.
+pub const SCHEME_STREAM: &str = "stream";
 /// The asset requirements name (amounts are micro-USD).
 pub const ASSET_USD: &str = "USD";
 
@@ -251,6 +270,10 @@ pub struct Facilitator<'l> {
     counter: AtomicU64,
     /// How long settlement waits for a certified receipt.
     pub timeout: Duration,
+    streams: Option<StreamDesk>,
+    /// The latest Pulse seen, and when it was read.
+    pulse: Mutex<(Instant, sion_core::ids::Pulse)>,
+    tended: Mutex<Instant>,
 }
 
 impl std::fmt::Debug for Facilitator<'_> {
@@ -271,7 +294,32 @@ impl<'l> Facilitator<'l> {
             used: Mutex::new(BTreeSet::new()),
             counter: AtomicU64::new(0),
             timeout: Duration::from_secs(60),
+            streams: None,
+            pulse: Mutex::new((Instant::now(), ledger.pulse()?)),
+            tended: Mutex::new(Instant::now()),
         })
+    }
+
+    /// Also accepts payments from streams, settled by `desk`.
+    pub fn with_streams(mut self, desk: StreamDesk) -> Self {
+        self.streams = Some(desk);
+        self
+    }
+
+    /// The stream desk, if this facilitator accepts streams.
+    pub fn streams(&self) -> Option<&StreamDesk> {
+        self.streams.as_ref()
+    }
+
+    /// The latest Pulse, read from the ledger at most every 200 ms.
+    fn now(&self) -> sion_core::ids::Pulse {
+        let mut cached = self.pulse.lock().expect("pulse lock");
+        if cached.0.elapsed() > Duration::from_millis(200) {
+            if let Ok(pulse) = self.ledger.pulse() {
+                *cached = (Instant::now(), pulse);
+            }
+        }
+        cached.1
     }
 
     /// This facilitator's network identifier.
@@ -339,12 +387,140 @@ impl<'l> Facilitator<'l> {
                 expires: now + valid_for,
             },
         );
+        let mut accepts = vec![requirements];
+        if let Some(desk) = &self.streams {
+            accepts.push(self.stream_requirements(desk, pay_to, amount, valid_for));
+        }
         PaymentRequired {
             x402_version: X402_VERSION,
             error: None,
             resource,
-            accepts: vec![requirements],
+            accepts,
             extensions: None,
+        }
+    }
+
+    /// What a payment from a stream must name: the same for every request
+    /// of a route (no nonce; a chain element pays for one position only).
+    fn stream_requirements(
+        &self,
+        desk: &StreamDesk,
+        pay_to: AccountId,
+        amount: Amount,
+        valid_for: Duration,
+    ) -> PaymentRequirements {
+        PaymentRequirements {
+            scheme: SCHEME_STREAM.into(),
+            network: self.network(),
+            asset: ASSET_USD.into(),
+            amount: amount.0.to_string(),
+            pay_to: pay_to.to_string(),
+            max_timeout_seconds: valid_for.as_secs().max(1),
+            extra: json!({
+                "chain": self.chain.to_hex(),
+                "decimals": 6,
+                "margin": desk.margin,
+            }),
+        }
+    }
+
+    /// Accepts a payment from a stream for one request to `resource` at
+    /// `price`, paid to `pay_to`: one hash per step, nothing submitted. The
+    /// desk settles later ([`Facilitator::tend`]).
+    pub fn accept_stream(
+        &self,
+        resource: &str,
+        price: Amount,
+        pay_to: AccountId,
+        payload: &PaymentPayload,
+    ) -> SettleResponse {
+        let failure = |reason: String, extensions: Option<Value>| SettleResponse {
+            success: false,
+            error_reason: Some(reason),
+            payer: None,
+            transaction: String::new(),
+            network: self.network(),
+            extensions,
+        };
+        let Some(desk) = &self.streams else {
+            return failure("this server does not accept streams".into(), None);
+        };
+        let accepted = &payload.accepted;
+        if payload.x402_version != X402_VERSION {
+            return failure(
+                format!("x402 version {} is not supported", payload.x402_version),
+                None,
+            );
+        }
+        if accepted.scheme != SCHEME_STREAM
+            || accepted.network != self.network()
+            || accepted.asset != ASSET_USD
+            || accepted.extra["chain"].as_str() != Some(self.chain.to_hex().as_str())
+        {
+            return failure(
+                format!("not a {SCHEME_STREAM} payment on {}", self.network()),
+                None,
+            );
+        }
+        if accepted.amount != price.0.to_string() || accepted.pay_to != pay_to.to_string() {
+            return failure(
+                format!("{resource} costs {price} USD paid to {}", pay_to.short()),
+                None,
+            );
+        }
+        let StreamPayment { payment, jump } = match serde_json::from_value(payload.payload.clone())
+        {
+            Ok(payment) => payment,
+            Err(e) => return failure(format!("the stream payment does not parse: {e}"), None),
+        };
+        match desk.accept(self.ledger, self.now(), &payment, price, jump.as_ref()) {
+            Ok(done) => SettleResponse {
+                success: true,
+                error_reason: None,
+                payer: Some(done.payer.to_string()),
+                transaction: String::new(),
+                network: self.network(),
+                extensions: Some(json!({
+                    "sion": {
+                        "scheme": SCHEME_STREAM,
+                        "stream": payment.stream,
+                        "position": done.position,
+                        "settled": done.settled,
+                    }
+                })),
+            },
+            Err(refused) => failure(
+                refused.reason,
+                refused.position.map(|position| {
+                    json!({ "sion": { "stream": payment.stream, "position": position } })
+                }),
+            ),
+        }
+    }
+
+    /// Checks settlements in flight and sends those that are due, at most
+    /// every 100 ms. A server calls it between requests.
+    pub fn tend(&self) {
+        let Some(desk) = &self.streams else {
+            return;
+        };
+        {
+            let mut tended = self.tended.lock().expect("tended lock");
+            if tended.elapsed() < Duration::from_millis(100) {
+                return;
+            }
+            *tended = Instant::now();
+        }
+        // A failure here is retried on the next call.
+        let _ = desk.refresh(self.ledger);
+        let _ = desk.settle(self.ledger, &self.config, self.now(), false);
+    }
+
+    /// Settles every unsettled stream payment and waits for the settlements.
+    pub fn close_out(&self) -> Result<(), CliError> {
+        match &self.streams {
+            Some(desk) => desk.close_out(self.ledger, &self.config, self.timeout),
+            None => Ok(()),
         }
     }
 
@@ -650,10 +826,18 @@ impl PaidServer {
         while !stop.load(Ordering::Relaxed) {
             let request = match self.server.recv_timeout(Duration::from_millis(50)) {
                 Ok(Some(request)) => request,
-                Ok(None) => continue,
+                Ok(None) => {
+                    facilitator.tend();
+                    continue;
+                }
                 Err(_) => break,
             };
             self.answer(request, facilitator, pay_to, routes, quote_valid_for);
+            facilitator.tend();
+        }
+        // Whatever streams paid is settled before the server goes.
+        if let Err(error) = facilitator.close_out() {
+            eprintln!("warning: {error}");
         }
     }
 
@@ -711,7 +895,10 @@ impl PaidServer {
                 return;
             }
         };
-        let settlement = facilitator.settle(&route.path, &payload);
+        let settlement = match payload.accepted.scheme.as_str() {
+            SCHEME_STREAM => facilitator.accept_stream(&route.path, route.price, pay_to, &payload),
+            _ => facilitator.settle(&route.path, &payload),
+        };
         if !settlement.success {
             let reason = settlement.error_reason.clone();
             let _ = request.respond(ask(reason, Some(&settlement)));
@@ -740,6 +927,18 @@ pub enum Payer {
         /// The agent's allotment.
         allotment: ObjectId,
     },
+    /// The next element of a payment stream the session's book holds.
+    Stream(ObjectId),
+}
+
+impl Payer {
+    /// The scheme this payer pays with.
+    pub fn scheme(&self) -> &'static str {
+        match self {
+            Payer::Stream(_) => SCHEME_STREAM,
+            _ => SCHEME_EXACT,
+        }
+    }
 }
 
 /// What a paid request returned.
@@ -756,6 +955,9 @@ pub struct Fetched {
     /// The payment the client signed, if it paid (its `PAYMENT-SIGNATURE`
     /// header value).
     pub payment: Option<String>,
+    /// The requirements it paid against (reusable for the next request of a
+    /// `stream` payment).
+    pub accepted: Option<PaymentRequirements>,
 }
 
 fn response_parts(response: ureq::Response) -> (u16, Option<String>, Option<String>, String) {
@@ -801,6 +1003,11 @@ pub fn sign_payment(
             },
             Vec::new(),
         )?,
+        Payer::Stream(_) => {
+            return Err(CliError::Usage(
+                "a stream payment is not a transaction; see fetch".into(),
+            ))
+        }
         Payer::Charter {
             agent,
             charter,
@@ -836,31 +1043,67 @@ pub fn fetch(
     chain: &Hash32,
     max_price: Amount,
 ) -> Result<Fetched, CliError> {
-    let agent = ureq::AgentBuilder::new()
+    fetch_with(session, payer, url, chain, max_price, None)
+}
+
+fn client() -> ureq::Agent {
+    ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(120))
-        .build();
-    let (status, required, _, body) = get(&agent, url, None)?;
-    if status != 402 {
-        return Ok(Fetched {
-            status,
-            body,
-            quoted: None,
-            settlement: None,
-            payment: None,
-        });
-    }
-    let quoted: PaymentRequired = match required {
-        Some(header) => decode_header(&header)?,
-        None => serde_json::from_str(&body)
-            .map_err(|e| CliError::Protocol(format!("402 without payment requirements: {e}")))?,
+        .build()
+}
+
+/// Like [`fetch`]; with `known` requirements (from an earlier request's
+/// [`Fetched::accepted`]), pays up front without asking first. Only a
+/// `stream` payment can be made this way: an `exact` quote pays once.
+pub fn fetch_with(
+    session: &mut Session<'_>,
+    payer: &Payer,
+    url: &str,
+    chain: &Hash32,
+    max_price: Amount,
+    known: Option<&PaymentRequirements>,
+) -> Result<Fetched, CliError> {
+    let agent = client();
+    let (requirements, quoted) = match known {
+        Some(requirements) if requirements.scheme == SCHEME_STREAM => (requirements.clone(), None),
+        Some(_) => {
+            return Err(CliError::Usage(
+                "only stream requirements can be paid up front".into(),
+            ))
+        }
+        None => {
+            let (status, required, _, body) = get(&agent, url, None)?;
+            if status != 402 {
+                return Ok(Fetched {
+                    status,
+                    body,
+                    quoted: None,
+                    settlement: None,
+                    payment: None,
+                    accepted: None,
+                });
+            }
+            let quoted: PaymentRequired = match required {
+                Some(header) => decode_header(&header)?,
+                None => serde_json::from_str(&body).map_err(|e| {
+                    CliError::Protocol(format!("402 without payment requirements: {e}"))
+                })?,
+            };
+            let ours = network(chain);
+            let requirements = quoted
+                .accepts
+                .iter()
+                .find(|r| r.scheme == payer.scheme() && r.network == ours && r.asset == ASSET_USD)
+                .ok_or_else(|| {
+                    CliError::Protocol(format!(
+                        "the server does not accept {} payments on {ours}",
+                        payer.scheme()
+                    ))
+                })?
+                .clone();
+            (requirements, Some(quoted))
+        }
     };
-    let ours = network(chain);
-    let requirements = quoted
-        .accepts
-        .iter()
-        .find(|r| r.scheme == SCHEME_EXACT && r.network == ours && r.asset == ASSET_USD)
-        .ok_or_else(|| CliError::Protocol(format!("the server does not accept payment on {ours}")))?
-        .clone();
     if requirements.extra["chain"].as_str() != Some(chain.to_hex().as_str()) {
         return Err(CliError::Protocol(
             "the quote names another chain identity".into(),
@@ -872,40 +1115,93 @@ pub fn fetch(
             "the server asks {price} USD, more than the {max_price} USD this client may pay"
         )));
     }
-    let signed = sign_payment(session, payer, &requirements)?;
-    let payload = PaymentPayload {
-        x402_version: X402_VERSION,
-        resource: Some(quoted.resource.clone()),
-        accepted: requirements,
-        payload: json!({ "transaction": hex::encode(encode(&signed)) }),
-        extensions: None,
+    let resource = quoted.as_ref().map(|q| q.resource.clone());
+    // A stream pays `price / unit` steps per request.
+    let steps = match payer {
+        Payer::Stream(stream) => {
+            let record = session.streams.record(stream)?;
+            if record.payee != parse_account(&requirements.pay_to)? {
+                return Err(CliError::Usage(format!(
+                    "stream {} does not pay {}",
+                    stream.short(),
+                    requirements.pay_to
+                )));
+            }
+            let unit = record.unit;
+            if unit == Amount::ZERO || price.0 % unit.0 != 0 {
+                return Err(CliError::Usage(format!(
+                    "the price, {price} USD, is not a whole number of the stream's {unit} USD steps"
+                )));
+            }
+            u64::try_from(price.0 / unit.0).map_err(|_| CliError::Usage("too many steps".into()))?
+        }
+        _ => 0,
     };
-    let payment = encode_header(&payload);
-    let result = get(&agent, url, Some(&payment));
-    let name = match payer {
-        Payer::Wallet(name) => name,
-        Payer::Charter { agent, .. } => agent,
-    };
-    session.wallet(name).settle();
-    let (status, _, settled, body) = result?;
-    let settlement = settled
-        .map(|header| decode_header::<SettleResponse>(&header))
-        .transpose()?;
-    Ok(Fetched {
-        status,
-        body,
-        quoted: Some(quoted),
-        settlement,
-        payment: Some(payment),
-    })
+    let mut retried = false;
+    loop {
+        let body = match payer {
+            Payer::Stream(stream) => {
+                serde_json::to_value(session.streams.pay_with_jump(stream, steps)?)
+                    .expect("serializable")
+            }
+            _ => {
+                let signed = sign_payment(session, payer, &requirements)?;
+                json!({ "transaction": hex::encode(encode(&signed)) })
+            }
+        };
+        let payload = PaymentPayload {
+            x402_version: X402_VERSION,
+            resource: resource.clone(),
+            accepted: requirements.clone(),
+            payload: body,
+            extensions: None,
+        };
+        let payment = encode_header(&payload);
+        let result = get(&agent, url, Some(&payment));
+        match payer {
+            Payer::Wallet(name) | Payer::Charter { agent: name, .. } => {
+                session.wallet(name).settle()
+            }
+            Payer::Stream(_) => {}
+        }
+        let (status, _, settled, body) = result?;
+        let settlement = settled
+            .map(|header| decode_header::<SettleResponse>(&header))
+            .transpose()?;
+        // A refused stream payment names the position the server accepted
+        // up to. An honest client goes back there (re-revealing nothing
+        // new), and pays once more if it had been ahead of the server.
+        if let (Payer::Stream(stream), Some(refused)) = (
+            payer,
+            settlement.as_ref().filter(|s| !s.success && status == 402),
+        ) {
+            let theirs = refused
+                .extensions
+                .as_ref()
+                .and_then(|e| e["sion"]["position"].as_u64());
+            if let Some(position) = theirs {
+                let ours = session.streams.record(stream)?.revealed;
+                session.streams.resync(stream, position)?;
+                if !retried && position.saturating_add(steps) < ours {
+                    retried = true;
+                    continue;
+                }
+            }
+        }
+        return Ok(Fetched {
+            status,
+            body,
+            quoted,
+            settlement,
+            payment: Some(payment),
+            accepted: Some(requirements),
+        });
+    }
 }
 
 /// Sends a payment header again, as a replaying client would.
 pub fn replay(url: &str, payment: &str) -> Result<Fetched, CliError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(120))
-        .build();
-    let (status, required, settled, body) = get(&agent, url, Some(payment))?;
+    let (status, required, settled, body) = get(&client(), url, Some(payment))?;
     Ok(Fetched {
         status,
         body,
@@ -916,6 +1212,7 @@ pub fn replay(url: &str, payment: &str) -> Result<Fetched, CliError> {
             .map(|header| decode_header::<SettleResponse>(&header))
             .transpose()?,
         payment: Some(payment.to_string()),
+        accepted: None,
     })
 }
 

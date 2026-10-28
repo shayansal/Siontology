@@ -444,6 +444,44 @@ pub enum Event {
         /// Rotations of this shard in the epoch so far.
         rotation: u32,
     },
+    /// A payment stream was opened.
+    StreamOpened {
+        /// The stream.
+        stream: ObjectId,
+        /// Who escrowed.
+        payer: AccountId,
+        /// Who is paid.
+        payee: AccountId,
+        /// The escrow.
+        deposit: Amount,
+    },
+    /// A payee settled steps of a stream.
+    StreamSettled {
+        /// The stream.
+        stream: ObjectId,
+        /// The position settled to.
+        position: u64,
+        /// The chain element at that position.
+        head: Hash32,
+        /// What the payee received.
+        amount: Amount,
+    },
+    /// A payer added to a stream's escrow or extended it.
+    StreamToppedUp {
+        /// The stream.
+        stream: ObjectId,
+        /// Added to the escrow.
+        deposit: Amount,
+        /// The stream's last Pulse.
+        until: Pulse,
+    },
+    /// A stream was closed and the rest of its escrow returned.
+    StreamClosed {
+        /// The stream.
+        stream: ObjectId,
+        /// Returned to the payer.
+        refund: Amount,
+    },
 }
 
 /// The effects of one transaction.
@@ -1958,6 +1996,238 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 amount: stake,
                 reporter: tx.sender,
                 reward: paid[0],
+            });
+        }
+        TxKind::OpenStream {
+            payee,
+            asset,
+            unit,
+            length,
+            anchor,
+            deposit,
+            until,
+            checkpoints,
+        } => {
+            if *unit == Amount::ZERO || *deposit == Amount::ZERO {
+                return Err(ExecError::Invalid(
+                    "a stream needs a positive unit and deposit".into(),
+                ));
+            }
+            if *length == 0 || *length > crate::stream::MAX_STREAM_LENGTH {
+                return Err(ExecError::Invalid(format!(
+                    "a stream's length must be between 1 and {}",
+                    crate::stream::MAX_STREAM_LENGTH
+                )));
+            }
+            if let Some(c) = checkpoints {
+                if c.spacing == 0
+                    || c.spacing > *length
+                    || length / c.spacing >= crate::stream::MAX_CHECKPOINTS
+                {
+                    return Err(ExecError::Invalid(format!(
+                        "checkpoints need a spacing between 1 and the length, and at most {} of them",
+                        crate::stream::MAX_CHECKPOINTS
+                    )));
+                }
+            }
+            let latest = pulse.0.saturating_add(crate::market::MAX_PERIOD);
+            if until.0 <= pulse.0 || until.0 > latest {
+                return Err(ExecError::Invalid(format!(
+                    "a stream must last between 1 and {} Pulses",
+                    crate::market::MAX_PERIOD
+                )));
+            }
+            run.draw(*asset, *deposit)?;
+            let stream = created_id(&run.digest, run.next_index);
+            run.create(
+                Owner::Shared(object_domain("stream", &stream)),
+                ObjectData::Stream(crate::stream::Stream {
+                    payer: tx.sender,
+                    payee: *payee,
+                    asset: *asset,
+                    unit: *unit,
+                    length: *length,
+                    position: 0,
+                    head: *anchor,
+                    escrow: *deposit,
+                    until: *until,
+                    open: true,
+                    spacing: checkpoints.map(|c| c.spacing).unwrap_or(0),
+                    checkpoints: checkpoints
+                        .map(|c| c.root)
+                        .unwrap_or(sion_core::hash::Hash32::ZERO),
+                }),
+            );
+            run.event(Event::StreamOpened {
+                stream,
+                payer: tx.sender,
+                payee: *payee,
+                deposit: *deposit,
+            });
+        }
+        TxKind::SettleStream {
+            stream,
+            position,
+            value,
+            jump,
+        } => {
+            let mut object = run.load(stream)?;
+            let ObjectData::Stream(state) = &mut object.data else {
+                return Err(ExecError::Invalid(format!("{stream} is not a stream")));
+            };
+            if !state.open {
+                return Err(ExecError::Invalid("the stream is closed".into()));
+            }
+            if state.payee != tx.sender {
+                return Err(ExecError::Unauthorized(
+                    "only the stream's payee may settle it".into(),
+                ));
+            }
+            if pulse > state.until {
+                return Err(ExecError::Invalid("the stream has expired".into()));
+            }
+            if *position <= state.position || *position > state.length {
+                return Err(ExecError::Invalid(format!(
+                    "position {position} is not between {} and {}",
+                    state.position + 1,
+                    state.length
+                )));
+            }
+            let steps = position - state.position;
+            // The hashes this settlement costs the validators.
+            let hashes = match jump {
+                None if steps > crate::stream::MAX_SETTLE_STEPS => {
+                    return Err(ExecError::Invalid(format!(
+                        "at most {} steps per settlement without a jump",
+                        crate::stream::MAX_SETTLE_STEPS
+                    )));
+                }
+                None => steps,
+                Some(jump) => crate::stream::jump_hashes(state, *position, jump).ok_or_else(
+                    || {
+                        ExecError::Invalid(
+                            "the jump does not apply: no checkpoints, a checkpoint not below the position, or a path too long"
+                                .into(),
+                        )
+                    },
+                )?,
+            };
+            let required = run.ctx.config.min_fee(tx.size()).0.saturating_add(
+                crate::stream::STREAM_STEP_FEE
+                    .0
+                    .saturating_mul(u128::from(hashes)),
+            );
+            if tx.fee.0 < required {
+                return Err(ExecError::Invalid(format!(
+                    "settling with {hashes} hashes needs a fee of at least {}",
+                    Amount(required)
+                )));
+            }
+            let genuine = match jump {
+                None => crate::stream::walk(value, steps) == state.head,
+                Some(jump) => crate::stream::verify_jump(state, *position, value, jump),
+            };
+            if !genuine {
+                return Err(ExecError::Invalid(
+                    "the value is not the chain element at that position".into(),
+                ));
+            }
+            let amount = state
+                .unit
+                .0
+                .checked_mul(u128::from(steps))
+                .map(Amount)
+                .ok_or_else(|| ExecError::Invalid("the amount overflows".into()))?;
+            if amount > state.escrow {
+                return Err(ExecError::Invalid(format!(
+                    "{amount} is more than the {} left in escrow",
+                    state.escrow
+                )));
+            }
+            state.escrow = state.escrow.checked_sub(amount)?;
+            state.position = *position;
+            state.head = *value;
+            let asset = state.asset;
+            run.store(object);
+            run.mint_coin(tx.sender, asset, amount);
+            run.event(Event::StreamSettled {
+                stream: *stream,
+                position: *position,
+                head: *value,
+                amount,
+            });
+        }
+        TxKind::TopUpStream {
+            stream,
+            deposit,
+            until,
+        } => {
+            let mut object = run.load(stream)?;
+            let ObjectData::Stream(state) = &mut object.data else {
+                return Err(ExecError::Invalid(format!("{stream} is not a stream")));
+            };
+            if !state.open {
+                return Err(ExecError::Invalid("the stream is closed".into()));
+            }
+            if state.payer != tx.sender {
+                return Err(ExecError::Unauthorized(
+                    "only the stream's payer may top it up".into(),
+                ));
+            }
+            if pulse > state.until {
+                return Err(ExecError::Invalid("the stream has expired".into()));
+            }
+            let latest = pulse.0.saturating_add(crate::market::MAX_PERIOD);
+            if *until < state.until || until.0 > latest {
+                return Err(ExecError::Invalid(format!(
+                    "the new last Pulse must be between {} and {latest}",
+                    state.until
+                )));
+            }
+            if *deposit == Amount::ZERO && *until == state.until {
+                return Err(ExecError::Invalid(
+                    "a top-up must add funds or extend the stream".into(),
+                ));
+            }
+            let asset = state.asset;
+            if *deposit > Amount::ZERO {
+                state.escrow = state.escrow.checked_add(*deposit)?;
+            }
+            state.until = *until;
+            if *deposit > Amount::ZERO {
+                run.draw(asset, *deposit)?;
+            }
+            run.store(object);
+            run.event(Event::StreamToppedUp {
+                stream: *stream,
+                deposit: *deposit,
+                until: *until,
+            });
+        }
+        TxKind::CloseStream { stream } => {
+            let mut object = run.load(stream)?;
+            let ObjectData::Stream(state) = &mut object.data else {
+                return Err(ExecError::Invalid(format!("{stream} is not a stream")));
+            };
+            if !state.open {
+                return Err(ExecError::Invalid("the stream is closed".into()));
+            }
+            let by_payee = state.payee == tx.sender;
+            let by_payer_after_expiry = state.payer == tx.sender && pulse > state.until;
+            if !by_payee && !by_payer_after_expiry {
+                return Err(ExecError::Unauthorized(
+                    "only the payee, or the payer once the stream has expired, may close it".into(),
+                ));
+            }
+            let refund = state.escrow;
+            let (payer, asset) = (state.payer, state.asset);
+            state.escrow = Amount::ZERO;
+            state.open = false;
+            run.store(object);
+            run.mint_coin(payer, asset, refund);
+            run.event(Event::StreamClosed {
+                stream: *stream,
+                refund,
             });
         }
     }

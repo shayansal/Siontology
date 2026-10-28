@@ -129,6 +129,8 @@ pub enum ObjectData {
     Validators(Box<crate::validators::ValidatorSet>),
     /// Forced-inclusion obligations.
     Forced(Box<crate::validators::ForcedObligations>),
+    /// A payment stream.
+    Stream(crate::stream::Stream),
 }
 
 /// Something the protocol must do at a given Pulse.

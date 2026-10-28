@@ -38,6 +38,10 @@ forbidden = [
     (r"\.(lane_members|lane_committee|lane_committees|consensus_committee|epoch_end|rotation)\s*\(|ValidatorSet::\w+\s*\(",
      "ValidatorSet methods"),
     (r"\bposted_intents\b", "sion_exec::pulse::posted_intents"),
+    (r"sion_exec::stream::(?!\{|Stream\b|Checkpoints\b|Jump\b|MAX_STREAM_LENGTH\b|MAX_SETTLE_STEPS\b|STREAM_STEP_FEE\b|STEP_DOMAIN\b|MAX_CHECKPOINTS\b|MAX_CHECKPOINT_DEPTH\b|CHECKPOINT_TAG\b)\w+",
+     "sion_exec::stream helpers (only the Stream, Checkpoints and Jump types and the §5.31 constants are allowed)"),
+    (r"\bPayerChain\b|\bextends\s*\(|\bcheckpoint_leaf\b|\bverify_jump\b|\bjump_hashes\b|\bcheckpoint_count\b|\bwalk\s*\(",
+     "sion_exec::stream helpers"),
 ]
 
 # The sion_exec::pulse items the library may use: type definitions only

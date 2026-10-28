@@ -116,6 +116,15 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::WithdrawStake { .. } => "WithdrawStake",
         TxKind::ClaimRewards { .. } => "ClaimRewards",
         TxKind::ReportEquivocation { .. } => "ReportEquivocation",
+        TxKind::OpenStream {
+            checkpoints: Some(_),
+            ..
+        } => "OpenStream(checkpoints)",
+        TxKind::OpenStream { .. } => "OpenStream",
+        TxKind::SettleStream { jump: Some(_), .. } => "SettleStream(jump)",
+        TxKind::SettleStream { .. } => "SettleStream",
+        TxKind::TopUpStream { .. } => "TopUpStream",
+        TxKind::CloseStream { .. } => "CloseStream",
     }
 }
 
@@ -2286,6 +2295,536 @@ fn bounded(chunk_size: usize) -> Harness {
 #[test]
 fn bounded_totals_create_spend_return_rebalance() {
     bounded(2).summary("bounded");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario (v1.6): payment streams
+// ---------------------------------------------------------------------------
+
+/// The stream a successful OpenStream created.
+fn opened_stream(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::StreamOpened { stream, .. } => Some(*stream),
+                _ => None,
+            })
+        })
+        .expect("stream opened")
+}
+
+fn stream_state(h: &Harness, id: &ObjectId) -> sion_exec::stream::Stream {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Stream(stream) => stream.clone(),
+        other => panic!("not a stream: {other:?}"),
+    }
+}
+
+fn open_stream(
+    h: &mut Harness,
+    payer: &str,
+    payee: &str,
+    chain: &sion_exec::stream::PayerChain,
+    deposit: Amount,
+    until: u64,
+) -> SignedTransaction {
+    let payee = h.id(payee);
+    h.tx(
+        payer,
+        TxKind::OpenStream {
+            payee,
+            asset: usd(),
+            unit: cents(1),
+            length: chain.length(),
+            anchor: chain.anchor(),
+            deposit,
+            until: Pulse(until),
+            checkpoints: chain.checkpoints(),
+        },
+    )
+}
+
+fn settle_stream(
+    h: &mut Harness,
+    who: &str,
+    stream: ObjectId,
+    position: u64,
+    value: Hash32,
+) -> SignedTransaction {
+    h.tx(
+        who,
+        TxKind::SettleStream {
+            stream,
+            position,
+            value,
+            jump: None,
+        },
+    )
+}
+
+fn jump_stream(
+    h: &mut Harness,
+    who: &str,
+    stream: ObjectId,
+    position: u64,
+    value: Hash32,
+    jump: sion_exec::stream::Jump,
+) -> SignedTransaction {
+    h.tx(
+        who,
+        TxKind::SettleStream {
+            stream,
+            position,
+            value,
+            jump: Some(jump),
+        },
+    )
+}
+
+fn streams(chunk_size: usize) -> Harness {
+    use sion_exec::stream::{walk, PayerChain};
+    let mut h = Harness::new(&["payer", "api", "outsider"], 10_000, 8, chunk_size);
+    let mut chain = PayerChain::new(Hash32([0x5a; 32]), 100);
+    let mut long = PayerChain::new(Hash32([0x5b; 32]), 70_000);
+    let now = h.pulse_number();
+
+    // Pulse: one stream of 100 steps of 0.01 USD with 0.50 USD in escrow,
+    // one long stream, and opens that break §5.31 step 1.
+    let s1 = open_stream(&mut h, "payer", "api", &chain, cents(50), now + 30);
+    let s2 = open_stream(&mut h, "payer", "api", &long, units(1_000), now + 30);
+    let anchor = chain.anchor();
+    let api = h.id("api");
+    let bad = |h: &mut Harness, unit: Amount, length: u64, deposit: Amount, until: u64| {
+        h.tx(
+            "outsider",
+            TxKind::OpenStream {
+                payee: api,
+                asset: usd(),
+                unit,
+                length,
+                anchor,
+                deposit,
+                until: Pulse(until),
+                checkpoints: None,
+            },
+        )
+    };
+    let zero_unit = bad(&mut h, Amount::ZERO, 10, cents(1), now + 5);
+    let zero_length = bad(&mut h, cents(1), 0, cents(1), now + 5);
+    let past = bad(&mut h, cents(1), 10, cents(1), now + 1);
+    let too_long = bad(&mut h, cents(1), 10, cents(1), now + 2 + 1_000_001);
+    let out = h.pulse(vec![
+        s1.clone(),
+        s2.clone(),
+        zero_unit.clone(),
+        zero_length.clone(),
+        past.clone(),
+        too_long.clone(),
+    ]);
+    expect(&out, &s1, Outcome::Success);
+    expect(&out, &s2, Outcome::Success);
+    for tx in [&zero_unit, &zero_length, &past, &too_long] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    let (one, two) = (opened_stream(&out, &s1), opened_stream(&out, &s2));
+    let before = h.balance("api", &usd());
+
+    // Off the ledger the payer reveals elements 1..=10; the api checks each
+    // with one hash. It settles 10 steps: 0.10 USD.
+    let mut last = anchor;
+    for position in 1..=10 {
+        let value = chain.element(position).unwrap();
+        assert_eq!(walk(&value, 1), last);
+        last = value;
+    }
+    let w10 = chain.element(10).unwrap();
+    let ok = settle_stream(&mut h, "api", one, 10, w10);
+    let thief = settle_stream(&mut h, "outsider", one, 10, w10);
+    let wrong = settle_stream(&mut h, "api", two, 3, w10);
+    let out = h.pulse(vec![ok.clone(), thief.clone(), wrong.clone()]);
+    expect(&out, &ok, Outcome::Success);
+    expect(&out, &thief, Outcome::Failed);
+    expect(&out, &wrong, Outcome::Failed);
+    let fee = |out: &PulseOutput, tx: &SignedTransaction| {
+        out.effects
+            .iter()
+            .find(|e| e.digest == tx.digest())
+            .unwrap()
+            .fee
+    };
+    // The api paid a fee for both of its settlements, the failed one too.
+    assert_eq!(
+        h.balance("api", &usd()).0,
+        before.0 + cents(10).0 - fee(&out, &ok).0 - fee(&out, &wrong).0
+    );
+    let state = stream_state(&h, &one);
+    assert_eq!(
+        (state.position, state.head, state.escrow),
+        (10, w10, cents(40))
+    );
+    // A third party checks any paid element against the settled head.
+    let w4 = chain.element(4).unwrap();
+    assert_eq!(walk(&state.head, 10 - 4), w4);
+
+    // §5.32 steps 2, 3 and 5: not past the settled position, not beyond
+    // the length, not more than the escrow, not more than 65,536 steps,
+    // and a fee per step.
+    let behind = settle_stream(&mut h, "api", one, 10, w10);
+    let beyond = settle_stream(&mut h, "api", one, 101, w10);
+    let w60 = chain.element(60).unwrap();
+    let over_escrow = settle_stream(&mut h, "api", one, 60, w60);
+    let out = h.pulse(vec![behind.clone(), beyond.clone(), over_escrow.clone()]);
+    for tx in [&behind, &beyond, &over_escrow] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    let w65537 = long.element(65_537).unwrap();
+    let too_many = settle_stream(&mut h, "api", two, 65_537, w65537);
+    let w600 = long.element(600).unwrap();
+    let cheap = by_hand(
+        &mut h,
+        "api",
+        TxKind::SettleStream {
+            stream: two,
+            position: 600,
+            value: w600,
+            jump: None,
+        },
+        Vec::new(),
+    );
+    let out = h.pulse(vec![too_many.clone(), cheap.clone()]);
+    expect(&out, &too_many, Outcome::Failed);
+    expect(&out, &cheap, Outcome::Failed);
+    let w65536 = long.element(65_536).unwrap();
+    let most = settle_stream(&mut h, "api", two, 65_536, w65536);
+    let out = h.pulse(vec![most.clone()]);
+    expect(&out, &most, Outcome::Success);
+    assert_eq!(stream_state(&h, &two).position, 65_536);
+
+    // §5.33: the payer adds 1 USD and extends the stream; the payee, a
+    // shorter last Pulse and a top-up that changes nothing are refused.
+    let until = stream_state(&h, &one).until.0;
+    let top = h.tx(
+        "payer",
+        TxKind::TopUpStream {
+            stream: one,
+            deposit: units(1),
+            until: Pulse(until + 10),
+        },
+    );
+    let by_payee = h.tx(
+        "api",
+        TxKind::TopUpStream {
+            stream: one,
+            deposit: cents(1),
+            until: Pulse(until),
+        },
+    );
+    let out = h.pulse(vec![top.clone(), by_payee.clone()]);
+    expect(&out, &top, Outcome::Success);
+    expect(&out, &by_payee, Outcome::Failed);
+    let shorter = h.tx(
+        "payer",
+        TxKind::TopUpStream {
+            stream: one,
+            deposit: cents(1),
+            until: Pulse(until),
+        },
+    );
+    let nothing = h.tx(
+        "payer",
+        TxKind::TopUpStream {
+            stream: one,
+            deposit: Amount::ZERO,
+            until: Pulse(until + 10),
+        },
+    );
+    let out = h.pulse(vec![shorter.clone(), nothing.clone()]);
+    expect(&out, &shorter, Outcome::Failed);
+    expect(&out, &nothing, Outcome::Failed);
+    assert_eq!(stream_state(&h, &one).escrow, cents(140));
+
+    // Now 50 more steps fit in the escrow.
+    let late = settle_stream(&mut h, "api", one, 60, w60);
+    let early_close = h.tx("payer", TxKind::CloseStream { stream: one });
+    let out = h.pulse(vec![late.clone(), early_close.clone()]);
+    expect(&out, &late, Outcome::Success);
+    expect(&out, &early_close, Outcome::Failed);
+
+    // §5.34: the payee closes; the payer gets the rest back; a closed
+    // stream refuses everything.
+    let payer_before = h.balance("payer", &usd());
+    let close = h.tx("api", TxKind::CloseStream { stream: one });
+    let out = h.pulse(vec![close.clone()]);
+    expect(&out, &close, Outcome::Success);
+    assert_eq!(
+        h.balance("payer", &usd()),
+        payer_before.checked_add(cents(90)).unwrap()
+    );
+    let w70 = chain.element(70).unwrap();
+    let after_close = settle_stream(&mut h, "api", one, 70, w70);
+    let top_closed = h.tx(
+        "payer",
+        TxKind::TopUpStream {
+            stream: one,
+            deposit: cents(1),
+            until: Pulse(until + 20),
+        },
+    );
+    let close_again = h.tx("api", TxKind::CloseStream { stream: one });
+    let out = h.pulse(vec![
+        after_close.clone(),
+        top_closed.clone(),
+        close_again.clone(),
+    ]);
+    for tx in [&after_close, &top_closed, &close_again] {
+        expect(&out, tx, Outcome::Failed);
+    }
+
+    // The long stream expires: the payee can no longer settle, an outsider
+    // cannot close it, and the payer takes back the rest.
+    let end = stream_state(&h, &two).until.0;
+    h.advance_to(end + 1);
+    let w70000 = long.element(70_000).unwrap();
+    let expired = settle_stream(&mut h, "api", two, 70_000, w70000);
+    let stranger = h.tx("outsider", TxKind::CloseStream { stream: two });
+    let reclaim = h.tx("payer", TxKind::CloseStream { stream: two });
+    let out = h.pulse(vec![expired.clone(), stranger.clone(), reclaim.clone()]);
+    expect(&out, &expired, Outcome::Failed);
+    expect(&out, &stranger, Outcome::Failed);
+    expect(&out, &reclaim, Outcome::Success);
+    assert_eq!(stream_state(&h, &two).escrow, Amount::ZERO);
+    assert!(!stream_state(&h, &two).open);
+
+    h.assert_covered(&[
+        "OpenStream/ok",
+        "OpenStream/failed",
+        "SettleStream/ok",
+        "SettleStream/failed",
+        "TopUpStream/ok",
+        "TopUpStream/failed",
+        "CloseStream/ok",
+        "CloseStream/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn streams_open_settle_top_up_and_close() {
+    streams(2).summary("streams");
+}
+
+#[test]
+fn streams_one_transaction_per_chunk() {
+    streams(1).summary("streams (1 per chunk)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: stream checkpoints (spec v1.7)
+// ---------------------------------------------------------------------------
+
+/// §5.31 and §5.32 with checkpoints: opening with a commitment to every
+/// `spacing`-th element, settling by a jump to a checkpoint (any number of
+/// steps for a bounded number of hashes), and every way a jump can be wrong.
+fn stream_checkpoints(chunk_size: usize) -> Harness {
+    use sion_exec::stream::{walk, Checkpoints, Jump, PayerChain, MAX_CHECKPOINTS};
+    let mut h = Harness::new(&["payer", "api", "outsider"], 10_000, 8, chunk_size);
+    let mut chain = PayerChain::with_checkpoints(Hash32([0x6a; 32]), 10_000, 64);
+    let mut plain = PayerChain::new(Hash32([0x6b; 32]), 1_000);
+    // Longer than one walked settlement may cover: 200,000 steps.
+    let mut long = PayerChain::with_checkpoints(Hash32([0x6c; 32]), 200_000, 1_024);
+    let now = h.pulse_number();
+    let api = h.id("api");
+    let s1 = open_stream(&mut h, "payer", "api", &chain, units(90), now + 40);
+    let s2 = open_stream(&mut h, "payer", "api", &plain, units(10), now + 40);
+    let s3 = open_stream(&mut h, "payer", "api", &long, units(2_100), now + 40);
+    // §5.31 step 1: a spacing of 0, longer than the chain, or more than
+    // 2^20 checkpoints.
+    let anchor = chain.anchor();
+    let bad = |h: &mut Harness, length: u64, spacing: u64| {
+        h.tx(
+            "outsider",
+            TxKind::OpenStream {
+                payee: api,
+                asset: usd(),
+                unit: cents(1),
+                length,
+                anchor,
+                deposit: cents(1),
+                until: Pulse(now + 5),
+                checkpoints: Some(Checkpoints {
+                    spacing,
+                    root: Hash32([1; 32]),
+                }),
+            },
+        )
+    };
+    let no_spacing = bad(&mut h, 100, 0);
+    let wide = bad(&mut h, 100, 101);
+    let crowded = bad(&mut h, MAX_CHECKPOINTS * 2, 2);
+    let most = bad(&mut h, MAX_CHECKPOINTS * 2 - 1, 2);
+    let out = h.pulse(vec![
+        s1.clone(),
+        s2.clone(),
+        s3.clone(),
+        no_spacing.clone(),
+        wide.clone(),
+        crowded.clone(),
+        most.clone(),
+    ]);
+    for tx in [&s1, &s2, &s3, &most] {
+        expect(&out, tx, Outcome::Success);
+    }
+    for tx in [&no_spacing, &wide, &crowded] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    let (one, two, three) = (
+        opened_stream(&out, &s1),
+        opened_stream(&out, &s2),
+        opened_stream(&out, &s3),
+    );
+    let state = stream_state(&h, &one);
+    assert_eq!(state.spacing, 64);
+    assert_eq!(state.checkpoints, chain.checkpoints().unwrap().root);
+    assert_eq!(state.checkpoint_count(), 157);
+
+    // A jump to position 5,000: checkpoint 78 (5,000 = 78 × 64 + 8).
+    let w5000 = chain.element(5_000).unwrap();
+    let j78 = chain.jump(78).unwrap();
+    let ok = jump_stream(&mut h, "api", one, 5_000, w5000, j78.clone());
+    let fee_paid = ok.tx.fee;
+    // The wrong checkpoint (more than one spacing below), a checkpoint
+    // above the position, a bent path, a path that is too long, and a
+    // stream without checkpoints.
+    let low = jump_stream(&mut h, "api", one, 5_000, w5000, chain.jump(77).unwrap());
+    let high = jump_stream(&mut h, "api", one, 5_000, w5000, chain.jump(79).unwrap());
+    let mut bent = j78.clone();
+    bent.path[1] = walk(&bent.path[1], 1);
+    let bent = jump_stream(&mut h, "api", one, 5_000, w5000, bent);
+    let mut padded = j78.clone();
+    padded
+        .path
+        .extend(std::iter::repeat(Hash32([2; 32])).take(21 - padded.path.len()));
+    let padded = jump_stream(&mut h, "api", one, 5_000, w5000, padded);
+    let w500 = plain.element(500).unwrap();
+    let no_tree = jump_stream(
+        &mut h,
+        "api",
+        two,
+        500,
+        w500,
+        Jump {
+            index: 7,
+            path: Vec::new(),
+        },
+    );
+    // Consensus orders the failures first, then the good jump.
+    let out = h.pulse(vec![
+        low.clone(),
+        high.clone(),
+        bent.clone(),
+        padded.clone(),
+        no_tree.clone(),
+        ok.clone(),
+    ]);
+    for tx in [&low, &high, &bent, &padded, &no_tree] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    expect(&out, &ok, Outcome::Success);
+    let state = stream_state(&h, &one);
+    assert_eq!((state.position, state.head), (5_000, w5000));
+    assert_eq!(state.escrow, units(40));
+    // The jump cost 8 steps, the leaf and the path in hashes, not 5,000.
+    let hashes = 8 + 1 + j78.path.len() as u128;
+    let floor = h.chain.state.config.min_fee(ok.tx.size()).0 + 2 * hashes;
+    assert_eq!(fee_paid.0, floor);
+
+    // §5.32 step 4: a jump pays for its hashes. One fee short fails.
+    let w5100 = chain.element(5_100).unwrap();
+    let j79 = chain.jump(79).unwrap();
+    let mut short = jump_stream(&mut h, "api", one, 5_100, w5100, j79.clone()).tx;
+    short.fee = Amount(short.fee.0 - 1);
+    let short = h.resign("api", short);
+    let out = h.pulse(vec![short.clone()]);
+    expect(&out, &short, Outcome::Failed);
+
+    // A walk still works after a jump, and a jump may start below the
+    // settled position: walk 30 steps to 5,030, then jump to 5,100 from
+    // checkpoint 79 (5,056), which lies between them.
+    let w5030 = chain.element(5_030).unwrap();
+    let walked = settle_stream(&mut h, "api", one, 5_030, w5030);
+    let out = h.pulse(vec![walked.clone()]);
+    expect(&out, &walked, Outcome::Success);
+    let w5060 = chain.element(5_060).unwrap();
+    let j79b = chain.jump(79).unwrap();
+    let across = jump_stream(&mut h, "api", one, 5_060, w5060, j79b);
+    let out = h.pulse(vec![across.clone()]);
+    expect(&out, &across, Outcome::Success);
+    // And one whose checkpoint lies below the settled position: from
+    // 5,060, jump to 5,100 by checkpoint 79 again.
+    let again = jump_stream(&mut h, "api", one, 5_100, w5100, j79);
+    let out = h.pulse(vec![again.clone()]);
+    expect(&out, &again, Outcome::Success);
+
+    // The escrow still bounds a jump: the 39 USD left cover 3,900 steps,
+    // not the 4,900 up to 10,000.
+    let w10000 = chain.element(10_000).unwrap();
+    let j156 = chain.jump(156).unwrap();
+    let too_much = jump_stream(&mut h, "api", one, 10_000, w10000, j156.clone());
+    let out = h.pulse(vec![too_much.clone()]);
+    expect(&out, &too_much, Outcome::Failed);
+
+    // The long stream: 199,999 steps in one settlement, beyond what a walk
+    // may cover (65,536 steps), for about 1,040 hashes.
+    let w199999 = long.element(199_999).unwrap();
+    let walk_far = settle_stream(&mut h, "api", three, 199_999, w199999);
+    let jump_far = jump_stream(
+        &mut h,
+        "api",
+        three,
+        199_999,
+        w199999,
+        long.jump(195).unwrap(),
+    );
+    let out = h.pulse(vec![walk_far.clone(), jump_far.clone()]);
+    expect(&out, &walk_far, Outcome::Failed);
+    expect(&out, &jump_far, Outcome::Success);
+    let state = stream_state(&h, &three);
+    assert_eq!(state.position, 199_999);
+    assert_eq!(
+        state.escrow,
+        units(2_100).checked_sub(Amount(199_999 * 10_000)).unwrap()
+    );
+    // The last step, by a walk of one hash.
+    let top = long.element(200_000).unwrap();
+    let last = settle_stream(&mut h, "api", three, 200_000, top);
+    let out = h.pulse(vec![last.clone()]);
+    expect(&out, &last, Outcome::Success);
+    assert_eq!(stream_state(&h, &three).position, 200_000);
+
+    h.assert_covered(&[
+        "OpenStream(checkpoints)/ok",
+        "OpenStream(checkpoints)/failed",
+        "OpenStream/ok",
+        "SettleStream(jump)/ok",
+        "SettleStream(jump)/failed",
+        "SettleStream/ok",
+        "SettleStream/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn stream_checkpoints_settle_by_jump() {
+    stream_checkpoints(2).summary("stream checkpoints");
+}
+
+#[test]
+fn stream_checkpoints_one_transaction_per_chunk() {
+    stream_checkpoints(1).summary("stream checkpoints (1 per chunk)");
 }
 
 // ---------------------------------------------------------------------------

@@ -1458,3 +1458,235 @@ fn bounds_keep_user_chosen_numbers_far_from_overflow() {
     let out = chain.pulse(vec![deep.clone()]).unwrap();
     assert_failed(&out, &deep, "too deep");
 }
+
+fn stream_state(chain: &Chain, id: &ObjectId) -> sion_exec::stream::Stream {
+    match &chain.state.objects[id].data {
+        ObjectData::Stream(stream) => stream.clone(),
+        other => panic!("not a stream: {other:?}"),
+    }
+}
+
+/// An agent pays an API one tenth of a cent per request from a stream: each
+/// payment is one chain element, checked by the API with one hash, and the
+/// API settles thousands of them in a transaction. Anyone holding a request
+/// receipt can check it against the settled head later.
+#[test]
+fn a_stream_pays_an_api_per_request_with_one_hash_each() {
+    use sion_exec::stream::{extends, step, walk, PayerChain};
+
+    let mut chain = Chain::new(&["agent", "api", "auditor"], 100, 2);
+    let api = chain.id("api");
+    let mut payer = PayerChain::new(hash_domain("test/stream/seed", b"agent"), 100_000);
+    let unit = Amount(1_000); // 0.001 USD
+    let open = chain
+        .tx(
+            "agent",
+            TxKind::OpenStream {
+                payee: api,
+                asset: usd(),
+                unit,
+                length: payer.length(),
+                anchor: payer.anchor(),
+                deposit: units(10),
+                until: Pulse(chain.state.pulse.0 + 50),
+                checkpoints: None,
+            },
+        )
+        .unwrap();
+    let agent_before = chain.balance("agent", &usd());
+    let out = chain.pulse(vec![open.clone()]).unwrap();
+    assert_success(&out, &open);
+    let stream = all_events(&out)
+        .iter()
+        .find_map(|e| match e {
+            Event::StreamOpened { stream, .. } => Some(*stream),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        chain.balance("agent", &usd()),
+        minus(minus(agent_before, units(10)), open.tx.fee)
+    );
+
+    // Off the ledger: 2,500 requests, each paid by the next element and
+    // checked by the API with one hash against the last one it accepted.
+    let (mut last, mut hashes) = (payer.anchor(), 0u64);
+    let mut receipts = Vec::new();
+    for position in 1..=2_500u64 {
+        let value = payer.element(position).unwrap();
+        hashes += 1;
+        assert_eq!(step(&value), last, "payment {position}");
+        last = value;
+        if position % 500 == 234 {
+            receipts.push((position, value));
+        }
+    }
+    assert_eq!(hashes, 2_500);
+    // A payment that skips ahead (three requests at once) is checked with
+    // three hashes.
+    assert!(extends(&last, &payer.element(2_503).unwrap(), 3));
+    // A replayed or forged payment does not hash to the last one accepted.
+    assert_ne!(step(&payer.element(2_500).unwrap()), last);
+    assert_ne!(step(&hash_domain("test/forged", b"x")), last);
+
+    // The API settles twice: 1,000 steps, then 1,500.
+    let api_before = chain.balance("api", &usd());
+    let first = chain
+        .tx(
+            "api",
+            TxKind::SettleStream {
+                stream,
+                position: 1_000,
+                value: payer.element(1_000).unwrap(),
+                jump: None,
+            },
+        )
+        .unwrap();
+    let out = chain.pulse(vec![first.clone()]).unwrap();
+    assert_success(&out, &first);
+    let second = chain
+        .tx(
+            "api",
+            TxKind::SettleStream {
+                stream,
+                position: 2_500,
+                value: last,
+                jump: None,
+            },
+        )
+        .unwrap();
+    let out = chain.pulse(vec![second.clone()]).unwrap();
+    assert_success(&out, &second);
+    // The fee pays for each step checked: 2 micro-USD on top of the minimum.
+    let config = chain.state.config.clone();
+    assert_eq!(
+        second.tx.fee,
+        plus(config.min_fee(second.tx.size()), Amount(2 * 1_500))
+    );
+    let fees = plus(first.tx.fee, second.tx.fee);
+    assert_eq!(
+        chain.balance("api", &usd()),
+        minus(plus(api_before, Amount(2_500 * 1_000)), fees)
+    );
+    let settled = stream_state(&chain, &stream);
+    assert_eq!((settled.position, settled.head), (2_500, last));
+    assert_eq!(settled.escrow, minus(units(10), Amount(2_500 * 1_000)));
+    // 2,500 payments cost the API two transactions: about 2.4 micro-USD
+    // each, against 1,000+ for a transfer per request.
+    assert!(fees.0 / 2_500 < 5);
+
+    // An auditor checks request receipts against the settled head alone.
+    for (position, value) in &receipts {
+        assert_eq!(walk(&settled.head, settled.position - position), *value);
+    }
+    let (position, _) = receipts[0];
+    assert_ne!(
+        walk(&settled.head, settled.position - position),
+        hash_domain("test/forged", b"receipt")
+    );
+
+    // The API closes the stream and the agent gets the rest back.
+    let agent_before = chain.balance("agent", &usd());
+    let close = chain.tx("api", TxKind::CloseStream { stream }).unwrap();
+    let out = chain.pulse(vec![close.clone()]).unwrap();
+    assert_success(&out, &close);
+    assert_eq!(
+        chain.balance("agent", &usd()),
+        plus(agent_before, Amount(10_000_000 - 2_500_000))
+    );
+    assert!(!stream_state(&chain, &stream).open);
+}
+
+/// With checkpoints, what a settlement costs does not grow with the number
+/// of payments it covers: settling 1,000 payments and settling 200,000 cost
+/// the same hashes and the same fee.
+#[test]
+fn a_settlement_by_checkpoint_costs_the_same_however_many_payments_it_covers() {
+    use sion_exec::stream::PayerChain;
+
+    let mut chain = Chain::new(&["agent", "api"], 1_000, 4);
+    let api = chain.id("api");
+    let chains = [
+        PayerChain::with_checkpoints(hash_domain("test/stream/seed", b"small"), 1_000, 100),
+        PayerChain::with_checkpoints(hash_domain("test/stream/seed", b"large"), 200_000, 100),
+    ];
+    let opens: Vec<_> = chains
+        .iter()
+        .map(|payer| {
+            chain
+                .tx(
+                    "agent",
+                    TxKind::OpenStream {
+                        payee: api,
+                        asset: usd(),
+                        unit: Amount(1),
+                        length: payer.length(),
+                        anchor: payer.anchor(),
+                        deposit: units(1),
+                        until: Pulse(chain.state.pulse.0 + 50),
+                        checkpoints: payer.checkpoints(),
+                    },
+                )
+                .unwrap()
+        })
+        .collect();
+    let out = chain.pulse(opens).unwrap();
+    let streams: Vec<ObjectId> = all_events(&out)
+        .iter()
+        .filter_map(|e| match e {
+            Event::StreamOpened { stream, .. } => Some(*stream),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(streams.len(), 2);
+    let mut chains = chains;
+    // Settle each stream to its top, by the jump to its last checkpoint.
+    let settles: Vec<_> = (0..2)
+        .map(|i| {
+            let stream = streams
+                .iter()
+                .copied()
+                .find(|id| stream_state(&chain, id).length == chains[i].length())
+                .unwrap();
+            let top = chains[i].length();
+            chain
+                .tx(
+                    "api",
+                    TxKind::SettleStream {
+                        stream,
+                        position: top,
+                        value: chains[i].element(top).unwrap(),
+                        jump: chains[i].jump(top / 100),
+                    },
+                )
+                .unwrap()
+        })
+        .collect();
+    let out = chain.pulse(settles.clone()).unwrap();
+    for tx in &settles {
+        assert_success(&out, tx);
+    }
+    let paths: Vec<usize> = settles
+        .iter()
+        .map(|tx| match &tx.tx.kind {
+            TxKind::SettleStream {
+                jump: Some(jump), ..
+            } => jump.path.len(),
+            _ => unreachable!(),
+        })
+        .collect();
+    // 11 leaves and 2,001 leaves: paths of at most 4 and 11 hashes (an
+    // RFC 9162 tree gives its last leaf a shorter one). The settlement that
+    // covers 200 times as many payments costs a few more hashes: 2
+    // micro-USD each.
+    assert!(paths[0] <= 4 && paths[1] <= 11, "{paths:?}");
+    let fees: Vec<u128> = settles.iter().map(|tx| tx.tx.fee.0).collect();
+    assert_eq!(fees[1] - fees[0], 2 * (paths[1] - paths[0]) as u128);
+    assert_eq!(
+        chain.balance("api", &usd()),
+        minus(
+            plus(units(1_000), Amount(1_000 + 200_000)),
+            Amount(fees[0] + fees[1])
+        )
+    );
+}

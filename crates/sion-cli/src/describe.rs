@@ -382,6 +382,52 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
                 sion_exec::validators::Equivocation::Approvals { .. } => "lane approvals",
             }
         ),
+        TxKind::OpenStream {
+            payee,
+            asset,
+            unit,
+            length,
+            deposit,
+            until,
+            checkpoints,
+            ..
+        } => format!(
+            "Open a payment stream to {}: escrow {}, paid off the ledger at {} a step for up to {length} steps, settled by {} until Pulse {until}{}",
+            names.account(payee),
+            names.money(*deposit, asset),
+            names.money(*unit, asset),
+            names.account(payee),
+            match checkpoints {
+                Some(c) => format!(", with a checkpoint every {} steps", c.spacing),
+                None => String::new(),
+            }
+        ),
+        TxKind::SettleStream {
+            stream,
+            position,
+            jump,
+            ..
+        } => format!(
+            "Settle stream {} up to step {position}{}",
+            stream.short(),
+            match jump {
+                Some(jump) => format!(", proven by checkpoint {}", jump.index),
+                None => String::new(),
+            }
+        ),
+        TxKind::TopUpStream {
+            stream,
+            deposit,
+            until,
+        } => format!(
+            "Add {} to stream {} and keep it open until Pulse {until}",
+            names.usd(*deposit),
+            stream.short()
+        ),
+        TxKind::CloseStream { stream } => format!(
+            "Close stream {} and return what is left in escrow to its payer",
+            stream.short()
+        ),
     };
     format!(
         "{body}. Fee {}; valid until Pulse {}.",
@@ -571,6 +617,42 @@ pub fn event(names: &Names, event: &Event) -> String {
         Event::ShardRotated { shard, rotation } => {
             format!("shard {shard}'s committee was replaced (rotation {rotation} this epoch)")
         }
+        Event::StreamOpened {
+            stream,
+            payer,
+            payee,
+            deposit,
+        } => format!(
+            "{} opened stream {} to {} with {} in escrow",
+            names.account(payer),
+            stream.short(),
+            names.account(payee),
+            names.usd(*deposit)
+        ),
+        Event::StreamSettled {
+            stream,
+            position,
+            amount,
+            ..
+        } => format!(
+            "stream {} settled to step {position}: {} paid",
+            stream.short(),
+            names.usd(*amount)
+        ),
+        Event::StreamToppedUp {
+            stream,
+            deposit,
+            until,
+        } => format!(
+            "stream {} topped up by {}, open until Pulse {until}",
+            stream.short(),
+            names.usd(*deposit)
+        ),
+        Event::StreamClosed { stream, refund } => format!(
+            "stream {} closed: {} returned to its payer",
+            stream.short(),
+            names.usd(*refund)
+        ),
     }
 }
 

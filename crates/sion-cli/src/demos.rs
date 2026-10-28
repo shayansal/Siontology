@@ -55,6 +55,11 @@ fn usd(n: u64) -> Amount {
     Amount::units(n)
 }
 
+/// `n` with thousands separators.
+fn grouped(n: u64) -> String {
+    Amount::units(n).to_string()
+}
+
 /// A transaction's outcome in a few words.
 fn outcome(status: &ExecStatus) -> String {
     match status {
@@ -1167,6 +1172,236 @@ pub fn x402(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErro
     Ok(())
 }
 
+/// Streams: an agent pays an API a tenth of a cent per call from a payment
+/// stream. Each payment is one hash-chain element that the API checks with
+/// one hash; the API settles thousands in a few transactions, which every
+/// validator checks with one hash per payment; and anyone holding a call's
+/// receipt can check it against the settled head.
+pub fn streams(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::stream::{
+        load_stream, standing, standing_by_jump, PayerBook, PayerRecord, Payment, Standing,
+        StreamDesk,
+    };
+    use crate::x402::{
+        decode_header, fetch, fetch_with, Facilitator, PaidRoute, PaidServer, Payer, PaymentPayload,
+    };
+
+    const CALLS: u64 = 2_000;
+    const STEPS: u64 = 100_000;
+    out.say("== Streams: an agent pays an API a tenth of a cent per call, one hash per payment ==");
+    fund_all(
+        session,
+        &[
+            ("stream-agent", AssetId::usd(), usd(30)),
+            ("carol", AssetId::usd(), usd(10)),
+        ],
+    )?;
+    let chain = session_chain(session)?;
+    let carol = session.id("carol");
+    let unit = Amount(1_000);
+    let spacing = 100;
+    let (seed, payer_chain) = PayerBook::new_chain(STEPS, spacing);
+    let until = Pulse(session.ledger.pulse()?.0 + 2_000);
+    let view = session.must(
+        "stream-agent",
+        TxKind::OpenStream {
+            payee: carol,
+            asset: AssetId::usd(),
+            unit,
+            length: STEPS,
+            anchor: payer_chain.anchor(),
+            deposit: usd(20),
+            until,
+            checkpoints: payer_chain.checkpoints(),
+        },
+        Vec::new(),
+    )?;
+    let stream = find(&view, |e| match e {
+        Event::StreamOpened { stream, .. } => Some(*stream),
+        _ => None,
+    })?;
+    session.streams.add(
+        PayerRecord {
+            stream,
+            wallet: "stream-agent".into(),
+            payee: carol,
+            unit,
+            length: STEPS,
+            seed,
+            revealed: 0,
+            spacing,
+        },
+        payer_chain,
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  the agent opens a stream to carol: 20 USD in escrow, {unit} USD a step, {} steps; carol may settle until Pulse {until}",
+        view.pulse,
+        grouped(STEPS)
+    ));
+
+    let mut desk = StreamDesk::new(crate::session::wallet_for("carol"));
+    desk.settle_every = 500;
+    let facilitator = Facilitator::new(session.ledger, chain)?.with_streams(desk);
+    let server = PaidServer::bind("127.0.0.1:0")?;
+    let url = format!("http://{}/v1/price", server.address);
+    let routes = vec![PaidRoute {
+        path: "/v1/price".into(),
+        price: unit,
+        description: "Spot price of a GPU-hour".into(),
+        mime_type: "application/json".into(),
+        body: Box::new(|_| r#"{"good":"gpu-hour","usd":1.95}"#.to_string()),
+    }];
+    out.say(format!(
+        "           carol's API at {url}: {unit} USD per call, paid by `exact` (a transaction per call) or `stream` (a hash per call)"
+    ));
+    let stop = AtomicBool::new(false);
+    let (receipt, per_call_fee, elapsed) = std::thread::scope(|scope| {
+        let serving = scope.spawn(|| {
+            server.serve(
+                &facilitator,
+                carol,
+                &routes,
+                Duration::from_secs(600),
+                &stop,
+            )
+        });
+        let result = (|| -> Result<(Payment, Amount, Duration), CliError> {
+            // One call paid the usual way, for comparison.
+            let fetched = fetch(
+                session,
+                &Payer::Wallet("stream-agent".into()),
+                &url,
+                &chain,
+                usd(1),
+            )?;
+            let settled = fetched
+                .settlement
+                .as_ref()
+                .filter(|s| s.success && fetched.status == 200)
+                .ok_or_else(|| CliError::Transaction("the exact payment failed".into()))?;
+            let digest = sion_core::ids::TxDigest::from_hash(
+                sion_core::hash::Hash32::from_hex(&settled.transaction)
+                    .map_err(|_| CliError::Protocol("bad digest".into()))?,
+            );
+            let per_call_fee = match session.ledger.tx(digest)? {
+                crate::ledger::TxState::Executed(view) => view.effects.fee,
+                _ => return Err(CliError::Protocol("the exact payment vanished".into())),
+            };
+            out.say(format!(
+                "           one call paid with a transfer: a transaction, certified and proven, {per_call_fee} USD in fees"
+            ));
+            // Then the stream: the first call learns the price, the rest pay
+            // up front.
+            let started = Instant::now();
+            let mut known = None;
+            let mut receipt = None;
+            for call in 1..=CALLS {
+                let fetched = fetch_with(
+                    session,
+                    &Payer::Stream(stream),
+                    &url,
+                    &chain,
+                    usd(1),
+                    known.as_ref(),
+                )?;
+                if fetched.status != 200 {
+                    return Err(CliError::Transaction(format!(
+                        "call {call} was refused: {:?}",
+                        fetched.settlement.and_then(|s| s.error_reason)
+                    )));
+                }
+                if call == 1_234 {
+                    let header = fetched.payment.as_deref().unwrap_or_default();
+                    let paid: PaymentPayload = decode_header(header)?;
+                    receipt = Some(
+                        serde_json::from_value::<Payment>(paid.payload)
+                            .map_err(|e| CliError::Protocol(e.to_string()))?,
+                    );
+                }
+                known = fetched.accepted;
+            }
+            let receipt = receipt.ok_or_else(|| CliError::Protocol("no receipt kept".into()))?;
+            Ok((receipt, per_call_fee, started.elapsed()))
+        })();
+        // The server settles whatever is left before it stops.
+        stop.store(true, Ordering::Relaxed);
+        let _ = serving.join();
+        result
+    })?;
+    let report = facilitator
+        .streams()
+        .map(|desk| desk.report())
+        .unwrap_or_default();
+    out.say(format!(
+        "           {} calls paid from the stream in {:.1} s: carol's server checked {} hashes and sent no transaction per call",
+        grouped(CALLS),
+        elapsed.as_secs_f64(),
+        grouped(report.hashes)
+    ));
+    let per_payment = report.fees.0 as f64 / report.settled_steps.max(1) as f64;
+    out.say(format!(
+        "           carol settled {} payments in {} transactions: {} USD received, {} USD in fees ({per_payment:.2} micro-USD per payment, against {} for a transaction per call)",
+        grouped(report.settled_steps),
+        report.settlements,
+        report.settled_value,
+        report.fees,
+        grouped(u64::try_from(per_call_fee.0).unwrap_or(u64::MAX))
+    ));
+    let state = load_stream(session.ledger, &stream)?;
+    out.say(format!(
+        "           the validators checked {} hashes for those settlements ({} proven by a jump to a checkpoint), not one per payment; the stream is at position {} with {} USD left in escrow",
+        grouped(report.ledger_hashes),
+        report.jumps,
+        grouped(state.position),
+        state.escrow
+    ));
+    let walked = match standing(&state, &receipt) {
+        Standing::Settled { hashes } => hashes,
+        other => {
+            return Err(CliError::Protocol(format!(
+                "the receipt should be settled: {other:?}"
+            )))
+        }
+    };
+    let jump = session
+        .streams
+        .jump(&stream, receipt.position / spacing)?
+        .ok_or_else(|| CliError::Protocol("no checkpoint for the receipt".into()))?;
+    let jumped = match standing_by_jump(&state, &receipt, &jump) {
+        Standing::Settled { hashes } => hashes,
+        other => {
+            return Err(CliError::Protocol(format!(
+                "the receipt should be settled by its checkpoint too: {other:?}"
+            )))
+        }
+    };
+    out.say(format!(
+        "           an auditor checks call {}'s receipt: genuine and settled, in {walked} hashes from the settled head, or {jumped} from the checkpoint below it",
+        grouped(receipt.position)
+    ));
+    let forged = Payment {
+        value: hash_domain("demo/forged", b"receipt"),
+        ..receipt
+    };
+    if standing(&state, &forged) != Standing::Forged {
+        return Err(CliError::Protocol("a forged receipt passed".into()));
+    }
+    out.say("           a forged receipt for the same call → not an element of the stream's chain");
+    let view = session.must("carol", TxKind::CloseStream { stream }, Vec::new())?;
+    let refund = find(&view, |e| match e {
+        Event::StreamClosed { refund, .. } => Some(*refund),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  carol closes the stream; the agent gets {refund} USD back",
+        view.pulse
+    ));
+    out.say("Result: each payment costs the server one hash, not a signature; a settlement costs the ledger the same however many payments it covers; and every payment stays checkable by anyone.");
+    Ok(())
+}
+
 fn json<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, CliError> {
     serde_json::from_value(value.clone()).map_err(|e| CliError::Protocol(e.to_string()))
 }
@@ -1467,19 +1702,20 @@ pub fn local_config(name: &str) -> sion_node::DevnetConfig {
 }
 
 /// Every demo, in the order `all` runs them.
-pub const ALL: [&str; 8] = [
+pub const ALL: [&str; 9] = [
     "invoice",
     "agents",
     "market",
     "receipts",
     "x402",
+    "streams",
     "censorship",
     "light",
     "staking",
 ];
 
 /// Runs a named demo (`invoice`, `agents`, `market`, `receipts`, `x402`,
-/// `light`, `censorship`, `staking`, `all`).
+/// `streams`, `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
@@ -1489,6 +1725,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
         "light" => light(session, out),
         "censorship" => censorship(session, out),
         "x402" => x402(session, out),
+        "streams" => streams(session, out),
         "staking" => staking(session, out),
         "all" => {
             for (index, demo) in ALL.iter().enumerate() {
@@ -1500,7 +1737,7 @@ pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<
             Ok(())
         }
         other => Err(CliError::Usage(format!(
-            "unknown demo {other:?}; try invoice, agents, market, receipts, x402, censorship, light, staking or all"
+            "unknown demo {other:?}; try invoice, agents, market, receipts, x402, streams, censorship, light, staking or all"
         ))),
     }
 }

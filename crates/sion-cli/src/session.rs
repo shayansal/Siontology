@@ -77,6 +77,15 @@ pub fn wallet_for(name: &str) -> Wallet {
     Wallet::named(name)
 }
 
+/// Where a payer's stream chains live: `$SION_HOME/streams` (default
+/// `~/.sion/streams`). Each file holds a chain's secret seed.
+pub fn stream_dir() -> PathBuf {
+    wallet_dir()
+        .parent()
+        .map(|home| home.join("streams"))
+        .unwrap_or_else(|| PathBuf::from(".sion/streams"))
+}
+
 /// Creates a wallet with a fresh random seed stored under [`wallet_dir`].
 pub fn create_wallet(name: &str) -> Result<Wallet, CliError> {
     let dir = wallet_dir();
@@ -104,6 +113,9 @@ pub struct Session<'a> {
     pub timeout: Duration,
     /// Print what happens.
     pub verbose: bool,
+    /// The payment streams this session pays from (in memory unless the
+    /// caller points it at a directory).
+    pub streams: crate::stream::PayerBook,
 }
 
 impl std::fmt::Debug for Session<'_> {
@@ -122,6 +134,7 @@ impl<'a> Session<'a> {
             wallets: BTreeMap::new(),
             timeout: Duration::from_secs(90),
             verbose: false,
+            streams: crate::stream::PayerBook::in_memory(),
         })
     }
 
