@@ -125,6 +125,12 @@ impl DevnetArgs {
 enum Command {
     /// Run a devnet and serve its API.
     Devnet(DevnetArgs),
+    /// Collect validators' entries into a network's genesis file.
+    Genesis(sion_cli::network::GenesisArgs),
+    /// Run one validator of a network, in this process.
+    Node(sion_cli::network::NodeArgs),
+    /// Run a gateway of a network, in this process.
+    Gateway(sion_cli::network::GatewayArgs),
     /// Chain status.
     Status,
     /// Wallet keys.
@@ -487,6 +493,10 @@ enum KeysCommand {
         /// Name.
         name: String,
     },
+    /// Generate a network validator's keys and its signed network record.
+    Validator(sion_cli::network::ValidatorKeysArgs),
+    /// Generate a network gateway's key.
+    Gateway(sion_cli::network::GatewayKeysArgs),
 }
 
 #[derive(Subcommand)]
@@ -748,11 +758,17 @@ fn run_devnet(args: &DevnetArgs) -> Result<(), CliError> {
 }
 
 fn run(cli: Cli) -> Result<(), CliError> {
-    if let Command::Devnet(args) = &cli.command {
-        return run_devnet(args);
+    match &cli.command {
+        Command::Devnet(args) => return run_devnet(args),
+        Command::Genesis(args) => return sion_cli::network::genesis(args).map(|_| ()),
+        Command::Node(args) => return sion_cli::network::run_node(args),
+        Command::Gateway(args) => return sion_cli::network::run_gateway(args),
+        _ => {}
     }
     if let Command::Keys(command) = &cli.command {
         return match command {
+            KeysCommand::Validator(args) => sion_cli::network::validator_keys(args).map(|_| ()),
+            KeysCommand::Gateway(args) => sion_cli::network::gateway_keys(args).map(|_| ()),
             KeysCommand::New { name } => {
                 let wallet = create_wallet(name)?;
                 println!("created {name}: account {}", wallet.id);
@@ -833,7 +849,13 @@ fn run(cli: Cli) -> Result<(), CliError> {
     // Show what each command signs, as a sentence (demos narrate instead).
     session.verbose = !matches!(cli.command, Command::Demo { .. });
     match cli.command {
-        Command::Devnet(_) | Command::Keys(_) | Command::Mcp | Command::Bench { .. } => {
+        Command::Devnet(_)
+        | Command::Genesis(_)
+        | Command::Node(_)
+        | Command::Gateway(_)
+        | Command::Keys(_)
+        | Command::Mcp
+        | Command::Bench { .. } => {
             unreachable!("handled above")
         }
         Command::X402(X402Command::Serve {
