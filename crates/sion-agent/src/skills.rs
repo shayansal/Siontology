@@ -35,6 +35,9 @@ pub const MAX_BUNDLE: usize = 4 << 20;
 pub const MAX_DESCRIPTION: usize = 1024;
 /// Where replaced versions of a skill's files are kept, inside the skill.
 pub const HISTORY: &str = ".history";
+/// The file in an installed skill that records the release it came from.
+/// Neither it nor the history is part of a bundle.
+pub const SOURCE: &str = ".source";
 
 const BUNDLE_MAGIC: &[u8] = b"sion-skill-bundle/v1\n";
 
@@ -47,6 +50,20 @@ pub struct Skill {
     pub description: String,
     /// Its directory.
     pub dir: PathBuf,
+    /// Where it came from, if it was installed: the release and version.
+    pub source: Option<String>,
+}
+
+/// What an installed skill's source file says, in a few words.
+fn source_of(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(SOURCE)).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let release = value["release"].as_str()?;
+    Some(format!(
+        "installed from release {}, version {}",
+        &release[..release.len().min(8)],
+        value["version"].as_str().unwrap_or("?")
+    ))
 }
 
 /// Whether `name` is a valid skill name: 1 to 64 lowercase ASCII letters,
@@ -147,10 +164,12 @@ pub fn list(root: &Path) -> Vec<Skill> {
         };
         if let Ok((name, description, _)) = parse(&text) {
             if entry.file_name().to_string_lossy() == name {
+                let source = source_of(&dir);
                 skills.push(Skill {
                     name,
                     description,
                     dir,
+                    source,
                 });
             }
         }
@@ -168,7 +187,13 @@ pub fn catalog(skills: &[Skill]) -> String {
         "Skills you have (read one with skill_read before using it; its other files with skill_file):\n",
     );
     for skill in skills {
-        text.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+        match &skill.source {
+            Some(source) => text.push_str(&format!(
+                "- {}: {} ({source})\n",
+                skill.name, skill.description
+            )),
+            None => text.push_str(&format!("- {}: {}\n", skill.name, skill.description)),
+        }
     }
     text
 }
@@ -192,7 +217,10 @@ fn files(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
                 .map_err(|e| e.to_string())?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if relative == HISTORY || relative.starts_with(&format!("{HISTORY}/")) {
+            if relative == HISTORY
+                || relative.starts_with(&format!("{HISTORY}/"))
+                || relative == SOURCE
+            {
                 continue;
             }
             if kind.is_dir() {
@@ -256,6 +284,7 @@ pub fn unbundle(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
             || path.starts_with(HISTORY)
+            || path == SOURCE
         {
             return Err(format!("{path}: not a path inside a skill"));
         }
@@ -425,6 +454,11 @@ impl Tool for SkillWrite {
         }
         if text.len() > MAX_SKILL_MD {
             return Outcome::error(format!("SKILL.md is at most {MAX_SKILL_MD} bytes"));
+        }
+        if dir.join(SOURCE).exists() {
+            return Outcome::error(format!(
+                "{name} was installed from a release; write your own skill under another name"
+            ));
         }
         let path = dir.join("SKILL.md");
         let previous = std::fs::read_to_string(&path).ok();

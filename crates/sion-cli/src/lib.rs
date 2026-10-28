@@ -26,6 +26,7 @@ pub mod memory;
 pub mod network;
 pub mod runtime;
 pub mod session;
+pub mod skills;
 pub mod stake;
 pub mod storage;
 pub mod stream;

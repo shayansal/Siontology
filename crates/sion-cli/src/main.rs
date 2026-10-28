@@ -257,6 +257,11 @@ enum Command {
     /// proofs of completeness.
     #[command(subcommand)]
     Memory(sion_cli::memory::MemoryCommand),
+    /// Skills with a supply chain: pack a skill, audit a bundle, publish a
+    /// release on bonds and audits, show one, install one for an agent under
+    /// the decision rule.
+    #[command(subcommand)]
+    Skill(sion_cli::skills::SkillCommand),
     /// Storage deals: have data kept by a provider who proves every round
     /// that it still holds it, or provide storage and be paid for it.
     #[command(subcommand)]
@@ -1247,6 +1252,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
         Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
+        Command::Skill(command) => sion_cli::skills::run(&mut session, ledger, command)?,
         Command::Storage(command) => sion_cli::storage::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,
