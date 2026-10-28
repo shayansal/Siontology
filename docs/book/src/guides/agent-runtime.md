@@ -215,11 +215,17 @@ descriptions are in every prompt; the model reads a skill's instructions
 with `skill_read` when it decides to use it, and its other files with
 `skill_file`. With `skill_write` the agent writes down how it did
 something, or improves a skill it has; the version it replaces is kept in
-the skill's `.history`.
+the skill's `.history`. After a long task in which it wrote no skill, the
+runtime asks it whether to write down how it did the task
+([Writing down what worked](skill-improvement.md#writing-down-what-worked));
+`--no-reflect` turns that off.
 
 A skill written by the agent stays on its machine. Skills from others
 come with bonds behind them and audits that pay when a skill misbehaves:
-see [Skills from others](skills.md).
+see [Skills from others](skills.md). A skill can be measured against an
+evaluation set, improved by evolving variants, and released again only
+once others have verified the better version: see
+[Skills that get better](skill-improvement.md).
 
 ## Safety nets
 
@@ -251,8 +257,8 @@ see [Skills from others](skills.md).
 
 ## What this does not do yet
 
-- Self-improvement, schedules, channels and handing work to other agents
-  are the next parts of the plan
+- Schedules, channels and handing work to other agents are the next
+  parts of the plan
   ([Reliable, self-improving agents](../research/agents.md)). Memory atoms
   stay on the machine that wrote them: keeping the log's archive with
   storage providers is not wired in yet.

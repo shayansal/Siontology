@@ -40,7 +40,7 @@ guides show the commands in use.
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
 | Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `mcp`, `x402 serve`, `x402 fetch` |
-| Skills | `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install` |
+| Skills | `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
 | Storage | `storage prepare`, `storage post`, `storage deals`, `storage show`, `storage accept`, `storage prove`, `storage settle`, `storage close`, `storage serve` |
@@ -86,7 +86,7 @@ Commands:
   task       Task Charters: escrow work whose acceptance rule is fixed when it is posted; attest, submit and settle results; cancel
   stake      Pooled stake: delegate to a validator without handing the stake over, collect rewards, leave; set a validator's commission
   memory     Memory logs for agents and robots: open a log, record atoms locally, commit heads the ledger keeps append-only, and recall with proofs of completeness
-  skill      Skills with a supply chain: pack a skill, audit a bundle, publish a release on bonds and audits, show one, install one for an agent under the decision rule
+  skill      Skills with a supply chain: pack a skill, audit a bundle, publish a release on bonds and audits, show one, install one for an agent under the decision rule; evaluate a skill, evolve it, and have a better version verified by others through a bounty
   storage    Storage deals: have data kept by a provider who proves every round that it still holds it, or provide storage and be paid for it
   market     Markets
   stream     Payment streams: escrow once, pay per request with one hash each, settle thousands of payments in one transaction
@@ -883,6 +883,7 @@ Options:
       --system <SYSTEM>        A file with the system prompt (default: one that tells the agent who it is and how its charter limits it)
       --memory <MEMORY>        The agent's memory log (its id, or a unique prefix of one with a local store), or `new` to open one for it. Its preferences, goals and procedures go into the prompt; what it records is committed when the session ends, with the session as an episode
       --skills <SKILLS>        The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
+      --no-reflect             Do not ask the agent, after a long task it finished without writing a skill, whether to write down how it did it
   -h, --help                   Print help
 ```
 
@@ -1337,7 +1338,7 @@ Options:
 ## `sion skill`
 
 ```text
-Skills with a supply chain: pack a skill, audit a bundle, publish a release on bonds and audits, show one, install one for an agent under the decision rule
+Skills with a supply chain: pack a skill, audit a bundle, publish a release on bonds and audits, show one, install one for an agent under the decision rule; evaluate a skill, evolve it, and have a better version verified by others through a bounty
 
 Usage: sion skill [OPTIONS] <COMMAND>
 
@@ -1347,6 +1348,13 @@ Commands:
   publish  Publish a release of a skill: a claim naming it, its version and its bundle root, on your bond or the audits of that root, or both
   show     A release: what it names, the backing behind it, and the decision rule for a value at risk
   install  Install a release for an agent: fetch and check its bundle, accept the release with the agent's remaining budget at risk, and only then put the skill in the agent's skills
+  eval     Run an evaluation set on a skill: each case with stand-in tools, then its checks. Needs no node
+  evolve   Evolve a skill against an evaluation set: a model proposes variants for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
+  vouch    Vouch for an evaluation set on your bond: claim that it has no known way to be passed without doing what the skill describes
+  bounty   Post a bounty for a better version of a release: a Task Charter whose spec names the release, the evaluation set and the cases to pass, and whose verifiers are fixed now, before any version exists
+  verify   Verify a version for a bounty, as one of its verifiers: check that it keeps the skill's purpose, run the evaluation set on it yourself, and attest on your bond only if enough cases pass
+  submit   Submit a version for a bounty, as its worker, with its attestations, and settle the task
+  lineage  A release's lineage: each version back to the first, with what it rests on and the evidence for each step
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1409,6 +1417,7 @@ Options:
       --bond <BOND>                The label of your bond the release rests on
       --audits <AUDITS>            Audits of the bundle the release rests on (claim ids)
       --adjudicator <ADJUDICATOR>  The adjudicator atom that rules on challenges
+      --evidence <EVIDENCE>        Results of settled bounties for this version (claim ids): the release rests on them too, and records them
       --previous <PREVIOUS>        The release this one follows (its claim id)
       --locator <LOCATOR>          Where installers can fetch the bundle (an https URL)
       --valid-for <VALID_FOR>      Validity in Pulses [default: 100000]
@@ -1454,6 +1463,153 @@ Options:
 ```
 
 Asks for the decision before signing: a release whose backing does not cover the value at risk is refused without a fee.
+
+## `sion skill eval`
+
+```text
+Run an evaluation set on a skill: each case with stand-in tools, then its checks. Needs no node
+
+Usage: sion skill eval [OPTIONS] --evals <EVALS> --model <MODELS> <DIR>
+
+Arguments:
+  <DIR>  The skill directory (with a SKILL.md)
+
+Options:
+      --evals <EVALS>                The evaluation set (a JSON file)
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --model <MODELS>               The agent's model: anthropic:<model>, openai:<model> or script:<file>. Repeat for fallbacks, in order
+      --trajectories <TRAJECTORIES>  Write each run as a trajectory (JSON Lines in chat format), labelled with its result
+  -h, --help                         Print help
+```
+
+Needs no node. See [Skills that get better](../guides/skill-improvement.md#measuring-a-skill).
+
+## `sion skill evolve`
+
+```text
+Evolve a skill against an evaluation set: a model proposes variants for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
+
+Usage: sion skill evolve [OPTIONS] --evals <EVALS> --model <MODELS> --mutator <MUTATOR> <DIR>
+
+Arguments:
+  <DIR>  The skill directory (with a SKILL.md)
+
+Options:
+      --evals <EVALS>              The evaluation set (a JSON file)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --model <MODELS>             The agent's model, as for `eval`. Repeat for fallbacks
+      --mutator <MUTATOR>          The model that proposes variants
+      --generations <GENERATIONS>  Generations, at most [default: 3]
+      --max-bytes <MAX_BYTES>      The largest SKILL.md a version may have, in bytes [default: 15000]
+  -h, --help                       Print help
+```
+
+Needs no node. Gates: the name and description unchanged, the size limit, a version not tried before, and no case lost that the parent passed. See [Skills that get better](../guides/skill-improvement.md#evolving-a-better-version).
+
+## `sion skill vouch`
+
+```text
+Vouch for an evaluation set on your bond: claim that it has no known way to be passed without doing what the skill describes
+
+Usage: sion skill vouch [OPTIONS] --evals <EVALS> --bond <BOND> --adjudicator <ADJUDICATOR> <WALLET>
+
+Arguments:
+  <WALLET>  Your wallet
+
+Options:
+      --evals <EVALS>              The evaluation set (a JSON file)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --bond <BOND>                The label of your bond the claim rests on
+      --adjudicator <ADJUDICATOR>  The adjudicator atom that rules on challenges
+      --valid-for <VALID_FOR>      Validity in Pulses [default: 100000]
+  -h, --help                       Print help
+```
+
+## `sion skill bounty`
+
+```text
+Post a bounty for a better version of a release: a Task Charter whose spec names the release, the evaluation set and the cases to pass, and whose verifiers are fixed now, before any version exists
+
+Usage: sion skill bounty [OPTIONS] --evals <EVALS> --amount <AMOUNT> --verifiers <VERIFIERS> --adjudicator <ADJUDICATOR> <WALLET> <RELEASE>
+
+Arguments:
+  <WALLET>   The poster's wallet
+  <RELEASE>  The release to improve (its claim id)
+
+Options:
+      --evals <EVALS>              The evaluation set (a JSON file)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --amount <AMOUNT>            Escrow (USD), paid for an accepted version
+      --verifiers <VERIFIERS>      Verifiers whose attestations count (comma-separated wallets or accounts)
+      --adjudicator <ADJUDICATOR>  The adjudicator atom results must name
+      --requires <REQUIRES>        Claims every result must rest on, such as the set's vouching (comma-separated ids)
+      --worker <WORKER>            The worker (default: anyone may take it)
+      --pass <PASS>                The cases a version must pass (default: all)
+      --deadline <DEADLINE>        Pulses until the deadline [default: 1000]
+      --kappa <KAPPA>              κ of your decision rule for a result [default: 2]
+      --reliance <RELIANCE>        Pulses you rely on a paid version (its backing stays reserved) [default: 1000]
+  -h, --help                       Print help
+```
+
+The spec is kept in `$SION_HOME/skills/specs`, under the commitment the task records. See [Skills that get better](../guides/skill-improvement.md#a-bounty-fixed-before-any-better-version-exists).
+
+## `sion skill verify`
+
+```text
+Verify a version for a bounty, as one of its verifiers: check that it keeps the skill's purpose, run the evaluation set on it yourself, and attest on your bond only if enough cases pass
+
+Usage: sion skill verify [OPTIONS] --model <MODELS> <WALLET> <TASK> <DIR>
+
+Arguments:
+  <WALLET>  The verifier's wallet
+  <TASK>    The bounty (its task id)
+  <DIR>     The version's directory
+
+Options:
+      --model <MODELS>  The agent's model, as for `eval`. Repeat for fallbacks
+      --node <NODE>     The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --evals <EVALS>   The evaluation set (default: the local store, by the digest the spec names)
+      --spec <SPEC>     The task's spec (default: the local store)
+      --bond <BOND>     The label of your bond the attestation rests on [default: verifier]
+  -h, --help            Print help
+```
+
+Refuses a wallet the task does not name as a verifier, the task's worker, a closed task, the release the task improves, and a version that changes the skill's name or description. The results are printed before anything is signed.
+
+## `sion skill submit`
+
+```text
+Submit a version for a bounty, as its worker, with its attestations, and settle the task
+
+Usage: sion skill submit [OPTIONS] <WALLET> <TASK> <DIR>
+
+Arguments:
+  <WALLET>  The worker's wallet
+  <TASK>    The bounty (its task id)
+  <DIR>     The version's directory
+
+Options:
+      --attestations <ATTESTATIONS>  Attestation claim ids (comma-separated)
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help                         Print help
+```
+
+Refuses an attestation by the submitter itself. The worker needs a task bond (`sion bond <worker> task-worker <amount>`).
+
+## `sion skill lineage`
+
+```text
+A release's lineage: each version back to the first, with what it rests on and the evidence for each step
+
+Usage: sion skill lineage [OPTIONS] <RELEASE>
+
+Arguments:
+  <RELEASE>  The release (its claim id)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
 
 ## `sion storage`
 

@@ -259,7 +259,8 @@ enum Command {
     Memory(sion_cli::memory::MemoryCommand),
     /// Skills with a supply chain: pack a skill, audit a bundle, publish a
     /// release on bonds and audits, show one, install one for an agent under
-    /// the decision rule.
+    /// the decision rule; evaluate a skill, evolve it, and have a better
+    /// version verified by others through a bounty.
     #[command(subcommand)]
     Skill(sion_cli::skills::SkillCommand),
     /// Storage deals: have data kept by a provider who proves every round
@@ -864,6 +865,12 @@ fn run(cli: Cli) -> Result<(), CliError> {
             result?;
         }
         return Ok(());
+    }
+    // Packing, evaluating and evolving a skill need no node.
+    if let Command::Skill(command) = &cli.command {
+        if let Some(result) = sion_cli::skills::run_offline(command) {
+            return result;
+        }
     }
     let http = HttpLedger::new(&cli.node);
     let ledger: &dyn Ledger = &http;

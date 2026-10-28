@@ -192,6 +192,10 @@ pub enum AgentCommand {
         /// $SION_HOME/agents/skills/<agent>).
         #[arg(long)]
         skills: Option<std::path::PathBuf>,
+        /// Do not ask the agent, after a long task it finished without
+        /// writing a skill, whether to write down how it did it.
+        #[arg(long)]
+        no_reflect: bool,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -244,6 +248,7 @@ pub fn run(
             system,
             memory,
             skills,
+            no_reflect,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let memory = match memory.as_deref() {
@@ -281,6 +286,7 @@ pub fn run(
                     memory,
                     skills,
                     system,
+                    reflect: !no_reflect,
                 },
             )?;
             println!("session {} for agent {}", saved.state.id, agent.short());

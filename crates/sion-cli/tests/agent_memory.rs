@@ -185,6 +185,60 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
         "nothing to commit: the ledger holds the whole log"
     );
 
+    // A long task done without writing a skill: the agent is asked whether
+    // to write down how it did it, with only its skill tools, and does.
+    let long = home.join("long.json");
+    std::fs::write(
+        &long,
+        json!([
+            {"call": "memory_search", "input": {"words": "invoice"}},
+            {"call": "memory_search", "input": {"words": "order"}},
+            {"call": "memory_search", "input": {"words": "terms"}},
+            {"call": "memory_search", "input": {"words": "supplier"}},
+            {"call": "memory_search", "input": {"words": "payment"}},
+            {"say": "Nothing to pay this week."},
+            {"when": "write it down as a skill", "call": "skill_write", "input": {"name": "weekly-check", "description": "Check what is due this week before paying anything.", "instructions": "1. Search memory for invoices, orders, terms, suppliers and payments.\n2. Pay nothing that is not due."}},
+            {"say": "Wrote down the weekly check."}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let (reflected, lines) = runtime::start(
+        ledger.clone(),
+        "agent-8",
+        agent,
+        "Check whether anything is due this week.",
+        vec![format!("script:{}", long.display())],
+        Policy {
+            autonomy: Autonomy::L3,
+            ..Policy::default()
+        },
+        Equipment {
+            memory: Some(log),
+            reflect: true,
+            ..Equipment::default()
+        },
+    )
+    .unwrap();
+    let text = lines.join("\n");
+    assert_eq!(
+        reflected.ended,
+        Some(Ended::Done {
+            text: "Nothing to pay this week.".into()
+        }),
+        "{text}"
+    );
+    assert!(
+        text.contains("asked whether to write down how it did the task, as a skill:"),
+        "{text}"
+    );
+    assert!(text.contains("wrote skill weekly-check"), "{text}");
+    let skills = sion_agent::skills::list(reflected.skills.as_ref().unwrap());
+    assert!(
+        skills.iter().any(|s| s.name == "weekly-check"),
+        "{skills:?}"
+    );
+
     // A memory log that is not the agent's is refused.
     let (_, other) = sion_cli::memory::open(&mut session, "alice", None).unwrap();
     let refused = runtime::start(

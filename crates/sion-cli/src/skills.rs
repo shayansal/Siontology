@@ -98,6 +98,10 @@ pub enum SkillCommand {
         /// The adjudicator atom that rules on challenges.
         #[arg(long)]
         adjudicator: String,
+        /// Results of settled bounties for this version (claim ids): the
+        /// release rests on them too, and records them.
+        #[arg(long, value_delimiter = ',')]
+        evidence: Vec<String>,
         /// The release this one follows (its claim id).
         #[arg(long)]
         previous: Option<String>,
@@ -145,6 +149,205 @@ pub enum SkillCommand {
         #[arg(long)]
         skills: Option<PathBuf>,
     },
+    /// Run an evaluation set on a skill: each case with stand-in tools,
+    /// then its checks. Needs no node.
+    Eval {
+        /// The skill directory (with a SKILL.md).
+        dir: PathBuf,
+        /// The evaluation set (a JSON file).
+        #[arg(long)]
+        evals: PathBuf,
+        /// The agent's model: anthropic:<model>, openai:<model> or
+        /// script:<file>. Repeat for fallbacks, in order.
+        #[arg(long = "model", required = true)]
+        models: Vec<String>,
+        /// Write each run as a trajectory (JSON Lines in chat format),
+        /// labelled with its result.
+        #[arg(long)]
+        trajectories: Option<PathBuf>,
+    },
+    /// Evolve a skill against an evaluation set: a model proposes variants
+    /// for the cases it fails, each is scored under gates, and the best
+    /// version found is kept as a draft. Needs no node.
+    Evolve {
+        /// The skill directory (with a SKILL.md).
+        dir: PathBuf,
+        /// The evaluation set (a JSON file).
+        #[arg(long)]
+        evals: PathBuf,
+        /// The agent's model, as for `eval`. Repeat for fallbacks.
+        #[arg(long = "model", required = true)]
+        models: Vec<String>,
+        /// The model that proposes variants.
+        #[arg(long)]
+        mutator: String,
+        /// Generations, at most.
+        #[arg(long, default_value_t = 3)]
+        generations: usize,
+        /// The largest SKILL.md a version may have, in bytes.
+        #[arg(long, default_value_t = sion_agent::evolve::MAX_BYTES)]
+        max_bytes: usize,
+    },
+    /// Vouch for an evaluation set on your bond: claim that it has no known
+    /// way to be passed without doing what the skill describes.
+    Vouch {
+        /// Your wallet.
+        wallet: String,
+        /// The evaluation set (a JSON file).
+        #[arg(long)]
+        evals: PathBuf,
+        /// The label of your bond the claim rests on.
+        #[arg(long)]
+        bond: String,
+        /// The adjudicator atom that rules on challenges.
+        #[arg(long)]
+        adjudicator: String,
+        /// Validity in Pulses.
+        #[arg(long, default_value_t = 100_000)]
+        valid_for: u64,
+    },
+    /// Post a bounty for a better version of a release: a Task Charter
+    /// whose spec names the release, the evaluation set and the cases to
+    /// pass, and whose verifiers are fixed now, before any version exists.
+    Bounty {
+        /// The poster's wallet.
+        wallet: String,
+        /// The release to improve (its claim id).
+        release: String,
+        /// The evaluation set (a JSON file).
+        #[arg(long)]
+        evals: PathBuf,
+        /// Escrow (USD), paid for an accepted version.
+        #[arg(long)]
+        amount: String,
+        /// Verifiers whose attestations count (comma-separated wallets or
+        /// accounts).
+        #[arg(long, value_delimiter = ',', required = true)]
+        verifiers: Vec<String>,
+        /// The adjudicator atom results must name.
+        #[arg(long)]
+        adjudicator: String,
+        /// Claims every result must rest on, such as the set's vouching
+        /// (comma-separated ids).
+        #[arg(long, value_delimiter = ',')]
+        requires: Vec<String>,
+        /// The worker (default: anyone may take it).
+        #[arg(long)]
+        worker: Option<String>,
+        /// The cases a version must pass (default: all).
+        #[arg(long)]
+        pass: Option<usize>,
+        /// Pulses until the deadline.
+        #[arg(long, default_value_t = 1_000)]
+        deadline: u64,
+        /// κ of your decision rule for a result.
+        #[arg(long, default_value_t = 2.0)]
+        kappa: f64,
+        /// Pulses you rely on a paid version (its backing stays reserved).
+        #[arg(long, default_value_t = 1_000)]
+        reliance: u64,
+    },
+    /// Verify a version for a bounty, as one of its verifiers: check that
+    /// it keeps the skill's purpose, run the evaluation set on it yourself,
+    /// and attest on your bond only if enough cases pass.
+    Verify {
+        /// The verifier's wallet.
+        wallet: String,
+        /// The bounty (its task id).
+        task: String,
+        /// The version's directory.
+        dir: PathBuf,
+        /// The agent's model, as for `eval`. Repeat for fallbacks.
+        #[arg(long = "model", required = true)]
+        models: Vec<String>,
+        /// The evaluation set (default: the local store, by the digest the
+        /// spec names).
+        #[arg(long)]
+        evals: Option<PathBuf>,
+        /// The task's spec (default: the local store).
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        /// The label of your bond the attestation rests on.
+        #[arg(long, default_value = crate::tasks::VERIFIER_BOND_LABEL)]
+        bond: String,
+    },
+    /// Submit a version for a bounty, as its worker, with its attestations,
+    /// and settle the task.
+    Submit {
+        /// The worker's wallet.
+        wallet: String,
+        /// The bounty (its task id).
+        task: String,
+        /// The version's directory.
+        dir: PathBuf,
+        /// Attestation claim ids (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        attestations: Vec<String>,
+    },
+    /// A release's lineage: each version back to the first, with what it
+    /// rests on and the evidence for each step.
+    Lineage {
+        /// The release (its claim id).
+        release: String,
+    },
+}
+
+/// Runs the skill commands that need no node (`pack`, `eval`, `evolve`);
+/// None for the others.
+pub fn run_offline(command: &SkillCommand) -> Option<Result<(), CliError>> {
+    let print = |lines: Vec<String>| {
+        for line in lines {
+            println!("{line}");
+        }
+    };
+    match command {
+        SkillCommand::Pack { dir, out } => Some(pack_command(dir, out.as_deref())),
+        SkillCommand::Eval {
+            dir,
+            evals,
+            models,
+            trajectories,
+        } => Some(
+            crate::skill_improve::eval(dir, evals, models, trajectories.as_deref())
+                .map(|(_, lines)| print(lines)),
+        ),
+        SkillCommand::Evolve {
+            dir,
+            evals,
+            models,
+            mutator,
+            generations,
+            max_bytes,
+        } => {
+            let settings = sion_agent::evolve::Settings {
+                generations: *generations,
+                max_bytes: *max_bytes,
+                ..sion_agent::evolve::Settings::default()
+            };
+            Some(
+                crate::skill_improve::evolve(dir, evals, models, mutator, &settings)
+                    .map(|(_, _, lines)| print(lines)),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn pack_command(dir: &Path, out: Option<&Path>) -> Result<(), CliError> {
+    let (bytes, root, name, _) = pack(dir)?;
+    let path = match out {
+        Some(path) => {
+            std::fs::write(path, &bytes).map_err(|e| CliError::Usage(e.to_string()))?;
+            path.to_path_buf()
+        }
+        None => store_bundle(&bytes, &root)?,
+    };
+    println!(
+        "skill {name}: bundle {root} ({} bytes) at {}",
+        bytes.len(),
+        path.display()
+    );
+    Ok(())
 }
 
 /// Where bundles are kept locally: `$SION_HOME/skills/bundles`.
@@ -174,7 +377,8 @@ pub fn pack(dir: &Path) -> Result<(Vec<u8>, Hash32, String, String), CliError> {
     Ok((bytes.clone(), bundle_root(&bytes), name, description))
 }
 
-fn store_bundle(bytes: &[u8], root: &Hash32) -> Result<PathBuf, CliError> {
+/// Keeps a bundle in the local store, under its root.
+pub fn store_bundle(bytes: &[u8], root: &Hash32) -> Result<PathBuf, CliError> {
     let dir = bundles_dir();
     std::fs::create_dir_all(&dir).map_err(|e| CliError::Usage(e.to_string()))?;
     let path = dir.join(format!("{}.skill", root.to_hex()));
@@ -218,6 +422,9 @@ pub struct Release {
     pub locator: Option<String>,
     /// The audits it rests on.
     pub audits: Vec<ClaimId>,
+    /// The verified improvements it rests on: settled bounties' results,
+    /// as the release records them.
+    pub evidence: Vec<Value>,
 }
 
 /// Reads a release from the ledger.
@@ -241,8 +448,14 @@ pub fn release(ledger: &dyn Ledger, id: &str) -> Result<Release, CliError> {
         .as_str()
         .map(|p| parse_hash(p, "previous").map(ClaimId::from_hash))
         .transpose()?;
+    let evidence: Vec<Value> = payload["evidence"].as_array().cloned().unwrap_or_default();
+    let results: Vec<String> = evidence
+        .iter()
+        .filter_map(|e| e["result"].as_str().map(str::to_string))
+        .collect();
     let mut audits = Vec::new();
     collect_claims(&stored.body.formula, &mut audits);
+    audits.retain(|a| !results.contains(&a.to_string()));
     Ok(Release {
         claim: stored.id,
         publisher: stored.issuer,
@@ -253,6 +466,7 @@ pub fn release(ledger: &dyn Ledger, id: &str) -> Result<Release, CliError> {
         previous,
         locator: payload["locator"].as_str().map(str::to_string),
         audits,
+        evidence,
     })
 }
 
@@ -300,6 +514,20 @@ pub fn audit(
     Ok((id, view))
 }
 
+/// What a release rests on: the publisher's bond, audits of its bundle,
+/// and results of settled bounties for it (see
+/// [`crate::skill_improve::evidence`]).
+#[derive(Clone, Debug, Default)]
+pub struct Backing<'a> {
+    /// The label of the publisher's bond.
+    pub bond: Option<&'a str>,
+    /// Audits of the bundle.
+    pub audits: &'a [ClaimId],
+    /// Results of settled bounties for a better version of the release it
+    /// follows, for this very bundle.
+    pub evidence: &'a [ClaimId],
+}
+
 /// Publishes a release of the skill in `dir`; returns its id and the bundle
 /// root.
 #[allow(clippy::too_many_arguments)]
@@ -309,13 +537,17 @@ pub fn publish(
     wallet: &str,
     dir: &Path,
     version: &str,
-    bond: Option<&str>,
-    audits: &[ClaimId],
+    backing: Backing<'_>,
     adjudicator_atom: AtomId,
     previous: Option<ClaimId>,
     locator: Option<&str>,
     valid_for: u64,
 ) -> Result<(ClaimId, Hash32, sion_node::TxView), CliError> {
+    let Backing {
+        bond,
+        audits,
+        evidence,
+    } = backing;
     let (bytes, root, name, description) = pack(dir)?;
     store_bundle(&bytes, &root)?;
     let publisher = session.id(wallet);
@@ -333,6 +565,12 @@ pub fn publish(
             )));
         }
     }
+    // Each piece of evidence must be a settled bounty's result for these
+    // very bytes, improving the release this one follows.
+    let recorded = evidence
+        .iter()
+        .map(|e| crate::skill_improve::evidence(ledger, *e, previous, &bytes))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut backing: Vec<Formula> = Vec::new();
     if let Some(label) = bond {
         backing.push(Formula::atom(
@@ -340,13 +578,15 @@ pub fn publish(
         ));
     }
     backing.extend(audits.iter().map(|a| Formula::Claim(*a)));
+    backing.extend(evidence.iter().map(|e| Formula::Claim(*e)));
     if backing.is_empty() {
         return Err(CliError::Usage(
-            "a release rests on your bond, on audits, or both: give --bond or --audits".into(),
+            "a release rests on your bond, on audits or on evidence: give --bond, --audits or --evidence"
+                .into(),
         ));
     }
     let formula = Formula::and(vec![formulas::dual_signature(), Formula::or(backing)]);
-    let payload = json!({
+    let mut payload = json!({
         "name": name,
         "version": version,
         "bundle": root.to_hex(),
@@ -354,6 +594,9 @@ pub fn publish(
         "previous": previous.map(|p| p.to_string()),
         "locator": locator,
     });
+    if !recorded.is_empty() {
+        payload["evidence"] = json!(recorded);
+    }
     let body = ClaimBody {
         schema: RELEASE.into(),
         subject: one_line(&format!("Skill {name} {version}: {description}"), 200),
@@ -503,7 +746,7 @@ pub fn quarantine_falsified(ledger: &dyn Ledger, skills: &Path) -> Vec<String> {
 /// or `expired`. The node reports a status in its debug form
 /// (`Falsified { at: Pulse(9), causes: [...] }`), of which only the first
 /// word is the state; empty if there is none.
-fn status_word(status: &Value) -> String {
+pub fn status_word(status: &Value) -> String {
     match status {
         Value::String(text) => text
             .split(|c: char| !c.is_ascii_alphabetic())
@@ -525,22 +768,11 @@ pub fn run(
     ledger: &dyn Ledger,
     command: SkillCommand,
 ) -> Result<(), CliError> {
+    if let Some(result) = run_offline(&command) {
+        return result;
+    }
     match command {
-        SkillCommand::Pack { dir, out } => {
-            let (bytes, root, name, _) = pack(&dir)?;
-            let path = match out {
-                Some(path) => {
-                    std::fs::write(&path, &bytes).map_err(|e| CliError::Usage(e.to_string()))?;
-                    path
-                }
-                None => store_bundle(&bytes, &root)?,
-            };
-            println!(
-                "skill {name}: bundle {root} ({} bytes) at {}",
-                bytes.len(),
-                path.display()
-            );
-        }
+        SkillCommand::Pack { .. } | SkillCommand::Eval { .. } | SkillCommand::Evolve { .. } => {}
         SkillCommand::Audit {
             wallet,
             bundle,
@@ -568,14 +800,13 @@ pub fn run(
             bond,
             audits,
             adjudicator: judge,
+            evidence,
             previous,
             locator,
             valid_for,
         } => {
-            let audits: Vec<ClaimId> = audits
-                .iter()
-                .map(|a| parse_hash(a, "an audit").map(ClaimId::from_hash))
-                .collect::<Result<_, _>>()?;
+            let audits = claim_ids(&audits, "an audit")?;
+            let evidence = claim_ids(&evidence, "a result")?;
             let previous = previous
                 .map(|p| parse_hash(&p, "the previous release").map(ClaimId::from_hash))
                 .transpose()?;
@@ -585,8 +816,11 @@ pub fn run(
                 &wallet,
                 &dir,
                 &version,
-                bond.as_deref(),
-                &audits,
+                Backing {
+                    bond: bond.as_deref(),
+                    audits: &audits,
+                    evidence: &evidence,
+                },
                 adjudicator(&judge)?,
                 previous,
                 locator.as_deref(),
@@ -611,6 +845,7 @@ pub fn run(
                 "previous": release.previous,
                 "locator": release.locator,
                 "audits": release.audits,
+                "evidence": release.evidence,
                 "publisher": release.publisher,
                 "decision": {
                     "value_at_risk": value,
@@ -647,8 +882,108 @@ pub fn run(
                 println!("{line}");
             }
         }
+        SkillCommand::Vouch {
+            wallet,
+            evals,
+            bond,
+            adjudicator: judge,
+            valid_for,
+        } => {
+            let (id, view) = crate::skill_improve::vouch(
+                session,
+                &wallet,
+                &evals,
+                &bond,
+                adjudicator(&judge)?,
+                valid_for,
+            )?;
+            crate::agents::print_receipt(session, &view);
+            println!("vouching {id}");
+        }
+        SkillCommand::Bounty {
+            wallet,
+            release: id,
+            evals,
+            amount,
+            verifiers,
+            adjudicator: judge,
+            requires,
+            worker,
+            pass,
+            deadline,
+            kappa,
+            reliance,
+        } => {
+            let requires = claim_ids(&requires, "a required claim")?;
+            let (task, spec, view) = crate::skill_improve::bounty(
+                session,
+                ledger,
+                &wallet,
+                &id,
+                &evals,
+                &amount,
+                &verifiers,
+                adjudicator(&judge)?,
+                &requires,
+                worker.as_deref(),
+                pass,
+                deadline,
+                kappa,
+                reliance,
+            )?;
+            crate::agents::print_receipt(session, &view);
+            println!(
+                "task {task}
+spec {}",
+                spec.display()
+            );
+        }
+        SkillCommand::Verify {
+            wallet,
+            task,
+            dir,
+            models,
+            evals,
+            spec,
+            bond,
+        } => {
+            let task = ObjectId::from_hash(parse_hash(&task, "the task")?);
+            crate::skill_improve::verify(
+                session,
+                ledger,
+                &wallet,
+                task,
+                &dir,
+                evals.as_deref(),
+                spec.as_deref(),
+                &models,
+                &bond,
+            )?;
+        }
+        SkillCommand::Submit {
+            wallet,
+            task,
+            dir,
+            attestations,
+        } => {
+            let task = ObjectId::from_hash(parse_hash(&task, "the task")?);
+            let attestations = claim_ids(&attestations, "an attestation")?;
+            crate::skill_improve::submit(session, ledger, &wallet, task, &dir, &attestations)?;
+        }
+        SkillCommand::Lineage { release: id } => {
+            for line in crate::skill_improve::lineage(ledger, &id)? {
+                println!("{line}");
+            }
+        }
     }
     Ok(())
+}
+
+fn claim_ids(texts: &[String], what: &str) -> Result<Vec<ClaimId>, CliError> {
+    texts
+        .iter()
+        .map(|t| parse_hash(t, what).map(ClaimId::from_hash))
+        .collect()
 }
 
 /// Installs a release for an agent; returns what to print.

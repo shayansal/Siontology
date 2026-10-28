@@ -369,6 +369,11 @@ fn commitment(file: Option<&Path>, domain: &str) -> Result<Hash32, CliError> {
     }
 }
 
+/// The commitment a task makes to its spec's exact bytes.
+pub fn spec_commitment(spec: &[u8]) -> Hash32 {
+    hash_domain("sion/task/spec", spec)
+}
+
 /// The commitment a result and its attestations make to an output's
 /// exact bytes.
 pub fn output_commitment(output: &[u8]) -> Hash32 {

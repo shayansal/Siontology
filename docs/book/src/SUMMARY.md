@@ -60,6 +60,7 @@
 - [Agent identities from the command line](guides/agents.md)
 - [Agents at work](guides/agent-runtime.md)
 - [Skills from others](guides/skills.md)
+- [Skills that get better](guides/skill-improvement.md)
 - [Task Charters from the command line](guides/tasks.md)
 - [Memory from the command line](guides/memory.md)
 - [Storage from the command line](guides/storage.md)

@@ -24,7 +24,7 @@ live.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills and skills from others installed through bonds and audits; self-improvement, schedules and channels not built) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, and self-improvement with verified promotion; schedules and channels not built) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -145,10 +145,25 @@ its auditor's bond); `sion skill install` checks the bundle against the
 root, accepts the release with the agent's remaining budget at risk
 (reserving κ times that of its backing), and only then writes the skill,
 which the agent cannot rewrite. Before each run, a skill whose release is
-no longer active is taken out of use. Tested with the scripted model and
-with stand-ins for the providers' APIs: this environment has no model
+no longer active is taken out of use. Self-improvement
+([Skills that get better](book/src/guides/skill-improvement.md)): an
+evaluation set is cases with stand-in tools and checks, fixed by the
+digest of its bytes; `sion skill evolve` shows a model the cases a
+version fails and scores the variants it proposes, under gates (purpose,
+size, novelty, no regression), keeping a Pareto front, and keeps the best
+as a draft; a bounty is a Task Charter whose spec names the release, the
+set and the cases to pass, with its verifiers, adjudicator and required
+claims (such as the set's author vouching for it, `skill.evals/v1`) fixed
+before any version exists; verifiers run the set themselves and attest;
+the next release rests on the settled result and records it, and
+`sion skill lineage` follows the evidence back. After a finished task
+with at least five successful tool calls and no skill written, the
+runtime asks the agent whether to write one, with only its skill tools.
+Scripted models take conditions on the conversation, to stand in for a
+model that follows a skill. Tested with the scripted model and with
+stand-ins for the providers' APIs: this environment has no model
 provider. Not built: permissions that skills declare and the runtime
-enforces, self-improvement with verified promotion, search over past
+enforces, requiring a particular verifier's attestation, search over past
 sessions, consolidation, the memory archive with storage providers,
 schedules, channels, handing work to other agents, a shell tool and a
 sandbox ([Reliable, self-improving agents](book/src/research/agents.md)).
@@ -629,6 +644,7 @@ the architecture's own:
 | `agent:provider-sees-context` | A model provider receives the conversation it is asked to continue, tool results included. |
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
 | `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again. |
+| `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. That a verifier did not write the version is checked by the commands, not by the ledger. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

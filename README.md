@@ -86,7 +86,9 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   acceptance is fixed when it is posted. `sion agent run` puts an agent to
   work with a model, under autonomy levels and approvals, while the
   ledger enforces its charter. It installs a skill from others only when
-  the bonds and audits behind the skill cover what the agent could lose.
+  the bonds and audits behind the skill cover what the agent could lose,
+  and a skill's better version is released only once verifiers, fixed
+  before it existed, have run its evaluation set and attested.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,

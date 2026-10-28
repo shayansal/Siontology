@@ -1,11 +1,12 @@
 # Reliable, self-improving agents
 
-**Status: being built** (the runtime's core and skills with a supply
-chain are built). This note sets out how Siontology offers what the
-leading open agent runtimes offer for building good agents, and what its
-primitives add. Parts are built already (identities, budgets, memory,
-tasks, storage, the runtime's core, skills with a supply chain); the rest
-is the plan this note fixes. Each part says which.
+**Status: being built** (the runtime's core, skills with a supply chain
+and self-improvement are built). This note sets out how Siontology offers
+what the leading open agent runtimes offer for building good agents, and
+what its primitives add. Parts are built already (identities, budgets,
+memory, tasks, storage, the runtime's core, skills with a supply chain,
+self-improvement with verified promotion); the rest is the plan this note
+fixes. Each part says which.
 
 ## What the leading runtimes do
 
@@ -107,7 +108,7 @@ the plan.
 | Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Not built (no shell tool yet) |
 | Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Built: atoms in the agent's memory log, preferences, goals and procedures in every prompt, recall proved complete against the ledger, search, retraction, every session an episode. Not built: search over past sessions' text, consolidation |
 | Durable memory | The log's archive kept by storage providers, proven every round | Next |
-| Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use |
+| Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use; evaluation, evolution and verified promotion (part 3) |
 | Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Not built |
 | Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Identities built; spawning from the runtime not built |
 | Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Command line built |
@@ -116,7 +117,11 @@ the plan.
 
 ### 3. Self-improvement that cannot fool itself
 
-**Status: to be built.**
+**Status: built** (`sion skill eval`, `evolve`, `vouch`, `bounty`,
+`verify`, `submit` and `lineage`; see
+[Skills that get better](../guides/skill-improvement.md)), except an
+overseer's approval as a required claim (step 4). No change to the state
+transition: it uses claims, bonds and Task Charters as they are.
 
 1. **Experience.** Every session is a trajectory: messages, tool calls,
    results, and an outcome (the user's verdict, a check, a task's
@@ -125,23 +130,34 @@ the plan.
    session is an episode in the log, with its trajectory's digest.*
 2. **Skill creation.** After a successful task that took many steps, the
    agent writes the procedure as a skill, or improves the skill it used.
-   Drafts stay private.
+   Drafts stay private. *Built: after a finished task with at least five
+   successful tool calls and no skill written, the runtime asks the agent
+   whether to write one, with only its skill tools.*
 3. **Evolution.** For a skill with an evaluation set, the runtime reads the
    traces of its failures, asks the model for variants that address them,
    scores each on the set, and keeps the variants that are better and no
    larger (a Pareto front, as GEPA does), under the same gates Hermes uses:
-   tests pass, a size limit, the purpose unchanged.
+   tests pass, a size limit, the purpose unchanged. *Built: evaluation
+   sets of cases with stand-in tools and checks; the gates are the name
+   and description unchanged, 15,000 bytes, a version not tried before,
+   and no case lost that the parent passed. Only the instructions evolve.*
 4. **Promotion, verified by others.** A variant becomes the new version
    only when **verifiers who did not write it** attest that it passes the
    evaluation, through a Task Charter whose acceptance rule was fixed
    before the variant existed. The release then rests on their attestations
    and points to its parent, so anyone can follow a skill's lineage and the
    evidence for each step. An overseer's approval can be one of the
-   required claims, as a human review is in Hermes.
+   required claims, as a human review is in Hermes. *Built, except the
+   overseer: a bounty's spec names the release, the set's digest and the
+   cases to pass; its verifiers run the set themselves; the release rests
+   on the settled result and records it. An overseer can be a verifier,
+   but a bounty cannot yet require one particular verifier.*
 5. **Training data.** Trajectories export as JSON Lines in the chat format
    with tool calls, labelled with their verified outcomes, for fine-tuning
    or reinforcement learning; evaluations and rollouts can be bought from
-   others as Task Charters.
+   others as Task Charters. *Built: `sion agent trace` for sessions,
+   `sion skill eval --trajectories` for evaluation runs labelled with their
+   results.*
 
 ### 4. In the app
 

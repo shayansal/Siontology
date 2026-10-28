@@ -54,6 +54,25 @@ Commit messages before the rename use the working name, Fold.
   the agents that relied on it are compensated from the slashed bonds.
   New trust atom `agent:local-skill-checks`. Guide: [Skills from
   others](docs/book/src/guides/skills.md).
+- Skills that get better: evaluation sets (`sion_agent::evals`: cases
+  with stand-in tools and checks, fixed by the digest of their bytes) and
+  evolution (`sion_agent::evolve`: a mutator model proposes variants for
+  the cases a version fails; gates for purpose, size, novelty and
+  regressions; a Pareto front). `sion skill eval` (with trajectories
+  labelled by result), `evolve` (the best version kept as a draft),
+  `vouch` (an evaluation set's author stands behind it on a bond,
+  `skill.evals/v1`), `bounty` (a Task Charter for a better version, its
+  spec, verifiers and required claims fixed first), `verify` (a named
+  verifier runs the set and attests), `submit` (result and settlement),
+  `publish --evidence` (the release rests on the settled result and
+  records it) and `lineage`. New trust atom `agent:eval-runs`. Guide:
+  [Skills that get better](docs/book/src/guides/skill-improvement.md).
+- After a finished task with at least five successful tool calls and no
+  skill written, `sion agent run` asks the agent whether to write down how
+  it did it, with only its skill tools (`--no-reflect` to skip).
+- Scripted models: a step can play only `when` the conversation contains
+  a text, or `unless` it does; a resumed session's script goes on from the
+  step it reached.
 
 ### Fixes from the review of storage deals, pooled stake and the app
 

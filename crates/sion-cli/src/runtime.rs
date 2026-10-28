@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use sion_agent::model::Model;
 use sion_agent::scripted::Scripted;
 use sion_agent::tools::{Effect, Outcome, Tool};
-use sion_agent::{Block, Ended, Limits, Policy, Role, Runtime, State, ToolSpec, Toolbox};
+use sion_agent::{Autonomy, Block, Ended, Limits, Policy, Role, Runtime, State, ToolSpec, Toolbox};
 use sion_core::hash::Hash32;
 use sion_core::ids::{AssetId, ObjectId, TxDigest};
 use sion_exec::object::ObjectData;
@@ -370,6 +370,14 @@ pub struct Saved {
     /// The call a person just decided, to show with the next run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided: Option<sion_agent::session::Pending>,
+    /// Where each scripted model's script had got to, so that a resumed
+    /// session goes on from there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub positions: Vec<Option<usize>>,
+    /// Whether to ask the agent, after a long task it finished, whether to
+    /// write down how it did it as a skill.
+    #[serde(default)]
+    pub reflect: bool,
 }
 
 /// Where agent sessions are kept: `$SION_HOME/agents/sessions`.
@@ -503,11 +511,15 @@ impl Saved {
         }
         let system = self.system_prompt();
         self.prompt = system.clone();
-        let skip = self.state.turns_taken as usize;
+        let turns = self.state.turns_taken as usize;
         let models: Vec<Box<dyn Model>> = self
             .models
             .iter()
-            .map(|spec| model(spec, skip))
+            .enumerate()
+            .map(|(i, spec)| {
+                let skip = self.positions.get(i).copied().flatten().unwrap_or(turns);
+                model(spec, skip)
+            })
             .collect::<Result<_, _>>()?;
         let runtime = Runtime {
             models: models.iter().map(|m| m.as_ref()).collect(),
@@ -522,6 +534,44 @@ impl Saved {
         let waiting = self.decided.take().or_else(|| self.state.pending.clone());
         let ended = runtime.run(&mut self.state);
         self.ended = Some(ended.clone());
+        let task_end = self.state.messages.len();
+        // A long task done without writing a skill: the agent is asked
+        // whether to write down how it did it, with its skill tools only.
+        let mut reflection = Vec::new();
+        let room = self
+            .limits
+            .max_turns
+            .saturating_sub(self.state.turns_taken)
+            .min(3);
+        if self.reflect
+            && self.skills.is_some()
+            && matches!(ended, Ended::Done { .. })
+            && self.policy.autonomy >= Autonomy::L3
+            && room > 0
+            && sion_agent::skills::worth_writing_down(
+                &self.state.messages,
+                sion_agent::skills::REFLECT_AFTER,
+            )
+        {
+            let start = self.state.messages.len();
+            self.state
+                .messages
+                .push(sion_agent::Message::user(sion_agent::skills::REFLECT));
+            self.state.turns_left = room;
+            let reflecting = Runtime {
+                policy: Policy {
+                    grants: ["skill_read", "skill_file", "skill_write"]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    ..self.policy.clone()
+                },
+                ..runtime
+            };
+            reflecting.run(&mut self.state);
+            reflection = transcript(&self.state.messages[start + 1..]);
+        }
+        self.positions = models.iter().map(|m| m.position()).collect();
         self.save()?;
         let mut lines = quarantined;
         // A call that waited for a decision is answered in place: show how.
@@ -544,9 +594,13 @@ impl Saved {
             }
         }
         lines.extend(transcript(
-            &self.state.messages[from.min(self.state.messages.len())..],
+            &self.state.messages[from.min(task_end)..task_end],
         ));
         lines.push(ending(&ended, &self.state.id));
+        if !reflection.is_empty() {
+            lines.push("asked whether to write down how it did the task, as a skill:".to_string());
+            lines.extend(reflection);
+        }
         // What was recorded reaches the ledger; a finished session is
         // recorded as an episode first.
         if let (Some(memory), false) = (&memory, ended == Ended::Stopped) {
@@ -691,6 +745,9 @@ pub struct Equipment {
     pub skills: Option<PathBuf>,
     /// A system prompt other than the default.
     pub system: Option<String>,
+    /// Whether to ask the agent, after a long task it finished, whether to
+    /// write down how it did it as a skill.
+    pub reflect: bool,
 }
 
 /// The default directory of an agent's skills.
@@ -714,6 +771,7 @@ pub fn start(
         memory,
         skills,
         system,
+        reflect,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -754,6 +812,8 @@ pub fn start(
         state: State::start(&new_id(), task, &limits),
         ended: None,
         decided: None,
+        positions: Vec::new(),
+        reflect,
     };
     let lines = saved.run(ledger)?;
     Ok((saved, lines))

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::builtin::inside;
-use crate::model::ToolSpec;
+use crate::model::{Block, Message, ToolSpec};
 use crate::tools::{Effect, Outcome, Tool};
 
 /// The most bytes of a `SKILL.md`.
@@ -489,6 +489,48 @@ impl Tool for SkillWrite {
     }
 }
 
+/// What the agent is asked after it finished a long task without writing
+/// a skill: to write down how it did it, if that would help next time.
+pub const REFLECT: &str = "You finished the task. Before you stop: if how you did it would help \
+     with tasks like it next time, write it down as a skill with skill_write, or improve the \
+     skill of yours that you used (a skill installed from a release cannot be changed). Keep to \
+     the steps that worked and the mistakes to avoid. If it would not help, reply \"no skill\". \
+     Do not do any more of the task.";
+
+/// The fewest successful tool calls after which a finished task is worth
+/// writing down.
+pub const REFLECT_AFTER: usize = 5;
+
+/// Whether a session's conversation is worth writing down as a skill: at
+/// least `min_calls` tool calls succeeded, no skill was written, and the
+/// agent was not asked already.
+pub fn worth_writing_down(messages: &[Message], min_calls: usize) -> bool {
+    let mut names = std::collections::BTreeMap::new();
+    let mut succeeded = 0;
+    for message in messages {
+        for block in &message.content {
+            match block {
+                Block::ToolUse { id, name, .. } => {
+                    names.insert(id.as_str(), name.as_str());
+                }
+                Block::ToolResult {
+                    id,
+                    is_error: false,
+                    ..
+                } => {
+                    if names.get(id.as_str()) == Some(&"skill_write") {
+                        return false;
+                    }
+                    succeeded += 1;
+                }
+                Block::Text { text } if text == REFLECT => return false,
+                _ => {}
+            }
+        }
+    }
+    succeeded >= min_calls
+}
+
 /// The skill tools for `root`: read, read a file, write.
 pub fn tools(root: &Path) -> Vec<Box<dyn Tool>> {
     vec![
@@ -513,6 +555,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_long_task_without_a_skill_is_worth_writing_down() {
+        let call = |id: &str, name: &str| Message {
+            role: crate::model::Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input: json!({}),
+            }],
+        };
+        let result = |id: &str, is_error: bool| Message {
+            role: crate::model::Role::User,
+            content: vec![Block::ToolResult {
+                id: id.into(),
+                content: String::new(),
+                is_error,
+            }],
+        };
+        let mut messages = vec![Message::user("Pay the invoices.")];
+        for i in 0..4 {
+            messages.push(call(&format!("c{i}"), "ledger_pay"));
+            messages.push(result(&format!("c{i}"), false));
+        }
+        messages.push(call("c4", "ledger_pay"));
+        messages.push(result("c4", true));
+        assert!(
+            !worth_writing_down(&messages, REFLECT_AFTER),
+            "a failure does not count"
+        );
+        messages.push(call("c5", "ledger_balance"));
+        messages.push(result("c5", false));
+        assert!(worth_writing_down(&messages, REFLECT_AFTER));
+        let mut wrote = messages.clone();
+        wrote.push(call("c6", "skill_write"));
+        wrote.push(result("c6", false));
+        assert!(!worth_writing_down(&wrote, REFLECT_AFTER));
+        let mut asked = messages;
+        asked.push(Message::user(REFLECT));
+        assert!(!worth_writing_down(&asked, REFLECT_AFTER));
     }
 
     #[test]

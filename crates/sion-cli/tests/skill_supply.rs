@@ -141,8 +141,10 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
         "publisher",
         &dir,
         "1.0.0",
-        Some("skills"),
-        &[],
+        sion_cli::skills::Backing {
+            bond: Some("skills"),
+            ..Default::default()
+        },
         judge,
         None,
         None,
@@ -184,8 +186,11 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
         "publisher",
         &dir,
         "1.0.1",
-        Some("skills"),
-        &[audit],
+        sion_cli::skills::Backing {
+            bond: Some("skills"),
+            audits: &[audit],
+            evidence: &[],
+        },
         judge,
         Some(first),
         None,

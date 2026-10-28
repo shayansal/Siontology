@@ -198,4 +198,11 @@ pub trait Model: Send + Sync {
 
     /// One call.
     fn complete(&self, request: &Request) -> Result<Response, ModelError>;
+
+    /// How far a model that replays a script has got: the steps it has
+    /// used, so that a resumed session can go on from there. None for a
+    /// model that does not replay anything.
+    fn position(&self) -> Option<usize> {
+        None
+    }
 }

@@ -32,8 +32,14 @@
 //!   decides. A kill switch stops a run before its next call.
 //! - **Traces.** A session exports as a trajectory, for review, evaluation
 //!   and training ([`trace`]).
+//!
+//! Skills ([`skills`]) are how an agent gets better at its work: it writes
+//! down what worked, and a skill is measured against an evaluation set
+//! ([`evals`]) and improved by evolving variants against it ([`evolve`]).
 
 pub mod builtin;
+pub mod evals;
+pub mod evolve;
 pub mod journal;
 pub mod model;
 pub mod policy;
