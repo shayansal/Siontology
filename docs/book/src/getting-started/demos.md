@@ -180,37 +180,38 @@ own policy. See [Memory for agents and robots](../concepts/memory.md).
 ```text
 == Storage for agents: a robot's memory kept by devices it pays, proven every round ==
 Pulse   7  robot-gamma commits 400 observations of a patrol; the head's manifest is the root of their archive (88 KiB, 23 leaves of at most 4 KiB)
-Pulse   9  robot-gamma posts an open deal for the archive: 6 rounds of 12 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral
+Pulse   9  robot-gamma posts an open deal for the archive: 6 rounds of 16 Pulses at 0.5 USD a proven round (3 USD in escrow), 4 leaves challenged a round, 3 USD of collateral
 Pulse  11  and a deal for its camera footage (16 leaves) with the phone, on the same terms
-           a laptop and a phone run providers: each fetches a deal's data from its locator, checks it hashes to the deal's root, posts the collateral, then proves every round
-           laptop: Pulse 13: Done: laptop accepted storage deal cadc0423 (custody record 3a9250aa); rounds start at Pulse 14; fee 0.0012 USD.
-           laptop: Pulse 15: Done: round 0 of storage deal cadc0423 proven; fee 0.0027 USD.
-           phone:  Pulse 17: Done: phone accepted storage deal 3902d3be (custody record 76341d11); rounds start at Pulse 18; fee 0.0012 USD.
-           phone:  Pulse 19: Done: round 0 of storage deal 3902d3be proven; fee 0.0027 USD.
+           a laptop and a phone run providers: each fetches a deal's data from its locator in the background, checks it hashes to the deal's root, posts the collateral, then proves every round
+           laptop: fetching deal 54fef09d from file://…/storage/robot-gamma/patrol-archive.bin
+           phone:  fetching deal e6c488cb from file://…/storage/robot-gamma/camera.bin
+           laptop: Pulse 16: Done: laptop accepted storage deal 54fef09d (custody record 1a9dc946); rounds start at Pulse 24; fee 0.0012 USD.
+           phone:  Pulse 18: Done: phone accepted storage deal e6c488cb (custody record a86a1d8b); rounds start at Pulse 24; fee 0.0012 USD.
            the phone then quietly keeps only leaves 0 to 7 of the footage, to save space: the deal still pays it, as long as nobody asks for the rest
-           laptop: Pulse 28: Done: round 1 of storage deal cadc0423 proven; fee 0.0027 USD.
-           round 1: the phone is asked for leaves [6, 13, 9, 15]; it lost 3 of them and cannot answer
-           laptop: Pulse 39: Done: round 2 of storage deal cadc0423 proven; fee 0.0027 USD.
-           round 2: the phone is asked for leaves [6, 12, 4, 8]; it lost 2 of them and cannot answer
-           laptop: Pulse 53: Done: round 3 of storage deal cadc0423 proven; fee 0.002 USD.
-           laptop: Pulse 56: Done: 2 USD paid for 4 proven round(s) of storage deal cadc0423; fee 0.0011 USD.
-           round 3: the phone is asked for leaves [9, 7, 13, 10]; it lost 3 of them and cannot answer
-           laptop: Pulse 63: Done: round 4 of storage deal cadc0423 proven; fee 0.0027 USD.
-           round 4: the phone is asked for leaves [15, 0, 14, 13]; it lost 3 of them and cannot answer
-Pulse  67  robot-gamma closes the footage deal (abandoned): 3 round(s) missed; 2.5 USD of escrow back, 0.5 USD paid for what the phone proved, its collateral of 3 USD forfeited to the treasury
-           laptop: Pulse 75: Done: round 5 of storage deal cadc0423 proven; fee 0.0027 USD.
-           laptop: Pulse 90: Done: storage deal cadc0423 closed: 0 USD refunded, 1 USD paid, 3 USD of collateral returned, 0 USD forfeited, 0 round(s) missed; fee 0.0011 USD.
+           round 0: the phone is asked for leaves [7, 0, 8, 11]; it lost 2 of them and cannot answer
+           laptop: Pulse 28: Done: round 0 of storage deal 54fef09d proven; fee 0.0027 USD.
+           round 1: the phone is asked for leaves [9, 0, 8, 5]; it lost 2 of them and cannot answer
+           laptop: Pulse 43: Done: round 1 of storage deal 54fef09d proven; fee 0.0027 USD.
+           round 2: the phone is asked for leaves [2, 2, 10, 6]; it lost 1 of them and cannot answer
+           laptop: Pulse 58: Done: round 2 of storage deal 54fef09d proven; fee 0.0027 USD.
+Pulse  74  robot-gamma closes the footage deal (abandoned): 3 round(s) missed; 3 USD of escrow back, 0 USD paid for what the phone proved, its collateral of 3 USD forfeited to the treasury
+           laptop: Pulse 77: Done: round 3 of storage deal 54fef09d proven; fee 0.0027 USD.
+           laptop: Pulse 79: Done: 2 USD paid for 4 proven round(s) of storage deal 54fef09d; fee 0.0011 USD.
+           laptop: Pulse 90: Done: round 4 of storage deal 54fef09d proven; fee 0.0027 USD.
+           laptop: Pulse 107: Done: round 5 of storage deal 54fef09d proven; fee 0.0027 USD.
+           laptop: Pulse 122: Done: storage deal 54fef09d closed: 0 USD refunded, 1 USD paid, 3 USD of collateral returned, 0 USD forfeited, 0 round(s) missed; fee 0.0011 USD.
            the laptop proved 6 of 6 rounds (0 missed): paid 3 USD and its collateral returned; it kept the archive the whole time
            a reader checks two objects on the ledger: robot-gamma's memory head names manifest 86cfe894, and the deal the laptop proved commits to root 86cfe894: the memory the robot committed is the data that was kept
            what a proof shows: the provider could produce the challenged leaves during the round; not that it stores its own copy (no proof of replication)
 ```
 
-Each round's challenge is drawn from a seed that the beacon of the
-previous proof's Pulse changed, so the phone cannot know which leaves it
-will be asked for, and with half its leaves gone it answers a round only
-when all four challenges fall in the half it kept (one round in 16). The
-ledger never sees the data: it checks four leaves and their Merkle paths a
-round. See [Storage deals](../concepts/storage.md).
+Each round's challenge is drawn from the beacon of the round's first
+Pulse, which the ledger records, so the phone cannot know which leaves it
+will be asked for before the round starts, nor pick them by timing its
+proof. With half its leaves gone it answers a round only when all four
+challenges fall in the half it kept (one round in 16). The ledger never
+sees the data: it checks four leaves and their Merkle paths a round. See
+[Storage deals](../concepts/storage.md).
 
 ## market
 
