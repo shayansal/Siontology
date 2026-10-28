@@ -83,7 +83,9 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   its whole tree. Agents and robots keep memory in single-writer logs whose
   heads are on the ledger, so a reader can check that an answer is
   complete and a rewrite is refused. Task Charters escrow work whose
-  acceptance is fixed when it is posted.
+  acceptance is fixed when it is posted. `sion agent run` puts an agent to
+  work with a model, under autonomy levels and approvals, while the
+  ledger enforces its charter.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,
@@ -191,6 +193,7 @@ availability and proving) and narrates what the ledger established.
 | [`sion-memory`](crates/sion-memory) | Memory for agents and robots, off the ledger: memory atoms, single-writer logs, a 4D index with range, subject, link and omission proofs, belief as a fold, sealing and forgetting |
 | [`sion-net`](crates/sion-net) | Networking between processes: QUIC with TLS 1.3, X25519MLKEM768 and pinned ML-DSA-44 raw public keys, bounded queues and quotas |
 | [`sion-http`](crates/sion-http) | Outbound HTTPS for clients, X25519MLKEM768 offered first, refusing non-public addresses |
+| [`sion-agent`](crates/sion-agent) | The agent runtime: models, tools with effects, autonomy levels and approvals, taint, a journal of side effects, budgets, sessions that pause and resume |
 | [`sion-node`](crates/sion-node) | The devnet and `sion node`: validators, gateway, prover, write-ahead log and snapshots, HTTP API |
 | [`sion-cli`](crates/sion-cli) | The `sion` command: devnet, nodes, wallets, payment streams, x402, agents, tasks, memory, storage deals, demos, light verification, MCP server, benchmarks |
 | [`sion-app-core`](crates/sion-app-core) | The app's core: the device's key, a light client that verifies the device's own receipts, payments, storage provided from the device ([apps/sion-app](apps/sion-app)) |

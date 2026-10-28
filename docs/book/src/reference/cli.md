@@ -683,6 +683,11 @@ Commands:
   resume         Lift a suspension (the suspender or the backer)
   revoke         Revoke an agent and everything below it, for good (the agent itself or an overseer)
   reclaim        Return a revoked or expired agent's unspent budget to its backer (its principal or its backer)
+  run            Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
+  continue       Continue a session: approve or decline the call it waits on, or tell it more
+  sessions       The agent sessions on this machine
+  trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
+  kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   help           Print this message or the help of the given subcommand(s)
 
 Options:
@@ -848,6 +853,92 @@ Usage: sion agent reclaim [OPTIONS] <WALLET> <AGENT>
 Arguments:
   <WALLET>  Wallet
   <AGENT>   Agent id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent run`
+
+```text
+Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
+
+Usage: sion agent run [OPTIONS] --task <TASK> --model <MODELS> <WALLET> <AGENT>
+
+Arguments:
+  <WALLET>  The agent's wallet
+  <AGENT>   The agent (its id)
+
+Options:
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --task <TASK>            The task, in words
+      --model <MODELS>         The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY) or script:<file>. Repeat for fallbacks, in order
+      --autonomy <AUTONOMY>    How much it may do without asking: L0 (nothing) to L6 (spend within its charter). L3 reads and writes its workspace; L5 also fetches from the web and asks before paying [default: L5]
+      --workspace <WORKSPACE>  A directory the agent may read and write
+      --web                    Let it fetch public web pages (they taint the session: external calls and payments then wait for approval)
+      --system <SYSTEM>        A file with the system prompt (default: one that tells the agent who it is and how its charter limits it)
+  -h, --help                   Print help
+```
+
+See [Agents at work](../guides/agent-runtime.md).
+
+## `sion agent continue`
+
+```text
+Continue a session: approve or decline the call it waits on, or tell it more
+
+Usage: sion agent continue [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+
+Options:
+      --approve            Approve the call it waits on
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --decline <DECLINE>  Decline the call it waits on, saying why
+      --say <SAY>          Tell it something more and let it go on
+  -h, --help               Print help
+```
+
+See [Agents at work](../guides/agent-runtime.md#approvals).
+
+## `sion agent sessions`
+
+```text
+The agent sessions on this machine
+
+Usage: sion agent sessions [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent trace`
+
+```text
+A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
+
+Usage: sion agent trace [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent kill-switch`
+
+```text
+The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
+
+Usage: sion agent kill-switch [OPTIONS] <STATE>
+
+Arguments:
+  <STATE>  on or off
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]

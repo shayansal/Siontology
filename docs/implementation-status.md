@@ -24,6 +24,7 @@ live.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime core with providers and a scripted model; memory, skills, self-improvement, schedules and channels not built) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -112,6 +113,26 @@ limits (window limits are fixed windows, so a subtree can spend up to twice
 its root's limit in an interval that straddles two windows), and a rule
 that makes a certified agent payment final before it executes (today a
 suspension or revocation that executes first makes it fail).
+
+**Agent runtime: partly built (beyond the paper).** `sion-agent` runs a
+language model as an agent: the Anthropic Messages API (version
+2026-10-21), any OpenAI-compatible API, or a scripted model; fallback with
+a 30-second cooldown; tools that declare an effect (read, write, external,
+spend); autonomy levels L0 to L6 with approvals that expire after 15
+minutes; taint for 24 hours after content from outside, during which
+external calls and spending need approval; a journal that returns the
+recorded outcome of a repeated call and never repeats one whose outcome is
+unknown; a turn budget of 12, plus 4 per turn of progress, at most 32;
+compaction; a kill switch; sessions that serialise, pause for approval and
+resume; and trajectories in chat format. `sion agent run` gives it the
+ledger as tools (balance, payments under the agent's charter, transaction
+status), files in a workspace and public web pages
+([Agents at work](book/src/guides/agent-runtime.md)). Tested with the
+scripted model and with stand-ins for the providers' APIs: this
+environment has no model provider. Not built: memory and skills,
+self-improvement with verified promotion, schedules, channels, handing
+work to other agents, a shell tool and a sandbox
+([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
 
@@ -585,6 +606,9 @@ the architecture's own:
 | `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
 | `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |
 | `app:unproven-balances` | The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven. |
+| `agent:local-policy` | An agent runtime's autonomy level, approvals, grants and taint are enforced by the runtime on the machine it runs on. Only the agent's charter (payees, limits, budget, expiry, suspension) is enforced by the ledger. |
+| `agent:provider-sees-context` | A model provider receives the conversation it is asked to continue, tool results included. |
+| `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

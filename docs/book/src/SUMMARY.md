@@ -58,6 +58,7 @@
 - [Bonds and challenges](guides/bonds-and-challenges.md)
 - [Charters for AI agents](guides/charters.md)
 - [Agent identities from the command line](guides/agents.md)
+- [Agents at work](guides/agent-runtime.md)
 - [Task Charters from the command line](guides/tasks.md)
 - [Memory from the command line](guides/memory.md)
 - [Storage from the command line](guides/storage.md)

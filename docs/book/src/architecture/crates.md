@@ -1,6 +1,6 @@
 # Crate map
 
-The repository is one Cargo workspace of seventeen crates. Lower crates know
+The repository is one Cargo workspace of eighteen crates. Lower crates know
 nothing of higher ones, and every crate depends on `sion-core` rather than
 on its neighbours where it can (a rule in `AGENTS.md`). The app's GUI shell,
 `apps/sion-app/src-tauri`, is a separate Cargo workspace on top of
@@ -12,7 +12,7 @@ dependencies):
 ```text
 sion-app-core
 sion-cli
-sion-node
+sion-node        sion-agent
 sion-prover
 sion-spec        sion-light      sion-net
 sion-exec        sion-memory
@@ -36,8 +36,9 @@ sion-core        sion-lp         sion-http
 | `sion-memory` | Memory for agents and robots, off the ledger: memory atoms with space and two kinds of time, single-writer logs, the canonical 4D index with range, subject, link and omission proofs, belief as a fold, sealing and forgetting | 9,156 | core, crypto |
 | `sion-net` | Networking between processes: QUIC with TLS 1.3, X25519MLKEM768 and pinned ML-DSA-44 raw public keys, one stream per message class, bounded queues and quotas | 2,958 | core, crypto |
 | `sion-http` | Outbound HTTPS for clients: TLS 1.3 or 1.2 with the hybrid X25519MLKEM768 key exchange offered first (TLS 1.3 only), web PKI roots, a resolver that refuses loopback, private and other non-public addresses, proxy support, bounded reads, timeouts, no redirects | 670 | none |
+| `sion-agent` | The agent runtime: models (Anthropic, OpenAI-compatible, scripted), tools with effects, autonomy levels, approvals, taint, the journal of side effects, turn budgets, compaction, fallback, sessions that pause and resume, trajectories, workspace and web tools | 2,431 | core, http |
 | `sion-node` | The devnet and `sion node`: validator threads, gateway, prover thread, committees from the state, forced-inclusion bookkeeping, write-ahead log and snapshots, HTTP API, the transport seam | 10,448 | core, crypto, assurance, clearing, consensus, exec, da, light, net, prover |
-| `sion-cli` | The `sion` command: devnet, nodes and gateways, wallets, transactions, payment streams (payer book, payee desk), agents, tasks, memory, pooled stake, storage deals and the storage provider, demos, light verification, MCP server, x402 adapter, benchmarks, sentences | 15,177 | everything except lp and net |
+| `sion-cli` | The `sion` command: devnet, nodes and gateways, wallets, transactions, payment streams (payer book, payee desk), agents and the agent runtime's ledger tools and sessions, tasks, memory, pooled stake, storage deals and the storage provider, demos, light verification, MCP server, x402 adapter, benchmarks, sentences | 16,045 | everything except lp and net |
 | `sion-app-core` | The app's core: the device's key, a light client that verifies the latest Pulse and the device's own receipts, payments, pooled stake and storage provided from the device ([The app](../getting-started/app.md)) | 850 | core, crypto, exec, light, cli |
 
 Lines are lines of Rust under each crate's `src/`, unit tests included, at
@@ -68,6 +69,8 @@ the time of writing.
 | `sion-node/tests/devnet.rs` | End-to-end devnets with dual post-quantum signatures |
 | `sion-app-core/tests/devnet.rs` | The app's core against a devnet over HTTP: pinning on first use, a payment with its receipt proven, pooled stake, a wrong pin, following new epochs without starting over, providing storage and proving its rounds |
 | `sion-cli/tests/demos.rs` | The demos (`#[ignore]`d: they take minutes) and an MCP session |
+| `sion-agent/tests` | Sessions with a scripted model (approvals across a pause, the journal, taint, budgets, fallback, compaction, the kill switch, traces) and the providers against stand-ins for their APIs |
+| `sion-cli/tests/agent_runtime.rs` | An agent at work on a devnet: payments the charter allows go through, the ledger refuses the rest even at L6, a payment waits for approval at L5 and survives a restart |
 | `sion-cli/tests/streams.rs` | An x402 server's stream desk on a devnet: refusals, recovery, top-ups and the close-out |
 
 `cargo test --workspace` runs the fast suite, as CI does on every push.

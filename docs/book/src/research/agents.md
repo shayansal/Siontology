@@ -1,10 +1,10 @@
 # Reliable, self-improving agents
 
-**Status: design, being built.** This note sets out how Siontology offers
-what the leading open agent runtimes offer for building good agents, and
-what its primitives add. Parts are built already (identities, budgets,
-memory, tasks, storage); the rest is the plan this note fixes. Each part
-says which.
+**Status: being built** (the runtime's core is built). This note sets
+out how Siontology offers what the leading open agent runtimes offer for
+building good agents, and what its primitives add. Parts are built
+already (identities, budgets, memory, tasks, storage, the runtime's
+core); the rest is the plan this note fixes. Each part says which.
 
 ## What the leading runtimes do
 
@@ -89,21 +89,26 @@ skill that reaches further is caught doing something it bonded against.
 
 ### 2. The runtime
 
-**Status: to be built** (`sion agent run | chat | serve`).
+**Status: core built** (`sion agent run`; see
+[Agents at work](../guides/agent-runtime.md)). The rest of this table is
+the plan.
 
-| Part | Plan | Built on |
+| Part | Plan | Status |
 |---|---|---|
-| Models | One interface; OpenAI-compatible and Anthropic providers; a scripted model for tests and demos | — |
-| Tools | Files, shell, web fetch, and every ledger action (pay, post a task, keep data, remember, recall); MCP servers mounted as tools | The CLI library; MCP |
-| Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Skill releases |
-| Spending | Every payment goes through the agent's charter; a payment above its limits is refused by the ledger, not by the runtime | Agent Charters |
-| Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Memory logs, belief |
-| Durable memory | The log's archive kept by storage providers, proven every round | Storage deals |
-| Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Part 1 |
-| Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | — |
-| Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Agent identities |
-| Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | — |
-| Hiring | An agent hands work to another through a Task Charter, paid only for an accepted result | Task Charters |
+| Models | One interface; Anthropic and OpenAI-compatible providers; a scripted model for tests and demos; fallback with a cooldown | Built (`sion-agent`) |
+| Rules | Tools declare an effect (read, write, external, spend); autonomy levels L0 to L6 decide what runs, what waits for approval and what is refused; content from outside taints the session | Built |
+| Reliability | A journal so that nothing is done twice by accident and an unknown outcome is never repeated; turn budgets that grow with progress; blocking a call that keeps failing; compaction; sessions that pause for approval and resume; a kill switch | Built |
+| Spending | Every payment goes through the agent's charter; a payment above its limits is refused by the ledger, not by the runtime | Built (`ledger_pay`) |
+| Tools | Files in a workspace, web pages, the ledger (balance, payments, transactions); then memory, tasks and storage; MCP servers mounted as tools | Partly built |
+| Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Not built (no shell tool yet) |
+| Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Next |
+| Durable memory | The log's archive kept by storage providers, proven every round | Next |
+| Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Next |
+| Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Not built |
+| Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Identities built; spawning from the runtime not built |
+| Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Command line built |
+| Hiring | An agent hands work to another through a Task Charter, paid only for an accepted result | Not built |
+| Traces | Every session exports as a trajectory in chat format with its outcome, and as a digest | Built |
 
 ### 3. Self-improvement that cannot fool itself
 

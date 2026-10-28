@@ -10,6 +10,29 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### An agent runtime
+
+- New crate `sion-agent`: runs a language model as an agent. Models: the
+  Anthropic Messages API (version 2026-10-21, automatic prompt caching),
+  any OpenAI-compatible API, and a scripted model; a busy model cools
+  down for 30 seconds while the next is asked. Tools declare an effect
+  (read, write, external, spend); autonomy levels L0 to L6 decide what
+  runs, what waits for a person's approval (valid 15 minutes) and what is
+  refused. Content from outside taints a session for 24 hours, during
+  which external calls and spending need approval. A journal returns the
+  recorded outcome of a repeated call and never repeats one whose outcome
+  is unknown. Runs are bounded (12 turns, 4 more per turn of progress, at
+  most 32), compacted when long, stopped by a kill switch, and pause and
+  resume from disk. Sessions export as chat-format trajectories.
+- `sion agent run | continue | sessions | trace | kill-switch`: an agent
+  identity at work, with the ledger as tools (`ledger_balance`,
+  `ledger_pay` under its charter, `ledger_transaction`), files in a
+  workspace and public web pages. The ledger refuses a payment outside
+  the charter whatever the runtime's level. New trust atoms
+  `agent:local-policy`, `agent:provider-sees-context` and
+  `agent:plain-sessions`. Guide: [Agents at
+  work](docs/book/src/guides/agent-runtime.md).
+
 ### Fixes from the review of storage deals, pooled stake and the app
 
 An independent review of storage deals and the app, and a review of the
