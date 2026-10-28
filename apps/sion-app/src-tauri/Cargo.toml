@@ -1,0 +1,36 @@
+[package]
+name = "sion-app"
+description = "The Siontology app: a light node for desktop and mobile, with a wallet and pooled stake"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[lib]
+name = "sion_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+sion-app-core = { path = "../../../crates/sion-app-core" }
+
+# Its own workspace: the shell's GUI dependencies stay out of the
+# protocol's workspace and its tests.
+[workspace]
+
+[profile.dev]
+# Post-quantum verification is slow unoptimized, as in the protocol's
+# workspace.
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = false
+overflow-checks = true

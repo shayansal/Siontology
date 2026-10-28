@@ -81,7 +81,22 @@ impl EpochChain {
             .epochs
             .keys()
             .next_back()
-            .expect("epoch 0 is always known")
+            .expect("an epoch chain always holds at least one epoch")
+    }
+
+    /// The chain identity this chain of committees was started from.
+    pub fn chain(&self) -> Hash32 {
+        self.chain
+    }
+
+    /// Forgets the committees of the epochs before `epoch`, always keeping
+    /// the latest one, so that a client that keeps following the chain
+    /// holds a bounded number of committees. Headers of forgotten epochs
+    /// can no longer be checked; [`EpochChain::extend`] is unaffected,
+    /// since it only needs the latest epoch.
+    pub fn forget_before(&mut self, epoch: u64) {
+        let keep_from = epoch.min(self.latest());
+        self.epochs = self.epochs.split_off(&keep_from);
     }
 
     /// The committee that signs the headers of `epoch`, if verified.
@@ -148,5 +163,57 @@ impl EpochChain {
         self.epochs
             .insert(proof.epoch, (committee, Keys::State(Box::new(set))));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sion_crypto::{DualKeypair, Scheme};
+
+    use super::*;
+
+    fn spec(n: usize) -> ChainSpec {
+        let mut keys = ValidatorSet::default();
+        let mut validators = Vec::new();
+        for i in 0..n {
+            let pair = DualKeypair::from_seed(&[i as u8; 32], Scheme::SlhDsaSha2_128f);
+            let id = keys.insert(pair.lattice.public().clone(), pair.hash.public().clone());
+            validators.push((id, 1));
+        }
+        ChainSpec {
+            genesis: sion_core::hash::hash_domain("test/genesis", b"g"),
+            validators,
+            keys,
+            shards: 2,
+            seats: 3,
+            insecure_signatures: false,
+        }
+    }
+
+    #[test]
+    fn forgetting_keeps_the_latest_epoch_and_those_after_the_mark() {
+        let spec = spec(4);
+        let mut chain = EpochChain::new(&spec).unwrap();
+        assert_eq!(chain.chain(), spec.id());
+        chain.forget_before(7);
+        assert_eq!(chain.latest(), 0, "the only epoch is kept");
+        // Committees as if five boundaries had been followed.
+        for epoch in 1..=5 {
+            chain.epochs.insert(
+                epoch,
+                (
+                    spec.committee(epoch).unwrap(),
+                    Keys::Spec(spec.keys.clone()),
+                ),
+            );
+        }
+        chain.forget_before(3);
+        assert!(chain.committee(2).is_none());
+        assert!(chain.committee(3).is_some());
+        assert_eq!(chain.latest(), 5);
+        chain.forget_before(99);
+        assert_eq!(chain.latest(), 5);
+        assert!(chain.committee(4).is_none());
+        assert!(chain.committee(5).is_some());
     }
 }

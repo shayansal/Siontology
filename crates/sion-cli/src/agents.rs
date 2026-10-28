@@ -491,7 +491,8 @@ fn parse_id(text: &str, what: &str) -> Result<ObjectId, CliError> {
         .map_err(|_| CliError::Usage(format!("{what} must be a 64-digit hex ID")))
 }
 
-pub(crate) fn parse_amount(text: &str) -> Result<Amount, CliError> {
+/// A decimal amount with at most six places: `12.5` → 12,500,000 micro-units.
+pub fn parse_amount(text: &str) -> Result<Amount, CliError> {
     let text = text.trim();
     let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
     if whole.is_empty() && fraction.is_empty() || fraction.len() > 6 {

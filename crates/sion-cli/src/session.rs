@@ -148,6 +148,13 @@ impl<'a> Session<'a> {
         names
     }
 
+    /// Uses `wallet` for `name` in this session, instead of a seed file or
+    /// the deterministic devnet wallet of that name (for apps that keep
+    /// their own key).
+    pub fn add_wallet(&mut self, name: &str, wallet: Wallet) {
+        self.wallets.insert(name.to_string(), wallet);
+    }
+
     /// The wallet for `name`.
     pub fn wallet(&mut self, name: &str) -> &mut Wallet {
         self.wallets

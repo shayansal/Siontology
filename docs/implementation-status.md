@@ -42,6 +42,7 @@ live.
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
 | Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402) |
+| Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
 | Orchestration: Task Charters, escrowed work with acceptance fixed at posting (beyond the paper) | Built (devnet scale) |
@@ -342,6 +343,22 @@ server that crashes loses what it had not settled. MCP's
 
 **Not built:** adapters for AP2, ERC-8004 and C2PA.
 
+**The app: partly built.** `sion-app-core` turns a device into a light
+node: it keeps the device's key (`key.seed`, mode 0600), verifies the
+latest certified Pulse every eight seconds the way `sion verify --no-world`
+does (chain identity pinned on first use, committee certificate followed
+from the pin, receipts, a state proof when the node is at that Pulse, 16
+random data shares), proves the receipt of every transaction it signs, and
+pays and pools stake (v1.11) through `sion_cli`. It is `Send + Sync`, takes
+`&self` and holds no lock while it talks to a node. Tested against a
+devnet over HTTP (`crates/sion-app-core/tests/devnet.rs`). The Tauri 2
+shell in `apps/sion-app` (its own Cargo workspace) builds and runs on
+Linux; it was run under a virtual display against a devnet and its four
+tabs captured. **Not built:** the Android and iOS builds (configured, not
+attempted: no SDK here), a key in the platform's keystore (`app:plain-key`),
+proofs of the balances it shows (`app:unproven-balances`), storage or
+bandwidth served by devices, and installers or code signing.
+
 ### Payments
 
 **Payment streams: built (specification v1.6 and v1.7).** Not in the
@@ -523,6 +540,9 @@ the architecture's own:
 | `impl:public-amounts` | Amounts and balances are visible to everyone. |
 | `impl:memory-index` | The ledger stores a memory log's index root without checking it: a memory query proof is complete relative to that root, and nothing on the ledger yet acts on evidence that an index leaves an atom out. |
 | `impl:unaudited-pq-crates` | The FIPS 203/204/205 implementations are unaudited pure-Rust crates. |
+| `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
+| `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |
+| `app:unproven-balances` | The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

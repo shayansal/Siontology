@@ -282,26 +282,36 @@ pub fn parse_percent(text: &str) -> Result<u16, CliError> {
 
 /// What a delegation stands for now: its standing in the current epoch,
 /// the stake behind its shares and what it is owed.
-fn standing(pool: &Pool, delegation: &Delegation, epoch: u64) -> (String, u128, Option<u128>) {
+/// Where a delegation stands: a sentence, a machine-readable phase
+/// (`pending`, `earning`, `unbonding` or `unknown`), its stake, and what
+/// it is owed.
+fn standing(
+    pool: &Pool,
+    delegation: &Delegation,
+    epoch: u64,
+) -> (String, &'static str, u128, Option<u128>) {
     let stake = pool.value_of(delegation.shares).map(|a| a.0).unwrap_or(0);
     let (mut pool, mut d) = (pool.clone(), delegation.clone());
     match (delegation.state, resolve(&mut d, &mut pool, epoch)) {
         (DelegationState::Unbonding { at }, _) => (
             format!("unbonding, withdrawable from Pulse {at}"),
+            "unbonding",
             stake,
             None,
         ),
         (_, Ok(Standing::Pending)) => (
             "pending: earns from the end of this epoch".into(),
+            "pending",
             stake,
             Some(0),
         ),
         (_, Ok(Standing::Earning { entry })) => (
             "earning".into(),
+            "earning",
             stake,
             pool.owed(delegation.shares, entry).map(|a| a.0),
         ),
-        (_, Err(reason)) => (reason.to_string(), stake, None),
+        (_, Err(reason)) => (reason.to_string(), "unknown", stake, None),
     }
 }
 
@@ -316,13 +326,19 @@ pub fn delegations_of(ledger: &dyn Ledger, account: AccountId) -> Result<Value, 
             continue;
         };
         let pool = book.pools.get(&d.validator).cloned().unwrap_or_default();
-        let (state, stake, owed) = standing(&pool, d, set.epoch);
+        let (state, phase, stake, owed) = standing(&pool, d, set.epoch);
+        let withdrawable_at = match d.state {
+            DelegationState::Unbonding { at } => Some(at),
+            _ => None,
+        };
         list.push(json!({
             "delegation": object.id,
             "validator": d.validator,
             "shares": d.shares.to_string(),
             "stake": sion_core::Amount(stake).to_string(),
             "state": state,
+            "phase": phase,
+            "withdrawable_at": withdrawable_at,
             "rewards_owed": owed.map(|o| sion_core::Amount(o).to_string()),
             "since": d.since,
         }));

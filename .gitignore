@@ -3,3 +3,5 @@
 /devnet-data
 /.claude
 __pycache__/
+/apps/sion-app/src-tauri/target
+/apps/sion-app/src-tauri/gen/schemas

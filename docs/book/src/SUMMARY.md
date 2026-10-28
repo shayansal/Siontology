@@ -10,6 +10,7 @@
 - [Your first transfer](getting-started/first-transfer.md)
 - [Verify as a light client](getting-started/light-client.md)
 - [Connect an AI agent over MCP](getting-started/mcp.md)
+- [The app: a light node on every device](getting-started/app.md)
 
 # Concepts
 

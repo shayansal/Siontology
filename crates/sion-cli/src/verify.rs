@@ -26,6 +26,19 @@ pub fn epoch_chain(
     epoch: u64,
 ) -> Result<EpochChain, CliError> {
     let mut epochs = EpochChain::new(chain).map_err(|e| CliError::Verification(e.to_string()))?;
+    extend_epoch_chain(ledger, &mut epochs, epoch)?;
+    Ok(epochs)
+}
+
+/// Extends `epochs` up to `epoch`, one boundary at a time, with proofs
+/// fetched from the ledger; returns how many boundaries it followed (none
+/// if `epochs` already reaches `epoch`).
+pub fn extend_epoch_chain(
+    ledger: &dyn Ledger,
+    epochs: &mut EpochChain,
+    epoch: u64,
+) -> Result<u64, CliError> {
+    let mut followed = 0;
     while epochs.latest() < epoch {
         let next = epochs.latest() + 1;
         // A boundary's certificate can complete after those of the Pulses
@@ -41,8 +54,9 @@ pub fn epoch_chain(
         epochs
             .extend(&proof)
             .map_err(|e| CliError::Verification(format!("epoch {next}: {e}")))?;
+        followed += 1;
     }
-    Ok(epochs)
+    Ok(followed)
 }
 
 /// Checks a Pulse certificate against the committee of its epoch, following
@@ -74,6 +88,49 @@ pub fn verify_pulse(
     samples: usize,
     world: bool,
 ) -> Result<Vec<String>, CliError> {
+    Ok(verify_pulse_report(ledger, pinned, pulse, samples, world)?.lines)
+}
+
+/// What [`verify_pulse_report`] established.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PulseReport {
+    /// The chain identity every check ran against: the pinned one, or, if
+    /// none was pinned, the one the node served for this verification.
+    pub chain: Hash32,
+    /// The Pulse verified.
+    pub pulse: Pulse,
+    /// The checks, one line each.
+    pub lines: Vec<String>,
+}
+
+/// [`verify_pulse`], also returning the chain identity and the Pulse it
+/// checked, so that a client pinning on first use pins exactly the identity
+/// it verified against rather than asking the node a second time.
+pub fn verify_pulse_report(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    pulse: Option<Pulse>,
+    samples: usize,
+    world: bool,
+) -> Result<PulseReport, CliError> {
+    verify_pulse_cached(ledger, pinned, pulse, samples, world, &mut None)
+}
+
+/// [`verify_pulse_report`] for a client that verifies again and again: the
+/// committees it followed last time come in `epochs` and go back out
+/// there, extended to the verified header's epoch, so that each
+/// verification only follows the boundaries since the last one. Only the
+/// committees of the verified epoch and the one before are kept. A cache
+/// for another chain, or one that has forgotten the header's epoch, is
+/// replaced by one followed from the pinned epoch 0.
+pub fn verify_pulse_cached(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    pulse: Option<Pulse>,
+    samples: usize,
+    world: bool,
+    epochs: &mut Option<EpochChain>,
+) -> Result<PulseReport, CliError> {
     let mut report = Vec::new();
 
     // 0. The chain identity: every committee below is derived from it.
@@ -156,27 +213,54 @@ pub fn verify_pulse(
             "certificate is for another header".into(),
         ));
     }
-    let epochs = epoch_chain(ledger, &chain, header.epoch)?;
+    let reusable = epochs.as_ref().is_some_and(|cached| {
+        cached.chain() == chain_id
+            && (cached.committee(header.epoch).is_some() || cached.latest() < header.epoch)
+    });
+    let kept = if reusable { epochs.take() } else { None };
+    let reused = kept.is_some();
+    let mut followed_epochs = match kept {
+        Some(cached) => cached,
+        None => EpochChain::new(&chain).map_err(|e| CliError::Verification(e.to_string()))?,
+    };
+    let followed = match extend_epoch_chain(ledger, &mut followed_epochs, header.epoch) {
+        Ok(followed) => followed,
+        Err(error) => {
+            // Every committee followed so far was proven: keep them.
+            *epochs = Some(followed_epochs);
+            return Err(error);
+        }
+    };
     if header.epoch > 0 {
-        report.push(format!(
-            "committees: followed from the pinned epoch 0 to epoch {} through {} certified boundaries and validator-set proofs ✓",
-            header.epoch, header.epoch
-        ));
+        report.push(if reused {
+            format!(
+                "committees: followed from the pinned epoch 0 to epoch {}; {} new certified boundary and validator-set proof(s) checked, the earlier ones kept from previous verifications ✓",
+                header.epoch, followed
+            )
+        } else {
+            format!(
+                "committees: followed from the pinned epoch 0 to epoch {} through {} certified boundaries and validator-set proofs ✓",
+                header.epoch, followed
+            )
+        });
     }
-    match epochs
-        .verify_header(&certificate)
-        .map_err(|e| CliError::Verification(e.to_string()))?
-    {
+    let verified_header = followed_epochs.verify_header(&certificate);
+    let committee_size = followed_epochs
+        .committee(header.epoch)
+        .map(|c| (c.size(), c.total_stake()));
+    followed_epochs.forget_before(header.epoch.saturating_sub(1));
+    *epochs = Some(followed_epochs);
+    match verified_header.map_err(|e| CliError::Verification(e.to_string()))? {
         None => report
             .push("certificate: SKIPPED — this devnet runs insecure simulation signatures".into()),
         Some((stake, quorum)) => {
-            let committee = epochs.committee(header.epoch).expect("verified above");
+            let (size, total) = committee_size.expect("verified above");
             report.push(format!(
                 "certificate: {} of {} validators signed, {} of {} stake (quorum {}), each signature ML-DSA-44 + SLH-DSA-SHA2-128f ✓",
                 certificate.signers().len(),
-                committee.size(),
+                size,
                 stake,
-                committee.total_stake(),
+                total,
                 quorum
             ));
         }
@@ -320,7 +404,11 @@ pub fn verify_pulse(
             }
         }
     }
-    Ok(report)
+    Ok(PulseReport {
+        chain: chain_id,
+        pulse,
+        lines: report,
+    })
 }
 
 /// A transaction's receipt as a light client established it.

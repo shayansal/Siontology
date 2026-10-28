@@ -10,6 +10,23 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### The app: a light node on every device
+
+- New crate `sion-app-core`, shared by the app's desktop and mobile
+  shells: the device's key, a light client that verifies the latest
+  certified Pulse every eight seconds (chain identity pinned on first use
+  or by its user, committee certificate, receipts, a state proof, 16 random
+  data shares), receipts proven for every transaction the device signs,
+  payments and pooled stake, over any node's HTTP API. `Send + Sync`, and
+  no lock held while it talks to a node.
+- A Tauri 2 shell in `apps/sion-app` (its own Cargo workspace) with four
+  tabs (Node, Wallet, Stake, Settings) in the brand's type and colours.
+  Built and run on Linux against a devnet; Android and iOS are configured
+  but not built yet. See the [app page](docs/book/src/getting-started/app.md).
+- `sion_cli::verify::verify_pulse_report` returns the chain identity and
+  Pulse a verification checked, so a client pinning on first use pins the
+  identity it verified against.
+
 ### Networking between machines
 
 - Validators run one per process and talk QUIC: `sion keys validator`

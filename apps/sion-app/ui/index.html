@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Siontology</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="5" y="5" width="22" height="8"/>
+      <rect x="5" y="15" width="10" height="6"/><rect x="17" y="15" width="10" height="6"/>
+      <rect x="5" y="23" width="4" height="4"/><rect x="11" y="23" width="4" height="4"/>
+      <rect x="17" y="23" width="4" height="4"/><rect x="23" y="23" width="4" height="4"/>
+    </svg>
+    <span class="wordmark">Siontology</span>
+    <span class="live" id="live" data-state="idle"><span class="dot"></span><span id="live-text">Starting</span></span>
+  </header>
+
+  <main>
+    <!-- Node -->
+    <section class="view" id="view-node" aria-labelledby="node-title">
+      <p class="kicker">This device</p>
+      <h1 id="node-title">A light node</h1>
+      <p class="lede">It checks every Pulse it shows: the validators' signatures, the receipts, and random pieces of the Pulse's data. A server cannot show it a false state, and many devices sampling make withheld data likely to be caught.</p>
+
+      <div class="pulse-card" id="pulse-card" data-ok="unknown">
+        <div class="pulse-label" id="pulse-label">Not verified yet</div>
+        <div class="pulse-number" id="pulse-number">—</div>
+        <div class="pulse-when" id="pulse-when">&nbsp;</div>
+      </div>
+
+      <ol class="checks" id="checks"></ol>
+
+      <dl class="tally">
+        <div><dt>Verified</dt><dd id="tally-ok">0</dd></div>
+        <div><dt>Failed</dt><dd id="tally-failed">0</dd></div>
+        <div><dt>Chain</dt><dd id="tally-chain" class="mono">—</dd></div>
+      </dl>
+
+      <button class="button" id="verify-now">Verify now</button>
+    </section>
+
+    <!-- Wallet -->
+    <section class="view" id="view-wallet" hidden aria-labelledby="wallet-title">
+      <p class="kicker">Wallet</p>
+      <h1 id="wallet-title"><span id="balance">—</span> <span class="unit">USD</span></h1>
+      <p class="account">Account <span class="mono" id="account">—</span>
+        <button class="link" id="copy-account">Copy</button></p>
+      <p class="note">Balances come from the node; the Node tab shows whether its latest Pulse verified.</p>
+
+      <form class="form" id="send-form" autocomplete="off">
+        <h2>Send</h2>
+        <label>To <input id="send-to" placeholder="account (64 hex digits) or devnet name" required></label>
+        <label>Amount <input id="send-amount" inputmode="decimal" placeholder="1.50" required></label>
+        <button class="button" type="submit">Sign and send</button>
+      </form>
+      <p class="receipt" id="send-receipt" hidden></p>
+
+      <div class="devnet">
+        <button class="button button--quiet" id="faucet">Get 100 test USD</button>
+        <span class="note">Devnet only: the faucet pays test money.</span>
+      </div>
+    </section>
+
+    <!-- Stake -->
+    <section class="view" id="view-stake" hidden aria-labelledby="stake-title">
+      <p class="kicker">Pooled stake</p>
+      <h1 id="stake-title">Back a validator</h1>
+      <p class="lede">Your stake counts towards a validator's weight and earns a share of its fees, less its commission (at most 25 %). It stays yours: only you can collect, leave or withdraw. If the validator signs two conflicting messages, a tenth of its pool is lost.</p>
+
+      <h2>Your delegations</h2>
+      <div id="mine" class="cards"><p class="empty">None yet.</p></div>
+
+      <h2>Validators</h2>
+      <p class="note" id="epoch-note">&nbsp;</p>
+      <div id="validators" class="rows"></div>
+    </section>
+
+    <!-- Settings -->
+    <section class="view" id="view-settings" hidden aria-labelledby="settings-title">
+      <p class="kicker">Settings</p>
+      <h1 id="settings-title">Node and chain</h1>
+      <form class="form" id="node-form" autocomplete="off">
+        <label>Node <input id="node-url" placeholder="http://127.0.0.1:8730" required></label>
+        <button class="button" type="submit">Save</button>
+      </form>
+      <div class="pinned">
+        <h2>Pinned chain identity</h2>
+        <p class="mono wrap" id="pinned">—</p>
+        <p class="note">Pinned on first use. Every verification checks the node against it, so a node of another chain, or one serving forged validator keys, fails. Compare it with the identity from a source you trust: a release, a friend, a second node.</p>
+        <form class="form" id="pin-form" autocomplete="off">
+          <label>Pin an identity you trust <input id="pin-input" placeholder="64 hex digits" spellcheck="false" required></label>
+          <div class="actions">
+            <button class="button" type="submit">Pin</button>
+            <button class="button button--quiet" type="button" id="unpin">Unpin</button>
+          </div>
+        </form>
+      </div>
+      <p class="note about">Siontology app 0.1.0. On test networks the stake asset is test USD.</p>
+    </section>
+  </main>
+
+  <nav class="tabs" aria-label="Sections">
+    <button class="tab" data-view="node" aria-current="page">Node</button>
+    <button class="tab" data-view="wallet">Wallet</button>
+    <button class="tab" data-view="stake">Stake</button>
+    <button class="tab" data-view="settings">Settings</button>
+  </nav>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
