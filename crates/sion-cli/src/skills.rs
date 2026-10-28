@@ -475,21 +475,17 @@ pub fn quarantine_falsified(ledger: &dyn Ledger, skills: &Path) -> Vec<String> {
         let Ok(id) = parse_hash(&release, "release") else {
             continue;
         };
-        let status = match ledger.claim(ClaimId::from_hash(id)) {
-            Ok(view) => view["status"].clone(),
+        let state = match ledger.claim(ClaimId::from_hash(id)) {
+            Ok(view) => status_word(&view["status"]),
             Err(_) => continue,
         };
-        if status == "Active" {
+        if state == "active" {
             continue;
         }
-        let state = match &status {
-            Value::String(s) => s.to_lowercase(),
-            Value::Object(map) => map
-                .keys()
-                .next()
-                .map(|k| k.to_lowercase())
-                .unwrap_or_default(),
-            _ => "inactive".into(),
+        let state = if state.is_empty() {
+            "inactive".to_string()
+        } else {
+            state
         };
         let target = skills.join(format!("{}.{state}-{}", skill.name, &release[..8]));
         if std::fs::rename(&skill.dir, &target).is_ok() {
@@ -501,6 +497,26 @@ pub fn quarantine_falsified(ledger: &dyn Ledger, skills: &Path) -> Vec<String> {
         }
     }
     lines
+}
+
+/// The state a claim's status names, in lower case: `active`, `falsified`
+/// or `expired`. The node reports a status in its debug form
+/// (`Falsified { at: Pulse(9), causes: [...] }`), of which only the first
+/// word is the state; empty if there is none.
+fn status_word(status: &Value) -> String {
+    match status {
+        Value::String(text) => text
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()
+            .unwrap_or_default()
+            .to_lowercase(),
+        Value::Object(map) => map
+            .keys()
+            .next()
+            .map(|k| k.to_lowercase())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 /// Runs a skill command.
@@ -748,4 +764,26 @@ pub fn install(
         dir.display()
     ));
     Ok(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_status_names_its_state_by_its_first_word() {
+        assert_eq!(status_word(&json!("Active")), "active");
+        assert_eq!(status_word(&json!("Expired")), "expired");
+        assert_eq!(
+            status_word(&json!(
+                "Falsified { at: Pulse(109), causes: [AtomId(f88c2190)] }"
+            )),
+            "falsified"
+        );
+        assert_eq!(
+            status_word(&json!({"Falsified": {"at": 109, "causes": []}})),
+            "falsified"
+        );
+        assert_eq!(status_word(&Value::Null), "");
+    }
 }

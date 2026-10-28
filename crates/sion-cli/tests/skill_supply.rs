@@ -338,8 +338,17 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
     );
     // The next session takes the skill out of use.
     let quarantined = sion_cli::skills::quarantine_falsified(ledger.as_ref(), &skills);
-    assert_eq!(quarantined.len(), 1, "{quarantined:?}");
-    assert!(quarantined[0].contains("falsified"), "{quarantined:?}");
+    let short = &second.to_string()[..8];
+    assert_eq!(
+        quarantined,
+        vec![format!(
+            "skill pay-invoices taken out of use: its release {short} is falsified"
+        )]
+    );
+    assert!(skills
+        .join(format!("pay-invoices.falsified-{short}"))
+        .join("SKILL.md")
+        .exists());
     assert!(sion_agent::skills::list(&skills).is_empty());
     std::fs::remove_dir_all(&home).unwrap();
 }
