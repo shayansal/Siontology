@@ -43,6 +43,7 @@ pub mod payload;
 pub mod prover;
 pub mod pulses;
 pub mod storage;
+pub mod transport;
 pub mod validator;
 pub mod view;
 

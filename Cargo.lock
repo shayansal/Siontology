@@ -1070,6 +1070,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sion-net"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "proptest",
+ "serde",
+ "sion-core",
+ "sion-crypto",
+ "thiserror",
+]
+
+[[package]]
 name = "sion-node"
 version = "0.1.0"
 dependencies = [
@@ -1086,6 +1098,7 @@ dependencies = [
  "sion-da",
  "sion-exec",
  "sion-light",
+ "sion-net",
  "sion-prover",
  "thiserror",
  "tiny_http",

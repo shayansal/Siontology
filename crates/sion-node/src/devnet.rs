@@ -1,5 +1,11 @@
 //! Assembling and running a devnet: validators, gateway and prover in one
 //! process, connected by an in-memory network.
+//!
+//! Every validator and the gateway has an endpoint on one
+//! [`MemoryNetwork`]: whatever they send each other goes through the
+//! [`Transport`] seam, as it would between machines. What stays in the
+//! process (queries, the adversary simulation, shutdown, the API's
+//! submissions) travels over local control channels.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,12 +32,14 @@ use sion_light::ChainSpec;
 use crate::committees::CommitteeView;
 use crate::config::DevnetConfig;
 use crate::error::NodeError;
-use crate::gateway::{Gateway, GatewayInput};
+use crate::gateway::{Gateway, GatewayInput, Querier};
 use crate::keys::{NodeVerifier, SignatureMode, ValidatorKeys};
 use crate::prover::{self, ProverHandle};
 use crate::pulses::Carry;
 use crate::storage::{replay, LaneLog, Snapshot, Wal};
-use crate::validator::{Bus, Input, Shared, Validator, ValidatorSetup};
+use crate::transport::memory::MemoryNetwork;
+use crate::transport::{ClassLimits, Delivery, NodeId, Transport};
+use crate::validator::{ExecutedReports, Input, Shared, Validator, ValidatorSetup};
 use crate::view::{Query, SubmitReceipt, TxStatus, TxView};
 
 /// How long a devnet API call waits for a validator or the gateway. Long
@@ -45,14 +53,61 @@ pub const BEACON_CHAIN_LENGTH: usize = 1 << 17;
 /// The name of the devnet faucet wallet.
 pub const FAUCET: &str = "faucet";
 
+/// How a devnet's nodes reach each other.
+#[derive(Clone, Debug, Default)]
+pub struct DevnetNetwork {
+    /// Encode and decode every message on its way (slower): checks that
+    /// everything the protocol sends round-trips through its canonical
+    /// encoding within its class's size limit.
+    pub encode: bool,
+}
+
+/// The local control channels: queries, the adversary simulation,
+/// shutdown, and what the API hands the validators and the gateway.
+#[derive(Clone, Debug)]
+struct Control {
+    validators: Vec<Sender<Input>>,
+    gateway: Sender<GatewayInput>,
+}
+
 /// A running devnet.
 #[derive(Debug)]
 pub struct Devnet {
     /// What every validator shares.
     pub shared: Arc<Shared>,
-    bus: Bus,
+    control: Control,
+    network: Arc<MemoryNetwork>,
+    transports: Vec<Arc<dyn Transport>>,
     threads: Vec<JoinHandle<()>>,
     prover: Option<ProverHandle>,
+}
+
+/// The devnet gateway's node identity on chain `chain_id`.
+pub fn gateway_node(chain_id: &str) -> NodeId {
+    NodeId::Node(hash_domain("sion/devnet/gateway", chain_id.as_bytes()))
+}
+
+/// The class limits of a devnet: its payload limits, and committees of up
+/// to all of its validators (at least the 100 the active set allows).
+pub fn class_limits(config: &DevnetConfig) -> ClassLimits {
+    ClassLimits::for_protocol(
+        config.core.max_payload_bytes,
+        config.core.max_items_per_header,
+        (config.validators + config.standby).max(100),
+    )
+}
+
+/// A query answered by a validator thread of this process.
+pub(crate) fn local_querier(validator: Sender<Input>, timeout: Duration) -> Querier {
+    Box::new(move |query| {
+        let (reply, answer) = mpsc::channel();
+        validator
+            .send(Input::Query(query, reply))
+            .map_err(|_| "validator stopped".to_string())?;
+        answer
+            .recv_timeout(timeout)
+            .map_err(|_| "validator did not answer".to_string())?
+    })
 }
 
 /// Validator `index`'s beacon hash chain.
@@ -318,8 +373,13 @@ fn recover(
 }
 
 impl Devnet {
-    /// Starts a devnet.
+    /// Starts a devnet on the in-memory network.
     pub fn start(config: DevnetConfig) -> Result<Devnet, NodeError> {
+        Devnet::start_with(config, DevnetNetwork::default())
+    }
+
+    /// Starts a devnet whose nodes reach each other as `network` says.
+    pub fn start_with(config: DevnetConfig, network: DevnetNetwork) -> Result<Devnet, NodeError> {
         if config.validators == 0 {
             return Err(NodeError::Config("at least one validator".into()));
         }
@@ -386,11 +446,37 @@ impl Devnet {
         let (senders, receivers): (Vec<Sender<Input>>, Vec<_>) =
             (0..n).map(|_| mpsc::channel()).unzip();
         let (gateway_sender, gateway_receiver) = mpsc::channel();
-        let bus = Bus {
+        let control = Control {
             validators: senders,
-            index: ids.iter().enumerate().map(|(i, id)| (*id, i)).collect(),
             gateway: gateway_sender,
         };
+
+        // One endpoint per validator and one for the gateway; each delivers
+        // into its node's inbox.
+        let memory = MemoryNetwork::new(class_limits(&config), network.encode);
+        let transports: Vec<Arc<dyn Transport>> = control
+            .validators
+            .iter()
+            .zip(&ids)
+            .map(|(inbox, id)| {
+                let inbox = inbox.clone();
+                let deliver: Delivery = Arc::new(move |from, message| {
+                    let _ = inbox.send(Input::Peer { from, message });
+                });
+                Arc::new(memory.endpoint(NodeId::Validator(*id), deliver)) as Arc<dyn Transport>
+            })
+            .collect();
+        let gateway_id = gateway_node(&config.chain_id);
+        let gateway_inbox = control.gateway.clone();
+        let gateway_transport: Arc<dyn Transport> = Arc::new(memory.endpoint(
+            gateway_id,
+            Arc::new(move |from, message| {
+                let _ = gateway_inbox.send(GatewayInput::Peer {
+                    from,
+                    message: Box::new(message),
+                });
+            }),
+        ));
 
         let proven = Arc::new(Mutex::new(BTreeMap::new()));
         let prover = config
@@ -416,7 +502,13 @@ impl Devnet {
                 chain,
                 wal,
                 inbox: receiver,
-                bus: bus.clone(),
+                transport: transports[index].clone(),
+                // Validator 0 tells the gateway what executed.
+                executed_to: ExecutedReports::To(if index == 0 {
+                    vec![gateway_id]
+                } else {
+                    Vec::new()
+                }),
                 prover: if index == 0 {
                     prover.as_ref().map(|p| p.jobs.clone())
                 } else {
@@ -439,9 +531,11 @@ impl Devnet {
                     .spawn(move || validator.run())?,
             );
         }
+        // The gateway asks validator 0 about the state.
         let gateway = Gateway::new(
             shared.clone(),
-            bus.clone(),
+            gateway_transport,
+            local_querier(control.validators[0].clone(), Duration::from_secs(15)),
             gateway_receiver,
             Wallet::named(FAUCET),
         );
@@ -453,16 +547,28 @@ impl Devnet {
         );
         Ok(Devnet {
             shared,
-            bus,
+            control,
+            network: memory,
+            transports,
             threads,
             prover,
         })
     }
 
+    /// The in-memory network the devnet's nodes share.
+    pub fn network(&self) -> &Arc<MemoryNetwork> {
+        &self.network
+    }
+
+    /// Validator `index`'s transport (its traffic counters, for example).
+    pub fn transport(&self, index: usize) -> Option<&Arc<dyn Transport>> {
+        self.transports.get(index)
+    }
+
     /// Asks validator `index` a question.
     pub fn query_validator(&self, index: usize, query: Query) -> Result<Value, String> {
         let (reply, answer) = mpsc::channel();
-        self.bus
+        self.control
             .validators
             .get(index)
             .ok_or("no such validator")?
@@ -481,7 +587,7 @@ impl Devnet {
     /// Submits a signed transaction.
     pub fn submit(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
         let (reply, answer) = mpsc::channel();
-        self.bus
+        self.control
             .gateway
             .send(GatewayInput::Submit {
                 tx: Box::new(tx),
@@ -502,7 +608,7 @@ impl Devnet {
         let digest = tx.digest();
         let shard = sion_core::ids::ShardId::for_account(&tx.tx.sender, self.shared.config.shards);
         let item = crate::payload::PayloadItem::Forced { tx: Box::new(tx) }.to_bytes();
-        for sender in &self.bus.validators {
+        for sender in &self.control.validators {
             let _ = sender.send(Input::Submit(item.clone()));
         }
         Ok(SubmitReceipt {
@@ -518,14 +624,14 @@ impl Devnet {
     /// their transactions from proposals. An empty list stops censorship.
     pub fn censor(&self, accounts: Vec<AccountId>, gateway: bool, validators: usize) {
         let censored: std::collections::BTreeSet<AccountId> = accounts.into_iter().collect();
-        let _ = self.bus.gateway.send(GatewayInput::Censor {
+        let _ = self.control.gateway.send(GatewayInput::Censor {
             accounts: if gateway {
                 censored.clone()
             } else {
                 Default::default()
             },
         });
-        for (index, sender) in self.bus.validators.iter().enumerate() {
+        for (index, sender) in self.control.validators.iter().enumerate() {
             let _ = sender.send(Input::Adversary {
                 censored: censored.clone(),
                 censor: index < validators,
@@ -536,7 +642,7 @@ impl Devnet {
     /// Queues faucet grants.
     pub fn faucet(&self, grants: Vec<(AccountId, AssetId, Amount)>) -> Result<(), String> {
         let (reply, answer) = mpsc::channel();
-        self.bus
+        self.control
             .gateway
             .send(GatewayInput::Faucet { grants, reply })
             .map_err(|_| "gateway stopped".to_string())?;
@@ -553,7 +659,7 @@ impl Devnet {
             return Ok(Some(TxStatus::Executed(Box::new(view))));
         }
         let (reply, answer) = mpsc::channel();
-        self.bus
+        self.control
             .gateway
             .send(GatewayInput::Status { tx: digest, reply })
             .map_err(|_| "gateway stopped".to_string())?;
@@ -615,10 +721,10 @@ impl Devnet {
     }
 
     fn stop(&mut self) {
-        for sender in &self.bus.validators {
+        for sender in &self.control.validators {
             let _ = sender.send(Input::Shutdown);
         }
-        let _ = self.bus.gateway.send(GatewayInput::Shutdown);
+        let _ = self.control.gateway.send(GatewayInput::Shutdown);
         if let Some(prover) = &self.prover {
             prover.stop();
         }

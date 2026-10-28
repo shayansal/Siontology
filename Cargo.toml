@@ -12,6 +12,7 @@ members = [
     "crates/sion-spec",
     "crates/sion-prover",
     "crates/sion-light",
+    "crates/sion-net",
     "crates/sion-node",
     "crates/sion-cli",
 ]
@@ -39,6 +40,7 @@ sion-exec = { path = "crates/sion-exec" }
 sion-spec = { path = "crates/sion-spec" }
 sion-prover = { path = "crates/sion-prover" }
 sion-light = { path = "crates/sion-light" }
+sion-net = { path = "crates/sion-net" }
 sion-node = { path = "crates/sion-node" }
 
 # Hashing, encoding, errors
