@@ -162,7 +162,9 @@ $("verify-now").addEventListener("click", (event) => verify(event.currentTarget)
 
 setInterval(() => {
   if (lastVerifiedAt) {
-    const skipped = lastVerified && (lastVerified.lines || []).some((line) => line.toLowerCase().includes("skipped"));
+    // Only a skipped certificate means unchecked signatures; a state proof
+    // skipped because the node moved on says nothing about them.
+    const skipped = lastVerified && (lastVerified.lines || []).some((line) => line.toLowerCase().includes("simulation signatures"));
     const checked = skipped ? "receipts and data checked; signatures not checked (simulation signatures)" : "signatures, receipts and data checked";
     $("pulse-when").textContent = `${ago(lastVerifiedAt)} · ${lastVerified && lastVerified.ok ? checked : "the node's answer did not check out"}`;
   }
