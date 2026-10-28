@@ -39,7 +39,7 @@ guides show the commands in use.
 | Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `mcp`, `x402 serve`, `x402 fetch` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent telegram`, `mcp`, `x402 serve`, `x402 fetch` |
 | Skills | `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
@@ -691,6 +691,11 @@ Commands:
   sessions       The agent sessions on this machine
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
+  profile        Agent profiles: how to run an agent, under a name, for schedules and channels
+  schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
+  scheduler      Run scheduled jobs as they fall due
+  serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token
+  telegram       Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
   help           Print this message or the help of the given subcommand(s)
 
 Options:
@@ -874,17 +879,34 @@ Arguments:
   <AGENT>   The agent (its id)
 
 Options:
-      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --task <TASK>            The task, in words
-      --model <MODELS>         The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY) or script:<file>. Repeat for fallbacks, in order
-      --autonomy <AUTONOMY>    How much it may do without asking: L0 (nothing) to L6 (spend within its charter). L3 reads and writes its workspace; L5 also fetches from the web and asks before paying [default: L5]
-      --workspace <WORKSPACE>  A directory the agent may read and write
-      --web                    Let it fetch public web pages (they taint the session: external calls and payments then wait for approval)
-      --system <SYSTEM>        A file with the system prompt (default: one that tells the agent who it is and how its charter limits it)
-      --memory <MEMORY>        The agent's memory log (its id, or a unique prefix of one with a local store), or `new` to open one for it. Its preferences, goals and procedures go into the prompt; what it records is committed when the session ends, with the session as an episode
-      --skills <SKILLS>        The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
-      --no-reflect             Do not ask the agent, after a long task it finished without writing a skill, whether to write down how it did it
-  -h, --help                   Print help
+      --node <NODE>
+          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --task <TASK>
+          The task, in words
+      --model <MODELS>
+          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY) or script:<file>. Repeat for fallbacks, in order
+      --autonomy <AUTONOMY>
+          How much it may do without asking: L0 (nothing) to L6 (spend within its charter). L3 reads and writes its workspace; L5 also fetches from the web and asks before paying [default: L5]
+      --workspace <WORKSPACE>
+          A directory the agent may read and write
+      --web
+          Let it fetch public web pages (they taint the session: external calls and payments then wait for approval)
+      --system <SYSTEM>
+          A file with the system prompt (default: one that tells the agent who it is and how its charter limits it)
+      --memory <MEMORY>
+          The agent's memory log (its id, or a unique prefix of one with a local store), or `new` to open one for it. Its preferences, goals and procedures go into the prompt; what it records is committed when the session ends, with the session as an episode
+      --skills <SKILLS>
+          The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
+      --no-reflect
+          Do not ask the agent, after a long task it finished without writing a skill, whether to write down how it did it
+      --delegate
+          Let it hand work to other agents: spawn subagents with budgets carved from its own (agent_spawn), hire through Task Charters (task_post, task_status) and deliver tasks it was hired for (task_submit)
+      --subagent-model <SUBAGENT_MODELS>
+          The model its subagents run with (default: its own). Repeat for fallbacks
+      --adjudicator <ADJUDICATOR>
+          The adjudicator atom of the tasks it posts (without one, their results cannot be challenged)
+  -h, --help
+          Print help
 ```
 
 See [Agents at work](../guides/agent-runtime.md).
@@ -950,6 +972,211 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
+
+## `sion agent profile`
+
+```text
+Agent profiles: how to run an agent, under a name, for schedules and channels
+
+Usage: sion agent profile [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add a profile, or replace the one of that name
+  list    The profiles on this machine
+  remove  Remove a profile
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Profiles are kept in `$SION_HOME/agents/profiles.json`. See [Teams, schedules and channels](../guides/agent-teams.md#profiles).
+
+## `sion agent profile add`
+
+```text
+Add a profile, or replace the one of that name
+
+Usage: sion agent profile add [OPTIONS] --model <MODELS> <NAME> <WALLET> <AGENT>
+
+Arguments:
+  <NAME>    Its name (lowercase letters, digits and hyphens)
+  <WALLET>  The agent's wallet
+  <AGENT>   The agent (its id)
+
+Options:
+      --model <MODELS>
+          The model, as for `sion agent run`. Repeat for fallbacks
+      --node <NODE>
+          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --autonomy <AUTONOMY>
+          How much it may do without asking, L0 to L6 [default: L5]
+      --memory <MEMORY>
+          Its memory log (its id, or a unique prefix of one with a local store)
+      --skills <SKILLS>
+          Its skills' directory
+      --workspace <WORKSPACE>
+          A directory it may read and write
+      --web
+          Let it fetch public web pages
+      --delegate
+          Let it hand work to other agents
+      --subagent-model <SUBAGENT_MODELS>
+          The model its subagents run with. Repeat for fallbacks
+      --adjudicator <ADJUDICATOR>
+          The adjudicator atom of the tasks it posts
+      --no-reflect
+          Do not ask it to write down long tasks as skills
+  -h, --help
+          Print help
+```
+
+## `sion agent profile list`
+
+```text
+The profiles on this machine
+
+Usage: sion agent profile list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent profile remove`
+
+```text
+Remove a profile
+
+Usage: sion agent profile remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent schedule`
+
+```text
+Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
+
+Usage: sion agent schedule [OPTIONS] <COMMAND>
+
+Commands:
+  add     Schedule a task for a profile: once (--at), every interval (--every) or on a cron expression (--cron, UTC)
+  list    The scheduled jobs, with their next runs and latest results
+  remove  Remove a job
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Jobs are kept in `$SION_HOME/agents/schedules.json`, with their latest runs. See [Teams, schedules and channels](../guides/agent-teams.md#schedules).
+
+## `sion agent schedule add`
+
+```text
+Schedule a task for a profile: once (--at), every interval (--every) or on a cron expression (--cron, UTC)
+
+Usage: sion agent schedule add [OPTIONS] --task <TASK> <NAME> <PROFILE>
+
+Arguments:
+  <NAME>     The job's name (lowercase letters, digits and hyphens)
+  <PROFILE>  The agent profile that runs it
+
+Options:
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --task <TASK>        The task, in words
+      --every <EVERY>      Every interval: 90s, 15m, 2h, 1d
+      --at <AT>            Once, at a time like 2026-11-02T09:00:00Z
+      --cron <CRON>        On a cron expression: minute hour day month weekday, in UTC
+      --deliver <DELIVER>  Where what it said goes: file:<path>, webhook:<url> or telegram:<chat id> (TELEGRAM_BOT_TOKEN)
+  -h, --help               Print help
+```
+
+## `sion agent schedule list`
+
+```text
+The scheduled jobs, with their next runs and latest results
+
+Usage: sion agent schedule list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent schedule remove`
+
+```text
+Remove a job
+
+Usage: sion agent schedule remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent scheduler`
+
+```text
+Run scheduled jobs as they fall due
+
+Usage: sion agent scheduler [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --once         Run the jobs due now, then stop
+      --poll <POLL>  Check for new jobs at least this often, in seconds [default: 60]
+  -h, --help         Print help
+```
+
+A run that was missed while the scheduler was not running happens once, late (`agent:local-scheduler`).
+
+## `sion agent serve`
+
+```text
+Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token
+
+Usage: sion agent serve [OPTIONS]
+
+Options:
+      --listen <LISTEN>        Where to listen [default: 127.0.0.1:8790]
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --token-env <TOKEN_ENV>  The environment variable holding the bearer token (at least 16 characters) [default: SION_AGENT_TOKEN]
+  -h, --help                   Print help
+```
+
+Whoever holds the token can start and continue every profile's sessions, approvals included (`agent:channel-token`). Requests are handled one at a time. See [Teams, schedules and channels](../guides/agent-teams.md#http).
+
+## `sion agent telegram`
+
+```text
+Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
+
+Usage: sion agent telegram [OPTIONS] --allow <ALLOW> <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --allow <ALLOW>  The chats it answers (comma-separated ids); others are ignored
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --once           Answer one batch of messages, then stop
+  -h, --help           Print help
+```
+
+In a group chat, every member speaks for you, approvals included (`agent:telegram-chats`). See [Teams, schedules and channels](../guides/agent-teams.md#telegram).
 
 ## `sion task`
 

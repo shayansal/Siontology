@@ -24,7 +24,7 @@ live.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, and self-improvement with verified promotion; schedules and channels not built) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels; a sandbox not built) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -160,13 +160,24 @@ the next release rests on the settled result and records it, and
 with at least five successful tool calls and no skill written, the
 runtime asks the agent whether to write one, with only its skill tools.
 Scripted models take conditions on the conversation, to stand in for a
-model that follows a skill. Tested with the scripted model and with
-stand-ins for the providers' APIs: this environment has no model
-provider. Not built: permissions that skills declare and the runtime
-enforces, requiring a particular verifier's attestation, search over past
-sessions, consolidation, the memory archive with storage providers,
-schedules, channels, handing work to other agents, a shell tool and a
-sandbox ([Reliable, self-improving agents](book/src/research/agents.md)).
+model that follows a skill. Teams, schedules and channels
+([Teams, schedules and channels](book/src/guides/agent-teams.md)): with
+`--delegate`, an agent spawns subagents (a budget carved from its
+allotment under attenuated caveats, fee money from its account, a session
+of their own, two levels deep at most), and posts, follows and delivers
+Task Charters; profiles keep how to run an agent under a name;
+`sion agent schedule` and `sion agent scheduler` run a profile's task
+once, every interval or on cron (UTC), and deliver its answer to a file,
+a webhook or Telegram; `sion agent serve` (HTTP with a bearer token) and
+`sion agent telegram` (long polling, chats allowed by id) carry
+conversations, each a session, with approvals answered in the channel.
+Tested with the scripted model and with stand-ins for the providers' and
+Telegram's APIs: this environment reaches neither. Not built: permissions
+that skills declare and the runtime enforces, requiring a particular
+verifier's attestation, search over past sessions, consolidation, the
+memory archive with storage providers, storage deals and MCP servers as
+tools, routing channels across machines, a shell tool and a sandbox
+([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
 
@@ -645,6 +656,9 @@ the architecture's own:
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
 | `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again. |
 | `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. That a verifier did not write the version is checked by the commands, not by the ledger. |
+| `agent:channel-token` | Whoever holds the HTTP channel's bearer token can start and continue the sessions of every profile on the machine, approvals included, within each profile's autonomy and the agent's charter. The channel speaks plain HTTP. |
+| `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included. |
+| `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

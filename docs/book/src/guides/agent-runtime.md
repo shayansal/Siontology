@@ -59,6 +59,8 @@ finish. The agent's tools:
 | `ledger_transaction` | read | Whether a transaction executed, by digest, to check a payment whose outcome is unknown |
 | `read_file`, `write_file`, `list_files` | read, write | Files in the directory `--workspace` gives, and nowhere else |
 | `fetch_url` | external | Public web pages, with `--web`; local and private addresses are refused |
+| `agent_spawn` | spend | With `--delegate`: a subagent with a budget carved from the agent's, working on a task in a session of its own ([Teams, schedules and channels](agent-teams.md)) |
+| `task_post`, `task_status`, `task_submit` | spend, read, external | With `--delegate`: hire another agent through a Task Charter, follow it, or deliver one you were hired for |
 
 ## Models
 
@@ -257,11 +259,10 @@ once others have verified the better version: see
 
 ## What this does not do yet
 
-- Schedules, channels and handing work to other agents are the next
-  parts of the plan
-  ([Reliable, self-improving agents](../research/agents.md)). Memory atoms
-  stay on the machine that wrote them: keeping the log's archive with
-  storage providers is not wired in yet.
+- Memory atoms stay on the machine that wrote them: keeping the log's
+  archive with storage providers is not wired in yet. Scheduled runs and
+  channels (HTTP, Telegram) are in
+  [Teams, schedules and channels](agent-teams.md).
 - Autonomy, approvals, grants and taint are enforced by the runtime on
   the machine it runs on (`agent:local-policy`); only the charter is
   enforced by the ledger.

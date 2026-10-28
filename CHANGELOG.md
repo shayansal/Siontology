@@ -73,6 +73,21 @@ Commit messages before the rename use the working name, Fold.
 - Scripted models: a step can play only `when` the conversation contains
   a text, or `unless` it does; a resumed session's script goes on from the
   step it reached.
+- Teams, schedules and channels. `sion agent run --delegate` adds
+  `agent_spawn` (a subagent with a budget carved from the agent's, fee
+  money from its account, and a session of its own with the models of
+  `--subagent-model`, two levels deep at most), `task_post` (a Task
+  Charter from the agent's budget), `task_status` and `task_submit` (a
+  worker's result on its task bond, and the settlement). `sion agent
+  profile` keeps how to run an agent under a name; `sion agent schedule`
+  and `sion agent scheduler` run a profile's task once, every interval or
+  on cron (`sion_agent::schedule`, UTC), delivering its answer to a file, a
+  webhook or Telegram; `sion agent serve` (HTTP, bearer token) and
+  `sion agent telegram` (long polling, allowed chats) carry conversations,
+  each a session, with `/approve`, `/decline`, `/new` and `/status`. New
+  trust atoms `agent:channel-token`, `agent:telegram-chats` and
+  `agent:local-scheduler`. Guide: [Teams, schedules and
+  channels](docs/book/src/guides/agent-teams.md).
 
 ### Fixes from the review of storage deals, pooled stake and the app
 

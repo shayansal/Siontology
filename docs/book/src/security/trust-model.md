@@ -61,6 +61,9 @@ of the architecture's own. The list is copied from the repository's
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions` |
 | `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again |
 | `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. That a verifier did not write the version is checked by the commands, not by the ledger |
+| `agent:channel-token` | Whoever holds the HTTP channel's bearer token can start and continue the sessions of every profile on the machine, approvals included, within each profile's autonomy and the agent's charter. The channel speaks plain HTTP |
+| `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included |
+| `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so |
 
 ## What a light client trusts

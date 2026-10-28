@@ -88,7 +88,10 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   ledger enforces its charter. It installs a skill from others only when
   the bonds and audits behind the skill cover what the agent could lose,
   and a skill's better version is released only once verifiers, fixed
-  before it existed, have run its evaluation set and attested.
+  before it existed, have run its evaluation set and attested. Agents
+  spawn subagents with budgets carved from their own, hire each other
+  through Task Charters, run on schedules, and answer over HTTP and
+  Telegram.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,

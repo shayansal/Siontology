@@ -44,6 +44,7 @@ pub mod journal;
 pub mod model;
 pub mod policy;
 pub mod providers;
+pub mod schedule;
 pub mod scripted;
 pub mod session;
 pub mod skills;

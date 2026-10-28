@@ -1,12 +1,13 @@
 # Reliable, self-improving agents
 
-**Status: being built** (the runtime's core, skills with a supply chain
-and self-improvement are built). This note sets out how Siontology offers
-what the leading open agent runtimes offer for building good agents, and
-what its primitives add. Parts are built already (identities, budgets,
-memory, tasks, storage, the runtime's core, skills with a supply chain,
-self-improvement with verified promotion); the rest is the plan this note
-fixes. Each part says which.
+**Status: mostly built.** This note sets out how Siontology offers what
+the leading open agent runtimes offer for building good agents, and what
+its primitives add. Built: identities, budgets, memory, tasks, storage,
+the runtime with subagents, hiring, schedules and channels, skills with a
+supply chain, and self-improvement with verified promotion. Not built: a
+sandbox and a shell tool, MCP servers and storage deals as tools, search
+over past sessions, consolidation, the memory archive with storage
+providers, and the app's Agents tab. Each part says which.
 
 ## What the leading runtimes do
 
@@ -94,9 +95,9 @@ something it bonded against. That needs the sandbox of part 2.
 
 ### 2. The runtime
 
-**Status: core built** (`sion agent run`; see
-[Agents at work](../guides/agent-runtime.md)). The rest of this table is
-the plan.
+**Status: built, except as the table says** (`sion agent run`; see
+[Agents at work](../guides/agent-runtime.md) and
+[Teams, schedules and channels](../guides/agent-teams.md)).
 
 | Part | Plan | Status |
 |---|---|---|
@@ -104,15 +105,15 @@ the plan.
 | Rules | Tools declare an effect (read, write, external, spend); autonomy levels L0 to L6 decide what runs, what waits for approval and what is refused; content from outside taints the session | Built |
 | Reliability | A journal so that nothing is done twice by accident and an unknown outcome is never repeated; turn budgets that grow with progress; blocking a call that keeps failing; compaction; sessions that pause for approval and resume; a kill switch | Built |
 | Spending | Every payment goes through the agent's charter; a payment above its limits is refused by the ledger, not by the runtime | Built (`ledger_pay`) |
-| Tools | Files in a workspace, web pages, the ledger (balance, payments, transactions), memory and skills; then tasks and storage; MCP servers mounted as tools | Partly built |
+| Tools | Files in a workspace, web pages, the ledger (balance, payments, transactions), memory and skills; then tasks and storage; MCP servers mounted as tools | Built: files, web pages, the ledger, memory, skills, subagents and tasks. Not built: storage deals and MCP servers as tools |
 | Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Not built (no shell tool yet) |
 | Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Built: atoms in the agent's memory log, preferences, goals and procedures in every prompt, recall proved complete against the ledger, search, retraction, every session an episode. Not built: search over past sessions' text, consolidation |
 | Durable memory | The log's archive kept by storage providers, proven every round | Next |
 | Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use; evaluation, evolution and verified promotion (part 3) |
-| Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Not built |
-| Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Identities built; spawning from the runtime not built |
-| Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Command line built |
-| Hiring | An agent hands work to another through a Task Charter, paid only for an accepted result | Not built |
+| Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Built (`sion agent schedule`, `sion agent scheduler`): once, every interval or on cron (UTC), each run a session of a profile, its answer to a file, a webhook or Telegram |
+| Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Built: `agent_spawn` registers the subagent with a budget carved from the parent's allotment, gives it fee money from the parent's account, and runs its task in a session of its own, two levels deep at most |
+| Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Built: the command line, an HTTP endpoint with a bearer token and Telegram (tested against a stand-in for its API), each conversation a session, approvals answered in the channel, routed by profile on one machine. Not built: routing across machines, other messengers |
+| Hiring | An agent hands work to another through a Task Charter, paid only for an accepted result | Built: `task_post` from the agent's budget, `task_status`, and `task_submit` for the worker, on its task bond |
 | Traces | Every session exports as a trajectory in chat format with its outcome, and as a digest | Built |
 
 ### 3. Self-improvement that cannot fool itself

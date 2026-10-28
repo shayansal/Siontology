@@ -378,6 +378,71 @@ pub struct Saved {
     /// write down how it did it as a skill.
     #[serde(default)]
     pub reflect: bool,
+    /// Whether it may hand work to other agents: spawn subagents and post
+    /// or deliver tasks.
+    #[serde(default)]
+    pub delegate: bool,
+    /// The models its subagents run with (default: its own).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_models: Vec<String>,
+    /// The adjudicator of the tasks it posts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjudicator: Option<sion_core::ids::AtomId>,
+    /// How deep it is among subagents: 0 for an agent a person runs.
+    #[serde(default)]
+    pub depth: u32,
+}
+
+/// What a person answers a session with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reply {
+    /// Approve the call it waits on.
+    Approve,
+    /// Decline it, saying why.
+    Decline(String),
+    /// Tell it more, and let it go on.
+    Say(String),
+}
+
+/// Continues the session `id` (or a unique prefix of it), with a reply or
+/// none, and saves it; returns it and the lines to show.
+pub fn resume(
+    ledger: SharedLedger,
+    id: &str,
+    reply: Option<Reply>,
+) -> Result<(Saved, Vec<String>), CliError> {
+    let mut saved = Saved::load(id)?;
+    match reply {
+        Some(Reply::Approve) => saved.decide(true, "")?,
+        Some(Reply::Decline(why)) => saved.decide(false, &why)?,
+        Some(Reply::Say(more)) => {
+            if saved.state.pending.is_some() {
+                return Err(CliError::Usage(
+                    "the session waits for a decision: approve or decline it first".into(),
+                ));
+            }
+            saved.state.tell(&more, &saved.limits);
+        }
+        None => {}
+    }
+    let lines = saved.run(ledger)?;
+    Ok((saved, lines))
+}
+
+/// What a session last said to the person, in a line: its answer, or what
+/// it waits for.
+pub fn last_words(saved: &Saved) -> String {
+    match &saved.ended {
+        Some(Ended::Done { text }) => text.clone(),
+        Some(Ended::NeedsApproval {
+            tool,
+            input,
+            reason,
+            ..
+        }) => format!("waiting for your approval: {tool} {input} ({reason})"),
+        Some(other) => ending(other, &saved.state.id),
+        None => "not run yet".into(),
+    }
 }
 
 /// Where agent sessions are kept: `$SION_HOME/agents/sessions`.
@@ -490,6 +555,22 @@ impl Saved {
             let client = sion_http::Client::new(sion_http::Options::default())
                 .map_err(|e| CliError::Usage(e.to_string()))?;
             tools.add(sion_agent::builtin::Fetch { client });
+        }
+        if self.delegate {
+            let delegation = crate::delegation::Delegation {
+                acting: acting.clone(),
+                models: if self.subagent_models.is_empty() {
+                    self.models.clone()
+                } else {
+                    self.subagent_models.clone()
+                },
+                policy: self.policy.clone(),
+                depth: self.depth,
+                adjudicator: self.adjudicator,
+            };
+            for tool in delegation.tools() {
+                tools.add_boxed(tool);
+            }
         }
         let memory = self.memory.map(|log| crate::agent_memory::Memory {
             acting: acting.clone(),
@@ -748,6 +829,14 @@ pub struct Equipment {
     /// Whether to ask the agent, after a long task it finished, whether to
     /// write down how it did it as a skill.
     pub reflect: bool,
+    /// Whether it may hand work to other agents.
+    pub delegate: bool,
+    /// The models its subagents run with (default: its own).
+    pub subagent_models: Vec<String>,
+    /// The adjudicator of the tasks it posts.
+    pub adjudicator: Option<sion_core::ids::AtomId>,
+    /// How deep it is among subagents.
+    pub depth: u32,
 }
 
 /// The default directory of an agent's skills.
@@ -772,6 +861,10 @@ pub fn start(
         skills,
         system,
         reflect,
+        delegate,
+        subagent_models,
+        adjudicator,
+        depth,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -814,6 +907,10 @@ pub fn start(
         decided: None,
         positions: Vec::new(),
         reflect,
+        delegate: delegate || (depth > 0 && depth < crate::delegation::MAX_DEPTH),
+        subagent_models,
+        adjudicator,
+        depth,
     };
     let lines = saved.run(ledger)?;
     Ok((saved, lines))

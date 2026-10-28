@@ -196,6 +196,20 @@ pub enum AgentCommand {
         /// writing a skill, whether to write down how it did it.
         #[arg(long)]
         no_reflect: bool,
+        /// Let it hand work to other agents: spawn subagents with budgets
+        /// carved from its own (agent_spawn), hire through Task Charters
+        /// (task_post, task_status) and deliver tasks it was hired for
+        /// (task_submit).
+        #[arg(long)]
+        delegate: bool,
+        /// The model its subagents run with (default: its own). Repeat for
+        /// fallbacks.
+        #[arg(long = "subagent-model")]
+        subagent_models: Vec<String>,
+        /// The adjudicator atom of the tasks it posts (without one, their
+        /// results cannot be challenged).
+        #[arg(long)]
+        adjudicator: Option<String>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -226,6 +240,48 @@ pub enum AgentCommand {
         /// on or off.
         state: String,
     },
+    /// Agent profiles: how to run an agent, under a name, for schedules
+    /// and channels.
+    #[command(subcommand)]
+    Profile(crate::profiles::ProfileCommand),
+    /// Scheduled jobs: a task a profile works on at a time, every interval
+    /// or on a cron expression, each run a session whose answer goes to a
+    /// channel.
+    #[command(subcommand)]
+    Schedule(crate::schedules::ScheduleCommand),
+    /// Run scheduled jobs as they fall due.
+    Scheduler {
+        /// Run the jobs due now, then stop.
+        #[arg(long)]
+        once: bool,
+        /// Check for new jobs at least this often, in seconds.
+        #[arg(long, default_value_t = 60)]
+        poll: u64,
+    },
+    /// Serve the HTTP channel: POST /v1/profiles/<name>/messages with
+    /// {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a
+    /// bearer token.
+    Serve {
+        /// Where to listen.
+        #[arg(long, default_value = "127.0.0.1:8790")]
+        listen: String,
+        /// The environment variable holding the bearer token (at least 16
+        /// characters).
+        #[arg(long, default_value = "SION_AGENT_TOKEN")]
+        token_env: String,
+    },
+    /// Answer Telegram chats with a profile, by long polling
+    /// (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server).
+    Telegram {
+        /// The agent profile.
+        profile: String,
+        /// The chats it answers (comma-separated ids); others are ignored.
+        #[arg(long, value_delimiter = ',', required = true)]
+        allow: Vec<i64>,
+        /// Answer one batch of messages, then stop.
+        #[arg(long)]
+        once: bool,
+    },
 }
 
 /// Runs an agent command. `shared` is the same ledger, for the runtime's
@@ -249,8 +305,14 @@ pub fn run(
             memory,
             skills,
             no_reflect,
+            delegate,
+            subagent_models,
+            adjudicator,
         } => {
             let agent = parse_id(&agent, "agent")?;
+            let adjudicator = adjudicator
+                .map(|a| parse_id(&a, "adjudicator").map(|id| sion_core::ids::AtomId(id.0)))
+                .transpose()?;
             let memory = match memory.as_deref() {
                 None => None,
                 Some("new") => {
@@ -287,6 +349,10 @@ pub fn run(
                     skills,
                     system,
                     reflect: !no_reflect,
+                    delegate,
+                    subagent_models,
+                    adjudicator,
+                    depth: 0,
                 },
             )?;
             println!("session {} for agent {}", saved.state.id, agent.short());
@@ -301,20 +367,15 @@ pub fn run(
             decline,
             say,
         } => {
-            let mut saved = crate::runtime::Saved::load(&id)?;
-            if approve {
-                saved.decide(true, "")?;
+            let reply = if approve {
+                Some(crate::runtime::Reply::Approve)
             } else if let Some(why) = decline {
-                saved.decide(false, &why)?;
-            } else if let Some(more) = say {
-                if saved.state.pending.is_some() {
-                    return Err(CliError::Usage(
-                        "the session waits for a decision: --approve or --decline first".into(),
-                    ));
-                }
-                saved.state.tell(&more, &saved.limits);
-            }
-            for line in saved.run(shared)? {
+                Some(crate::runtime::Reply::Decline(why))
+            } else {
+                say.map(crate::runtime::Reply::Say)
+            };
+            let (_, lines) = crate::runtime::resume(shared, &id, reply)?;
+            for line in lines {
                 println!("{line}");
             }
             Ok(())
@@ -366,6 +427,22 @@ pub fn run(
                 sion_agent::trace::chat_line(&saved.state, &saved.prompt, saved.ended.as_ref())
             );
             Ok(())
+        }
+        AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
+        AgentCommand::Schedule(command) => crate::schedules::run(command),
+        AgentCommand::Scheduler { once, poll } => crate::schedules::scheduler(shared, once, poll),
+        AgentCommand::Serve { listen, token_env } => {
+            let token = std::env::var(&token_env)
+                .map_err(|_| CliError::Usage(format!("set {token_env} to the channel's token")))?;
+            crate::channels::serve(shared, &listen, &token, None)
+        }
+        AgentCommand::Telegram {
+            profile,
+            allow,
+            once,
+        } => {
+            let profile = crate::profiles::get(&profile)?;
+            crate::channels::telegram(shared, &profile, &allow, once)
         }
         AgentCommand::KillSwitch { state } => {
             let path = crate::runtime::kill_switch();
@@ -705,7 +782,7 @@ fn read_card(path: Option<&std::path::Path>) -> Result<Hash32, CliError> {
 
 /// Makes sure a wallet named `name` has a seed file, creating one with a
 /// random seed if it has none.
-fn ensure_wallet(name: &str) -> Result<(), CliError> {
+pub(crate) fn ensure_wallet(name: &str) -> Result<(), CliError> {
     if wallet_dir().join(format!("{name}.seed")).exists() {
         return Ok(());
     }
