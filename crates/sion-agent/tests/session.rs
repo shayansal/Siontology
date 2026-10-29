@@ -180,6 +180,63 @@ fn an_identical_call_is_not_made_twice() {
         "the repeat returned the recorded outcome"
     );
     assert_eq!(state.journal.entries().len(), 1);
+    // The model is told that the outcome is a record, not news.
+    let results: Vec<&str> = state
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results[0], "paid 5 USD");
+    assert_eq!(
+        results[1],
+        format!("{}\npaid 5 USD", sion_agent::session::REPLAYED)
+    );
+}
+
+/// A tool whose identical calls are meant to run again, as a shell's are.
+struct Rerun(Arc<AtomicUsize>);
+
+impl sion_agent::Tool for Rerun {
+    fn spec(&self) -> sion_agent::ToolSpec {
+        sion_agent::ToolSpec {
+            name: "run_tests".into(),
+            description: "runs the tests".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    fn journaled(&self) -> bool {
+        false
+    }
+
+    fn call(&self, _input: &Value, _key: &str) -> Outcome {
+        let n = self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::ok(if n == 0 { "1 failed" } else { "all passed" })
+    }
+}
+
+#[test]
+fn a_call_that_is_not_journaled_runs_again() {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let mut tools = Toolbox::new();
+    tools.add(Rerun(runs.clone()));
+    let model = Scripted::new("m")
+        .calls("run_tests", json!({}))
+        .calls("run_tests", json!({}))
+        .says("The tests pass.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("s4b", "Fix the tests", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+    assert!(state.journal.entries().is_empty());
 }
 
 #[test]
@@ -483,4 +540,101 @@ fn a_session_exports_as_a_chat_trajectory() {
         sion_agent::trace::digest(&state),
         sion_agent::trace::digest(&state.clone())
     );
+}
+
+/// A tool whose calls in one turn run together, recording each batch.
+struct Together(Arc<std::sync::Mutex<Vec<usize>>>);
+
+impl sion_agent::Tool for Together {
+    fn spec(&self) -> sion_agent::ToolSpec {
+        sion_agent::ToolSpec {
+            name: "spawn".into(),
+            description: "starts a worker".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Spend
+    }
+
+    fn batches(&self) -> bool {
+        true
+    }
+
+    fn call(&self, input: &Value, key: &str) -> Outcome {
+        self.call_batch(&[(input, key)]).remove(0)
+    }
+
+    fn call_batch(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
+        self.0.lock().unwrap().push(calls.len());
+        calls
+            .iter()
+            .map(|(input, _)| Outcome::ok(format!("started {}", input["name"])))
+            .collect()
+    }
+}
+
+#[test]
+fn the_calls_of_a_batching_tool_in_one_turn_run_together() {
+    let batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut tools = Toolbox::new();
+    tools.add(Together(batches.clone()));
+    let (balance, _) = counted("balance", Effect::Read, |_| Outcome::ok("5 USD"));
+    tools.add(balance);
+    let model = Scripted::new("m")
+        .calls_all(vec![
+            ("spawn".to_string(), json!({"name": "a"})),
+            ("spawn".to_string(), json!({"name": "b"})),
+            // An identical call is not run with the first: the journal
+            // answers it.
+            ("spawn".to_string(), json!({"name": "b"})),
+            ("spawn".to_string(), json!({"name": "c"})),
+            ("balance".to_string(), json!({})),
+            ("spawn".to_string(), json!({"name": "d"})),
+        ])
+        .says("Four workers started.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    let mut state = State::start("s-batch", "Start the workers", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert_eq!(*batches.lock().unwrap(), vec![2, 1, 1]);
+    let results: Vec<String> = state
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results[0], "started \"a\"");
+    assert_eq!(results[1], "started \"b\"");
+    assert!(
+        results[2].starts_with(sion_agent::session::REPLAYED),
+        "{}",
+        results[2]
+    );
+    assert_eq!(results[3], "started \"c\"");
+    assert_eq!(results[4], "5 USD");
+    assert_eq!(results[5], "started \"d\"");
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn a_batch_stops_at_a_call_that_needs_approval() {
+    let batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut tools = Toolbox::new();
+    tools.add(Together(batches.clone()));
+    let model = Scripted::new("m")
+        .calls_all(vec![
+            ("spawn".to_string(), json!({"name": "a"})),
+            ("spawn".to_string(), json!({"name": "b"})),
+        ])
+        .says("Started.");
+    // At L5 spending waits for a person: nothing runs until approved.
+    let rt = runtime(vec![&model], &tools, Autonomy::L5);
+    let mut state = State::start("s-batch-ask", "Start the workers", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::NeedsApproval { .. }));
+    assert!(batches.lock().unwrap().is_empty());
+    every_result_answers_a_call(&state);
 }

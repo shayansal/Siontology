@@ -10,15 +10,23 @@ from recorded sessions against a devnet.
 ## Protocol
 
 - JSON-RPC 2.0 over standard input and output, one message per line.
-- Protocol version `2025-06-18`. The server offers tools only.
-- Methods: `initialize`, `notifications/initialized`, `tools/list`,
-  `tools/call`. Any other method is answered with error `-32601`:
+- Both eras of the protocol. A request whose `_meta` carries
+  `io.modelcontextprotocol/protocolVersion` is served as version
+  `2026-07-28`, and its result says `"resultType": "complete"`; another
+  version is refused with error `-32022` and the versions it speaks. A
+  client that opens with `initialize` gets the handshake of the version it
+  asks for, if it is `2025-11-25`, `2025-06-18`, `2025-03-26` or
+  `2024-11-05` (otherwise `2025-11-25`). The server offers tools only.
+- Methods: `server/discover`, `initialize`, `notifications/initialized`,
+  `ping`, `tools/list`, `tools/call`. Any other method is answered with
+  error `-32601`:
 
   ```json
   {"error":{"code":-32601,"message":"method not found: resources/list"},"id":17,"jsonrpc":"2.0"}
   ```
 
-- The `initialize` result carries these instructions for the agent:
+- The `initialize` and `server/discover` results carry these instructions
+  for the agent:
   `Tools for the Siontology neo-blockchain devnet. Assess a claim with
   sion_assess_claim before relying on it.`
 - Every successful result carries the same value twice: as pretty-printed

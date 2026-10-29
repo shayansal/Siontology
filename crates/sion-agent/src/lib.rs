@@ -18,11 +18,19 @@
 //! - **Taint.** Content from outside (a web page, another agent) taints the
 //!   session for a day: until then, external calls and spending need
 //!   approval, so an injected instruction cannot act on its own.
-//! - **No accidental repeats.** Every call that changes something is in a
-//!   [`journal`](journal::Journal) under an idempotency key. Repeating an
-//!   identical call returns the recorded outcome; a call whose outcome is
-//!   unknown (a timeout after a payment was sent) is never repeated until
-//!   someone settles it.
+//! - **No accidental repeats.** Every call that adds to the world (a
+//!   payment, a message) is in a [`journal`](journal::Journal) under an
+//!   idempotency key. Repeating an identical call returns the recorded
+//!   outcome, saying so; a call whose outcome is unknown (a timeout after a
+//!   payment was sent) is never repeated until someone settles it. Calls
+//!   meant to run again when repeated (a shell command, writing a file
+//!   back) are not journaled.
+//! - **Sandboxed commands.** The shell and skills' scripts run in a
+//!   [`sandbox`] (bubblewrap or a Docker image pinned by digest) that can
+//!   write only the workspace and reaches no network unless the operator
+//!   allows it.
+//! - **Tools from MCP servers** ([`mcp`]), offered only while each tool's
+//!   definition matches the one an operator reviewed.
 //! - **Bounded runs.** A budget of turns that grows with progress up to a
 //!   cap; an identical call that keeps failing is blocked; long
 //!   conversations are compacted; a model that fails is cooled down and the
@@ -41,9 +49,11 @@ pub mod builtin;
 pub mod evals;
 pub mod evolve;
 pub mod journal;
+pub mod mcp;
 pub mod model;
 pub mod policy;
 pub mod providers;
+pub mod sandbox;
 pub mod schedule;
 pub mod scripted;
 pub mod session;

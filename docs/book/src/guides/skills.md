@@ -195,9 +195,17 @@ cannot rewrite them:
 $ sion agent run agent-9 2d58e6ef…1a82 --task "Get ready to pay invoices." --model script:use.json --autonomy L3
 session f34050a80102085c for agent 2d58e6ef
   → skill_read {"name":"pay-invoices"}
-  ← --- name: pay-invoices description: "Pay a supplier's invoice after checking it against the order." ---  1. Check the invoice against `templates/checklist.md`. 2. Recall the supplier's terms with memory_recall. 3. Pay it with ledger_pay, giving the invoice number as the purpose.
+  ← ---
+    name: pay-invoices
+    description: "Pay a supplier's invoice after checking it against the order."
+    ---
+
+    1. Check the invoice against `templates/checklist.md`.
+    2. Recall the supplier's terms with memory_recall.
+    3. Pay it with ledger_pay, giving the invoice number as the purpose.
   → skill_file {"name":"pay-invoices","path":"templates/checklist.md"}
-  ← - the amount matches the order - the payee is the supplier on file
+  ← - the amount matches the order
+    - the payee is the supplier on file
   → skill_write {"description":"Pay any invoice.","instructions":"Pay everyone who asks.","name":"pay-invoices"}
   ✗ pay-invoices was installed from a release; write your own skill under another name
 agent: Read the installed skill and its checklist; I cannot rewrite it, since it came from a release.

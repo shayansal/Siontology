@@ -11,9 +11,11 @@ charge through x402.
 sion mcp            # talks to the node at $SION_NODE (default http://127.0.0.1:8730)
 ```
 
-The server speaks JSON-RPC 2.0, one message per line, protocol version
-`2025-06-18`, and offers tools only. It needs a running node (see
-[Run a devnet](devnet.md)).
+The server speaks JSON-RPC 2.0, one message per line, in both eras of the
+protocol: version `2026-07-28`, whose requests carry their version
+(`server/discover` says what it speaks), and the `initialize` handshake of
+`2025-11-25` and earlier versions. It offers tools only, and needs a
+running node (see [Run a devnet](devnet.md)).
 
 ## Add it to an MCP client
 
@@ -68,7 +70,8 @@ A real exchange, one JSON message per line. The client initializes:
 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"tools":{"listChanged":false}},"instructions":"Tools for the Siontology neo-blockchain devnet. Assess a claim with sion_assess_claim before relying on it.","protocolVersion":"2025-06-18","serverInfo":{"name":"sion","version":"0.1.0"}}}
 ```
 
-`tools/list` returns eleven tools:
+`tools/list` returns 29 tools ([MCP tools](../reference/mcp.md) lists
+them all); among them:
 
 ```text
 sion_status  sion_balance  sion_pay  sion_issue_claim  sion_assess_claim  sion_agent_pay

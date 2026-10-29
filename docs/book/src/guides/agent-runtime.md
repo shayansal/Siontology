@@ -59,8 +59,11 @@ finish. The agent's tools:
 | `ledger_transaction` | read | Whether a transaction executed, by digest, to check a payment whose outcome is unknown |
 | `read_file`, `write_file`, `list_files` | read, write | Files in the directory `--workspace` gives, and nowhere else |
 | `fetch_url` | external | Public web pages, with `--web`; local and private addresses are refused |
-| `agent_spawn` | spend | With `--delegate`: a subagent with a budget carved from the agent's, working on a task in a session of its own ([Teams, schedules and channels](agent-teams.md)) |
+| `agent_spawn` | spend | With `--delegate`: a subagent with a budget carved from the agent's, working on a task in a session of its own ([Teams, schedules and channels](agent-teams.md)); those of one turn are spawned together and work at the same time |
 | `task_post`, `task_status`, `task_submit` | spend, read, external | With `--delegate`: hire another agent through a Task Charter, follow it, or deliver one you were hired for |
+| `shell`, `skill_run` | write, or external with the network | With `--shell`: commands, and a skill's own scripts, in a sandbox that writes only the workspace ([Commands, scripts and MCP servers](agent-tools.md)) |
+| `<server>_<tool>` | as reviewed | With `--mcp <server>`: the reviewed tools of an MCP server |
+| `storage_keep`, `storage_deals`, `storage_close` | spend, read, write | With `--storage`: keep a workspace file with storage providers, follow and close the deals |
 
 ## Models
 
@@ -172,7 +175,14 @@ that before paying:
 $ sion agent run agent-7 ebc55841…ded9e --task "Pay Acme's invoice INV-1042 for 7.50 USD to bob, who collects for Acme." --model script:pay.json --memory 391aa9d2 --autonomy L6
 session ac81c7b0646a2d4b for agent ebc55841
   → skill_read {"name":"pay-invoices"}
-  ← --- name: pay-invoices description: "Pay a supplier's invoice after checking it against the order and the supplier's terms." ---  1. memory_recall the supplier's terms. 2. Check the invoice against the order. 3. Pay it with ledger_pay, giving the invoice number as the purpose.
+  ← ---
+    name: pay-invoices
+    description: "Pay a supplier's invoice after checking it against the order and the supplier's terms."
+    ---
+
+    1. memory_recall the supplier's terms.
+    2. Check the invoice against the order.
+    3. Pay it with ledger_pay, giving the invoice number as the purpose.
   → memory_recall {"relation":"terms","subject":"supplier-acme"}
   ← {"committed":[{"committed":true,"confidence_permille":1000,"id":"1d49c69d…","kind":"fact","seq":1,"statement":"supplier-acme terms \"net 30\"",…}],"complete":"proved complete against the index root on the ledger, as of 3 atoms","not_committed_yet":[],"relation":"terms","subject":"supplier-acme"}
   → ledger_pay {"amount":"7.5","purpose":"Acme invoice INV-1042 (net 30)","to":"bob"}
@@ -233,10 +243,11 @@ once others have verified the better version: see
 
 - **No accidental repeats.** A call that changed something is recorded
   under a key made of the session, the tool and the input. The same call
-  again returns the recorded outcome instead of paying twice. A payment
-  whose outcome is unknown (the node stopped answering after it was
-  submitted) is reported as uncertain and is never repeated: the agent is
-  told to check it with `ledger_transaction`.
+  again returns the recorded outcome, saying so, instead of paying twice.
+  A payment whose outcome is unknown (the node stopped answering after it
+  was submitted) is reported as uncertain and is never repeated: the agent
+  is told to check it with `ledger_transaction`. Calls meant to run again
+  are not recorded: shell commands, skills' scripts and file writes.
 - **Bounded runs.** 12 model turns, 4 more after each turn in which a tool
   call succeeded, at most 32. A call that failed twice with the same input
   is blocked. Long conversations are compacted: the middle is replaced by
@@ -269,4 +280,6 @@ once others have verified the better version: see
 - A model provider receives the conversation, tool results included
   (`agent:provider-sees-context`). Sessions are stored unencrypted under
   `$SION_HOME/agents/sessions` (`agent:plain-sessions`).
-- There is no shell tool and no sandbox for running code yet.
+- Commands run in a sandbox only as far as the kernel's namespaces or the
+  container runtime hold (`agent:sandbox`); see [Commands, scripts and MCP
+  servers](agent-tools.md) for what else they do not stop.

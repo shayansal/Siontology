@@ -83,10 +83,41 @@ pub trait Tool: Send + Sync {
     /// The most a call can do.
     fn effect(&self) -> Effect;
 
+    /// What the call with `input` can do: at most [`Tool::effect`], less
+    /// when the input shows it (a skill's script that has no network).
+    fn effect_of(&self, _input: &Value) -> Effect {
+        self.effect()
+    }
+
+    /// Whether the journal answers a repeat of an identical call with the
+    /// first one's outcome instead of making it again. True for calls that
+    /// add to the world (a payment, a message); a tool whose identical
+    /// calls are meant to run again (a shell command after a fix, writing
+    /// a file back as it was) says false, and its calls are not journaled.
+    fn journaled(&self) -> bool {
+        true
+    }
+
     /// Runs one call. `key` identifies the call (see [`crate::journal::key`]):
     /// a tool that talks to a service which deduplicates requests passes it
     /// on.
     fn call(&self, input: &Value, key: &str) -> Outcome;
+
+    /// Whether the calls of this tool that follow one another in a turn run
+    /// together ([`Tool::call_batch`]), each once it passed the policy by
+    /// itself: subagents that work at the same time, say.
+    fn batches(&self) -> bool {
+        false
+    }
+
+    /// Runs several calls together: one outcome each, in order. By
+    /// default, one after another.
+    fn call_batch(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
+        calls
+            .iter()
+            .map(|(input, key)| self.call(input, key))
+            .collect()
+    }
 }
 
 /// The tools of a session, by name.

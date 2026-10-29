@@ -4,10 +4,10 @@
 the leading open agent runtimes offer for building good agents, and what
 its primitives add. Built: identities, budgets, memory, tasks, storage,
 the runtime with subagents, hiring, schedules and channels, skills with a
-supply chain, and self-improvement with verified promotion. Not built: a
-sandbox and a shell tool, MCP servers and storage deals as tools, search
-over past sessions, consolidation, the memory archive with storage
-providers, and the app's Agents tab. Each part says which.
+supply chain, self-improvement with verified promotion, a sandboxed shell
+and skills' scripts, and MCP servers and storage deals as tools. Not
+built: search over past sessions, consolidation, the memory archive with
+storage providers, and the app's Agents tab. Each part says which.
 
 ## What the leading runtimes do
 
@@ -88,10 +88,11 @@ uses claims, bonds, `Accept`, `Challenge` and `Rule` as they are.
 - **The registry** is the knowledge log itself: every release, audit and
   falsification, with lineage from version to version.
 
-Not built yet: the runtime enforcing the declared permissions when it
-runs a skill's scripts (a sandbox without network for a skill that
-declares none), so that a skill that reaches further is caught doing
-something it bonded against. That needs the sandbox of part 2.
+Built since: the runtime runs a skill's scripts in the sandbox of part 2,
+without network unless the skill declares it (`metadata: {sion-network:
+"true"}`). Not built: the other permissions a skill could declare, and
+evidence that ties a skill caught reaching further to the bond behind its
+release.
 
 ### 2. The runtime
 
@@ -105,13 +106,13 @@ something it bonded against. That needs the sandbox of part 2.
 | Rules | Tools declare an effect (read, write, external, spend); autonomy levels L0 to L6 decide what runs, what waits for approval and what is refused; content from outside taints the session | Built |
 | Reliability | A journal so that nothing is done twice by accident and an unknown outcome is never repeated; turn budgets that grow with progress; blocking a call that keeps failing; compaction; sessions that pause for approval and resume; a kill switch | Built |
 | Spending | Every payment goes through the agent's charter; a payment above its limits is refused by the ledger, not by the runtime | Built (`ledger_pay`) |
-| Tools | Files in a workspace, web pages, the ledger (balance, payments, transactions), memory and skills; then tasks and storage; MCP servers mounted as tools | Built: files, web pages, the ledger, memory, skills, subagents and tasks. Not built: storage deals and MCP servers as tools |
-| Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Not built (no shell tool yet) |
+| Tools | Files in a workspace, web pages, the ledger (balance, payments, transactions), memory and skills; then tasks and storage; MCP servers mounted as tools | Built: files, web pages, the ledger, memory, skills, subagents, tasks, storage deals, and MCP servers, each tool pinned by a digest of its reviewed definition ([Commands, scripts and MCP servers](../guides/agent-tools.md)) |
+| Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Built: bubblewrap, or a Docker image pinned by digest; no network unless the operator gives one; a skill's scripts get it only if the skill declares it. Not built: other declared permissions |
 | Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Built: atoms in the agent's memory log, preferences, goals and procedures in every prompt, recall proved complete against the ledger, search, retraction, every session an episode. Not built: search over past sessions' text, consolidation |
 | Durable memory | The log's archive kept by storage providers, proven every round | Next |
 | Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use; evaluation, evolution and verified promotion (part 3) |
 | Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Built (`sion agent schedule`, `sion agent scheduler`): once, every interval or on cron (UTC), each run a session of a profile, its answer to a file, a webhook or Telegram |
-| Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Built: `agent_spawn` registers the subagent with a budget carved from the parent's allotment, gives it fee money from the parent's account, and runs its task in a session of its own, two levels deep at most |
+| Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Built: `agent_spawn` registers keyless subagents with budgets carved from the parent's allotment, gives them fee money from the parent's account, and runs their tasks in sessions of their own, two levels deep at most; those of one turn are spawned in one transaction and work at the same time, their payments signed in batches |
 | Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Built: the command line, an HTTP endpoint with a bearer token and Telegram (tested against a stand-in for its API), each conversation a session, approvals answered in the channel, routed by profile on one machine. Not built: routing across machines, other messengers |
 | Hiring | An agent hands work to another through a Task Charter, paid only for an accepted result | Built: `task_post` from the agent's budget, `task_status`, and `task_submit` for the worker, on its task bond |
 | Traces | Every session exports as a trajectory in chat format with its outcome, and as a digest | Built |

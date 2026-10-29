@@ -242,6 +242,17 @@ pub enum AgentCommand {
         /// results cannot be challenged).
         #[arg(long)]
         adjudicator: Option<String>,
+        #[command(flatten)]
+        shell: crate::runtime::ShellArgs,
+        /// Give it the reviewed tools of this MCP server (see `sion agent mcp
+        /// add`). Repeat for more.
+        #[arg(long = "mcp", value_name = "SERVER")]
+        mcp: Vec<String>,
+        /// Give it the storage-deal tools: keep a file of its workspace with
+        /// storage providers (the escrow comes from its account's balance,
+        /// not its budget), follow its deals and close them.
+        #[arg(long)]
+        storage: bool,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -276,6 +287,10 @@ pub enum AgentCommand {
     /// and channels.
     #[command(subcommand)]
     Profile(crate::profiles::ProfileCommand),
+    /// MCP servers whose tools agents may use: add one (its tools are
+    /// reviewed and pinned), list them, review one again, remove one.
+    #[command(subcommand)]
+    Mcp(crate::agent_mcp::McpCommand),
     /// Scheduled jobs: a task a profile works on at a time, every interval
     /// or on a cron expression, each run a session whose answer goes to a
     /// channel.
@@ -340,8 +355,12 @@ pub fn run(
             delegate,
             subagent_models,
             adjudicator,
+            shell,
+            mcp,
+            storage,
         } => {
             let agent = parse_id(&agent, "agent")?;
+            let shell = shell.sandbox()?;
             let adjudicator = adjudicator
                 .map(|a| parse_id(&a, "adjudicator").map(|id| sion_core::ids::AtomId(id.0)))
                 .transpose()?;
@@ -385,6 +404,9 @@ pub fn run(
                     subagent_models,
                     adjudicator,
                     depth: 0,
+                    shell,
+                    mcp,
+                    storage,
                 },
             )?;
             println!("session {} for agent {}", saved.state.id, agent.short());
@@ -461,6 +483,7 @@ pub fn run(
             Ok(())
         }
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
+        AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Scheduler { once, poll } => crate::schedules::scheduler(shared, once, poll),
         AgentCommand::Serve { listen, token_env } => {
