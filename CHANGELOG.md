@@ -10,6 +10,15 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Fixes
+
+- The gateway answers submissions while its faucet waits. The faucet read
+  its account and checked its last transaction with queries that wait on
+  a validator (up to 15 seconds each), and signed on the gateway's own
+  thread, so a busy validator held every submission behind it and clients
+  saw "the gateway did not answer". The faucet now runs on a thread of its
+  own; the gateway only hands it grants and submits what it signed.
+
 ### Batched authorization and keyless subagents (specification v1.13)
 
 - One authorization can sign a batch of up to 256 transactions: the RFC 9162

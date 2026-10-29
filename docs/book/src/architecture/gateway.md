@@ -70,10 +70,17 @@ It keeps every certified transaction until a Pulse executes it:
 ## The faucet
 
 `POST /v1/faucet` queues grants (at most 10,000 waiting). Every 100 ms, the
-gateway turns up to 256 queued grants into one `Faucet` transaction signed
+faucet turns up to 256 queued grants into one `Faucet` transaction signed
 by the faucet wallet, with no fee and an expiry 30 Pulses ahead, and waits
-for it to execute before sending the next. Grants of a transaction that
-did not succeed go back in the queue.
+for it to execute (at most 30 seconds) before sending the next. Grants of
+a transaction that did not succeed, or that its lane committee refused, go
+back in the queue.
+
+The faucet runs on a thread of its own. Reading the faucet's account and
+asking whether its transaction executed wait on a validator, which can be
+busy for seconds; signing takes a dual post-quantum signature. Neither holds
+up the gateway: it only hands the faucet its grants and submits what the
+faucet signed, so submissions are answered while the faucet waits.
 
 ## Statuses
 
