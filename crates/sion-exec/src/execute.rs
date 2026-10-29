@@ -26,9 +26,11 @@ use sion_core::{merkle, Amount};
 
 use crate::account::AccountState;
 use crate::assurance::AssuranceDomain;
+use crate::auth::{check_authorization, find_authority};
 use crate::beacons::{next_boundary, slot_of, BEACON_INTERVAL};
 use crate::charter::{
-    AgentIdentity, Allotment, Caveats, Charter, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH,
+    keyless_account, AgentIdentity, Allotment, Caveats, Charter, Spawn, MAX_CHARTER_CHAIN,
+    MAX_SPAWN_BATCH,
 };
 use crate::claim::{claim_id, formulas, ClaimBody, Payload};
 use crate::delegation::{
@@ -58,7 +60,7 @@ use crate::task::{
     RESULT_SCHEMA,
 };
 use crate::tx::{
-    object_domain, signing_context, SignedTransaction, Transaction, TxKind, MAX_GRANT, MAX_INPUTS,
+    object_domain, required_fee, SignedTransaction, Transaction, TxKind, MAX_GRANT, MAX_INPUTS,
 };
 use crate::validators::{
     permille_of, possession_digest, ValidatorRecord, ValidatorSet, ValidatorStatus,
@@ -515,7 +517,9 @@ pub enum Event {
         agent: ObjectId,
         /// Its parent's charter.
         parent: ObjectId,
-        /// The account that signs for it.
+        /// The account it acts as: the one its key signs for, or, for a
+        /// keyless subagent, `keyless_account(agent)`, which its nearest
+        /// keyed ancestor signs for (spec §4.3).
         account: AccountId,
         /// Its allotment.
         allotment: ObjectId,
@@ -773,6 +777,9 @@ struct Run<'r, 'a, S: ObjectStore> {
     overlay: &'r mut Overlay<'a, S>,
     ctx: &'r PulseContext,
     tx: &'r Transaction,
+    /// The size of the transaction's batch, for a batch member (its fee
+    /// floor depends on it, spec §4.3).
+    batch_size: Option<u64>,
     digest: TxDigest,
     originals: BTreeMap<ObjectId, Version>,
     created: BTreeSet<ObjectId>,
@@ -1004,7 +1011,8 @@ fn prepare<S: ObjectStore>(
             return Err(ExecError::Invalid("faucet transactions pay no fee".into()));
         }
     } else {
-        let min = ctx.config.min_fee(tx.size());
+        let min = required_fee(&ctx.config, signed)
+            .ok_or_else(|| ExecError::Invalid("the fee floor overflows".into()))?;
         if tx.fee < min {
             return Err(ExecError::Invalid(format!(
                 "fee {} below minimum {}",
@@ -1013,46 +1021,28 @@ fn prepare<S: ObjectStore>(
         }
     }
 
-    // Authorization against the current policy.
-    let account_id = well_known::account(&tx.sender);
-    let policy = match run.try_load(&account_id)? {
-        Some(object) => match object.data {
-            ObjectData::Account(state) => state.policy,
-            _ => return Err(ExecError::Invalid("account object corrupted".into())),
-        },
-        None => {
-            let policy = tx.genesis_policy.clone().ok_or_else(|| {
-                ExecError::Unauthorized("unknown account; genesis policy required".into())
-            })?;
-            policy.validate()?;
-            if policy.account_id() != tx.sender {
-                return Err(ExecError::Unauthorized(
-                    "genesis policy does not hash to the sender".into(),
-                ));
-            }
-            run.store(Object {
-                id: account_id,
-                version: Version(0),
-                owner: Owner::Account(tx.sender),
-                data: ObjectData::Account(AccountState {
-                    id: tx.sender,
-                    policy: policy.clone(),
-                    viewing_key: None,
-                    created_at: ctx.pulse,
-                    rotations: 0,
-                }),
-            });
-            policy
-        }
-    };
+    // The authorizing policy (spec §4.3): all the reading happens here.
+    let authority =
+        find_authority(signed, &mut |id| run.try_load(id))?.map_err(ExecError::Unauthorized)?;
+    if authority.new_account {
+        run.store(Object {
+            id: well_known::account(&tx.sender),
+            version: Version(0),
+            owner: Owner::Account(tx.sender),
+            data: ObjectData::Account(AccountState {
+                id: tx.sender,
+                policy: authority.policy.clone(),
+                viewing_key: None,
+                created_at: ctx.pulse,
+                rotations: 0,
+            }),
+        });
+    }
+    // The check reads nothing, so skipping it (signatures checked when the
+    // inputs were locked) never changes what the transaction reads.
     if ctx.verify_signatures {
-        policy
-            .verify(
-                &signing_context(&ctx.config),
-                &run.digest.0 .0,
-                &signed.auth,
-            )
-            .map_err(|e| ExecError::Unauthorized(e.to_string()))?;
+        check_authorization(&ctx.config, signed, &authority.policy)
+            .map_err(ExecError::Unauthorized)?;
     }
 
     // Owned inputs.
@@ -1076,7 +1066,9 @@ fn prepare<S: ObjectStore>(
         }
         if index == 0 {
             if is_faucet {
-                if Some(tx.sender) != ctx.config.faucet || input.id != account_id {
+                if Some(tx.sender) != ctx.config.faucet
+                    || input.id != well_known::account(&tx.sender)
+                {
                     return Err(ExecError::Unauthorized("only the faucet may mint".into()));
                 }
             } else {
@@ -1102,6 +1094,7 @@ pub fn execute_transaction<S: ObjectStore>(
 ) -> TxEffects {
     let digest = signed.digest();
     let tx = &signed.tx;
+    let batch_size = signed.batch.as_ref().map(|member| member.batch.size);
     let mut effects = TxEffects::new(tx, digest);
 
     overlay.begin();
@@ -1110,6 +1103,7 @@ pub fn execute_transaction<S: ObjectStore>(
             overlay: &mut *overlay,
             ctx,
             tx,
+            batch_size,
             digest,
             originals: BTreeMap::new(),
             created: BTreeSet::new(),
@@ -1149,6 +1143,7 @@ pub fn execute_transaction<S: ObjectStore>(
                 overlay: &mut *overlay,
                 ctx,
                 tx,
+                batch_size,
                 digest,
                 originals: BTreeMap::new(),
                 created: BTreeSet::new(),
@@ -2646,7 +2641,9 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     },
                 )?,
             };
-            let required = run.ctx.config.min_fee(tx.size()).0.saturating_add(
+            let floor = crate::tx::fee_floor(&run.ctx.config, tx.size(), run.batch_size)
+                .ok_or_else(|| ExecError::Invalid("the fee floor overflows".into()))?;
+            let required = floor.0.saturating_add(
                 crate::stream::STREAM_STEP_FEE
                     .0
                     .saturating_mul(u128::from(hashes)),
@@ -3833,11 +3830,13 @@ fn spawn_one<S: ObjectStore>(
     let sender = run.tx.sender;
     let depth = u8::try_from(depth).map_err(|_| ExecError::Invalid("too deep".into()))?;
     let child_id = created_id(&run.digest, run.next_index);
+    // A keyless subagent's account is derived from its id (spec §4.3).
+    let account = child.agent.unwrap_or_else(|| keyless_account(&child_id));
     run.create(
         Owner::Shared(object_domain("charter", &child_id)),
         ObjectData::Charter(Charter {
             principal: sender,
-            agent: child.agent,
+            agent: account,
             caveats: child.caveats.clone(),
             agent_atom: parent.agent_atom,
             backer: parent.backer,
@@ -3853,10 +3852,10 @@ fn spawn_one<S: ObjectStore>(
         }),
     );
     let allotment = run.create(
-        Owner::Account(child.agent),
+        Owner::Account(account),
         ObjectData::Allotment(Allotment {
             source: child_id,
-            writer: child.agent,
+            writer: account,
             asset: AssetId::usd(),
             remaining: child.budget,
             caveats: Some(child.caveats.clone()),
@@ -3873,7 +3872,7 @@ fn spawn_one<S: ObjectStore>(
     run.event(Event::AgentSpawned {
         agent: child_id,
         parent: *parent_id,
-        account: child.agent,
+        account,
         allotment,
     });
     Ok(())

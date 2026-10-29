@@ -458,7 +458,7 @@ pub struct Obligation {
     pub inputs: Vec<ObjectRef>,
     /// The intent's expiry.
     pub expires_at: Pulse,
-    /// The sender account's policy rotations when the intent was posted.
+    /// The signer's policy rotations when the intent was posted.
     pub rotations: u32,
     /// The Pulse it was posted in.
     pub posted_at: Pulse,
@@ -466,6 +466,10 @@ pub struct Obligation {
     pub deadline: Pulse,
     /// Deadlines it has missed.
     pub missed: u32,
+    /// The account whose policy authorized the intent (spec §6.3): the
+    /// sender, or the nearest keyed ancestor that signed for a keyless
+    /// sender (v1.13).
+    pub signer: AccountId,
 }
 
 /// Forced-inclusion obligations: a shared protocol object.

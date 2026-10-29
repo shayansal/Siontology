@@ -21,19 +21,43 @@ pub struct Transaction {
 
 pub struct SignedTransaction {
     pub tx: Transaction,
-    pub auth: Authorization, // signatures satisfying the sender's policy, for this chain
+    pub auth: Authorization,          // signatures satisfying the authorizing policy, for this chain
+    pub batch: Option<BatchMember>,   // for a batch member: its batch and its place in it
+}
+
+pub struct BatchMember {
+    pub batch: TxBatch,               // what the one authorization signs
+    pub index: u64,                   // the member's position
+    pub path: Vec<Hash32>,            // its inclusion path to the batch's root
+    pub charter: Option<ObjectId>,    // for a keyless sender, its charter
+}
+
+pub struct TxBatch {
+    pub signer: AccountId,            // the account whose policy the authorization satisfies
+    pub size: u64,                    // 1 to 256 members
+    pub root: Hash32,                 // RFC 9162 Merkle root over the members' digests
 }
 ```
 
-- The **digest** is the hash of the Borsh encoding of `Transaction`; it is
-  what the sender signs, under a signing context bound to the chain's
-  configuration.
+- The **digest** is the hash of the Borsh encoding of `Transaction`. A
+  transaction on its own signs its digest, under a signing context bound
+  to the chain's configuration. A **batch member** is signed for once with
+  the rest of its batch: the authorization signs the batch's message,
+  under a separate batch context, and the member carries its path to the
+  batch's root. See [Batched authorization](../concepts/batched-authorization.md).
+- The **authorizing policy** is the sender's own, or, for a
+  [keyless subagent](../concepts/agent-identities.md#keyless-subagents),
+  the policy of its nearest keyed ancestor, which must be the batch's
+  signer.
 - A transaction names **1 to 256 distinct inputs**. The first is a USD coin
   that pays the fee (the faucet's transaction uses its account object
   instead).
 - The **minimum fee** is `base_fee + fee_per_kib × ⌈size / 1024⌉`, where
   `size` is the encoded body without signatures (0.001 and 0.0001 USD on
-  the devnet).
+  the devnet). A batch member pays a share of the signature check instead
+  of the whole of it: 800‰ of `base_fee` is split between the batch's
+  members, rounded up. On the devnet a small transfer's floor is
+  0.0011 USD alone and 0.000304 USD as a member of a batch of 256.
 - The **coordination class** is derived from the kind, never declared.
   Kinds that touch a contention domain are *contended*; `IssueClaim`,
   `RegisterAtom` and `PostBond` are *knowledge*; `AgentPay`, `Delegate`,
@@ -129,7 +153,7 @@ See [Validators, staking and epochs](../concepts/committees.md).
 | `ClaimDelegatorRewards` | Pays the rewards credited to the delegation at `inputs[1]` | contended (validators) | `Collect a delegation's rewards` | `sion stake claim`, MCP `sion_stake_claim` |
 | `SetCommission { validator, permille }` | The operator sets its pool's commission (at most 250 ‰; once anyone has delegated, a raise of at most 20 ‰ at a time), from the epoch's end | contended (validators) | `Set validator <id>'s commission to <p>% from the epoch's end` | `sion stake commission` |
 
-See [Pooled stake](../concepts/pooled-stake.md).
+See [Pooled stake](../concepts/validators/pooled-stake.md).
 
 ## Payment streams
 

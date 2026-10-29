@@ -1222,6 +1222,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "sion-agent"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sion-core",
+ "sion-http",
+ "thiserror",
+ "tiny_http",
+]
+
+[[package]]
 name = "sion-app-core"
 version = "0.1.0"
 dependencies = [
@@ -1277,6 +1289,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sion-agent",
  "sion-assurance",
  "sion-clearing",
  "sion-consensus",

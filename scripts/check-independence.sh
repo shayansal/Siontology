@@ -56,7 +56,17 @@ forbidden = [
      "sion_exec::beacons helpers (only the type and the constants are allowed)"),
     (r"\bslot_of\b|\bnext_boundary\b",
      "sion_exec::beacons helpers (slot_of, next_boundary)"),
+    (r"sion_exec::auth\b|\bfind_authority\b|\bcheck_authorization\b|\bcheck_membership\b|\bsigned_message\b|\bis_keyless\b",
+     "sion_exec::auth and charter::is_keyless (the reference executor's authorization)"),
 ]
+
+# Items of a module that are named in a `use` list or a path: the
+# sion_exec::tx and sion_exec::charter logic stack B must write itself
+# (spec §0), wherever an import puts them.
+forbidden_items = {
+    "tx": {"fee_floor", "required_fee", "sign_batch"},
+    "charter": {"is_keyless"},
+}
 
 # The sion_exec::pulse items the library may use: type definitions only
 # (the §7 helpers are reimplemented and cross-checked in unit tests).
@@ -77,6 +87,12 @@ for path in sorted(src.rglob("*.rs")):
         for pattern, what in forbidden:
             if re.search(pattern, line):
                 problems.append(f"{path.relative_to(src.parent.parent.parent)}:{number}: uses {what}: {line.strip()}")
+    for module, names in forbidden_items.items():
+        for match in re.finditer(r"sion_exec::" + module + r"::(\{[^}]*\}|\w+)", text):
+            for name in re.findall(r"\w+", match.group(1)):
+                if name in names:
+                    number = text[: match.start()].count("\n") + 1
+                    problems.append(f"{path.relative_to(src.parent.parent.parent)}:{number}: uses sion_exec::{module}::{name}")
     for match in re.finditer(r"sion_exec::pulse::(\{[^}]*\}|\w+)", text):
         names = re.findall(r"\w+", match.group(1))
         for name in names:

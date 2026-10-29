@@ -1,13 +1,16 @@
 //! What a validator checks before locking owned inputs to a transaction.
 
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 use sion_consensus::lanes::canonical_inputs;
 use sion_consensus::{LaneRequest, OwnerAuthorization};
 use sion_core::encode::{decode, encode};
 use sion_core::hash::{hash_parts, Hash32};
-use sion_crypto::AuthPolicy;
+use sion_crypto::{AuthPolicy, Authorization};
+use sion_exec::auth::{check_authorization, check_membership, find_authority, signed_message};
 use sion_exec::object::well_known;
-use sion_exec::tx::signing_context;
-use sion_exec::{ObjectData, Owner, SignedTransaction, State};
+use sion_exec::tx::required_fee;
+use sion_exec::{ChainConfig, Owner, SignedTransaction, State};
 
 use crate::payload::lane_inputs;
 
@@ -47,46 +50,70 @@ pub fn lock_is_live(state: &State, request: &LaneRequest) -> bool {
 pub const MAX_INPUTS: usize = 256;
 
 /// Identifies "these exact authorization bytes satisfy this policy for this
-/// transaction", so a validator that checked them once (when locking the
-/// inputs) need not check them again when executing. The key covers the
-/// signatures themselves: the transaction digest does not, and the same
-/// body with other signatures must be checked afresh.
-pub fn authorization_key(tx: &SignedTransaction, policy: &AuthPolicy) -> Hash32 {
+/// message in this context", so a validator that checked them once (when
+/// locking the inputs) need not check them again when executing. The message
+/// is a transaction's digest or, for a batch member, its batch's message
+/// (spec §4.3), so one check serves every member of a batch; each member's
+/// place in its batch is checked on its own, which costs a few hashes. The
+/// key covers the signatures themselves: the same body or batch with other
+/// signatures must be checked afresh.
+pub fn authorization_key(
+    config: &ChainConfig,
+    tx: &SignedTransaction,
+    policy: &AuthPolicy,
+) -> Hash32 {
+    let (context, message) = signed_message(config, tx);
     hash_parts(
         "sion/node/authorized",
-        &[&tx.digest().0 .0, &encode(policy), &encode(&tx.auth)],
+        &[
+            context.as_bytes(),
+            &message.0,
+            &encode(policy),
+            &encode(&tx.auth),
+        ],
     )
 }
 
-/// The policy a transaction is checked against in the given state: the
-/// sender's current policy, or its genesis policy if the account is new.
+/// The policy a transaction is checked against in the given state (spec
+/// §4.3): the sender's current policy, or its genesis policy if the account
+/// is new; for a keyless subagent, its nearest keyed ancestor's.
 pub fn policy_for(state: &State, signed: &SignedTransaction) -> Result<AuthPolicy, String> {
-    let sender = signed.tx.sender;
-    match state
-        .objects
-        .get(&well_known::account(&sender))
-        .map(|o| &o.data)
-    {
-        Some(ObjectData::Account(account)) => Ok(account.policy.clone()),
-        Some(_) => Err("account object corrupted".into()),
-        None => {
-            let policy = signed
-                .tx
-                .genesis_policy
-                .clone()
-                .ok_or_else(|| "unknown account and no genesis policy".to_string())?;
-            if policy.account_id() != sender {
-                return Err("genesis policy does not hash to the sender".into());
-            }
-            Ok(policy)
-        }
-    }
+    find_authority(signed, &mut |id| Ok(state.objects.get(id).cloned()))
+        .map_err(|e| e.to_string())?
+        .map(|authority| authority.policy)
 }
 
 impl StateOwners<'_> {
     /// Why a request is not authorized, if it is not. On success, returns
     /// the transaction and its [`authorization_key`].
     pub fn check(&self, request: &LaneRequest) -> Result<(SignedTransaction, Hash32), String> {
+        let signed = self.decode_request(request)?;
+        // Cheap checks first; the signature last.
+        self.check_unsigned(&signed)?;
+        let policy = policy_for(self.state, &signed)?;
+        check_authorization(&self.state.config, &signed, &policy)
+            .map_err(|e| format!("authorization: {e}"))?;
+        let key = authorization_key(&self.state.config, &signed, &policy);
+        Ok((signed, key))
+    }
+
+    /// [`StateOwners::check`], skipping signatures `authorized` holds as
+    /// verified and remembering those it verifies: a batch's members after
+    /// the first cost their own cheap checks and a few hashes each.
+    pub fn check_cached(
+        &self,
+        request: &LaneRequest,
+        authorized: &mut Authorized,
+    ) -> Result<SignedTransaction, String> {
+        let signed = self.decode_request(request)?;
+        self.check_unsigned(&signed)?;
+        let policy = policy_for(self.state, &signed)?;
+        authorized.check(&self.state.config, &signed, &policy)?;
+        Ok(signed)
+    }
+
+    /// The signed transaction a request carries, if it is the request's.
+    fn decode_request(&self, request: &LaneRequest) -> Result<SignedTransaction, String> {
         let signed: SignedTransaction = decode(&request.owner_proof)
             .map_err(|_| "owner proof is not a signed transaction".to_string())?;
         if signed.digest() != request.tx {
@@ -95,18 +122,7 @@ impl StateOwners<'_> {
         if canonical_inputs(&lane_inputs(&signed.tx.inputs)) != request.canonical_inputs() {
             return Err("request inputs differ from the transaction's".into());
         }
-        // Cheap checks first; the signature last.
-        self.check_unsigned(&signed)?;
-        let policy = policy_for(self.state, &signed)?;
-        policy
-            .verify(
-                &signing_context(&self.state.config),
-                &signed.digest().0 .0,
-                &signed.auth,
-            )
-            .map_err(|e| format!("authorization: {e}"))?;
-        let key = authorization_key(&signed, &policy);
-        Ok((signed, key))
+        Ok(signed)
     }
 
     /// Everything [`StateOwners::check`] checks except the authorization:
@@ -124,7 +140,7 @@ impl StateOwners<'_> {
         if tx.inputs.is_empty() || tx.inputs.len() > MAX_INPUTS {
             return Err(format!("a transaction needs 1 to {MAX_INPUTS} inputs"));
         }
-        let distinct: std::collections::BTreeSet<_> = tx.inputs.iter().map(|r| r.id).collect();
+        let distinct: BTreeSet<_> = tx.inputs.iter().map(|r| r.id).collect();
         if distinct.len() != tx.inputs.len() {
             return Err("duplicate inputs".into());
         }
@@ -137,7 +153,7 @@ impl StateOwners<'_> {
                 return Err("not a valid faucet transaction".into());
             }
         } else {
-            let floor = config.min_fee(tx.size());
+            let floor = required_fee(config, signed).ok_or("the fee floor overflows")?;
             if tx.fee < floor {
                 return Err(format!("fee {} below minimum {floor}", tx.fee));
             }
@@ -202,18 +218,7 @@ impl StateOwners<'_> {
     ) -> Result<(), String> {
         self.check_unsigned(signed)?;
         let policy = policy_for(self.state, signed)?;
-        let key = authorization_key(signed, &policy);
-        if !authorized.contains(&key) {
-            policy
-                .verify(
-                    &signing_context(&self.state.config),
-                    &signed.digest().0 .0,
-                    &signed.auth,
-                )
-                .map_err(|e| format!("authorization: {e}"))?;
-            authorized.insert(key);
-        }
-        Ok(())
+        authorized.check(&self.state.config, signed, &policy)
     }
 }
 
@@ -223,24 +228,44 @@ impl OwnerAuthorization for StateOwners<'_> {
     }
 }
 
-/// Authorizations a validator has verified, by [`authorization_key`]; the
-/// oldest are forgotten first.
+/// Where a batch's authorization is remembered: its signing context and
+/// message.
+fn batch_key(config: &ChainConfig, tx: &SignedTransaction) -> Hash32 {
+    let (context, message) = signed_message(config, tx);
+    hash_parts(
+        "sion/node/authorized-batch",
+        &[context.as_bytes(), &message.0],
+    )
+}
+
+/// Authorizations a validator has verified; the oldest are forgotten
+/// first. A transaction signed by itself is remembered by its
+/// [`authorization_key`]. A batch's authorization (spec §4.3) is remembered
+/// by its batch with the policy and signatures that verified, compared byte
+/// for byte, so each of its members costs its own place in the batch (a few
+/// hashes), not a hash over 20 KB of signatures.
 #[derive(Debug, Default)]
 pub struct Authorized {
-    keys: std::collections::BTreeSet<Hash32>,
-    order: std::collections::VecDeque<Hash32>,
+    keys: BTreeSet<Hash32>,
+    order: VecDeque<Hash32>,
+    batches: BTreeMap<Hash32, Vec<(AuthPolicy, Authorization)>>,
+    batch_order: VecDeque<Hash32>,
 }
 
 impl Authorized {
-    /// How many authorizations are remembered.
+    /// How many transactions' authorizations are remembered.
     pub const LIMIT: usize = 200_000;
 
-    /// Whether this authorization was verified.
+    /// How many batches' authorizations are remembered.
+    pub const BATCH_LIMIT: usize = 4_096;
+
+    /// Whether this authorization was verified (a transaction signed by
+    /// itself, by its [`authorization_key`]).
     pub fn contains(&self, key: &Hash32) -> bool {
         self.keys.contains(key)
     }
 
-    /// Remembers a verified authorization.
+    /// Remembers a verified authorization of a transaction signed by itself.
     pub fn insert(&mut self, key: Hash32) {
         if self.keys.insert(key) {
             self.order.push_back(key);
@@ -250,6 +275,61 @@ impl Authorized {
                 }
             }
         }
+    }
+
+    /// Whether `tx`'s exact signatures were verified under `policy`. For a
+    /// batch member this says nothing of its place in the batch.
+    pub fn verified(
+        &self,
+        config: &ChainConfig,
+        tx: &SignedTransaction,
+        policy: &AuthPolicy,
+    ) -> bool {
+        if tx.batch.is_none() {
+            return self.contains(&authorization_key(config, tx, policy));
+        }
+        self.batches
+            .get(&batch_key(config, tx))
+            .is_some_and(|seen| seen.iter().any(|(p, auth)| p == policy && *auth == tx.auth))
+    }
+
+    /// Remembers that `tx`'s signatures verified under `policy`.
+    pub fn remember(&mut self, config: &ChainConfig, tx: &SignedTransaction, policy: &AuthPolicy) {
+        if tx.batch.is_none() {
+            self.insert(authorization_key(config, tx, policy));
+            return;
+        }
+        if self.verified(config, tx, policy) {
+            return;
+        }
+        let key = batch_key(config, tx);
+        let seen = self.batches.entry(key).or_default();
+        if seen.is_empty() {
+            self.batch_order.push_back(key);
+        }
+        seen.push((policy.clone(), tx.auth.clone()));
+        while self.batch_order.len() > Self::BATCH_LIMIT {
+            if let Some(old) = self.batch_order.pop_front() {
+                self.batches.remove(&old);
+            }
+        }
+    }
+
+    /// The check of spec §4.3 for `tx` under `policy`: its place in its
+    /// batch always, its signatures unless they verified before.
+    /// Remembers what verifies.
+    pub fn check(
+        &mut self,
+        config: &ChainConfig,
+        tx: &SignedTransaction,
+        policy: &AuthPolicy,
+    ) -> Result<(), String> {
+        if self.verified(config, tx, policy) {
+            return check_membership(tx).map_err(|e| format!("authorization: {e}"));
+        }
+        check_authorization(config, tx, policy).map_err(|e| format!("authorization: {e}"))?;
+        self.remember(config, tx, policy);
+        Ok(())
     }
 
     /// Whether every transaction of a Pulse is already known to be
@@ -272,15 +352,36 @@ impl Authorized {
         {
             return false;
         }
-        let mut misses = Vec::new();
+        let config = &state.config;
+        // Each batch member's place in its batch is checked here, every
+        // time (a few hashes); the signatures of each distinct transaction
+        // or batch at most once.
+        let mut misses: Vec<(AuthPolicy, &SignedTransaction)> = Vec::new();
+        // A batch's members after the first, compared byte for byte.
+        let mut pending: BTreeMap<Hash32, Vec<usize>> = BTreeMap::new();
         for tx in txs {
+            if check_membership(tx).is_err() {
+                return false;
+            }
             let Ok(policy) = policy_for(state, tx) else {
                 return false;
             };
-            let key = authorization_key(tx, &policy);
-            if !self.contains(&key) {
-                misses.push((key, policy, tx));
+            if self.verified(config, tx, &policy) {
+                continue;
             }
+            if tx.batch.is_none() {
+                misses.push((policy, tx));
+                continue;
+            }
+            let same = pending.entry(batch_key(config, tx)).or_default();
+            if same
+                .iter()
+                .any(|&i| misses[i].0 == policy && misses[i].1.auth == tx.auth)
+            {
+                continue;
+            }
+            same.push(misses.len());
+            misses.push((policy, tx));
         }
         if misses.is_empty() {
             return true;
@@ -290,16 +391,14 @@ impl Authorized {
             .unwrap_or(1)
             .clamp(1, misses.len());
         let size = misses.len().div_ceil(threads);
-        let context = signing_context(&state.config);
-        let context = context.as_str();
         let valid = std::thread::scope(|scope| {
             let handles: Vec<_> = misses
                 .chunks(size)
                 .map(|chunk| {
                     scope.spawn(move || {
-                        chunk.iter().all(|(_, policy, tx)| {
-                            policy.verify(context, &tx.digest().0 .0, &tx.auth).is_ok()
-                        })
+                        chunk
+                            .iter()
+                            .all(|(policy, tx)| check_authorization(config, tx, policy).is_ok())
                     })
                 })
                 .collect();
@@ -308,8 +407,8 @@ impl Authorized {
                 .all(|handle| handle.join().unwrap_or(false))
         });
         if valid {
-            for (key, _, _) in misses {
-                self.insert(key);
+            for (policy, tx) in misses {
+                self.remember(config, tx, &policy);
             }
         }
         valid
@@ -331,7 +430,7 @@ impl OwnerAuthorization for AlreadyChecked {
 mod tests {
     use sion_core::ids::AssetId;
     use sion_core::Amount;
-    use sion_exec::sim::Chain;
+    use sion_exec::sim::{Chain, Sender};
     use sion_exec::TxKind;
 
     use super::*;
@@ -419,5 +518,53 @@ mod tests {
             )
             .unwrap();
         assert!(!Authorized::default().preverify(&chain.state, &[rotate]));
+    }
+
+    #[test]
+    fn a_batch_is_preverified_with_one_signature_check() {
+        let mut chain = Chain::new(&["a", "b"], 100, 8);
+        let b = chain.id("b");
+        let members = chain
+            .batch(
+                "a",
+                (1..=4)
+                    .map(|n| {
+                        (
+                            Sender::Named("a"),
+                            TxKind::Transfer {
+                                asset: AssetId::usd(),
+                                outputs: vec![(b, Amount::units(n))],
+                            },
+                            Vec::new(),
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let mut authorized = Authorized::default();
+        assert!(authorized.preverify(&chain.state, &members));
+        assert_eq!(authorized.batch_order.len(), 1, "one batch remembered");
+        assert!(authorized.keys.is_empty());
+        let policy = chain.wallet("a").policy.clone();
+        for member in &members {
+            assert!(authorized.verified(&chain.state.config, member, &policy));
+        }
+        // A remembered batch does not excuse a member's place in it.
+        let mut moved = members[0].clone();
+        moved.batch.as_mut().unwrap().index = 1;
+        assert!(!authorized.preverify(&chain.state, &[moved]));
+        // Nor other signatures over the same batch.
+        let mut stripped = members[1].clone();
+        stripped.auth = Default::default();
+        assert!(!authorized.verified(&chain.state.config, &stripped, &policy));
+        assert!(!authorized.preverify(&chain.state, &[stripped]));
+        // The fee floor of a member is the batch's: lower than alone.
+        let owners = StateOwners {
+            state: &chain.state,
+        };
+        assert!(owners.check_unsigned(&members[2]).is_ok());
+        let mut alone = members[2].clone();
+        alone.batch = None;
+        assert!(owners.check_unsigned(&alone).is_err());
     }
 }

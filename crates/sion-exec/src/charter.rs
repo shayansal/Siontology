@@ -17,6 +17,11 @@
 //! allotment, so siblings never contend. Revoking or suspending any
 //! charter stops everything below it, because every check walks the chain
 //! up to the root.
+//!
+//! **Keyless subagents** (spec v1.13). A subagent spawned without an
+//! account of its own gets [`keyless_account`] of its id: no key controls
+//! it, and its transactions are authorized only as members of batches its
+//! nearest keyed ancestor signs ([`crate::tx::sign_batch`]).
 
 use std::collections::BTreeSet;
 
@@ -50,14 +55,32 @@ pub struct AgentIdentity {
 /// One subagent to launch (spec §5.36).
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Spawn {
-    /// The subagent's own account, which signs for it.
-    pub agent: AccountId,
+    /// The account that acts for the subagent, or `None` for a keyless
+    /// subagent, whose account is [`keyless_account`] of its id.
+    pub agent: Option<AccountId>,
     /// Commitment to its card.
     pub card: Hash32,
     /// Its caveats, which must attenuate the parent's.
     pub caveats: Caveats,
     /// Carved from the parent's allotment into the subagent's own.
     pub budget: Amount,
+}
+
+/// The account of the keyless subagent whose charter is `charter`
+/// (spec §4.3): `AccountId(H("sion/agent/keyless", charter bytes))`. Account
+/// ids of keyed accounts hash policies in another domain, so no key ever
+/// controls this one.
+pub fn keyless_account(charter: &ObjectId) -> AccountId {
+    AccountId(sion_core::hash::hash_domain(
+        "sion/agent/keyless",
+        &charter.0 .0,
+    ))
+}
+
+/// Whether `charter`'s agent is keyless: its account is
+/// [`keyless_account`] of the charter's own id.
+pub fn is_keyless(id: &ObjectId, charter: &Charter) -> bool {
+    charter.agent == keyless_account(id)
 }
 
 /// The commitment an identity stores for an agent card: a domain-separated

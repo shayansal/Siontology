@@ -22,6 +22,7 @@ use sion_exec::tx::object_domain;
 
 use sion_exec::charter::{MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH};
 
+use crate::authorize::keyless;
 use crate::error::{fail, Abort, Step};
 use crate::ops::assurance::load_assurance;
 use crate::tx::{usd, TxRun};
@@ -624,11 +625,16 @@ pub(super) fn spawn_agents(run: &mut TxRun<'_>, charter_id: ObjectId, children: 
     let depth = u8::try_from(n).map_err(|_| fail("too deep"))?;
     for child in children {
         let child_id = run.next_created_id();
+        // 8.1: a keyless child's account is derived from its id (§4.3).
+        let account = match child.agent {
+            Some(agent) => agent,
+            None => keyless(&child_id),
+        };
         run.create(
             Owner::Shared(object_domain("charter", &child_id)),
             ObjectData::Charter(Charter {
                 principal: sender,
-                agent: child.agent,
+                agent: account,
                 caveats: child.caveats.clone(),
                 agent_atom: parent.agent_atom,
                 backer: parent.backer,
@@ -644,10 +650,10 @@ pub(super) fn spawn_agents(run: &mut TxRun<'_>, charter_id: ObjectId, children: 
             }),
         )?;
         let child_allotment = run.create(
-            Owner::Account(child.agent),
+            Owner::Account(account),
             ObjectData::Allotment(Allotment {
                 source: child_id,
-                writer: child.agent,
+                writer: account,
                 asset: usd(),
                 remaining: child.budget,
                 caveats: Some(child.caveats.clone()),
@@ -660,7 +666,7 @@ pub(super) fn spawn_agents(run: &mut TxRun<'_>, charter_id: ObjectId, children: 
         run.event(Event::AgentSpawned {
             agent: child_id,
             parent: charter_id,
-            account: child.agent,
+            account,
             allotment: child_allotment,
         });
     }

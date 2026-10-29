@@ -7,7 +7,9 @@
 //! a Pulse executes it; a contended transaction is then ordered by
 //! consensus. Because contended transactions lock their owned inputs too, a
 //! consensus-ordered spend can never overtake a certified one. The devnet
-//! faucet batches its grants into one transaction per Pulse.
+//! faucet batches its grants into one transaction per Pulse, on a thread of
+//! its own: what it asks a validator, and the signing, never hold up
+//! submissions.
 //!
 //! Committees come from the state and change: lane committees at epoch
 //! boundaries and rotations, the consensus committee (and its session) at
@@ -17,8 +19,9 @@
 //! certified transactions that a new session dropped before ordering are
 //! handed to consensus again, until they execute.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,16 +31,33 @@ use sion_core::encode::encode;
 use sion_core::ids::{AccountId, AssetId, Epoch, Pulse, ShardId, TxDigest, ValidatorId};
 use sion_core::Amount;
 use sion_exec::object::well_known;
+use sion_exec::state::ChainConfig;
 use sion_exec::{ObjectData, SignedTransaction, Transaction, TxKind, Wallet};
 
 use crate::payload::{lane_inputs, PayloadItem};
-use crate::transport::{NodeId, PeerMessage, Transport};
+use crate::transport::{LaneMember, NodeId, PeerMessage, Transport};
 use crate::validator::Shared;
 use crate::view::{Query, SubmitReceipt, TxStatus};
 
-/// How a gateway asks a validator about the state (the faucet's account,
-/// whether its grants executed): a channel to a validator thread in the same
-/// process, or a node's HTTP API.
+/// Hands the members of one batch to a gateway and waits for its receipts.
+pub fn submit_batch_to(
+    gateway: &std::sync::mpsc::Sender<GatewayInput>,
+    members: Vec<SignedTransaction>,
+    timeout: Duration,
+) -> Result<Vec<SubmitReceipt>, String> {
+    let (reply, answer) = std::sync::mpsc::channel();
+    gateway
+        .send(GatewayInput::SubmitBatch { members, reply })
+        .map_err(|_| "gateway stopped".to_string())?;
+    answer
+        .recv_timeout(timeout)
+        .map_err(|_| "gateway did not answer".to_string())?
+}
+
+/// How a gateway's faucet asks a validator about the state (the faucet's
+/// account, whether its grants executed): a channel to a validator thread in
+/// the same process, or a node's HTTP API. It may wait for as long as the
+/// validator takes, so only the faucet's own thread calls it.
 pub type Querier = Box<dyn Fn(Query) -> Result<Value, String> + Send>;
 
 /// Messages to the gateway.
@@ -49,6 +69,15 @@ pub enum GatewayInput {
         tx: Box<SignedTransaction>,
         /// Where to answer.
         reply: Sender<Result<SubmitReceipt, String>>,
+    },
+    /// A client submits the members of one batch (spec v1.13): each
+    /// shard's committee gets their lane requests in one message, the
+    /// batch's signatures once.
+    SubmitBatch {
+        /// The members, all of one batch.
+        members: Vec<SignedTransaction>,
+        /// Where to answer, a receipt per member.
+        reply: Sender<Result<Vec<SubmitReceipt>, String>>,
     },
     /// A message from a validator (an approval, a refusal or an execution
     /// report), with the sender as the transport stamped it.
@@ -121,16 +150,26 @@ struct Sequenced {
 pub struct Gateway {
     shared: Arc<Shared>,
     net: Arc<dyn Transport>,
-    query: Querier,
     inbox: Receiver<GatewayInput>,
     pending: BTreeMap<TxDigest, Pending>,
     statuses: BTreeMap<TxDigest, TxStatus>,
     order: VecDeque<TxDigest>,
     next: usize,
-    faucet: Wallet,
-    faucet_queue: Vec<(AccountId, AssetId, Amount)>,
-    faucet_inflight: Option<(TxDigest, Vec<Grant>, Instant)>,
-    faucet_nonce: u64,
+    /// The faucet, until [`Gateway::run`] starts it on its own thread.
+    faucet: Option<Faucet>,
+    /// Grants for the faucet.
+    faucet_grants: Sender<Vec<Grant>>,
+    /// Faucet transactions the faucet signed, to submit.
+    faucet_signed: Receiver<SignedTransaction>,
+    /// Faucet transactions refused: not admitted, or rejected by their lane
+    /// committee.
+    faucet_refused: Sender<TxDigest>,
+    /// Faucet transactions submitted and not yet executed or refused.
+    faucet_digests: BTreeSet<TxDigest>,
+    /// Grants waiting in the faucet (for [`FAUCET_QUEUE_LIMIT`]).
+    faucet_queued: Arc<AtomicUsize>,
+    /// Tells the faucet to stop.
+    faucet_stop: Arc<AtomicBool>,
     verifier: crate::keys::NodeVerifier,
     certified: Vec<(SignedTransaction, LaneCertificate)>,
     censored: std::collections::BTreeSet<AccountId>,
@@ -170,8 +209,21 @@ const GROUP_LIMIT: usize = 512;
 /// Faucet grants waiting at most.
 const FAUCET_QUEUE_LIMIT: usize = 10_000;
 
+/// How often the faucet looks for grants and for the fate of its
+/// transaction.
+const FAUCET_TICK: Duration = Duration::from_millis(100);
+
+/// How long the faucet waits for its transaction to execute before granting
+/// again (a faucet transaction that never executes is replaced: the next one
+/// spends the same account version, so at most one of them executes).
+const FAUCET_PATIENCE: Duration = Duration::from_secs(30);
+
 /// One faucet grant: recipient, asset, amount.
 type Grant = (AccountId, AssetId, Amount);
+
+/// Whom to ask for a transaction's lane approvals: its shard and the
+/// members of the shard's committee.
+type Ask = (ShardId, Vec<NodeId>);
 
 impl Gateway {
     /// A gateway that reaches validators through `net`, receives what they
@@ -184,19 +236,36 @@ impl Gateway {
         faucet: Wallet,
     ) -> Gateway {
         let verifier = shared.verifier.clone();
+        let (faucet_grants, grants) = mpsc::channel();
+        let (signed, faucet_signed) = mpsc::channel();
+        let (faucet_refused, refused) = mpsc::channel();
+        let faucet_queued = Arc::new(AtomicUsize::new(0));
+        let faucet_stop = Arc::new(AtomicBool::new(false));
+        let faucet = Faucet {
+            query,
+            wallet: faucet,
+            config: shared.genesis.config.clone(),
+            grants,
+            signed,
+            refused,
+            queued: faucet_queued.clone(),
+            stop: faucet_stop.clone(),
+        };
         Gateway {
             shared,
             net,
-            query,
             inbox,
             pending: BTreeMap::new(),
             statuses: BTreeMap::new(),
             order: VecDeque::new(),
             next: 0,
-            faucet,
-            faucet_queue: Vec::new(),
-            faucet_inflight: None,
-            faucet_nonce: 0,
+            faucet: Some(faucet),
+            faucet_grants,
+            faucet_signed,
+            faucet_refused,
+            faucet_digests: BTreeSet::new(),
+            faucet_queued,
+            faucet_stop,
             verifier,
             certified: Vec::new(),
             censored: Default::default(),
@@ -276,8 +345,17 @@ impl Gateway {
         self.send_certified(again);
     }
 
-    /// Runs until shut down.
+    /// Runs until shut down, with the faucet on a thread of its own.
     pub fn run(mut self) {
+        if let Some(faucet) = self.faucet.take() {
+            let started = std::thread::Builder::new()
+                .name("faucet".into())
+                .stack_size(crate::THREAD_STACK_BYTES)
+                .spawn(move || faucet.run());
+            if let Err(error) = started {
+                eprintln!("gateway: the faucet did not start: {error}");
+            }
+        }
         let mut last_tick = Instant::now();
         let mut last_flush = Instant::now();
         loop {
@@ -289,6 +367,7 @@ impl Gateway {
                 Ok(input) => self.handle(input),
                 Err(RecvTimeoutError::Timeout) => {}
             }
+            self.submit_faucet();
             if last_flush.elapsed() >= Duration::from_millis(GROUP_INTERVAL_MS) {
                 last_flush = Instant::now();
                 self.flush_certified();
@@ -297,7 +376,20 @@ impl Gateway {
                 last_tick = Instant::now();
                 self.follow_committees();
                 self.retry_lane_requests();
-                self.tick_faucet();
+            }
+        }
+        self.faucet_stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Submits what the faucet signed; a refusal goes back to the faucet,
+    /// which grants again.
+    fn submit_faucet(&mut self) {
+        while let Ok(tx) = self.faucet_signed.try_recv() {
+            let digest = tx.digest();
+            if self.submit(tx).is_ok() {
+                self.faucet_digests.insert(digest);
+            } else {
+                let _ = self.faucet_refused.send(digest);
             }
         }
     }
@@ -364,6 +456,9 @@ impl Gateway {
     }
 
     fn set_status(&mut self, tx: TxDigest, status: TxStatus) {
+        if matches!(status, TxStatus::Rejected(_)) && self.faucet_digests.remove(&tx) {
+            let _ = self.faucet_refused.send(tx);
+        }
         if self.statuses.insert(tx, status).is_none() {
             self.order.push_back(tx);
             while self.order.len() > STATUS_LIMIT {
@@ -379,15 +474,21 @@ impl Gateway {
             GatewayInput::Submit { tx, reply } => {
                 let _ = reply.send(self.submit(*tx));
             }
+            GatewayInput::SubmitBatch { members, reply } => {
+                let _ = reply.send(self.submit_batch(members));
+            }
             GatewayInput::Peer { from, message } => self.on_peer(from, *message),
             GatewayInput::Faucet { grants, reply } => {
+                let queued = self.faucet_queued.load(Ordering::Relaxed);
                 if grants.iter().any(|(_, _, a)| *a == Amount::ZERO) {
                     let _ = reply.send(Err("zero grant".into()));
-                } else if self.faucet_queue.len() + grants.len() > FAUCET_QUEUE_LIMIT {
+                } else if queued + grants.len() > FAUCET_QUEUE_LIMIT {
                     let _ = reply.send(Err("the faucet is busy; try again shortly".into()));
                 } else {
-                    self.faucet_queue.extend(grants);
-                    let _ = reply.send(Ok(()));
+                    self.faucet_queued
+                        .fetch_add(grants.len(), Ordering::Relaxed);
+                    let sent = self.faucet_grants.send(grants);
+                    let _ = reply.send(sent.map_err(|_| "the faucet stopped".to_string()));
                 }
             }
             GatewayInput::Status { tx, reply } => {
@@ -410,6 +511,7 @@ impl Gateway {
             PeerMessage::Executed { digests, .. } => {
                 for digest in digests {
                     self.sequencing.remove(&digest);
+                    self.faucet_digests.remove(&digest);
                 }
             }
             _ => {}
@@ -417,6 +519,77 @@ impl Gateway {
     }
 
     fn submit(&mut self, signed: SignedTransaction) -> Result<SubmitReceipt, String> {
+        let request = LaneRequest {
+            tx: signed.digest(),
+            inputs: lane_inputs(&signed.tx.inputs),
+            owner_proof: encode(&signed),
+        };
+        let (receipt, ask) = self.admit(signed)?;
+        if let Some((shard, members)) = ask {
+            self.net
+                .send_all(&members, &PeerMessage::Lane { shard, request });
+        }
+        Ok(receipt)
+    }
+
+    /// Submits the members of one batch: each is admitted as
+    /// [`Gateway::submit`] admits a transaction, and each shard's committee
+    /// gets the lane requests of its members in one message, with the
+    /// batch's signatures once. Members of different batches go one by one.
+    fn submit_batch(
+        &mut self,
+        members: Vec<SignedTransaction>,
+    ) -> Result<Vec<SubmitReceipt>, String> {
+        let shared = members.first().and_then(|first| {
+            let batch = first.batch.as_ref()?.batch;
+            members
+                .iter()
+                .all(|m| m.auth == first.auth && m.batch.as_ref().map(|b| b.batch) == Some(batch))
+                .then(|| (batch, first.auth.clone()))
+        });
+        let Some((batch, auth)) = shared else {
+            return members.into_iter().map(|m| self.submit(m)).collect();
+        };
+        if members.len() as u64 > sion_exec::tx::MAX_BATCH {
+            return Err("a batch holds at most 256 transactions".into());
+        }
+        let mut receipts = Vec::with_capacity(members.len());
+        let mut asks: BTreeMap<ShardId, (Vec<NodeId>, Vec<LaneMember>)> = BTreeMap::new();
+        for signed in members {
+            let place = signed.batch.clone().expect("a batch member");
+            let tx = signed.tx.clone();
+            let (receipt, ask) = self.admit(signed)?;
+            if let Some((shard, nodes)) = ask {
+                asks.entry(shard)
+                    .or_insert_with(|| (nodes, Vec::new()))
+                    .1
+                    .push(LaneMember {
+                        tx,
+                        index: place.index,
+                        path: place.path,
+                        charter: place.charter,
+                    });
+            }
+            receipts.push(receipt);
+        }
+        for (shard, (nodes, members)) in asks {
+            self.net.send_all(
+                &nodes,
+                &PeerMessage::LaneBatch {
+                    shard,
+                    batch,
+                    auth: auth.clone(),
+                    members,
+                },
+            );
+        }
+        Ok(receipts)
+    }
+
+    /// Admits a transaction for certification: its receipt, and the shard
+    /// and committee members to ask for lane approvals, if they are to be
+    /// asked (not when it is already known, or censored).
+    fn admit(&mut self, signed: SignedTransaction) -> Result<(SubmitReceipt, Option<Ask>), String> {
         let digest = signed.digest();
         if signed.size() > 256 * 1024 {
             return Err("transaction too large".into());
@@ -440,7 +613,7 @@ impl Gateway {
             self.statuses.remove(&digest);
         }
         if self.pending.contains_key(&digest) || self.statuses.contains_key(&digest) {
-            return Ok(receipt);
+            return Ok((receipt, None));
         }
         if self.pending.len() >= PENDING_LIMIT {
             return Err("the gateway is busy; try again shortly".into());
@@ -454,24 +627,17 @@ impl Gateway {
                     approvals: 0,
                 },
             );
-            return Ok(receipt);
+            return Ok((receipt, None));
         }
         let committee = self
             .lane_committee(shard)
             .ok_or("no committee for the shard yet")?;
         let inputs = lane_inputs(&signed.tx.inputs);
-        let request = LaneRequest {
-            tx: digest,
-            inputs: inputs.clone(),
-            owner_proof: encode(&signed),
-        };
         let members: Vec<NodeId> = committee
             .members()
             .iter()
             .map(|(member, _)| NodeId::Validator(*member))
             .collect();
-        self.net
-            .send_all(&members, &PeerMessage::Lane { shard, request });
         self.pending.insert(
             digest,
             Pending {
@@ -494,7 +660,7 @@ impl Gateway {
                 approvals: 0,
             },
         );
-        Ok(receipt)
+        Ok((receipt, Some((shard, members))))
     }
 
     /// Hands every certificate collected since the last flush to consensus,
@@ -661,55 +827,88 @@ impl Gateway {
             self.set_status(tx, TxStatus::Rejected(reason));
         }
     }
+}
 
-    fn query(&self, query: Query) -> Result<Value, String> {
-        (self.query)(query)
+/// The devnet faucet: it batches grants into transactions from the faucet's
+/// account, one at a time. It asks a validator for the account and for
+/// whether its last transaction executed, and signs, on a thread of its own,
+/// so the gateway never waits for a busy validator: a submission is answered
+/// while the faucet waits.
+struct Faucet {
+    query: Querier,
+    wallet: Wallet,
+    config: ChainConfig,
+    grants: Receiver<Vec<Grant>>,
+    signed: Sender<SignedTransaction>,
+    refused: Receiver<TxDigest>,
+    queued: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Faucet {
+    /// Grants until the gateway stops.
+    fn run(self) {
+        let mut queue: Vec<Grant> = Vec::new();
+        let mut inflight: Option<(TxDigest, Vec<Grant>, Instant)> = None;
+        let mut refused: BTreeSet<TxDigest> = BTreeSet::new();
+        let mut nonce = 0u64;
+        while !self.stop.load(Ordering::Relaxed) {
+            match self.grants.recv_timeout(FAUCET_TICK) {
+                Ok(more) => queue.extend(more),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            queue.extend(self.grants.try_iter().flatten());
+            refused.extend(self.refused.try_iter());
+            let waiting = match &inflight {
+                None => false,
+                Some((digest, grants, since)) => {
+                    let executed = (self.query)(Query::Tx(*digest)).ok();
+                    let succeeded = executed
+                        .as_ref()
+                        .and_then(|v| v.get("status"))
+                        .is_some_and(|s| s == "Success");
+                    let rejected = refused.contains(digest);
+                    if executed.is_some() || rejected || since.elapsed() > FAUCET_PATIENCE {
+                        if !succeeded {
+                            queue.extend(grants.iter().copied());
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                }
+            };
+            if !waiting {
+                inflight = None;
+                refused.clear();
+                if !queue.is_empty() {
+                    let take = queue.len().min(256);
+                    let grants: Vec<Grant> = queue.drain(..take).collect();
+                    match self.build(&grants, nonce) {
+                        Ok(tx) => {
+                            nonce += 1;
+                            let digest = tx.digest();
+                            if self.signed.send(tx).is_err() {
+                                return;
+                            }
+                            inflight = Some((digest, grants, Instant::now()));
+                        }
+                        Err(error) => {
+                            eprintln!("gateway: faucet: {error}");
+                            queue.extend(grants);
+                        }
+                    }
+                }
+            }
+            self.queued.store(queue.len(), Ordering::Relaxed);
+        }
     }
 
-    fn tick_faucet(&mut self) {
-        if let Some((digest, grants, since)) = &self.faucet_inflight {
-            let executed = self.query(Query::Tx(*digest)).ok();
-            let rejected = matches!(self.statuses.get(digest), Some(TxStatus::Rejected(_)));
-            let succeeded = executed
-                .as_ref()
-                .and_then(|v| v.get("status"))
-                .map(|s| s == "Success")
-                .unwrap_or(false);
-            if executed.is_some() || rejected || since.elapsed() > Duration::from_secs(30) {
-                if !succeeded {
-                    self.faucet_queue.extend(grants.iter().copied());
-                }
-                self.faucet_inflight = None;
-            } else {
-                return;
-            }
-        }
-        if self.faucet_queue.is_empty() {
-            return;
-        }
-        let take = self.faucet_queue.len().min(256);
-        let grants: Vec<_> = self.faucet_queue.drain(..take).collect();
-        match self.build_faucet(grants.clone()) {
-            Ok(tx) => {
-                let digest = tx.digest();
-                if self.submit(tx).is_ok() {
-                    self.faucet_inflight = Some((digest, grants, Instant::now()));
-                } else {
-                    self.faucet_queue.extend(grants);
-                }
-            }
-            Err(error) => {
-                eprintln!("gateway: faucet: {error}");
-                self.faucet_queue.extend(grants);
-            }
-        }
-    }
-
-    fn build_faucet(
-        &mut self,
-        grants: Vec<(AccountId, AssetId, Amount)>,
-    ) -> Result<SignedTransaction, String> {
-        let value = self.query(Query::Object(well_known::account(&self.faucet.id)))?;
+    /// A faucet transaction for `grants`, spending the faucet's account at
+    /// the version a validator reports.
+    fn build(&self, grants: &[Grant], nonce: u64) -> Result<SignedTransaction, String> {
+        let value = (self.query)(Query::Object(well_known::account(&self.wallet.id)))?;
         let pulse: Pulse =
             serde_json::from_value(value["pulse"].clone()).map_err(|e| e.to_string())?;
         let object: sion_exec::Object = serde_json::from_value(value["proof"]["object"].clone())
@@ -718,16 +917,139 @@ impl Gateway {
             return Err("faucet account object corrupted".into());
         }
         let tx = Transaction {
-            sender: self.faucet.id,
+            sender: self.wallet.id,
             genesis_policy: None,
             inputs: vec![object.reference()],
             fee: Amount::ZERO,
-            kind: TxKind::Faucet { grants },
+            kind: TxKind::Faucet {
+                grants: grants.to_vec(),
+            },
             expires_at: Pulse(pulse.0 + 30),
-            nonce: self.faucet_nonce,
+            nonce,
         };
-        self.faucet_nonce += 1;
-        tx.sign(&self.faucet.keys, &self.shared.genesis.config)
+        tx.sign(&self.wallet.keys, &self.config)
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::thread;
+
+    use sion_core::ids::ObjectId;
+    use sion_exec::object::ObjectRef;
+
+    use super::*;
+    use crate::committees::CommitteeView;
+    use crate::config::DevnetConfig;
+    use crate::devnet::{chain_spec, class_limits, devnet_genesis, gateway_node};
+    use crate::keys::{NodeVerifier, ValidatorKeys};
+    use crate::transport::memory::MemoryNetwork;
+
+    /// The state a gateway shares with validators, with no validator
+    /// running: nobody publishes committees, so every submission is refused
+    /// at once ("no committee"), which is all this test needs.
+    fn shared(config: &DevnetConfig) -> Arc<Shared> {
+        let keys: Vec<ValidatorKeys> = (0..config.validators)
+            .map(|i| ValidatorKeys::devnet(&config.chain_id, i))
+            .collect();
+        let genesis = devnet_genesis(config);
+        let digest = genesis.digest();
+        let chain = chain_spec(config, &genesis, digest).expect("chain");
+        Arc::new(Shared {
+            config: config.clone(),
+            chain_id: chain.id(),
+            genesis,
+            genesis_digest: digest,
+            chain,
+            generation: 0,
+            verifier: NodeVerifier::new(&keys, config.signatures),
+            validators: keys.iter().map(|k| k.id).collect(),
+            view: std::sync::RwLock::new(CommitteeView::default()),
+        })
+    }
+
+    #[test]
+    fn a_busy_validator_does_not_hold_up_submissions() {
+        let config = DevnetConfig::default();
+        let shared = shared(&config);
+        let memory = MemoryNetwork::new(class_limits(&config), false);
+        let net: Arc<dyn Transport> =
+            Arc::new(memory.endpoint(gateway_node(&config.chain_id), Arc::new(|_, _| {})));
+        // A validator that takes five seconds to answer anything.
+        let asked = Arc::new(AtomicUsize::new(0));
+        let query: Querier = {
+            let asked = asked.clone();
+            Box::new(move |_| {
+                asked.fetch_add(1, Ordering::SeqCst);
+                thread::sleep(Duration::from_secs(5));
+                Err("busy".into())
+            })
+        };
+        let (inbox, receiver) = mpsc::channel();
+        let gateway = Gateway::new(
+            shared.clone(),
+            net,
+            query,
+            receiver,
+            Wallet::named("faucet"),
+        );
+        let running = thread::spawn(move || gateway.run());
+
+        // A grant sets the faucet asking that validator for its account.
+        let (reply, answer) = mpsc::channel();
+        inbox
+            .send(GatewayInput::Faucet {
+                grants: vec![(AccountId::derive(b"alice"), AssetId::usd(), Amount(1))],
+                reply,
+            })
+            .unwrap();
+        answer
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the faucet takes grants at once")
+            .expect("granted");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while asked.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the faucet never asked");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // While it waits, a submission is answered: here refused, because no
+        // validator has published committees.
+        let alice = Wallet::named("alice");
+        let tx = Transaction {
+            sender: alice.id,
+            genesis_policy: None,
+            inputs: vec![ObjectRef {
+                id: ObjectId::derive(b"coin"),
+                version: sion_core::ids::Version(0),
+            }],
+            fee: Amount(1_100),
+            kind: TxKind::Transfer {
+                asset: AssetId::usd(),
+                outputs: vec![(alice.id, Amount(1))],
+            },
+            expires_at: Pulse(100),
+            nonce: 0,
+        }
+        .sign(&alice.keys, &shared.genesis.config)
+        .unwrap();
+        let started = Instant::now();
+        let (reply, answer) = mpsc::channel();
+        inbox
+            .send(GatewayInput::Submit {
+                tx: Box::new(tx),
+                reply,
+            })
+            .unwrap();
+        let answered = answer
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the gateway answers while its faucet waits on a validator");
+        assert_eq!(answered.unwrap_err(), "no committee for the shard yet");
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        inbox.send(GatewayInput::Shutdown).unwrap();
+        running.join().unwrap();
     }
 }

@@ -33,6 +33,11 @@ pub trait Ledger: Sync {
     fn query(&self, query: Query) -> Result<Value, CliError>;
     /// Submits a transaction.
     fn submit(&self, tx: &SignedTransaction) -> Result<SubmitReceipt, CliError>;
+    /// Submits every member of one batch (spec §4.3). By default one by
+    /// one; a ledger across a network sends the batch's signatures once.
+    fn submit_batch(&self, members: &[SignedTransaction]) -> Result<Vec<SubmitReceipt>, CliError> {
+        members.iter().map(|member| self.submit(member)).collect()
+    }
     /// A transaction's state.
     fn tx(&self, digest: TxDigest) -> Result<TxState, CliError>;
     /// Queues a faucet grant.
@@ -123,6 +128,10 @@ impl Ledger for Devnet {
 
     fn submit(&self, tx: &SignedTransaction) -> Result<SubmitReceipt, CliError> {
         Devnet::submit(self, tx.clone()).map_err(CliError::Node)
+    }
+
+    fn submit_batch(&self, members: &[SignedTransaction]) -> Result<Vec<SubmitReceipt>, CliError> {
+        Devnet::submit_batch(self, members.to_vec()).map_err(CliError::Node)
     }
 
     fn tx(&self, digest: TxDigest) -> Result<TxState, CliError> {
@@ -270,6 +279,19 @@ impl Ledger for HttpLedger {
             json!({ "tx": hex::encode(sion_core::encode::encode(tx)) }),
         )?;
         parse(value)
+    }
+
+    fn submit_batch(&self, members: &[SignedTransaction]) -> Result<Vec<SubmitReceipt>, CliError> {
+        // A whole batch goes in one request, its signatures once; anything
+        // else member by member.
+        let Some(envelope) = sion_exec::tx::BatchEnvelope::of(members) else {
+            return members.iter().map(|member| self.submit(member)).collect();
+        };
+        let value = self.post(
+            "/v1/batches",
+            json!({ "batch": hex::encode(sion_core::encode::encode(&envelope)) }),
+        )?;
+        parse(value["members"].clone())
     }
 
     fn tx(&self, digest: TxDigest) -> Result<TxState, CliError> {

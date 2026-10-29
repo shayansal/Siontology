@@ -24,6 +24,8 @@ live.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
+| Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels; a sandbox not built) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -104,14 +106,105 @@ principal, an ancestor's agent) can suspend a subtree, the suspender or the
 backer can resume it, and the agent or any overseer can revoke it. Both
 proof stacks implement it, and the differential tests cover every
 operation and its failure cases. The `swarm` demo runs it on a devnet.
-Not built, and named in the [design note](book/src/research/agent-scale.md):
-cohorts that create a million identities in one transaction and
-materialize each on first use, identities without an account of their own
-(signed for by an ancestor in batch roots), additive token-bucket rate
-limits (window limits are fixed windows, so a subtree can spend up to twice
-its root's limit in an interval that straddles two windows), and a rule
-that makes a certified agent payment final before it executes (today a
-suspension or revocation that executes first makes it fail).
+Specification v1.13 adds **keyless subagents**: a subagent spawned without
+an account gets one derived from its id, which no key controls, and acts
+only as a member of batches its nearest keyed ancestor signs (see
+[Batched authorization](book/src/concepts/batched-authorization.md)); the runtime's
+`agent_spawn` makes keyless subagents, and `sion agent spawn --keyless`
+does from the command line. Not built, and named in the [design
+note](book/src/research/agent-scale.md): cohorts that create a million
+identities in one transaction and materialize each on first use, lineage
+ids, additive token-bucket rate limits (window limits are fixed windows, so
+a subtree can spend up to twice its root's limit in an interval that
+straddles two windows), overlays that revoke a subtree with one write and
+absence proofs, and a rule that makes a certified agent payment final
+before it executes (today a suspension or revocation that executes first
+makes it fail).
+
+**Batched authorization: built (devnet scale, specification v1.13).** One
+authorization signs a batch of up to 256 transactions (`TxBatch { signer,
+size, root }`, the root an RFC 9162 tree over their digests); each member
+carries the authorization, its position and its path, and its fee floor is
+the usual one less 80 % of the base fee (the part that pays for checking
+signatures), plus its share of that part, rounded up. Both proof
+stacks implement it (`sion_exec::auth`, `sion_spec::authorize`), with the
+differential tests covering batches a sender signs for itself, keyless
+subagents at two depths and below a keyed subagent, every way a member can
+be refused, forced intents whose signer rotates, and settlements that pay
+per hash on the member's floor. Validators, the executor and both proof
+stacks check a batch's signatures once and each member's path every time;
+the gateway sends each shard committee a batch's members in one message
+and consensus groups carry its authorization once; `POST /v1/batches`
+takes a whole batch. Not built: a sequence number per signer that would
+make two conflicting batches slashable, so that a payee could rely on a
+member before it is certified; today conflicting batches are settled by
+lane locks, as any two transactions are. Trust atoms:
+`agent:keyless-signer`, `impl:batch-size-fee`.
+
+**Agent runtime: partly built (beyond the paper).** `sion-agent` runs a
+language model as an agent: the Anthropic Messages API (version
+2026-10-21), any OpenAI-compatible API, or a scripted model; fallback with
+a 30-second cooldown; tools that declare an effect (read, write, external,
+spend); autonomy levels L0 to L6 with approvals that expire after 15
+minutes; taint for 24 hours after content from outside, during which
+external calls and spending need approval; a journal that returns the
+recorded outcome of a repeated call and never repeats one whose outcome is
+unknown; a turn budget of 12, plus 4 per turn of progress, at most 32;
+compaction; a kill switch; sessions that serialise, pause for approval and
+resume; and trajectories in chat format. `sion agent run` gives it the
+ledger as tools (balance, payments under the agent's charter, transaction
+status), files in a workspace and public web pages
+([Agents at work](book/src/guides/agent-runtime.md)). With a memory log,
+the agent records facts, episodes, procedures, preferences, goals, plans
+and reflections as atoms; its preferences, goals and procedures are in
+every prompt; recall for a subject and a relation is proved complete
+against the index root on the ledger; retraction leaves atoms in the log;
+each finished session is recorded as an episode with its trajectory's
+digest and the head is committed. Its own skills, in the Agent Skills
+format, are listed in every prompt, read on use, and written and improved
+by the agent with their history kept; a skill's bundle is a canonical
+encoding of its files, and its root is the Merkle root a storage deal over
+the bundle commits to. Skills from others
+([Skills from others](book/src/guides/skills.md)): a release is a claim
+(`skill/v1`) naming a skill, its version and its bundle root, resting on
+the publisher's bond or audits of the same root (`skill.audit/v1`, each on
+its auditor's bond); `sion skill install` checks the bundle against the
+root, accepts the release with the agent's remaining budget at risk
+(reserving κ times that of its backing), and only then writes the skill,
+which the agent cannot rewrite. Before each run, a skill whose release is
+no longer active is taken out of use. Self-improvement
+([Skills that get better](book/src/guides/skill-improvement.md)): an
+evaluation set is cases with stand-in tools and checks, fixed by the
+digest of its bytes; `sion skill evolve` shows a model the cases a
+version fails and scores the variants it proposes, under gates (purpose,
+size, novelty, no regression), keeping a Pareto front, and keeps the best
+as a draft; a bounty is a Task Charter whose spec names the release, the
+set and the cases to pass, with its verifiers, adjudicator and required
+claims (such as the set's author vouching for it, `skill.evals/v1`) fixed
+before any version exists; verifiers run the set themselves and attest;
+the next release rests on the settled result and records it, and
+`sion skill lineage` follows the evidence back. After a finished task
+with at least five successful tool calls and no skill written, the
+runtime asks the agent whether to write one, with only its skill tools.
+Scripted models take conditions on the conversation, to stand in for a
+model that follows a skill. Teams, schedules and channels
+([Teams, schedules and channels](book/src/guides/agent-teams.md)): with
+`--delegate`, an agent spawns subagents (a budget carved from its
+allotment under attenuated caveats, fee money from its account, a session
+of their own, two levels deep at most), and posts, follows and delivers
+Task Charters; profiles keep how to run an agent under a name;
+`sion agent schedule` and `sion agent scheduler` run a profile's task
+once, every interval or on cron (UTC), and deliver its answer to a file,
+a webhook or Telegram; `sion agent serve` (HTTP with a bearer token) and
+`sion agent telegram` (long polling, chats allowed by id) carry
+conversations, each a session, with approvals answered in the channel.
+Tested with the scripted model and with stand-ins for the providers' and
+Telegram's APIs: this environment reaches neither. Not built: permissions
+that skills declare and the runtime enforces, requiring a particular
+verifier's attestation, search over past sessions, consolidation, the
+memory archive with storage providers, storage deals and MCP servers as
+tools, routing channels across machines, a shell tool and a sandbox
+([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
 
@@ -585,6 +678,16 @@ the architecture's own:
 | `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
 | `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |
 | `app:unproven-balances` | The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven. |
+| `agent:local-policy` | An agent runtime's autonomy level, approvals, grants and taint are enforced by the runtime on the machine it runs on. Only the agent's charter (payees, limits, budget, expiry, suspension) is enforced by the ledger. |
+| `agent:provider-sees-context` | A model provider receives the conversation it is asked to continue, tool results included. |
+| `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
+| `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again. |
+| `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. That a verifier did not write the version is checked by the commands, not by the ledger. |
+| `agent:channel-token` | Whoever holds the HTTP channel's bearer token can start and continue the sessions of every profile on the machine, approvals included, within each profile's autonomy and the agent's charter. The channel speaks plain HTTP. |
+| `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included. |
+| `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
+| `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
+| `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

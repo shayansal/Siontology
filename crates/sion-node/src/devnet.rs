@@ -648,6 +648,15 @@ impl Devnet {
             .map_err(|_| "gateway did not answer".to_string())?
     }
 
+    /// Submits the members of one batch through the gateway, the batch's
+    /// signatures once per shard committee (spec v1.13).
+    pub fn submit_batch(
+        &self,
+        members: Vec<SignedTransaction>,
+    ) -> Result<Vec<SubmitReceipt>, String> {
+        crate::gateway::submit_batch_to(&self.control.gateway, members, API_TIMEOUT)
+    }
+
     /// Posts a forced intent: the transaction goes straight to every
     /// validator's proposals, bypassing the gateway (any honest proposer is
     /// enough). The Pulse that commits it posts it as an obligation of its

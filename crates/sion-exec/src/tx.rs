@@ -41,8 +41,231 @@ pub fn signing_context(config: &ChainConfig) -> String {
     format!("{TX_DOMAIN}/{}", config.digest().to_hex())
 }
 
+/// The signing context of batches on the chain with this configuration
+/// (spec §4.3): [`TX_DOMAIN`], `/batch/`, and the configuration digest in
+/// lowercase hex. It differs from [`signing_context`], so a transaction's
+/// signature never verifies as a batch's, nor a batch's as a transaction's.
+pub fn batch_signing_context(config: &ChainConfig) -> String {
+    format!("{TX_DOMAIN}/batch/{}", config.digest().to_hex())
+}
+
 /// The most owned inputs a transaction may name.
 pub const MAX_INPUTS: usize = 256;
+
+/// The most transactions one batch may authorize (spec §4.3).
+pub const MAX_BATCH: u64 = 256;
+
+/// The part of the base fee, in thousandths, that pays for checking an
+/// authorization (spec §4.3). A batch's members split it, so a member of a
+/// batch of 256 pays a 256th of it.
+pub const SIGNATURE_SHARE_PERMILLE: u128 = 800;
+
+/// What one authorization of a batch signs (spec §4.3): who signs, how many
+/// transactions the batch holds, and the RFC 9162 Merkle root over their
+/// leaves ([`batch_leaf`]), in the batch's order.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
+)]
+pub struct TxBatch {
+    /// The account whose policy the authorization satisfies.
+    pub signer: AccountId,
+    /// How many transactions the batch holds, 1 to [`MAX_BATCH`].
+    pub size: u64,
+    /// The Merkle root over the members' leaves.
+    pub root: Hash32,
+}
+
+impl TxBatch {
+    /// The message the batch's authorization signs, in
+    /// [`batch_signing_context`]: `H("sion/tx/batch", enc(batch))`.
+    pub fn message(&self) -> Hash32 {
+        sion_core::hash::hash_domain("sion/tx/batch", &encode(self))
+    }
+}
+
+/// The Merkle leaf of a batch member with this digest:
+/// `merkle::leaf_hash(digest bytes)`.
+pub fn batch_leaf(digest: &TxDigest) -> Hash32 {
+    sion_core::merkle::leaf_hash(&digest.0 .0)
+}
+
+/// A batch member's place in its batch (spec §4.3).
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct BatchMember {
+    /// The batch the authorization signs.
+    pub batch: TxBatch,
+    /// The member's position in the batch.
+    pub index: u64,
+    /// Its inclusion path to the batch's root.
+    pub path: Vec<Hash32>,
+    /// For a keyless sender, its charter: the subagent's id
+    /// ([`crate::charter::keyless_account`]).
+    pub charter: Option<ObjectId>,
+}
+
+/// A whole batch as a client hands it to a node: the batch, its one
+/// authorization, and each member's body with, for a keyless sender, its
+/// charter. Not consensus data: a node checks that the members give the
+/// batch's root and size, then builds each member's path
+/// ([`BatchEnvelope::members`]), so the signatures cross the wire once.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct BatchEnvelope {
+    /// The batch.
+    pub batch: TxBatch,
+    /// Its authorization.
+    pub auth: Authorization,
+    /// The members, in order.
+    pub members: Vec<(Transaction, Option<ObjectId>)>,
+}
+
+impl BatchEnvelope {
+    /// The envelope of a whole batch, from all its members in order (as
+    /// [`sign_batch`] returns them); `None` if they are not one whole batch.
+    pub fn of(members: &[SignedTransaction]) -> Option<BatchEnvelope> {
+        let first = members.first()?;
+        let batch = first.batch.as_ref()?.batch;
+        if batch.size != members.len() as u64 {
+            return None;
+        }
+        let mut bodies = Vec::with_capacity(members.len());
+        for (index, member) in members.iter().enumerate() {
+            let place = member.batch.as_ref()?;
+            if place.batch != batch || place.index != index as u64 || member.auth != first.auth {
+                return None;
+            }
+            bodies.push((member.tx.clone(), place.charter));
+        }
+        Some(BatchEnvelope {
+            batch,
+            auth: first.auth.clone(),
+            members: bodies,
+        })
+    }
+
+    /// The members as signed transactions, each with its path, if they are
+    /// the whole batch: 1 to [`MAX_BATCH`] of them, as many as the batch
+    /// says, and their leaves give its root. The authorization is not
+    /// checked here.
+    pub fn members(self) -> Result<Vec<SignedTransaction>, String> {
+        let size = self.members.len() as u64;
+        if self.members.is_empty() || size > MAX_BATCH {
+            return Err(format!(
+                "a batch holds 1 to {MAX_BATCH} transactions, not {size}"
+            ));
+        }
+        if size != self.batch.size {
+            return Err(format!(
+                "the batch says it holds {}, the envelope has {size}",
+                self.batch.size
+            ));
+        }
+        let leaves: Vec<Hash32> = self
+            .members
+            .iter()
+            .map(|(tx, _)| batch_leaf(&tx.digest()))
+            .collect();
+        if sion_core::merkle::root(&leaves) != self.batch.root {
+            return Err("the members do not give the batch's root".into());
+        }
+        self.members
+            .into_iter()
+            .enumerate()
+            .map(|(index, (tx, charter))| {
+                let path = sion_core::merkle::inclusion_proof(&leaves, index)
+                    .map_err(|e| e.to_string())?;
+                Ok(SignedTransaction {
+                    tx,
+                    auth: self.auth.clone(),
+                    batch: Some(BatchMember {
+                        batch: self.batch,
+                        index: index as u64,
+                        path,
+                        charter,
+                    }),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The fee floor of a transaction body of `size` bytes (spec §4.3): the
+/// configuration's [`ChainConfig::min_fee`] for a transaction signed by
+/// itself (`batch_size = None`); for a member of a batch of `batch_size`,
+/// that less [`SIGNATURE_SHARE_PERMILLE`] of the base fee, plus the
+/// member's part of it, rounded up. `None` only if the share overflows.
+pub fn fee_floor(config: &ChainConfig, size: usize, batch_size: Option<u64>) -> Option<Amount> {
+    let floor = config.min_fee(size);
+    let Some(members) = batch_size else {
+        return Some(floor);
+    };
+    let share = config.base_fee.0.checked_mul(SIGNATURE_SHARE_PERMILLE)? / 1000;
+    let part = share.div_ceil(u128::from(members.max(1)));
+    Some(Amount(floor.0 - share + part))
+}
+
+/// A signed transaction's fee floor ([`fee_floor`] of its body and batch).
+pub fn required_fee(config: &ChainConfig, signed: &SignedTransaction) -> Option<Amount> {
+    fee_floor(
+        config,
+        signed.tx.size(),
+        signed.batch.as_ref().map(|m| m.batch.size),
+    )
+}
+
+/// Signs `members` as one batch with `keys`, the keys of `signer`
+/// (spec §4.3): computes the root over their digests, signs the batch once
+/// and gives each member the authorization, its position and its path.
+/// Each member is a body and, for a keyless sender, its charter. Fees are
+/// the caller's: a member pays at least [`fee_floor`] for this batch's size.
+pub fn sign_batch(
+    keys: &DualKeypair,
+    signer: AccountId,
+    config: &ChainConfig,
+    members: Vec<(Transaction, Option<ObjectId>)>,
+) -> Result<Vec<SignedTransaction>, crate::error::ExecError> {
+    let size = members.len() as u64;
+    if members.is_empty() || size > MAX_BATCH {
+        return Err(crate::error::ExecError::Invalid(format!(
+            "a batch holds 1 to {MAX_BATCH} transactions, not {size}"
+        )));
+    }
+    let leaves: Vec<Hash32> = members
+        .iter()
+        .map(|(tx, _)| batch_leaf(&tx.digest()))
+        .collect();
+    let batch = TxBatch {
+        signer,
+        size,
+        root: sion_core::merkle::root(&leaves),
+    };
+    let auth = keys.authorize(&batch_signing_context(config), &batch.message().0)?;
+    members
+        .into_iter()
+        .enumerate()
+        .map(|(index, (tx, charter))| {
+            let path = sion_core::merkle::inclusion_proof(&leaves, index)?;
+            Ok(SignedTransaction {
+                tx,
+                auth: auth.clone(),
+                batch: Some(BatchMember {
+                    batch,
+                    index: index as u64,
+                    path,
+                    charter,
+                }),
+            })
+        })
+        .collect()
+}
 
 /// The largest amount one faucet grant may mint. Bounding grants keeps every
 /// supply total far from overflow.
@@ -526,13 +749,17 @@ pub struct Transaction {
     pub nonce: u64,
 }
 
-/// A transaction with its authorization.
+/// A transaction with its authorization (spec §4.3).
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct SignedTransaction {
     /// The body.
     pub tx: Transaction,
-    /// Signatures satisfying the sender's policy.
+    /// Signatures satisfying the authorizing policy: over the body's digest,
+    /// or, for a batch member, over its batch's [`TxBatch::message`].
     pub auth: Authorization,
+    /// For a batch member, its batch and its place in it.
+    #[serde(default)]
+    pub batch: Option<BatchMember>,
 }
 
 impl Transaction {
@@ -549,7 +776,11 @@ impl Transaction {
         config: &ChainConfig,
     ) -> Result<SignedTransaction, CryptoError> {
         let auth = keys.authorize(&signing_context(config), &self.digest().0 .0)?;
-        Ok(SignedTransaction { tx: self, auth })
+        Ok(SignedTransaction {
+            tx: self,
+            auth,
+            batch: None,
+        })
     }
 
     /// The contention domain a transaction must be ordered in, if any.
@@ -685,5 +916,69 @@ mod tests {
         let mut b = a.clone();
         b.nonce = 1;
         assert_ne!(a.digest(), b.digest());
+    }
+
+    #[test]
+    fn a_batch_lowers_the_fee_floor_by_the_shared_signature_check() {
+        // Devnet: 1,000 base and 100 per KiB, so a 300-byte body costs
+        // 1,100 signed by itself; 800 of the base pays for the check.
+        let config = ChainConfig::devnet(None);
+        let alone = fee_floor(&config, 300, None).unwrap();
+        assert_eq!(alone, config.min_fee(300));
+        assert_eq!(alone, Amount(1_100));
+        assert_eq!(fee_floor(&config, 300, Some(1)).unwrap(), alone);
+        assert_eq!(
+            fee_floor(&config, 300, Some(256)).unwrap(),
+            Amount(1_100 - 800 + 4)
+        );
+        // The member's part rounds up: 800 / 3 is 266.67.
+        assert_eq!(
+            fee_floor(&config, 300, Some(3)).unwrap(),
+            Amount(1_100 - 800 + 267)
+        );
+        // A declared size of zero is never valid; its floor counts it as one.
+        assert_eq!(fee_floor(&config, 300, Some(0)).unwrap(), alone);
+        // The share overflowing makes the floor undefined.
+        let absurd = ChainConfig {
+            base_fee: Amount(u128::MAX / 2),
+            fee_per_kib: Amount::ZERO,
+            ..config
+        };
+        assert_eq!(fee_floor(&absurd, 300, Some(2)), None);
+    }
+
+    #[test]
+    fn an_envelope_carries_a_whole_batch_and_nothing_else() {
+        let keys = DualKeypair::from_seed(&[5; 32], sion_crypto::Scheme::SlhDsaSha2_128f);
+        let signer = keys.policy().account_id();
+        let config = ChainConfig::devnet(None);
+        let bodies: Vec<_> = (0..3)
+            .map(|n| {
+                let mut body = tx(TxKind::ReturnAllotment);
+                body.sender = signer;
+                body.nonce = n;
+                (body, None)
+            })
+            .collect();
+        let members = sign_batch(&keys, signer, &config, bodies).unwrap();
+        assert!(members.iter().all(|m| m.auth == members[0].auth));
+        let envelope = BatchEnvelope::of(&members).unwrap();
+        assert_eq!(envelope.clone().members().unwrap(), members);
+        // Part of a batch, or its members out of order, is no envelope.
+        assert!(BatchEnvelope::of(&members[..2]).is_none());
+        let swapped = vec![members[1].clone(), members[0].clone(), members[2].clone()];
+        assert!(BatchEnvelope::of(&swapped).is_none());
+        // A member replaced, removed or added does not give the root.
+        let mut edited = envelope.clone();
+        edited.members[1].0.nonce = 9;
+        assert!(edited.members().is_err());
+        let mut short = envelope.clone();
+        short.members.pop();
+        assert!(short.members().is_err());
+        let mut empty = envelope;
+        empty.members.clear();
+        assert!(empty.members().is_err());
+        // No batch of none, nor of more than the limit.
+        assert!(sign_batch(&keys, signer, &config, Vec::new()).is_err());
     }
 }

@@ -43,6 +43,7 @@ use sion_core::smt::{SmtProof, SmtSnapshot, SparseMerkleTree};
 use sion_core::Amount;
 
 use crate::assurance::AssuranceDomain;
+use crate::auth::{check_authorization, find_authority};
 use crate::claim::{claim_id, knowledge_leaf, ClaimBody, StoredClaim};
 use crate::delegation::{mul_div, DelegationBook, Join, REWARD_SCALE};
 use crate::error::ExecError;
@@ -55,7 +56,7 @@ use crate::object::{
 };
 use crate::state::{ChainConfig, State, WorldCommitment};
 use crate::store::{ObjectStore, Overlay};
-use crate::tx::{signing_context, SignedTransaction, TxKind, MAX_INPUTS};
+use crate::tx::{required_fee, SignedTransaction, TxKind, MAX_INPUTS};
 use crate::validators::{
     rotation_seed, share_of, weight, ForcedObligations, Obligation, ShardRotation, ValidatorSet,
     ValidatorStatus,
@@ -1071,7 +1072,7 @@ pub fn apply_deferred<S: ObjectStore>(
                 intent: digest,
                 reason,
             }),
-            Ok(rotations) => {
+            Ok((signer, rotations)) => {
                 let tx = &intent.tx;
                 let shard = ShardId::for_account(&tx.sender, ctx.config.shard_count.max(1)).0;
                 let deadline = Pulse(ctx.pulse.0.saturating_add(window).min(tx.expires_at.0));
@@ -1086,6 +1087,7 @@ pub fn apply_deferred<S: ObjectStore>(
                         posted_at: ctx.pulse,
                         deadline,
                         missed: 0,
+                        signer,
                     },
                 );
                 protocol
@@ -1298,12 +1300,12 @@ fn record_beacon<S: ObjectStore>(
 /// Whether a forced intent may become an obligation: everything `prepare`
 /// checks (§4.1 of the specification), read-only, plus that it is not a
 /// faucet transaction and does not expire in the Pulse it is posted in.
-/// Returns the sender's policy rotations, or why not.
+/// Returns its signer and the signer's policy rotations, or why not.
 fn admissible<S: ObjectStore>(
     run: &mut DeferredRun<'_, '_, S>,
     ctx: &PulseContext,
     signed: &SignedTransaction,
-) -> Result<Result<u32, String>, ExecError> {
+) -> Result<Result<(AccountId, u32), String>, ExecError> {
     let tx = &signed.tx;
     if matches!(tx.kind, TxKind::Faucet { .. }) {
         return Ok(Err("faucet transactions cannot be forced".into()));
@@ -1318,35 +1320,20 @@ fn admissible<S: ObjectStore>(
     if unique.len() != tx.inputs.len() {
         return Ok(Err("duplicate inputs".into()));
     }
-    if tx.fee < ctx.config.min_fee(tx.size()) {
-        return Ok(Err("fee below the minimum".into()));
+    match required_fee(&ctx.config, signed) {
+        Some(floor) if tx.fee >= floor => {}
+        _ => return Ok(Err("fee below the minimum".into())),
     }
-    let (policy, rotations) = match run.load(&well_known::account(&tx.sender))? {
-        Some(object) => match object.data {
-            ObjectData::Account(state) => (state.policy, state.rotations),
-            _ => return Ok(Err("account object corrupted".into())),
-        },
-        None => {
-            let Some(policy) = tx.genesis_policy.clone() else {
-                return Ok(Err("unknown account and no genesis policy".into()));
-            };
-            if policy.validate().is_err() || policy.account_id() != tx.sender {
-                return Ok(Err("invalid genesis policy".into()));
-            }
-            (policy, 0)
-        }
+    // The authorizing policy (spec §4.3), read with try_load and storing
+    // nothing: the signer is whose policy it is.
+    let authority = match find_authority(signed, &mut |id| run.load(id))? {
+        Ok(authority) => authority,
+        Err(reason) => return Ok(Err(reason)),
     };
     // Always checked, even when the node skips signature checks for
     // transactions it verified when locking their inputs: forced intents
     // were never locked.
-    if policy
-        .verify(
-            &signing_context(&ctx.config),
-            &signed.digest().0 .0,
-            &signed.auth,
-        )
-        .is_err()
-    {
+    if check_authorization(&ctx.config, signed, &authority.policy).is_err() {
         return Ok(Err("its authorization does not verify".into()));
     }
     for (index, input) in tx.inputs.iter().enumerate() {
@@ -1369,11 +1356,11 @@ fn admissible<S: ObjectStore>(
             }
         }
     }
-    Ok(Ok(rotations))
+    Ok(Ok((authority.signer, authority.rotations)))
 }
 
 /// Whether an obligation's intent could still execute: every input is at the
-/// version it spends, unspent and the sender's, and the sender's policy has
+/// version it spends, unspent and the sender's, and the signer's policy has
 /// not rotated.
 fn still_executable<S: ObjectStore>(
     run: &mut DeferredRun<'_, '_, S>,
@@ -1388,7 +1375,7 @@ fn still_executable<S: ObjectStore>(
             _ => return Ok(false),
         }
     }
-    let rotations = match run.load(&well_known::account(&obligation.sender))? {
+    let rotations = match run.load(&well_known::account(&obligation.signer))? {
         Some(Object {
             data: ObjectData::Account(state),
             ..

@@ -14,8 +14,11 @@
 //! - [`tasks`]: Task Charters: escrowed work with acceptance fixed in advance.
 //! - [`x402`]: HTTP 402 payments settled on Siontology, for servers and agents.
 
+pub mod agent_memory;
 pub mod agents;
 pub mod bench;
+pub mod channels;
+pub mod delegation;
 pub mod demos;
 pub mod describe;
 pub mod error;
@@ -23,7 +26,12 @@ pub mod ledger;
 pub mod mcp;
 pub mod memory;
 pub mod network;
+pub mod profiles;
+pub mod runtime;
+pub mod schedules;
 pub mod session;
+pub mod skill_improve;
+pub mod skills;
 pub mod stake;
 pub mod storage;
 pub mod stream;

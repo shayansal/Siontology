@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.12
+# The Siontology state transition — specification v1.13
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -61,19 +61,21 @@ definitions and the commitment helpers named in §7), `sion_exec::stateless`,
 shares_for, bonded, earning_value, owed}`), the `sion_exec::storage`
 helpers (`challenge_index`, `round_seed`, `current_round`,
 `DataTree`, `split_leaves`, `Deal::end`), the `sion_exec::beacons` helpers
-(`slot_of`, `next_boundary`), nor
+(`slot_of`, `next_boundary`), the `sion_exec::tx` helpers `fee_floor`,
+`required_fee` and `sign_batch`, nor
 the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
 helpers `Transaction::{digest, domain, class, size}`,
-`SignedTransaction::digest`, `Object::{digest, is_tombstone, reference,
-as_coin}`, `ChainConfig::{min_fee, digest}`, `Payload::size`,
-`WorldCommitment::digest`, `ChunkStatement::digest`, `claim::{claim_id,
-knowledge_leaf, formulas::*}`, `object::{created_id, well_known::*}`,
-`tx::object_domain`, `tx::signing_context`, `market::sealing_aad`,
-`execute::{bond_atom, registered_atom, bond_owner}`, and
-`validators::{weight, permille_of, share_of, possession_digest,
-rotation_seed}`.
+`SignedTransaction::digest`, `TxBatch::message`, `Object::{digest,
+is_tombstone, reference, as_coin}`, `ChainConfig::{min_fee, digest}`,
+`Payload::size`, `WorldCommitment::digest`, `ChunkStatement::digest`,
+`claim::{claim_id, knowledge_leaf, formulas::*}`, `object::{created_id,
+well_known::*}`, `tx::object_domain`, `tx::signing_context`,
+`tx::batch_signing_context`, `charter::keyless_account`,
+`market::sealing_aad`, `execute::{bond_atom, registered_atom,
+bond_owner}`, and `validators::{weight, permille_of, share_of,
+possession_digest, rotation_seed}`.
 
 ## 1. Conventions
 
@@ -212,21 +214,10 @@ In this order; any failure is a **rejection**:
 2. `tx.inputs` empty, or longer than `MAX_INPUTS` (256,
    `sion_exec::tx::MAX_INPUTS`) → reject. Duplicate input ids → reject.
 3. If the kind is `Faucet`, `tx.fee ≠ 0` → reject. Otherwise `tx.fee <
-   ctx.config.min_fee(tx.size())` → reject.
-4. Account: `try_load(well_known::account(tx.sender))`.
-   - If it exists, it MUST be `ObjectData::Account`; the policy is its
-     `policy`.
-   - Otherwise `tx.genesis_policy` MUST be present, MUST pass
-     `AuthPolicy::validate`, and `policy.account_id()` MUST equal
-     `tx.sender`; then **store** a new account object
-     `Object { id: well_known::account(sender), version: 0, owner:
-     Account(sender), data: Account(AccountState { id: sender, policy,
-     viewing_key: None, created_at: ctx.pulse, rotations: 0 }) }`.
-5. `policy.verify(signing_context(ctx.config), digest bytes, &signed.auth)`
-   MUST succeed, where `signing_context(config)` is `TX_DOMAIN`, a `/`, and
-   `config.digest()` in lowercase hex (`sion_exec::tx::signing_context`).
-   A transaction signed for one chain therefore never verifies on a chain
-   with another configuration.
+   required_fee(signed)` (§4.3) → reject.
+4. The **authorizing policy** MUST be found (§4.3). Finding it may store
+   the sender's new account object.
+5. The authorization MUST pass the **check** under that policy (§4.3).
 6. For each input `r` at position `i`, in order: `load(r.id)`; its version
    MUST equal `r.version`; its owner MUST be `Owner::Account(tx.sender)`; it
    MUST NOT be a tombstone. (An input may be the account object stored in
@@ -253,6 +244,105 @@ In this order; any failure is a **rejection**:
    completeness), the transaction is rejected as in step 1.
 
 `TxEffects.class` is `tx.class()` in every case.
+
+### 4.3 Authorization
+
+A transaction is authorized in one of two ways, told apart by
+`signed.batch`:
+
+- **Signed by itself** (`batch = None`): `signed.auth` signs the
+  transaction's digest.
+- **A batch member** (`batch = Some(m)`, v1.13): `signed.auth` signs a
+  batch `m.batch = TxBatch { signer, size, root }` of `size` transactions,
+  `root` being the RFC 9162 Merkle root (`sion_core::merkle::root`) over
+  their leaves `merkle::leaf_hash(digest bytes)`, in the batch's order.
+  `m.index` is the member's position, `m.path` its inclusion path, and
+  `m.charter` names, for a keyless sender, the sender's charter. Each
+  member carries the batch's one authorization, so a node that checks it
+  once has checked it for every member.
+
+**The fee floor.** For a transaction signed by itself, `required_fee(signed)
+= ctx.config.min_fee(tx.size())`. For a batch member,
+
+```text
+share        = ⌊ctx.config.base_fee × SIGNATURE_SHARE_PERMILLE / 1000⌋
+required_fee = ctx.config.min_fee(tx.size()) − share + ⌈share / max(m.batch.size, 1)⌉
+```
+
+with `SIGNATURE_SHARE_PERMILLE = 800`
+(`sion_exec::tx::SIGNATURE_SHARE_PERMILLE`, a protocol constant, so the
+configuration and its digest are unchanged); the multiplication
+overflowing is an error. `share` is the part of the base fee that pays for
+checking an authorization, and a batch's members split it.
+
+**The authorizing policy**, found in one of two ways:
+
+1. **The sender's own**, if `batch = None` or `m.charter = None`. For a
+   batch member, `m.batch.signer` MUST equal `tx.sender`. Then
+   `try_load(well_known::account(tx.sender))`:
+   - if it exists, it MUST be `ObjectData::Account`, and the policy is its
+     `policy`;
+   - otherwise `tx.genesis_policy` MUST be present, MUST pass
+     `AuthPolicy::validate`, and `policy.account_id()` MUST equal
+     `tx.sender`; then **store** a new account object `Object { id:
+     well_known::account(sender), version: 0, owner: Account(sender), data:
+     Account(AccountState { id: sender, policy, viewing_key: None,
+     created_at: ctx.pulse, rotations: 0 }) }`.
+2. **The nearest keyed ancestor's**, if `m.charter = Some(c)`: the sender
+   is a keyless subagent (§5.36). `tx.sender` MUST equal
+   `keyless_account(c)`. Load `c` (MUST be a charter); its `agent` MUST
+   be `tx.sender`. Then load `c.parent`, its parent, and so on (each MUST
+   be a charter), until one whose agent is not keyless: a charter `a` with
+   id `id_a` is keyless if `a.agent = keyless_account(id_a)`. The search
+   fails at a charter without a parent, and after `MAX_CHARTER_CHAIN − 1`
+   ancestors (`MAX_CHARTER_CHAIN` is 16, §5.13): if the last one loaded
+   is keyless, its parent is not loaded. The ancestor found MUST have `agent = m.batch.signer`. Then
+   `try_load(well_known::account(m.batch.signer))` MUST exist and be
+   `ObjectData::Account`; its `policy` is the policy. Nothing is stored,
+   and `tx.genesis_policy` is ignored.
+
+`keyless_account(c) = AccountId(H("sion/agent/keyless", c bytes))`
+(`sion_exec::charter::keyless_account`). Account ids are derived from
+policies in another domain, so no policy hashes to a keyless account and
+no key ever controls one: it acts only through batches its nearest keyed
+ancestor signs. That ancestor's own budget contains the subagent's, and it
+can already suspend or revoke it.
+
+**The check**, under the policy found:
+
+- Signed by itself: `policy.verify(signing_context(ctx.config), digest
+  bytes, &signed.auth)` MUST succeed, where `signing_context(config)` is
+  `TX_DOMAIN`, a `/`, and `config.digest()` in lowercase hex
+  (`sion_exec::tx::signing_context`). A transaction signed for one chain
+  therefore never verifies on a chain with another configuration.
+- A batch member, in this order: `1 ≤ m.batch.size ≤ MAX_BATCH` (256,
+  `sion_exec::tx::MAX_BATCH`);
+  `merkle::verify_inclusion(m.batch.root, m.batch.size, m.index,
+  merkle::leaf_hash(digest bytes), m.path)` MUST succeed (so `m.index <
+  m.batch.size`); and `policy.verify(batch_signing_context(ctx.config),
+  m.batch.message() bytes, &signed.auth)` MUST succeed, where
+  `batch_signing_context(config)` is `TX_DOMAIN`, `/batch/` and
+  `config.digest()` in lowercase hex (`sion_exec::tx::batch_signing_context`)
+  and `TxBatch::message() = H("sion/tx/batch", enc(batch))`. The two
+  contexts differ, so a transaction's signature never verifies as a
+  batch's, nor a batch's as a transaction's.
+
+The check reads nothing: finding the policy does all the reading, so what
+a transaction reads does not depend on whether its signatures verify.
+
+A batch's members are separate transactions. Each has its own inputs, fee,
+expiry and outcome, and each may execute in a different Pulse, or never;
+nothing orders them. A signer that signs two batches holding transactions
+that spend the same input version gets at most one of them certified, as
+with any two transactions.
+
+**What the fee floor trusts.** It splits the share by the size a batch
+declares. A signer that declares 256 members and sends one pays about a
+fifth of the base fee for a check that validators run in full. The
+reference node checks a batch's authorization once for all its members,
+after the cheap checks of each, and accepts batches whole
+(`sion_node::owners`, `POST /v1/batches`); a node may refuse a batch it
+does not receive in full.
 
 ## 5. Operations
 
@@ -746,8 +836,8 @@ only makes jumps fail, and the payee can always settle by walking.
      `stream.spacing > 0`; `|path| ≤ MAX_CHECKPOINT_DEPTH`; `base = index ×
      spacing` (checked: an overflow fails); `base ≤ position < base +
      spacing`; `rest = position − base`; `hashes = rest + 1 + |path|`.
-4. `tx.fee ≥ ctx.config.min_fee(tx.size()) + hashes × STREAM_STEP_FEE` (the
-   arithmetic saturating).
+4. `tx.fee ≥ required_fee(signed) + hashes × STREAM_STEP_FEE` (§4.3; the
+   addition and multiplication saturating).
 5. The element MUST be genuine:
    - walk: `stepˢᵗᵉᵖˢ(value) = head`;
    - jump: with `x = stepʳᵉˢᵗ(value)`, `merkle::verify_inclusion(checkpoints,
@@ -801,7 +891,10 @@ the id's 64 hex digits, in the off-ledger card).
 ### 5.36 SpawnAgents { charter, children }
 
 An agent launches subagents, each with its own identity, account, caveats
-and budget.
+and budget. A child's `agent` is the account that acts for it, or `None`
+for a **keyless** subagent (v1.13), whose account is derived from its id
+and which acts only through batches its nearest keyed ancestor signs
+(§4.3).
 
 1. `1 ≤ |children| ≤ MAX_SPAWN_BATCH` (256,
    `sion_exec::charter::MAX_SPAWN_BATCH`).
@@ -817,19 +910,20 @@ and budget.
    `remaining −= child.budget` (error if insufficient).
 7. Store the allotment.
 8. For each child, in order:
-   1. `child_id = created_id(digest, next_index)`;
+   1. `child_id = created_id(digest, next_index)`; `account =
+      child.agent`, or `keyless_account(child_id)` if `child.agent = None`;
       `create(Shared(object_domain("charter", child_id)), Charter {
-      principal: sender, agent: child.agent, caveats: child.caveats,
+      principal: sender, agent: account, caveats: child.caveats,
       agent_atom: p.agent_atom, backer: p.backer, revoked_at: None, parent:
       Some(charter), allotments: ∅, created_at: ctx.pulse, suspended_by:
       None, identity: Some(AgentIdentity { card: child.card, depth: n })
       })`.
-   2. `a = create(Account(child.agent), Allotment { source: child_id,
-      writer: child.agent, asset: USD, remaining: child.budget, caveats:
+   2. `a = create(Account(account), Allotment { source: child_id,
+      writer: account, asset: USD, remaining: child.budget, caveats:
       Some(child.caveats), window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`.
    3. Load the child charter, insert `a` into `allotments`, store it.
-   4. Event `AgentSpawned { agent: child_id, parent: charter, account:
-      child.agent, allotment: a }`.
+   4. Event `AgentSpawned { agent: child_id, parent: charter, account,
+      allotment: a }`.
 
 Siblings share nothing they write: each spends from its own allotment, so
 their payments need no consensus.
@@ -1455,14 +1549,16 @@ Otherwise `t` is dismissed unless it is **admissible**, checked in this
 order (stop at the first failure):
 
 1. its kind is not `Faucet`; `ctx.pulse < tx.expires_at`; it has 1 to
-   `MAX_INPUTS` inputs with distinct ids; `tx.fee ≥
-   ctx.config.min_fee(tx.size())`;
-2. `try_load(well_known::account(sender))`: if present it MUST be an
-   `Account`, giving `policy` and `rotations`; if absent,
-   `tx.genesis_policy` MUST be present, pass `validate`, and hash to the
-   sender, giving that policy and `rotations = 0`;
-3. `policy.verify(signing_context(ctx.config), d bytes, t.auth)` passes
-   (always checked);
+   `MAX_INPUTS` inputs with distinct ids; `tx.fee ≥ required_fee(t)`
+   (§4.3);
+2. its authorizing policy is found as in §4.3, except that every read is
+   a `try_load` (a missing object fails) and nothing is stored. This gives
+   the intent's **signer**, the account whose policy it is (`tx.sender`,
+   or `m.batch.signer` for a keyless sender), and `rotations`, that
+   account object's `rotations` (0 for a sender without an account object,
+   whose policy is its genesis policy);
+3. the authorization passes the check of §4.3 under that policy (always
+   checked);
 4. for each input, in order: `try_load` it; it MUST exist, be at
    `r.version`, not be a tombstone and be owned by `Account(sender)`; the
    first MUST be a USD coin with amount ≥ `tx.fee`.
@@ -1477,7 +1573,7 @@ ShardId::for_account(sender, max(ctx.config.shard_count, 1))`, `deadline =
 min(ctx.pulse + window, tx.expires_at)` (the addition saturating, `window =
 max(params.window, 1)`); insert `pending[d] = { shard, sender, inputs:
 tx.inputs, expires_at: tx.expires_at, rotations, posted_at: ctx.pulse,
-deadline, missed: 0 }`; schedule `ForcedDeadline { intent: d }` at
+deadline, missed: 0, signer }`; schedule `ForcedDeadline { intent: d }` at
 `deadline`; event `ForcedPosted { intent: d, shard, deadline }`.
 
 **Due events.** Then remove from `schedule.due` every entry whose key is
@@ -1503,9 +1599,11 @@ scheduled at least one Pulse ahead unless the Pulse number saturates):
   is not pending. The intent is **still executable** if every input of the
   obligation, in order, still exists at its version, is not a tombstone and
   is owned by `Account(sender)` (stop reading at the first that fails), and
-  then `try_load(well_known::account(sender))` gives the same `rotations`
+  then `try_load(well_known::account(signer))` gives the same `rotations`
   (absent counts as 0; present but not an `Account` counts as not
-  executable). If it is not, remove it from pending; event
+  executable). A rotation of the signer's policy may void the
+  authorization, so an intent whose signer rotated is not held against its
+  shard. If it is not, remove it from pending; event
   `ForcedResolved { intent }`. If it is, the shard censored it: event
   `ForcedOverdue { intent, shard }`; obtain the validator set and
   **rotate** the shard; then, if `ctx.pulse ≥ expires_at`, remove the
@@ -1683,6 +1781,25 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.13.** Batched authorization and keyless subagents (§4.3). One
+  authorization can sign a batch of up to 256 transactions: the Merkle
+  root over their digests, with its signer and size. Each member carries
+  the authorization, its position and its inclusion path instead of
+  signatures of its own, and its fee floor is lowered by the share of the
+  base fee that pays for checking an authorization (80 %), less its part
+  of the batch's. A subagent may be spawned keyless (§5.36): its account is
+  derived from its id, so no key controls it, and its transactions are
+  authorized only as members of batches signed by its nearest keyed
+  ancestor. Forced intents may be batch members; an obligation records the
+  account whose policy authorized its intent (`signer`), and a rotation of
+  that account's policy resolves it (§6.3). New types
+  `sion_exec::tx::{TxBatch, BatchMember}`, field `SignedTransaction::batch`
+  (so the encoding of every signed transaction changes), `Spawn::agent`
+  becomes optional, `Obligation` gains `signer`, constants
+  `sion_exec::tx::{MAX_BATCH, SIGNATURE_SHARE_PERMILLE}`, helpers
+  `sion_exec::tx::{batch_signing_context, fee_floor, required_fee,
+  sign_batch}` and `sion_exec::charter::keyless_account`.
 
 - **v1.12.** Storage deals (§5.50 to §5.54). A client escrows payment for
   keeping data whose Merkle root it fixes at posting (`PostDeal`), for a

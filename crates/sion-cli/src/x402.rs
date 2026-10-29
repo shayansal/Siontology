@@ -64,13 +64,11 @@ use sion_core::hash::{hash_parts, Hash32};
 use sion_core::ids::{AccountId, AssetId, ObjectId, TxDigest};
 use sion_core::Amount;
 use sion_crypto::AuthPolicy;
-use sion_exec::object::well_known;
-use sion_exec::tx::signing_context;
-use sion_exec::{ChainConfig, ExecStatus, ObjectData, SignedTransaction, TxKind};
+use sion_exec::{ChainConfig, ExecStatus, SignedTransaction, TxKind};
 
 use crate::error::CliError;
 use crate::ledger::{Ledger, LedgerExt, TxState};
-use crate::session::{RemoteView, Session};
+use crate::session::Session;
 use crate::stream::{StreamDesk, StreamPayment};
 use crate::verify::{verify_receipt_of, VerifiedReceipt};
 
@@ -524,29 +522,18 @@ impl<'l> Facilitator<'l> {
         }
     }
 
-    /// The sender's authorization policy: its current one, or the genesis
-    /// policy the transaction carries if the account is new.
+    /// The payment's authorizing policy (spec §4.3): the sender's current
+    /// one, or the genesis policy the transaction carries if the account is
+    /// new; for a keyless subagent, its nearest keyed ancestor's.
     fn policy_of(&self, signed: &SignedTransaction) -> Result<AuthPolicy, String> {
-        let sender = signed.tx.sender;
-        let account = self
-            .ledger
-            .object(well_known::account(&sender))
-            .map_err(|e| e.to_string())?;
-        match account.map(|o| o.data) {
-            Some(ObjectData::Account(account)) => Ok(account.policy),
-            Some(_) => Err("the sender's account object is not an account".into()),
-            None => {
-                let policy = signed
-                    .tx
-                    .genesis_policy
-                    .clone()
-                    .ok_or("unknown account and no genesis policy")?;
-                if policy.account_id() != sender {
-                    return Err("the genesis policy does not hash to the sender".into());
-                }
-                Ok(policy)
-            }
-        }
+        let ledger = self.ledger;
+        sion_exec::auth::find_authority(signed, &mut |id| {
+            ledger
+                .object(*id)
+                .map_err(|e| sion_exec::ExecError::Invalid(e.to_string()))
+        })
+        .map_err(|e| e.to_string())?
+        .map(|authority| authority.policy)
     }
 
     /// Every check that does not need the payment to run.
@@ -636,12 +623,7 @@ impl<'l> Facilitator<'l> {
             _ => return Err("the transaction is not a payment".into()),
         }
         let policy = self.policy_of(&signed)?;
-        policy
-            .verify(
-                &signing_context(&self.config),
-                &signed.tx.digest().0 .0,
-                &signed.auth,
-            )
+        sion_exec::auth::check_authorization(&self.config, &signed, &policy)
             .map_err(|_| "the payment's signatures do not verify for this chain")?;
         let pulse = self.ledger.pulse().map_err(|e| e.to_string())?;
         if signed.tx.expires_at <= pulse {
@@ -992,11 +974,9 @@ pub fn sign_payment(
 ) -> Result<SignedTransaction, CliError> {
     let pay_to = parse_account(&requirements.pay_to)?;
     let amount = parse_amount(&requirements.amount)?;
-    let ledger = session.ledger;
-    let view = RemoteView::new(ledger, session.config.clone());
     let signed = match payer {
-        Payer::Wallet(name) => session.wallet(name).build(
-            &view,
+        Payer::Wallet(name) => session.sign(
+            name,
             TxKind::Transfer {
                 asset: AssetId::usd(),
                 outputs: vec![(pay_to, amount)],
@@ -1018,8 +998,8 @@ pub fn sign_payment(
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
-            session.wallet(agent).build(
-                &view,
+            session.sign(
+                agent,
                 TxKind::AgentPay {
                     charter: *charter,
                     payee: pay_to,

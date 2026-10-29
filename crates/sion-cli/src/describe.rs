@@ -686,6 +686,16 @@ pub fn event(names: &Names, event: &Event) -> String {
             parent,
             account,
             ..
+        } if *account == sion_exec::charter::keyless_account(agent) => format!(
+            "subagent {} launched by {}, keyless: its nearest keyed ancestor signs for it",
+            object(agent),
+            object(parent)
+        ),
+        Event::AgentSpawned {
+            agent,
+            parent,
+            account,
+            ..
         } => format!(
             "subagent {} launched by {}, signing as {}",
             object(agent),

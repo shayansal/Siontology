@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use sion_core::hash::hash_domain;
-use sion_core::ids::{AccountId, AssetId, Pulse};
+use sion_core::ids::{AccountId, AssetId, ObjectId, Pulse};
 use sion_core::Amount;
 
 use crate::error::ExecError;
@@ -21,7 +21,7 @@ use crate::state::{ChainConfig, State};
 use crate::stateless::replay_chunk;
 use crate::tx::{SignedTransaction, TxKind};
 use crate::validators::{ForcedParams, ValidatorParams};
-use crate::wallet::Wallet;
+use crate::wallet::{Keyless, Wallet};
 
 /// Genesis validators in simulations.
 pub const SIM_VALIDATORS: usize = 4;
@@ -58,6 +58,17 @@ pub struct Chain {
     pub history: Vec<PulseRecord>,
     /// The genesis validators' keys, in genesis order.
     pub validator_keys: Vec<sion_crypto::DualKeypair>,
+    /// Keyless subagents' transaction builders, by charter.
+    pub keyless: BTreeMap<ObjectId, Keyless>,
+}
+
+/// Who sends a batch member ([`Chain::batch`]).
+#[derive(Clone, Copy, Debug)]
+pub enum Sender<'a> {
+    /// A named wallet.
+    Named(&'a str),
+    /// The keyless subagent with this charter.
+    Keyless(ObjectId),
 }
 
 /// A deterministic beacon for simulations.
@@ -138,6 +149,7 @@ impl Chain {
             replay: true,
             history: Vec::new(),
             validator_keys,
+            keyless: BTreeMap::new(),
         }
     }
 
@@ -184,6 +196,52 @@ impl Chain {
         wallet.build(&self.state, kind, extra)
     }
 
+    /// Builds `members`, each a sender, a kind and extra owned inputs, and
+    /// signs them as one batch with the named wallet `signer` (spec §4.3):
+    /// one authorization for all of them. Each pays the fee floor of a
+    /// member of a batch of this size. A keyless sender's transactions are
+    /// authorized only if `signer` is its nearest keyed ancestor's agent.
+    pub fn batch(
+        &mut self,
+        signer: &str,
+        members: Vec<(Sender<'_>, TxKind, Vec<ObjectRef>)>,
+    ) -> Result<Vec<SignedTransaction>, ExecError> {
+        let size = members.len() as u64;
+        let mut bodies = Vec::with_capacity(members.len());
+        for (sender, kind, extra) in members {
+            let body = match sender {
+                Sender::Named(name) => {
+                    let wallet = self
+                        .wallets
+                        .get_mut(name)
+                        .ok_or_else(|| ExecError::Invalid(format!("no wallet named {name}")))?;
+                    (wallet.draft(&self.state, kind, extra, Some(size))?, None)
+                }
+                Sender::Keyless(charter) => {
+                    let builder = self
+                        .keyless
+                        .entry(charter)
+                        .or_insert_with(|| Keyless::new(charter));
+                    (
+                        builder.draft(&self.state, kind, extra, size)?,
+                        Some(charter),
+                    )
+                }
+            };
+            bodies.push(body);
+        }
+        let wallet = self
+            .wallets
+            .get(signer)
+            .ok_or_else(|| ExecError::Invalid(format!("no wallet named {signer}")))?;
+        wallet.sign_batch(&self.state.config, bodies)
+    }
+
+    /// The account of the keyless subagent with this charter.
+    pub fn keyless_id(&self, charter: &ObjectId) -> AccountId {
+        crate::charter::keyless_account(charter)
+    }
+
     /// Executes one Pulse. Transactions that need consensus are ordered as
     /// given; the rest go on the owned path.
     pub fn pulse(&mut self, txs: Vec<SignedTransaction>) -> Result<PulseOutput, ExecError> {
@@ -224,6 +282,9 @@ impl Chain {
         self.check_invariants().map_err(ExecError::Invalid)?;
         for wallet in self.wallets.values_mut() {
             wallet.settle();
+        }
+        for builder in self.keyless.values_mut() {
+            builder.settle();
         }
         self.history.push(PulseRecord {
             output: output.clone(),

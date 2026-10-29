@@ -40,6 +40,7 @@
 - [Task Charters](concepts/task-charters.md)
 - [Privacy](concepts/privacy.md)
 - [Post-quantum identity](concepts/post-quantum.md)
+- [Batched authorization](concepts/batched-authorization.md)
 - [Censorship resistance](concepts/censorship-resistance.md)
 - [Validators, staking and epochs](concepts/committees.md)
   - [Staking](concepts/validators/staking.md)
@@ -58,6 +59,10 @@
 - [Bonds and challenges](guides/bonds-and-challenges.md)
 - [Charters for AI agents](guides/charters.md)
 - [Agent identities from the command line](guides/agents.md)
+- [Agents at work](guides/agent-runtime.md)
+- [Skills from others](guides/skills.md)
+- [Skills that get better](guides/skill-improvement.md)
+- [Teams, schedules and channels](guides/agent-teams.md)
 - [Task Charters from the command line](guides/tasks.md)
 - [Memory from the command line](guides/memory.md)
 - [Storage from the command line](guides/storage.md)
@@ -103,6 +108,7 @@
   - [Billions of agents](research/agent-scale.md)
   - [Succinct validity proofs](research/succinct-proofs.md)
   - [Networking between machines](research/networking.md)
+  - [Reliable, self-improving agents](research/agents.md)
 
 # Security
 

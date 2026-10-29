@@ -322,3 +322,169 @@ fn a_burst_larger_than_a_consensus_payload_still_executes() {
     );
     devnet.shutdown();
 }
+
+#[test]
+fn keyless_subagents_pay_in_one_batch_that_is_certified_executed_and_proven() {
+    // Spec v1.13: an agent spawns keyless subagents and signs one batch for
+    // a payment from each. The gateway hands each shard's committee the
+    // members in one message, validators check the batch's signatures once,
+    // and the prover replays the members in both proof stacks.
+    let _serial = serial();
+    let devnet = Devnet::start(config()).unwrap();
+    let remote = Remote {
+        devnet: &devnet,
+        config: devnet.shared.genesis.config.clone(),
+    };
+    let mut alice = Wallet::named("alice");
+    let bob = Wallet::named("bob");
+    let wait = |digest| {
+        let record = devnet.wait_for(digest, Duration::from_secs(90)).unwrap();
+        assert_eq!(record.status, ExecStatus::Success, "{record:?}");
+        record
+    };
+    let caveats = sion_exec::charter::Caveats {
+        payees: Some([bob.id].into_iter().collect()),
+        max_per_payment: Amount::units(5),
+        max_per_window: Amount::units(1_000),
+        window: 1_000,
+        expires_at: Pulse(100_000),
+        evidence_above: None,
+        evidence_policy: sion_assurance::Policy::standard(),
+        receipts: false,
+        may_delegate: true,
+    };
+    let register = alice
+        .build(
+            &remote,
+            TxKind::RegisterAgent {
+                agent: alice.id,
+                card: sion_core::hash::Hash32::ZERO,
+                caveats: caveats.clone(),
+                funding: Amount::units(100),
+                agent_bond: Amount::ZERO,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let record = wait(devnet.submit(register).unwrap().digest);
+    let (root, root_allotment) = record
+        .effects
+        .events
+        .iter()
+        .find_map(|event| match event {
+            sion_exec::Event::AgentRegistered {
+                agent, allotment, ..
+            } => Some((*agent, *allotment)),
+            _ => None,
+        })
+        .unwrap();
+    alice.settle();
+    let mut child = caveats.clone();
+    child.max_per_window = Amount::units(10);
+    let spawn = alice
+        .build(
+            &remote,
+            TxKind::SpawnAgents {
+                charter: root,
+                children: (0..16)
+                    .map(|_| sion_exec::charter::Spawn {
+                        agent: None,
+                        card: sion_core::hash::Hash32::ZERO,
+                        caveats: child.clone(),
+                        budget: Amount::units(2),
+                    })
+                    .collect(),
+            },
+            vec![remote.object(&root_allotment).unwrap().reference()],
+        )
+        .unwrap();
+    let record = wait(devnet.submit(spawn).unwrap().digest);
+    let spawned: Vec<_> = record
+        .effects
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            sion_exec::Event::AgentSpawned {
+                agent,
+                account,
+                allotment,
+                ..
+            } => Some((*agent, *account, *allotment)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(spawned.len(), 16);
+    alice.settle();
+    let gas = alice
+        .build(
+            &remote,
+            TxKind::Transfer {
+                asset: AssetId::usd(),
+                outputs: spawned
+                    .iter()
+                    .map(|(_, account, _)| (*account, Amount::units(1)))
+                    .collect(),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    wait(devnet.submit(gas).unwrap().digest);
+
+    // One batch: a payment from each subagent, one authorization.
+    let bodies: Vec<_> = spawned
+        .iter()
+        .map(|(charter, _, allotment)| {
+            let mut builder = sion_exec::wallet::Keyless::new(*charter);
+            let body = builder
+                .draft(
+                    &remote,
+                    TxKind::AgentPay {
+                        charter: *charter,
+                        payee: bob.id,
+                        amount: Amount::units(1),
+                        purpose: "a batched tool call".into(),
+                        evidence: None,
+                    },
+                    vec![remote.object(allotment).unwrap().reference()],
+                    16,
+                )
+                .unwrap();
+            (body, Some(*charter))
+        })
+        .collect();
+    let members = alice
+        .sign_batch(&devnet.shared.genesis.config, bodies)
+        .unwrap();
+    let receipts = devnet.submit_batch(members.clone()).unwrap();
+    assert_eq!(receipts.len(), 16);
+    let mut pulses = std::collections::BTreeSet::new();
+    for member in &members {
+        let record = wait(member.digest());
+        assert!(
+            record.effects.fee < Amount(1_000),
+            "{:?}",
+            record.effects.fee
+        );
+        pulses.insert(record.pulse);
+    }
+    let bob_view: AccountView =
+        serde_json::from_value(devnet.query(Query::Account(bob.id)).unwrap()).unwrap();
+    assert_eq!(
+        bob_view.balances,
+        vec![(AssetId::usd(), Amount::units(100_016))]
+    );
+    // The prover folded every Pulse the members executed in.
+    for pulse in pulses {
+        let mut world: Option<Value> = None;
+        for _ in 0..600 {
+            if let Ok(value) = devnet.query(Query::World(pulse)) {
+                world = Some(value);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let world = world.expect("the prover folded the Pulse");
+        assert!(world.get("error").is_none(), "{world}");
+    }
+    devnet.shutdown();
+}

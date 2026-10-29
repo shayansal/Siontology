@@ -457,7 +457,7 @@ fn value_text(value: &Value) -> String {
     }
 }
 
-fn describe_atom(atom: &MemoryAtom) -> Json {
+pub(crate) fn describe_atom(atom: &MemoryAtom) -> Json {
     json!({
         "id": atom.id(),
         "seq": atom.seq,
@@ -487,7 +487,7 @@ pub fn store_dir(log: &ObjectId) -> PathBuf {
         .join(log.0.to_hex())
 }
 
-fn open_store(log: &ObjectId, writer: AccountId) -> Result<LogStore, CliError> {
+pub(crate) fn open_store(log: &ObjectId, writer: AccountId) -> Result<LogStore, CliError> {
     let store = LogStore::open_or_create(store_dir(log), writer).map_err(memory_error)?;
     if store.log().writer() != writer {
         return Err(CliError::Usage(format!(
@@ -603,6 +603,6 @@ fn class_of(kind: MemoryKind) -> AtomClass {
     }
 }
 
-fn memory_error(error: sion_memory::MemoryError) -> CliError {
+pub(crate) fn memory_error(error: sion_memory::MemoryError) -> CliError {
     CliError::Usage(format!("memory: {error}"))
 }

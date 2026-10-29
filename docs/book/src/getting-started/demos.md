@@ -1,6 +1,6 @@
 # Run the demos
 
-Twelve scripted demos drive real transactions through the whole protocol
+Fourteen scripted demos drive real transactions through the whole protocol
 (lane certificates, consensus, Pulse execution, header certificates, data
 availability and proving) and narrate what the ledger established.
 
@@ -12,8 +12,8 @@ sion demo all --local
 validators, 2 shards, dual post-quantum signatures, proving on) and stops it
 at the end. The staking demo needs epochs that end, so it gets a devnet of
 its own with a standby validator and 24-Pulse epochs: `sion demo all
---local` runs the first eleven demos on one default devnet, then starts a
-second devnet for the staking demo.
+--local` runs the first thirteen demos on one default devnet, then starts
+a second devnet for the staking demo.
 
 Without `--local`, a demo runs against the node at `--node` (default
 `http://127.0.0.1:8730`), for example a devnet you started with
@@ -29,6 +29,7 @@ seconds against a running devnet.
 | `invoice` | Trade finance on insured knowledge: a bonded invoice claim, priced with the Assurance Algebra, relied on within its backing, and repaid from slashed bonds when it proves false |
 | `agents` | An AI agent with a budget the ledger enforces: an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent |
 | `swarm` | Agent identities: an orchestrator launches 12 researchers in one transaction and one of them launches 3 of its own, each with its own identity, account and budget; 15 pay at once without consensus; one suspension stops the whole tree and one resumption restarts it |
+| `batch` | Batched authorization: an orchestrator launches 64 keyless subagents, which have no keys of their own, and signs once for a payment from each; every payment pays a fee floor that shares the signature check; a stranger's signature for one of them is refused |
 | `tasks` | Task Charters: an eval orchestrator posts work from its budget; a result is paid only when it rests on the environment's claim and enough attested backing, and only once; a bounty is settled and another withdrawn; an exploit in the grader is proven and the lab is compensated from the vendor's bond |
 | `robots` | Memory for robots: two robots with their own identities and memory logs share a warehouse; a reader checks complete answers against the heads on the ledger; a rewrite is refused; a curator's refutation gives two readers two provable beliefs; an index that leaves an atom out is convicted; a camera frame is forgotten; a suspended robot's memory stops growing |
 | `storage` | Storage deals: a robot commits its memory log with its archive's root as the manifest and pays a laptop to keep the archive, proven every round; a phone that kept only half of the footage it accepted cannot answer the challenges and forfeits its collateral |
@@ -44,10 +45,11 @@ Run one with `sion demo <name> --local`, except `light`, which needs a
 devnet that has already proven a Pulse ([light](#light) below).
 
 What follows is real output: the first five demos from one run of
-`sion demo all --local`, and the swarm, tasks, robots, storage, streams,
-censorship, light and staking demos from runs of their own on later versions, so chain identities
-differ between them. Account names such as `supplier` and `judge` are deterministic devnet
-wallets: anyone who knows the name can derive the keys.
+`sion demo all --local`, and the swarm, batch, tasks, robots, storage,
+streams, censorship, light and staking demos from runs of their own on
+later versions, so chain identities differ between them. Account names
+such as `supplier` and `judge` are deterministic devnet wallets: anyone
+who knows the name can derive the keys.
 
 ## invoice
 
@@ -118,6 +120,26 @@ Each Pulse line is one transaction, except the payments line, which is
 fifteen transactions certified together. Every refusal comes from the
 ledger: the subagents' code is not involved. See [Agent identities and
 subagents](../concepts/agent-identities.md).
+
+## batch
+
+```text
+== Batched authorization: one signature for 64 keyless subagents ==
+Pulse   4  acme registers its orchestrator: agent 83fc8c49, 1,000 USD budget
+Pulse   7  the orchestrator launches 64 keyless subagents in one transaction: no keys, 10 USD each, ≤ 5 USD per payment
+Pulse   9  it gives each 0.01 USD for fees, in one transfer
+Pulse  14  64 subagents each pay gpu-cloud 1 USD, all authorized by one signature of 19,524 bytes over the batch's Merkle root
+            each pays a fee of 0.000313 USD instead of 0.0011 USD: the signature check is shared by the batch
+            signed one by one, the 64 payments would carry 1.25 MB of signatures; batched, 19.5 KB
+            mallory signs a batch for one of them → not certified: the batch is not signed by the subagent's nearest keyed ancestor
+```
+
+The subagents have no keys: each one's account is derived from its id,
+and the ledger accepts its transactions only in a batch its nearest keyed
+ancestor signed. The 64 payments are 64 transactions with 64 receipts,
+authorized by one dual signature over the Merkle root of their digests;
+each carries its path to that root instead of signatures of its own. See
+[Batched authorization](../concepts/batched-authorization.md).
 
 ## tasks
 

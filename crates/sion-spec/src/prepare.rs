@@ -10,6 +10,7 @@ use sion_exec::object::{well_known, Object, ObjectData, Owner};
 use sion_exec::state::ChainConfig;
 use sion_exec::tx::{TxKind, MAX_INPUTS, TX_DOMAIN};
 
+use crate::authorize::{authorizing_policy, check, required_fee};
 use crate::error::{fail, Step};
 use crate::tx::{usd, TxRun};
 
@@ -42,51 +43,39 @@ pub(crate) fn prepare(run: &mut TxRun<'_>) -> Step {
     if distinct.len() != tx.inputs.len() {
         return Err(fail("duplicate input"));
     }
-    // 3. Fees: the faucet pays none; everyone else pays at least the floor.
+    // 3. Fees: the faucet pays none; everyone else pays at least the floor
+    // (§4.3: lower for a batch member).
     if is_faucet {
         if tx.fee != Amount::ZERO {
             return Err(fail("faucet transactions pay no fee"));
         }
-    } else if tx.fee < ctx.config.min_fee(tx.size()) {
-        return Err(fail("fee below the minimum"));
-    }
-    // 4. The sender's account and policy.
-    let account = well_known::account(&tx.sender);
-    let policy = match run.try_load(&account)? {
-        Some(object) => match object.data {
-            ObjectData::Account(state) => state.policy,
-            _ => return Err(fail("the account object is not an account")),
-        },
-        None => {
-            let policy = tx
-                .genesis_policy
-                .clone()
-                .ok_or_else(|| fail("unknown account and no genesis policy"))?;
-            policy.validate()?;
-            if policy.account_id() != tx.sender {
-                return Err(fail("genesis policy does not hash to the sender"));
-            }
-            run.store(Object {
-                id: account,
-                version: Version(0),
-                owner: Owner::Account(tx.sender),
-                data: ObjectData::Account(AccountState {
-                    id: tx.sender,
-                    policy: policy.clone(),
-                    viewing_key: None,
-                    created_at: ctx.pulse,
-                    rotations: 0,
-                }),
-            })?;
-            policy
+    } else {
+        match required_fee(&ctx.config, run.signed) {
+            Some(floor) if tx.fee >= floor => {}
+            Some(_) => return Err(fail("fee below the minimum")),
+            None => return Err(fail("the fee floor overflows")),
         }
-    };
-    // 5. Authorization.
-    policy.verify(
-        &signing_context(&ctx.config),
-        &run.digest.0 .0,
-        &run.signed.auth,
-    )?;
+    }
+    // 4. The authorizing policy (§4.3), with load semantics: a missing
+    // object the text requires is an error.
+    let signed = run.signed;
+    let found = authorizing_policy(signed, &mut |id| run.try_load(id))?.map_err(fail)?;
+    if found.new_account {
+        run.store(Object {
+            id: well_known::account(&tx.sender),
+            version: Version(0),
+            owner: Owner::Account(tx.sender),
+            data: ObjectData::Account(AccountState {
+                id: tx.sender,
+                policy: found.policy.clone(),
+                viewing_key: None,
+                created_at: ctx.pulse,
+                rotations: 0,
+            }),
+        })?;
+    }
+    // 5. The check (§4.3).
+    check(&ctx.config, signed, &found.policy).map_err(fail)?;
     // 6. Inputs.
     for (position, input) in tx.inputs.iter().enumerate() {
         let object = run.load(&input.id)?;
@@ -107,7 +96,7 @@ pub(crate) fn prepare(run: &mut TxRun<'_>) -> Step {
                 if ctx.config.faucet != Some(tx.sender) {
                     return Err(fail("only the faucet account may mint"));
                 }
-                if input.id != account {
+                if input.id != well_known::account(&tx.sender) {
                     return Err(fail("the faucet's input must be its account object"));
                 }
             } else {

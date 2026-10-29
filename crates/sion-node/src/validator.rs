@@ -39,7 +39,7 @@ use crate::committees::{CommitteeView, Committees};
 use crate::config::DevnetConfig;
 use crate::keys::{NodeAuthenticator, NodeVerifier};
 use crate::owners::{AlreadyChecked, Authorized, StateOwners};
-use crate::payload::{expand, lane_inputs, PayloadItem, MAX_GROUP_BATCHES};
+use crate::payload::{expand, lane_inputs, restore, PayloadItem, MAX_GROUP_BATCHES};
 use crate::pulses::{Carry, ClosedPulse, PulseBuilder};
 use crate::storage::{LaneLog, PulseRecord, Snapshot, Wal};
 use crate::transport::{NodeId, PeerMessage, Transport, EXECUTED_CHUNK};
@@ -684,6 +684,28 @@ impl Validator {
                 self.subscribe(from);
                 self.handle_lane_request(shard, request, 0, from);
             }
+            PeerMessage::LaneBatch {
+                shard,
+                batch,
+                auth,
+                members,
+            } => {
+                // Each member is a lane request of its own; the batch's
+                // signatures are checked with the first and remembered.
+                if members.len() as u64 > sion_exec::tx::MAX_BATCH {
+                    return;
+                }
+                self.subscribe(from);
+                for member in &members {
+                    let signed = member.signed(batch, &auth);
+                    let request = LaneRequest {
+                        tx: signed.digest(),
+                        inputs: lane_inputs(&signed.tx.inputs),
+                        owner_proof: sion_core::encode::encode(&signed),
+                    };
+                    self.handle_lane_request(shard, request, 0, from);
+                }
+            }
             PeerMessage::PulseSignature {
                 pulse,
                 header,
@@ -842,15 +864,13 @@ impl Validator {
             return;
         };
         let owners = StateOwners { state: &self.state };
-        let expires_at = match owners.check(&request) {
-            Ok((signed, _)) if self.censoring && self.censored.contains(&signed.tx.sender) => {
+        // A batch's members share one signature check (spec §4.3).
+        let expires_at = match owners.check_cached(&request, &mut self.authorized) {
+            Ok(signed) if self.censoring && self.censored.contains(&signed.tx.sender) => {
                 // Censorship is silent: no approval, no rejection.
                 return;
             }
-            Ok((signed, key)) => {
-                self.authorized.insert(key);
-                signed.tx.expires_at
-            }
+            Ok(signed) => signed.tx.expires_at,
             Err(reason) => {
                 let behind =
                     sion_core::encode::decode::<sion_exec::SignedTransaction>(&request.owner_proof)
@@ -1079,8 +1099,12 @@ impl Validator {
         let mut certificates: BTreeMap<TxDigest, LaneCertificate> = BTreeMap::new();
         let mut posted = Vec::new();
         for item in closed.items {
-            let (batches, txs) = match item {
-                PayloadItem::Certified { batches, txs } => (batches, txs),
+            let (batches, authorizations, txs) = match item {
+                PayloadItem::Certified {
+                    batches,
+                    authorizations,
+                    txs,
+                } => (batches, authorizations, txs),
                 PayloadItem::Forced { tx } => {
                     posted.push(*tx);
                     continue;
@@ -1096,6 +1120,7 @@ impl Validator {
                 || batches
                     .iter()
                     .any(|b| b.signature.len() > MAX_SIGNATURE_BYTES)
+                || authorizations.len() > txs.len()
                 || txs.iter().any(|t| {
                     t.approvals.len() > seats || t.approvals.iter().any(|a| a.path.len() > 64)
                 })
@@ -1106,9 +1131,17 @@ impl Validator {
                 continue;
             }
             for grouped in &txs {
+                // A batch member's signatures come from the group's list.
+                let Some(tx) = restore(&authorizations, grouped) else {
+                    self.drop_uncertified(
+                        &grouped.tx,
+                        "references an authorization the group does not carry",
+                    );
+                    continue;
+                };
+                let tx = &tx;
                 // The certificate must lock exactly the transaction's owned
                 // inputs, with a quorum of its shard's committee.
-                let tx = &grouped.tx;
                 let Some(certificate) = expand(&batches, grouped) else {
                     self.drop_uncertified(tx, "references a batch the group does not carry");
                     continue;

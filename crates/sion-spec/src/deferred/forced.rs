@@ -6,15 +6,15 @@
 use std::collections::BTreeSet;
 
 use sion_consensus::{resample_committee, sample_committee, Committee, ConsensusError};
-use sion_core::ids::{Epoch, Pulse, ShardId, TxDigest, ValidatorId};
+use sion_core::ids::{AccountId, Epoch, Pulse, ShardId, TxDigest, ValidatorId};
 use sion_exec::execute::Event;
 use sion_exec::object::{well_known, ObjectData, Owner, ScheduledEvent};
 use sion_exec::tx::{SignedTransaction, TxKind, MAX_INPUTS};
 use sion_exec::validators::{rotation_seed, Obligation, ShardRotation};
 
 use super::{broken, rejected, DeferredRun};
+use crate::authorize::{authorizing_policy, check, required_fee};
 use crate::error::SpecError;
-use crate::prepare::signing_context;
 use crate::tx::usd;
 
 /// Why a posted intent creates no obligation (free text, not committed).
@@ -52,10 +52,10 @@ impl DeferredRun<'_> {
         } else if full {
             Err("the most obligations allowed are pending".to_owned())
         } else {
-            self.admissible(intent, &digest)?
+            self.admissible(intent)?
         };
-        let rotations = match verdict {
-            Ok(rotations) => rotations,
+        let (signer, rotations) = match verdict {
+            Ok(found) => found,
             Err(reason) => {
                 self.events.push(Event::ForcedDismissed {
                     intent: digest,
@@ -79,6 +79,7 @@ impl DeferredRun<'_> {
                 posted_at: pulse,
                 deadline,
                 missed: 0,
+                signer,
             },
         );
         self.schedule(deadline, ScheduledEvent::ForcedDeadline { intent: digest });
@@ -92,12 +93,12 @@ impl DeferredRun<'_> {
 
     /// The admissibility checks, in order, stopping at the first failure
     /// (so a dismissed intent reads only what its checks needed). Returns the
-    /// sender account's policy rotations, or why the intent is dismissed.
+    /// intent's signer and that account's policy rotations, or why the
+    /// intent is dismissed.
     fn admissible(
         &mut self,
         intent: &SignedTransaction,
-        digest: &TxDigest,
-    ) -> Result<Result<u32, Dismissal>, SpecError> {
+    ) -> Result<Result<(AccountId, u32), Dismissal>, SpecError> {
         let tx = &intent.tx;
         let ctx = self.ctx;
         // 1. Shape, expiry and fee, from the intent alone.
@@ -114,37 +115,20 @@ impl DeferredRun<'_> {
         if distinct.len() != tx.inputs.len() {
             return Ok(Err("duplicate input".into()));
         }
-        if tx.fee < ctx.config.min_fee(tx.size()) {
-            return Ok(Err("fee below the minimum".into()));
+        match required_fee(&ctx.config, intent) {
+            Some(floor) if tx.fee >= floor => {}
+            _ => return Ok(Err("fee below the minimum".into())),
         }
-        // 2. The sender's policy and rotations.
-        let account = self
-            .book
-            .try_load(&well_known::account(&tx.sender))
-            .map_err(rejected)?;
-        let (policy, rotations) = match account {
-            Some(object) => match object.data {
-                ObjectData::Account(state) => (state.policy, state.rotations),
-                _ => return Ok(Err("the account object is not an account".into())),
-            },
-            None => {
-                let Some(policy) = tx.genesis_policy.clone() else {
-                    return Ok(Err("unknown account and no genesis policy".into()));
-                };
-                if policy.validate().is_err() {
-                    return Ok(Err("invalid genesis policy".into()));
-                }
-                if policy.account_id() != tx.sender {
-                    return Ok(Err("the genesis policy does not hash to the sender".into()));
-                }
-                (policy, 0)
-            }
-        };
-        // 3. The authorization.
-        if policy
-            .verify(&signing_context(&ctx.config), &digest.0 .0, &intent.auth)
-            .is_err()
-        {
+        // 2. The authorizing policy (§4.3), every read a try_load, nothing
+        // stored: its owner is the intent's signer.
+        let book = &mut self.book;
+        let found =
+            match authorizing_policy(intent, &mut |id| book.try_load(id)).map_err(rejected)? {
+                Ok(found) => found,
+                Err(reason) => return Ok(Err(reason)),
+            };
+        // 3. The check (always made: forced intents were never locked).
+        if check(&ctx.config, intent, &found.policy).is_err() {
             return Ok(Err("the authorization does not verify".into()));
         }
         // 4. The inputs, in order.
@@ -170,7 +154,7 @@ impl DeferredRun<'_> {
                 }
             }
         }
-        Ok(Ok(rotations))
+        Ok(Ok((found.signer, found.rotations)))
     }
 
     /// **ForcedDeadline { intent }** (§6.3): an intent that can no longer
@@ -209,7 +193,7 @@ impl DeferredRun<'_> {
     /// Whether an obligation's intent could still execute: every input, in
     /// order, still exists at its version, is not a tombstone and is owned by
     /// the sender (reading stops at the first that fails), and then the
-    /// sender's account shows the same policy rotations (absent counts as 0;
+    /// signer's account shows the same policy rotations (absent counts as 0;
     /// an object that is not an account makes it unexecutable).
     fn still_executable(&mut self, obligation: &Obligation) -> Result<bool, SpecError> {
         let owner = Owner::Account(obligation.sender);
@@ -223,7 +207,7 @@ impl DeferredRun<'_> {
         }
         let account = self
             .book
-            .try_load(&well_known::account(&obligation.sender))
+            .try_load(&well_known::account(&obligation.signer))
             .map_err(rejected)?;
         let rotations = match account {
             None => 0,
@@ -341,6 +325,7 @@ mod tests {
             posted_at: Pulse(5),
             deadline: Pulse(10),
             missed: 0,
+            signer: sender,
         };
         let set = ValidatorSet {
             params: ValidatorParams {

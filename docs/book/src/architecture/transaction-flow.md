@@ -29,6 +29,12 @@ The CLI prints the sentence it signed:
 dana signs: Pay 12.5 USD to alice. Fee 0.0012 USD; valid until Pulse 22.
 ```
 
+**A batch** (specification v1.13) is built the same way, body by body,
+each with the fee floor of a member of a batch of its size
+(`Wallet::draft`, or `Keyless::draft` for a keyless subagent); then one
+wallet signs the Merkle root over their digests once and gives every member
+the authorization, its position and its path (`sion_exec::tx::sign_batch`).
+
 ## 2. The API hands it to the gateway
 
 `POST /v1/transactions` with `{"tx": "<hex of the Borsh SignedTransaction>"}`
@@ -36,17 +42,22 @@ dana signs: Pay 12.5 USD to alice. Fee 0.0012 USD; valid until Pulse 22.
 256 KiB, derives the sender's shard from its account identifier, and
 answers at once with the digest, the route (`lane` for owned paths,
 `consensus` for contended ones) and the shard. Every transaction takes the
-lane route first; a contended one then also goes through consensus.
+lane route first; a contended one then also goes through consensus. A whole
+batch goes in one `POST /v1/batches`, with its signatures once: the node
+checks the members against the root and builds their paths.
 
 ## 3. The shard's lane committee locks the inputs
 
 The gateway sends a lane request (the digest, the inputs, and the signed
 transaction as the owner's proof) to every member of the shard's lane
-committee. Each member (`sion_consensus::lanes::LaneValidator`, driven by
+committee; a batch's members in one shard go in one `LaneBatch` message,
+the batch's signatures once. Each member (`sion_consensus::lanes::LaneValidator`, driven by
 `sion_node::validator`):
 
 1. checks what execution would check before charging a fee (expiry, 1 to
-   256 distinct inputs, fee, inputs owned at those versions, signatures);
+   256 distinct inputs, fee, inputs owned at those versions, signatures:
+   a batch's the first time, then only each member's path, since the
+   validator remembers the batch, `sion_node::owners::Authorized`);
 2. locks each input version to this digest, or refuses if one is locked to
    another transaction;
 3. writes the approval to its lane log before it leaves the validator;
@@ -68,7 +79,8 @@ the gateway marks the transaction rejected:
 Once approvals reach a quorum, the gateway has a lane certificate and the
 transaction is final (certificate finality). Every 20 ms the gateway hands
 the certificates collected since the last flush to consensus as one group,
-at most 512, with each batch header carried once. It sends the group to
+at most 512, with each batch header carried once, and each transaction
+batch's authorization once. It sends the group to
 f + 1 members of the consensus committee, so at least one honest proposer
 includes it. A certified transaction not executed after 4 seconds, or
 dropped by a new consensus session, is sent again; duplicates execute once.

@@ -19,7 +19,7 @@ use crate::error::ExecError;
 use crate::market::Submission;
 use crate::object::{well_known, Object, ObjectData, ObjectRef};
 use crate::state::{ChainConfig, State};
-use crate::tx::{SignedTransaction, Transaction, TxKind};
+use crate::tx::{fee_floor, SignedTransaction, Transaction, TxKind};
 
 /// What a wallet needs to know about the state.
 pub trait StateView {
@@ -240,9 +240,157 @@ impl Wallet {
         extra: Vec<ObjectRef>,
     ) -> Result<SignedTransaction, ExecError> {
         let config = view.config().clone();
+        let tx = self.draft(view, kind, extra, None)?;
+        match tx.clone().sign(&self.keys, &config) {
+            Ok(signed) => Ok(signed),
+            Err(error) => {
+                self.forget(&tx);
+                Err(error.into())
+            }
+        }
+    }
+
+    /// Builds the body of a transaction for `kind` without signing it,
+    /// paying the fee floor of a member of a batch of `batch_size` (spec
+    /// §4.3), or of a transaction signed by itself (`None`). Its coins are
+    /// held back as if it had been sent; [`Wallet::sign_batch`] signs
+    /// bodies drafted for one batch.
+    pub fn draft(
+        &mut self,
+        view: &impl StateView,
+        kind: TxKind,
+        extra: Vec<ObjectRef>,
+        batch_size: Option<u64>,
+    ) -> Result<Transaction, ExecError> {
         let account_object = view.object(&well_known::account(&self.id));
         let genesis_policy = account_object.is_none().then(|| self.policy.clone());
-        let draws = Self::draws(view, &kind);
+        let mut extra = extra;
+        if matches!(kind, TxKind::RotatePolicy { .. }) {
+            if let Some(account) = &account_object {
+                extra.push(account.reference());
+            }
+        }
+        let account = Drafting {
+            id: self.id,
+            genesis_policy,
+            in_flight: &mut self.in_flight,
+            nonce: &mut self.nonce,
+            validity: self.validity,
+        };
+        account.draft(view, kind, extra, batch_size)
+    }
+
+    /// Signs bodies this wallet drafted for one batch, each with the
+    /// charter of its sender if that sender is a keyless subagent this
+    /// wallet's account is the nearest keyed ancestor of (spec §4.3).
+    pub fn sign_batch(
+        &self,
+        config: &ChainConfig,
+        members: Vec<(Transaction, Option<ObjectId>)>,
+    ) -> Result<Vec<SignedTransaction>, ExecError> {
+        crate::tx::sign_batch(&self.keys, self.id, config, members)
+    }
+
+    /// Releases the coins of a body that will not be sent.
+    pub fn forget(&mut self, tx: &Transaction) {
+        for input in &tx.inputs {
+            self.in_flight.remove(input);
+        }
+    }
+}
+
+/// A keyless subagent's transaction builder (spec §4.3): coin selection,
+/// inputs and fees as a [`Wallet`]'s, but no keys. Its nearest keyed
+/// ancestor's wallet signs what it drafts, in batches
+/// ([`Wallet::sign_batch`] with [`Keyless::charter`]).
+#[derive(Clone, Debug)]
+pub struct Keyless {
+    /// The subagent's charter (its id).
+    pub charter: ObjectId,
+    /// Its account, [`crate::charter::keyless_account`] of the charter.
+    pub id: AccountId,
+    /// Coin versions committed to transactions not yet executed.
+    in_flight: BTreeSet<ObjectRef>,
+    /// Distinguishes otherwise identical transactions.
+    nonce: u64,
+    /// How many Pulses a transaction stays valid.
+    pub validity: u64,
+}
+
+impl Keyless {
+    /// The builder for the keyless subagent with this charter.
+    pub fn new(charter: ObjectId) -> Keyless {
+        Keyless {
+            charter,
+            id: crate::charter::keyless_account(&charter),
+            in_flight: BTreeSet::new(),
+            nonce: 0,
+            validity: 20,
+        }
+    }
+
+    /// Forgets coins held back for pending transactions (after they executed).
+    pub fn settle(&mut self) {
+        self.in_flight.clear();
+    }
+
+    /// Builds the body of a transaction for `kind`, paying the fee floor of
+    /// a member of a batch of `batch_size`.
+    pub fn draft(
+        &mut self,
+        view: &impl StateView,
+        kind: TxKind,
+        extra: Vec<ObjectRef>,
+        batch_size: u64,
+    ) -> Result<Transaction, ExecError> {
+        let account = Drafting {
+            id: self.id,
+            genesis_policy: None,
+            in_flight: &mut self.in_flight,
+            nonce: &mut self.nonce,
+            validity: self.validity,
+        };
+        account.draft(view, kind, extra, Some(batch_size))
+    }
+}
+
+/// The account a body is drafted for, with its builder's bookkeeping.
+struct Drafting<'w> {
+    id: AccountId,
+    genesis_policy: Option<AuthPolicy>,
+    in_flight: &'w mut BTreeSet<ObjectRef>,
+    nonce: &'w mut u64,
+    validity: u64,
+}
+
+impl Drafting<'_> {
+    /// Spendable coins of `asset`, largest first, excluding those in flight.
+    fn spendable(&self, view: &impl StateView, asset: &AssetId) -> Vec<(ObjectRef, Amount)> {
+        let mut coins: Vec<(ObjectRef, Amount)> = view
+            .coins(&self.id)
+            .into_iter()
+            .filter_map(|o| {
+                let coin = o.as_coin()?;
+                (coin.asset == *asset && !self.in_flight.contains(&o.reference()))
+                    .then(|| (o.reference(), coin.amount))
+            })
+            .collect();
+        coins.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        coins
+    }
+
+    /// Picks the coins, orders the inputs, finds the fee and holds the
+    /// inputs back. `extra` are owned inputs the operation finds at
+    /// `inputs[1..]`, right after the gas coin.
+    fn draft(
+        self,
+        view: &impl StateView,
+        kind: TxKind,
+        extra: Vec<ObjectRef>,
+        batch_size: Option<u64>,
+    ) -> Result<Transaction, ExecError> {
+        let config = view.config().clone();
+        let draws = Wallet::draws(view, &kind);
         let usd_draw = draws
             .iter()
             .filter(|(asset, _)| *asset == AssetId::usd())
@@ -254,16 +402,9 @@ impl Wallet {
             .filter(|(a, _)| *a != AssetId::usd())
             .copied()
             .collect();
-        let mut extra = extra;
-        if matches!(kind, TxKind::RotatePolicy { .. }) {
-            if let Some(account) = &account_object {
-                extra.push(account.reference());
-            }
-        }
-
-        let nonce = self.nonce;
+        let nonce = *self.nonce;
         let expires_at = Pulse(view.current_pulse().0 + self.validity);
-        let extra_fee = Self::extra_fee(view, &kind);
+        let extra_fee = Wallet::extra_fee(view, &kind);
         let mut fee = config.min_fee(0).saturating_add(extra_fee);
         for _ in 0..4 {
             // USD coins: enough for the fee plus any USD the operation draws.
@@ -307,27 +448,36 @@ impl Wallet {
             inputs.extend(tail);
             let tx = Transaction {
                 sender: self.id,
-                genesis_policy: genesis_policy.clone(),
+                genesis_policy: self.genesis_policy.clone(),
                 inputs,
                 fee,
                 kind: kind.clone(),
                 expires_at,
                 nonce,
             };
-            let required = config.min_fee(tx.size()).saturating_add(extra_fee);
+            let floor = fee_floor(&config, tx.size(), batch_size)
+                .ok_or_else(|| ExecError::Invalid("the fee floor overflows".into()))?;
+            let required = floor.saturating_add(extra_fee);
             if required <= fee {
-                let signed = tx.sign(&self.keys, &config)?;
-                for input in &signed.tx.inputs {
+                // The fee is a fixed-width field: lowering it to the floor
+                // keeps the size the floor was computed for.
+                let tx = Transaction {
+                    fee: required,
+                    ..tx
+                };
+                for input in &tx.inputs {
                     self.in_flight.insert(*input);
                 }
-                self.nonce += 1;
-                return Ok(signed);
+                *self.nonce += 1;
+                return Ok(tx);
             }
             fee = required;
         }
         Err(ExecError::Invalid("fee did not converge".into()))
     }
+}
 
+impl Wallet {
     /// A faucet transaction (only the configured faucet may send it).
     pub fn faucet(
         &mut self,

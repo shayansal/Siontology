@@ -257,6 +257,12 @@ enum Command {
     /// proofs of completeness.
     #[command(subcommand)]
     Memory(sion_cli::memory::MemoryCommand),
+    /// Skills with a supply chain: pack a skill, audit a bundle, publish a
+    /// release on bonds and audits, show one, install one for an agent under
+    /// the decision rule; evaluate a skill, evolve it, and have a better
+    /// version verified by others through a bounty.
+    #[command(subcommand)]
+    Skill(sion_cli::skills::SkillCommand),
     /// Storage deals: have data kept by a provider who proves every round
     /// that it still holds it, or provide storage and be paid for it.
     #[command(subcommand)]
@@ -311,7 +317,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all.
+    /// Run a scripted demo: invoice, agents, swarm, batch, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -333,8 +339,8 @@ enum Command {
         /// Skip the end-to-end devnet measurement.
         #[arg(long)]
         no_devnet: bool,
-        /// Run only these groups: signatures, state, data, clearing,
-        /// assurance, execution, streams, devnet (comma-separated).
+        /// Run only these groups: signatures, authorization, state, data,
+        /// clearing, assurance, execution, streams, devnet (comma-separated).
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
         /// Write the measurements as JSON to this file.
@@ -860,6 +866,12 @@ fn run(cli: Cli) -> Result<(), CliError> {
         }
         return Ok(());
     }
+    // Packing, evaluating and evolving a skill need no node.
+    if let Command::Skill(command) = &cli.command {
+        if let Some(result) = sion_cli::skills::run_offline(command) {
+            return result;
+        }
+    }
     let http = HttpLedger::new(&cli.node);
     let ledger: &dyn Ledger = &http;
     if let Command::Mcp = &cli.command {
@@ -1238,10 +1250,16 @@ fn run(cli: Cli) -> Result<(), CliError> {
             )?;
             show_tx(&session.names(), &view);
         }
-        Command::Agent(command) => sion_cli::agents::run(&mut session, ledger, command)?,
+        Command::Agent(command) => sion_cli::agents::run(
+            &mut session,
+            ledger,
+            std::sync::Arc::new(http.clone()),
+            command,
+        )?,
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
         Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
+        Command::Skill(command) => sion_cli::skills::run(&mut session, ledger, command)?,
         Command::Storage(command) => sion_cli::storage::run(&mut session, ledger, command)?,
         Command::Charter(CharterCommand::Create {
             principal,

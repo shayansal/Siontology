@@ -80,10 +80,21 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   this does and does not mean).
 - **Agent identities, memory and tasks.** An agent launches subagents,
   each with its own identity, account and budget, and suspending one stops
-  its whole tree. Agents and robots keep memory in single-writer logs whose
-  heads are on the ledger, so a reader can check that an answer is
+  its whole tree. A subagent can be keyless: it has no keys of its own,
+  and its nearest keyed ancestor signs for it, one batch for up to 256
+  transactions, so a swarm costs one post-quantum signature per batch,
+  not one per action. Agents and robots keep memory in single-writer logs
+  whose heads are on the ledger, so a reader can check that an answer is
   complete and a rewrite is refused. Task Charters escrow work whose
-  acceptance is fixed when it is posted.
+  acceptance is fixed when it is posted. `sion agent run` puts an agent to
+  work with a model, under autonomy levels and approvals, while the
+  ledger enforces its charter. It installs a skill from others only when
+  the bonds and audits behind the skill cover what the agent could lose,
+  and a skill's better version is released only once verifiers, fixed
+  before it existed, have run its evaluation set and attested. Agents
+  spawn subagents with budgets carved from their own, hire each other
+  through Task Charters, run on schedules, and answer over HTTP and
+  Telegram.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,
@@ -162,6 +173,7 @@ availability and proving) and narrates what the ledger established.
 | `invoice` | Trade finance on insured knowledge: a buyer's acceptance of invoice #1042 is a bonded claim; a financier prices it with the Assurance Algebra, relies on it within its backing, and is compensated from the slashed bond when the claim proves false. |
 | `agents` | An AI agent with a budget the ledger enforces: a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent. |
 | `swarm` | Agent identities: an orchestrator launches 12 researchers in one transaction and one of them launches 3 of its own, each with its own identity, account and budget; 15 pay at once without consensus; one suspension stops the whole tree and one resumption restarts it. |
+| `batch` | Batched authorization: an orchestrator launches 64 keyless subagents in one transaction and signs one batch for a payment from each; each member pays a lower fee because the signature check is shared, and nobody else can sign for them. |
 | `tasks` | Task Charters: an eval orchestrator posts work from its budget; a result is paid only when it rests on the environment's claim and enough attested backing, and only once; a bounty is settled and another withdrawn; an exploit in the grader is proven and the lab is compensated from the vendor's bond. |
 | `robots` | Memory for robots: two robots with their own identities and memory logs share a warehouse; a reader checks complete answers against the heads on the ledger; a rewrite is refused; a curator's refutation gives two readers two provable beliefs; an index that leaves an atom out is convicted; a camera frame is forgotten; a suspended robot's memory stops growing. |
 | `storage` | Storage deals: a robot commits its memory log with its archive's root as the manifest and pays a laptop to keep the archive, proven every round; a phone that kept only half of the footage it accepted cannot answer the challenges and forfeits its collateral. |
@@ -191,6 +203,7 @@ availability and proving) and narrates what the ledger established.
 | [`sion-memory`](crates/sion-memory) | Memory for agents and robots, off the ledger: memory atoms, single-writer logs, a 4D index with range, subject, link and omission proofs, belief as a fold, sealing and forgetting |
 | [`sion-net`](crates/sion-net) | Networking between processes: QUIC with TLS 1.3, X25519MLKEM768 and pinned ML-DSA-44 raw public keys, bounded queues and quotas |
 | [`sion-http`](crates/sion-http) | Outbound HTTPS for clients, X25519MLKEM768 offered first, refusing non-public addresses |
+| [`sion-agent`](crates/sion-agent) | The agent runtime: models, tools with effects, autonomy levels and approvals, taint, a journal of side effects, budgets, sessions that pause and resume |
 | [`sion-node`](crates/sion-node) | The devnet and `sion node`: validators, gateway, prover, write-ahead log and snapshots, HTTP API |
 | [`sion-cli`](crates/sion-cli) | The `sion` command: devnet, nodes, wallets, payment streams, x402, agents, tasks, memory, storage deals, demos, light verification, MCP server, benchmarks |
 | [`sion-app-core`](crates/sion-app-core) | The app's core: the device's key, a light client that verifies the device's own receipts, payments, storage provided from the device ([apps/sion-app](apps/sion-app)) |

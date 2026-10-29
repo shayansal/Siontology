@@ -10,6 +10,138 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Fixes
+
+- The gateway answers submissions while its faucet waits. The faucet read
+  its account and checked its last transaction with queries that wait on
+  a validator (up to 15 seconds each), and signed on the gateway's own
+  thread, so a busy validator held every submission behind it and clients
+  saw "the gateway did not answer". The faucet now runs on a thread of its
+  own; the gateway only hands it grants and submits what it signed.
+
+### Batched authorization and keyless subagents (specification v1.13)
+
+- One authorization can sign a batch of up to 256 transactions: the RFC 9162
+  Merkle root over their digests, with its signer and size, signed in a
+  context of its own (`sion/tx/v1/batch/<configuration digest>`). Each
+  member carries the authorization, its position and its inclusion path.
+  Its fee floor is the usual one less 80 % of the base fee (the part that
+  pays for checking signatures), plus its share of that part, rounded up:
+  0.000304 USD instead of 0.0011 USD on the devnet in a batch of 256. New
+  types
+  `sion_exec::tx::{TxBatch, BatchMember, BatchEnvelope}`, field
+  `SignedTransaction::batch` (the encoding of every signed transaction
+  changes, so data from earlier devnets does not load), module
+  `sion_exec::auth`, and `Wallet::{draft, sign_batch}`.
+- Keyless subagents: `Spawn::agent` becomes optional, and a subagent
+  spawned without an account gets `H("sion/agent/keyless", id)`, which no
+  key controls. It acts only as a member of batches its nearest keyed
+  ancestor signs. `sion agent spawn --keyless [--gas <USD>]` spawns them
+  and writes a `.keyless` wallet file per subagent that holds no secret,
+  only its charter and the wallet that signs for it: every command that
+  takes a wallet takes its name. `sion agent pay-batch` pays from many
+  agents under one signature, or prints the batch for `POST /v1/batches`;
+  like any command, it first prints what is signed, member by member.
+  The runtime's `agent_spawn` now makes keyless subagents, so no seed is
+  made or kept for a subagent.
+- Forced intents may be batch members; an obligation records its
+  `signer`, and a rotation of the signer's policy resolves it.
+- Proof stack B implements v1.13 independently (`sion_spec::authorize`);
+  the differential tests cover batches a sender signs for itself, keyless
+  subagents at two depths and below a keyed subagent, every way a member
+  is refused, forced intents and settlements on the member's floor.
+- The node checks a batch's signatures once: validators remember a batch
+  by its message with the policy and signatures compared byte for byte,
+  the executor and both proof stacks too, so a batch of 256 costs one
+  signature check, not 256. The gateway sends each shard committee a
+  batch's members in one `LaneBatch` message, consensus groups carry each
+  batch's authorization once, and `POST /v1/batches` takes a whole batch
+  with its signatures once.
+- `sion demo batch`: 64 keyless subagents pay in one batch. `sion bench
+  --only authorization` measures checks and bytes signed alone and in
+  batches, and a Pulse of agent payments both ways. New trust atoms
+  `agent:keyless-signer` and `impl:batch-size-fee`. Docs: [Batched
+  authorization](docs/book/src/concepts/batched-authorization.md).
+
+### An agent runtime
+
+- New crate `sion-agent`: runs a language model as an agent. Models: the
+  Anthropic Messages API (version 2026-10-21, automatic prompt caching),
+  any OpenAI-compatible API, and a scripted model; a busy model cools
+  down for 30 seconds while the next is asked. Tools declare an effect
+  (read, write, external, spend); autonomy levels L0 to L6 decide what
+  runs, what waits for a person's approval (valid 15 minutes) and what is
+  refused. Content from outside taints a session for 24 hours, during
+  which external calls and spending need approval. A journal returns the
+  recorded outcome of a repeated call and never repeats one whose outcome
+  is unknown. Runs are bounded (12 turns, 4 more per turn of progress, at
+  most 32), compacted when long, stopped by a kill switch, and pause and
+  resume from disk. Sessions export as chat-format trajectories.
+- `sion agent run | continue | sessions | trace | kill-switch`: an agent
+  identity at work, with the ledger as tools (`ledger_balance`,
+  `ledger_pay` under its charter, `ledger_transaction`), files in a
+  workspace and public web pages. The ledger refuses a payment outside
+  the charter whatever the runtime's level. New trust atoms
+  `agent:local-policy`, `agent:provider-sees-context` and
+  `agent:plain-sessions`. Guide: [Agents at
+  work](docs/book/src/guides/agent-runtime.md).
+- Memory: `sion agent run --memory <log>|new` gives the agent its memory
+  log and the tools `memory_remember`, `memory_recall` (proved complete
+  against the ledger for a subject and a relation), `memory_search`,
+  `memory_forget` (a retraction; nothing is deleted) and `memory_commit`.
+  Its preferences, goals and procedures are in every prompt, and each
+  finished session is recorded as an episode with its trajectory's digest.
+- Skills in the Agent Skills format (`sion_agent::skills`): the agent's
+  skills are listed in every prompt, read on use (`skill_read`,
+  `skill_file`), and written or improved by the agent (`skill_write`),
+  which keeps the versions it replaces; a skill's bundle is a canonical
+  encoding of its files.
+- Skills from others: `sion skill pack | audit | publish | show |
+  install`. A release (`skill/v1`) is a claim on the publisher's bond or
+  on audits of the same bundle (`skill.audit/v1`, each on its auditor's
+  bond), which add up. Installing checks the bundle against the release's
+  root and accepts the release with the agent's remaining budget at risk;
+  a release whose backing does not cover it is refused before anything is
+  signed. An installed skill cannot be rewritten by the agent, and one
+  whose release is falsified is taken out of use before the next run;
+  the agents that relied on it are compensated from the slashed bonds.
+  New trust atom `agent:local-skill-checks`. Guide: [Skills from
+  others](docs/book/src/guides/skills.md).
+- Skills that get better: evaluation sets (`sion_agent::evals`: cases
+  with stand-in tools and checks, fixed by the digest of their bytes) and
+  evolution (`sion_agent::evolve`: a mutator model proposes variants for
+  the cases a version fails; gates for purpose, size, novelty and
+  regressions; a Pareto front). `sion skill eval` (with trajectories
+  labelled by result), `evolve` (the best version kept as a draft),
+  `vouch` (an evaluation set's author stands behind it on a bond,
+  `skill.evals/v1`), `bounty` (a Task Charter for a better version, its
+  spec, verifiers and required claims fixed first), `verify` (a named
+  verifier runs the set and attests), `submit` (result and settlement),
+  `publish --evidence` (the release rests on the settled result and
+  records it) and `lineage`. New trust atom `agent:eval-runs`. Guide:
+  [Skills that get better](docs/book/src/guides/skill-improvement.md).
+- After a finished task with at least five successful tool calls and no
+  skill written, `sion agent run` asks the agent whether to write down how
+  it did it, with only its skill tools (`--no-reflect` to skip).
+- Scripted models: a step can play only `when` the conversation contains
+  a text, or `unless` it does; a resumed session's script goes on from the
+  step it reached.
+- Teams, schedules and channels. `sion agent run --delegate` adds
+  `agent_spawn` (a subagent with a budget carved from the agent's, fee
+  money from its account, and a session of its own with the models of
+  `--subagent-model`, two levels deep at most), `task_post` (a Task
+  Charter from the agent's budget), `task_status` and `task_submit` (a
+  worker's result on its task bond, and the settlement). `sion agent
+  profile` keeps how to run an agent under a name; `sion agent schedule`
+  and `sion agent scheduler` run a profile's task once, every interval or
+  on cron (`sion_agent::schedule`, UTC), delivering its answer to a file, a
+  webhook or Telegram; `sion agent serve` (HTTP, bearer token) and
+  `sion agent telegram` (long polling, allowed chats) carry conversations,
+  each a session, with `/approve`, `/decline`, `/new` and `/status`. New
+  trust atoms `agent:channel-token`, `agent:telegram-chats` and
+  `agent:local-scheduler`. Guide: [Teams, schedules and
+  channels](docs/book/src/guides/agent-teams.md).
+
 ### Fixes from the review of storage deals, pooled stake and the app
 
 An independent review of storage deals and the app, and a review of the
