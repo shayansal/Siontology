@@ -18,6 +18,8 @@ Commit messages before the rename use the working name, Fold.
   thread, so a busy validator held every submission behind it and clients
   saw "the gateway did not answer". The faucet now runs on a thread of its
   own; the gateway only hands it grants and submits what it signed.
+- The app core's devnet tests take turns: three devnets at once on a
+  2-core machine starved each other past the tests' deadlines.
 
 ### Batched authorization and keyless subagents (specification v1.13)
 

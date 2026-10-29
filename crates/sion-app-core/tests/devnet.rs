@@ -1,13 +1,23 @@
 //! The app core against a devnet served over HTTP, as a shell uses it.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sion_app_core::AppCore;
 use sion_node::{Devnet, DevnetConfig};
 
+/// Each test runs a whole devnet; two at once on a small machine starve
+/// each other's validators past the tests' deadlines, so they take turns.
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    static DEVNETS: Mutex<()> = Mutex::new(());
+    DEVNETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn an_install_verifies_the_chain_pays_and_delegates() {
+    let _turn = one_at_a_time();
     let devnet = Arc::new(
         Devnet::start(DevnetConfig {
             rounds_per_pulse: 2,
@@ -99,6 +109,7 @@ fn an_install_verifies_the_chain_pays_and_delegates() {
 
 #[test]
 fn a_device_follows_new_epochs_without_starting_over() {
+    let _turn = one_at_a_time();
     let devnet = Arc::new(
         Devnet::start(DevnetConfig {
             rounds_per_pulse: 2,
@@ -160,6 +171,7 @@ fn a_device_follows_new_epochs_without_starting_over() {
 
 #[test]
 fn a_device_provides_storage_and_proves_its_rounds() {
+    let _turn = one_at_a_time();
     use sion_cli::ledger::HttpLedger;
     use sion_cli::session::Session;
     use sion_exec::storage::DataTree;
@@ -242,8 +254,9 @@ fn a_device_provides_storage_and_proves_its_rounds() {
 
     // The device takes it and proves rounds until the deal is closed;
     // turned off after the first proof, it takes nothing new but keeps
-    // proving the deal it holds.
-    let deadline = Instant::now() + Duration::from_secs(180);
+    // proving the deal it holds. Three rounds of 16 Pulses: a deadline for
+    // a slow machine (one without SHA extensions signs slowly).
+    let deadline = Instant::now() + Duration::from_secs(600);
     let mut on = true;
     let mut log: Vec<String> = Vec::new();
     loop {
