@@ -35,6 +35,7 @@ $ curl -s http://127.0.0.1:8730/v1/accounts/xyz
 | GET | `/v1/claims/{id}` | A claim, its status, cost of corruption and inclusion proof |
 | POST | `/v1/claims/{id}/decide` | The decision rule for a value at risk |
 | POST | `/v1/transactions` | Submit a signed transaction |
+| POST | `/v1/batches` | Submit a whole batch of transactions under one authorization (spec v1.13) |
 | GET | `/v1/transactions/{digest}` | A transaction's status, effects and receipt proof |
 | POST | `/v1/faucet` | Devnet faucet |
 | GET | `/v1/pulses/latest`, `/v1/pulses/{n}` | A Pulse's header, certificate and summary |
@@ -234,7 +235,41 @@ a contended kind), and the sender's shard. Track the transaction with
 {"error":"tx is not a Borsh SignedTransaction"}
 ```
 
-A transaction over 256 KiB is refused with `transaction too large`.
+A transaction over 256 KiB is refused with `transaction too large`. A
+batch member (spec v1.13) can be submitted here like any transaction, with
+the batch's signatures, its position and its path; a whole batch is
+cheaper through `POST /v1/batches`.
+
+## `POST /v1/batches`
+
+Body: `{"batch": "<hex of the Borsh-encoded BatchEnvelope>"}`: the batch
+(`TxBatch { signer, size, root }`), its one authorization, and every
+member's body with, for a keyless sender, its charter, in the batch's
+order (`sion_exec::tx::BatchEnvelope`). The node checks that the members
+are the whole batch (as many as its size, their leaves giving its root),
+builds each member's inclusion path, and hands the members to its gateway
+together, which asks each shard's committee for theirs in one message. The
+answer has the batch's root and a receipt per member, as `POST
+/v1/transactions` gives one:
+
+```text
+$ sion agent pay-batch orchestrator carol 1 --agents "$W1,$W2,$W3" --print > batch.hex
+$ curl -s -X POST -H 'Content-Type: application/json' http://127.0.0.1:8793/v1/batches -d "{\"batch\": \"$(cat batch.hex)\"}"
+{"batch":"554e1cd7c8a30a339e7ae0633991d701364bb8fff8ccad0b0d657047ad0a1cb9","members":[{"digest":"fca975f57370c8e7f660cbcd546744378272d90b2f74d1c3fabd3f625e556181","route":"lane","shard":0},{"digest":"669e636ef5d24f7545c6a931d70b45b2b526d3d2465b867a4ab5c3e6fcd2053a","route":"lane","shard":1},{"digest":"30ecd86632a443215659305ffdf3d18065c9381bd88995e95e83bb9c82bf2e34","route":"lane","shard":1}]}
+```
+
+Here three keyless subagents' payments, from a devnet on port 8793, went
+to two shards. The members' signatures are not checked here: the lane
+committees check them, once for the batch. Errors: a body that is not an
+envelope, a size that is not the number of members (here the size field
+edited to 4), and members whose leaves do not give the root (one bit of
+the root flipped):
+
+```text
+{"error":"batch is not a Borsh BatchEnvelope"}
+{"error":"the batch says it holds 4, the envelope has 3"}
+{"error":"the members do not give the batch's root"}
+```
 
 ## `GET /v1/transactions/{digest}`
 

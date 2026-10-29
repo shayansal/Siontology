@@ -11,6 +11,7 @@
 //! | GET | `/v1/claims/{id}` | claim, status, cost of corruption, inclusion proof |
 //! | POST | `/v1/claims/{id}/decide` | the decision rule for `{value, policy?}` |
 //! | POST | `/v1/transactions` | submit `{tx: hex(borsh(SignedTransaction))}` |
+//! | POST | `/v1/batches` | submit a whole batch `{batch: hex(borsh(BatchEnvelope))}`, its signatures once (spec v1.13) |
 //! | GET | `/v1/transactions/{digest}` | status, effects and receipt proof |
 //! | POST | `/v1/faucet` | devnet faucet `{account, amount, asset?}` (micro-units) |
 //! | GET | `/v1/pulses/latest`, `/v1/pulses/{n}` | header, certificate, summary |
@@ -39,6 +40,7 @@ use sion_core::encode::decode;
 use sion_core::hash::Hash32;
 use sion_core::ids::{AccountId, AssetId, ClaimId, ObjectId, Pulse, TxDigest};
 use sion_core::Amount;
+use sion_exec::tx::BatchEnvelope;
 use sion_exec::SignedTransaction;
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -52,6 +54,8 @@ pub trait Backend: Send + Sync + 'static {
     fn query(&self, query: Query) -> Result<Value, String>;
     /// Submits a signed transaction through a gateway.
     fn submit(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String>;
+    /// Submits the members of one batch through a gateway.
+    fn submit_batch(&self, members: Vec<SignedTransaction>) -> Result<Vec<SubmitReceipt>, String>;
     /// Where a transaction is.
     fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String>;
     /// Queues faucet grants (test networks).
@@ -74,6 +78,10 @@ impl Backend for Devnet {
 
     fn submit(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
         Devnet::submit(self, tx)
+    }
+
+    fn submit_batch(&self, members: Vec<SignedTransaction>) -> Result<Vec<SubmitReceipt>, String> {
+        Devnet::submit_batch(self, members)
     }
 
     fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String> {
@@ -208,6 +216,11 @@ struct SubmitBody {
 }
 
 #[derive(Deserialize)]
+struct BatchBody {
+    batch: String,
+}
+
+#[derive(Deserialize)]
 struct FaucetBody {
     account: String,
     amount: u128,
@@ -264,6 +277,19 @@ fn route<B: Backend>(backend: &B, request: &mut Request) -> Result<Value, HttpEr
                 decode(&bytes).map_err(|_| bad("tx is not a Borsh SignedTransaction"))?;
             let receipt = backend.submit(tx)?;
             Ok(serde_json::to_value(receipt).unwrap_or(Value::Null))
+        }
+        (Method::Post, ["v1", "batches"]) => {
+            // A whole batch, its signatures once: the members are checked
+            // against its root and size, then each goes through the gateway
+            // with its path (spec §4.3).
+            let submit: BatchBody = body(request)?;
+            let bytes = hex::decode(submit.batch.trim()).map_err(|_| bad("batch must be hex"))?;
+            let envelope: BatchEnvelope =
+                decode(&bytes).map_err(|_| bad("batch is not a Borsh BatchEnvelope"))?;
+            let root = envelope.batch.root;
+            let members = envelope.members().map_err(bad)?;
+            let receipts = backend.submit_batch(members)?;
+            Ok(json!({ "batch": root.to_hex(), "members": receipts }))
         }
         (Method::Post, ["v1", "forced"]) => {
             let submit: SubmitBody = body(request)?;

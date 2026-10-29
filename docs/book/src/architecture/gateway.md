@@ -26,6 +26,12 @@ A transaction it refused before may be submitted again: validators may
 have caught up, or its inputs been released. Submitting the same
 transaction twice while it is in flight changes nothing.
 
+The members of one batch (specification v1.13, `GatewayInput::SubmitBatch`,
+from `POST /v1/batches`) are admitted one by one in the same way, but each
+shard's committee gets their lane requests in one `LaneBatch` message: the
+batch, its authorization once, and each member's body and place. A member
+asked again after a silence is asked with a lane request of its own.
+
 ## Collecting approvals
 
 Approvals arrive from validators' batches. The gateway checks each one

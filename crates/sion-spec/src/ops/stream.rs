@@ -18,6 +18,7 @@ use sion_exec::stream::{
 };
 use sion_exec::tx::object_domain;
 
+use crate::authorize::required_fee;
 use crate::error::{fail, Step};
 use crate::tx::TxRun;
 
@@ -167,11 +168,11 @@ pub(super) fn settle(
             (position - base) + 1 + jump.path.len() as u64
         }
     };
-    // Step 4.
-    let floor = run
-        .ctx
-        .config
-        .min_fee(run.tx.size())
+    // Step 4: on top of the transaction's own floor (§4.3), which preparation
+    // already found computable.
+    let own =
+        required_fee(&run.ctx.config, run.signed).ok_or_else(|| fail("the fee floor overflows"))?;
+    let floor = own
         .0
         .saturating_add(STREAM_STEP_FEE.0.saturating_mul(u128::from(hashes)));
     if run.tx.fee.0 < floor {

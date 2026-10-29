@@ -115,6 +115,7 @@ mod tests {
                     posted_at: Pulse(3),
                     deadline: Pulse(11),
                     missed,
+                    signer: AccountId::derive(&[n]),
                 },
             );
         }

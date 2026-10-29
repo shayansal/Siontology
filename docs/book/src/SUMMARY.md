@@ -40,6 +40,7 @@
 - [Task Charters](concepts/task-charters.md)
 - [Privacy](concepts/privacy.md)
 - [Post-quantum identity](concepts/post-quantum.md)
+- [Batched authorization](concepts/batched-authorization.md)
 - [Censorship resistance](concepts/censorship-resistance.md)
 - [Validators, staking and epochs](concepts/committees.md)
   - [Staking](concepts/validators/staking.md)

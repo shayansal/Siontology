@@ -30,6 +30,7 @@ second line of defence.
 | `Consensus` | other validators | Feeds the consensus core |
 | `Submit` | the gateway, the API (forced intents) | Proposes the payload item in its next header |
 | `Lane` | the gateway | Checks and locks a transaction's inputs for one shard |
+| `LaneBatch` | the gateway | The lane requests of a batch's members in one shard: each checked and locked as a `Lane` request, the batch's signatures checked once and remembered |
 | `PulseSignature` | other validators | Collects signatures on a Pulse header until it is certified |
 | `ForcedApproval` | other validators | Collects approvals of a forced intent, so a certificate forms without the gateway |
 | `Adversary` | `POST /v1/devnet/censor` | Adversary simulation: censors accounts |

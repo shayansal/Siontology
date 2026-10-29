@@ -41,7 +41,7 @@ use sion_exec::object::{
     created_id, well_known, CoordinationClass, Object, ObjectData, ObjectRef, Owner, ScheduledEvent,
 };
 use sion_exec::pulse::ChunkTrace;
-use sion_exec::sim::Chain;
+use sion_exec::sim::{Chain, Sender};
 use sion_exec::validators::{
     possession_digest, Equivocation, EvidenceApproval, ForcedObligations, ForcedParams,
     ValidatorParams, ValidatorRecord, ValidatorSet, ValidatorStatus,
@@ -157,6 +157,16 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::ProveStorage { .. } => "ProveStorage",
         TxKind::SettleDeal { .. } => "SettleDeal",
         TxKind::CloseDeal { .. } => "CloseDeal",
+    }
+}
+
+/// How a transaction is authorized (spec §4.3): signed by itself, as a
+/// member of a batch its sender signed, or as a keyless subagent's.
+fn auth_mode(signed: &SignedTransaction) -> &'static str {
+    match &signed.batch {
+        None => "own",
+        Some(member) if member.charter.is_some() => "keyless",
+        Some(_) => "batch",
     }
 }
 
@@ -374,6 +384,18 @@ impl Harness {
             .unwrap_or_else(|e| panic!("{name} cannot build the transaction: {e}"))
     }
 
+    /// Builds `members` and signs them as one batch with `signer`'s keys
+    /// (spec §4.3).
+    fn batch(
+        &mut self,
+        signer: &str,
+        members: Vec<(Sender<'_>, TxKind, Vec<ObjectRef>)>,
+    ) -> Vec<SignedTransaction> {
+        self.chain
+            .batch(signer, members)
+            .unwrap_or_else(|e| panic!("{signer} cannot sign the batch: {e}"))
+    }
+
     /// Signs an edited transaction body with `name`'s keys, for this chain.
     fn resign(&self, name: &str, body: Transaction) -> SignedTransaction {
         body.sign(&self.chain.wallet(name).keys, &self.chain.state.config)
@@ -515,6 +537,11 @@ impl Harness {
                     self.coverage.insert(format!(
                         "{}/{}",
                         kind_name(&signed.tx.kind),
+                        outcome_tag(outcome_of(&effects.status))
+                    ));
+                    self.coverage.insert(format!(
+                        "auth/{}/{}",
+                        auth_mode(signed),
                         outcome_tag(outcome_of(&effects.status))
                     ));
                 }
@@ -2397,7 +2424,7 @@ fn charter_state(h: &Harness, id: &ObjectId) -> sion_exec::charter::Charter {
 
 fn spawn_child(agent: AccountId, caveats: Caveats, budget: Amount, card: &[u8]) -> Spawn {
     Spawn {
-        agent,
+        agent: Some(agent),
         card: card_commitment(card),
         caveats,
         budget,
@@ -2818,6 +2845,717 @@ fn agents_register_spawn_suspend_resume_and_revoke() {
 #[test]
 fn agents_many_transactions_per_chunk() {
     agents(5).summary("agents (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: batched authorization and keyless subagents (spec v1.13)
+// ---------------------------------------------------------------------------
+
+/// The fee a member of a batch of `size` must pay at least (spec §4.3),
+/// computed here from the text: the configuration's floor less 80 % of the
+/// base fee, plus that share split between the members, rounded up.
+fn member_floor(h: &Harness, tx: &Transaction, size: u64) -> Amount {
+    let config = &h.chain.state.config;
+    let share = config.base_fee.0 * 800 / 1000;
+    Amount(config.min_fee(tx.size()).0 - share + share.div_ceil(u128::from(size)))
+}
+
+fn transfer_kind(to: AccountId, amount: Amount) -> TxKind {
+    TxKind::Transfer {
+        asset: usd(),
+        outputs: vec![(to, amount)],
+    }
+}
+
+/// An agent payment from a charter's allotment, as an action of a batch.
+fn pay_action<'a>(
+    h: &Harness,
+    sender: Sender<'a>,
+    charter: ObjectId,
+    allotment: ObjectId,
+    payee: AccountId,
+    amount: Amount,
+) -> (Sender<'a>, TxKind, Vec<ObjectRef>) {
+    (
+        sender,
+        TxKind::AgentPay {
+            charter,
+            payee,
+            amount,
+            purpose: "a batched tool call".into(),
+            evidence: None,
+        },
+        vec![h.reference(&allotment)],
+    )
+}
+
+fn keyless_child(caveats: Caveats, budget: Amount, card: &[u8]) -> Spawn {
+    Spawn {
+        agent: None,
+        card: card_commitment(card),
+        caveats,
+        budget,
+    }
+}
+
+/// A spawn sent as the only member of a batch `signer` signs, for a parent
+/// that is itself keyless.
+fn keyless_spawn(
+    h: &mut Harness,
+    signer: &str,
+    parent: ObjectId,
+    allotment: ObjectId,
+    children: Vec<Spawn>,
+) -> SignedTransaction {
+    let input = h.reference(&allotment);
+    h.batch(
+        signer,
+        vec![(
+            Sender::Keyless(parent),
+            TxKind::SpawnAgents {
+                charter: parent,
+                children,
+            },
+            vec![input],
+        )],
+    )
+    .remove(0)
+}
+
+fn batches(chunk_size: usize) -> Harness {
+    let mut h = Harness::new(
+        &["principal", "lead", "worker", "vendor", "stranger"],
+        10_000,
+        8,
+        chunk_size,
+    );
+    let (lead, worker, vendor) = (h.id("lead"), h.id("worker"), h.id("vendor"));
+
+    // --- Batches a sender signs for itself ---------------------------------
+
+    // Three transfers on one authorization, each paying the member floor.
+    let members = h.batch(
+        "lead",
+        (1..=3)
+            .map(|n| {
+                (
+                    Sender::Named("lead"),
+                    transfer_kind(vendor, units(n)),
+                    Vec::new(),
+                )
+            })
+            .collect(),
+    );
+    assert!(members.iter().all(|m| m.auth == members[0].auth));
+    for member in &members {
+        assert_eq!(member.tx.fee, member_floor(&h, &member.tx, 3));
+        assert!(member.tx.fee < h.chain.state.config.min_fee(member.tx.size()));
+    }
+    let out = h.pulse(members.clone());
+    for member in &members {
+        expect(&out, member, Outcome::Success);
+    }
+
+    // A member paying the floor of a bigger batch than it is in.
+    let drafted = h
+        .chain
+        .wallets
+        .get_mut("lead")
+        .unwrap()
+        .draft(
+            &h.chain.state,
+            transfer_kind(vendor, units(1)),
+            Vec::new(),
+            Some(200),
+        )
+        .unwrap();
+    let cheap = h
+        .chain
+        .wallet("lead")
+        .sign_batch(&h.chain.state.config, vec![(drafted, None)])
+        .unwrap()
+        .remove(0);
+    let out = h.pulse(vec![cheap.clone()]);
+    expect(&out, &cheap, Outcome::Rejected);
+    h.settle();
+
+    // A batch signed by one account for another's transaction.
+    let foreign = h.batch(
+        "lead",
+        vec![(
+            Sender::Named("stranger"),
+            transfer_kind(vendor, units(1)),
+            Vec::new(),
+        )],
+    );
+    let out = h.pulse(foreign.clone());
+    expect(&out, &foreign[0], Outcome::Rejected);
+    h.settle();
+
+    // Tampering: a body changed after signing, a position past the size, a
+    // size of zero or above the limit, a batch's signature presented as a
+    // transaction's and a transaction's as a batch's. Each is rejected.
+    let originals = h.batch(
+        "lead",
+        vec![
+            (
+                Sender::Named("lead"),
+                transfer_kind(vendor, units(2)),
+                Vec::new(),
+            ),
+            (
+                Sender::Named("lead"),
+                transfer_kind(vendor, units(3)),
+                Vec::new(),
+            ),
+        ],
+    );
+    let mut edited = originals[0].clone();
+    edited.tx.nonce += 1_000;
+    let mut beyond = originals[1].clone();
+    beyond.batch.as_mut().unwrap().index = 2;
+    let mut empty = originals[1].clone();
+    empty.batch.as_mut().unwrap().batch.size = 0;
+    let mut huge = originals[1].clone();
+    huge.batch.as_mut().unwrap().batch.size = sion_exec::tx::MAX_BATCH + 1;
+    let mut unbatched = originals[0].clone();
+    unbatched.batch = None;
+    let own = h.tx("lead", transfer_kind(vendor, units(4)));
+    let mut rebatched = own.clone();
+    rebatched.batch = Some(sion_exec::tx::BatchMember {
+        batch: sion_exec::tx::TxBatch {
+            signer: lead,
+            size: 1,
+            root: sion_exec::tx::batch_leaf(&own.digest()),
+        },
+        index: 0,
+        path: Vec::new(),
+        charter: None,
+    });
+    for forged in [&edited, &beyond, &empty, &huge, &unbatched, &rebatched] {
+        let out = h.pulse(vec![forged.clone()]);
+        expect(&out, forged, Outcome::Rejected);
+    }
+    h.settle();
+    // The originals still execute: tampered copies changed nothing.
+    let out = h.pulse(originals.clone());
+    for member in &originals {
+        expect(&out, member, Outcome::Success);
+    }
+
+    // A new account's first transaction as a batch member: its genesis
+    // policy creates the account.
+    let newcomer = h.chain.add_wallet("newcomer");
+    h.fund(&[("newcomer", usd(), units(10))]);
+    let first = h.batch(
+        "newcomer",
+        vec![(
+            Sender::Named("newcomer"),
+            transfer_kind(vendor, units(1)),
+            Vec::new(),
+        )],
+    );
+    assert!(first[0].tx.genesis_policy.is_some());
+    let out = h.pulse(first.clone());
+    expect(&out, &first[0], Outcome::Success);
+    assert!(h
+        .chain
+        .state
+        .objects
+        .contains_key(&well_known::account(&newcomer)));
+
+    // --- Keyless subagents ---------------------------------------------------
+
+    let register = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: lead,
+            card: card_commitment(b"lead card"),
+            caveats: charter_caveats(vendor),
+            funding: units(1_000),
+            agent_bond: units(100),
+        },
+    );
+    let out = h.pulse(vec![register.clone()]);
+    expect(&out, &register, Outcome::Success);
+    let (root, root_allotment) = agent_registered(&out, &register);
+
+    // Two keyless subagents and a keyed one in one spawn.
+    let mut lean = charter_caveats(vendor);
+    lean.max_per_payment = units(20);
+    lean.max_per_window = units(50);
+    let spawn_tx = spawn(
+        &mut h,
+        "lead",
+        root,
+        root_allotment,
+        vec![
+            keyless_child(lean.clone(), units(100), b"k1"),
+            keyless_child(lean.clone(), units(100), b"k2"),
+            spawn_child(worker, lean.clone(), units(100), b"worker"),
+        ],
+    );
+    let out = h.pulse(vec![spawn_tx.clone()]);
+    expect(&out, &spawn_tx, Outcome::Success);
+    let spawned = agents_spawned(&out, &spawn_tx);
+    let [(k1, k1_allotment), (k2, k2_allotment), (w, w_allotment)] = spawned[..] else {
+        panic!("three subagents");
+    };
+    let (k1_account, k2_account) = (h.chain.keyless_id(&k1), h.chain.keyless_id(&k2));
+    assert_eq!(charter_state(&h, &k1).agent, k1_account);
+    assert_eq!(charter_state(&h, &k2).agent, k2_account);
+    assert_eq!(charter_state(&h, &w).agent, worker);
+    assert!(all_events(&out).iter().any(|event| matches!(
+        event,
+        Event::AgentSpawned { account, .. } if *account == k1_account
+    )));
+
+    // Gas for the keyless subagents, then one batch: both pay and lead
+    // pays too, on one signature.
+    let gas = h.tx(
+        "lead",
+        TxKind::Transfer {
+            asset: usd(),
+            outputs: vec![(k1_account, units(1)), (k2_account, units(1))],
+        },
+    );
+    let out = h.pulse(vec![gas.clone()]);
+    expect(&out, &gas, Outcome::Success);
+    let actions = vec![
+        pay_action(&h, Sender::Keyless(k1), k1, k1_allotment, vendor, units(5)),
+        pay_action(&h, Sender::Keyless(k2), k2, k2_allotment, vendor, units(6)),
+        (
+            Sender::Named("lead"),
+            transfer_kind(vendor, units(1)),
+            Vec::new(),
+        ),
+    ];
+    let swarm = h.batch("lead", actions);
+    let out = h.pulse(swarm.clone());
+    for member in &swarm {
+        expect(&out, member, Outcome::Success);
+    }
+    assert_eq!(swarm[0].tx.sender, k1_account);
+    // Its keyless caveats still bind: a payment above its limit fails (the
+    // fee is paid), and a payee outside the list too.
+    let over = h.batch(
+        "lead",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(k1),
+            k1,
+            k1_allotment,
+            vendor,
+            units(21),
+        )],
+    );
+    let out = h.pulse(over.clone());
+    expect(&out, &over[0], Outcome::Failed);
+
+    // Nobody else signs for a keyless subagent.
+    let hijack = h.batch(
+        "stranger",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(k1),
+            k1,
+            k1_allotment,
+            vendor,
+            units(1),
+        )],
+    );
+    let out = h.pulse(hijack.clone());
+    expect(&out, &hijack[0], Outcome::Rejected);
+    h.settle();
+    // A keyless account has no key of its own: signed by itself, or in a
+    // batch naming no charter, it is never authorized.
+    let lone = sion_exec::wallet::Keyless::new(k1)
+        .draft(
+            &h.chain.state,
+            transfer_kind(vendor, Amount(100)),
+            Vec::new(),
+            1,
+        )
+        .unwrap();
+    let self_signed = h.resign("lead", lone.clone());
+    let out = h.pulse(vec![self_signed.clone()]);
+    expect(&out, &self_signed, Outcome::Rejected);
+    let nameless = h
+        .chain
+        .wallet("lead")
+        .sign_batch(&h.chain.state.config, vec![(lone.clone(), None)])
+        .unwrap()
+        .remove(0);
+    let out = h.pulse(vec![nameless.clone()]);
+    expect(&out, &nameless, Outcome::Rejected);
+    // Naming another subagent's charter, or a keyed charter, is refused.
+    let mut swapped = h
+        .chain
+        .wallet("lead")
+        .sign_batch(&h.chain.state.config, vec![(lone.clone(), Some(k2))])
+        .unwrap()
+        .remove(0);
+    let out = h.pulse(vec![swapped.clone()]);
+    expect(&out, &swapped, Outcome::Rejected);
+    swapped.batch.as_mut().unwrap().charter = Some(w);
+    let out = h.pulse(vec![swapped.clone()]);
+    expect(&out, &swapped, Outcome::Rejected);
+    let mut keyed_body = lone.clone();
+    keyed_body.sender = h.chain.keyless_id(&w);
+    let keyed = h
+        .chain
+        .wallet("lead")
+        .sign_batch(&h.chain.state.config, vec![(keyed_body, Some(w))])
+        .unwrap()
+        .remove(0);
+    let out = h.pulse(vec![keyed.clone()]);
+    expect(&out, &keyed, Outcome::Rejected);
+    // A charter that does not exist.
+    let ghost_charter = ObjectId::derive(b"no such charter");
+    let mut ghost_body = lone.clone();
+    ghost_body.sender = h.chain.keyless_id(&ghost_charter);
+    let ghost = h
+        .chain
+        .wallet("lead")
+        .sign_batch(
+            &h.chain.state.config,
+            vec![(ghost_body, Some(ghost_charter))],
+        )
+        .unwrap()
+        .remove(0);
+    let out = h.pulse(vec![ghost.clone()]);
+    expect(&out, &ghost, Outcome::Rejected);
+
+    // A keyless subagent spawns a keyless grandchild; the nearest keyed
+    // ancestor of both is lead's, so lead signs for both.
+    let grandchild = keyless_spawn(
+        &mut h,
+        "lead",
+        k1,
+        k1_allotment,
+        vec![keyless_child(lean.clone(), units(20), b"g1")],
+    );
+    let out = h.pulse(vec![grandchild.clone()]);
+    expect(&out, &grandchild, Outcome::Success);
+    let (g1, g1_allotment) = agents_spawned(&out, &grandchild)[0];
+    let g1_account = h.chain.keyless_id(&g1);
+    let gas = h.tx("lead", transfer_kind(g1_account, units(1)));
+    let out = h.pulse(vec![gas.clone()]);
+    expect(&out, &gas, Outcome::Success);
+    let deep = h.batch(
+        "lead",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(g1),
+            g1,
+            g1_allotment,
+            vendor,
+            units(2),
+        )],
+    );
+    let out = h.pulse(deep.clone());
+    expect(&out, &deep[0], Outcome::Success);
+
+    // Below a keyed subagent, its own agent signs: worker, not lead.
+    let worker_spawn = spawn(
+        &mut h,
+        "worker",
+        w,
+        w_allotment,
+        vec![keyless_child(lean.clone(), units(10), b"w1")],
+    );
+    let out = h.pulse(vec![worker_spawn.clone()]);
+    expect(&out, &worker_spawn, Outcome::Success);
+    let (w1, w1_allotment) = agents_spawned(&out, &worker_spawn)[0];
+    let w1_account = h.chain.keyless_id(&w1);
+    let gas = h.tx("worker", transfer_kind(w1_account, units(1)));
+    let out = h.pulse(vec![gas.clone()]);
+    expect(&out, &gas, Outcome::Success);
+    let by_lead = h.batch(
+        "lead",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(w1),
+            w1,
+            w1_allotment,
+            vendor,
+            units(1),
+        )],
+    );
+    let out = h.pulse(by_lead.clone());
+    expect(&out, &by_lead[0], Outcome::Rejected);
+    h.settle();
+    let by_worker = h.batch(
+        "worker",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(w1),
+            w1,
+            w1_allotment,
+            vendor,
+            units(1),
+        )],
+    );
+    let out = h.pulse(by_worker.clone());
+    expect(&out, &by_worker[0], Outcome::Success);
+
+    // Suspending the subtree stops keyless payments too: authorized, but
+    // the charter check fails, so the fee is paid.
+    let suspend = h.tx("lead", TxKind::SuspendAgent { charter: k1 });
+    let out = h.pulse(vec![suspend.clone()]);
+    expect(&out, &suspend, Outcome::Success);
+    let suspended = h.batch(
+        "lead",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(g1),
+            g1,
+            g1_allotment,
+            vendor,
+            units(1),
+        )],
+    );
+    let out = h.pulse(suspended.clone());
+    expect(&out, &suspended[0], Outcome::Failed);
+    let resume = h.tx("lead", TxKind::ResumeAgent { charter: k1 });
+    let out = h.pulse(vec![resume.clone()]);
+    expect(&out, &resume, Outcome::Success);
+
+    // --- Forced intents ------------------------------------------------------
+
+    // A keyless payment posted as a forced intent: its signer is lead.
+    let intent = h.batch(
+        "lead",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(k2),
+            k2,
+            k2_allotment,
+            vendor,
+            units(1),
+        )],
+    );
+    let wrong = h.batch(
+        "stranger",
+        vec![pay_action(
+            &h,
+            Sender::Keyless(k1),
+            k1,
+            k1_allotment,
+            vendor,
+            units(1),
+        )],
+    );
+    h.settle();
+    let out = h.pulse_forced(Vec::new(), vec![intent[0].clone(), wrong[0].clone()]);
+    let events = &out.deferred_events;
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::ForcedPosted { intent: d, .. } if *d == intent[0].digest()
+    )));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::ForcedDismissed { intent: d, .. } if *d == wrong[0].digest()
+    )));
+    let obligation = h.obligations().pending[&intent[0].digest()].clone();
+    assert_eq!(obligation.sender, k2_account);
+    assert_eq!(obligation.signer, lead);
+    // lead rotates its policy before the deadline: the batch's signature no
+    // longer counts, so the shard is not blamed when the intent stays out.
+    let policy = h.chain.wallet("lead").policy.clone();
+    let rotate = h.tx(
+        "lead",
+        TxKind::RotatePolicy {
+            policy,
+            viewing_key: None,
+        },
+    );
+    let out = h.pulse(vec![rotate.clone()]);
+    expect(&out, &rotate, Outcome::Success);
+    let deadline = obligation.deadline.0;
+    h.advance_to(deadline);
+    let last = h.chain.history.last().unwrap();
+    assert!(last.output.deferred_events.iter().any(|e| matches!(
+        e,
+        Event::ForcedResolved { intent: d } if *d == intent[0].digest()
+    )));
+
+    // --- Fees that build on the member floor ---------------------------------
+
+    // A stream's settlement as a batch member pays the member floor plus the
+    // per-hash fee.
+    let anchor_seed = Hash32([42; 32]);
+    let chain_len = 8u64;
+    let elements: Vec<Hash32> = std::iter::successors(Some(anchor_seed), |x| {
+        Some(hash_domain(sion_exec::stream::STEP_DOMAIN, &x.0))
+    })
+    .take(chain_len as usize + 1)
+    .collect();
+    let head = elements[chain_len as usize];
+    let open = h.tx(
+        "lead",
+        TxKind::OpenStream {
+            payee: vendor,
+            asset: usd(),
+            unit: Amount(1_000),
+            length: chain_len,
+            anchor: head,
+            deposit: units(1),
+            until: Pulse(h.pulse_number() + 100),
+            checkpoints: None,
+        },
+    );
+    let out = h.pulse(vec![open.clone()]);
+    expect(&out, &open, Outcome::Success);
+    let stream = out
+        .effects
+        .iter()
+        .find(|e| e.digest == open.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::StreamOpened { stream, .. } => Some(*stream),
+                _ => None,
+            })
+        })
+        .expect("stream opened");
+    let settle = h.batch(
+        "vendor",
+        vec![(
+            Sender::Named("vendor"),
+            TxKind::SettleStream {
+                stream,
+                position: 3,
+                value: elements[chain_len as usize - 3],
+                jump: None,
+            },
+            Vec::new(),
+        )],
+    );
+    let out = h.pulse(settle.clone());
+    expect(&out, &settle[0], Outcome::Success);
+
+    h.assert_covered(&[
+        "auth/own/ok",
+        "auth/batch/ok",
+        "auth/batch/rejected",
+        "auth/keyless/ok",
+        "auth/keyless/failed",
+        "auth/keyless/rejected",
+        "SpawnAgents/ok",
+        "AgentPay/ok",
+        "AgentPay/failed",
+        "SettleStream/ok",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn batches_and_keyless_subagents() {
+    batches(1).summary("batches");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 8,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0xba7c_4e55),
+        ..ProptestConfig::default()
+    })]
+
+    /// Random batches from an agent and its keyless subagents, some members
+    /// tampered with: both stacks agree on every chunk, a tampered member is
+    /// rejected, and every other member executes.
+    #[test]
+    fn random_batches_are_verified_chunk_by_chunk(
+        chunk_size in 1usize..4,
+        batches in proptest::collection::vec(
+            (1u8..16, proptest::collection::vec(0u8..8, 4)),
+            1..4,
+        ),
+    ) {
+        let mut h = Harness::new(&["principal", "lead", "vendor"], 10_000, 8, chunk_size);
+        let (lead, vendor) = (h.id("lead"), h.id("vendor"));
+        let register = h.tx(
+            "principal",
+            TxKind::RegisterAgent {
+                agent: lead,
+                card: Hash32::ZERO,
+                caveats: charter_caveats(vendor),
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        );
+        let out = h.pulse(vec![register.clone()]);
+        let (root, root_allotment) = agent_registered(&out, &register);
+        let mut lean = charter_caveats(vendor);
+        lean.max_per_window = units(50);
+        let spawn_tx = spawn(
+            &mut h,
+            "lead",
+            root,
+            root_allotment,
+            (0..3).map(|n| keyless_child(lean.clone(), units(100), &[n])).collect(),
+        );
+        let out = h.pulse(vec![spawn_tx.clone()]);
+        let children = agents_spawned(&out, &spawn_tx);
+        let gas = h.tx(
+            "lead",
+            TxKind::Transfer {
+                asset: usd(),
+                outputs: children
+                    .iter()
+                    .map(|(charter, _)| (h.chain.keyless_id(charter), units(1)))
+                    .collect(),
+            },
+        );
+        h.pulse(vec![gas]);
+        for (senders, tampering) in batches {
+            // Which of lead and its three subagents send, each at most once.
+            let mut actions = Vec::new();
+            for who in 0..4u8 {
+                if senders & (1 << who) == 0 {
+                    continue;
+                }
+                actions.push(if who == 0 {
+                    (Sender::Named("lead"), transfer_kind(vendor, Amount(1_000)), Vec::new())
+                } else {
+                    let (charter, allotment) = children[usize::from(who - 1)];
+                    pay_action(&h, Sender::Keyless(charter), charter, allotment, vendor, Amount(1_000))
+                });
+            }
+            let mut members = h.batch("lead", actions);
+            let mut tampered = Vec::new();
+            for (member, how) in members.iter_mut().zip(&tampering) {
+                let place = member.batch.as_mut().unwrap();
+                match how {
+                    // An edited body, a position past the batch, another
+                    // signer named, signatures dropped.
+                    4 => member.tx.nonce ^= 1 << 40,
+                    5 => place.index = place.batch.size,
+                    6 => place.batch.signer = vendor,
+                    7 => member.auth = Default::default(),
+                    _ => continue,
+                }
+                tampered.push(member.digest());
+            }
+            let out = h.pulse(members.clone());
+            for member in &members {
+                let outcome = if tampered.contains(&member.digest()) {
+                    Outcome::Rejected
+                } else {
+                    Outcome::Success
+                };
+                expect(&out, member, outcome);
+            }
+        }
+        h.assert_minimal_witnesses();
+    }
+}
+
+#[test]
+fn batches_many_transactions_per_chunk() {
+    batches(4).summary("batches (chunks of 4)");
 }
 
 // ---------------------------------------------------------------------------
@@ -7975,6 +8713,7 @@ fn probe_signatures_are_bound_to_the_chain() {
             .authorize(sion_exec::tx::TX_DOMAIN, &body.digest().0 .0)
             .expect("signing"),
         tx: body.clone(),
+        batch: None,
     };
     let out = h.pulse(vec![foreign.clone()]);
     expect(&out, &foreign, Outcome::Rejected);

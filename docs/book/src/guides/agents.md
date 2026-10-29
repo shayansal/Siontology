@@ -54,7 +54,67 @@ sion charter pay researcher-1 <researcher id> <researcher allotment> carol 8 \
 A payment above the subagent's limit, or to a payee not on its list, is
 refused by the ledger.
 
-## 5. Inspect
+## 5. Keyless subagents
+
+A subagent does not need keys of its own. Launch keyless ones and the
+orchestrator's wallet signs for all of them:
+
+```bash
+sion agent spawn orchestrator <agent id> <allotment> --keyless \
+  --count 3 --budget 40 --max-payment 10 --prefix worker --gas 0.01
+```
+
+Each keyless subagent's account is derived from its id
+(`H("sion/agent/keyless", id)`), which no key controls; the ledger accepts
+its transactions only as members of a batch signed by its nearest keyed
+ancestor, here the orchestrator. Nothing secret is written: each name gets
+a `.keyless` file under `$SION_HOME/wallets` that records the subagent and
+the wallet that signs for it:
+
+```text
+$ cat $SION_HOME/wallets/worker-1.keyless
+{
+  "charter": "81fc211e28c4d6df634ee034cfda5a2e130df8d0ca26a82fbe835731e4b75eb7",
+  "signer": "orchestrator"
+}
+```
+
+`--gas 0.01` sends each subagent 0.01 USD from the orchestrator's account
+for its fees, in one transfer. Every command that takes a wallet takes a
+keyless name, and signs with the orchestrator's keys:
+
+```bash
+sion charter pay worker-1 <worker id> <worker allotment> carol 8 \
+  --purpose "a tool call"
+```
+
+To pay from many subagents at once, sign one batch for all of them:
+
+```bash
+sion agent pay-batch orchestrator carol 1 \
+  --agents <worker-1 id>,<worker-2 id>,<worker-3 id> --purpose "tool calls"
+```
+
+It prints what the orchestrator signs, then each payment's outcome:
+
+```text
+orchestrator signs one batch of 3 transactions:
+  As an agent under charter 81fc211e, pay 1 USD to carol for "tool calls". Fee 0.000567 USD; valid until Pulse 33.
+  As an agent under charter 38731f06, pay 1 USD to carol for "tool calls". Fee 0.000567 USD; valid until Pulse 33.
+  As an agent under charter 21e080bf, pay 1 USD to carol for "tool calls". Fee 0.000567 USD; valid until Pulse 33.
+Pulse 16: Done: agent paid 1 USD to carol (receipt claim 52480131); fee 0.000567 USD.
+Pulse 16: Done: agent paid 1 USD to carol (receipt claim 4a296f0c); fee 0.000567 USD.
+Pulse 16: Done: agent paid 1 USD to carol (receipt claim 4de2fe2b); fee 0.000567 USD.
+```
+
+Each payment is a transaction of its own, with its own receipt and fee;
+the three share one authorization. A member of a batch of three pays a fee
+floor of 0.000567 USD on the devnet, against 0.0011 USD for a transaction
+signed by itself (see [Batched authorization](../concepts/batched-authorization.md)).
+`sion agent show` marks a keyless subagent with `"keyless": true` and names
+the account that signs for it in `signed_for_by`.
+
+## 6. Inspect
 
 ```bash
 sion agent show <researcher id>
@@ -63,7 +123,7 @@ sion agent show <researcher id>
 prints the agent's account, principal, backer, card, depth, status,
 remaining budget and lineage up to the root.
 
-## 6. Suspend, resume, revoke
+## 7. Suspend, resume, revoke
 
 ```bash
 sion agent suspend alice <agent id>              # the whole tree stops

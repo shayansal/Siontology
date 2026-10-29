@@ -317,7 +317,7 @@ enum Command {
         #[arg(long)]
         no_world: bool,
     },
-    /// Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all.
+    /// Run a scripted demo: invoice, agents, swarm, batch, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all.
     Demo {
         /// Which demo.
         #[arg(default_value = "all")]
@@ -339,8 +339,8 @@ enum Command {
         /// Skip the end-to-end devnet measurement.
         #[arg(long)]
         no_devnet: bool,
-        /// Run only these groups: signatures, state, data, clearing,
-        /// assurance, execution, streams, devnet (comma-separated).
+        /// Run only these groups: signatures, authorization, state, data,
+        /// clearing, assurance, execution, streams, devnet (comma-separated).
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
         /// Write the measurements as JSON to this file.

@@ -31,9 +31,24 @@ use sion_exec::object::well_known;
 use sion_exec::{ObjectData, SignedTransaction, Transaction, TxKind, Wallet};
 
 use crate::payload::{lane_inputs, PayloadItem};
-use crate::transport::{NodeId, PeerMessage, Transport};
+use crate::transport::{LaneMember, NodeId, PeerMessage, Transport};
 use crate::validator::Shared;
 use crate::view::{Query, SubmitReceipt, TxStatus};
+
+/// Hands the members of one batch to a gateway and waits for its receipts.
+pub fn submit_batch_to(
+    gateway: &std::sync::mpsc::Sender<GatewayInput>,
+    members: Vec<SignedTransaction>,
+    timeout: Duration,
+) -> Result<Vec<SubmitReceipt>, String> {
+    let (reply, answer) = std::sync::mpsc::channel();
+    gateway
+        .send(GatewayInput::SubmitBatch { members, reply })
+        .map_err(|_| "gateway stopped".to_string())?;
+    answer
+        .recv_timeout(timeout)
+        .map_err(|_| "gateway did not answer".to_string())?
+}
 
 /// How a gateway asks a validator about the state (the faucet's account,
 /// whether its grants executed): a channel to a validator thread in the same
@@ -49,6 +64,15 @@ pub enum GatewayInput {
         tx: Box<SignedTransaction>,
         /// Where to answer.
         reply: Sender<Result<SubmitReceipt, String>>,
+    },
+    /// A client submits the members of one batch (spec v1.13): each
+    /// shard's committee gets their lane requests in one message, the
+    /// batch's signatures once.
+    SubmitBatch {
+        /// The members, all of one batch.
+        members: Vec<SignedTransaction>,
+        /// Where to answer, a receipt per member.
+        reply: Sender<Result<Vec<SubmitReceipt>, String>>,
     },
     /// A message from a validator (an approval, a refusal or an execution
     /// report), with the sender as the transport stamped it.
@@ -172,6 +196,10 @@ const FAUCET_QUEUE_LIMIT: usize = 10_000;
 
 /// One faucet grant: recipient, asset, amount.
 type Grant = (AccountId, AssetId, Amount);
+
+/// Whom to ask for a transaction's lane approvals: its shard and the
+/// members of the shard's committee.
+type Ask = (ShardId, Vec<NodeId>);
 
 impl Gateway {
     /// A gateway that reaches validators through `net`, receives what they
@@ -379,6 +407,9 @@ impl Gateway {
             GatewayInput::Submit { tx, reply } => {
                 let _ = reply.send(self.submit(*tx));
             }
+            GatewayInput::SubmitBatch { members, reply } => {
+                let _ = reply.send(self.submit_batch(members));
+            }
             GatewayInput::Peer { from, message } => self.on_peer(from, *message),
             GatewayInput::Faucet { grants, reply } => {
                 if grants.iter().any(|(_, _, a)| *a == Amount::ZERO) {
@@ -417,6 +448,77 @@ impl Gateway {
     }
 
     fn submit(&mut self, signed: SignedTransaction) -> Result<SubmitReceipt, String> {
+        let request = LaneRequest {
+            tx: signed.digest(),
+            inputs: lane_inputs(&signed.tx.inputs),
+            owner_proof: encode(&signed),
+        };
+        let (receipt, ask) = self.admit(signed)?;
+        if let Some((shard, members)) = ask {
+            self.net
+                .send_all(&members, &PeerMessage::Lane { shard, request });
+        }
+        Ok(receipt)
+    }
+
+    /// Submits the members of one batch: each is admitted as
+    /// [`Gateway::submit`] admits a transaction, and each shard's committee
+    /// gets the lane requests of its members in one message, with the
+    /// batch's signatures once. Members of different batches go one by one.
+    fn submit_batch(
+        &mut self,
+        members: Vec<SignedTransaction>,
+    ) -> Result<Vec<SubmitReceipt>, String> {
+        let shared = members.first().and_then(|first| {
+            let batch = first.batch.as_ref()?.batch;
+            members
+                .iter()
+                .all(|m| m.auth == first.auth && m.batch.as_ref().map(|b| b.batch) == Some(batch))
+                .then(|| (batch, first.auth.clone()))
+        });
+        let Some((batch, auth)) = shared else {
+            return members.into_iter().map(|m| self.submit(m)).collect();
+        };
+        if members.len() as u64 > sion_exec::tx::MAX_BATCH {
+            return Err("a batch holds at most 256 transactions".into());
+        }
+        let mut receipts = Vec::with_capacity(members.len());
+        let mut asks: BTreeMap<ShardId, (Vec<NodeId>, Vec<LaneMember>)> = BTreeMap::new();
+        for signed in members {
+            let place = signed.batch.clone().expect("a batch member");
+            let tx = signed.tx.clone();
+            let (receipt, ask) = self.admit(signed)?;
+            if let Some((shard, nodes)) = ask {
+                asks.entry(shard)
+                    .or_insert_with(|| (nodes, Vec::new()))
+                    .1
+                    .push(LaneMember {
+                        tx,
+                        index: place.index,
+                        path: place.path,
+                        charter: place.charter,
+                    });
+            }
+            receipts.push(receipt);
+        }
+        for (shard, (nodes, members)) in asks {
+            self.net.send_all(
+                &nodes,
+                &PeerMessage::LaneBatch {
+                    shard,
+                    batch,
+                    auth: auth.clone(),
+                    members,
+                },
+            );
+        }
+        Ok(receipts)
+    }
+
+    /// Admits a transaction for certification: its receipt, and the shard
+    /// and committee members to ask for lane approvals, if they are to be
+    /// asked (not when it is already known, or censored).
+    fn admit(&mut self, signed: SignedTransaction) -> Result<(SubmitReceipt, Option<Ask>), String> {
         let digest = signed.digest();
         if signed.size() > 256 * 1024 {
             return Err("transaction too large".into());
@@ -440,7 +542,7 @@ impl Gateway {
             self.statuses.remove(&digest);
         }
         if self.pending.contains_key(&digest) || self.statuses.contains_key(&digest) {
-            return Ok(receipt);
+            return Ok((receipt, None));
         }
         if self.pending.len() >= PENDING_LIMIT {
             return Err("the gateway is busy; try again shortly".into());
@@ -454,24 +556,17 @@ impl Gateway {
                     approvals: 0,
                 },
             );
-            return Ok(receipt);
+            return Ok((receipt, None));
         }
         let committee = self
             .lane_committee(shard)
             .ok_or("no committee for the shard yet")?;
         let inputs = lane_inputs(&signed.tx.inputs);
-        let request = LaneRequest {
-            tx: digest,
-            inputs: inputs.clone(),
-            owner_proof: encode(&signed),
-        };
         let members: Vec<NodeId> = committee
             .members()
             .iter()
             .map(|(member, _)| NodeId::Validator(*member))
             .collect();
-        self.net
-            .send_all(&members, &PeerMessage::Lane { shard, request });
         self.pending.insert(
             digest,
             Pending {
@@ -494,7 +589,7 @@ impl Gateway {
                 approvals: 0,
             },
         );
-        Ok(receipt)
+        Ok((receipt, Some((shard, members))))
     }
 
     /// Hands every certificate collected since the last flush to consensus,

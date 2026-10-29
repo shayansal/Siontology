@@ -23,6 +23,7 @@
 //! | `tx` | §3 | create, mint, draw, charge_fee_from_gas, finalize_inputs |
 //! | `prepare` | §4.1 | preparation (failures reject) |
 //! | `outcome` | §4.2 | success, failure with fee, rejection |
+//! | `authorize` | §4.3 | fee floor, authorizing policy, check (v1.13) |
 //! | `ops` | §5 | one function per transaction kind |
 //! | `deferred` | §6.3 | the deferred phase: items, forced intents, due events, epochs |
 //! | [`commit`] | §7 | effects leaves, accumulators, steps |
@@ -32,6 +33,7 @@
 
 #![warn(missing_docs)]
 
+mod authorize;
 pub mod chunk;
 pub mod commit;
 pub mod context;

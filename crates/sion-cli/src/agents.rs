@@ -11,7 +11,7 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 use sion_assurance::Policy;
 use sion_core::hash::Hash32;
-use sion_core::ids::{ObjectId, Pulse};
+use sion_core::ids::{AccountId, AssetId, ObjectId, Pulse};
 use sion_core::Amount;
 use sion_exec::charter::{card_commitment, Caveats, Charter, Spawn, MAX_SPAWN_BATCH};
 use sion_exec::execute::Event;
@@ -20,7 +20,7 @@ use sion_exec::TxKind;
 
 use crate::error::CliError;
 use crate::ledger::{Ledger, LedgerExt};
-use crate::session::{create_wallet, wallet_dir, Session};
+use crate::session::{create_wallet, wallet_dir, Actor, Session};
 
 /// `sion agent …`
 #[derive(Debug, Subcommand)]
@@ -92,6 +92,38 @@ pub enum AgentCommand {
         /// The subagents may launch subagents of their own.
         #[arg(long)]
         may_spawn: bool,
+        /// Keyless subagents (spec v1.13): no keys are made for them. Each
+        /// account is derived from the subagent's id, and the wallet that
+        /// signs for the parent signs for them, in batches. Their names
+        /// become `.keyless` wallet files that hold no secret.
+        #[arg(long)]
+        keyless: bool,
+        /// Give each subagent this much USD from the parent's account for
+        /// its transaction fees (all in one transaction).
+        #[arg(long)]
+        gas: Option<String>,
+    },
+    /// Pay from several agents in one batch (spec v1.13): one payment from
+    /// each agent's own budget, all authorized by one signature of
+    /// `signer`, the agents' own wallet or, for keyless agents, the wallet
+    /// of their nearest keyed ancestor.
+    PayBatch {
+        /// The wallet that signs the batch.
+        signer: String,
+        /// Payee (wallet or account).
+        payee: String,
+        /// USD each agent pays.
+        amount: String,
+        /// The agents (their ids, comma-separated), at most 256.
+        #[arg(long, value_delimiter = ',', required = true)]
+        agents: Vec<String>,
+        /// What the payments are for.
+        #[arg(long, default_value = "")]
+        purpose: String,
+        /// Print the batch as `POST /v1/batches` takes it (Borsh, in hex)
+        /// instead of sending it.
+        #[arg(long)]
+        print: bool,
     },
     /// Show an agent: account, principal, lineage, card, status, budget.
     Show {
@@ -537,6 +569,8 @@ pub fn run(
             max_payment,
             max_window,
             may_spawn,
+            keyless,
+            gas,
         } => {
             if count == 0 {
                 return Err(CliError::Usage("--count must be at least 1".into()));
@@ -567,17 +601,30 @@ pub fn run(
             caveats.may_delegate = may_spawn && own.caveats.may_delegate;
             let card = read_card(card.as_deref())?;
             let budget = parse_amount(&budget)?;
-            let mut names = Vec::with_capacity(count);
-            for i in 1..=count {
-                let name = format!("{prefix}-{i}");
-                ensure_wallet(&name)?;
-                names.push(name);
+            let gas = gas.as_deref().map(parse_amount).transpose()?;
+            let signer = session.signer_of(&parent);
+            let names: Vec<String> = (1..=count).map(|i| format!("{prefix}-{i}")).collect();
+            for name in &names {
+                if keyless {
+                    let dir = crate::session::wallet_dir();
+                    for file in [format!("{name}.seed"), format!("{name}.keyless")] {
+                        if dir.join(&file).exists() {
+                            return Err(CliError::Usage(format!(
+                                "{} already exists: choose another --prefix",
+                                dir.join(file).display()
+                            )));
+                        }
+                    }
+                } else {
+                    ensure_wallet(name)?;
+                }
             }
+            let mut accounts = Vec::with_capacity(count);
             for batch in names.chunks(MAX_SPAWN_BATCH) {
                 let children: Vec<Spawn> = batch
                     .iter()
                     .map(|name| Spawn {
-                        agent: session.id(name),
+                        agent: (!keyless).then(|| session.id(name)),
                         card,
                         caveats: caveats.clone(),
                         budget,
@@ -590,20 +637,119 @@ pub fn run(
                     vec![input],
                 )?;
                 print_receipt(session, &view);
-                let spawned: Vec<(ObjectId, ObjectId)> = view
+                let spawned: Vec<(ObjectId, AccountId, ObjectId)> = view
                     .effects
                     .events
                     .iter()
                     .filter_map(|event| match event {
                         Event::AgentSpawned {
-                            agent, allotment, ..
-                        } => Some((*agent, *allotment)),
+                            agent,
+                            account,
+                            allotment,
+                            ..
+                        } => Some((*agent, *account, *allotment)),
                         _ => None,
                     })
                     .collect();
-                for (name, (id, own_allotment)) in batch.iter().zip(&spawned) {
-                    println!("{name}: agent {id} allotment {own_allotment}");
+                for (name, (id, account, own_allotment)) in batch.iter().zip(&spawned) {
+                    if keyless {
+                        crate::session::create_keyless_alias(
+                            name,
+                            &crate::session::KeylessAlias {
+                                charter: *id,
+                                signer: signer.clone(),
+                            },
+                        )?;
+                        println!(
+                            "{name}: agent {id} account {account} allotment {own_allotment} (keyless; {signer} signs for it)"
+                        );
+                    } else {
+                        println!("{name}: agent {id} allotment {own_allotment}");
+                    }
+                    accounts.push(*account);
                 }
+            }
+            if let Some(gas) = gas {
+                for chunk in accounts.chunks(256) {
+                    let view = session.send(
+                        &parent,
+                        TxKind::Transfer {
+                            asset: AssetId::usd(),
+                            outputs: chunk.iter().map(|account| (*account, gas)).collect(),
+                        },
+                        Vec::new(),
+                    )?;
+                    print_receipt(session, &view);
+                }
+            }
+            Ok(())
+        }
+        AgentCommand::PayBatch {
+            signer,
+            payee,
+            amount,
+            agents,
+            purpose,
+            print,
+        } => {
+            if agents.len() > sion_exec::tx::MAX_BATCH as usize {
+                return Err(CliError::Usage(format!(
+                    "a batch holds at most {} transactions",
+                    sion_exec::tx::MAX_BATCH
+                )));
+            }
+            let amount = parse_amount(&amount)?;
+            let payee = session.id(&payee);
+            let mut actions = Vec::with_capacity(agents.len());
+            for agent in &agents {
+                let charter = parse_id(agent, "agent")?;
+                let state = identity(ledger, charter)?;
+                // A keyless agent's own account sends; a keyed one is the
+                // signer's own.
+                let actor = if sion_exec::charter::is_keyless(&charter, &state) {
+                    Actor::Keyless(charter)
+                } else {
+                    Actor::Wallet(signer.clone())
+                };
+                let mut source = None;
+                for id in &state.allotments {
+                    if let Some(object) = ledger.object(*id)? {
+                        if matches!(&object.data, ObjectData::Allotment(a) if a.remaining >= amount)
+                        {
+                            source = Some(object.reference());
+                            break;
+                        }
+                    }
+                }
+                let source = source.ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "agent {} has no allotment holding {amount} USD",
+                        charter.short()
+                    ))
+                })?;
+                actions.push((
+                    actor,
+                    TxKind::AgentPay {
+                        charter,
+                        payee,
+                        amount,
+                        purpose: purpose.clone(),
+                        evidence: None,
+                    },
+                    vec![source],
+                ));
+            }
+            if print {
+                let members = session.sign_batch(&signer, actions)?;
+                session.settle_all();
+                let envelope = sion_exec::tx::BatchEnvelope::of(&members)
+                    .ok_or_else(|| CliError::Protocol("not one whole batch".into()))?;
+                println!("{}", hex::encode(sion_core::encode::encode(&envelope)));
+                return Ok(());
+            }
+            let views = session.send_batch(&signer, actions)?;
+            for view in &views {
+                print_receipt(session, view);
             }
             Ok(())
         }
@@ -697,13 +843,20 @@ pub fn card_template(name: &str, description: &str, url: &str) -> Value {
 /// An agent's identity record, lineage and status, as JSON.
 pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
     let charter = identity(ledger, id)?;
+    let keyless = sion_exec::charter::is_keyless(&id, &charter);
     let mut lineage = Vec::new();
+    // A keyless agent's signer: the agent of its nearest keyed ancestor
+    // (spec §4.3).
+    let mut signer = None;
     let mut next = charter.parent;
     while let Some(parent) = next {
         if lineage.len() == sion_exec::charter::MAX_CHARTER_CHAIN {
             break;
         }
         let above = identity(ledger, parent)?;
+        if keyless && signer.is_none() && !sion_exec::charter::is_keyless(&parent, &above) {
+            signer = Some(above.agent);
+        }
         lineage.push(json!({
             "agent": parent,
             "account": above.agent,
@@ -736,6 +889,8 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
         "agent": id,
         "did": did(ledger, &id)?,
         "account": charter.agent,
+        "keyless": keyless,
+        "signed_for_by": signer,
         "principal": charter.principal,
         "backer": charter.backer,
         "card": charter.identity.as_ref().map(|i| i.card),

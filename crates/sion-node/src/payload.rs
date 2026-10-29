@@ -12,6 +12,12 @@
 //! batch header once and each approval as a reference (batch, position,
 //! path): a group of a hundred transactions costs a handful of dual
 //! signatures instead of three hundred.
+//!
+//! **Batched transactions** (spec v1.13). The members of a transaction
+//! batch share one authorization, and a group carries it once: each member
+//! travels with its signatures moved to the group's list and an index into
+//! it, so a group of 256 members costs one dual signature for their
+//! authorization, not 256.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,6 +27,7 @@ use sion_consensus::{ApprovalProof, BatchHeader, LaneCertificate, ObjectRef as L
 use sion_core::encode::{decode, encode};
 use sion_core::hash::Hash32;
 use sion_core::ids::{Pulse, ValidatorId};
+use sion_crypto::Authorization;
 use sion_exec::{ObjectRef, SignedTransaction};
 
 /// A validator's signed batch header.
@@ -46,19 +53,25 @@ pub struct ApprovalRef {
 /// A certified transaction inside a group.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct GroupedTx {
-    /// The transaction.
+    /// The transaction. A batch member whose authorization the group
+    /// carries has no signatures here ([`restore`] puts them back).
     pub tx: SignedTransaction,
     /// Its approvals.
     pub approvals: Vec<ApprovalRef>,
+    /// For a batch member, the index of its authorization in the group's.
+    pub authorization: Option<u32>,
 }
 
 /// One consensus payload item.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum PayloadItem {
-    /// Certified transactions (owned-path or contended) sharing batch headers.
+    /// Certified transactions (owned-path or contended) sharing batch
+    /// headers and batch authorizations.
     Certified {
         /// Signed batch headers, each once.
         batches: Vec<SignedBatchHeader>,
+        /// Transaction batches' authorizations, each once.
+        authorizations: Vec<Authorization>,
         /// Transactions with their approvals.
         txs: Vec<GroupedTx>,
     },
@@ -108,8 +121,10 @@ impl PayloadItem {
     pub fn group(certified: Vec<(SignedTransaction, LaneCertificate)>) -> PayloadItem {
         let mut index: BTreeMap<Hash32, u32> = BTreeMap::new();
         let mut batches = Vec::new();
+        let mut shared: BTreeMap<Hash32, u32> = BTreeMap::new();
+        let mut authorizations = Vec::new();
         let mut txs = Vec::with_capacity(certified.len());
-        for (tx, certificate) in certified {
+        for (mut tx, certificate) in certified {
             let mut approvals = Vec::with_capacity(certificate.approvals.len());
             for proof in certificate.approvals {
                 let key = proof.batch.signing_digest();
@@ -126,9 +141,24 @@ impl PayloadItem {
                     path: proof.path,
                 });
             }
-            txs.push(GroupedTx { tx, approvals });
+            let authorization = authorization_key(&tx).map(|key| {
+                let auth = std::mem::take(&mut tx.auth);
+                *shared.entry(key).or_insert_with(|| {
+                    authorizations.push(auth);
+                    (authorizations.len() - 1) as u32
+                })
+            });
+            txs.push(GroupedTx {
+                tx,
+                approvals,
+                authorization,
+            });
         }
-        PayloadItem::Certified { batches, txs }
+        PayloadItem::Certified {
+            batches,
+            authorizations,
+            txs,
+        }
     }
 
     /// Splits certified transactions into groups that each fit a consensus
@@ -146,9 +176,11 @@ impl PayloadItem {
         let mut out = Vec::new();
         let mut current: Vec<(SignedTransaction, LaneCertificate)> = Vec::new();
         let mut headers: BTreeSet<Hash32> = BTreeSet::new();
+        let mut shared: BTreeSet<Hash32> = BTreeSet::new();
         let mut bytes = EMPTY_GROUP_LEN;
         for (tx, certificate) in certified {
-            let added = |headers: &BTreeSet<Hash32>| {
+            let shared_key = authorization_key(&tx);
+            let added = |headers: &BTreeSet<Hash32>, shared: &BTreeSet<Hash32>| {
                 let mut fresh = BTreeSet::new();
                 let mut len = grouped_len(&tx, &certificate);
                 for proof in &certificate.approvals {
@@ -157,20 +189,29 @@ impl PayloadItem {
                         len += header_len(proof);
                     }
                 }
+                // A batch member's authorization goes to the group's list,
+                // once.
+                if let Some(key) = shared_key {
+                    if !shared.contains(&key) {
+                        len += encoded_len(&tx.auth);
+                    }
+                }
                 (len, fresh)
             };
-            let (mut len, mut fresh) = added(&headers);
+            let (mut len, mut fresh) = added(&headers, &shared);
             let full = bytes + len > max_bytes
                 || current.len() >= max_txs
                 || headers.len() + fresh.len() > MAX_GROUP_BATCHES;
             if full && !current.is_empty() {
                 out.push(PayloadItem::group(std::mem::take(&mut current)));
                 headers.clear();
+                shared.clear();
                 bytes = EMPTY_GROUP_LEN;
-                (len, fresh) = added(&headers);
+                (len, fresh) = added(&headers, &shared);
             }
             bytes += len;
             headers.extend(fresh);
+            shared.extend(shared_key);
             current.push((tx, certificate));
         }
         if !current.is_empty() {
@@ -184,20 +225,43 @@ impl PayloadItem {
 /// groups before expanding anything.
 pub const MAX_GROUP_BATCHES: usize = 4_096;
 
-/// Encoded length of an empty certified group: the variant tag and two
+/// Encoded length of an empty certified group: the variant tag and three
 /// vector lengths.
-const EMPTY_GROUP_LEN: usize = 1 + 4 + 4;
+const EMPTY_GROUP_LEN: usize = 1 + 4 + 4 + 4;
 
-/// Encoded length of a transaction inside a group: the transaction, then
-/// each approval as a reference (batch index, leaf index, path).
+/// Which batch authorization a transaction shares with other members of
+/// its batch: the batch and the signatures (`None` for a transaction signed
+/// by itself, whose signatures stay with it).
+fn authorization_key(tx: &SignedTransaction) -> Option<Hash32> {
+    let member = tx.batch.as_ref()?;
+    Some(sion_core::hash::hash_parts(
+        "sion/node/group-authorization",
+        &[&encode(&member.batch), &encode(&tx.auth)],
+    ))
+}
+
+/// Encoded length of a transaction inside a group: the transaction (a batch
+/// member without its signatures), each approval as a reference (batch
+/// index, leaf index, path), and the authorization's index.
 fn grouped_len(tx: &SignedTransaction, certificate: &LaneCertificate) -> usize {
     let approvals: usize = certificate
         .approvals
         .iter()
         .map(|proof| 4 + 8 + 4 + 32 * proof.path.len())
         .sum();
-    encoded_len(tx) + 4 + approvals
+    let (own, index) = if tx.batch.is_some() {
+        (
+            encoded_len(tx) - encoded_len(&tx.auth) + EMPTY_AUTH_LEN,
+            1 + 4,
+        )
+    } else {
+        (encoded_len(tx), 1)
+    };
+    own + 4 + approvals + index
 }
+
+/// Encoded length of an authorization without signatures.
+const EMPTY_AUTH_LEN: usize = 4;
 
 /// Encoded length of the signed batch header an approval references.
 fn header_len(proof: &ApprovalProof) -> usize {
@@ -206,6 +270,21 @@ fn header_len(proof: &ApprovalProof) -> usize {
 
 fn encoded_len<T: BorshSerialize>(value: &T) -> usize {
     borsh::object_length(value).expect("values in memory encode")
+}
+
+/// A grouped transaction with its authorization back in place (`None` if
+/// it references an authorization the group does not carry, or a batch
+/// member's signatures are both in the group and its own).
+pub fn restore(authorizations: &[Authorization], grouped: &GroupedTx) -> Option<SignedTransaction> {
+    let mut tx = grouped.tx.clone();
+    match grouped.authorization {
+        None => Some(tx),
+        Some(_) if !tx.auth.signatures.is_empty() || tx.batch.is_none() => None,
+        Some(index) => {
+            tx.auth = authorizations.get(index as usize)?.clone();
+            Some(tx)
+        }
+    }
 }
 
 /// Expands a grouped transaction back into its full lane certificate
@@ -331,6 +410,101 @@ mod tests {
         (out, committee, verifier)
     }
 
+    /// `count` transfers signed as one batch, certified as [`certified`]
+    /// certifies.
+    fn certified_batch(
+        count: u64,
+    ) -> (
+        Vec<(SignedTransaction, LaneCertificate)>,
+        Committee,
+        sion_consensus::InsecureSimVerifier,
+    ) {
+        let (auths, verifier) = insecure_sim_keyring(4, 7);
+        let ids: Vec<_> = auths.iter().map(|a| a.validator()).collect();
+        let committee = Committee::equal_weight(Epoch(0), ShardId(0), ids.iter().copied()).unwrap();
+        let mut lanes: Vec<LaneValidator<_>> = auths
+            .iter()
+            .map(|a| LaneValidator::new(&committee, a.clone()))
+            .collect();
+        let alice = Wallet::named("alice");
+        let config = sion_exec::ChainConfig::devnet(None);
+        let bodies = (0..count)
+            .map(|i| (transfer(&alice, &(1_000 + i).to_be_bytes(), i).tx, None))
+            .collect();
+        let txs = alice.sign_batch(&config, bodies).expect("sign a batch");
+        for lane in lanes.iter_mut() {
+            for tx in &txs {
+                let request = LaneRequest {
+                    tx: tx.digest(),
+                    inputs: lane_inputs(&tx.tx.inputs),
+                    owner_proof: Vec::new(),
+                };
+                lane.approve(request, &AnyOwner).unwrap();
+            }
+            lane.seal_batch().unwrap();
+        }
+        let mut out = Vec::new();
+        for tx in &txs {
+            let mut builder = CertificateBuilder::new(tx.digest(), &lane_inputs(&tx.tx.inputs));
+            let mut certificate = None;
+            for lane in &lanes {
+                let proof = lane.approval_proof(&tx.digest()).unwrap().clone();
+                if let Some(done) = builder.add(&committee, proof, &verifier).unwrap() {
+                    certificate.get_or_insert(done);
+                }
+            }
+            out.push((tx.clone(), certificate.expect("quorum")));
+        }
+        (out, committee, verifier)
+    }
+
+    #[test]
+    fn a_batch_s_members_carry_its_authorization_once() {
+        let (certified, _, _) = certified_batch(16);
+        let signature = sion_core::encode::encode(&certified[0].0.auth).len();
+        let item = PayloadItem::group(certified.clone());
+        let bytes = item.to_bytes().len();
+        let PayloadItem::Certified {
+            authorizations,
+            txs,
+            ..
+        } = PayloadItem::from_bytes(&item.to_bytes()).expect("round trip")
+        else {
+            panic!("certified group expected");
+        };
+        assert_eq!(authorizations.len(), 1, "one authorization for the batch");
+        assert!(bytes < 2 * signature, "{bytes} bytes for 16 members");
+        // Every member comes back whole, signatures in place.
+        for (grouped, (original, _)) in txs.iter().zip(&certified) {
+            assert!(grouped.tx.auth.signatures.is_empty());
+            assert_eq!(restore(&authorizations, grouped).as_ref(), Some(original));
+        }
+        // The size estimate is exact, and a budget below it splits the group.
+        assert_eq!(PayloadItem::groups(certified.clone(), bytes, 512).len(), 1);
+        let split = PayloadItem::groups(certified.clone(), bytes - 1, 512);
+        assert_eq!(split.len(), 2);
+        for group in &split {
+            let PayloadItem::Certified {
+                authorizations,
+                txs,
+                ..
+            } = group
+            else {
+                panic!("certified group expected");
+            };
+            assert_eq!(authorizations.len(), 1, "each group carries it once");
+            assert!(txs.iter().all(|t| restore(authorizations, t).is_some()));
+        }
+        // A reference to an authorization the group lacks restores nothing;
+        // nor does a member that kept its own signatures as well.
+        let mut dangling = txs[0].clone();
+        dangling.authorization = Some(7);
+        assert!(restore(&authorizations, &dangling).is_none());
+        let mut doubled = txs[0].clone();
+        doubled.tx.auth = authorizations[0].clone();
+        assert!(restore(&authorizations, &doubled).is_none());
+    }
+
     fn txs_of(item: &PayloadItem) -> &[GroupedTx] {
         match item {
             PayloadItem::Certified { txs, .. } => txs,
@@ -364,7 +538,7 @@ mod tests {
         for item in &groups {
             assert!(item.to_bytes().len() <= budget);
             let decoded = PayloadItem::from_bytes(&item.to_bytes()).expect("round trip");
-            let PayloadItem::Certified { batches, txs } = decoded else {
+            let PayloadItem::Certified { batches, txs, .. } = decoded else {
                 panic!("certified group expected");
             };
             for grouped in &txs {
@@ -450,6 +624,7 @@ mod tests {
         let PayloadItem::Certified {
             batches,
             txs: grouped,
+            ..
         } = item
         else {
             panic!("certified group expected");

@@ -184,6 +184,16 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         spawned.contains("Its calls: ledger_pay ok, ledger_pay failed (not sent: no part of your budget holds 8 USD)"),
         "{spawned}"
     );
+    // The subagent is keyless (spec v1.13): no seed was made for it, and the
+    // lead's wallet signs for it.
+    assert!(!home.join("wallets").join("lead-buyer.seed").exists());
+    let alias = sion_cli::session::keyless_alias("lead-buyer").expect("a keyless subagent");
+    assert_eq!(alias.signer, "lead");
+    let child = sion_cli::agents::identity(ledger.as_ref(), alias.charter).unwrap();
+    assert_eq!(
+        child.agent,
+        sion_exec::charter::keyless_account(&alias.charter)
+    );
     // 10 USD went to the subagent, and 5 into the task's escrow.
     assert_eq!(budget(&ledger, lead), Amount::units(85).0, "{text}");
     let task = results[1]

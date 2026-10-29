@@ -10,7 +10,9 @@ Every output below is from a real run on a local devnet (long identifiers
 and some JSON shortened with `…`). The models are scripted, as in
 [Agents at work](agent-runtime.md). The Telegram part runs against a
 stand-in for Telegram's Bot API, because this environment cannot reach
-Telegram.
+Telegram. The runs predate specification v1.13. Run again on v1.13, the
+subagents and hiring part printed the same lines with other identifiers,
+and `lead-buyer` was a keyless subagent.
 
 ## Subagents
 
@@ -32,13 +34,18 @@ session 35fe88cb470eb08a: done
 
 `agent_spawn` does five things:
 
-1. It registers a subagent identity with its own wallet, here
-   `lead-buyer` (`SpawnAgents`).
+1. It registers a **keyless** subagent identity, here `lead-buyer`
+   (`SpawnAgents`, specification v1.13). No key is made for it: its
+   account is derived from its id, and the wallet that signs for the
+   parent signs for it, each of its transactions a [batch](../concepts/batched-authorization.md)
+   of one. `lead-buyer` is a `.keyless` file under `$SION_HOME/wallets`
+   that holds no secret, only the subagent's id and the name of the wallet
+   that signs for it.
 2. It carves the budget from the parent's allotment. The ledger requires
    the subagent's caveats to attenuate the parent's: payees, the most per
    payment and per window (here 10 USD each), and the expiry.
-3. It gives the subagent 0.05 USD from the parent's own account, to pay
-   its transactions' fees.
+3. It gives the subagent 0.05 USD from the account that signs for it, to
+   pay its transactions' fees.
 4. It runs the task in a session of the subagent's own, with the models
    given by `--subagent-model` (by default the parent's) and the same
    autonomy.
@@ -55,10 +62,11 @@ $ sion agent sessions
 35fe88cb470eb08a  lead  done  Get the dataset from bob and have it summarised.
 ```
 
-Subagents may spawn their own, two levels deep at most. `agent_spawn` is
-a spending call, so below autonomy L6 it waits for a person's approval.
-Suspending the lead's identity on the ledger (`sion agent suspend`)
-stops the subagents too.
+Subagents may spawn their own, two levels deep at most, and a keyless
+subagent's own subagents are signed for by the same wallet, the nearest
+keyed ancestor's. `agent_spawn` is a spending call, so below autonomy L6
+it waits for a person's approval. Suspending the lead's identity on the
+ledger (`sion agent suspend`) stops the subagents too.
 
 ## Hiring another agent
 
@@ -219,6 +227,10 @@ sendMessage {"chat_id": 42, "text": "85 USD left in the budget."}
 - A subagent's answer and a hired agent's output are checked only by
   the rules the parent set: the charter's limits, and the task's
   acceptance rule and bonds. Nothing reads the work itself.
+- A keyless subagent's transactions are signed by the runtime that holds
+  its ancestor's wallet, for the subagent's own tool calls only
+  (`agent:keyless-signer`). The runtime signs each as a batch of one; it
+  does not yet gather calls from several subagents into one batch.
 - There is no gateway that routes channels across machines, and no
   messenger other than Telegram. The tools do not yet include storage
   deals or MCP servers.

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sion_assurance::{atom::standard, AtomClass, Formula, Policy};
 use sion_clearing::Side;
-use sion_core::hash::hash_domain;
-use sion_core::ids::{AssetId, ClaimId, ObjectId, Pulse};
+use sion_core::hash::{hash_domain, Hash32};
+use sion_core::ids::{AccountId, AssetId, ClaimId, ObjectId, Pulse};
 use sion_core::{Amount, Cost};
 use sion_exec::charter::Caveats;
 use sion_exec::claim::{claim_id, formulas, ClaimBody, Payload};
@@ -1762,7 +1762,7 @@ pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     let children: Vec<Spawn> = researchers
         .iter()
         .map(|name| Spawn {
-            agent: session.id(name),
+            agent: Some(session.id(name)),
             card: card_commitment(format!("{{\"name\":\"{name}\"}}").as_bytes()),
             caveats: worker.clone(),
             budget: usd(40),
@@ -1802,7 +1802,7 @@ pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     let children: Vec<Spawn> = subs
         .iter()
         .map(|name| Spawn {
-            agent: session.id(name),
+            agent: Some(session.id(name)),
             card: card_commitment(format!("{{\"name\":\"{name}\"}}").as_bytes()),
             caveats: leaf.clone(),
             budget: usd(10),
@@ -1960,6 +1960,186 @@ pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     out.say(format!(
         "            {} identities created in 3 transactions; every limit was checked by the ledger, not by the agents",
         1 + spawned.len() + sub_agents.len()
+    ));
+    Ok(())
+}
+
+/// Batched authorization (spec v1.13): an orchestrator launches keyless
+/// subagents, which have no keys of their own, and signs once for a payment
+/// from every one of them.
+pub fn batch(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
+    use crate::session::Actor;
+    use sion_exec::charter::Spawn;
+    const WORKERS: usize = 64;
+    out.say("== Batched authorization: one signature for 64 keyless subagents ==");
+    fund_all(
+        session,
+        &[
+            ("acme", AssetId::usd(), usd(5_000)),
+            ("orchestrator", AssetId::usd(), usd(10)),
+        ],
+    )?;
+    let vendor = session.id("gpu-cloud");
+    let orchestrator = session.id("orchestrator");
+    let mut caveats = charter_caveats(vendor);
+    caveats.max_per_payment = usd(25);
+    caveats.max_per_window = usd(1_000);
+    let view = session.must(
+        "acme",
+        TxKind::RegisterAgent {
+            agent: orchestrator,
+            card: Hash32::ZERO,
+            caveats: caveats.clone(),
+            funding: usd(1_000),
+            agent_bond: usd(200),
+        },
+        Vec::new(),
+    )?;
+    let (root, root_allotment) = find(&view, |e| match e {
+        Event::AgentRegistered {
+            agent, allotment, ..
+        } => Some((*agent, *allotment)),
+        _ => None,
+    })?;
+    out.say(format!(
+        "Pulse {:>3}  acme registers its orchestrator: agent {}, 1,000 USD budget",
+        view.pulse,
+        root.short()
+    ));
+
+    // Keyless subagents: no keys are made; each account is derived from
+    // the subagent's id, and only the orchestrator can sign for it.
+    let mut worker = caveats.clone();
+    worker.max_per_payment = usd(5);
+    worker.max_per_window = usd(10);
+    let children: Vec<Spawn> = (0..WORKERS)
+        .map(|_| Spawn {
+            agent: None,
+            card: Hash32::ZERO,
+            caveats: worker.clone(),
+            budget: usd(10),
+        })
+        .collect();
+    let input = session.reference(&root_allotment)?;
+    let view = session.must(
+        "orchestrator",
+        TxKind::SpawnAgents {
+            charter: root,
+            children,
+        },
+        vec![input],
+    )?;
+    let spawned: Vec<(ObjectId, AccountId, ObjectId)> = events(&view)
+        .iter()
+        .filter_map(|e| match e {
+            Event::AgentSpawned {
+                agent,
+                account,
+                allotment,
+                ..
+            } => Some((*agent, *account, *allotment)),
+            _ => None,
+        })
+        .collect();
+    out.say(format!(
+        "Pulse {:>3}  the orchestrator launches {} keyless subagents in one transaction: no keys, 10 USD each, ≤ 5 USD per payment",
+        view.pulse,
+        spawned.len()
+    ));
+    let gas = Amount(10_000);
+    let view = session.must(
+        "orchestrator",
+        TxKind::Transfer {
+            asset: AssetId::usd(),
+            outputs: spawned
+                .iter()
+                .map(|(_, account, _)| (*account, gas))
+                .collect(),
+        },
+        Vec::new(),
+    )?;
+    out.say(format!(
+        "Pulse {:>3}  it gives each 0.01 USD for fees, in one transfer",
+        view.pulse
+    ));
+
+    // One batch: a payment from every subagent, one signature for all.
+    let mut actions = Vec::with_capacity(spawned.len());
+    for (charter, _, allotment) in &spawned {
+        let input = session.reference(allotment)?;
+        actions.push((
+            Actor::Keyless(*charter),
+            TxKind::AgentPay {
+                charter: *charter,
+                payee: vendor,
+                amount: usd(1),
+                purpose: "a tool call".into(),
+                evidence: None,
+            },
+            vec![input],
+        ));
+    }
+    let members = session.sign_batch("orchestrator", actions)?;
+    let signature = sion_core::encode::encode(&members[0].auth).len();
+    let fee = members[0].tx.fee;
+    let alone = session.config.min_fee(members[0].tx.size());
+    session.ledger.submit_batch(&members)?;
+    let mut paid = 0;
+    let mut last = Pulse(0);
+    for member in &members {
+        let view = session.wait(member.digest())?;
+        last = last.max(view.pulse);
+        if view.status == ExecStatus::Success {
+            paid += 1;
+        }
+    }
+    session.settle_all();
+    let names = session.names();
+    out.say(format!(
+        "Pulse {:>3}  {paid} subagents each pay gpu-cloud 1 USD, all authorized by one signature of {} bytes over the batch's Merkle root",
+        last.0,
+        grouped(signature as u64)
+    ));
+    out.say(format!(
+        "            each pays a fee of {} instead of {}: the signature check is shared by the batch",
+        names.money(fee, &AssetId::usd()),
+        names.money(alone, &AssetId::usd())
+    ));
+    out.say(format!(
+        "            signed one by one, the {} payments would carry {:.2} MB of signatures; batched, {:.1} KB",
+        members.len(),
+        (members.len() * signature) as f64 / 1e6,
+        signature as f64 / 1e3
+    ));
+
+    // Nobody else can sign for a keyless subagent.
+    let (charter, _, allotment) = spawned[0];
+    let input = session.reference(&allotment)?;
+    let forged = session.sign_batch(
+        "mallory",
+        vec![(
+            Actor::Keyless(charter),
+            TxKind::AgentPay {
+                charter,
+                payee: vendor,
+                amount: usd(1),
+                purpose: "not mine to pay".into(),
+                evidence: None,
+            },
+            vec![input],
+        )],
+    )?;
+    let refused = match session.ledger.submit(&forged[0]) {
+        Err(error) => format!("refused: {error}"),
+        Ok(_) => match session.wait(forged[0].digest()) {
+            Err(CliError::Transaction(reason)) => reason,
+            Err(error) => error.to_string(),
+            Ok(view) => format!("{:?}", view.status),
+        },
+    };
+    session.settle_all();
+    out.say(format!(
+        "            mallory signs a batch for one of them → {refused}"
     ));
     Ok(())
 }
@@ -3114,10 +3294,11 @@ fn refusal(view: &TxView) -> String {
     }
 }
 
-pub const ALL: [&str; 13] = [
+pub const ALL: [&str; 14] = [
     "invoice",
     "agents",
     "swarm",
+    "batch",
     "tasks",
     "robots",
     "storage",
@@ -3130,13 +3311,14 @@ pub const ALL: [&str; 13] = [
     "staking",
 ];
 
-/// Runs a named demo (`invoice`, `agents`, `swarm`, `tasks`, `robots`, `storage`, `market`,
-/// `receipts`, `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
+/// Runs a named demo (`invoice`, `agents`, `swarm`, `batch`, `tasks`, `robots`, `storage`,
+/// `market`, `receipts`, `x402`, `streams`, `light`, `censorship`, `staking`, `all`).
 pub fn run(name: &str, session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliError> {
     match name {
         "invoice" => invoice(session, out),
         "agents" => agents(session, out),
         "swarm" => swarm(session, out),
+        "batch" => batch(session, out),
         "tasks" => tasks(session, out),
         "robots" => robots(session, out),
         "storage" => storage(session, out),

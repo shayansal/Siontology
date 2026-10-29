@@ -95,7 +95,7 @@ Commands:
   pulse      A Pulse's header, certificate and summary
   events     Recent events
   verify     Verify a Pulse as a light client
-  demo       Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
+  demo       Run a scripted demo: invoice, agents, swarm, batch, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
   mcp        Serve the Model Context Protocol on stdio (for AI agents)
   x402       Sell or buy HTTP resources with x402 (HTTP 402 payments settled on Siontology)
   bench      Measure primitives, execution, proving, clearing and a devnet
@@ -679,6 +679,7 @@ Usage: sion agent [OPTIONS] <COMMAND>
 Commands:
   register       Register an agent identity: a charter with a card, funded by the principal
   spawn          Launch subagents, each with its own identity, account, caveats and budget carved from the parent's allotment
+  pay-batch      Pay from several agents in one batch (spec v1.13): one payment from each agent's own budget, all authorized by one signature of `signer`, the agents' own wallet or, for keyless agents, the wallet of their nearest keyed ancestor
   show           Show an agent: account, principal, lineage, card, status, budget
   card           Replace an agent's card with a file's commitment
   card-template  Print an agent card template (A2A-style JSON with a `sion` section)
@@ -751,8 +752,34 @@ Options:
       --max-payment <MAX_PAYMENT>  Largest payment of each (USD); default: the parent's
       --max-window <MAX_WINDOW>    Largest total per window of each (USD); default: an equal share of the window allowance the parent has not carved out yet
       --may-spawn                  The subagents may launch subagents of their own
+      --keyless                    Keyless subagents (spec v1.13): no keys are made for them. Each account is derived from the subagent's id, and the wallet that signs for the parent signs for them, in batches. Their names become `.keyless` wallet files that hold no secret
+      --gas <GAS>                  Give each subagent this much USD from the parent's account for its transaction fees (all in one transaction)
   -h, --help                       Print help
 ```
+
+With `--keyless`, no keys are made: each subagent's account is derived from its id, the wallet that signs for the parent signs for it, and its name becomes a `.keyless` file under `$SION_HOME/wallets` that holds no secret. Every command that takes a wallet takes that name. See [Agent identities from the command line](../guides/agents.md#5-keyless-subagents).
+
+## `sion agent pay-batch`
+
+```text
+Pay from several agents in one batch (spec v1.13): one payment from each agent's own budget, all authorized by one signature of `signer`, the agents' own wallet or, for keyless agents, the wallet of their nearest keyed ancestor
+
+Usage: sion agent pay-batch [OPTIONS] --agents <AGENTS> <SIGNER> <PAYEE> <AMOUNT>
+
+Arguments:
+  <SIGNER>  The wallet that signs the batch
+  <PAYEE>   Payee (wallet or account)
+  <AMOUNT>  USD each agent pays
+
+Options:
+      --agents <AGENTS>    The agents (their ids, comma-separated), at most 256
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --purpose <PURPOSE>  What the payments are for [default: ""]
+      --print              Print the batch as `POST /v1/batches` takes it (Borsh, in hex) instead of sending it
+  -h, --help               Print help
+```
+
+Each agent pays from the first of its allotments that holds the amount. Each transaction's sender is the keyless agent's own account, or the signer for a keyed agent, and pays its fee in USD: the floor for a member of a batch of that size (see [Batched authorization](../concepts/batched-authorization.md#the-fee)). With `--print`, nothing is sent: the output is the hex that the body of [`POST /v1/batches`](http-api.md#post-v1batches) carries.
 
 ## `sion agent show`
 
@@ -2372,7 +2399,7 @@ See [Verify as a light client](../getting-started/light-client.md).
 ## `sion demo`
 
 ```text
-Run a scripted demo: invoice, agents, swarm, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
+Run a scripted demo: invoice, agents, swarm, batch, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
 
 Usage: sion demo [OPTIONS] [NAME]
 
@@ -2476,7 +2503,7 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --quick        Smaller sizes
       --no-devnet    Skip the end-to-end devnet measurement
-      --only <ONLY>  Run only these groups: signatures, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
+      --only <ONLY>  Run only these groups: signatures, authorization, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
       --json <JSON>  Write the measurements as JSON to this file
   -h, --help         Print help
 ```

@@ -32,7 +32,10 @@ use std::sync::Arc;
 use borsh::{BorshDeserialize, BorshSerialize};
 use sion_consensus::{ApprovalProof, LaneRequest, Message};
 use sion_core::hash::Hash32;
-use sion_core::ids::{Pulse, ShardId, TxDigest};
+use sion_core::ids::{ObjectId, Pulse, ShardId, TxDigest};
+use sion_crypto::Authorization;
+use sion_exec::tx::{BatchMember, TxBatch};
+use sion_exec::{SignedTransaction, Transaction};
 pub use sion_net::{ClassLimits, MessageClass, NodeId};
 
 pub use stats::{Counter, Traffic, TrafficCounter, TrafficStats};
@@ -70,6 +73,19 @@ pub enum PeerMessage {
         shard: ShardId,
         /// The request.
         request: LaneRequest,
+    },
+    /// The lane requests of a batch's members in one shard (spec v1.13),
+    /// the batch's signatures once. The member answers each as it answers
+    /// a [`PeerMessage::Lane`] request.
+    LaneBatch {
+        /// The shard.
+        shard: ShardId,
+        /// The batch.
+        batch: TxBatch,
+        /// Its authorization.
+        auth: Authorization,
+        /// The members in this shard.
+        members: Vec<LaneMember>,
     },
     /// A sealed lane approval, to the node that asked for it.
     Approval {
@@ -135,7 +151,9 @@ impl PeerMessage {
                 message: Message::Vote(_) | Message::SyncRequest(_),
                 ..
             } => MessageClass::Control,
-            PeerMessage::Payload { .. } | PeerMessage::Lane { .. } => MessageClass::Ingress,
+            PeerMessage::Payload { .. }
+            | PeerMessage::Lane { .. }
+            | PeerMessage::LaneBatch { .. } => MessageClass::Ingress,
             PeerMessage::Approval { .. }
             | PeerMessage::LaneRejected { .. }
             | PeerMessage::PulseSignature { .. }
@@ -156,6 +174,7 @@ impl PeerMessage {
             },
             PeerMessage::Payload { .. } => "payload",
             PeerMessage::Lane { .. } => "lane_request",
+            PeerMessage::LaneBatch { .. } => "lane_batch",
             PeerMessage::Approval { .. } => "approval",
             PeerMessage::LaneRejected { .. } => "lane_rejected",
             PeerMessage::PulseSignature { .. } => "pulse_signature",
@@ -193,6 +212,36 @@ impl PeerMessage {
             reason.truncate(cut);
         }
         PeerMessage::LaneRejected { tx, reason }
+    }
+}
+
+/// One batch member in a [`PeerMessage::LaneBatch`]: its body and its
+/// place in the batch.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct LaneMember {
+    /// The body.
+    pub tx: Transaction,
+    /// Its position in the batch.
+    pub index: u64,
+    /// Its inclusion path.
+    pub path: Vec<Hash32>,
+    /// For a keyless sender, its charter.
+    pub charter: Option<ObjectId>,
+}
+
+impl LaneMember {
+    /// The signed member, with the batch's authorization.
+    pub fn signed(&self, batch: TxBatch, auth: &Authorization) -> SignedTransaction {
+        SignedTransaction {
+            tx: self.tx.clone(),
+            auth: auth.clone(),
+            batch: Some(BatchMember {
+                batch,
+                index: self.index,
+                path: self.path.clone(),
+                charter: self.charter,
+            }),
+        }
     }
 }
 

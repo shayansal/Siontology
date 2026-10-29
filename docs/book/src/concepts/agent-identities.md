@@ -17,7 +17,7 @@ guarantees holds for every identity in the tree, at every depth.
 |---|---|---|
 | Id | The charter's object id, unique by construction (derived from the transaction that created it) | The ledger |
 | DID | `did:sion:<chain>:<id>`: the [chain identity](../reference/chain-identity.md) and the agent's id, 64 hex digits each | The card |
-| Account | The account that signs for the agent, with its own dual post-quantum keys | The ledger |
+| Account | The account that acts for the agent: one with its own dual post-quantum keys, or, for a keyless subagent, one derived from its id that its nearest keyed ancestor signs for | The ledger |
 | Principal | Who launched it: the person or organization for a registered agent, the parent agent for a subagent | The ledger |
 | Backer | The person or organization at the root, who answers for the whole tree | The ledger |
 | Card | A commitment (SHA3-256, domain `sion/agent/card`) to the agent's card file: name, description, endpoint, skills, provider | The commitment on the ledger, the file wherever the agent publishes it |
@@ -57,6 +57,38 @@ allotment holding its budget.
   parent's rate.
 - **Depth is bounded.** A tree holds at most 16 generations, so every
   check walks at most 16 charters.
+
+## Keyless subagents
+
+A subagent need not have keys of its own (specification v1.13). A parent
+that names no account for a child spawns it **keyless**: its account is
+`H("sion/agent/keyless", id)`, derived from its id, and no policy hashes to
+such an account, so no key controls it. The child acts only through
+[batches](batched-authorization.md) that its **nearest keyed ancestor**
+signs: the first agent above it that has keys of its own.
+
+- **Nothing to generate or keep.** A keyless subagent costs no key pair,
+  no seed on disk and no policy on the ledger: launching a thousand of them
+  makes a thousand charters and allotments, nothing more.
+- **One signature for many.** The ancestor signs one batch of up to 256
+  transactions, from any of its keyless descendants and its own, with one
+  authorization. Each member still spends only its own allotment, under
+  its own caveats, so the ledger contains each subagent exactly as it
+  contains one with keys.
+- **Who can act for it is fixed.** The ancestor is found by walking the
+  child's chain upward past keyless agents, so only one account can ever
+  sign for a keyless subagent, and it already oversees it: it can suspend
+  or revoke it, and its own budget contains the child's. A keyed subagent
+  below the ancestor ends the walk, so its keyless children are its own to
+  sign for.
+
+A keyless subagent pays its fees from coins its account holds: its parent
+gives it some, as `sion agent spawn --keyless --gas` and the runtime's
+`agent_spawn` do. Its containment is that of the runtime holding its
+ancestor's keys: a subagent that could make that runtime sign as the
+ancestor would act beyond its own caveats, within the ancestor's. The
+signing has to stay outside the models' reach, which is a trust atom
+(`agent:keyless-signer`).
 
 ## Containment: suspension and revocation
 
@@ -99,16 +131,20 @@ is a design under study, not built.
 | `RevokeCharter { charter }` | Contended, in the charter's domain | §5.16 |
 
 All of them are in [specification](../specification.md) version 1.8, and
-both proof stacks implement them. The differential tests run every
+keyless subagents in version 1.13 (§4.3, §5.36). Both proof stacks
+implement them. The differential tests run every
 operation, including each way it can fail, through both.
 
 ## Scale
 
-An identity costs the ledger two objects: the charter and the allotment.
-A spawn of 256 subagents is one transaction with one pair of signatures.
+An identity costs the ledger two objects: the charter and the allotment
+(and, for a subagent with keys, an account object once it first acts).
+A spawn of 256 subagents is one transaction with one pair of signatures,
+and a batch of 256 of their payments, if they are keyless, is another.
 Checking an agent reads at most 16 charters. Revoking a subtree is one
 write, whatever its size. These are properties of the rules, not
-measurements.
+measurements; what batches measure is in [Batched
+authorization](batched-authorization.md).
 
 ## Try it
 
@@ -118,4 +154,6 @@ measurements.
   refused; `acme` suspends the orchestrator and a sub-researcher two levels
   down cannot pay; `acme` resumes it; the orchestrator revokes a researcher
   and `acme` reclaims its budget.
+- `sion demo batch --local`: an orchestrator launches 64 keyless
+  subagents and signs once for a payment from each.
 - [Agent identities from the command line](../guides/agents.md).

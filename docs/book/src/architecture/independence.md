@@ -15,10 +15,15 @@ repository keeps B independent, and what the two still share.
 **May not call** the reference executor's logic: `sion_exec::execute`,
 `sion_exec::pulse` (beyond its type definitions and the commitment helpers
 of §7), `sion_exec::stateless`, `sion_exec::wallet`, `sion_exec::sim`,
-`sion_exec::genesis`, nor the methods `Allotment::spend`,
-`Caveats::attenuates`, `OrderTerms::escrow`, `Market::clearing_batch`,
-`Market::batch_index`, `Equivocation::offender` and the `ValidatorSet`
-methods.
+`sion_exec::genesis`, the reference's authorization (`sion_exec::auth`,
+and the `sion_exec::tx` helpers `fee_floor`, `required_fee` and
+`sign_batch`), the helpers of streams, tasks, delegation, storage and
+beacons, nor the methods `Allotment::spend`, `Caveats::attenuates`,
+`OrderTerms::escrow`, `Market::clearing_batch`, `Market::batch_index`,
+`Equivocation::offender` and the `ValidatorSet` methods. Stack B writes
+v1.13's fee floor, policy search and check itself (`sion_spec::authorize`),
+down to the keyless account and the batch's signing context, which its
+unit tests compare with the reference's.
 
 **May use** the data layouts (the Rust type definitions, whose canonical
 encoding is Borsh, are normative), a short list of type helpers
@@ -32,11 +37,13 @@ and others named in §0), and the shared primitives below.
 unit-test modules excluded, since unit tests cross-check helpers against
 the reference on purpose) for the forbidden paths and method calls, and
 for any item of `sion_exec::pulse` other than `ChunkStatement`,
-`ChunkTrace`, `Witness` and `PulseInput`. CI runs it on every push:
+`ChunkTrace`, `Witness` and `PulseInput`, and for the `sion_exec::tx` and
+`sion_exec::charter` helpers it must write itself, wherever an import
+names them. CI runs it on every push:
 
 ```text
 $ ./scripts/check-independence.sh
-Proof stack B is independent of the reference executor (21 files checked).
+Proof stack B is independent of the reference executor (27 files checked).
 ```
 
 It is a lint, not a proof. Review still matters: a function copied into B

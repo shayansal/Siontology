@@ -677,6 +677,7 @@ mod tests {
             auth: Authorization {
                 signatures: Vec::new(),
             },
+            batch: None,
         }
     }
 

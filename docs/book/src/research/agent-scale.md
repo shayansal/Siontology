@@ -32,17 +32,21 @@
 - **Signatures are the binding cost.** A dual post-quantum signature is
   19,518 bytes. If each of ten billion agents made one dual-signed ledger
   action a day, every validator would receive 2.3 GB of signatures a
-  second. Signed in batches of 256, the same actions need 38 MB a second
-  (our arithmetic). Amortized signing has to be the default, and
-  verification has to be priced.
+  second. Signed in batches of 256, the same actions need 48 MB a second
+  (our arithmetic, with the 418 bytes a member carried in v1.13's
+  benchmark). Amortized signing has to be the default, and
+  verification has to be priced. Specification v1.13 builds both: one
+  authorization for up to 256 transactions, and a fee floor whose
+  signature share a batch's members split.
 - **Identities (built).** Every agent can have an identity of its own, and
   launch up to 256 subagents with identities of their own in one
   transaction. Budgets and rate limits are carved down the tree, so a
   subtree never spends more than its root was given, and one transaction
-  from any agent above stops a whole subtree. The path to ten billion:
-  cohorts of a million identities created in one transaction, children
-  without keys of their own signed for in batch roots, additive rate
-  limits, and certificates that stay final under revocation.
+  from any agent above stops a whole subtree. Children without keys of
+  their own, signed for in batch roots, are built (v1.13). The rest of the
+  path to ten billion is designed: cohorts of a million identities created
+  in one transaction, additive rate limits, and certificates that stay
+  final under revocation.
 - **Memory (design).** An agent's or a robot's memory becomes a
   single-writer, append-only log of atoms that carry space and two kinds of
   time, after [Hotgraph](https://github.com/shayansal/Hotgraph)'s Reality
@@ -71,8 +75,8 @@
   can start at about EUR 104 a month, against the 7,000 USD a month our
   networking plan estimated on AWS.
 - **What it is not.** Nothing at this scale has run. Nothing has run
-  across machines yet. The identities are built at devnet scale; the rest
-  is a design.
+  across machines yet. The identities and batched authorization are built
+  at devnet scale; the rest is a design.
 
 ## 1. The target in numbers
 
@@ -134,20 +138,24 @@ Proofs and published data have to scale with settlements, not operations.
 
 | Per ledger action | Dual signature | One-time lane key | Batch root of 256 |
 |---|---|---|---|
-| Bytes | 19.5 KB | about 4.7 KB | about 0.33 KB |
-| Verification | 1.02 ms (measured) | about 0.4 ms (estimate) | about 7 µs (our arithmetic) |
-| Ingress per validator, 10¹⁰ agents acting once a day (115,741 a second) | 2.26 GB a second | 0.54 GB a second | 38 MB a second |
-| Cores of verification per validator, same load | 118 | 46 | 0.9 |
+| Bytes | 19.5 KB | about 4.7 KB | 0.42 KB (measured in v1.13) |
+| Verification | 1.02 ms (measured) | about 0.4 ms (estimate) | about 7 µs (our arithmetic, from the measured ratio: in v1.13 a member's check took a 150th of a dual signature check, 30 µs against 4.5 ms, on a slower machine) |
+| Ingress per validator, 10¹⁰ agents acting once a day (115,741 a second) | 2.26 GB a second | 0.54 GB a second | 48 MB a second |
+| Cores of verification per validator, same load | 118 | 46 | 0.8 |
 
 Two consequences:
 
 - **Amortization is the default, not an option.** Section 3.2 describes
-  the three signing tiers.
-- **Verification needs a price.** A transaction pays 0.001 USD plus 0.0001
-  USD per KiB of its published body, and signatures are not charged. A
-  dual-signed transaction therefore pays what a batched one pays, for
-  about 60 times the bandwidth and 140 times the verification. A fee per
-  signature scheme corrects the price and gives users a reason to batch.
+  the three signing tiers; specification v1.13 builds the batched one
+  ([Batched authorization](../concepts/batched-authorization.md)).
+- **Verification needs a price.** Until v1.13 a transaction paid 0.001 USD
+  plus 0.0001 USD per KiB of its published body and nothing for its
+  signatures, so a dual-signed transaction paid what a batched one would,
+  for about 60 times the bandwidth and 140 times the verification.
+  Specification v1.13 prices the check: 80 % of the base fee pays for it,
+  and a batch's members split that part. On the devnet a transaction
+  under 1 KiB pays 0.0011 USD signed by itself and 0.000304 USD as a
+  member of a batch of 256, which gives senders a reason to batch.
 
 ### 2.3 The per-core figure does not carry over
 
@@ -219,13 +227,14 @@ makes it fail.
 
 ### 3.2 The path to ten billion identities
 
-At ten billion agents, v1.8 has five limits. Each has a designed fix, none
-built:
+At ten billion agents, v1.8 had five limits. Each has a designed fix.
+Specification v1.13 builds part of the second, keyless agents signed for
+in batches; the rest is not built:
 
 | Limit at 10¹⁰ agents | Fix |
 |---|---|
 | **Heavy creation.** An agent costs a charter, an allotment and an account with full keys: about 2.5 KB of state, 25 TB for 10¹⁰ agents (our arithmetic) | **Lineage ids and cohorts.** An agent's id is `H("sion/id/agent", parent ‖ index)`, with the index from a counter only the parent writes: unique by construction, and anyone holding the root and the path can recompute every ancestor's id. A cohort creates up to 2²⁰ identities in one transaction as a Merkle sum tree over their budgets and rates; each is materialized on first use |
-| **Every action dual-signed** | **Three signing tiers.** Root accounts sign with full dual keys. Keyed agents sign with their own ML-DSA-44 key and either SLH-DSA or a one-time lane key (LM-OTS, about 4.7 KB per action). Keyless agents are signed for by their nearest keyed ancestor in batch roots over up to 256 transactions (about 0.33 KB each). Two roots for the same sequence number are equivocation, slashable against the signer's bond |
+| **Every action dual-signed** | **Three signing tiers.** Root accounts sign with full dual keys. Keyed agents sign with their own ML-DSA-44 key and either SLH-DSA or a one-time lane key (LM-OTS, about 4.7 KB per action). Keyless agents are signed for by their nearest keyed ancestor in batch roots over up to 256 transactions (about 0.33 KB each by our arithmetic; 0.42 KB measured in v1.13). Two roots for the same sequence number are equivocation, slashable against the signer's bond. *Built in v1.13:* keyless agents and batch roots, with the root dual-signed; batches have no sequence number, so a signer's conflicting batches are settled by lane locks and not slashed. *Not built:* agent keys of ML-DSA-44 alone and lane keys |
 | **Fixed windows** | **Additive token buckets.** Each agent has a bucket (σ, ρ), and a spawn requires the children's σ and ρ to sum to at most what the parent keeps. Every subtree then pays at most σ + ρ·τ in any τ Pulses, a bound to prove and property-test |
 | **Every ancestor read** (up to 16 shared objects per action) | **Overlays.** Revoking, suspending or narrowing a subtree writes one overlay object at its root. A check computes its ancestors' ids by hashing and proves the absence of their overlays: at most 8 lookups, with the maximum depth lowered to 8 |
 | **Certified agent payments can still fail** | **Certificate stamps.** Each approval carries the last Pulse its validator executed, and an action executes only if every approval is at most Δ = 8 Pulses old. If a revocation commits at Pulse r, nothing below it executes after r + Δ, even with a wholly Byzantine lane committee. With an honest committee, nothing can void a certificate, so a seller can serve as soon as it holds one. Exposure between r and r + Δ is at most σ + ρ·Δ |
@@ -237,7 +246,7 @@ costs and devnet fees):
 |---|---|---|
 | State per materialized agent | about 2.5 KB | about 1.0 KB, plus 1.3 KB if the agent stores an ML-DSA key |
 | Creating 10¹⁰ agents | one transaction per 256: 3.9 × 10⁷ transactions, 2 to 3 × 10⁵ USD in fees at devnet prices | cohorts: about 9,500 transactions, about 10 USD |
-| One ledger action | 19.5 KB, 1.02 ms | lane key: about 4.7 KB, 0.4 ms; batched: about 0.33 KB, 7 µs |
+| One ledger action | 19.5 KB, 1.02 ms | lane key: about 4.7 KB, 0.4 ms; batched: 0.42 KB and a 150th of the dual check, about 7 µs (measured in v1.13 as a ratio) |
 
 **Risks.**
 
@@ -926,7 +935,8 @@ round with 7 validators. A desktop community node needs no server at all.
 | v1.10 | Task Charters: task escrows with acceptance fixed at posting, adjudicators on result claims, batch claims with beacon-chosen samples | Built, except batch claims |
 | v1.11 | Non-custodial delegation (pooled stake) | Built |
 | v1.12 | Storage deals: devices paid by clients to keep data and prove it every round, with challenges from recorded beacons | Built |
-| v1.13 | Amortized authorization: batch roots and a verification fee, cohorts, keyless children, lineage ids, token buckets, overlays | Planned (next) |
+| v1.13 | Amortized authorization: batches of up to 256 transactions under one authorization, a fee floor that shares the signature check, keyless subagents signed for by their nearest keyed ancestor | Built |
+| v1.14 | Lineage ids and cohorts, token buckets, overlays | Planned (next) |
 | Later | Node registration, bond-weighted archival assignments and custody challenges paid from fees (§6.3); the light-client accumulator; certificate stamps, once the consensus simulator can test lagging and Byzantine committees; aggregators and curators for memory; storage proofs aggregated per provider | Design |
 | In parallel | Networking between machines, phase by phase | Simplified: QUIC between processes, peers from files |
 | In parallel | The app: one Rust core with desktop and mobile shells | Desktop built and run; mobile configured, not built |

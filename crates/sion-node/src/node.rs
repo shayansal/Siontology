@@ -454,6 +454,14 @@ impl Node {
             .map_err(|_| "gateway did not answer".to_string())?
     }
 
+    /// Submits the members of one batch through this node's gateway.
+    pub fn submit_batch(
+        &self,
+        members: Vec<SignedTransaction>,
+    ) -> Result<Vec<SubmitReceipt>, String> {
+        crate::gateway::submit_batch_to(self.gateway()?, members, API_TIMEOUT)
+    }
+
     /// Where a transaction is: executed, or what the node's gateway knows.
     pub fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String> {
         if let Ok(value) = self.query(Query::Tx(digest)) {
@@ -547,6 +555,10 @@ impl Backend for Node {
 
     fn submit(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
         Node::submit(self, tx)
+    }
+
+    fn submit_batch(&self, members: Vec<SignedTransaction>) -> Result<Vec<SubmitReceipt>, String> {
+        Node::submit_batch(self, members)
     }
 
     fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String> {
@@ -709,6 +721,14 @@ impl GatewayNode {
             .map_err(|_| "gateway did not answer".to_string())?
     }
 
+    /// Submits the members of one batch.
+    pub fn submit_batch(
+        &self,
+        members: Vec<SignedTransaction>,
+    ) -> Result<Vec<SubmitReceipt>, String> {
+        crate::gateway::submit_batch_to(&self.gateway, members, API_TIMEOUT)
+    }
+
     /// Where a transaction is: executed (as its node says), or what the
     /// gateway knows.
     pub fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String> {
@@ -754,6 +774,10 @@ impl Backend for GatewayNode {
 
     fn submit(&self, tx: SignedTransaction) -> Result<SubmitReceipt, String> {
         GatewayNode::submit(self, tx)
+    }
+
+    fn submit_batch(&self, members: Vec<SignedTransaction>) -> Result<Vec<SubmitReceipt>, String> {
+        GatewayNode::submit_batch(self, members)
     }
 
     fn status(&self, digest: TxDigest) -> Result<Option<TxStatus>, String> {

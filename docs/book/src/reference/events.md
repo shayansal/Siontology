@@ -55,7 +55,7 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 | `CharterReclaimed` | `charter`, `amount` | `ReclaimCharter` | `<amount> USD returned from charter <id>` |
 | `AgentPaid` | `charter`, `payee`, `amount`, `receipt` | `AgentPay` | `agent paid <amount> USD to <payee>[ (receipt claim <id>)]` |
 | `AgentRegistered` | `agent`, `account`, `allotment` | `RegisterAgent` | `agent <id> registered, signing as <account>` |
-| `AgentSpawned` | `agent`, `parent`, `account`, `allotment` | `SpawnAgents` (one per subagent) | `subagent <id> launched by <parent>, signing as <account>` |
+| `AgentSpawned` | `agent`, `parent`, `account`, `allotment` | `SpawnAgents` (one per subagent) | `subagent <id> launched by <parent>, signing as <account>`, or for a keyless subagent (`account` is `keyless_account(agent)`) `subagent <id> launched by <parent>, keyless: its nearest keyed ancestor signs for it` |
 | `AgentCardSet` | `agent`, `card` | `SetAgentCard` | `agent <id>'s card is now <hash>` |
 | `AgentSuspended` | `agent`, `by` | `SuspendAgent` | `agent <id> suspended by <account>, with everything below it` |
 | `AgentResumed` | `agent` | `ResumeAgent` | `agent <id> resumed` |

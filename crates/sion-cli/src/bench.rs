@@ -369,6 +369,271 @@ fn execution(r: &mut Recorder, quick: bool) {
 /// Payment streams: what one payment costs the payee, the payer and the
 /// ledger. A payee checks a payment with one hash; the ledger checks it
 /// again, one hash per step, when the payee settles a batch.
+/// Authorization (spec v1.13): what checking one action's authorization
+/// costs signed by itself and as a member of a batch, in time and in bytes,
+/// and what a Pulse of agent payments costs with each.
+fn authorization(r: &mut Recorder, quick: bool) {
+    use sion_exec::auth::check_authorization;
+    use sion_exec::tx::{sign_batch, Transaction};
+
+    let config = sion_exec::ChainConfig::devnet(None);
+    let wallet = Wallet::named("bench-signer");
+    let body = |nonce: u64| Transaction {
+        sender: wallet.id,
+        genesis_policy: None,
+        inputs: vec![sion_exec::ObjectRef {
+            id: sion_core::ids::ObjectId::derive(&nonce.to_be_bytes()),
+            version: sion_core::ids::Version(0),
+        }],
+        fee: Amount(1_000),
+        kind: TxKind::Transfer {
+            asset: AssetId::usd(),
+            outputs: vec![(wallet.id, Amount(1))],
+        },
+        expires_at: Pulse(100),
+        nonce,
+    };
+    let n = if quick { 8 } else { 40 };
+    let own: Vec<SignedTransaction> = (0..n)
+        .map(|i| body(i).sign(&wallet.keys, &config).expect("sign"))
+        .collect();
+    let start = Instant::now();
+    for tx in &own {
+        check_authorization(&config, tx, &wallet.policy).expect("verifies");
+    }
+    r.add(
+        "authorization",
+        "signed by itself: check",
+        per_op(start.elapsed(), n as usize),
+        "µs",
+        "ML-DSA-44 + SLH-DSA-SHA2-128f, per transaction",
+    );
+    let own_bytes = encode(&own[0].auth).len() + 1;
+    r.add(
+        "authorization",
+        "signed by itself: bytes",
+        own_bytes as f64,
+        "B",
+        "signatures, per transaction",
+    );
+    for size in [16u64, 64, 256] {
+        let members = sign_batch(
+            &wallet.keys,
+            wallet.id,
+            &config,
+            (0..size).map(|i| (body(10_000 + i), None)).collect(),
+        )
+        .expect("sign a batch");
+        // A fresh thread, so no batch is remembered as checked before.
+        let (config2, policy) = (config.clone(), wallet.policy.clone());
+        let checked = std::thread::spawn(move || {
+            let start = Instant::now();
+            for member in &members {
+                check_authorization(&config2, member, &policy).expect("verifies");
+            }
+            let elapsed = start.elapsed();
+            (elapsed, members)
+        })
+        .join()
+        .expect("thread");
+        let (elapsed, members) = checked;
+        r.add(
+            "authorization",
+            &format!("batch of {size}: check per member"),
+            per_op(elapsed, size as usize),
+            "µs",
+            "one signature check per batch, one inclusion path per member",
+        );
+        // On the wire the batch's signatures travel once; each member carries
+        // its place: the batch, its index, its path, a charter option.
+        let shared = encode(&members[0].auth).len() as f64;
+        let place = (encode(&members[0].batch).len()) as f64;
+        r.add(
+            "authorization",
+            &format!("batch of {size}: bytes per member"),
+            shared / size as f64 + place,
+            "B",
+            format!("{place} B of place and path, plus a {size}th of the signatures"),
+        );
+    }
+    // A Pulse of agent payments: each signed by its own subagent, or every
+    // one a keyless subagent's, in one batch its parent signs.
+    let count = if quick { 32 } else { 256 };
+    for keyless in [false, true] {
+        let (chain, txs) = agent_payments(count, keyless);
+        let mut state = chain.state.clone();
+        let pulse = state.pulse.next();
+        let input = PulseInput {
+            pulse,
+            beacon: sim_beacon(pulse),
+            owned: txs,
+            contended: Vec::new(),
+            forced: Vec::new(),
+        };
+        // A fresh thread: nothing is remembered as checked.
+        let (elapsed, ok) = std::thread::spawn(move || {
+            let start = Instant::now();
+            let output = execute_pulse(&mut state, &input, true).expect("execute");
+            (start.elapsed(), output.status_counts().0)
+        })
+        .join()
+        .expect("thread");
+        assert_eq!(ok, count, "every payment succeeds");
+        let label = if keyless {
+            "keyless subagents, one batch"
+        } else {
+            "keyed subagents, each signed by itself"
+        };
+        r.add(
+            "authorization",
+            &format!("Pulse of {count} agent payments, {label}"),
+            per_op(elapsed, count),
+            "µs/tx",
+            format!(
+                "{:.1} ms per Pulse with signature checks, one core",
+                elapsed.as_secs_f64() * 1e3
+            ),
+        );
+    }
+}
+
+/// A chain where an agent has `count` subagents with gas and budgets, and
+/// one agent payment from each: signed by each keyed subagent, or by the
+/// parent in one batch for keyless ones.
+fn agent_payments(count: usize, keyless: bool) -> (Chain, Vec<SignedTransaction>) {
+    use sion_exec::charter::{Caveats, Spawn};
+    use sion_exec::sim::Sender;
+
+    let names: Vec<String> = (0..count).map(|i| format!("sub-{i}")).collect();
+    let mut all: Vec<&str> = vec!["principal", "parent", "vendor"];
+    if !keyless {
+        all.extend(names.iter().map(String::as_str));
+    }
+    let mut chain = Chain::new(&all, 1_000_000, 4);
+    let vendor = chain.id("vendor");
+    let caveats = Caveats {
+        payees: Some([vendor].into_iter().collect()),
+        max_per_payment: Amount::units(10),
+        max_per_window: Amount::units(1_000_000),
+        window: 1_000,
+        expires_at: Pulse(1_000_000),
+        evidence_above: None,
+        evidence_policy: Policy::standard(),
+        receipts: false,
+        may_delegate: true,
+    };
+    let parent = chain.id("parent");
+    let register = chain
+        .tx(
+            "principal",
+            TxKind::RegisterAgent {
+                agent: parent,
+                card: Hash32::ZERO,
+                caveats: caveats.clone(),
+                funding: Amount::units(100_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+        .expect("register");
+    let out = chain.pulse(vec![register]).expect("pulse");
+    let (root, root_allotment) = out
+        .effects
+        .iter()
+        .flat_map(|e| e.events.iter())
+        .find_map(|event| match event {
+            sion_exec::Event::AgentRegistered {
+                agent, allotment, ..
+            } => Some((*agent, *allotment)),
+            _ => None,
+        })
+        .expect("registered");
+    let mut child = caveats.clone();
+    child.max_per_window = Amount::units(100);
+    let children: Vec<Spawn> = names
+        .iter()
+        .map(|name| Spawn {
+            agent: (!keyless).then(|| chain.id(name)),
+            card: Hash32::ZERO,
+            caveats: child.clone(),
+            budget: Amount::units(10),
+        })
+        .collect();
+    let input = chain.state.objects[&root_allotment].reference();
+    let spawn = chain
+        .tx_with(
+            "parent",
+            TxKind::SpawnAgents {
+                charter: root,
+                children,
+            },
+            vec![input],
+        )
+        .expect("spawn");
+    let out = chain.pulse(vec![spawn]).expect("pulse");
+    let spawned: Vec<(
+        sion_core::ids::ObjectId,
+        AccountId,
+        sion_core::ids::ObjectId,
+    )> = out
+        .effects
+        .iter()
+        .flat_map(|e| e.events.iter())
+        .filter_map(|event| match event {
+            sion_exec::Event::AgentSpawned {
+                agent,
+                account,
+                allotment,
+                ..
+            } => Some((*agent, *account, *allotment)),
+            _ => None,
+        })
+        .collect();
+    if keyless {
+        let gas = chain
+            .tx(
+                "parent",
+                TxKind::Transfer {
+                    asset: AssetId::usd(),
+                    outputs: spawned
+                        .iter()
+                        .map(|(_, account, _)| (*account, Amount::units(1)))
+                        .collect(),
+                },
+            )
+            .expect("gas");
+        chain.pulse(vec![gas]).expect("pulse");
+    }
+    let pay = |charter| TxKind::AgentPay {
+        charter,
+        payee: vendor,
+        amount: Amount::units(1),
+        purpose: "bench".into(),
+        evidence: None,
+    };
+    let txs = if keyless {
+        let actions = spawned
+            .iter()
+            .map(|(charter, _, allotment)| {
+                let input = chain.state.objects[allotment].reference();
+                (Sender::Keyless(*charter), pay(*charter), vec![input])
+            })
+            .collect();
+        chain.batch("parent", actions).expect("batch")
+    } else {
+        names
+            .iter()
+            .zip(&spawned)
+            .map(|(name, (charter, _, allotment))| {
+                let input = chain.state.objects[allotment].reference();
+                chain
+                    .tx_with(name, pay(*charter), vec![input])
+                    .expect("pay")
+            })
+            .collect()
+    };
+    (chain, txs)
+}
+
 fn streams(r: &mut Recorder, quick: bool) {
     use sion_exec::stream::{step, PayerChain, MAX_SETTLE_STEPS};
 
@@ -802,8 +1067,9 @@ impl sion_exec::StateView for Prefetched {
 }
 
 /// The benchmark groups, in the order they run.
-pub const GROUPS: [&str; 8] = [
+pub const GROUPS: [&str; 9] = [
     "signatures",
+    "authorization",
     "state",
     "data",
     "clearing",
@@ -840,6 +1106,9 @@ pub fn run(
     }
     if wanted("signatures") {
         signatures(&mut r, quick);
+    }
+    if wanted("authorization") {
+        authorization(&mut r, quick);
     }
     if wanted("state") {
         hashing_and_trees(&mut r, quick);

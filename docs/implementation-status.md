@@ -24,6 +24,7 @@ live.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
+| Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
 | Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels; a sandbox not built) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
@@ -105,14 +106,40 @@ principal, an ancestor's agent) can suspend a subtree, the suspender or the
 backer can resume it, and the agent or any overseer can revoke it. Both
 proof stacks implement it, and the differential tests cover every
 operation and its failure cases. The `swarm` demo runs it on a devnet.
-Not built, and named in the [design note](book/src/research/agent-scale.md):
-cohorts that create a million identities in one transaction and
-materialize each on first use, identities without an account of their own
-(signed for by an ancestor in batch roots), additive token-bucket rate
-limits (window limits are fixed windows, so a subtree can spend up to twice
-its root's limit in an interval that straddles two windows), and a rule
-that makes a certified agent payment final before it executes (today a
-suspension or revocation that executes first makes it fail).
+Specification v1.13 adds **keyless subagents**: a subagent spawned without
+an account gets one derived from its id, which no key controls, and acts
+only as a member of batches its nearest keyed ancestor signs (see
+[Batched authorization](book/src/concepts/batched-authorization.md)); the runtime's
+`agent_spawn` makes keyless subagents, and `sion agent spawn --keyless`
+does from the command line. Not built, and named in the [design
+note](book/src/research/agent-scale.md): cohorts that create a million
+identities in one transaction and materialize each on first use, lineage
+ids, additive token-bucket rate limits (window limits are fixed windows, so
+a subtree can spend up to twice its root's limit in an interval that
+straddles two windows), overlays that revoke a subtree with one write and
+absence proofs, and a rule that makes a certified agent payment final
+before it executes (today a suspension or revocation that executes first
+makes it fail).
+
+**Batched authorization: built (devnet scale, specification v1.13).** One
+authorization signs a batch of up to 256 transactions (`TxBatch { signer,
+size, root }`, the root an RFC 9162 tree over their digests); each member
+carries the authorization, its position and its path, and its fee floor is
+the usual one less 80 % of the base fee (the part that pays for checking
+signatures), plus its share of that part, rounded up. Both proof
+stacks implement it (`sion_exec::auth`, `sion_spec::authorize`), with the
+differential tests covering batches a sender signs for itself, keyless
+subagents at two depths and below a keyed subagent, every way a member can
+be refused, forced intents whose signer rotates, and settlements that pay
+per hash on the member's floor. Validators, the executor and both proof
+stacks check a batch's signatures once and each member's path every time;
+the gateway sends each shard committee a batch's members in one message
+and consensus groups carry its authorization once; `POST /v1/batches`
+takes a whole batch. Not built: a sequence number per signer that would
+make two conflicting batches slashable, so that a payee could rely on a
+member before it is certified; today conflicting batches are settled by
+lane locks, as any two transactions are. Trust atoms:
+`agent:keyless-signer`, `impl:batch-size-fee`.
 
 **Agent runtime: partly built (beyond the paper).** `sion-agent` runs a
 language model as an agent: the Anthropic Messages API (version
@@ -659,6 +686,8 @@ the architecture's own:
 | `agent:channel-token` | Whoever holds the HTTP channel's bearer token can start and continue the sessions of every profile on the machine, approvals included, within each profile's autonomy and the agent's charter. The channel speaks plain HTTP. |
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
+| `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
+| `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 
 ## Light-client trust

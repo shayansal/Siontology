@@ -10,10 +10,12 @@ one machine and say little about yours.
 Usage: sion bench [OPTIONS]
 
 Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --quick        Smaller sizes
       --no-devnet    Skip the end-to-end devnet measurement
-      --only <ONLY>  Run only these groups: signatures, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
+      --only <ONLY>  Run only these groups: signatures, authorization, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
       --json <JSON>  Write the measurements as JSON to this file
+  -h, --help         Print help
 ```
 
 In the run below, from an earlier version, the hashing measurement is
@@ -132,6 +134,55 @@ costs a signature check: about 2.3 × 10⁶ and 880 a second. The payments
 themselves are checked by their payees, one hash each. What this does and
 does not mean for throughput at scale is in
 [Billions of payments a second](../research/billion-scale.md).
+
+## Authorization
+
+The `authorization` group measures what [batched
+authorization](../concepts/batched-authorization.md) saves: checking and
+carrying a transaction's signatures when it is signed by itself and when
+it is a member of a batch, and executing a Pulse of agent payments both
+ways. On a 2-core virtual machine (Intel Xeon at 2.80 GHz, without the
+SHA extensions, so SLH-DSA-SHA2 signed and verified four to five times
+slower than on the machine of the first run), idle, release build of
+specification v1.13, 29 October 2026 (`sion bench --only
+signatures,authorization`, the second of three runs):
+
+```text
+group        measurement                                                   value unit     note
+signatures   ML-DSA-44 sign                                               263.15 µs       
+signatures   ML-DSA-44 verify                                             182.91 µs       2420 B signature
+signatures   SLH-DSA-SHA2-128f sign                                     77007.00 µs       
+signatures   SLH-DSA-SHA2-128f verify                                    4152.45 µs       17088 B signature
+signatures   SLH-DSA-SHA2-128s sign                                   1590552.76 µs       
+signatures   SLH-DSA-SHA2-128s verify                                    1679.48 µs       7856 B signature
+authorization signed by itself: check                                     4501.87 µs       ML-DSA-44 + SLH-DSA-SHA2-128f, per transaction
+authorization signed by itself: bytes                                    19525.00 B        signatures, per transaction
+authorization batch of 16: check per member                                537.84 µs       one signature check per batch, one inclusion path per member
+authorization batch of 16: bytes per member                               1434.25 B        214 B of place and path, plus a 16th of the signatures
+authorization batch of 64: check per member                                149.61 µs       one signature check per batch, one inclusion path per member
+authorization batch of 64: bytes per member                                583.06 B        278 B of place and path, plus a 64th of the signatures
+authorization batch of 256: check per member                                30.40 µs       one signature check per batch, one inclusion path per member
+authorization batch of 256: bytes per member                               418.27 B        342 B of place and path, plus a 256th of the signatures
+authorization Pulse of 256 agent payments, keyed subagents, each signed by itself        5314.39 µs/tx    1360.5 ms per Pulse with signature checks, one core
+authorization Pulse of 256 agent payments, keyless subagents, one batch         112.14 µs/tx    28.7 ms per Pulse with signature checks, one core
+```
+
+**A batch member costs a share of one check.** In a batch of 256, a
+member's check took 30 µs (30 to 32 µs over three runs), against 4.5 ms
+(4.5 to 6.7 ms) for a transaction signed by itself: about 150 times less.
+That is a 256th of one dual signature check plus the member's own
+inclusion path. A member carries 418 bytes, 342 of them its place in the
+batch (the batch, its index, an eight-hash path and the charter option)
+and the rest a 256th of the signatures, against 19,525 bytes for a
+transaction signed by itself: 47 times less. Smaller batches save less: a
+member of a batch of 64 carried 583 bytes and cost 127 to 170 µs.
+
+**A Pulse of agent payments.** On one core, with every signature checked,
+a Pulse of 256 payments from keyless subagents in one batch executed in 29
+to 43 ms over three runs, and a Pulse of 256 payments each signed by its
+own keyed subagent in 1.25 to 1.36 s: 29 to 47 times longer, run by run.
+Both include everything else executing a payment costs: its caveats, its
+allotment and its coins.
 
 ## Measuring your own machine
 

@@ -39,6 +39,7 @@
 
 pub mod account;
 pub mod assurance;
+pub mod auth;
 pub mod beacons;
 pub mod charter;
 pub mod claim;

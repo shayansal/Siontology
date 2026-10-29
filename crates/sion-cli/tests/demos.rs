@@ -131,6 +131,18 @@ fn all_demos_run_and_tell_the_truth() {
         );
     }
     for expected in [
+        "the orchestrator launches 64 keyless subagents in one transaction: no keys",
+        "64 subagents each pay gpu-cloud 1 USD, all authorized by one signature of",
+        "each pays a fee of 0.000313 USD instead of 0.0011 USD: the signature check is shared by the batch",
+        "signed one by one, the 64 payments would carry 1.25 MB of signatures; batched, 19.5 KB",
+        "mallory signs a batch for one of them → not certified: the batch is not signed by the subagent's nearest keyed ancestor",
+    ] {
+        assert!(
+            text.contains(expected),
+            "batch: missing {expected:?}:\n{text}"
+        );
+    }
+    for expected in [
         "coder claims the 150 USD on its own 100 USD bond → refused by the ledger",
         "is below κ·V = 300",
         "→ paid 150 USD; 300 USD of that backing reserved for the lab",

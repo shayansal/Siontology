@@ -4,12 +4,14 @@
 //! paid only for an accepted result.
 //!
 //! - `agent_spawn` carves a budget from the agent's allotment into a new
-//!   subagent identity (`SpawnAgents`, under caveats that attenuate the
-//!   parent's, as the ledger requires), gives it fee money from the
-//!   parent's own account, and runs the task in a session of its own, with
-//!   the models the person chose for subagents and the same autonomy. Its
-//!   answer comes back as the call's result. Subagents may spawn their own
-//!   down to a depth of [`MAX_DEPTH`]; suspending the parent stops the tree.
+//!   keyless subagent identity (`SpawnAgents`, under caveats that attenuate
+//!   the parent's, as the ledger requires; spec v1.13): no key is made for
+//!   it, and the wallet that signs for the parent signs for it, in batches
+//!   of one. That wallet gives it fee money, and the subagent runs the task
+//!   in a session of its own, with the models the person chose for
+//!   subagents and the same autonomy. Its answer comes back as the call's
+//!   result. Subagents may spawn their own down to a depth of
+//!   [`MAX_DEPTH`]; suspending the parent stops the tree.
 //! - `task_post` escrows money from the agent's budget for work by another
 //!   agent (`PostTask` with the agent's charter): its spec, worker,
 //!   verifiers and adjudicator are fixed when it is posted.
@@ -111,6 +113,21 @@ fn allotment_holding(
     Err(format!("no part of your budget holds {amount} USD"))
 }
 
+/// `base`, or `base-2`, `base-3`, … if a wallet of that name exists.
+fn fresh_name(base: &str) -> String {
+    let dir = wallet_dir();
+    let taken = |name: &str| {
+        dir.join(format!("{name}.seed")).exists() || dir.join(format!("{name}.keyless")).exists()
+    };
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|name| !taken(name))
+        .expect("some name is free")
+}
+
 fn valid_name(name: &str) -> bool {
     (1..=32).contains(&name.len())
         && name
@@ -198,18 +215,19 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
     caveats.max_per_window = Amount(left_window.min(budget.0));
     caveats.max_per_payment = Amount(caveats.max_per_payment.0.min(budget.0));
     caveats.may_delegate = caveats.may_delegate && delegation.depth + 1 < MAX_DEPTH;
-    let wallet = format!("{}-{name}", acting.wallet);
-    crate::agents::ensure_wallet(&wallet).map_err(|e| e.to_string())?;
+    // A subagent is keyless (spec v1.13): no key is made or kept for it; the
+    // wallet that signs for this agent signs for it too.
+    let wallet = fresh_name(&format!("{}-{name}", acting.wallet));
     let mut session = Session::open(ledger).map_err(|e| e.to_string())?;
+    let signer = session.signer_of(&acting.wallet);
     let reference = session.reference(&allotment).map_err(|e| e.to_string())?;
-    let child_account = session.id(&wallet);
     let view = session
         .send(
             &acting.wallet,
             TxKind::SpawnAgents {
                 charter: acting.agent,
                 children: vec![Spawn {
-                    agent: child_account,
+                    agent: None,
                     card: Hash32::ZERO,
                     caveats,
                     budget,
@@ -234,11 +252,22 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
             _ => None,
         })
         .ok_or("the ledger spawned no subagent")?;
-    // The subagent pays its transactions' fees from its own account.
+    crate::session::create_keyless_alias(
+        &wallet,
+        &crate::session::KeylessAlias {
+            charter: child,
+            signer: signer.clone(),
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let child_account = sion_exec::charter::keyless_account(&child);
+    // The subagent pays its transactions' fees from its own account; the
+    // keyed account that signs for it gives it the money (a keyless parent
+    // has only fee money of its own).
     let grant = crate::agents::parse_amount(FEE_GRANT).map_err(|e| e.to_string())?;
     let funded = session
         .send(
-            &acting.wallet,
+            &signer,
             TxKind::Transfer {
                 asset: AssetId::usd(),
                 outputs: vec![(child_account, grant)],
@@ -249,7 +278,7 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
         .unwrap_or(false);
     if !funded {
         return Err(format!(
-            "spawned {wallet} (agent {}), but could not give it {FEE_GRANT} USD for fees from your account",
+            "spawned {wallet} (agent {}), but {signer} could not give it {FEE_GRANT} USD for fees",
             child.short()
         ));
     }

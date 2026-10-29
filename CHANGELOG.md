@@ -10,6 +10,50 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Batched authorization and keyless subagents (specification v1.13)
+
+- One authorization can sign a batch of up to 256 transactions: the RFC 9162
+  Merkle root over their digests, with its signer and size, signed in a
+  context of its own (`sion/tx/v1/batch/<configuration digest>`). Each
+  member carries the authorization, its position and its inclusion path.
+  Its fee floor is the usual one less 80 % of the base fee (the part that
+  pays for checking signatures), plus its share of that part, rounded up:
+  0.000304 USD instead of 0.0011 USD on the devnet in a batch of 256. New
+  types
+  `sion_exec::tx::{TxBatch, BatchMember, BatchEnvelope}`, field
+  `SignedTransaction::batch` (the encoding of every signed transaction
+  changes, so data from earlier devnets does not load), module
+  `sion_exec::auth`, and `Wallet::{draft, sign_batch}`.
+- Keyless subagents: `Spawn::agent` becomes optional, and a subagent
+  spawned without an account gets `H("sion/agent/keyless", id)`, which no
+  key controls. It acts only as a member of batches its nearest keyed
+  ancestor signs. `sion agent spawn --keyless [--gas <USD>]` spawns them
+  and writes a `.keyless` wallet file per subagent that holds no secret,
+  only its charter and the wallet that signs for it: every command that
+  takes a wallet takes its name. `sion agent pay-batch` pays from many
+  agents under one signature, or prints the batch for `POST /v1/batches`;
+  like any command, it first prints what is signed, member by member.
+  The runtime's `agent_spawn` now makes keyless subagents, so no seed is
+  made or kept for a subagent.
+- Forced intents may be batch members; an obligation records its
+  `signer`, and a rotation of the signer's policy resolves it.
+- Proof stack B implements v1.13 independently (`sion_spec::authorize`);
+  the differential tests cover batches a sender signs for itself, keyless
+  subagents at two depths and below a keyed subagent, every way a member
+  is refused, forced intents and settlements on the member's floor.
+- The node checks a batch's signatures once: validators remember a batch
+  by its message with the policy and signatures compared byte for byte,
+  the executor and both proof stacks too, so a batch of 256 costs one
+  signature check, not 256. The gateway sends each shard committee a
+  batch's members in one `LaneBatch` message, consensus groups carry each
+  batch's authorization once, and `POST /v1/batches` takes a whole batch
+  with its signatures once.
+- `sion demo batch`: 64 keyless subagents pay in one batch. `sion bench
+  --only authorization` measures checks and bytes signed alone and in
+  batches, and a Pulse of agent payments both ways. New trust atoms
+  `agent:keyless-signer` and `impl:batch-size-fee`. Docs: [Batched
+  authorization](docs/book/src/concepts/batched-authorization.md).
+
 ### An agent runtime
 
 - New crate `sion-agent`: runs a language model as an agent. Models: the

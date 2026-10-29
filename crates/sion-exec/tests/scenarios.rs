@@ -829,7 +829,7 @@ fn an_agent_swarm_is_contained_and_stopped_from_any_ancestor() {
         let mut caveats = charter_caveats(vendor);
         caveats.max_per_window = units(window);
         Spawn {
-            agent,
+            agent: Some(agent),
             card: card_commitment(b"worker"),
             caveats,
             budget: units(budget),
