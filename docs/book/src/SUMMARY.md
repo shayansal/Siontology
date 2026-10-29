@@ -60,6 +60,7 @@
 - [Charters for AI agents](guides/charters.md)
 - [Agent identities from the command line](guides/agents.md)
 - [Agents at work](guides/agent-runtime.md)
+- [Commands, scripts and MCP servers](guides/agent-tools.md)
 - [Skills from others](guides/skills.md)
 - [Skills that get better](guides/skill-improvement.md)
 - [Teams, schedules and channels](guides/agent-teams.md)

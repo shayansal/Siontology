@@ -25,7 +25,7 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels; a sandbox not built) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts, MCP servers, storage deals) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -198,12 +198,29 @@ once, every interval or on cron (UTC), and deliver its answer to a file,
 a webhook or Telegram; `sion agent serve` (HTTP with a bearer token) and
 `sion agent telegram` (long polling, chats allowed by id) carry
 conversations, each a session, with approvals answered in the channel.
-Tested with the scripted model and with stand-ins for the providers' and
-Telegram's APIs: this environment reaches neither. Not built: permissions
-that skills declare and the runtime enforces, requiring a particular
-verifier's attestation, search over past sessions, consolidation, the
-memory archive with storage providers, storage deals and MCP servers as
-tools, routing channels across machines, a shell tool and a sandbox
+Commands, scripts and MCP servers
+([Commands, scripts and MCP servers](book/src/guides/agent-tools.md)):
+`--shell` runs `/bin/sh` commands in a sandbox (bubblewrap, or a Docker
+image pinned by digest and never pulled) that writes only the workspace
+and reaches no network unless the operator gives one (refusing Docker's
+`host` and `bridge`); `skill_run` runs a skill's own scripts there, with
+the network only for skills that declare it; `sion agent mcp add` reviews
+an MCP server's tools and pins each by a digest of its definition, and a
+session offers only tools that still match, with effects from the reviewed
+annotations or the operator, in both eras of the protocol (2026-07-28 and
+the handshake of 2025-11-25 and before); `--storage` lets an agent keep a
+workspace file with storage providers and follow and close its deals.
+Calls meant to run again (commands, scripts, file writes) are not
+journaled, and a replayed outcome says so. The spawns of one turn go
+together, in one `SpawnAgents` transaction and one transfer of fee money,
+and their sessions run at the same time; their keyless payments are signed
+in batches as they arrive. Tested with the scripted model and with
+stand-ins for the providers' and Telegram's APIs: this environment reaches
+neither. The sandbox tests run bubblewrap for real, and Docker with
+`SION_TEST_DOCKER_IMAGE`. Not built: permissions that skills declare and
+the runtime enforces, requiring a particular verifier's attestation,
+search over past sessions, consolidation, the memory archive with storage
+providers, MCP over HTTP, and routing channels across machines
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
@@ -687,6 +704,13 @@ the architecture's own:
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
+| `agent:sandbox` | Commands an agent runs (its shell, its skills' scripts, MCP servers started in a sandbox) are contained only as far as the kernel's namespaces (bubblewrap) or the container runtime (Docker) hold: an escape gives them the runtime's user. Bubblewrap bounds how long a command runs and the size of each process, not how many processes it starts; Docker bounds those too. A container started by a runtime that is killed runs until its command ends. |
+| `agent:sandbox-network` | With the network allowed, a sandboxed command reaches what that network reaches. Bubblewrap's `host` network is the machine's own, unfiltered: local services and a cloud's metadata address included. A Docker network restricts only as its operator set it up: the runtime refuses Docker's `host` and `bridge` networks by name and cannot check the rest. |
+| `agent:shell-repeats` | Shell commands, skills' scripts and file writes are not journaled: a command the model gives again runs again, so with the network a repeated command can repeat an action outside the machine. |
+| `agent:workspace-content` | What an agent reads from its own workspace (files, and the output of commands without the network) does not taint its session, even content it saved there from outside in an earlier session. |
+| `agent:mcp-unsandboxed` | An MCP server added without a sandbox runs as the operator's user, with the environment variables its configuration names: it can do whatever that user can. |
+| `agent:mcp-effects` | What an MCP tool's call does is what its server does. The runtime knows it only from the annotations reviewed with the tool, or from the effect its operator set: a tool that does more than it says (moves money elsewhere, say) is caught only by the review, and an agent's charter does not bound money a tool moves outside the ledger. A pin shows that a tool's definition is the one reviewed, not that its server's code is. |
+| `agent:storage-from-account` | A storage deal an agent posts is paid from its account's balance, the money it pays fees with, not from its charter's budget: the charter's caveats do not bound it. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 

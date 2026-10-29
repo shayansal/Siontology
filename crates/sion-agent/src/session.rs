@@ -193,8 +193,37 @@ enum Called {
     },
 }
 
+/// What the checks say about a call before it runs.
+enum Checked {
+    /// Answered without running: from the journal, refused, blocked.
+    Answered(Outcome),
+    /// Needs a person's approval.
+    Wait {
+        key: String,
+        tool: String,
+        input: Value,
+        reason: String,
+    },
+    /// May run: the tool (inside `tools_call`, the inner one), its input,
+    /// the call's key and effect, and whether it is journaled.
+    Ready(Ready),
+}
+
+/// A call that passed its checks.
+struct Ready {
+    tool: String,
+    input: Value,
+    key: String,
+    effect: crate::tools::Effect,
+    journaled: bool,
+}
+
 /// What a tool use waiting for approval says to the model meanwhile.
 const WAITING: &str = "waiting for a person's approval";
+
+/// What precedes an outcome the journal answers a repeated call with.
+pub const REPLAYED: &str = "(Not done again: an identical call earlier in this session already \
+     did this. To do it again on purpose, change its input. It returned:)";
 
 impl Runtime<'_> {
     /// Runs the session until it ends or must wait.
@@ -274,7 +303,47 @@ impl Runtime<'_> {
     fn run_calls(&self, state: &mut State, calls: &[(String, String, Value)]) -> Option<Ended> {
         let mut results = Vec::new();
         let mut progress = false;
-        for (index, (use_id, name, input)) in calls.iter().enumerate() {
+        let mut index = 0;
+        while index < calls.len() {
+            let (use_id, name, input) = &calls[index];
+            // The calls of a batching tool that follow this one in the turn,
+            // if they too may run, run with it: each passed the policy by
+            // itself, and none was decided after seeing another's result.
+            if let Checked::Ready(first) = self.check(state, name, input) {
+                let tool = self.tools.get(&first.tool).expect("checked");
+                if tool.batches() && name != TOOLS_CALL {
+                    let mut group = vec![(index, first)];
+                    let mut next = index + 1;
+                    while next < calls.len() && calls[next].1 == *name {
+                        match self.check(state, name, &calls[next].2) {
+                            // An identical call waits for the first's record.
+                            Checked::Ready(ready)
+                                if group.iter().all(|(_, g)| g.key != ready.key) =>
+                            {
+                                group.push((next, ready));
+                                next += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    let inputs: Vec<(&Value, &str)> = group
+                        .iter()
+                        .map(|(_, r)| (&r.input, r.key.as_str()))
+                        .collect();
+                    let mut outcomes = tool.call_batch(&inputs);
+                    outcomes.resize_with(group.len(), || {
+                        Outcome::uncertain("the tool gave no outcome for this call")
+                    });
+                    for ((at, ready), outcome) in group.iter().zip(outcomes) {
+                        self.finish(state, ready, &outcome);
+                        progress |= !outcome.is_error;
+                        results.push(result_block(&calls[*at].0, &outcome));
+                    }
+                    index = next;
+                    continue;
+                }
+            }
+            index += 1;
             match self.call(state, name, input) {
                 Called::Ran(outcome) => {
                     progress |= !outcome.is_error;
@@ -287,7 +356,7 @@ impl Runtime<'_> {
                     reason,
                 } => {
                     results.push(result_block(use_id, &Outcome::ok(WAITING)));
-                    for (later, _, _) in &calls[index + 1..] {
+                    for (later, _, _) in &calls[index..] {
                         results.push(result_block(
                             later,
                             &Outcome::error("not run: an earlier call in this turn waited for approval; call it again if it is still needed"),
@@ -385,50 +454,85 @@ impl Runtime<'_> {
     }
 
     fn call(&self, state: &mut State, name: &str, input: &Value) -> Called {
+        match self.check(state, name, input) {
+            Checked::Answered(outcome) => Called::Ran(outcome),
+            Checked::Wait {
+                key,
+                tool,
+                input,
+                reason,
+            } => Called::Wait {
+                key,
+                tool,
+                input,
+                reason,
+            },
+            Checked::Ready(ready) => {
+                let tool = self.tools.get(&ready.tool).expect("checked");
+                let outcome = tool.call(&ready.input, &ready.key);
+                self.finish(state, &ready, &outcome);
+                Called::Ran(outcome)
+            }
+        }
+    }
+
+    /// Everything that decides whether a call runs, without running it:
+    /// the meta-tools, the journal, the policy and the kill switch. It
+    /// changes nothing, so a call may be checked again.
+    fn check(&self, state: &State, name: &str, input: &Value) -> Checked {
         // The meta-tools of a large toolbox.
         if name == TOOLS_SEARCH {
             let query = input["query"].as_str().unwrap_or_default();
             let found = self.tools.search(query);
-            return Called::Ran(Outcome::ok(json!(found).to_string()));
+            return Checked::Answered(Outcome::ok(json!(found).to_string()));
         }
         if name == TOOLS_CALL {
             let inner = input["name"].as_str().unwrap_or_default().to_string();
             if inner == TOOLS_CALL || inner == TOOLS_SEARCH {
-                return Called::Ran(Outcome::error("tools_call calls a tool, not itself"));
+                return Checked::Answered(Outcome::error("tools_call calls a tool, not itself"));
             }
             let inner_input = input.get("input").cloned().unwrap_or_else(|| json!({}));
-            return self.call(state, &inner, &inner_input);
+            return self.check(state, &inner, &inner_input);
         }
         let call_key = key(&state.id, name, input);
         let Some(tool) = self.tools.get(name) else {
-            return Called::Ran(Outcome::error(format!("there is no tool named {name}")));
+            return Checked::Answered(Outcome::error(format!("there is no tool named {name}")));
         };
         if state.failures.get(&call_key).copied().unwrap_or(0) >= self.limits.failures_to_block {
-            return Called::Ran(Outcome::error(
+            return Checked::Answered(Outcome::error(
                 "blocked: this exact call has failed repeatedly; change its input or the approach",
             ));
         }
+        let journaled = tool.journaled();
         match state.journal.prior(&call_key) {
-            Prior::Done(outcome) => return Called::Ran(outcome),
-            Prior::Unknown => {
-                return Called::Ran(Outcome::uncertain(
+            Prior::Done(outcome) if journaled => {
+                // Said, so that the model does not take a recorded outcome
+                // for news.
+                return Checked::Answered(Outcome {
+                    content: format!("{REPLAYED}\n{}", outcome.content),
+                    ..outcome
+                });
+            }
+            Prior::Unknown if journaled => {
+                return Checked::Answered(Outcome::uncertain(
                     "not repeated: an identical earlier call may or may not have taken effect; \
                      check its result before trying again",
                 ))
             }
-            Prior::New => {}
+            _ => {}
         }
         let now = (self.now)();
-        let effect = tool.effect();
+        // A call can do at most what its tool declares.
+        let effect = tool.effect_of(input).min(tool.effect());
         match self
             .policy
             .decide(&state.standing, name, effect, &call_key, now)
         {
             Decision::Deny(reason) => {
-                return Called::Ran(Outcome::error(format!("refused by policy: {reason}")))
+                return Checked::Answered(Outcome::error(format!("refused by policy: {reason}")))
             }
             Decision::Ask(reason) => {
-                return Called::Wait {
+                return Checked::Wait {
                     key: call_key,
                     tool: name.to_string(),
                     input: input.clone(),
@@ -438,26 +542,39 @@ impl Runtime<'_> {
             Decision::Run => {}
         }
         if (self.stopped)() {
-            return Called::Ran(Outcome::error("not run: the kill switch is on"));
+            return Checked::Answered(Outcome::error("not run: the kill switch is on"));
         }
-        let outcome = tool.call(input, &call_key);
+        Checked::Ready(Ready {
+            tool: name.to_string(),
+            input: input.clone(),
+            key: call_key,
+            effect,
+            journaled,
+        })
+    }
+
+    /// Records what a call that ran did: its taint, its failure, and, if it
+    /// is journaled, its outcome.
+    fn finish(&self, state: &mut State, ready: &Ready, outcome: &Outcome) {
+        let now = (self.now)();
         if outcome.untrusted {
             state.standing.taint(&self.policy, now);
         }
         if outcome.is_error && outcome.certain {
-            *state.failures.entry(call_key.clone()).or_default() += 1;
+            *state.failures.entry(ready.key.clone()).or_default() += 1;
         }
-        state.journal.record(
-            &call_key,
-            Entry {
-                tool: name.to_string(),
-                input: input.clone(),
-                effect,
-                outcome: outcome.clone(),
-                at: now,
-            },
-        );
-        Called::Ran(outcome)
+        if ready.journaled {
+            state.journal.record(
+                &ready.key,
+                Entry {
+                    tool: ready.tool.clone(),
+                    input: ready.input.clone(),
+                    effect: ready.effect,
+                    outcome: outcome.clone(),
+                    at: now,
+                },
+            );
+        }
     }
 
     /// Replaces the middle of a long conversation with a summary of it,

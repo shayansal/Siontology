@@ -49,6 +49,15 @@ pub struct Profile {
     /// Whether to ask it to write down long tasks as skills.
     #[serde(default = "yes")]
     pub reflect: bool,
+    /// The sandbox its commands run in, if it has a shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<sion_agent::sandbox::Sandbox>,
+    /// The MCP servers whose reviewed tools it has, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp: Vec<String>,
+    /// Whether it has the storage-deal tools.
+    #[serde(default)]
+    pub storage: bool,
 }
 
 fn yes() -> bool {
@@ -69,6 +78,9 @@ impl Profile {
             subagent_models: self.subagent_models.clone(),
             adjudicator: self.adjudicator,
             depth: 0,
+            shell: self.shell.clone(),
+            mcp: self.mcp.clone(),
+            storage: self.storage,
         }
     }
 
@@ -193,6 +205,14 @@ pub enum ProfileCommand {
         /// Do not ask it to write down long tasks as skills.
         #[arg(long)]
         no_reflect: bool,
+        #[command(flatten)]
+        shell: crate::runtime::ShellArgs,
+        /// Give it the reviewed tools of this MCP server. Repeat for more.
+        #[arg(long = "mcp", value_name = "SERVER")]
+        mcp: Vec<String>,
+        /// Give it the storage-deal tools.
+        #[arg(long)]
+        storage: bool,
     },
     /// The profiles on this machine.
     List,
@@ -225,7 +245,20 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             subagent_models,
             adjudicator,
             no_reflect,
+            shell,
+            mcp,
+            storage,
         } => {
+            let shell = shell.sandbox()?;
+            for server in &mcp {
+                crate::agent_mcp::get(server)?;
+            }
+            if let Some(sandbox) = &shell {
+                let root = workspace.as_ref().ok_or_else(|| {
+                    CliError::Usage("a shell needs a workspace to work in: give --workspace".into())
+                })?;
+                crate::runtime::check_shell(sandbox, root, skills.as_deref())?;
+            }
             if !valid_name(&name) {
                 return Err(CliError::Usage(format!(
                     "{name:?} is not a profile name: 1 to 32 lowercase letters, digits and hyphens"
@@ -252,6 +285,9 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                     .map(|a| hex_id(&a, "the adjudicator").map(AtomId::from_hash))
                     .transpose()?,
                 reflect: !no_reflect,
+                shell,
+                mcp,
+                storage,
             };
             let mut profiles = all()?;
             profiles.insert(name.clone(), profile.clone());
@@ -290,6 +326,15 @@ pub fn describe(profile: &Profile) -> String {
     }
     if profile.delegate {
         extras.push("delegates".to_string());
+    }
+    if let Some(sandbox) = &profile.shell {
+        extras.push(format!("a shell ({})", sandbox.describe()));
+    }
+    if !profile.mcp.is_empty() {
+        extras.push(format!("MCP servers {}", profile.mcp.join(", ")));
+    }
+    if profile.storage {
+        extras.push("storage deals".to_string());
     }
     format!(
         "profile {}: agent {} as {}, {} at {:?}{}",

@@ -693,6 +693,7 @@ Commands:
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
+  mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
   serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token
@@ -932,11 +933,23 @@ Options:
           The model its subagents run with (default: its own). Repeat for fallbacks
       --adjudicator <ADJUDICATOR>
           The adjudicator atom of the tasks it posts (without one, their results cannot be challenged)
+      --shell [<SANDBOX>]
+          Let it run commands with /bin/sh in a sandbox that can write only its workspace (needs --workspace), and its skills' scripts: `bwrap` (bubblewrap, the default) or `docker:<image>@sha256:<digest>`, an image already on this machine
+      --sandbox-network <NETWORK>
+          The network its commands reach: `none` (the default), `host` (bubblewrap: this machine's network, unfiltered) or a Docker network you set up to restrict where they connect [default: none]
+      --sandbox-read <DIR>
+          A directory its commands may read, at its own path (a toolchain, say); with bubblewrap, its bin directory goes on the PATH. Repeat for more
+      --sandbox-timeout <SECONDS>
+          Seconds a command may run before it is stopped [default: 120]
+      --mcp <SERVER>
+          Give it the reviewed tools of this MCP server (see `sion agent mcp add`). Repeat for more
+      --storage
+          Give it the storage-deal tools: keep a file of its workspace with storage providers (the escrow comes from its account's balance, not its budget), follow its deals and close them
   -h, --help
           Print help
 ```
 
-See [Agents at work](../guides/agent-runtime.md).
+See [Agents at work](../guides/agent-runtime.md), and [Commands, scripts and MCP servers](../guides/agent-tools.md) for `--shell`, `--mcp` and `--storage`.
 
 ## `sion agent continue`
 
@@ -1055,6 +1068,18 @@ Options:
           The adjudicator atom of the tasks it posts
       --no-reflect
           Do not ask it to write down long tasks as skills
+      --shell [<SANDBOX>]
+          Let it run commands with /bin/sh in a sandbox that can write only its workspace (needs --workspace), and its skills' scripts: `bwrap` (bubblewrap, the default) or `docker:<image>@sha256:<digest>`, an image already on this machine
+      --sandbox-network <NETWORK>
+          The network its commands reach: `none` (the default), `host` (bubblewrap: this machine's network, unfiltered) or a Docker network you set up to restrict where they connect [default: none]
+      --sandbox-read <DIR>
+          A directory its commands may read, at its own path (a toolchain, say); with bubblewrap, its bin directory goes on the PATH. Repeat for more
+      --sandbox-timeout <SECONDS>
+          Seconds a command may run before it is stopped [default: 120]
+      --mcp <SERVER>
+          Give it the reviewed tools of this MCP server. Repeat for more
+      --storage
+          Give it the storage-deal tools
   -h, --help
           Print help
 ```
@@ -1080,6 +1105,99 @@ Usage: sion agent profile remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent mcp`
+
+```text
+MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
+
+Usage: sion agent mcp [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add an MCP server for agents' sessions, and review its tools. The server is started and its tools listed, each with what its calls are taken to do; those offered are pinned by a digest of their definitions, so a tool that changes is not offered until reviewed again
+  list    The MCP servers on this machine, with their reviewed tools
+  review  Review a server's tools again: what changed, what is new and what is gone since its last review. With --accept, its tools are pinned as they are now (a tool keeps the larger of its old effect and what its annotations now say, unless --effect sets one)
+  remove  Remove a server
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Servers are kept in `$SION_HOME/agents/mcp.json`, with a digest of each reviewed tool's definition. See [Commands, scripts and MCP servers](../guides/agent-tools.md#tools-from-mcp-servers).
+
+## `sion agent mcp add`
+
+```text
+Add an MCP server for agents' sessions, and review its tools. The server is started and its tools listed, each with what its calls are taken to do; those offered are pinned by a digest of their definitions, so a tool that changes is not offered until reviewed again
+
+Usage: sion agent mcp add [OPTIONS] <NAME> -- <COMMAND>...
+
+Arguments:
+  <NAME>        Its name (lowercase letters, digits and hyphens)
+  <COMMAND>...  The program and its arguments, after `--`
+
+Options:
+      --env <NAME>                 An environment variable it is given, by name; the value is the one where the agent runs. Repeat for more
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --dir <DIR>                  The directory it works in (in a sandbox, at /workspace)
+      --allow <TOOL>               Offer only this tool of its tools (default: all). Repeat for more
+      --effect <TOOL=EFFECT>       What a tool's calls are taken to do, whatever its annotations say: TOOL=read, write, external or spend. Repeat for more
+      --timeout <TIMEOUT>          Seconds a call may take [default: 120]
+      --sandbox <SANDBOX>          The sandbox it runs in: bwrap or docker:<image>@sha256:<digest>. Without one, it runs as you
+      --sandbox-network <NETWORK>  The network it reaches in its sandbox: none (the default), host (bubblewrap) or a Docker network you set up [default: none]
+      --sandbox-read <DIR>         A directory it may read in its sandbox. Repeat for more
+  -h, --help                       Print help
+```
+
+The server is started, introduced to (protocol 2026-07-28, or the handshake of 2025-11-25 and before) and asked for its tools, then stopped. A tool that says nothing of itself is taken to reach the open world: its calls are external and what it returns taints the session. Without `--sandbox`, the server runs as you (`agent:mcp-unsandboxed`).
+
+## `sion agent mcp list`
+
+```text
+The MCP servers on this machine, with their reviewed tools
+
+Usage: sion agent mcp list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent mcp review`
+
+```text
+Review a server's tools again: what changed, what is new and what is gone since its last review. With --accept, its tools are pinned as they are now (a tool keeps the larger of its old effect and what its annotations now say, unless --effect sets one)
+
+Usage: sion agent mcp review [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The server
+
+Options:
+      --accept                Pin the tools as listed
+      --node <NODE>           The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --effect <TOOL=EFFECT>  What a tool's calls are taken to do: TOOL=read, write, external or spend. Repeat for more
+  -h, --help                  Print help
+```
+
+Without `--accept`, nothing changes. With it, a tool keeps the larger of its old effect and what its annotations now say, unless `--effect` sets one.
+
+## `sion agent mcp remove`
+
+```text
+Remove a server
+
+Usage: sion agent mcp remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The server
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]

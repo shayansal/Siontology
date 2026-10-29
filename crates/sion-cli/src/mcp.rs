@@ -26,8 +26,16 @@ use crate::error::CliError;
 use crate::ledger::{Ledger, LedgerExt};
 use crate::session::Session;
 
-/// The protocol version this server speaks.
-pub const PROTOCOL_VERSION: &str = "2025-06-18";
+/// The protocol version this server speaks to modern clients, which send
+/// it with every request.
+pub const PROTOCOL_VERSION: &str = "2026-07-28";
+
+/// The earlier versions it speaks to clients that open with the
+/// `initialize` handshake, newest first.
+pub const LEGACY_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// What the server tells a model about itself.
+const INSTRUCTIONS: &str = "Tools for the Siontology neo-blockchain devnet. Assess a claim with sion_assess_claim before relying on it.";
 
 fn tools() -> Value {
     let account = json!({ "type": "string", "description": "A wallet name (devnet) or a 64-digit hex account ID" });
@@ -1033,16 +1041,40 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
 }
 
 /// Handles one JSON-RPC message; returns the response, if any.
+///
+/// A request that carries `io.modelcontextprotocol/protocolVersion` in its
+/// `_meta` is served as protocol 2026-07-28 (every result says it is
+/// complete); `initialize` opens the earlier, handshake-based protocol.
 pub fn handle(session: &mut Session<'_>, message: &Value) -> Option<Value> {
     let id = message.get("id").cloned();
     let method = message["method"].as_str().unwrap_or("");
+    let asked = message["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"].as_str();
+    let modern = asked.is_some();
+    if let Some(version) = asked.filter(|v| *v != PROTOCOL_VERSION) {
+        let id = id?;
+        return Some(json!({ "jsonrpc": "2.0", "id": id, "error": {
+            "code": -32022,
+            "message": "Unsupported protocol version",
+            "data": { "supported": [PROTOCOL_VERSION], "requested": version }
+        }}));
+    }
+    let server_info = json!({ "name": "sion", "version": env!("CARGO_PKG_VERSION") });
     let result = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "tools": { "listChanged": false } },
-            "serverInfo": { "name": "sion", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": "Tools for the Siontology neo-blockchain devnet. Assess a claim with sion_assess_claim before relying on it."
+        "server/discover" => Ok(json!({
+            "supportedVersions": [PROTOCOL_VERSION],
+            "capabilities": { "tools": {} },
+            "_meta": { "io.modelcontextprotocol/serverInfo": server_info },
+            "instructions": INSTRUCTIONS
         })),
+        "initialize" => {
+            let requested = message["params"]["protocolVersion"].as_str().unwrap_or("");
+            Ok(json!({
+                "protocolVersion": if LEGACY_VERSIONS.contains(&requested) { requested } else { LEGACY_VERSIONS[0] },
+                "capabilities": { "tools": { "listChanged": false } },
+                "serverInfo": server_info,
+                "instructions": INSTRUCTIONS
+            }))
+        }
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
         "tools/call" => {
@@ -1065,7 +1097,14 @@ pub fn handle(session: &mut Session<'_>, message: &Value) -> Option<Value> {
     };
     let id = id?;
     Some(match result {
-        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Ok(mut result) => {
+            if modern {
+                if let Value::Object(fields) = &mut result {
+                    fields.insert("resultType".into(), json!("complete"));
+                }
+            }
+            json!({ "jsonrpc": "2.0", "id": id, "result": result })
+        }
         Err(error) => json!({ "jsonrpc": "2.0", "id": id, "error": error }),
     })
 }

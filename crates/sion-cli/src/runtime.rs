@@ -7,7 +7,7 @@
 //! approvals decide what the agent tries; the ledger decides what it can
 //! do, and refuses a payment outside the charter whatever the runtime said.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -193,7 +193,18 @@ fn pay(acting: &Acting, input: &Value, key: &str) -> Outcome {
         purpose: format!("{purpose} (agent call {call})"),
         evidence: None,
     };
-    let digest = match session.submit(&acting.wallet, kind, vec![reference]) {
+    // A keyless agent's payment is signed by its nearest keyed ancestor, in
+    // a batch with whatever its siblings send at about the same time.
+    let submitted = match session.keyless_of(&acting.wallet) {
+        Some(alias) => crate::batcher::of(&alias.signer).submit(
+            &acting.ledger,
+            crate::session::Actor::Keyless(alias.charter),
+            kind,
+            vec![reference],
+        ),
+        None => session.submit(&acting.wallet, kind, vec![reference]),
+    };
+    let digest = match submitted {
         Ok(digest) => digest,
         Err(CliError::Connection(e)) => {
             session.settle_all();
@@ -391,6 +402,15 @@ pub struct Saved {
     /// How deep it is among subagents: 0 for an agent a person runs.
     #[serde(default)]
     pub depth: u32,
+    /// The sandbox its commands run in, if it has a shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<sion_agent::sandbox::Sandbox>,
+    /// The MCP servers whose reviewed tools it has, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp: Vec<String>,
+    /// Whether it has the storage-deal tools.
+    #[serde(default)]
+    pub storage: bool,
 }
 
 /// What a person answers a session with.
@@ -546,6 +566,7 @@ impl Saved {
             tools.add_boxed(tool);
         }
         if let Some(root) = &self.workspace {
+            check_workspace(root)?;
             std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
             for tool in sion_agent::builtin::workspace(root) {
                 tools.add_boxed(tool);
@@ -555,6 +576,23 @@ impl Saved {
             let client = sion_http::Client::new(sion_http::Options::default())
                 .map_err(|e| CliError::Usage(e.to_string()))?;
             tools.add(sion_agent::builtin::Fetch { client });
+        }
+        if let Some(sandbox) = &self.shell {
+            let root = self.workspace.as_ref().ok_or_else(|| {
+                CliError::Usage("a shell needs a workspace to work in: give --workspace".into())
+            })?;
+            check_shell(sandbox, root, self.skills.as_deref())?;
+            tools.add(sion_agent::builtin::Shell {
+                root: root.clone(),
+                sandbox: sandbox.clone(),
+            });
+            if let Some(skills) = &self.skills {
+                tools.add(sion_agent::skills::SkillRun {
+                    root: skills.clone(),
+                    workspace: root.clone(),
+                    sandbox: sandbox.clone(),
+                });
+            }
         }
         if self.delegate {
             let delegation = crate::delegation::Delegation {
@@ -569,6 +607,33 @@ impl Saved {
                 adjudicator: self.adjudicator,
             };
             for tool in delegation.tools() {
+                tools.add_boxed(tool);
+            }
+        }
+        // Servers that cannot start, and tools changed since their review,
+        // are left out; the run says which.
+        let mut notes = Vec::new();
+        for name in &self.mcp {
+            let mounted = crate::agent_mcp::get(name)
+                .map_err(|e| e.to_string())
+                .and_then(|server| {
+                    if let Some(dir) = &server.dir {
+                        check_workspace(dir).map_err(|e| e.to_string())?;
+                    }
+                    sion_agent::mcp::mount(&server)
+                });
+            match mounted {
+                Ok(mounted) => {
+                    for tool in mounted.tools {
+                        tools.add_boxed(tool);
+                    }
+                    notes.extend(mounted.notes);
+                }
+                Err(e) => notes.push(format!("MCP server {name} is not offered: {e}")),
+            }
+        }
+        if self.storage {
+            for tool in crate::agent_storage::tools(&acting, self.workspace.as_deref()) {
                 tools.add_boxed(tool);
             }
         }
@@ -655,6 +720,7 @@ impl Saved {
         self.positions = models.iter().map(|m| m.position()).collect();
         self.save()?;
         let mut lines = quarantined;
+        lines.extend(notes);
         // A call that waited for a decision is answered in place: show how.
         if let Some(waiting) = waiting {
             let still = self.state.pending.as_ref().map(|p| &p.use_id) == Some(&waiting.use_id);
@@ -761,7 +827,11 @@ impl Saved {
     }
 }
 
-/// What a conversation says, one line per step.
+/// The most lines of a tool's result a transcript shows.
+pub const SHOWN_LINES: usize = 12;
+
+/// What a conversation says: a line per step, and a tool's result of
+/// several lines indented under its first.
 pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
     let mut lines = Vec::new();
     for message in messages {
@@ -775,12 +845,21 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
                 Block::ToolResult {
                     content, is_error, ..
                 } => {
-                    let shown: String = content.chars().take(400).collect();
+                    // A result of several lines (a command's output) keeps
+                    // them, indented under the first, up to a screenful.
+                    let mark = if *is_error { "✗" } else { "←" };
+                    let cut = |line: &str| -> String { line.chars().take(400).collect() };
+                    let mut shown = content.lines();
                     lines.push(format!(
-                        "  {} {}",
-                        if *is_error { "✗" } else { "←" },
-                        shown.replace('\n', " ")
-                    ))
+                        "  {mark} {}",
+                        cut(shown.next().unwrap_or_default())
+                    ));
+                    for line in shown.by_ref().take(SHOWN_LINES - 1) {
+                        lines.push(format!("    {}", cut(line)).trim_end().to_string());
+                    }
+                    if shown.next().is_some() {
+                        lines.push("    …".to_string());
+                    }
                 }
             }
         }
@@ -804,6 +883,193 @@ fn ending(ended: &Ended, id: &str) -> String {
             kill_switch().display()
         ),
     }
+}
+
+/// This machine's Siontology home: its wallets, sessions and skills.
+fn sion_home() -> PathBuf {
+    wallet_dir()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".sion"))
+}
+
+/// `path` made absolute and, as far as it exists, without links.
+pub fn resolved(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|dir| dir.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    // The longest part that exists, resolved, and the rest as given.
+    let mut existing = absolute.as_path();
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => break,
+        }
+    }
+    let mut out = existing
+        .canonicalize()
+        .unwrap_or_else(|_| existing.to_path_buf());
+    for name in rest.into_iter().rev() {
+        out.push(name);
+    }
+    out
+}
+
+/// Whether one of `a` and `b` lies inside the other.
+fn overlap(a: &Path, b: &Path) -> bool {
+    let (a, b) = (resolved(a), resolved(b));
+    a.starts_with(&b) || b.starts_with(&a)
+}
+
+/// Why a workspace may not be used: it holds this machine's Siontology
+/// home (wallet keys, sessions, skills) or lies inside it, so that its
+/// tools could read keys or change the record of approvals.
+pub fn check_workspace(workspace: &Path) -> Result<(), CliError> {
+    let home = sion_home();
+    if overlap(workspace, &home) {
+        return Err(CliError::Usage(format!(
+            "the workspace {} and {} (wallets, sessions, skills) overlap: give a workspace apart \
+             from it",
+            workspace.display(),
+            home.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Why `sandbox` may not run commands in `workspace`: besides the
+/// workspace's own rule, the skills (which change only through their
+/// tools and releases) must lie outside it, and no directory it may read
+/// may show the Siontology home.
+pub fn check_shell(
+    sandbox: &sion_agent::sandbox::Sandbox,
+    workspace: &Path,
+    skills: Option<&Path>,
+) -> Result<(), CliError> {
+    check_workspace(workspace)?;
+    sandbox.check().map_err(CliError::Usage)?;
+    if let Some(skills) = skills {
+        if overlap(workspace, skills) {
+            return Err(CliError::Usage(format!(
+                "the skills directory {} and the workspace overlap: a command could change a skill \
+                 without its checks; keep them apart",
+                skills.display()
+            )));
+        }
+    }
+    let home = sion_home();
+    for dir in &sandbox.readable {
+        if overlap(dir, &home) {
+            return Err(CliError::Usage(format!(
+                "{} and {} overlap: the sandbox would show your wallets",
+                dir.display(),
+                home.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The flags that give an agent a shell.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct ShellArgs {
+    /// Let it run commands with /bin/sh in a sandbox that can write only
+    /// its workspace (needs --workspace), and its skills' scripts: `bwrap`
+    /// (bubblewrap, the default) or `docker:<image>@sha256:<digest>`, an
+    /// image already on this machine.
+    #[arg(long, num_args = 0..=1, default_missing_value = "bwrap", value_name = "SANDBOX")]
+    pub shell: Option<String>,
+    /// The network its commands reach: `none` (the default), `host`
+    /// (bubblewrap: this machine's network, unfiltered) or a Docker network
+    /// you set up to restrict where they connect.
+    #[arg(long, default_value = "none", value_name = "NETWORK")]
+    pub sandbox_network: String,
+    /// A directory its commands may read, at its own path (a toolchain,
+    /// say); with bubblewrap, its bin directory goes on the PATH. Repeat
+    /// for more.
+    #[arg(long = "sandbox-read", value_name = "DIR")]
+    pub sandbox_read: Vec<PathBuf>,
+    /// Seconds a command may run before it is stopped.
+    #[arg(long, default_value_t = 120, value_name = "SECONDS")]
+    pub sandbox_timeout: u64,
+}
+
+impl ShellArgs {
+    /// The sandbox, if the flags ask for a shell.
+    pub fn sandbox(self) -> Result<Option<sion_agent::sandbox::Sandbox>, CliError> {
+        match self.shell {
+            None => {
+                if self.sandbox_network != "none" || !self.sandbox_read.is_empty() {
+                    return Err(CliError::Usage(
+                        "--sandbox-network and --sandbox-read go with --shell".into(),
+                    ));
+                }
+                Ok(None)
+            }
+            Some(backend) => sandbox_from(
+                &backend,
+                &self.sandbox_network,
+                self.sandbox_read,
+                self.sandbox_timeout,
+            )
+            .map(Some),
+        }
+    }
+}
+
+/// The sandbox the flags describe: `bwrap` or `docker:<image>@sha256:<digest>`,
+/// a network (`none`, `host` or a Docker network's name), directories it may
+/// read, and its time limit.
+pub fn sandbox_from(
+    backend: &str,
+    network: &str,
+    readable: Vec<PathBuf>,
+    timeout_secs: u64,
+) -> Result<sion_agent::sandbox::Sandbox, CliError> {
+    use sion_agent::sandbox::{Backend, Limits, Network, Sandbox};
+    let backend = match backend {
+        "bwrap" | "bubblewrap" => Backend::Bubblewrap,
+        other => match other.strip_prefix("docker:") {
+            Some(image) => Backend::Docker {
+                image: image.to_string(),
+            },
+            None => {
+                return Err(CliError::Usage(format!(
+                    "the sandbox is bwrap or docker:<image>@sha256:<digest>, not {other}"
+                )))
+            }
+        },
+    };
+    let network = match (network, &backend) {
+        ("none", _) => Network::None,
+        ("host", Backend::Bubblewrap) => Network::Host,
+        (name, Backend::Docker { .. }) => Network::Docker(name.to_string()),
+        (other, Backend::Bubblewrap) => {
+            return Err(CliError::Usage(format!(
+                "with bubblewrap the network is none or host, not {other}"
+            )))
+        }
+    };
+    let readable = readable.iter().map(|dir| resolved(dir)).collect();
+    let sandbox = Sandbox {
+        backend,
+        network,
+        limits: Limits {
+            timeout_secs,
+            ..Limits::default()
+        },
+        readable,
+    };
+    sandbox.check().map_err(CliError::Usage)?;
+    Ok(sandbox)
 }
 
 /// A new session id: 16 random hex digits.
@@ -837,6 +1103,14 @@ pub struct Equipment {
     pub adjudicator: Option<sion_core::ids::AtomId>,
     /// How deep it is among subagents.
     pub depth: u32,
+    /// The sandbox its commands run in, if it may run commands in its
+    /// workspace (and its skills' scripts).
+    pub shell: Option<sion_agent::sandbox::Sandbox>,
+    /// The MCP servers whose reviewed tools it has, by name.
+    pub mcp: Vec<String>,
+    /// Whether it has the storage-deal tools: keep a workspace file, follow
+    /// and close its deals.
+    pub storage: bool,
 }
 
 /// The default directory of an agent's skills.
@@ -865,9 +1139,30 @@ pub fn start(
         subagent_models,
         adjudicator,
         depth,
+        shell,
+        mcp,
+        storage,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
+    }
+    if let Some(root) = &workspace {
+        check_workspace(root)?;
+    }
+    for name in &mcp {
+        crate::agent_mcp::get(name)?;
+    }
+    let skills = skills.unwrap_or_else(|| skills_dir(&agent));
+    if let Some(sandbox) = &shell {
+        let root = workspace.as_ref().ok_or_else(|| {
+            CliError::Usage("a shell needs a workspace to work in: give --workspace".into())
+        })?;
+        check_shell(sandbox, root, Some(&skills))?;
+        // Fail now, with the reason, rather than at the agent's first command.
+        std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
+        sandbox
+            .probe()
+            .map_err(|e| CliError::Usage(format!("the sandbox cannot run commands here: {e}")))?;
     }
     // The agent must exist, and the wallet must be its account.
     let charter = crate::agents::identity(ledger.as_ref(), agent)?;
@@ -900,7 +1195,7 @@ pub fn start(
         workspace,
         web,
         memory,
-        skills: Some(skills.unwrap_or_else(|| skills_dir(&agent))),
+        skills: Some(skills),
         prompt: String::new(),
         state: State::start(&new_id(), task, &limits),
         ended: None,
@@ -911,6 +1206,9 @@ pub fn start(
         subagent_models,
         adjudicator,
         depth,
+        shell,
+        mcp,
+        storage,
     };
     let lines = saved.run(ledger)?;
     Ok((saved, lines))

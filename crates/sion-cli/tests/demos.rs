@@ -236,7 +236,36 @@ fn the_mcp_server_serves_an_agent() {
             &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
         )
         .unwrap();
-        assert_eq!(init["result"]["protocolVersion"], mcp::PROTOCOL_VERSION);
+        assert_eq!(init["result"]["protocolVersion"], mcp::LEGACY_VERSIONS[0]);
+        // A modern client: the version in every request, no handshake.
+        let meta = json!({
+            "io.modelcontextprotocol/protocolVersion": mcp::PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {}
+        });
+        let found = mcp::handle(
+            &mut session,
+            &json!({ "jsonrpc": "2.0", "id": 10, "method": "server/discover", "params": { "_meta": meta } }),
+        )
+        .unwrap();
+        assert_eq!(
+            found["result"]["supportedVersions"],
+            json!([mcp::PROTOCOL_VERSION])
+        );
+        assert_eq!(found["result"]["resultType"], "complete");
+        let listed = mcp::handle(
+            &mut session,
+            &json!({ "jsonrpc": "2.0", "id": 11, "method": "tools/list", "params": { "_meta": meta } }),
+        )
+        .unwrap();
+        assert_eq!(listed["result"]["resultType"], "complete");
+        let old = mcp::handle(
+            &mut session,
+            &json!({ "jsonrpc": "2.0", "id": 12, "method": "tools/list", "params": { "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2099-01-01"
+            } } }),
+        )
+        .unwrap();
+        assert_eq!(old["error"]["code"], -32022);
         assert!(mcp::handle(
             &mut session,
             &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })

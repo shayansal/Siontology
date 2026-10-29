@@ -137,7 +137,10 @@ fn valid_name(name: &str) -> bool {
         && !name.ends_with('-')
 }
 
-/// Spawns a subagent and runs a task in a session of its own.
+/// Spawns subagents and runs their tasks in sessions of their own. The
+/// spawns of one turn go together: one `SpawnAgents` transaction, one
+/// transfer of their fee money, and their sessions run at once, so that
+/// the transactions they make meanwhile are signed in batches.
 struct SpawnTool(Delegation);
 
 impl Tool for SpawnTool {
@@ -148,7 +151,8 @@ impl Tool for SpawnTool {
                           carved from yours (it can never spend more than you give it), works on \
                           the task you give it in a session of its own, under the same rules, \
                           and reports back. Give it a short name (lowercase letters, digits, \
-                          hyphens), a budget in USD and the task, in full: it sees nothing else."
+                          hyphens), a budget in USD and the task, in full: it sees nothing else. \
+                          Subagents you spawn in the same turn work at the same time."
                 .into(),
             input_schema: schema(
                 json!({
@@ -165,42 +169,96 @@ impl Tool for SpawnTool {
         Effect::Spend
     }
 
-    fn call(&self, input: &Value, _key: &str) -> Outcome {
-        match spawn(&self.0, input) {
-            Ok(text) => Outcome::ok(text),
-            Err(e) => Outcome::error(format!("no subagent: {e}")),
-        }
+    fn batches(&self) -> bool {
+        true
+    }
+
+    fn call(&self, input: &Value, key: &str) -> Outcome {
+        self.call_batch(&[(input, key)]).remove(0)
+    }
+
+    fn call_batch(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
+        spawn_all(&self.0, calls.iter().map(|(input, _)| *input).collect())
+            .into_iter()
+            .map(|result| match result {
+                Ok((text, tainted)) => {
+                    let outcome = Outcome::ok(text);
+                    // What a subagent that read content from outside reports
+                    // may carry it: it taints this session too.
+                    if tainted {
+                        outcome.from_outside()
+                    } else {
+                        outcome
+                    }
+                }
+                Err(e) => Outcome::error(format!("no subagent: {e}")),
+            })
+            .collect()
     }
 }
 
-fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
+/// A subagent asked for.
+struct Order {
+    name: String,
+    task: String,
+    budget: Amount,
+}
+
+/// What each input asks for, checked.
+fn orders(delegation: &Delegation, inputs: &[&Value]) -> Vec<Result<Order, String>> {
+    let mut seen = std::collections::BTreeSet::new();
+    inputs
+        .iter()
+        .map(|input| {
+            if delegation.depth >= MAX_DEPTH {
+                return Err(format!(
+                    "a subagent at depth {} cannot spawn another (at most {MAX_DEPTH})",
+                    delegation.depth
+                ));
+            }
+            let name = text(input, "name");
+            let task = text(input, "task");
+            if !valid_name(name) {
+                return Err(format!(
+                    "{name:?} is not a subagent name: 1 to 32 lowercase letters, digits and hyphens"
+                ));
+            }
+            if !seen.insert(name.to_string()) {
+                return Err(format!("{name} is asked for twice in this turn"));
+            }
+            if task.is_empty() {
+                return Err("give the subagent its task".into());
+            }
+            let budget =
+                crate::agents::parse_amount(text(input, "budget")).map_err(|e| e.to_string())?;
+            if budget == Amount::ZERO {
+                return Err("give the subagent a budget".into());
+            }
+            Ok(Order {
+                name: name.to_string(),
+                task: task.to_string(),
+                budget,
+            })
+        })
+        .collect()
+}
+
+/// A subagent launched: its wallet name and its agent.
+struct Launched {
+    wallet: String,
+    child: ObjectId,
+}
+
+/// Spawns `orders` in one transaction from one part of the budget, and
+/// gives them their fee money in one transfer.
+fn launch(delegation: &Delegation, orders: &[&Order]) -> Result<Vec<Launched>, String> {
     let acting = &delegation.acting;
-    if delegation.depth >= MAX_DEPTH {
-        return Err(format!(
-            "a subagent at depth {} cannot spawn another (at most {MAX_DEPTH})",
-            delegation.depth
-        ));
-    }
-    let name = text(input, "name");
-    let task = text(input, "task");
-    if !valid_name(name) {
-        return Err(format!(
-            "{name:?} is not a subagent name: 1 to 32 lowercase letters, digits and hyphens"
-        ));
-    }
-    if task.is_empty() {
-        return Err("give the subagent its task".into());
-    }
-    let budget = crate::agents::parse_amount(text(input, "budget")).map_err(|e| e.to_string())?;
-    if budget == Amount::ZERO {
-        return Err("give the subagent a budget".into());
-    }
     let ledger = acting.ledger.as_ref();
-    let (allotment, charter) = allotment_holding(ledger, acting.agent, budget)?;
+    let total = Amount(orders.iter().map(|o| o.budget.0).sum());
+    let (allotment, charter) = allotment_holding(ledger, acting.agent, total)?;
     if !charter.caveats.may_delegate {
         return Err("your charter does not let you spawn subagents".into());
     }
-    let mut caveats = charter.caveats.clone();
     let left_window = match ledger.object(allotment).map_err(|e| e.to_string())? {
         Some(object) => match object.data {
             ObjectData::Allotment(a) => a
@@ -212,12 +270,30 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
         },
         None => 0,
     };
-    caveats.max_per_window = Amount(left_window.min(budget.0));
-    caveats.max_per_payment = Amount(caveats.max_per_payment.0.min(budget.0));
-    caveats.may_delegate = caveats.may_delegate && delegation.depth + 1 < MAX_DEPTH;
-    // A subagent is keyless (spec v1.13): no key is made or kept for it; the
-    // wallet that signs for this agent signs for it too.
-    let wallet = fresh_name(&format!("{}-{name}", acting.wallet));
+    // The window left is shared out in proportion to the budgets, so that
+    // together the children never carve more than the parent has left.
+    let children: Vec<Spawn> = orders
+        .iter()
+        .map(|order| {
+            let mut caveats = charter.caveats.clone();
+            let window = if total.0 <= left_window {
+                order.budget.0
+            } else {
+                left_window.saturating_mul(order.budget.0) / total.0.max(1)
+            };
+            caveats.max_per_window = Amount(window.min(order.budget.0));
+            caveats.max_per_payment = Amount(caveats.max_per_payment.0.min(order.budget.0));
+            caveats.may_delegate = caveats.may_delegate && delegation.depth + 1 < MAX_DEPTH;
+            // Keyless (spec v1.13): no key is made or kept for it; the wallet
+            // that signs for this agent signs for it too.
+            Spawn {
+                agent: None,
+                card: Hash32::ZERO,
+                caveats,
+                budget: order.budget,
+            }
+        })
+        .collect();
     let mut session = Session::open(ledger).map_err(|e| e.to_string())?;
     let signer = session.signer_of(&acting.wallet);
     let reference = session.reference(&allotment).map_err(|e| e.to_string())?;
@@ -226,12 +302,7 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
             &acting.wallet,
             TxKind::SpawnAgents {
                 charter: acting.agent,
-                children: vec![Spawn {
-                    agent: None,
-                    card: Hash32::ZERO,
-                    caveats,
-                    budget,
-                }],
+                children,
             },
             vec![reference],
         )
@@ -243,34 +314,49 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
             crate::describe::receipt(&names, &view.effects)
         ));
     }
-    let child = view
+    let spawned: Vec<ObjectId> = view
         .effects
         .events
         .iter()
-        .find_map(|e| match e {
+        .filter_map(|e| match e {
             Event::AgentSpawned { agent, .. } => Some(*agent),
             _ => None,
         })
-        .ok_or("the ledger spawned no subagent")?;
-    crate::session::create_keyless_alias(
-        &wallet,
-        &crate::session::KeylessAlias {
-            charter: child,
-            signer: signer.clone(),
-        },
-    )
-    .map_err(|e| e.to_string())?;
-    let child_account = sion_exec::charter::keyless_account(&child);
-    // The subagent pays its transactions' fees from its own account; the
-    // keyed account that signs for it gives it the money (a keyless parent
-    // has only fee money of its own).
+        .collect();
+    if spawned.len() != orders.len() {
+        return Err(format!(
+            "the ledger spawned {} subagents of {}",
+            spawned.len(),
+            orders.len()
+        ));
+    }
+    let mut launched = Vec::new();
+    for (order, child) in orders.iter().zip(spawned) {
+        let wallet = fresh_name(&format!("{}-{}", acting.wallet, order.name));
+        crate::session::create_keyless_alias(
+            &wallet,
+            &crate::session::KeylessAlias {
+                charter: child,
+                signer: signer.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        launched.push(Launched { wallet, child });
+    }
+    // Each subagent pays its transactions' fees from its own account; the
+    // keyed account that signs for it gives it the money, all in one
+    // transfer (a keyless parent has only fee money of its own).
     let grant = crate::agents::parse_amount(FEE_GRANT).map_err(|e| e.to_string())?;
+    let outputs = launched
+        .iter()
+        .map(|l| (sion_exec::charter::keyless_account(&l.child), grant))
+        .collect();
     let funded = session
         .send(
             &signer,
             TxKind::Transfer {
                 asset: AssetId::usd(),
-                outputs: vec![(child_account, grant)],
+                outputs,
             },
             Vec::new(),
         )
@@ -278,17 +364,98 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
         .unwrap_or(false);
     if !funded {
         return Err(format!(
-            "spawned {wallet} (agent {}), but {signer} could not give it {FEE_GRANT} USD for fees",
-            child.short()
+            "spawned {}, but {signer} could not give them {FEE_GRANT} USD each for fees",
+            launched
+                .iter()
+                .map(|l| l.wallet.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
+    Ok(launched)
+}
+
+/// Spawns the subagents `inputs` ask for, runs them at once, and returns
+/// each one's report and whether its session was tainted.
+fn spawn_all(delegation: &Delegation, inputs: Vec<&Value>) -> Vec<Result<(String, bool), String>> {
+    let checked = orders(delegation, &inputs);
+    let valid: Vec<&Order> = checked.iter().filter_map(|o| o.as_ref().ok()).collect();
+    let launched = if valid.is_empty() {
+        Ok(Vec::new())
+    } else {
+        launch(delegation, &valid)
+    };
+    let launched = match launched {
+        Ok(launched) => launched,
+        Err(e) => {
+            return checked
+                .into_iter()
+                .map(|o| o.and_then(|_| Err(e.clone())))
+                .collect()
+        }
+    };
+    let signer = Session::open(delegation.acting.ledger.as_ref())
+        .map(|mut session| session.signer_of(&delegation.acting.wallet))
+        .unwrap_or_else(|_| delegation.acting.wallet.clone());
+    let before = crate::batcher::of(&signer).stats();
+    let runs: Vec<Result<(String, bool), String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = valid
+            .iter()
+            .zip(&launched)
+            .map(|(order, launched)| scope.spawn(move || work(delegation, order, launched)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err("the subagent's session failed".into()))
+            })
+            .collect()
+    });
+    // How the transactions signed for them meanwhile went out.
+    let after = crate::batcher::of(&signer).stats();
+    let (members, batches) = (
+        after.members.saturating_sub(before.members),
+        after.batches.saturating_sub(before.batches),
+    );
+    let signed = if members > 0 && launched.len() > 1 {
+        format!(
+            " While the {} subagents worked, {signer} signed {members} of their transactions in \
+             {batches} {}.",
+            launched.len(),
+            if batches == 1 { "batch" } else { "batches" }
+        )
+    } else {
+        String::new()
+    };
+    let mut runs = runs.into_iter();
+    checked
+        .into_iter()
+        .map(|o| {
+            o.and_then(|_| runs.next().unwrap_or_else(|| Err("no run".into())))
+                .map(|(text, tainted)| (format!("{text}{signed}"), tainted))
+        })
+        .collect()
+}
+
+/// Runs a launched subagent's task in a session of its own and reports how
+/// it went.
+fn work(
+    delegation: &Delegation,
+    order: &Order,
+    launched: &Launched,
+) -> Result<(String, bool), String> {
+    let acting = &delegation.acting;
+    let Launched { wallet, child } = launched;
     let (saved, _) = crate::runtime::start(
         acting.ledger.clone(),
-        &wallet,
-        child,
-        task,
+        wallet,
+        *child,
+        &order.task,
         delegation.models.clone(),
         delegation.policy.clone(),
+        // A subagent gets no workspace, shell or web of its parent's: only
+        // the ledger tools and what its charter allows.
         Equipment {
             depth: delegation.depth + 1,
             subagent_models: delegation.models.clone(),
@@ -339,15 +506,20 @@ fn spawn(delegation: &Delegation, input: &Value) -> Result<String, String> {
             }
         }
     }
-    Ok(format!(
-        "subagent {wallet} (agent {}, budget {budget} USD) worked in session {}: {ended}. Its calls: {}.",
-        child.short(),
-        saved.state.id,
-        if calls.is_empty() {
-            "none".to_string()
-        } else {
-            calls.join(", ")
-        }
+    let tainted = saved.state.standing.tainted_until.is_some();
+    Ok((
+        format!(
+            "subagent {wallet} (agent {}, budget {} USD) worked in session {}: {ended}. Its calls: {}.",
+            child.short(),
+            order.budget,
+            saved.state.id,
+            if calls.is_empty() {
+                "none".to_string()
+            } else {
+                calls.join(", ")
+            }
+        ),
+        tainted,
     ))
 }
 

@@ -68,6 +68,11 @@ keyed ancestor's. `agent_spawn` is a spending call, so below autonomy L6
 it waits for a person's approval. Suspending the lead's identity on the
 ledger (`sion agent suspend`) stops the subagents too.
 
+The subagents one turn asks for are spawned together, in one
+`SpawnAgents` transaction and one transfer of fee money, and work at the
+same time; the payments they make meanwhile are signed in batches
+([Spawning subagents together](agent-tools.md#spawning-subagents-together)).
+
 ## Hiring another agent
 
 The lead also hired `contractor`, another agent, through a
@@ -229,8 +234,8 @@ sendMessage {"chat_id": 42, "text": "85 USD left in the budget."}
   acceptance rule and bonds. Nothing reads the work itself.
 - A keyless subagent's transactions are signed by the runtime that holds
   its ancestor's wallet, for the subagent's own tool calls only
-  (`agent:keyless-signer`). The runtime signs each as a batch of one; it
-  does not yet gather calls from several subagents into one batch.
+  (`agent:keyless-signer`). Its payments are gathered with those of the
+  subagents working beside it; its other transactions (memory, tasks) are
+  each signed as a batch of one.
 - There is no gateway that routes channels across machines, and no
-  messenger other than Telegram. The tools do not yet include storage
-  deals or MCP servers.
+  messenger other than Telegram.

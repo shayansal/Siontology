@@ -10,6 +10,65 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Commands, scripts and MCP servers for agents
+
+- A sandbox for commands (`sion_agent::sandbox`): bubblewrap (new user,
+  PID, IPC, UTS, cgroup and network namespaces, no capabilities, the
+  system's programs read-only, the workspace the only place it can write)
+  or a Docker image pinned by digest and never pulled during a call
+  (read-only root, every capability dropped, no new privileges, bounded
+  processes, memory and CPUs, run as the workspace's owner). No network
+  unless the operator gives one: bubblewrap's `host` (unfiltered), or a
+  Docker network the operator set up (Docker's `host` and `bridge` are
+  refused). CPU, file-size, wall-clock and output limits.
+- `sion agent run --shell [bwrap|docker:<image>@sha256:<digest>]` gives an
+  agent a `shell` tool that runs `/bin/sh` commands in its workspace inside
+  the sandbox, and `skill_run`, which runs a script that comes with one of
+  its skills (the skill read-only at `/skill`); a skill's scripts get the
+  network only if its front matter's `metadata` says `sion-network: "true"`
+  and the sandbox has one. `--sandbox-network`, `--sandbox-read`,
+  `--sandbox-timeout`. Profiles take the same flags.
+- Tools from MCP servers (`sion_agent::mcp`): `sion agent mcp add <name>
+  -- <command>` starts a server, lists its tools with what their calls are
+  taken to do and pins each by a digest of its definition; `sion agent run
+  --mcp <name>` offers only tools whose definitions still match, so a
+  server cannot change what a tool tells the model between a review and a
+  run (`sion agent mcp review` shows what changed). Effects come from the
+  reviewed annotations (open-world tools are external and taint the
+  session) or `--effect`. Servers get only the environment variables they
+  are given, may run in the sandbox, and are spoken to in both eras of the
+  protocol: 2026-07-28 (probed with `server/discover`) and the `initialize`
+  handshake of 2025-11-25 and before. `sion mcp`, the ledger's own server,
+  now speaks both too.
+- The journal no longer answers repeats of calls meant to run again: shell
+  commands, skills' scripts and file writes run every time
+  (`Tool::journaled`). A repeat it does answer says so. A tool can declare
+  a smaller effect for a given input (`Tool::effect_of`).
+- A workspace may not hold `$SION_HOME` or lie inside it, and a shell's
+  workspace may not hold the skills it runs. `read_file` refuses pipes and
+  devices.
+- New trust atoms `agent:sandbox`, `agent:sandbox-network`,
+  `agent:shell-repeats`, `agent:workspace-content`, `agent:mcp-unsandboxed`,
+  `agent:mcp-effects` and `agent:storage-from-account`. Docs: [Commands, scripts and MCP
+  servers](docs/book/src/guides/agent-tools.md).
+
+### Storage deals and batched signing for agents
+
+- `sion agent run --storage` gives an agent `storage_keep` (post a deal
+  to have a workspace file kept and proven every round, from an https
+  locator or for a provider on this machine), `storage_deals` and
+  `storage_close`. The escrow comes from the agent's account, not its
+  charter's budget (`agent:storage-from-account`).
+- Tools may run the consecutive calls of one turn together
+  (`Tool::batches`, `Tool::call_batch`), each after passing the policy by
+  itself; an identical call still waits for the journal. `agent_spawn`
+  does: the subagents a turn asks for are spawned in one `SpawnAgents`
+  transaction, funded in one transfer and run at the same time.
+- Keyless subagents' payments go through a batcher per signing wallet
+  (`sion_cli::batcher`): those made within moments of each other (100 ms
+  after the last, 500 ms at most) are signed as one batch, so three
+  subagents paying at once need one signature, not three.
+
 ### Fixes
 
 - The gateway answers submissions while its faucet waits. The faucet read
