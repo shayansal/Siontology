@@ -505,7 +505,8 @@ pub enum AgentCommand {
     /// (MATTERMOST_URL, MATTERMOST_TOKEN), irc (IRC_SERVER, IRC_NICK,
     /// IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), email
     /// (EMAIL_ADDRESS, EMAIL_IMAP_URL, EMAIL_SMTP_URL, EMAIL_PASSWORD or
-    /// EMAIL_TOKEN_COMMAND), or through webhooks to --listen: whatsapp
+    /// EMAIL_TOKEN_COMMAND), imessage (through imsg on the Mac that runs
+    /// Messages, IMSG_COMMAND), or through webhooks to --listen: whatsapp
     /// (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET,
     /// WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN,
     /// LINE_CHANNEL_SECRET), sms through Twilio (TWILIO_ACCOUNT_SID,

@@ -36,6 +36,7 @@ pub mod email;
 pub mod error;
 pub mod gateway;
 pub mod google_chat;
+pub mod imessage;
 pub mod irc;
 pub mod jwt;
 pub mod ledger;

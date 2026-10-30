@@ -17,6 +17,7 @@
 //! | IRC, Twitch | a connection of its own ([`crate::irc`]) | `IRC_SERVER`, `IRC_NICK`; `TWITCH_NICK`, `TWITCH_TOKEN` | `#channels`, nicks |
 //! | WhatsApp, LINE, SMS | signed webhooks ([`crate::webhooks`]) | see there | numbers, ids |
 //! | Microsoft Teams, Google Chat | webhooks signed with the services' keys ([`crate::teams`], [`crate::google_chat`]) | `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`; `GOOGLE_CHAT_AUDIENCE` | conversation ids, spaces |
+//! | iMessage | `imsg rpc` on the Mac that runs Messages ([`crate::imessage`]) | none (`IMSG_COMMAND`) | handles, `chat…` |
 //! | Email | IMAP, IDLE where the server has it ([`crate::email`]) | `EMAIL_ADDRESS`, `EMAIL_IMAP_URL`, `EMAIL_SMTP_URL`, `EMAIL_PASSWORD` | addresses |
 //!
 //! Each `*_API_BASE` variable points a messenger at another server (a
@@ -1193,11 +1194,12 @@ pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, S
         "irc" => Box::new(crate::irc::Irc::irc_from_env(chats)?),
         "twitch" => Box::new(crate::irc::Irc::twitch_from_env(chats)?),
         "email" => Box::new(crate::email::Email::from_env()?),
+        "imessage" => Box::new(crate::imessage::IMessage::from_env()?),
         "teams" => Box::new(crate::teams::Teams::from_env(listen)?),
         "google-chat" => Box::new(crate::google_chat::GoogleChat::from_env(listen)?),
         other => {
             return Err(format!(
-                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line, sms, teams, google-chat or email"
+                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line, sms, teams, google-chat, email or imessage"
             ))
         }
     })

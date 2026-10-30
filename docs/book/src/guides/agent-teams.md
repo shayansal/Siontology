@@ -716,6 +716,52 @@ smtp: QUIT
 imap: s10 LOGOUT
 ```
 
+### iMessage
+
+`--via imessage` answers Messages on a Mac through
+[`imsg`](https://github.com/steipete/imsg), the command line OpenClaw
+drives too: the bridge runs `imsg rpc` and speaks its JSON-RPC, on the Mac
+itself or, with `IMSG_COMMAND="ssh mac imsg rpc"`, from another machine.
+imsg reads Messages' database (it needs Full Disk Access) and sends
+through Messages (Automation): there is no server to expose and no
+password to keep.
+
+The bridge subscribes to the messages after its place, a message's row
+id, so what came while it was stopped is answered; the first time, it
+starts after the latest message. A chat is named by its identifier: a
+handle for a direct chat (`--allow +15551234567`, or an Apple ID's
+address), `chat…` for a group. What is sent from the Mac itself is the
+agent's own, and not answered. Voice notes (Core Audio files) are heard
+as imsg converts them, where the bridge runs on the Mac; spoken answers
+go as audio messages, with their text. `IMSG_SERVICE` sends replies as
+`imessage`, `sms` or `auto`.
+
+Here imsg was a stand-in speaking its JSON-RPC (imsg runs only on
+macOS). After the first run, which answered nothing, came a question, the
+Mac's own reply to an earlier one, and a group's message:
+
+```text
+$ IMSG_COMMAND="python3 -I fake-imsg.py messages.json imsg-asked.jsonl" sion agent bridge lead --via imessage --allow +15550001111 --once
+$ sion agent bridge lead --via imessage --allow +15550001111 --once
+chat +15550001111: How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session e7382195f8970032: done
+to chat +15550001111: 100 USD left in the budget.
+chat chat777: not allowed, ignored
+```
+
+What imsg was asked over the two runs:
+
+```text
+{"method": "chats.list", "params": {"limit": 1}}
+{"method": "messages.history", "params": {"chat_id": 1, "limit": 1}}
+{"method": "watch.subscribe", "params": {"attachments": true, "since_rowid": 10}}
+{"method": "watch.subscribe", "params": {"attachments": true, "since_rowid": 10}}
+{"method": "send", "params": {"chat_identifier": "+15550001111", "text": "100 USD left in the budget."}}
+```
+
 ### Pairing and voice notes
 
 With `--pairing`, a bridge gives someone who writes to it directly, and
@@ -923,6 +969,11 @@ again.
   takes more than 25 seconds over goes only with a service account's key.
   Both have been run only against stand-ins for Microsoft's and Google's
   side.
+- On iMessage, who wrote is the handle Messages shows; an SMS's number
+  can be forged (`agent:imessage-handles`). Groups carry no mentions
+  here, so `--require-mention` answers nothing in them; a voice note is
+  heard only where the bridge runs on the Mac (its file is the Mac's).
+  imsg has been run only as a stand-in speaking its JSON-RPC.
 - An email is answered as from whom the provider's
   `Authentication-Results` say (`agent:email-from`): a provider that adds
   none, or does not check what it says it checked, leaves the bridge

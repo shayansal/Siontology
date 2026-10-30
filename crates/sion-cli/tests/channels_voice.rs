@@ -1595,3 +1595,175 @@ fn teams_and_google_chat_answer_only_what_their_services_signed() {
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// A stand-in for `imsg rpc`: line-delimited JSON-RPC on stdin and stdout,
+/// its messages read from a file anew for each request, and every request
+/// kept in another.
+const FAKE_IMSG: &str = r#"
+import json, sys
+box, kept = sys.argv[1], sys.argv[2]
+def out(value):
+    sys.stdout.write(json.dumps(value) + "\n")
+    sys.stdout.flush()
+def messages():
+    with open(box) as f:
+        return json.load(f)
+print("imsg stand-in: not JSON, and not an answer", flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    method, params, ident = request["method"], request.get("params", {}), request.get("id")
+    with open(kept, "a") as f:
+        f.write(json.dumps({"method": method, "params": params}) + "\n")
+    ok = lambda result: out({"jsonrpc": "2.0", "id": ident, "result": result})
+    if method == "chats.list":
+        ok({"chats": [{"id": 1, "identifier": "+15550001111", "is_group": False}]})
+    elif method == "messages.history":
+        ok({"messages": [m for m in messages() if m["chat_id"] == params["chat_id"]][-params.get("limit", 50):]})
+    elif method == "watch.subscribe":
+        ok({"subscription": 1, "buffer_limit": 256})
+        for m in messages():
+            if m["id"] > params.get("since_rowid", 0):
+                out({"jsonrpc": "2.0", "method": "message", "params": {"subscription": 1, "message": m}})
+    elif method == "messages.after":
+        found = [m for m in messages() if m["id"] > params["since_rowid"]][: params.get("limit", 500)]
+        for m in found:
+            for a in m["attachments"]:
+                if params.get("convert_attachments") and "converted" in a:
+                    a["converted_path"], a["converted_mime_type"] = a.pop("converted"), "audio/mp4"
+        ok({"messages": found, "next_rowid": found[-1]["id"] if found else params["since_rowid"], "has_more": False})
+    elif method in ("send", "send.attachment"):
+        ok({"ok": True, "transport": "applescript", "id": 99, "guid": "G99"})
+    else:
+        out({"jsonrpc": "2.0", "id": ident, "error": {"code": -32601, "message": "unknown method"}})
+"#;
+
+#[test]
+fn imessage_is_answered_through_imsg() {
+    let _environment = one_at_a_time();
+    let python = std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !python {
+        eprintln!("skipped: no python3 here for imsg's stand-in");
+        return;
+    }
+    let (home, devnet, ledger, profile) = setup("sion-imessage");
+    let reply = "85 USD left in the budget.";
+    let script = home.join("fake-imsg.py");
+    std::fs::write(&script, FAKE_IMSG).unwrap();
+    let (box_path, kept) = (home.join("messages.json"), home.join("imsg-asked.jsonl"));
+    let attachments = home.join("Library/Messages/Attachments/ab/01");
+    std::fs::create_dir_all(&attachments).unwrap();
+    std::fs::write(attachments.join("Audio Message.caf"), b"caff-voice").unwrap();
+    std::fs::write(attachments.join("Audio Message.m4a"), b"m4a-voice").unwrap();
+    let message = |id: u64, chat: &str, text: &str| {
+        json!({"id": id, "chat_id": if chat.starts_with("chat") { 2 } else { 1 }, "chat_identifier": chat,
+            "is_group": chat.starts_with("chat"), "sender": chat.replace("chat777", "+15550002222"),
+            "is_from_me": false, "text": text, "attachments": [], "created_at": "2026-10-31T09:00:00Z"})
+    };
+    let write = |messages: &[Value]| {
+        std::fs::write(&box_path, Value::from(messages.to_vec()).to_string()).unwrap()
+    };
+    let mut messages = vec![message(10, "+15550001111", "From before.")];
+    write(&messages);
+    std::env::set_var(
+        "IMSG_COMMAND",
+        format!(
+            "python3 -I {} {} {}",
+            script.display(),
+            box_path.display(),
+            kept.display()
+        ),
+    );
+    std::env::remove_var("IMSG_SERVICE");
+    let options = sion_cli::messengers::Options {
+        allow: vec!["+15550001111".into()],
+        once: true,
+        ..Default::default()
+    };
+
+    // The first time, after the latest message.
+    let imessage = sion_cli::messengers::for_bridge("imessage", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, imessage.as_ref(), &options)
+        .unwrap();
+    drop(imessage);
+    let asked = || -> Vec<Value> {
+        std::fs::read_to_string(&kept)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let subscribed: Vec<Value> = asked()
+        .into_iter()
+        .filter(|r| r["method"] == "watch.subscribe")
+        .collect();
+    assert_eq!(
+        subscribed[0]["params"],
+        json!({"since_rowid": 10, "attachments": true})
+    );
+    assert!(
+        !asked().iter().any(|r| r["method"] == "send"),
+        "nothing old is answered"
+    );
+
+    // Then a question, the agent's own message, a group's, and a voice note.
+    let mut own = message(12, "+15550001111", "Earlier answer.");
+    own["is_from_me"] = json!(true);
+    let mut voice = message(14, "+15550001111", "\u{FFFC}");
+    voice["attachments"] = json!([{"transfer_name": "Audio Message.caf", "uti": "com.apple.coreaudio-format",
+        "mime_type": "audio/x-caf", "missing": false,
+        "original_path": attachments.join("Audio Message.caf"),
+        "converted": attachments.join("Audio Message.m4a")}]);
+    messages.extend([
+        message(11, "+15550001111", "How much budget is left?"),
+        own,
+        message(13, "chat777", "lunch?"),
+        voice,
+    ]);
+    write(&messages);
+    let imessage = sion_cli::messengers::for_bridge("imessage", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, imessage.as_ref(), &options)
+        .unwrap();
+    drop(imessage);
+    let sends: Vec<Value> = asked()
+        .into_iter()
+        .filter(|r| r["method"] == "send")
+        .map(|r| r["params"].clone())
+        .collect();
+    assert_eq!(
+        sends,
+        [
+            json!({"chat_identifier": "+15550001111", "text": reply}),
+            json!({"chat_identifier": "+15550001111", "text": "I could not hear that: voice notes are not heard here: write instead"}),
+        ]
+    );
+
+    // A voice note's audio, as imsg converts it; a spoken answer, sent as
+    // an audio message with its text.
+    use sion_cli::messengers::Messenger;
+    let imessage = sion_cli::imessage::IMessage::from_env().unwrap();
+    let (found, cursor) = imessage.receive("13", 5).unwrap();
+    assert_eq!(cursor, "14");
+    let note = found[0].voice.clone().unwrap();
+    let audio = imessage.fetch_voice(&note).unwrap();
+    assert_eq!(
+        (audio.media_type.as_str(), audio.bytes.as_slice()),
+        ("audio/mp4", &b"m4a-voice"[..])
+    );
+    let spoken = sion_cli::voice::Audio::new("audio/ogg", b"OggS-reply".to_vec());
+    assert!(imessage.send_voice("+15550001111", &spoken, reply).unwrap());
+    drop(imessage);
+    let sent: Vec<Value> = asked()
+        .into_iter()
+        .filter(|r| r["method"] == "send.attachment")
+        .map(|r| r["params"].clone())
+        .collect();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["audio"], true);
+    let file = sent[0]["file"].as_str().unwrap();
+    assert_eq!(std::fs::read(file).unwrap(), b"OggS-reply");
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}

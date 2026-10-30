@@ -10,6 +10,16 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### iMessage
+
+- **Through imsg.** `sion agent bridge --via imessage` runs `imsg rpc` on
+  the Mac that runs Messages (`IMSG_COMMAND`, which can reach it through
+  SSH) and subscribes to the messages after the bridge's place, so what
+  came while it was stopped is answered; replies go to the chat, through
+  iMessage or SMS (`IMSG_SERVICE`). Voice notes are heard as imsg
+  converts them from Core Audio, and spoken answers sent as audio
+  messages. Trust atom `agent:imessage-handles`.
+
 ### Microsoft Teams and Google Chat
 
 - **Teams.** `sion agent bridge --via teams` takes the Bot Connector's
