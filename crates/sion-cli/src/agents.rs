@@ -492,10 +492,15 @@ pub enum AgentCommand {
         #[command(flatten)]
         channel: crate::messengers::ChannelArgs,
     },
-    /// Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN),
-    /// discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER,
-    /// MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for
-    /// signal-cli-rest-api) or telegram.
+    /// Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN,
+    /// SLACK_APP_TOKEN for Socket Mode), discord (DISCORD_BOT_TOKEN), matrix
+    /// (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE,
+    /// SIGNAL_NUMBER, for signal-cli-rest-api), telegram, or through
+    /// webhooks to --listen: whatsapp (WHATSAPP_TOKEN,
+    /// WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN),
+    /// line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET) or sms through
+    /// Twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_NUMBER,
+    /// TWILIO_WEBHOOK_URL).
     Bridge {
         /// The agent profile.
         profile: String,
@@ -514,6 +519,10 @@ pub enum AgentCommand {
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
+        /// Where whatsapp, line and sms send their webhooks (expose it to
+        /// them behind TLS).
+        #[arg(long, default_value = crate::webhooks::LISTEN)]
+        listen: String,
         #[command(flatten)]
         channel: crate::messengers::ChannelArgs,
     },
@@ -876,11 +885,15 @@ pub fn run(
             allow,
             approvers,
             once,
+            listen,
             channel,
         } => {
             crate::screens::keep_between_runs();
             let profile = crate::profiles::get(&profile)?;
-            let options = channel.options(allow, approvers, once)?;
+            let options = crate::messengers::Options {
+                listen,
+                ..channel.options(allow, approvers, once)?
+            };
             let messenger =
                 crate::messengers::for_bridge(&via, &options).map_err(CliError::Usage)?;
             crate::messengers::bridge_with(shared, &profile, messenger.as_ref(), &options)

@@ -631,3 +631,172 @@ fn voice_notes_are_heard_and_spoken_on_every_messenger() {
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[test]
+fn webhook_messengers_answer_only_what_is_signed() {
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-webhooks");
+    use common::{http_stand_in, sent_to};
+    let poster = sion_http::Client::new(sion_http::Options {
+        allow_private: true,
+        proxy_from_env: false,
+        ..sion_http::Options::default()
+    })
+    .unwrap();
+    let post = |url: &str, headers: &[(&str, &str)], body: &[u8]| {
+        poster
+            .send("POST", url, headers, Some(body))
+            .unwrap()
+            .status
+    };
+    let free = || {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("127.0.0.1:{}", probe.local_addr().unwrap().port())
+    };
+    let reply = "85 USD left in the budget.";
+    let options = |chat: &str, listen: &str| sion_cli::messengers::Options {
+        allow: vec![chat.into()],
+        once: true,
+        listen: listen.into(),
+        ..Default::default()
+    };
+
+    // WhatsApp: Meta's check of the address answered; an unsigned message
+    // refused; a signed one answered through the Cloud API.
+    let (meta, meta_seen) = http_stand_in(|_| {
+        (
+            200,
+            json!({"messages": [{"id": "wamid.out"}]})
+                .to_string()
+                .into_bytes(),
+        )
+    });
+    std::env::set_var("WHATSAPP_TOKEN", "wa-token");
+    std::env::set_var("WHATSAPP_PHONE_NUMBER_ID", "106");
+    std::env::set_var("WHATSAPP_APP_SECRET", "wa-secret");
+    std::env::set_var("WHATSAPP_VERIFY_TOKEN", "wa-verify");
+    std::env::set_var("WHATSAPP_API_BASE", &meta);
+    let listen = free();
+    let at = format!("http://{listen}/");
+    let whatsapp_options = options("15550001111", &listen);
+    let whatsapp = sion_cli::messengers::for_bridge("whatsapp", &whatsapp_options).unwrap();
+    let check = poster
+        .send(
+            "GET",
+            &format!("{at}?hub.mode=subscribe&hub.verify_token=wa-verify&hub.challenge=4242"),
+            &[],
+            None,
+        )
+        .unwrap();
+    assert_eq!(check.status, 200);
+    assert_eq!(check.read_all(100).unwrap(), b"4242");
+    let body = json!({"entry": [{"changes": [{"value": {"metadata": {"phone_number_id": "106"},
+        "messages": [{"id": "wamid.in", "from": "15550001111", "type": "text",
+            "text": {"body": "How much budget is left?"}}]}}]}]})
+    .to_string();
+    assert_eq!(post(&at, &[], body.as_bytes()), 401, "unsigned");
+    let signature = format!(
+        "sha256={}",
+        hex::encode(sion_http::hmac_sha256(b"wa-secret", body.as_bytes()))
+    );
+    assert_eq!(
+        post(&at, &[("X-Hub-Signature-256", &signature)], body.as_bytes()),
+        200
+    );
+    sion_cli::messengers::bridge_with(
+        ledger.clone(),
+        &profile,
+        whatsapp.as_ref(),
+        &whatsapp_options,
+    )
+    .unwrap();
+    drop(whatsapp);
+    let sent = sent_to(&meta_seen, "POST", "/106/messages").remove(0);
+    assert_eq!(sent.header("authorization"), Some("Bearer wa-token"));
+    assert_eq!(
+        sent.json(),
+        json!({"messaging_product": "whatsapp", "to": "15550001111", "type": "text",
+            "text": {"body": reply}})
+    );
+
+    // LINE: answered with the message's reply token.
+    let (line, line_seen) = http_stand_in(|_| (200, b"{}".to_vec()));
+    std::env::set_var("LINE_CHANNEL_ACCESS_TOKEN", "line-token");
+    std::env::set_var("LINE_CHANNEL_SECRET", "line-secret");
+    std::env::set_var("LINE_API_BASE", &line);
+    std::env::set_var("LINE_DATA_API_BASE", &line);
+    let listen = free();
+    let at = format!("http://{listen}/");
+    let line_options = options("U1", &listen);
+    let channel = sion_cli::messengers::for_bridge("line", &line_options).unwrap();
+    let body = json!({"events": [{"type": "message", "webhookEventId": "ev1", "replyToken": "r1",
+        "source": {"type": "user", "userId": "U1"},
+        "message": {"id": "1", "type": "text", "text": "How much budget is left?"}}]})
+    .to_string();
+    let forged = sion_http::base64(&sion_http::hmac_sha256(b"not-the-secret", body.as_bytes()));
+    assert_eq!(
+        post(&at, &[("X-Line-Signature", &forged)], body.as_bytes()),
+        401
+    );
+    let signature = sion_http::base64(&sion_http::hmac_sha256(b"line-secret", body.as_bytes()));
+    assert_eq!(
+        post(&at, &[("X-Line-Signature", &signature)], body.as_bytes()),
+        200
+    );
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, channel.as_ref(), &line_options)
+        .unwrap();
+    drop(channel);
+    assert_eq!(
+        sent_to(&line_seen, "POST", "/v2/bot/message/reply")
+            .remove(0)
+            .json(),
+        json!({"replyToken": "r1", "messages": [{"type": "text", "text": reply}]})
+    );
+
+    // SMS through Twilio: the signature over the public address Twilio was
+    // given; the reply sent through Twilio's API.
+    let (twilio, twilio_seen) = http_stand_in(|_| (201, b"{\"sid\": \"SM9\"}".to_vec()));
+    std::env::set_var("TWILIO_ACCOUNT_SID", "AC1");
+    std::env::set_var("TWILIO_AUTH_TOKEN", "tw-token");
+    std::env::set_var("TWILIO_NUMBER", "+15559990000");
+    std::env::set_var("TWILIO_WEBHOOK_URL", "https://bot.example.org/sms");
+    std::env::set_var("TWILIO_API_BASE", &twilio);
+    let listen = free();
+    let sms_options = options("+15550001111", &listen);
+    let number = sion_cli::messengers::for_bridge("sms", &sms_options).unwrap();
+    let body = b"MessageSid=SM1&From=%2B15550001111&To=%2B15559990000&Body=How+much+budget+is+left%3F&NumMedia=0";
+    let signature = sion_cli::webhooks::twilio_signature(
+        "tw-token",
+        "https://bot.example.org/sms",
+        &sion_cli::webhooks::decode_form(body),
+    );
+    let form = [("Content-Type", "application/x-www-form-urlencoded")];
+    let at = format!("http://{listen}/sms");
+    assert_eq!(post(&at, &form, body), 401, "unsigned");
+    assert_eq!(
+        post(&at, &[form[0], ("X-Twilio-Signature", &signature)], body),
+        200
+    );
+    sion_cli::messengers::bridge_with(ledger, &profile, number.as_ref(), &sms_options).unwrap();
+    drop(number);
+    let sent = sent_to(
+        &twilio_seen,
+        "POST",
+        "/2010-04-01/Accounts/AC1/Messages.json",
+    )
+    .remove(0);
+    assert_eq!(
+        sent.header("authorization").map(str::to_string),
+        Some(format!("Basic {}", sion_http::base64(b"AC1:tw-token")))
+    );
+    assert_eq!(
+        common::form(&sent.body),
+        [
+            ("To".to_string(), "+15550001111".to_string()),
+            ("From".to_string(), "+15559990000".to_string()),
+            ("Body".to_string(), reply.to_string())
+        ]
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}

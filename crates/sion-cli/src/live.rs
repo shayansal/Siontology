@@ -158,16 +158,16 @@ impl std::fmt::Debug for Link {
 }
 
 impl Link {
-    fn stopped(&self) -> bool {
+    pub(crate) fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
 
     /// Hands on `message`: false once nobody listens.
-    fn pass(&self, message: Incoming) -> bool {
+    pub(crate) fn pass(&self, message: Incoming) -> bool {
         self.sender.send(Event::Message(message)).is_ok()
     }
 
-    fn fail(&self, why: String) {
+    pub(crate) fn fail(&self, why: String) {
         let _ = self.sender.send(Event::Failed(why));
     }
 

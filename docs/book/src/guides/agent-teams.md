@@ -283,6 +283,7 @@ from the environment:
 | `matrix` | long polling `/sync` | `MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN` | room ids |
 | `signal` | polling the `receive` endpoint of [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) | `SIGNAL_API_BASE`, `SIGNAL_NUMBER` | phone numbers |
 | `telegram` | long polling `getUpdates` | `TELEGRAM_BOT_TOKEN` | chat ids |
+| `whatsapp`, `line`, `sms` | signed webhooks to `--listen` ([below](#whatsapp-line-and-sms)) | | numbers, user and group ids |
 
 `sion agent telegram` is the same bridge. It does not answer bots:
 Telegram does not show a bot other bots' messages, Slack and Discord mark
@@ -380,6 +381,88 @@ socket mode: closed by the bridge
 
 The intents, 37377, are servers, their messages, direct messages and
 message content.
+
+### WhatsApp, LINE and SMS
+
+WhatsApp (Meta's Cloud API), LINE (its Messaging API) and SMS (through
+Twilio) send what is said to the bridge as webhooks. The bridge listens
+on an address of its own (`--listen`, `127.0.0.1:8797` by default), which
+you expose to the service behind TLS, through a reverse proxy or a
+tunnel. Each webhook is checked against the service's signature with the
+secret you give, and one that is unsigned or signed with another secret
+is refused before anything reaches the profile. A service sends again
+what it thinks was not received; each message is answered once.
+
+| `--via` | Credentials | The signature checked | Answers through |
+|---|---|---|---|
+| `whatsapp` | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | `X-Hub-Signature-256`, with the app secret; Meta's check of the address is answered given the verify token | the Cloud API's `/messages` |
+| `line` | `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_CHANNEL_SECRET` | `X-Line-Signature`, with the channel secret | a reply, while the message's reply token lasts (50 seconds here), and a push after |
+| `sms` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_NUMBER`, `TWILIO_WEBHOOK_URL` | `X-Twilio-Signature`, with the auth token, over the public address Twilio is given (`TWILIO_WEBHOOK_URL`, exactly as Twilio has it) | Twilio's `Messages` API |
+
+Voice notes are heard on all three (WhatsApp's audio messages, LINE's,
+and audio sent by MMS) and spoken as an audio message on WhatsApp; LINE
+and MMS play audio only from a public address of your own, so there the
+reply is text.
+
+Here each bridge ran with `--once` while a stand-in sent it what the
+service would, and another stood in for the service's API
+(`WHATSAPP_API_BASE`, `LINE_API_BASE` and `TWILIO_API_BASE` pointed at
+it):
+
+```text
+$ WHATSAPP_TOKEN=… WHATSAPP_PHONE_NUMBER_ID=106 WHATSAPP_APP_SECRET=… WHATSAPP_VERIFY_TOKEN=… WHATSAPP_API_BASE=http://127.0.0.1:8798/meta sion agent bridge lead --via whatsapp --allow 15550001111 --listen 127.0.0.1:8797 --once
+whatsapp: webhooks on http://127.0.0.1:8797/
+number 15550001111: How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 010e73028a82599f: done
+to number 15550001111: 100 USD left in the budget.
+```
+
+What the stand-in for WhatsApp sent the bridge, and the answers:
+
+```text
+GET ?hub.mode=subscribe&hub.verify_token=…&hub.challenge=4242: HTTP 200 4242
+POST (unsigned): HTTP 401 not signed with the app secret
+POST (X-Hub-Signature-256: sha256=…): HTTP 200 ok
+```
+
+LINE and SMS, the same way:
+
+```text
+$ LINE_CHANNEL_ACCESS_TOKEN=… LINE_CHANNEL_SECRET=… LINE_API_BASE=http://127.0.0.1:8798/line sion agent bridge lead --via line --allow U4af4980629 --listen 127.0.0.1:8796 --once
+line: webhooks on http://127.0.0.1:8796/
+chat U4af4980629: How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 810e6fb01af77fad: done
+to chat U4af4980629: 100 USD left in the budget.
+$ TWILIO_ACCOUNT_SID=AC0001 TWILIO_AUTH_TOKEN=… TWILIO_NUMBER=+15559990000 TWILIO_WEBHOOK_URL=https://bot.example.org/sms TWILIO_API_BASE=http://127.0.0.1:8798/twilio sion agent bridge lead --via sms --allow +15550001111 --listen 127.0.0.1:8795 --once
+sms: webhooks on http://127.0.0.1:8795/
+number +15550001111: How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 01959b3c06d8963d: done
+to number +15550001111: 100 USD left in the budget.
+```
+
+```text
+POST (X-Line-Signature: another secret's): HTTP 401 not signed with the channel secret
+POST (X-Line-Signature: …): HTTP 200 ok
+POST (unsigned): HTTP 401 not signed with the auth token
+POST (X-Twilio-Signature: …): HTTP 200 <?xml version="1.0" encoding="UTF-8"?><Response></Response>
+```
+
+The stand-in for the three APIs received:
+
+```text
+POST /meta/106/messages {"messaging_product":"whatsapp","text":{"body":"100 USD left in the budget."},"to":"15550001111","type":"text"}
+POST /line/v2/bot/message/reply {"messages":[{"text":"100 USD left in the budget.","type":"text"}],"replyToken":"r-0042"}
+POST /twilio/2010-04-01/Accounts/AC0001/Messages.json To=%2B15550001111&From=%2B15559990000&Body=100%20USD%20left%20in%20the%20budget.
+```
 
 ### Pairing and voice notes
 
@@ -551,7 +634,14 @@ again.
   (`agent:telegram-chats`, `agent:messenger-identity`). An approved
   pairing code lets in whoever gave it to you (`agent:pairing`).
 - A spoken reply reaches Discord, Slack and Signal as audio attached to
-  the text, not as those apps' own voice messages. The services
+  the text, not as those apps' own voice messages; on LINE and SMS the
+  reply is text.
+- A webhook is taken as its service's when it carries the service's
+  signature with the secret you gave (`agent:webhooks`). The signatures
+  name no time: a webhook copied on its way could be sent again later,
+  and is answered again once its id has left the last thousand
+  remembered. The bridge listens on plain HTTP; TLS is your proxy's.
+  WhatsApp, LINE and Twilio have been run only against stand-ins. The services
   `--hear` and `--speak` name hear the voice notes and the replies
   (`agent:voice`). Pairing needs a messenger that shows direct
   messages from people it does not know: not Slack without Socket Mode.

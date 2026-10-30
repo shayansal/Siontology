@@ -10,6 +10,21 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### WhatsApp, LINE and SMS
+
+- **Webhook messengers.** `sion agent bridge --via whatsapp|line|sms`
+  listens for the service's webhooks on `--listen` (127.0.0.1:8797 by
+  default) and checks each against the service's signature: WhatsApp's
+  `X-Hub-Signature-256` with the app secret (and Meta's check of the
+  address with the verify token), LINE's `X-Line-Signature` with the
+  channel secret, Twilio's `X-Twilio-Signature` over the public address
+  Twilio is given. Unsigned or wrongly signed webhooks are refused;
+  messages sent again are answered once.
+- **Answers.** WhatsApp through the Cloud API (`/messages`), LINE with the
+  message's reply token while it lasts and a push after, SMS through
+  Twilio's `Messages` API. Voice notes are heard on all three and spoken
+  as an audio message on WhatsApp.
+
 ### Voice notes on every messenger
 
 - **Heard everywhere.** Besides Telegram's, voice notes are heard from

@@ -57,6 +57,7 @@ pub mod stream;
 pub mod tasks;
 pub mod verify;
 pub mod voice;
+pub mod webhooks;
 pub mod x402;
 
 pub use error::CliError;

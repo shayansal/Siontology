@@ -287,7 +287,10 @@ what mentions the bot or answers it. Pairing codes (8 consonants and
 digits, an hour each, three waiting per channel, a lockout after five
 wrong approvals) let in one direct chat on one channel and profile, from
 a store only the operator's user reads, changed by one process at a
-time. Voice notes are heard on every messenger (OpenAI-compatible
+time. WhatsApp (the Cloud API), LINE and SMS (Twilio) reach a bridge as
+webhooks on an address of its own, each checked against the service's
+signature (HMAC-SHA256, or Twilio's HMAC-SHA1) before anything reaches
+the profile; trust atom `agent:webhooks`. Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, or a command) and answered aloud (OpenAI,
 ElevenLabs, or a command): a voice note on Telegram, a voice message on
 Matrix, audio attached to the reply on Discord, Slack and Signal; trust
@@ -833,6 +836,7 @@ the architecture's own:
 | `agent:messenger-identity` | Slack, Discord, Matrix, Signal and Telegram say who wrote a message: a bridge's approvers are who the messenger says they are, and anyone who can write in an allowed chat talks to the profile. |
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included unless `--approvers` names who may decide. |
 | `agent:pairing` | An approved pairing code lets in the chat it was sent to, on that channel and profile, until revoked: the operator trusts that whoever gave them the code is the person they mean to let in, and the messenger for who writes in that chat afterwards (`agent:messenger-identity`). Codes are kept in a file only the operator's user can read. |
+| `agent:webhooks` | A webhook (WhatsApp, LINE, SMS through Twilio) is taken as its service's when it carries the service's signature with the secret the operator gave. The signatures name no time, so a webhook copied on its way could be sent again later and is answered again once its id has left the last thousand remembered; the bridge listens on plain HTTP, and TLS is the operator's proxy's. |
 | `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |

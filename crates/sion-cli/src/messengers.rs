@@ -1169,6 +1169,11 @@ pub fn from_env(name: &str, chats: &[String]) -> Result<Box<dyn Messenger>, Stri
 /// to.
 pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, String> {
     let chats = &options.allow;
+    let listen = if options.listen.is_empty() {
+        crate::webhooks::LISTEN
+    } else {
+        &options.listen
+    };
     Ok(match name {
         "telegram" => Box::new(crate::channels::Telegram::from_env()?),
         "slack" => Box::new(Slack::from_env(chats)?),
@@ -1176,9 +1181,12 @@ pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, S
         "matrix" if options.pairing => Box::new(Matrix::from_env()?.joining_invites()),
         "matrix" => Box::new(Matrix::from_env()?),
         "signal" => Box::new(Signal::from_env()?),
+        "whatsapp" => Box::new(crate::webhooks::WhatsApp::from_env(listen)?),
+        "line" => Box::new(crate::webhooks::Line::from_env(listen)?),
+        "sms" => Box::new(crate::webhooks::Sms::from_env(listen)?),
         other => {
             return Err(format!(
-                "{other} is not a messenger: telegram, slack, discord, matrix or signal"
+                "{other} is not a messenger: telegram, slack, discord, matrix, signal, whatsapp, line or sms"
             ))
         }
     })
@@ -1225,6 +1233,7 @@ impl ChannelArgs {
             once,
             pairing: self.pairing,
             require_mention: self.require_mention,
+            listen: String::new(),
             hearing: self
                 .hear
                 .as_deref()
@@ -1257,6 +1266,9 @@ pub struct Options {
     pub pairing: bool,
     /// In group chats, answer only what mentions the bot or answers it.
     pub require_mention: bool,
+    /// Where messengers that send webhooks reach the bridge
+    /// ([`crate::webhooks::LISTEN`] if empty).
+    pub listen: String,
     /// What hears voice notes, if any are heard.
     pub hearing: Option<crate::voice::Hearing>,
     /// What speaks the replies to voice notes, if they are spoken.
