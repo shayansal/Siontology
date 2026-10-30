@@ -262,6 +262,22 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
         ),
         ("teams", &["TEAMS_APP_ID", "TEAMS_APP_PASSWORD"]),
         ("google-chat", &["GOOGLE_CHAT_AUDIENCE"]),
+        (
+            "dingtalk",
+            &["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"],
+        ),
+        (
+            "feishu",
+            &[
+                "FEISHU_APP_ID",
+                "FEISHU_APP_SECRET",
+                "FEISHU_VERIFICATION_TOKEN",
+            ],
+        ),
+        (
+            "nextcloud-talk",
+            &["NEXTCLOUD_URL", "NEXTCLOUD_TALK_SECRET"],
+        ),
     ];
     let mut ready: Vec<&str> = messengers
         .iter()

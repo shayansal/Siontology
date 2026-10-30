@@ -506,14 +506,17 @@ pub enum AgentCommand {
     /// IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), email
     /// (EMAIL_ADDRESS, EMAIL_IMAP_URL, EMAIL_SMTP_URL, EMAIL_PASSWORD or
     /// EMAIL_TOKEN_COMMAND), imessage (through imsg on the Mac that runs
-    /// Messages, IMSG_COMMAND), or through webhooks to --listen: whatsapp
+    /// Messages, IMSG_COMMAND), dingtalk (DINGTALK_CLIENT_ID,
+    /// DINGTALK_CLIENT_SECRET), or through webhooks to --listen: whatsapp
     /// (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET,
     /// WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN,
     /// LINE_CHANNEL_SECRET), sms through Twilio (TWILIO_ACCOUNT_SID,
     /// TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL), teams
     /// (TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID for a
-    /// single-tenant bot) or google-chat (GOOGLE_CHAT_AUDIENCE, and
-    /// GOOGLE_CHAT_CREDENTIALS to answer through the Chat API).
+    /// single-tenant bot), google-chat (GOOGLE_CHAT_AUDIENCE, and
+    /// GOOGLE_CHAT_CREDENTIALS to answer through the Chat API), feishu or
+    /// lark (FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_VERIFICATION_TOKEN) or
+    /// nextcloud-talk (NEXTCLOUD_URL, NEXTCLOUD_TALK_SECRET).
     Bridge {
         /// The agent profile.
         profile: String,
@@ -532,8 +535,9 @@ pub enum AgentCommand {
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
-        /// Where whatsapp, line, sms, teams and google-chat send their
-        /// webhooks (expose it to them behind TLS).
+        /// Where whatsapp, line, sms, teams, google-chat, feishu and
+        /// nextcloud-talk send their webhooks (expose it to them behind
+        /// TLS).
         #[arg(long, default_value = crate::webhooks::LISTEN)]
         listen: String,
         #[command(flatten)]

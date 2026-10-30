@@ -10,6 +10,25 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### DingTalk, Feishu and Lark, Nextcloud Talk
+
+- **DingTalk.** `sion agent bridge --via dingtalk` connects in Stream
+  mode: a WebSocket of its own to DingTalk, opened with the app's
+  credentials, every frame acknowledged, so there is no address to
+  expose. Replies go through the message's session webhook, or after it
+  expires through the robot's API; DingTalk's own transcription of a
+  voice message is what the agent hears.
+- **Feishu and Lark.** `--via feishu` (or `lark`) takes the app's events
+  as webhooks with the subscription's verification token, answers the
+  address's check, refuses encrypted events, and replies to each message
+  through the Open Platform's API with the tenant token; voice messages
+  are fetched to be heard.
+- **Nextcloud Talk.** `--via nextcloud-talk` takes a bot's webhooks,
+  signed with its secret by the server named, and replies through Talk's
+  bot API, signed the same way.
+- Trust atoms `agent:dingtalk-stream`, `agent:feishu-token` and
+  `agent:talk-signatures`.
+
 ### iMessage
 
 - **Through imsg.** `sion agent bridge --via imessage` runs `imsg rpc` on

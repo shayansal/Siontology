@@ -1767,3 +1767,235 @@ fn imessage_is_answered_through_imsg() {
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[test]
+fn dingtalk_feishu_and_nextcloud_talk_answer_their_chats() {
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-dingtalk-feishu-talk");
+    use common::{http_stand_in, sent_to};
+    let reply = "85 USD left in the budget.";
+    let poster = sion_http::Client::new(sion_http::Options {
+        allow_private: true,
+        proxy_from_env: false,
+        ..sion_http::Options::default()
+    })
+    .unwrap();
+    let post = |url: &str, headers: &[(&str, &str)], body: &str| {
+        let mut all = vec![("Content-Type", "application/json")];
+        all.extend_from_slice(headers);
+        let answer = poster
+            .send("POST", url, &all, Some(body.as_bytes()))
+            .unwrap();
+        let status = answer.status;
+        (
+            status,
+            String::from_utf8(answer.read_all(1 << 16).unwrap()).unwrap(),
+        )
+    };
+    let free = || {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("127.0.0.1:{}", probe.local_addr().unwrap().port())
+    };
+
+    // DingTalk, in Stream mode: the connection opened with the app's
+    // credentials, a ping and a robot's message over the WebSocket, each
+    // acknowledged, and the reply through the message's session webhook.
+    let base = Arc::new(std::sync::OnceLock::<String>::new());
+    let (for_open, for_script) = (base.clone(), base.clone());
+    let (dingtalk, dingtalk_seen, frames) = common::mixed_stand_in(
+        move |sent| {
+            match (sent.method.as_str(), sent.url.as_str()) {
+            ("POST", "/v1.0/gateway/connections/open") => (
+                200,
+                json!({"endpoint": format!("{}/websocket", for_open.get().unwrap().replace("http://", "ws://")),
+                    "ticket": "t+1/="})
+                .to_string()
+                .into_bytes(),
+            ),
+            ("POST", url) if url.starts_with("/robot/sendBySession") => {
+                (200, b"{\"errcode\":0,\"errmsg\":\"ok\"}".to_vec())
+            }
+            _ => (404, b"{}".to_vec()),
+        }
+        },
+        move |peer| {
+            peer.send(json!({"specVersion": "1.0", "type": "SYSTEM",
+                "headers": {"topic": "ping", "messageId": "p1", "contentType": "application/json"},
+                "data": "{\"opaque\":\"x\"}"}));
+            let message = json!({"conversationId": "cid-dm", "conversationType": "1", "msgId": "msg1",
+                "msgtype": "text", "text": {"content": "How much budget is left?"},
+                "senderStaffId": "staff7", "senderId": "$:LWCP:a", "isInAtList": true,
+                "sessionWebhook": format!("{}/robot/sendBySession?session=s1", for_script.get().unwrap()),
+                "sessionWebhookExpiredTime": 4_000_000_000_000_u64, "robotCode": "ding-app"});
+            peer.send(json!({"specVersion": "1.0", "type": "CALLBACK",
+                "headers": {"topic": "/v1.0/im/bot/messages/get", "messageId": "c1", "contentType": "application/json"},
+                "data": message.to_string()}));
+        },
+    );
+    base.set(dingtalk.clone()).unwrap();
+    std::env::set_var("DINGTALK_CLIENT_ID", "ding-app");
+    std::env::set_var("DINGTALK_CLIENT_SECRET", "ding-secret");
+    std::env::set_var("DINGTALK_API_BASE", &dingtalk);
+    let options = sion_cli::messengers::Options {
+        allow: vec!["cid-dm".into()],
+        once: true,
+        ..Default::default()
+    };
+    let robot = sion_cli::messengers::for_bridge("dingtalk", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, robot.as_ref(), &options).unwrap();
+    drop(robot);
+    let opened = sent_to(&dingtalk_seen, "POST", "/v1.0/gateway/connections/open").remove(0);
+    assert_eq!(opened.json()["clientId"], "ding-app");
+    assert_eq!(
+        opened.json()["subscriptions"],
+        json!([{"type": "CALLBACK", "topic": "/v1.0/im/bot/messages/get"}])
+    );
+    let answered = sent_to(&dingtalk_seen, "POST", "/robot/sendBySession?session=s1").remove(0);
+    assert_eq!(
+        answered.json(),
+        json!({"msgtype": "text", "text": {"content": reply}})
+    );
+    let acks = common::wait_for(&frames, 2);
+    assert!(
+        acks.contains(&json!({"code": 200,
+        "headers": {"contentType": "application/json", "messageId": "p1"},
+        "message": "OK", "data": "{\"opaque\":\"x\"}"})),
+        "{acks:?}"
+    );
+    assert!(
+        acks.iter()
+            .any(|a| a["headers"]["messageId"] == "c1" && a["code"] == 200),
+        "{acks:?}"
+    );
+
+    // Feishu: the address's check answered; another token's event and an
+    // encrypted one refused; a message answered as a reply to it.
+    let (feishu, feishu_seen) =
+        http_stand_in(|sent| match (sent.method.as_str(), sent.url.as_str()) {
+            ("POST", "/open-apis/auth/v3/tenant_access_token/internal") => (
+                200,
+                json!({"code": 0, "msg": "ok", "tenant_access_token": "t-token", "expire": 7200})
+                    .to_string()
+                    .into_bytes(),
+            ),
+            ("POST", url) if url.starts_with("/open-apis/im/v1/messages/") => (
+                200,
+                json!({"code": 0, "msg": "success", "data": {"message_id": "om_r"}})
+                    .to_string()
+                    .into_bytes(),
+            ),
+            _ => (404, b"{\"code\": 404}".to_vec()),
+        });
+    std::env::set_var("FEISHU_APP_ID", "cli_a1");
+    std::env::set_var("FEISHU_APP_SECRET", "f-secret");
+    std::env::set_var("FEISHU_VERIFICATION_TOKEN", "v-token");
+    std::env::set_var("FEISHU_API_BASE", &feishu);
+    std::env::remove_var("FEISHU_DOMAIN");
+    let listen = free();
+    let options = sion_cli::messengers::Options {
+        allow: vec!["oc_dm".into()],
+        once: true,
+        listen: listen.clone(),
+        ..Default::default()
+    };
+    let bot = sion_cli::messengers::for_bridge("feishu", &options).unwrap();
+    let url = format!("http://{listen}/feishu");
+    let (status, body) = post(
+        &url,
+        &[],
+        &json!({"type": "url_verification", "challenge": "c-42", "token": "v-token"}).to_string(),
+    );
+    assert_eq!(
+        (status, serde_json::from_str::<Value>(&body).unwrap()),
+        (200, json!({"challenge": "c-42"}))
+    );
+    let event = |token: &str| {
+        json!({"schema": "2.0", "header": {"event_id": "ev1", "token": token, "event_type": "im.message.receive_v1",
+            "create_time": "1793000000000", "app_id": "cli_a1"},
+            "event": {"sender": {"sender_id": {"open_id": "ou_alice"}, "sender_type": "user"},
+                "message": {"message_id": "om_1", "chat_id": "oc_dm", "chat_type": "p2p", "message_type": "text",
+                    "content": "{\"text\":\"How much budget is left?\"}"}}})
+        .to_string()
+    };
+    assert_eq!(post(&url, &[], &event("another-token")).0, 401);
+    assert_eq!(post(&url, &[], "{\"encrypt\": \"FIAWEfw...\"}").0, 400);
+    assert_eq!(post(&url, &[], &event("v-token")).0, 200);
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, bot.as_ref(), &options).unwrap();
+    drop(bot);
+    let replied = sent_to(&feishu_seen, "POST", "/open-apis/im/v1/messages/om_1/reply").remove(0);
+    assert_eq!(replied.header("authorization"), Some("Bearer t-token"));
+    assert_eq!(
+        replied.json(),
+        json!({"msg_type": "text", "content": json!({"text": reply}).to_string()})
+    );
+
+    // Nextcloud Talk: a webhook unsigned, or signed by another server,
+    // refused; a signed one answered, the reply signed with the secret.
+    let (cloud, cloud_seen) = http_stand_in(|_| {
+        (
+            201,
+            b"{\"ocs\": {\"meta\": {\"status\": \"ok\"}, \"data\": {\"id\": 9}}}".to_vec(),
+        )
+    });
+    std::env::set_var("NEXTCLOUD_URL", &cloud);
+    std::env::set_var("NEXTCLOUD_TALK_SECRET", "talk-secret");
+    let listen = free();
+    let options = sion_cli::messengers::Options {
+        allow: vec!["n3xtc10ud".into()],
+        once: true,
+        listen: listen.clone(),
+        ..Default::default()
+    };
+    let talk = sion_cli::messengers::for_bridge("nextcloud-talk", &options).unwrap();
+    let activity = json!({"type": "Create",
+        "actor": {"type": "Person", "id": "users/alice", "name": "Alice"},
+        "object": {"type": "Note", "id": "1567", "name": "message", "mediaType": "text/markdown",
+            "content": json!({"message": "How much budget is left?", "parameters": {}}).to_string()},
+        "target": {"type": "Collection", "id": "n3xtc10ud", "name": "Budget"}})
+    .to_string();
+    let random = "a".repeat(64);
+    let signature =
+        sion_cli::nextcloud::talk_signature("talk-secret", &random, activity.as_bytes());
+    let url = format!("http://{listen}/talk");
+    assert_eq!(post(&url, &[], &activity).0, 401, "unsigned");
+    let signed = |backend: &str| {
+        post(
+            &url,
+            &[
+                ("X-Nextcloud-Talk-Random", random.as_str()),
+                ("X-Nextcloud-Talk-Signature", signature.as_str()),
+                ("X-Nextcloud-Talk-Backend", backend),
+            ],
+            &activity,
+        )
+        .0
+    };
+    assert_eq!(signed("https://elsewhere.example"), 401, "another server's");
+    assert_eq!(signed(&format!("{cloud}/")), 200);
+    sion_cli::messengers::bridge_with(ledger, &profile, talk.as_ref(), &options).unwrap();
+    drop(talk);
+    let sent = sent_to(
+        &cloud_seen,
+        "POST",
+        "/ocs/v2.php/apps/spreed/api/v1/bot/n3xtc10ud/message",
+    )
+    .remove(0);
+    assert_eq!(sent.header("ocs-apirequest"), Some("true"));
+    let body = sent.json();
+    assert_eq!(
+        (body["message"].as_str(), body["replyTo"].as_u64()),
+        (Some(reply), Some(1567))
+    );
+    let random = sent.header("x-nextcloud-talk-bot-random").unwrap();
+    assert_eq!(
+        sent.header("x-nextcloud-talk-bot-signature")
+            .map(str::to_string),
+        Some(sion_cli::nextcloud::talk_signature(
+            "talk-secret",
+            random,
+            reply.as_bytes()
+        ))
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}

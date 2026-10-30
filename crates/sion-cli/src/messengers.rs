@@ -18,6 +18,8 @@
 //! | WhatsApp, LINE, SMS | signed webhooks ([`crate::webhooks`]) | see there | numbers, ids |
 //! | Microsoft Teams, Google Chat | webhooks signed with the services' keys ([`crate::teams`], [`crate::google_chat`]) | `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`; `GOOGLE_CHAT_AUDIENCE` | conversation ids, spaces |
 //! | iMessage | `imsg rpc` on the Mac that runs Messages ([`crate::imessage`]) | none (`IMSG_COMMAND`) | handles, `chat…` |
+//! | DingTalk | Stream mode, a WebSocket of its own ([`crate::dingtalk`]) | `DINGTALK_CLIENT_ID`, `DINGTALK_CLIENT_SECRET` | conversation ids |
+//! | Feishu, Lark, Nextcloud Talk | webhooks with the app's token or the bot's signature ([`crate::feishu`], [`crate::nextcloud`]) | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_VERIFICATION_TOKEN`; `NEXTCLOUD_URL`, `NEXTCLOUD_TALK_SECRET` | chat ids, conversation tokens |
 //! | Email | IMAP, IDLE where the server has it ([`crate::email`]) | `EMAIL_ADDRESS`, `EMAIL_IMAP_URL`, `EMAIL_SMTP_URL`, `EMAIL_PASSWORD` | addresses |
 //!
 //! Each `*_API_BASE` variable points a messenger at another server (a
@@ -1195,11 +1197,14 @@ pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, S
         "twitch" => Box::new(crate::irc::Irc::twitch_from_env(chats)?),
         "email" => Box::new(crate::email::Email::from_env()?),
         "imessage" => Box::new(crate::imessage::IMessage::from_env()?),
+        "dingtalk" => Box::new(crate::dingtalk::DingTalk::from_env()?),
+        "feishu" | "lark" => Box::new(crate::feishu::Feishu::from_env(listen, name == "lark")?),
+        "nextcloud-talk" => Box::new(crate::nextcloud::NextcloudTalk::from_env(listen)?),
         "teams" => Box::new(crate::teams::Teams::from_env(listen)?),
         "google-chat" => Box::new(crate::google_chat::GoogleChat::from_env(listen)?),
         other => {
             return Err(format!(
-                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line, sms, teams, google-chat, email or imessage"
+                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line, sms, teams, google-chat, feishu, nextcloud-talk, dingtalk, email or imessage"
             ))
         }
     })
@@ -1329,10 +1334,14 @@ pub fn bridge_with(
         ));
     }
     if options.pairing && !messenger.sees_strangers() {
-        return Err(CliError::Usage(format!(
-            "{} is polled here channel by channel, so no message from a chat it does not answer reaches the bridge: give Slack an app-level token (SLACK_APP_TOKEN) for Socket Mode",
-            messenger.name()
-        )));
+        return Err(CliError::Usage(if messenger.name() == "slack" {
+            "slack is polled here channel by channel, so no message from a chat it does not answer reaches the bridge: give Slack an app-level token (SLACK_APP_TOKEN) for Socket Mode".to_string()
+        } else {
+            format!(
+                "{} cannot pair: nothing it passes on is known to be a direct chat with someone it does not answer yet; name the chats (--allow)",
+                messenger.name()
+            )
+        }));
     }
     let cursor_key = messenger.cursor_key(&profile.name);
     let word = messenger.chat_word();

@@ -612,6 +612,84 @@ POST /amer/v3/conversations/a%3A1chat/activities/act-1 (Authorization: Bearer �
 GET /jwk/chat
 ```
 
+### DingTalk, Feishu and Nextcloud Talk
+
+| `--via` | Credentials | Receives by | Answers through |
+|---|---|---|---|
+| `dingtalk` | `DINGTALK_CLIENT_ID`, `DINGTALK_CLIENT_SECRET` (an internal app's robot) | Stream mode: a WebSocket the bridge opens to DingTalk, every frame acknowledged, so there is no address to expose | the message's session webhook, or after it expires the robot's API with the app's token |
+| `feishu`, `lark` | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_VERIFICATION_TOKEN` | webhooks to `--listen` carrying the subscription's verification token | a reply to the message through the Open Platform's API, with the tenant token |
+| `nextcloud-talk` | `NEXTCLOUD_URL`, `NEXTCLOUD_TALK_SECRET` (a bot installed with `occ talk:bot:install`) | webhooks to `--listen`, signed with the bot's secret by the server named | Talk's bot API, signed the same way, as a reply to the message |
+
+DingTalk transcribes voice messages itself, and the agent is given what
+it heard, marked as such. Feishu's voice messages are fetched to be heard
+(`--hear`). Feishu's events encrypted with an Encrypt Key are refused, as
+the bridge reads no AES: leave the key empty, the webhook being behind
+TLS. Talk's webhooks do not say whether a conversation is one person's,
+so there is no pairing on Talk; name the conversations (`--allow`, by
+their tokens).
+
+Here each bridge ran with `--once` against stand-ins for the three
+(`DINGTALK_API_BASE`, `FEISHU_API_BASE` and `NEXTCLOUD_URL` pointed at
+them):
+
+```text
+$ DINGTALK_CLIENT_ID=ding-app DINGTALK_CLIENT_SECRET=… DINGTALK_API_BASE=http://127.0.0.1:8786 sion agent bridge lead --via dingtalk --allow cid-dm --once
+conversation cid-dm (staff7): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 65cf8dff1b2370b1: done
+to conversation cid-dm: 100 USD left in the budget.
+$ FEISHU_APP_ID=cli_a1 FEISHU_APP_SECRET=… FEISHU_VERIFICATION_TOKEN=… FEISHU_API_BASE=http://127.0.0.1:8786 sion agent bridge lead --via feishu --allow oc_dm --listen 127.0.0.1:8785 --once
+feishu: webhooks on http://127.0.0.1:8785/
+chat oc_dm (ou_alice): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 726529e4c8097cca: done
+to chat oc_dm: 100 USD left in the budget.
+$ NEXTCLOUD_URL=http://127.0.0.1:8786 NEXTCLOUD_TALK_SECRET=… sion agent bridge lead --via nextcloud-talk --allow n3xtc10ud --listen 127.0.0.1:8784 --once
+nextcloud-talk: webhooks on http://127.0.0.1:8784/
+conversation n3xtc10ud (users/alice): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 25454693a175dc53: done
+to conversation n3xtc10ud: 100 USD left in the budget.
+```
+
+What the stand-in for DingTalk was told, a ping and a message
+acknowledged over its WebSocket:
+
+```text
+POST /v1.0/gateway/connections/open (clientId, clientSecret, localIp, subscriptions, ua)
+WebSocket /connect?ticket=ticket-1
+acknowledged: {"code":200,"data":"{\"opaque\":\"x\"}","headers":{"contentType":"application/json","messageId":"p1"},"message":"OK"}
+acknowledged: {"code":200,"data":"{\"response\":\"OK\"}","headers":{"contentType":"application/json","messageId":"c1"},"message":"OK"}
+POST /robot/sendBySession?session=s1 {"msgtype":"text","text":{"content":"100 USD left in the budget."}}
+WebSocket closed by the bridge
+```
+
+What the stand-ins for Feishu and Talk sent the bridge, and the answers:
+
+```text
+POST (the address's check): HTTP 200 {"challenge":"c-42"}
+POST (another app's token): HTTP 401 not the app's verification token
+POST (encrypted): HTTP 400 an encrypted event: the bridge reads none (leave the Encrypt Key empty)
+POST (the app's token): HTTP 200 {}
+POST (unsigned): HTTP 401 not signed with the bot's secret
+POST (signed, from another server): HTTP 401 from another server
+POST (signed with the bot's secret): HTTP 200 ok
+```
+
+And what their APIs were asked, the secrets named and not shown:
+
+```text
+POST /open-apis/auth/v3/tenant_access_token/internal (app_id, app_secret)
+POST /open-apis/im/v1/messages/om_1/reply (Authorization: Bearer …) {"content":"{\"text\":\"100 USD left in the budget.\"}","msg_type":"text"}
+POST /ocs/v2.php/apps/spreed/api/v1/bot/n3xtc10ud/message (signed: random, signature) {"message":"100 USD left in the budget.","referenceId":"1ac60660c1b9f4e99397d8315d64c6911ac297b7e27feb67e8b72d0ba8a2f6de","replyTo":1567}
+```
+
 ### Email
 
 `--via email` reads the agent's own mailbox over IMAP and answers over
@@ -969,6 +1047,14 @@ again.
   takes more than 25 seconds over goes only with a service account's key.
   Both have been run only against stand-ins for Microsoft's and Google's
   side.
+- DingTalk's, Feishu's and Talk's messages are taken as their services'
+  (`agent:dingtalk-stream`, `agent:feishu-token`,
+  `agent:talk-signatures`): Feishu's verification token is a secret in
+  every event, not a signature, and Talk's signature names no time.
+  Encrypted Feishu events and WeCom, whose callbacks are always
+  encrypted (AES), are not read: the bridge has no AES to read them with.
+  Spoken answers go as text on all three. They have been run only
+  against stand-ins.
 - On iMessage, who wrote is the handle Messages shows; an SMS's number
   can be forged (`agent:imessage-handles`). Groups carry no mentions
   here, so `--require-mention` answers nothing in them; a voice note is

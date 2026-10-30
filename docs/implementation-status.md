@@ -308,7 +308,12 @@ the webhook's own answer or, with a service account's key, through the
 Chat API; trust atoms `agent:teams-tokens`, `agent:google-chat-tokens`.
 iMessage is answered through `imsg` on the Mac that runs Messages (its
 JSON-RPC over stdio, there or through SSH), from the bridge's place in
-the Messages database; trust atom `agent:imessage-handles`.
+the Messages database; trust atom `agent:imessage-handles`. DingTalk is
+reached in Stream mode (a WebSocket the bridge opens, each frame
+acknowledged), Feishu and Lark as webhooks with the event subscription's
+verification token, Nextcloud Talk as webhooks signed with the bot's
+secret; trust atoms `agent:dingtalk-stream`, `agent:feishu-token`,
+`agent:talk-signatures`.
 Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, or a command) and answered aloud (OpenAI,
 ElevenLabs, or a command): a voice note on Telegram, a voice message on
@@ -879,6 +884,9 @@ the architecture's own:
 | `agent:webhooks` | A webhook (WhatsApp, LINE, SMS through Twilio) is taken as its service's when it carries the service's signature with the secret the operator gave. The signatures name no time, so a webhook copied on its way could be sent again later and is answered again once its id has left the last thousand remembered; the bridge listens on plain HTTP, and TLS is the operator's proxy's. |
 | `agent:teams-tokens` | A Teams webhook is taken as the Bot Connector's when its token is signed by a key `login.botframework.com` publishes (fetched over TLS, kept a day), issued by `https://api.botframework.com` for the bot's app ID, within five minutes of its times, by a key endorsed for the activity's channel, and naming the activity's service URL, where the reply goes with the app's token; who wrote a message is who the Bot Connector says (`agent:messenger-identity`). |
 | `agent:google-chat-tokens` | A Google Chat webhook is taken as Chat's when its token is signed by a key Google publishes for `chat@system.gserviceaccount.com`, for the app's project number (or, with the endpoint URL as audience, is Google's ID token of the sender named, for that URL), within five minutes of its times; who wrote a message is who Chat says. With a service account's key, the bridge signs its token requests with it: whoever reads the key file can act as the app. |
+| `agent:dingtalk-stream` | DingTalk's messages come over a connection the bridge opens to DingTalk with the app's credentials, over TLS: who wrote a message is who DingTalk says, and a voice note says what DingTalk heard. Replies go to the session webhook the message names, which is DingTalk's, or after it expires through the robot's API. |
+| `agent:feishu-token` | A Feishu or Lark webhook is taken as theirs when it carries the event subscription's verification token: a secret in each event's body, as Feishu sends it, not a signature, so whoever saw one event on its way could send others. Encrypted events are not read. |
+| `agent:talk-signatures` | A Nextcloud Talk webhook is taken as the server's when it is signed with the bot's secret (HMAC-SHA256 over a random value and the body) and names the server. The signature names no time: a webhook copied on its way could be sent again, and is answered again once its message has left the last thousand remembered. |
 | `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
