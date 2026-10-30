@@ -2,12 +2,13 @@
 
 **Status: mostly built.** This note sets out how Siontology offers what
 the leading open agent runtimes offer for building good agents, and what
-its primitives add. Built: identities, budgets, memory, tasks, storage,
-the runtime with subagents, hiring, schedules and channels, skills with a
-supply chain, self-improvement with verified promotion, a sandboxed shell
-and skills' scripts, and MCP servers and storage deals as tools. Not
-built: search over past sessions, consolidation, the memory archive with
-storage providers, and the app's Agents tab. Each part says which.
+its primitives add. Built: identities, budgets, memory with search over
+past sessions, consolidation and an archive kept by storage providers,
+tasks, storage, the runtime with subagents, hiring, schedules, channels
+across machines, skills with a supply chain, self-improvement with
+verified promotion, a sandboxed shell and skills' scripts, MCP servers
+and storage deals as tools, and the app's Agents tab. Not built: the
+parts each section names. Each part says which.
 
 ## What the leading runtimes do
 
@@ -108,8 +109,8 @@ release.
 | Spending | Every payment goes through the agent's charter; a payment above its limits is refused by the ledger, not by the runtime | Built (`ledger_pay`) |
 | Tools | Files in a workspace, web pages, the ledger (balance, payments, transactions), memory and skills; then tasks and storage; MCP servers mounted as tools | Built: files, web pages, the ledger, memory, skills, subagents, tasks, storage deals, and MCP servers, each tool pinned by a digest of its reviewed definition ([Commands, scripts and MCP servers](../guides/agent-tools.md)) |
 | Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Built: bubblewrap, or a Docker image pinned by digest; no network unless the operator gives one; a skill's scripts get it only if the skill declares it. Not built: other declared permissions |
-| Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Built: atoms in the agent's memory log, preferences, goals and procedures in every prompt, recall proved complete against the ledger, search, retraction, every session an episode. Not built: search over past sessions' text, consolidation |
-| Durable memory | The log's archive kept by storage providers, proven every round | Next |
+| Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Built: atoms in the agent's memory log, preferences, goals and procedures in every prompt, recall proved complete against the ledger, search, retraction, every session an episode; BM25 search over past sessions' text, each hit checked against the episode on the ledger; consolidation into derived notes under gates, with provenance, superseding and never deleting |
+| Durable memory | The log's archive kept by storage providers, proven every round | Built: `sion memory archive` and `restore`, the archive encrypted for its writer and named by the head's manifest on the ledger, retrieved only by the deal's client |
 | Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use; evaluation, evolution and verified promotion (part 3) |
 | Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Built (`sion agent schedule`, `sion agent scheduler`): once, every interval or on cron (UTC), each run a session of a profile, its answer to a file, a webhook or Telegram |
 | Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Built: `agent_spawn` registers keyless subagents with budgets carved from the parent's allotment, gives them fee money from the parent's account, and runs their tasks in sessions of their own, two levels deep at most; those of one turn are spawned in one transaction and work at the same time, their payments signed in batches |
