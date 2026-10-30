@@ -639,6 +639,9 @@ mod tests {
         assert_eq!((t.netloc().as_str(), t.path.as_str()), ("[::1]:8080", "/"));
         assert_eq!(t.host_header(), "[::1]:8080");
         assert!(Target::parse("ws://user:pw@example.org/").is_err());
+        let irc = Target::parse("ircs://irc.libera.chat").unwrap();
+        assert_eq!((irc.port, irc.tls), (6697, true));
+        assert_eq!(Target::parse("irc://127.0.0.1:6667").unwrap().port, 6667);
         assert!(Target::parse("ws://example.org:x/").is_err());
         assert_eq!(
             crate::proxy_authorization("http://us%40er:p%3Ass@127.0.0.1:3128").as_deref(),

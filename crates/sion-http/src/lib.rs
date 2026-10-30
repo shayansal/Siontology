@@ -173,8 +173,9 @@ impl Client {
     }
 
     /// A connection of its own to `url`'s host, for a protocol that takes
-    /// over from HTTP (WebSocket: `ws`, `wss`, `http` or `https` URLs):
-    /// TLS for `wss` and `https`, with the client's roots, address rules,
+    /// over from HTTP (WebSocket: `ws`, `wss`, `http` or `https` URLs) or
+    /// has its own (IRC: `irc`, `ircs`): TLS for `wss`, `https` and `ircs`,
+    /// with the client's roots, address rules,
     /// connect timeout and proxy (a `CONNECT` tunnel, unless `NO_PROXY`
     /// names the host). Reads and writes time out after the client's
     /// timeout, until the caller sets another.
@@ -482,7 +483,7 @@ pub(crate) struct Target {
 }
 
 impl Target {
-    /// The target of a `ws`, `wss`, `http` or `https` URL.
+    /// The target of a `ws`, `wss`, `http`, `https`, `irc` or `ircs` URL.
     pub(crate) fn parse(url: &str) -> Result<Target, HttpError> {
         let (scheme, rest) = url
             .split_once("://")
@@ -490,9 +491,11 @@ impl Target {
         let (tls, default_port) = match scheme.to_ascii_lowercase().as_str() {
             "wss" | "https" => (true, 443),
             "ws" | "http" => (false, 80),
+            "ircs" => (true, 6697),
+            "irc" => (false, 6667),
             _ => {
                 return Err(HttpError::Refused(format!(
-                    "{url}: only ws, wss, http and https URLs"
+                    "{url}: only ws, wss, http, https, irc and ircs URLs"
                 )))
             }
         };

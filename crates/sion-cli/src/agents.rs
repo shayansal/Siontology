@@ -496,7 +496,9 @@ pub enum AgentCommand {
     /// Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN,
     /// SLACK_APP_TOKEN for Socket Mode), discord (DISCORD_BOT_TOKEN), matrix
     /// (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE,
-    /// SIGNAL_NUMBER, for signal-cli-rest-api), telegram, or through
+    /// SIGNAL_NUMBER, for signal-cli-rest-api), telegram, mattermost
+    /// (MATTERMOST_URL, MATTERMOST_TOKEN), irc (IRC_SERVER, IRC_NICK,
+    /// IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), or through
     /// webhooks to --listen: whatsapp (WHATSAPP_TOKEN,
     /// WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN),
     /// line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET) or sms through

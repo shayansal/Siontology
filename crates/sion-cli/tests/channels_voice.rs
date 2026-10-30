@@ -800,3 +800,119 @@ fn webhook_messengers_answer_only_what_is_signed() {
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[test]
+fn irc_and_mattermost_answer_their_channels() {
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-irc-mattermost");
+    use std::io::{BufRead, Write};
+    let reply = "85 USD left in the budget.";
+
+    // IRC: a server that welcomes the bot and, once it has joined, has
+    // someone say something to it, and someone else something else.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("irc://{}", server.local_addr().unwrap());
+    let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+    let kept = heard.clone();
+    std::thread::spawn(move || {
+        let (tcp, _) = server.accept().unwrap();
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        let mut out = tcp.try_clone().unwrap();
+        let mut lines = std::io::BufReader::new(tcp);
+        let mut line = String::new();
+        while lines.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+            let got = line.trim_end().to_string();
+            line.clear();
+            kept.lock().unwrap().push(got.clone());
+            if got.starts_with("USER ") {
+                out.write_all(b":irc.test 001 lead :Welcome\r\n").unwrap();
+            }
+            if got.starts_with("JOIN ") {
+                out.write_all(b"PING :irc.test\r\n").unwrap();
+                out.write_all(b":ann!a@host PRIVMSG #ops :lead: How much budget is left?\r\n")
+                    .unwrap();
+                out.write_all(b":bob!b@host PRIVMSG #ops :lunch at noon?\r\n")
+                    .unwrap();
+            }
+            if got.starts_with("QUIT") {
+                break;
+            }
+        }
+    });
+    std::env::set_var("IRC_SERVER", &address);
+    std::env::set_var("IRC_NICK", "lead");
+    std::env::remove_var("IRC_PASSWORD");
+    let options = sion_cli::messengers::Options {
+        allow: vec!["#ops".into()],
+        require_mention: true,
+        once: true,
+        ..Default::default()
+    };
+    let irc = sion_cli::messengers::for_bridge("irc", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, irc.as_ref(), &options).unwrap();
+    drop(irc);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !heard.lock().unwrap().iter().any(|l| l.starts_with("QUIT"))
+        && std::time::Instant::now() < until
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let heard = heard.lock().unwrap().clone();
+    for expected in [
+        "NICK lead",
+        "USER lead 0 * :sion",
+        "JOIN #ops",
+        "PONG :irc.test",
+        "QUIT :stopped",
+    ] {
+        assert!(heard.iter().any(|l| l == expected), "{expected}: {heard:?}");
+    }
+    let said: Vec<&String> = heard.iter().filter(|l| l.starts_with("PRIVMSG")).collect();
+    assert_eq!(
+        said,
+        [&format!("PRIVMSG #ops :{reply}")],
+        "only what was said to it"
+    );
+
+    // Mattermost: who the bot is, then a post in a channel, over the
+    // WebSocket; the answer posted.
+    let (mattermost, rest, _) = common::mixed_stand_in(
+        |sent| match (sent.method.as_str(), sent.url.as_str()) {
+            ("GET", "/api/v4/users/me") => (
+                200,
+                json!({"id": "b7", "username": "lead"})
+                    .to_string()
+                    .into_bytes(),
+            ),
+            ("POST", "/api/v4/posts") => (201, b"{\"id\": \"p2\"}".to_vec()),
+            _ => (404, b"{}".to_vec()),
+        },
+        |peer| {
+            peer.send(json!({"event": "hello", "data": {"server_version": "10"}}));
+            let post = json!({"id": "p1", "user_id": "u9", "channel_id": "town",
+                "message": "@lead How much budget is left?", "type": ""});
+            peer.send(json!({"event": "posted", "data": {"post": post.to_string(),
+                "channel_type": "O", "mentions": "[\"b7\"]"}}));
+        },
+    );
+    std::env::set_var("MATTERMOST_URL", &mattermost);
+    std::env::set_var("MATTERMOST_TOKEN", "mm-token");
+    let options = sion_cli::messengers::Options {
+        allow: vec!["town".into()],
+        require_mention: true,
+        once: true,
+        ..Default::default()
+    };
+    let chat = sion_cli::messengers::for_bridge("mattermost", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger, &profile, chat.as_ref(), &options).unwrap();
+    drop(chat);
+    let posted = common::sent_to(&rest, "POST", "/api/v4/posts").remove(0);
+    assert_eq!(posted.header("authorization"), Some("Bearer mm-token"));
+    assert_eq!(
+        posted.json(),
+        json!({"channel_id": "town", "message": reply})
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}

@@ -325,6 +325,9 @@ from the environment:
 | `matrix` | long polling `/sync` | `MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN` | room ids |
 | `signal` | polling the `receive` endpoint of [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) | `SIGNAL_API_BASE`, `SIGNAL_NUMBER` | phone numbers |
 | `telegram` | long polling `getUpdates` | `TELEGRAM_BOT_TOKEN` | chat ids |
+| `mattermost` | its WebSocket | `MATTERMOST_URL`, `MATTERMOST_TOKEN` | channel ids |
+| `irc` | a connection of its own (`ircs://`, or `irc://`), with a SASL login if `IRC_PASSWORD` is set | `IRC_SERVER`, `IRC_NICK`, `IRC_PASSWORD` | `#channels` (joined), and nicks |
+| `twitch` | Twitch's chat, over IRC | `TWITCH_NICK`, `TWITCH_TOKEN` | `#channels` (joined) |
 | `whatsapp`, `line`, `sms` | signed webhooks to `--listen` ([below](#whatsapp-line-and-sms)) | | numbers, user and group ids |
 
 `sion agent telegram` is the same bridge. It does not answer bots:
@@ -338,7 +341,10 @@ listens. With `--approvers`, only the people named, as the messenger
 names them, may approve or decline. With `--require-mention`, the group
 chats it answers are answered only where a message mentions the bot or
 answers one of its messages; direct messages are always answered. A
-chat it does not answer is said to be ignored once.
+chat it does not answer is said to be ignored once. On IRC and Twitch, a
+reply goes out as lines of about 400 bytes, eight at most, no faster
+than the networks allow (Twitch's, one every 1.6 seconds); someone who
+writes `lead: …` or names the bot mentions it.
 
 Here `SLACK_API_BASE` points the bridge at a stand-in for Slack's Web API.
 Its first poll found one old message, which the bridge took as where to
@@ -423,6 +429,39 @@ socket mode: closed by the bridge
 
 The intents, 37377, are servers, their messages, direct messages and
 message content.
+
+### IRC and Twitch
+
+`--via irc` keeps a connection of its own to `IRC_SERVER` (`ircs://` for
+TLS), logs in with SASL when `IRC_PASSWORD` is set, joins the `#channels`
+in `--allow`, and answers the server's pings; a nick in `--allow` is a
+private conversation. `--via twitch` is the same on Twitch's chat, with
+the bot's OAuth token. Here `IRC_SERVER` points the bridge at a stand-in,
+where, once the bot had joined, ann wrote to it and bob to the channel:
+
+```text
+$ IRC_SERVER=irc://127.0.0.1:8793 IRC_NICK=lead sion agent bridge lead --via irc --allow "#ops" --require-mention --once
+channel #ops (ann): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session ccc37f29472e2dd6: done
+to channel #ops: 100 USD left in the budget.
+```
+
+The server received:
+
+```text
+NICK lead
+USER lead 0 * :sion
+JOIN #ops
+PONG :irc.example.org
+PRIVMSG #ops :100 USD left in the budget.
+QUIT :stopped
+```
+
+`lead: How much budget is left?` mentions the bot; `lunch at noon?` does
+not, and with `--require-mention` it is not answered.
 
 ### WhatsApp, LINE and SMS
 
@@ -682,6 +721,11 @@ again.
 - A spoken reply reaches Discord, Slack and Signal as audio attached to
   the text, not as those apps' own voice messages; on LINE and SMS the
   reply is text.
+- On IRC, who wrote is the nick the server gives: on a network that does
+  not hold nicks to accounts, anyone can take a nick that is free,
+  approvals included where `--approvers` names nicks (`agent:irc-nicks`).
+  IRC and Twitch carry no voice notes. Mattermost, IRC and Twitch have
+  been run only against stand-ins.
 - A webhook is taken as its service's when it carries the service's
   signature with the secret you gave (`agent:webhooks`). The signatures
   name no time: a webhook copied on its way could be sent again later,

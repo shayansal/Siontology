@@ -10,6 +10,20 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Mattermost, IRC and Twitch
+
+- **Mattermost.** `--via mattermost` receives over the server's WebSocket
+  and posts through its API, with a bot's token; voice messages (audio
+  files attached to posts) are heard, and spoken replies posted with the
+  audio attached.
+- **IRC and Twitch.** `--via irc` keeps a connection of its own (TLS for
+  `ircs://`, `sion-http` now connects to IRC servers as it does to
+  WebSockets), logs in with SASL when given a password, joins the
+  `#channels` it answers, and answers pings; `--via twitch` is Twitch's
+  chat, with its OAuth token. Replies go out as lines, a few at most, no
+  faster than the networks allow; what was queued when the bridge stops
+  is sent before it quits.
+
 ### OpenAI's chat API on the HTTP channel
 
 - **For apps made for OpenAI.** `sion agent serve` also answers

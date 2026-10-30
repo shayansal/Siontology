@@ -178,3 +178,103 @@ pub fn form(body: &[u8]) -> Vec<(String, String)> {
         .map(|(k, v)| (decode(k), decode(v)))
         .collect()
 }
+
+/// A stand-in serving HTTP and, on paths with `/websocket`, one WebSocket
+/// connection that runs `script`, on one address (as Mattermost does):
+/// its base, the HTTP requests, and what the WebSocket was sent.
+pub fn mixed_stand_in(
+    answer: impl Fn(&Sent) -> (u16, Vec<u8>) + Send + 'static,
+    script: impl FnOnce(&mut Peer) + Send + 'static,
+) -> (String, Kept, Arc<Mutex<Vec<Value>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let kept: Kept = Arc::new(Mutex::new(Vec::new()));
+    let socket_kept = Arc::new(Mutex::new(Vec::new()));
+    let (keep, keep_socket) = (kept.clone(), socket_kept.clone());
+    std::thread::spawn(move || {
+        let mut script = Some(script);
+        for tcp in listener.incoming() {
+            let Ok(mut tcp) = tcp else { continue };
+            tcp.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+            // The request line says which it is, before anything is read.
+            let mut peeked = [0u8; 64];
+            let mut line = String::new();
+            for _ in 0..200 {
+                let n = tcp.peek(&mut peeked).unwrap_or(0);
+                line = String::from_utf8_lossy(&peeked[..n]).into_owned();
+                if line.contains(" HTTP/") {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if line.contains("/websocket") {
+                if let Some(script) = script.take() {
+                    let kept = keep_socket.clone();
+                    std::thread::spawn(move || {
+                        let (socket, _) = sion_http::ws::WebSocket::accept(tcp, 1 << 20).unwrap();
+                        let mut peer = Peer { socket, kept };
+                        script(&mut peer);
+                        let until = std::time::Instant::now() + Duration::from_secs(60);
+                        while std::time::Instant::now() < until && peer.keep(Duration::from_secs(1))
+                        {
+                        }
+                    });
+                }
+                continue;
+            }
+            let mut read = Vec::new();
+            let head_end = loop {
+                if let Some(at) = read.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break at;
+                }
+                let mut chunk = [0u8; 4096];
+                match tcp.read(&mut chunk) {
+                    Ok(0) | Err(_) => break read.len(),
+                    Ok(n) => read.extend_from_slice(&chunk[..n]),
+                }
+            };
+            let head = String::from_utf8_lossy(&read[..head_end]).into_owned();
+            let mut body = read.get(head_end + 4..).unwrap_or_default().to_vec();
+            let mut lines = head.split("\r\n");
+            let mut first = lines.next().unwrap_or_default().split(' ');
+            let (method, url) = (
+                first.next().unwrap_or_default(),
+                first.next().unwrap_or_default(),
+            );
+            let headers: Vec<(String, String)> = lines
+                .filter_map(|l| l.split_once(':'))
+                .map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_string()))
+                .collect();
+            let length: usize = headers
+                .iter()
+                .find(|(n, _)| n == "content-length")
+                .and_then(|(_, v)| v.parse().ok())
+                .unwrap_or(0);
+            while body.len() < length {
+                let mut chunk = [0u8; 4096];
+                match tcp.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => body.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let sent = Sent {
+                method: method.to_string(),
+                url: url.to_string(),
+                headers,
+                body,
+            };
+            let (status, reply) = answer(&sent);
+            keep.lock().unwrap().push(sent);
+            let _ = tcp.write_all(
+                format!(
+                    "HTTP/1.1 {status} Stand-in\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    reply.len()
+                )
+                .as_bytes(),
+            );
+            let _ = tcp.write_all(&reply);
+        }
+    });
+    (base, kept, socket_kept)
+}

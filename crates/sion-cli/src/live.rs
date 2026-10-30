@@ -20,7 +20,7 @@ use sion_http::HttpError;
 use crate::messengers::{Incoming, Note};
 
 /// The longest event taken from a connection, in bytes.
-const MAX_EVENT: usize = 8 << 20;
+pub(crate) const MAX_EVENT: usize = 8 << 20;
 
 /// How long a batch keeps gathering messages that follow the first
 /// closely, and for how long at most.
@@ -171,12 +171,17 @@ impl Link {
         let _ = self.sender.send(Event::Failed(why));
     }
 
-    fn known_me(&self) -> Option<String> {
+    pub(crate) fn known_me(&self) -> Option<String> {
         self.me.get().and_then(|names| names.first().cloned())
     }
 
+    /// Says who the bot is, as messages name it.
+    pub(crate) fn set_me(&self, names: Vec<String>) {
+        let _ = self.me.set(names);
+    }
+
     /// Waits `pause`, or less if stopped meanwhile.
-    fn rest(&self, pause: Duration) {
+    pub(crate) fn rest(&self, pause: Duration) {
         let until = Instant::now() + pause;
         while !self.stopped() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(100));
@@ -185,7 +190,7 @@ impl Link {
 }
 
 /// Why a connection ended badly.
-enum Fault {
+pub(crate) enum Fault {
     /// The service refused: no use trying again.
     Fatal(String),
     /// Worth trying again.
@@ -193,7 +198,7 @@ enum Fault {
 }
 
 /// What comes after a connection ends.
-enum Next {
+pub(crate) enum Next {
     /// Connect again, resuming where the service allows.
     Resume,
     /// Connect again as new.
@@ -201,7 +206,7 @@ enum Next {
     Stop,
 }
 
-fn again(why: impl std::fmt::Display) -> Fault {
+pub(crate) fn again(why: impl std::fmt::Display) -> Fault {
     Fault::Again(why.to_string())
 }
 
@@ -213,7 +218,11 @@ fn backoff(failures: u32) -> Duration {
 
 /// Keeps a connection with `session` until stopped or refused, trying
 /// again after faults.
-fn keep(name: &str, link: &Link, mut session: impl FnMut(&Link, bool) -> Result<Next, Fault>) {
+pub(crate) fn keep(
+    name: &str,
+    link: &Link,
+    mut session: impl FnMut(&Link, bool) -> Result<Next, Fault>,
+) {
     let mut failures = 0;
     let mut resume = false;
     while !link.stopped() {
@@ -241,7 +250,9 @@ fn keep(name: &str, link: &Link, mut session: impl FnMut(&Link, bool) -> Result<
     }
 }
 
-fn text_of(received: Result<Option<Message>, HttpError>) -> Result<Option<Value>, HttpError> {
+pub(crate) fn text_of(
+    received: Result<Option<Message>, HttpError>,
+) -> Result<Option<Value>, HttpError> {
     match received? {
         Some(Message::Text(text)) => Ok(serde_json::from_str(&text).ok()),
         _ => Ok(None),

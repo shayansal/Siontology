@@ -13,6 +13,9 @@
 //! | Discord | the gateway | `DISCORD_BOT_TOKEN` | channel ids |
 //! | Matrix | long polling `/sync` | `MATRIX_ACCESS_TOKEN`, `MATRIX_HOMESERVER` | room ids |
 //! | Signal | polling signal-cli-rest-api's `receive` | `SIGNAL_API_BASE`, `SIGNAL_NUMBER` | phone numbers |
+//! | Mattermost | its WebSocket ([`crate::mattermost`]) | `MATTERMOST_URL`, `MATTERMOST_TOKEN` | channel ids |
+//! | IRC, Twitch | a connection of its own ([`crate::irc`]) | `IRC_SERVER`, `IRC_NICK`; `TWITCH_NICK`, `TWITCH_TOKEN` | `#channels`, nicks |
+//! | WhatsApp, LINE, SMS | signed webhooks ([`crate::webhooks`]) | see there | numbers, ids |
 //!
 //! Each `*_API_BASE` variable points a messenger at another server (a
 //! stand-in, in the tests). Bots are not answered: Telegram does not show a
@@ -1184,9 +1187,12 @@ pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, S
         "whatsapp" => Box::new(crate::webhooks::WhatsApp::from_env(listen)?),
         "line" => Box::new(crate::webhooks::Line::from_env(listen)?),
         "sms" => Box::new(crate::webhooks::Sms::from_env(listen)?),
+        "mattermost" => Box::new(crate::mattermost::Mattermost::from_env()?),
+        "irc" => Box::new(crate::irc::Irc::irc_from_env(chats)?),
+        "twitch" => Box::new(crate::irc::Irc::twitch_from_env(chats)?),
         other => {
             return Err(format!(
-                "{other} is not a messenger: telegram, slack, discord, matrix, signal, whatsapp, line or sms"
+                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line or sms"
             ))
         }
     })
