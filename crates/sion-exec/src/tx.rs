@@ -766,6 +766,15 @@ pub enum TxKind {
         /// The limits, or `None` to lift them.
         narrowing: Option<Narrowing>,
     },
+    /// The sender names its latest claim under `key` (spec §5.58): its index
+    /// entry at `index_id(sender, key)` is created, or moves to `claim`, a
+    /// later claim of the sender's own.
+    IndexClaim {
+        /// The key, such as `skill:pay-invoices`.
+        key: String,
+        /// The claim.
+        claim: ClaimId,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -852,7 +861,9 @@ impl Transaction {
             TxKind::SettleStream { stream, .. }
             | TxKind::TopUpStream { stream, .. }
             | TxKind::CloseStream { stream } => Some(object_domain("stream", stream)),
-            TxKind::SettleTask { .. } => Some(well_known::assurance_domain()),
+            TxKind::SettleTask { .. } | TxKind::IndexClaim { .. } => {
+                Some(well_known::assurance_domain())
+            }
             TxKind::CancelTask { task } => Some(object_domain("task", task)),
             TxKind::AcceptDeal { deal }
             | TxKind::SettleDeal { deal }

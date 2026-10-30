@@ -21,6 +21,8 @@ They do not run the work. They hold the money, the rule and the record.
 | `worker` | Who may settle it, or nobody named: a bounty anyone may take | `coder` |
 | `requires` | Claims every result must rest on | The environment vendor's bonded claim that `swe-sandbox-7` has no known exploit that passes grader `g-3` |
 | `verifiers` | Whose attestations count | `reviewer-1`, `reviewer-2` |
+| `must_attest` | Verifiers who must each attest every result (v1.15) | `reviewer-2` |
+| `min_attestations` | How many attestations a result needs at least (v1.15) | 1 |
 | `policy` | The poster's decision rule: whose assumptions it trusts, and κ | The standard policy, κ = 2 |
 | `adjudicator` | Who rules on challenges to results | `arbiter` |
 | `detection_permille` | The largest detection factor a result may declare | 900 |
@@ -58,6 +60,24 @@ With bonds of 100 USD (the worker), 1,000 USD (each of two reviewers) and
 min(∞, 100 + 1,000 + 1,000, 5,000) = 2,100 USD; at a detection factor of
 0.9 and κ = 2 it covers payments up to 945 USD. The worker's bond alone,
 100 USD, covers 45 USD: the ledger refuses to pay 150 USD on it.
+
+## Requiring attestations
+
+The worker's own bond can be enough for the decision rule. A poster who
+wants someone else to check the work says so when posting (specification
+v1.15): `must_attest` names verifiers who must each attest every result,
+and `min_attestations` how many attestations a result needs. The ledger
+refuses a result without them, however large the worker's bond. It also
+refuses an attestation by the result's own author, and a task whose named
+worker is one of its verifiers: whoever wrote a result cannot be the one
+who vouches for it.
+
+The formula does not change. Required attestations sit in the same *or*
+as the worker's bond and the other attestations, so their backings still
+add up; requiring them makes sure that a verifier other than the author
+checked the output, and that its bond is part of the result's backing.
+In the `tasks` demo, the bounty requires reviewer-2's attestation, and the
+ledger refuses the bounty hunter's result without it.
 
 ## When a grader turns out to be exploitable
 
@@ -118,7 +138,8 @@ rule and every way it can fail through both.
   task, the exact result formula, settlement with reservation, exactly-once
   payment, bounties, cancellation and refunds, posting from an agent's
   budget, compensation when a required claim is falsified (specification
-  v1.10); `sion task` commands, MCP tools and the `tasks` demo.
+  v1.10); required attestations, and no attestation by a result's author
+  (v1.15); `sion task` commands, MCP tools and the `tasks` demo.
 - **Simplified**: settlement reserves backing in the assurance registry,
   which is one contended object, so settlements are ordered one after
   another.

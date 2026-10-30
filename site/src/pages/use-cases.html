@@ -155,13 +155,13 @@
       <dl class="facts">
         <div><dt>For</dt><dd>AI labs buying evaluations, training environments and rollouts; anyone, human or agent, paying for work whose result can be checked.</dd></div>
         <div><dt>Today</dt><dd>Work is paid for up front or on someone&rsquo;s say-so. If an environment&rsquo;s grader turns out to reward a shortcut instead of the task, every result it passed was paid for, and the buyer absorbs the loss.</dd></div>
-        <div><dt>With Siontology</dt><dd>A Task Charter escrows the payment together with the rule a result must pass, fixed when the task is posted: the claims every result must rest on (the vendor&rsquo;s bonded claim that its grader has no known exploit), the verifiers whose attestations count, and the buyer&rsquo;s policy for how much backing it needs.</dd></div>
+        <div><dt>With Siontology</dt><dd>A Task Charter escrows the payment together with the rule a result must pass, fixed when the task is posted: the claims every result must rest on (the vendor&rsquo;s bonded claim that its grader has no known exploit), the verifiers whose attestations count and those who must attest, and the buyer&rsquo;s policy for how much backing it needs. Nobody&rsquo;s attestation of their own result counts.</dd></div>
         <div><dt>What changes</dt><dd>The worker is paid once, and only for a result whose backing passes the rule. The buyer&rsquo;s reliance on a paid result stays backed: if the grader is later proven exploitable, every result resting on it falls and the buyer is repaid from the vendor&rsquo;s bond, while whoever found the exploit is paid from it too. An agent posts tasks from its own budget, under its charter&rsquo;s limits.</dd></div>
         <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>Not built: running the work or the grader (they stay off the ledger), and adapters for existing eval and training frameworks.</dd></div>
       </dl>
       <ol class="steps">
         <li><div><strong>Back</strong><p>The environment vendor bonds behind its claim that its grader cannot be gamed; reviewers bond behind their attestations.</p></div></li>
-        <li><div><strong>Post</strong><p>The buyer, or its agent from its budget, escrows the payment with the rule fixed: required claims, verifiers, policy.</p></div></li>
+        <li><div><strong>Post</strong><p>The buyer, or its agent from its budget, escrows the payment with the rule fixed: required claims, verifiers and who must attest, policy.</p></div></li>
         <li><div><strong>Settle</strong><p>The worker submits a result committed to the task and its output. It is paid only if the result&rsquo;s backing passes the rule, and only once.</p></div></li>
         <li><div><strong>Repay</strong><p>A red team proves the grader exploitable; the arbiter upholds it. The vendor&rsquo;s bond repays the buyer for the results it paid for, and the red team is paid for the find.</p></div></li>
       </ol>

@@ -150,6 +150,7 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::PostTask { .. } => "PostTask",
         TxKind::SettleTask { .. } => "SettleTask",
         TxKind::CancelTask { .. } => "CancelTask",
+        TxKind::IndexClaim { .. } => "IndexClaim",
         TxKind::DelegateStake { .. } => "DelegateStake",
         TxKind::Undelegate => "Undelegate",
         TxKind::WithdrawDelegation => "WithdrawDelegation",
@@ -5138,6 +5139,8 @@ fn acceptance(
         policy: Policy::standard(),
         requires: requires.iter().copied().collect(),
         verifiers: verifiers.iter().copied().collect(),
+        must_attest: BTreeSet::new(),
+        min_attestations: 0,
         adjudicator: Some(adjudicator),
         detection_permille: 900,
         reliance: 100,
@@ -5767,6 +5770,394 @@ fn tasks_post_settle_once_cancel_and_compensate_an_exploit() {
 #[test]
 fn tasks_many_transactions_per_chunk() {
     tasks(5).summary("tasks (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: attested tasks and the claim index (spec v1.15)
+// ---------------------------------------------------------------------------
+
+const ATTESTED_NAMES: [&str; 8] = [
+    "lab",
+    "rich-worker",
+    "hunter",
+    "overseer",
+    "reviewer",
+    "judge",
+    "publisher",
+    "stranger",
+];
+
+fn attested(chunk_size: usize) -> Harness {
+    use sion_exec::index::{index_id, MAX_INDEX_KEY};
+    use sion_exec::task::{result_formula, ATTESTATION_SCHEMA, RESULT_SCHEMA};
+
+    let mut h = Harness::new(&ATTESTED_NAMES, 1_000_000, 8, chunk_size);
+    let id = |h: &Harness, name: &str| h.id(name);
+    let (worker, hunter, overseer, reviewer, publisher) = (
+        id(&h, "rich-worker"),
+        id(&h, "hunter"),
+        id(&h, "overseer"),
+        id(&h, "reviewer"),
+        id(&h, "publisher"),
+    );
+    let judge_atom = bond_atom(AtomClass::Adjudicator, &id(&h, "judge"), "arbitration");
+    let verifier_atom = |who: &AccountId| bond_atom(AtomClass::Economic, who, "verifier");
+    let bond = |h: &mut Harness, who: &str, class, label: &str, amount| {
+        h.tx(
+            who,
+            TxKind::PostBond {
+                class,
+                label: label.into(),
+                amount: units(amount),
+            },
+        )
+    };
+    // The worker's own bond is large: on it alone, the decision rule would
+    // accept its result. The hunter's is nominal; it is also a verifier.
+    let txs = vec![
+        bond(
+            &mut h,
+            "judge",
+            AtomClass::Adjudicator,
+            "arbitration",
+            3_000,
+        ),
+        bond(
+            &mut h,
+            "rich-worker",
+            AtomClass::Economic,
+            "task-worker",
+            10_000,
+        ),
+        bond(&mut h, "hunter", AtomClass::Economic, "task-worker", 1),
+        bond(&mut h, "hunter", AtomClass::Economic, "verifier", 100),
+        bond(&mut h, "overseer", AtomClass::Economic, "verifier", 1_000),
+        bond(&mut h, "reviewer", AtomClass::Economic, "verifier", 1_000),
+        bond(&mut h, "publisher", AtomClass::Economic, "skills", 500),
+    ];
+    h.pulse(txs);
+
+    let terms = |verifiers: &[AccountId], must: &[AccountId], at_least: u8| {
+        let mut a = acceptance(&[], verifiers, judge_atom.id);
+        a.must_attest = must.iter().copied().collect();
+        a.min_attestations = at_least;
+        a
+    };
+
+    // Posting: the overseer must attest every result of t1; t2 is a bounty
+    // that needs one attestation, by the overseer or the hunter. Three
+    // postings break the rules of §5.42 step 1.
+    let base = h.pulse_number();
+    let deadline = Pulse(base + 60);
+    let t1_tx = post_task(
+        &mut h,
+        "lab",
+        terms(&[overseer, reviewer], &[overseer], 1),
+        Some(worker),
+        units(100),
+        deadline,
+        None,
+    );
+    let t2_tx = post_task(
+        &mut h,
+        "lab",
+        terms(&[overseer, hunter], &[], 1),
+        None,
+        units(40),
+        deadline,
+        None,
+    );
+    let outside = post_task(
+        &mut h,
+        "lab",
+        terms(&[reviewer], &[overseer], 0),
+        Some(worker),
+        units(1),
+        deadline,
+        None,
+    );
+    let too_many = post_task(
+        &mut h,
+        "lab",
+        terms(&[reviewer], &[], 2),
+        Some(worker),
+        units(1),
+        deadline,
+        None,
+    );
+    let self_verifying = post_task(
+        &mut h,
+        "lab",
+        terms(&[worker, reviewer], &[], 0),
+        Some(worker),
+        units(1),
+        deadline,
+        None,
+    );
+    let out = h.pulse(vec![
+        t1_tx.clone(),
+        t2_tx.clone(),
+        outside.clone(),
+        too_many.clone(),
+        self_verifying.clone(),
+    ]);
+    expect(&out, &t1_tx, Outcome::Success);
+    expect(&out, &t2_tx, Outcome::Success);
+    for (tx, why) in [
+        (&outside, "must attest"),
+        (&too_many, "attestations"),
+        (&self_verifying, "its own result"),
+    ] {
+        match status_of(&out, tx) {
+            ExecStatus::Failed(reason) => assert!(reason.contains(why), "{reason}"),
+            other => panic!("expected a failure ({why}), got {other:?}"),
+        }
+    }
+    let (t1, t2) = (task_posted(&out, &t1_tx), task_posted(&out, &t2_tx));
+    assert_eq!(
+        task_state(&h, &t1).acceptance.must_attest,
+        [overseer].into_iter().collect()
+    );
+
+    // Attestations, then results.
+    let attest = |task, output: &[u8], who: &AccountId| {
+        task_claim(
+            ATTESTATION_SCHEMA,
+            task,
+            output,
+            formulas::bonded_statement(verifier_atom(who).id),
+            judge_atom.id,
+            1000,
+        )
+    };
+    let by_overseer = attest(t1, b"t1", &overseer);
+    let by_reviewer = attest(t1, b"t1", &reviewer);
+    let by_hunter = attest(t2, b"t2", &hunter);
+    let by_overseer_t2 = attest(t2, b"t2", &overseer);
+    let txs = vec![
+        h.tx(
+            "overseer",
+            TxKind::IssueClaim {
+                claim: by_overseer.clone(),
+            },
+        ),
+        h.tx(
+            "reviewer",
+            TxKind::IssueClaim {
+                claim: by_reviewer.clone(),
+            },
+        ),
+        h.tx(
+            "hunter",
+            TxKind::IssueClaim {
+                claim: by_hunter.clone(),
+            },
+        ),
+        h.tx(
+            "overseer",
+            TxKind::IssueClaim {
+                claim: by_overseer_t2.clone(),
+            },
+        ),
+    ];
+    h.pulse(txs);
+    let (o_id, r_id, hunter_id, o2_id) = (
+        claim_id(&overseer, &by_overseer),
+        claim_id(&reviewer, &by_reviewer),
+        claim_id(&hunter, &by_hunter),
+        claim_id(&overseer, &by_overseer_t2),
+    );
+    let none = BTreeSet::new();
+    let result = |task, output: &[u8], formula| {
+        task_claim(RESULT_SCHEMA, task, output, formula, judge_atom.id, 900)
+    };
+    let alone = result(t1, b"t1", result_formula(&worker, &[], &none));
+    let reviewed = result(t1, b"t1", result_formula(&worker, &[r_id], &none));
+    let overseen = result(t1, b"t1", result_formula(&worker, &[o_id, r_id], &none));
+    let self_attested = result(t2, b"t2", result_formula(&hunter, &[hunter_id], &none));
+    let hunted = result(t2, b"t2", result_formula(&hunter, &[o2_id], &none));
+    let txs = vec![
+        h.tx(
+            "rich-worker",
+            TxKind::IssueClaim {
+                claim: alone.clone(),
+            },
+        ),
+        h.tx(
+            "rich-worker",
+            TxKind::IssueClaim {
+                claim: reviewed.clone(),
+            },
+        ),
+        h.tx(
+            "rich-worker",
+            TxKind::IssueClaim {
+                claim: overseen.clone(),
+            },
+        ),
+        h.tx(
+            "hunter",
+            TxKind::IssueClaim {
+                claim: self_attested.clone(),
+            },
+        ),
+        h.tx(
+            "hunter",
+            TxKind::IssueClaim {
+                claim: hunted.clone(),
+            },
+        ),
+    ];
+    h.pulse(txs);
+
+    // Settling: a large bond alone no longer suffices, the overseer must
+    // attest, and an author's attestation of its own result never counts.
+    let on_bond = settle_task(&mut h, "rich-worker", t1, &alone, &[]);
+    let without_overseer = settle_task(
+        &mut h,
+        "rich-worker",
+        t1,
+        &reviewed,
+        &[("reviewer", &by_reviewer)],
+    );
+    let own = settle_task(
+        &mut h,
+        "hunter",
+        t2,
+        &self_attested,
+        &[("hunter", &by_hunter)],
+    );
+    let out = h.pulse(vec![on_bond.clone(), without_overseer.clone(), own.clone()]);
+    for (tx, why) in [
+        (&on_bond, "must attest"),
+        (&without_overseer, "must attest"),
+        (&own, "author"),
+    ] {
+        match status_of(&out, tx) {
+            ExecStatus::Failed(reason) => assert!(reason.contains(why), "{reason}"),
+            other => panic!("expected a failure ({why}), got {other:?}"),
+        }
+    }
+    let settle = settle_task(
+        &mut h,
+        "rich-worker",
+        t1,
+        &overseen,
+        &[("overseer", &by_overseer), ("reviewer", &by_reviewer)],
+    );
+    let bounty = settle_task(
+        &mut h,
+        "hunter",
+        t2,
+        &hunted,
+        &[("overseer", &by_overseer_t2)],
+    );
+    let out = h.pulse(vec![settle.clone(), bounty.clone()]);
+    expect(&out, &settle, Outcome::Success);
+    expect(&out, &bounty, Outcome::Success);
+
+    // The claim index: a publisher names its latest release, which moves
+    // only to a later claim of its own.
+    let skills_atom = bond_atom(AtomClass::Economic, &publisher, "skills");
+    let release = |version: &str| ClaimBody {
+        schema: "skill/v1".into(),
+        subject: format!("Skill pay-invoices {version}"),
+        payload: Payload::Commitment(hash_domain("test/bundle", version.as_bytes())),
+        formula: formulas::bonded_statement(skills_atom.id),
+        adjudicator: Some(judge_atom.id),
+        detection_permille: 1000,
+        valid_for: 500,
+        challenge_period: 200,
+    };
+    let (r1, r2) = (release("1.0.0"), release("1.1.0"));
+    let (r1_id, r2_id) = (claim_id(&publisher, &r1), claim_id(&publisher, &r2));
+    let tx = h.tx("publisher", TxKind::IssueClaim { claim: r1 });
+    h.pulse(vec![tx]);
+    let tx = h.tx("publisher", TxKind::IssueClaim { claim: r2 });
+    h.pulse(vec![tx]);
+    let index = |h: &mut Harness, who: &str, key: &str, claim| {
+        h.tx(
+            who,
+            TxKind::IndexClaim {
+                key: key.into(),
+                claim,
+            },
+        )
+    };
+    let key = "skill:pay-invoices";
+    let first = index(&mut h, "publisher", key, r1_id);
+    let not_theirs = index(&mut h, "stranger", key, r1_id);
+    let unknown = index(
+        &mut h,
+        "publisher",
+        "skill:other",
+        ClaimId::derive(b"no such claim"),
+    );
+    let spaced = index(&mut h, "publisher", "skill pay invoices", r1_id);
+    let long = index(&mut h, "publisher", &"k".repeat(MAX_INDEX_KEY + 1), r1_id);
+    let out = h.pulse(vec![
+        first.clone(),
+        not_theirs.clone(),
+        unknown.clone(),
+        spaced.clone(),
+        long.clone(),
+    ]);
+    expect(&out, &first, Outcome::Success);
+    for tx in [&not_theirs, &unknown, &spaced, &long] {
+        expect(&out, tx, Outcome::Failed);
+    }
+    let entry_id = index_id(&publisher, key);
+    let entry = |h: &Harness| match &h.chain.state.objects[&entry_id].data {
+        ObjectData::IndexEntry(e) => e.clone(),
+        other => panic!("{other:?}"),
+    };
+    let named = entry(&h);
+    assert_eq!(
+        (
+            named.owner,
+            named.key.as_str(),
+            named.claim,
+            named.previous,
+            named.count
+        ),
+        (publisher, key, r1_id, None, 1)
+    );
+    let forward = index(&mut h, "publisher", key, r2_id);
+    let out = h.pulse(vec![forward.clone()]);
+    expect(&out, &forward, Outcome::Success);
+    let moved = entry(&h);
+    assert_eq!(
+        (moved.claim, moved.previous, moved.count),
+        (r2_id, Some(r1_id), 2)
+    );
+    let back = index(&mut h, "publisher", key, r1_id);
+    let same = index(&mut h, "publisher", key, r2_id);
+    let out = h.pulse(vec![back.clone(), same.clone()]);
+    expect(&out, &back, Outcome::Failed);
+    expect(&out, &same, Outcome::Failed);
+    assert_eq!(entry(&h).claim, r2_id);
+
+    h.assert_covered(&[
+        "PostTask/ok",
+        "PostTask/failed",
+        "PostTask(open)/ok",
+        "SettleTask/ok",
+        "SettleTask/failed",
+        "IndexClaim/ok",
+        "IndexClaim/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn tasks_require_attestations_and_an_index_moves_only_forward() {
+    attested(1).summary("attested tasks and the claim index");
+}
+
+#[test]
+fn attested_tasks_many_transactions_per_chunk() {
+    attested(4).summary("attested tasks and the claim index (chunks of 4)");
 }
 
 // ---------------------------------------------------------------------------

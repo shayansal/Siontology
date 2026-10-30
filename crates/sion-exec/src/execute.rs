@@ -750,6 +750,19 @@ pub enum Event {
         /// The narrowing now in force; `None` when it was lifted.
         narrowing: Option<Narrowing>,
     },
+    /// An owner named its latest claim under a key (spec v1.15, §5.58).
+    ClaimIndexed {
+        /// The index entry.
+        entry: ObjectId,
+        /// Whose claims it indexes.
+        owner: AccountId,
+        /// The key.
+        key: String,
+        /// The claim it names now.
+        claim: ClaimId,
+        /// How many claims it has named.
+        count: u64,
+    },
 }
 
 /// The effects of one transaction.
@@ -3180,6 +3193,24 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     crate::market::MAX_PERIOD
                 )));
             }
+            if !acceptance.must_attest.is_subset(&acceptance.verifiers) {
+                return Err(ExecError::Invalid(
+                    "every verifier that must attest is one the task names".into(),
+                ));
+            }
+            if usize::from(acceptance.min_attestations) > acceptance.verifiers.len() {
+                return Err(ExecError::Invalid(format!(
+                    "the task names {} verifiers: it cannot require {} attestations",
+                    acceptance.verifiers.len(),
+                    acceptance.min_attestations
+                )));
+            }
+            if worker.is_some_and(|w| acceptance.verifiers.contains(&w)) {
+                return Err(ExecError::Invalid(
+                    "the task's worker cannot be one of its verifiers: nobody attests its own result"
+                        .into(),
+                ));
+            }
             let (funder, refund_to) = match charter {
                 None => {
                     run.draw(AssetId::usd(), *amount)?;
@@ -3301,6 +3332,11 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 if !verifiers.insert(*verifier) {
                     return Err(ExecError::Invalid("one attestation per verifier".into()));
                 }
+                if *verifier == tx.sender {
+                    return Err(ExecError::Invalid(
+                        "a result is never attested by its author".into(),
+                    ));
+                }
                 if !state.acceptance.verifiers.contains(verifier) {
                     return Err(ExecError::Invalid(
                         "an attestation from a verifier the task does not name".into(),
@@ -3321,6 +3357,17 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                     ));
                 }
                 attested.push(id);
+            }
+            if !state.acceptance.must_attest.is_subset(&verifiers) {
+                return Err(ExecError::Invalid(
+                    "every verifier the task says must attest has to attest the result".into(),
+                ));
+            }
+            if attestations.len() < usize::from(state.acceptance.min_attestations) {
+                return Err(ExecError::Invalid(format!(
+                    "the task needs at least {} attestations",
+                    state.acceptance.min_attestations
+                )));
             }
             let expected = result_formula(&tx.sender, &attested, &state.acceptance.requires);
             if record.formula != expected {
@@ -3407,6 +3454,79 @@ fn apply<S: ObjectStore>(run: &mut Run<'_, '_, S>) -> Result<(), ExecError> {
                 task: *task,
                 refund,
                 to,
+            });
+        }
+        TxKind::IndexClaim { key, claim } => {
+            if !crate::index::valid_key(key) {
+                return Err(ExecError::Invalid(format!(
+                    "an index key is 1 to {} printable characters without spaces",
+                    crate::index::MAX_INDEX_KEY
+                )));
+            }
+            let (_, domain) = run.assurance()?;
+            let record = match domain.registry.claim(claim) {
+                Some(record) if record.status == ClaimStatus::Active => record,
+                _ => {
+                    return Err(ExecError::Invalid(format!(
+                        "claim {} is not an active claim",
+                        claim.short()
+                    )))
+                }
+            };
+            if record.issuer != tx.sender {
+                return Err(ExecError::Unauthorized(
+                    "an index names only its owner's own claims".into(),
+                ));
+            }
+            let sequence = record.sequence;
+            let id = crate::index::index_id(&tx.sender, key);
+            let entry = match run.try_load(&id)? {
+                Some(mut object) => {
+                    let ObjectData::IndexEntry(entry) = &object.data else {
+                        return Err(ExecError::Invalid(format!("{id} is not an index entry")));
+                    };
+                    let mut entry = entry.clone();
+                    let before = domain
+                        .registry
+                        .claim(&entry.claim)
+                        .map(|r| r.sequence)
+                        .ok_or_else(|| ExecError::Invalid("the indexed claim is unknown".into()))?;
+                    if before >= sequence {
+                        return Err(ExecError::Invalid(
+                            "an index entry moves only to a later claim".into(),
+                        ));
+                    }
+                    entry.previous = Some(entry.claim);
+                    entry.claim = *claim;
+                    entry.count = entry.count.saturating_add(1);
+                    entry.updated_at = pulse;
+                    object.data = ObjectData::IndexEntry(entry.clone());
+                    run.store(object);
+                    entry
+                }
+                None => {
+                    let entry = crate::index::IndexEntry {
+                        owner: tx.sender,
+                        key: key.clone(),
+                        claim: *claim,
+                        previous: None,
+                        count: 1,
+                        updated_at: pulse,
+                    };
+                    run.create_at(
+                        id,
+                        Owner::Shared(object_domain("index", &id)),
+                        ObjectData::IndexEntry(entry.clone()),
+                    );
+                    entry
+                }
+            };
+            run.event(Event::ClaimIndexed {
+                entry: id,
+                owner: tx.sender,
+                key: key.clone(),
+                claim: *claim,
+                count: entry.count,
             });
         }
         TxKind::PostDeal {

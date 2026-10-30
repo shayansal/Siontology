@@ -10,7 +10,8 @@
 //! - the **required claims** every result must rest on, typically the
 //!   environment vendor's bonded claim that its environment has no known
 //!   exploit that passes the grader without solving the task;
-//! - the **verifiers** whose attestations count;
+//! - the **verifiers** whose attestations count, those who must attest
+//!   every result, and how many attestations a result needs (v1.15);
 //! - the **adjudicator** results must name, the largest **detection
 //!   factor** they may declare, and how long the poster's reliance on a
 //!   paid result lasts.
@@ -19,8 +20,10 @@
 //! whose payload commits to the task and its output ([`TaskResult`]), and
 //! whose formula is exactly [`result_formula`]: the worker's task bond or
 //! any listed verifier's attestation of the same output, and every
-//! required claim. Faking an accepted result therefore costs at least what
-//! the decision rule demands, and the ledger reserves κ times the payment
+//! required claim. No result is attested by its own author, and a named
+//! worker is never one of its task's verifiers (v1.15). Faking an accepted
+//! result therefore costs at least what the decision rule demands, and the
+//! ledger reserves κ times the payment
 //! of the result's backing for the reliance period. If an exploit in the
 //! environment is proven later, the environment's claim is falsified, every
 //! result resting on it falls with it, and the poster is compensated from
@@ -94,6 +97,14 @@ pub struct Acceptance {
     pub requires: BTreeSet<ClaimId>,
     /// Accounts whose attestations count.
     pub verifiers: BTreeSet<AccountId>,
+    /// Verifiers who must each attest every result (specification v1.15):
+    /// a subset of `verifiers`.
+    #[serde(default)]
+    pub must_attest: BTreeSet<AccountId>,
+    /// How many attestations a result needs at least (specification
+    /// v1.15), at most the number of verifiers.
+    #[serde(default)]
+    pub min_attestations: u8,
     /// The adjudicator a result must name, if any.
     pub adjudicator: Option<AtomId>,
     /// The largest detection factor a result may declare, in thousandths.

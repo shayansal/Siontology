@@ -59,6 +59,23 @@ pub(super) fn post(run: &mut TxRun<'_>, terms: Posting<'_>) -> Step {
     if !(1 <= acceptance.reliance && acceptance.reliance <= MAX_PERIOD) {
         return Err(fail("the reliance period is out of range"));
     }
+    if acceptance
+        .must_attest
+        .iter()
+        .any(|v| !acceptance.verifiers.contains(v))
+    {
+        return Err(fail("a verifier that must attest is not one of the task's"));
+    }
+    if usize::from(acceptance.min_attestations) > acceptance.verifiers.len() {
+        return Err(fail(
+            "more attestations required than the task has verifiers",
+        ));
+    }
+    if let Some(worker) = &terms.worker {
+        if acceptance.verifiers.contains(worker) {
+            return Err(fail("the worker is one of the task's verifiers"));
+        }
+    }
     // Step 2.
     let (funder, refund_to) = match terms.charter {
         None => {
@@ -205,6 +222,9 @@ pub(super) fn settle(
         if !seen.insert(*verifier) {
             return Err(fail("two attestations by one verifier"));
         }
+        if *verifier == sender {
+            return Err(fail("the result's author attests it"));
+        }
         if !task.acceptance.verifiers.contains(verifier) {
             return Err(fail("the verifier is not named by the task"));
         }
@@ -220,6 +240,17 @@ pub(super) fn settle(
             return Err(fail("an attestation commits to something else"));
         }
         attested.push(a);
+    }
+    if task
+        .acceptance
+        .must_attest
+        .iter()
+        .any(|v| !seen.contains(v))
+    {
+        return Err(fail("a verifier that must attest did not"));
+    }
+    if attestations.len() < usize::from(task.acceptance.min_attestations) {
+        return Err(fail("fewer attestations than the task requires"));
     }
     // Step 5.
     let bond = bond_atom(AtomClass::Economic, &sender, WORKER_BOND_LABEL).id;

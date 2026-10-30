@@ -49,6 +49,7 @@ pub mod error;
 pub mod escrow;
 pub mod execute;
 pub mod genesis;
+pub mod index;
 pub mod market;
 pub mod memory;
 pub mod object;

@@ -97,6 +97,7 @@ only" below) can be built and signed with the Rust API
 | `Challenge { claim, target, evidence, deposit }` | Challenges one bonded atom of a claim with a deposit; needs an adjudicator | contended (assurance) | `Challenge assumption <atom> of claim <id>, depositing <deposit> USD` | `sion challenge` |
 | `Rule { challenge, upheld }` | The adjudicator's bond owner rules; upheld slashes, falsifies, compensates | contended (assurance) | `As adjudicator, uphold\|reject challenge <id>` | `sion rule` |
 | `WithdrawBond { atom }` | Withdraws the unlocked part of a bond | contended (assurance) | `Withdraw the free part of the bond behind assumption <atom>` | Rust API only |
+| `IndexClaim { key, claim }` | Names `claim`, an active claim of the sender's, as its latest under `key` in its index entry at `index_id(sender, key)`; the entry moves only to later claims (spec v1.15) | contended (assurance) | `Name claim <id> as your latest claim under "<key>" (your index entry moves only to a later claim of yours)` | `sion skill publish` |
 
 ## Agent Charters and Escrow Lanes
 
@@ -182,8 +183,8 @@ See [Memory for agents and robots](../concepts/memory.md).
 
 | Kind | What it does | Class | Sentence | Sent by |
 |---|---|---|---|---|
-| `PostTask { spec, acceptance, worker, amount, deadline, charter }` | Escrows `amount` for a task whose acceptance rule is fixed now; with `charter`, from that agent's allotment (`inputs[1]`) under its caveats | owned-linear, or bounded with `charter` | `Escrow <amount> USD for a task for <worker>\|open to anyone, paid … for a result resting on <n> required claims and accepted under your policy, settled by Pulse <deadline>[, from agent <id>'s budget]` | `sion task post` |
-| `SettleTask { task, result, attestations }` | Pays the worker once a result claim with exactly the required formula passes the decision rule; reserves κ times the amount of its backing for the payer | contended (assurance) | `Settle task <id> with your result[ and <n> attestations]` | `sion task settle` |
+| `PostTask { spec, acceptance, worker, amount, deadline, charter }` | Escrows `amount` for a task whose acceptance rule is fixed now (with v1.15, the verifiers who must attest and how many attestations it needs); with `charter`, from that agent's allotment (`inputs[1]`) under its caveats | owned-linear, or bounded with `charter` | `Escrow <amount> USD for a task for <worker>\|open to anyone, paid … for a result resting on <n> required claims[, attested by <verifiers>][, with at least <n> attestations] and accepted under your policy, settled by Pulse <deadline>[, from agent <id>'s budget]` | `sion task post`, `sion skill bounty` |
+| `SettleTask { task, result, attestations }` | Pays the worker once a result claim with exactly the required formula, the attestations the task requires and none by the worker passes the decision rule; reserves κ times the amount of its backing for the payer | contended (assurance) | `Settle task <id> with your result[ and <n> attestations]` | `sion task settle` |
 | `CancelTask { task }` | Refunds a task: released by its worker, or withdrawn by its poster when open to all or expired | contended (task) | `Cancel task <id> and refund its escrow` | `sion task cancel` |
 
 Results and attestations are claims (`IssueClaim`, schemas `task.result/v1`

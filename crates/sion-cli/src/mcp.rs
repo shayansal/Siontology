@@ -148,7 +148,7 @@ fn tools() -> Value {
         },
         {
             "name": "sion_task_post",
-            "description": "Post a task (Task Charters): escrow money for work whose acceptance rule is fixed now. A result is paid only if it rests on every required claim (for example an environment vendor's bonded 'no known exploit' claim) and on the worker's bond or a named verifier's attestation, and passes the poster's decision rule; κ times the payment of its backing is then reserved, so a result later proven false compensates the poster. Without worker, the task is a bounty anyone may settle. With charter and allotment, the escrow comes from that agent's budget under its caveats.",
+            "description": "Post a task (Task Charters): escrow money for work whose acceptance rule is fixed now. A result is paid only if it rests on every required claim (for example an environment vendor's bonded 'no known exploit' claim) and on the worker's bond or a named verifier's attestation (with every attestation the task requires, never the author's own), and passes the poster's decision rule; κ times the payment of its backing is then reserved, so a result later proven false compensates the poster. Without worker, the task is a bounty anyone may settle. With charter and allotment, the escrow comes from that agent's budget under its caveats.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -157,6 +157,8 @@ fn tools() -> Value {
                     "worker": { "type": "string", "description": "The worker (wallet or account); omit for an open bounty" },
                     "requires": { "type": "array", "items": { "type": "string" }, "description": "Claim ids every result must rest on" },
                     "verifiers": { "type": "array", "items": { "type": "string" }, "description": "Verifiers whose attestations count (wallets or accounts)" },
+                    "must_attest": { "type": "array", "items": { "type": "string" }, "description": "Verifiers who must each attest every result (each one of verifiers); with them the worker's bond alone never suffices" },
+                    "min_attestations": { "type": "integer", "description": "How many attestations a result needs at least (default 0)" },
                     "adjudicator": { "type": "string", "description": "Adjudicator atom id (hex) results must name" },
                     "deadline_pulses": { "type": "integer", "description": "Pulses until the deadline (default 1000)" },
                     "detection_permille": { "type": "integer", "description": "Largest detection factor results may declare (default 900)" },
@@ -686,6 +688,20 @@ fn call(session: &mut Session<'_>, name: &str, args: &Value) -> Result<Value, Cl
                             .collect()
                     })
                     .unwrap_or_default(),
+                must_attest: args["must_attest"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|v| session.id(v))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                min_attestations: args["min_attestations"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .min(u64::from(u8::MAX)) as u8,
                 adjudicator: match args["adjudicator"].as_str() {
                     Some(_) => Some(AtomId::from_hash(hex_id(
                         &args["adjudicator"],

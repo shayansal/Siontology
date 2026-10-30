@@ -153,6 +153,8 @@ pub enum ObjectData {
     /// A cohort of subagents committed to by a sum tree (specification
     /// v1.14, §5.55).
     Cohort(Box<crate::cohort::Cohort>),
+    /// An owner's latest claim under a key (specification v1.15, §5.58).
+    IndexEntry(crate::index::IndexEntry),
 }
 
 /// Something the protocol must do at a given Pulse.

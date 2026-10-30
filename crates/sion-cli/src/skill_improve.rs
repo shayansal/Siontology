@@ -472,6 +472,27 @@ pub fn spec_of(ledger: &dyn Ledger, task: ObjectId, file: Option<&Path>) -> Resu
     Spec::parse(&bytes)
 }
 
+/// Who must attest a better version (spec v1.15): verifiers who each must,
+/// and how many attestations it needs at least.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attesting {
+    /// Verifiers who must each attest.
+    pub must: Vec<String>,
+    /// How many attestations a version needs at least.
+    pub at_least: u8,
+}
+
+impl Default for Attesting {
+    /// One attestation, by any of the verifiers: a better version is
+    /// verified by others.
+    fn default() -> Self {
+        Attesting {
+            must: Vec::new(),
+            at_least: 1,
+        }
+    }
+}
+
 /// Posts a bounty for a better version of `release`: a Task Charter whose
 /// spec names the release, the evaluation set and the cases to pass.
 /// Returns the task, the spec's local copy and the receipt.
@@ -484,6 +505,7 @@ pub fn bounty(
     evals: &Path,
     amount: &str,
     verifiers: &[String],
+    attesting: &Attesting,
     adjudicator: AtomId,
     requires: &[ClaimId],
     worker: Option<&str>,
@@ -513,6 +535,19 @@ pub fn bounty(
         ));
     }
     let verifier_ids: BTreeSet<_> = verifiers.iter().map(|v| session.id(v)).collect();
+    let must_attest: BTreeSet<_> = attesting.must.iter().map(|v| session.id(v)).collect();
+    if !must_attest.is_subset(&verifier_ids) {
+        return Err(CliError::Usage(
+            "--must-attest names only verifiers given with --verifiers".into(),
+        ));
+    }
+    let min_attestations = attesting.at_least;
+    if usize::from(min_attestations) > verifier_ids.len() {
+        return Err(CliError::Usage(format!(
+            "{} verifiers cannot give {min_attestations} attestations",
+            verifier_ids.len()
+        )));
+    }
     let worker_id = worker.map(|w| session.id(w));
     if let Some(worker) = &worker_id {
         if verifier_ids.contains(worker) {
@@ -542,6 +577,8 @@ pub fn bounty(
         )),
         requires: requires.iter().copied().collect(),
         verifiers: verifier_ids,
+        must_attest,
+        min_attestations,
         adjudicator: Some(adjudicator),
         detection_permille: 1000,
         reliance,
@@ -690,9 +727,8 @@ pub fn submit(
     }
     crate::skills::store_bundle(&bytes, &root)?;
     let who = session.id(wallet);
-    // Verified by others: an attestation of one's own version does not
-    // count (the ledger does not check this; the poster's choice of
-    // verifiers does).
+    // Verified by others: the ledger refuses an attestation of one's own
+    // version (spec v1.15); saying so here saves the fee.
     for attestation in attestations {
         let stored = crate::tasks::stored_claim(ledger, &attestation.to_string())?;
         if stored.issuer == who {

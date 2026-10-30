@@ -45,6 +45,7 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 | `Falsified` | `claim`, `causes` [atoms] | `Rule` (upheld) | `claim <id> falsified` |
 | `Compensated` | `reservation`, `consumer`, `amount` | `Rule` (upheld) | `<consumer> compensated <amount> USD` |
 | `BondWithdrawn` | `atom`, `amount` | `WithdrawBond` | `<amount> USD withdrawn from the bond behind assumption <atom>` |
+| `ClaimIndexed` | `entry`, `owner`, `key`, `claim`, `count` | `IndexClaim` | `<owner>'s latest claim under "<key>" is claim <id> (<count> named so far)` |
 
 ## Charters and Escrow Lanes
 

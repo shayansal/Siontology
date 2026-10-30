@@ -111,6 +111,24 @@ pub enum SkillCommand {
         /// Validity in Pulses.
         #[arg(long, default_value_t = 100_000)]
         valid_for: u64,
+        /// Do not name the release as your latest in your index (spec v1.15).
+        #[arg(long)]
+        no_index: bool,
+    },
+    /// A publisher's latest release of a skill, from its index on the
+    /// ledger (spec v1.15), proven against a certified header.
+    Latest {
+        /// The publisher (wallet name or account) and the skill, as
+        /// `publisher/name`.
+        skill: String,
+        /// The chain identity the proof must verify against. Without it the
+        /// node vouches for itself.
+        #[arg(long, env = "SION_CHAIN")]
+        chain: Option<String>,
+        /// A certified Pulse you know of from elsewhere: a proof from more
+        /// than 16 Pulses before it is refused as stale.
+        #[arg(long)]
+        min_pulse: Option<u64>,
     },
     /// A release: what it names, the backing behind it, and the decision
     /// rule for a value at risk.
@@ -129,8 +147,19 @@ pub enum SkillCommand {
         wallet: String,
         /// The agent (its id).
         agent: String,
-        /// The release (its claim id).
+        /// The release: its claim id, or `publisher/name` for the latest
+        /// release in the publisher's index, proven against a certified
+        /// header.
         release: String,
+        /// With `publisher/name`: the chain identity the index's proof must
+        /// verify against. Without it the node vouches for itself.
+        #[arg(long, env = "SION_CHAIN")]
+        chain: Option<String>,
+        /// With `publisher/name`: a certified Pulse you know of from
+        /// elsewhere; an index proof from more than 16 Pulses before it is
+        /// refused as stale.
+        #[arg(long)]
+        min_pulse: Option<u64>,
         /// The bundle file (default: the local bundle store, then the
         /// release's locator).
         #[arg(long)]
@@ -224,6 +253,13 @@ pub enum SkillCommand {
         /// accounts).
         #[arg(long, value_delimiter = ',', required = true)]
         verifiers: Vec<String>,
+        /// Verifiers who must each attest a version, among --verifiers
+        /// (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        must_attest: Vec<String>,
+        /// How many attestations a version needs at least.
+        #[arg(long, value_name = "N", default_value_t = 1)]
+        min_attestations: u8,
         /// The adjudicator atom results must name.
         #[arg(long)]
         adjudicator: String,
@@ -425,6 +461,125 @@ pub struct Release {
     /// The verified improvements it rests on: settled bounties' results,
     /// as the release records them.
     pub evidence: Vec<Value>,
+}
+
+/// The key a publisher's index names its latest release of `name` under:
+/// `skill:<name>`.
+pub fn index_key(name: &str) -> String {
+    format!("skill:{name}")
+}
+
+/// `publisher/name` as its two parts.
+pub fn split_skill(text: &str) -> Result<(&str, &str), CliError> {
+    match text.split_once('/') {
+        Some((publisher, name))
+            if !publisher.is_empty() && sion_agent::skills::valid_name(name) =>
+        {
+            Ok((publisher, name))
+        }
+        _ => Err(CliError::Usage(format!(
+            "{text:?} is not publisher/name, with a skill's name"
+        ))),
+    }
+}
+
+/// The chain identity to verify against, if one is given (64 hex digits).
+pub fn pinned_chain(text: Option<&str>) -> Result<Option<Hash32>, CliError> {
+    text.map(|t| parse_hash(t, "the chain identity"))
+        .transpose()
+}
+
+/// Names `claim` as `wallet`'s latest release of `name` in its index (spec
+/// v1.15).
+pub fn index_release(
+    session: &mut Session<'_>,
+    wallet: &str,
+    name: &str,
+    claim: ClaimId,
+) -> Result<sion_node::TxView, CliError> {
+    session.send(
+        wallet,
+        TxKind::IndexClaim {
+            key: index_key(name),
+            claim,
+        },
+        Vec::new(),
+    )
+}
+
+/// `publisher`'s latest release of `name`: the claim its index entry names,
+/// the entry proven against a certified header as a light client would
+/// (against `pinned`, if given), and fresh (see
+/// [`crate::verify::verify_state`]; `min_pulse` is a certified Pulse the
+/// caller knows of from elsewhere), then the release read and checked to
+/// be that publisher's release of that skill.
+pub fn latest(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    min_pulse: Option<Pulse>,
+    publisher: sion_core::ids::AccountId,
+    name: &str,
+) -> Result<
+    (
+        Release,
+        sion_exec::index::IndexEntry,
+        crate::verify::VerifiedState,
+    ),
+    CliError,
+> {
+    let id = sion_exec::index::index_id(&publisher, &index_key(name));
+    let proven = crate::verify::verify_object_now(ledger, pinned, id, min_pulse)?;
+    let entry = match proven.objects.first().and_then(|(_, o)| o.as_ref()) {
+        Some(object) => match &object.data {
+            ObjectData::IndexEntry(entry) => entry.clone(),
+            _ => {
+                return Err(CliError::Verification(format!(
+                    "{id} holds something other than an index entry"
+                )))
+            }
+        },
+        None => {
+            return Err(CliError::Usage(format!(
+                "the publisher has indexed no release of {name} (proven absent: {})",
+                proven.line()
+            )))
+        }
+    };
+    let found = release(ledger, &entry.claim.to_string())?;
+    if found.publisher != publisher || found.name != name {
+        return Err(CliError::Verification(format!(
+            "the index names claim {}, which is not {name} by this publisher",
+            entry.claim.short()
+        )));
+    }
+    Ok((found, entry, proven))
+}
+
+/// A release as an install names it: a claim id as it is, or
+/// `publisher/name` resolved to the publisher's latest release through its
+/// index, proven against a certified header (against `pinned`, if given).
+/// Returns the claim id, and for a name, a line saying how it was found.
+pub fn resolve(
+    session: &mut Session<'_>,
+    ledger: &dyn Ledger,
+    text: &str,
+    pinned: Option<Hash32>,
+    min_pulse: Option<Pulse>,
+) -> Result<(String, Option<String>), CliError> {
+    if !text.contains('/') {
+        return Ok((text.to_string(), None));
+    }
+    let (publisher, name) = split_skill(text)?;
+    let publisher = session.id(publisher);
+    let (found, _, proven) = latest(ledger, pinned, min_pulse, publisher, name)?;
+    let line = format!(
+        "{name} {} is {}'s latest release ({}): {}",
+        found.version,
+        session.names().account(&publisher),
+        found.claim.short(),
+        proven.line()
+    );
+    Ok((found.claim.to_string(), Some(line)))
 }
 
 /// Reads a release from the ledger.
@@ -773,6 +928,36 @@ pub fn run(
     }
     match command {
         SkillCommand::Pack { .. } | SkillCommand::Eval { .. } | SkillCommand::Evolve { .. } => {}
+        SkillCommand::Latest {
+            skill,
+            chain,
+            min_pulse,
+        } => {
+            let (publisher, name) = split_skill(&skill)?;
+            let publisher = session.id(publisher);
+            let (found, entry, proven) = latest(
+                ledger,
+                pinned_chain(chain.as_deref())?,
+                min_pulse.map(Pulse),
+                publisher,
+                name,
+            )?;
+            let out = json!({
+                "skill": name,
+                "publisher": found.publisher,
+                "release": found.claim,
+                "version": found.version,
+                "bundle": found.bundle,
+                "previous": found.previous,
+                "index": {
+                    "entry": sion_exec::index::index_id(&publisher, &index_key(name)),
+                    "releases_named": entry.count,
+                    "updated_at": entry.updated_at,
+                    "proof": proven.line(),
+                },
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        }
         SkillCommand::Audit {
             wallet,
             bundle,
@@ -804,6 +989,7 @@ pub fn run(
             previous,
             locator,
             valid_for,
+            no_index,
         } => {
             let audits = claim_ids(&audits, "an audit")?;
             let evidence = claim_ids(&evidence, "a result")?;
@@ -828,6 +1014,16 @@ pub fn run(
             )?;
             crate::agents::print_receipt(session, &view);
             println!("release {id}\nbundle {root}");
+            if !no_index {
+                let name = release(ledger, &id.to_string())?.name;
+                let view = index_release(session, &wallet, &name, id)?;
+                crate::agents::print_receipt(session, &view);
+                if view.status != ExecStatus::Success {
+                    return Err(CliError::Transaction(
+                        "the release was published, but not indexed".into(),
+                    ));
+                }
+            }
         }
         SkillCommand::Show { release: id, value } => {
             let release = release(ledger, &id)?;
@@ -859,6 +1055,8 @@ pub fn run(
             wallet,
             agent,
             release: id,
+            chain,
+            min_pulse,
             bundle,
             value,
             kappa,
@@ -866,6 +1064,16 @@ pub fn run(
             skills,
         } => {
             let agent = ObjectId::from_hash(parse_hash(&agent, "the agent")?);
+            let (id, line) = resolve(
+                session,
+                ledger,
+                &id,
+                pinned_chain(chain.as_deref())?,
+                min_pulse.map(Pulse),
+            )?;
+            if let Some(line) = line {
+                println!("{line}");
+            }
             let lines = install(
                 session,
                 ledger,
@@ -906,6 +1114,8 @@ pub fn run(
             evals,
             amount,
             verifiers,
+            must_attest,
+            min_attestations,
             adjudicator: judge,
             requires,
             worker,
@@ -923,6 +1133,10 @@ pub fn run(
                 &evals,
                 &amount,
                 &verifiers,
+                &crate::skill_improve::Attesting {
+                    must: must_attest,
+                    at_least: min_attestations,
+                },
                 adjudicator(&judge)?,
                 &requires,
                 worker.as_deref(),
@@ -1030,9 +1244,10 @@ pub fn install(
         Policy::standard().with_kappa(Ratio::new((kappa * 1000.0).round().max(1.0) as u64, 1000));
     // Shown now, before the acceptance is signed.
     println!(
-        "bundle {} checked: {} files, skill {} {}",
+        "bundle {} checked: {} {}, skill {} {}",
         release.bundle.short(),
         files.len(),
+        if files.len() == 1 { "file" } else { "files" },
         release.name,
         release.version
     );

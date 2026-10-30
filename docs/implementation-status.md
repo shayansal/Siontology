@@ -193,7 +193,14 @@ its auditor's bond); `sion skill install` checks the bundle against the
 root, accepts the release with the agent's remaining budget at risk
 (reserving κ times that of its backing), and only then writes the skill,
 which the agent cannot rewrite. Before each run, a skill whose release is
-no longer active is taken out of use. Self-improvement
+no longer active is taken out of use. Since specification v1.15 a
+publisher's index on the ledger names its latest release of each skill
+(`IndexClaim`, moving only forward), and `sion skill install
+<publisher>/<name>` installs it after checking the index entry's state
+proof against a certified header (a proof from more than 16 Pulses before
+the latest certified Pulse the command knows of is refused as stale; a
+node can still answer from an older state within that window, or when the
+command knows of no later Pulse). Self-improvement
 ([Skills that get better](book/src/guides/skill-improvement.md)): an
 evaluation set is cases with stand-in tools and checks, fixed by the
 digest of its bytes; `sion skill evolve` shows a model the cases a
@@ -239,9 +246,9 @@ in batches as they arrive. Tested with the scripted model and with
 stand-ins for the providers' and Telegram's APIs: this environment reaches
 neither. The sandbox tests run bubblewrap for real, and Docker with
 `SION_TEST_DOCKER_IMAGE`. Not built: permissions that skills declare and
-the runtime enforces, requiring a particular verifier's attestation,
-search over past sessions, consolidation, the memory archive with storage
-providers, MCP over HTTP, and routing channels across machines
+the runtime enforces, search over past sessions, consolidation, the memory
+archive with storage providers, MCP over HTTP, and routing channels across
+machines
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
@@ -566,7 +573,10 @@ worker's bond or a named verifier's attestation of the same output and
 every required claim, passes the decision rule; it reserves κ times the
 payment of the result's backing for the payer, so a falsified result
 compensates it. `CancelTask` refunds tasks released by their worker, open
-ones and expired ones. Both proof stacks implement it, with differential
+ones and expired ones. Since specification v1.15 a task can require named
+verifiers' attestations and how many (a bond alone then never suffices),
+no result is attested by its author, and no named worker is one of its
+task's verifiers. Both proof stacks implement it, with differential
 tests for every rule and failure, including an exploit proven against an
 environment claim and the compensation that follows; the CLI has
 `sion task …`, the MCP server `sion_task_*` tools, and the demo `tasks`.
@@ -720,7 +730,7 @@ the architecture's own:
 | `agent:provider-sees-context` | A model provider receives the conversation it is asked to continue, tool results included. |
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
 | `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again. |
-| `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. That a verifier did not write the version is checked by the commands, not by the ledger. |
+| `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. The ledger refuses an attestation by the version's author (specification v1.15), but not one by an account the author controls under another name: such an attestation is worth its own bond. |
 | `agent:channel-token` | Whoever holds the HTTP channel's bearer token can start and continue the sessions of every profile on the machine, approvals included, within each profile's autonomy and the agent's charter. The channel speaks plain HTTP. |
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
