@@ -699,8 +699,11 @@ Commands:
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
-  serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token
+  serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
   telegram       Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
+  bridge         Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api) or telegram
+  gateway        Run a gateway: people write to profiles served from other machines, through POST /v1/profiles/<name>/messages with a profile's token (`sion agent profile token add`); hosts connect out to it and prove they hold each profile's agent key, and messages reach an agent only while the ledger has it in good standing
+  host           Serve profiles through a gateway: connect out to it, prove the agents' keys, and answer the messages it passes on
   help           Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1121,6 +1124,7 @@ Commands:
   add     Add a profile, or replace the one of that name
   list    The profiles on this machine
   remove  Remove a profile
+  token   A profile's channel tokens: each reaches only that profile, through the HTTP channel or a gateway, and is kept only as its hash
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1202,6 +1206,72 @@ Usage: sion agent profile remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent profile token`
+
+```text
+A profile's channel tokens: each reaches only that profile, through the HTTP channel or a gateway, and is kept only as its hash
+
+Usage: sion agent profile token [OPTIONS] <COMMAND>
+
+Commands:
+  add     Make a token for a profile (shown once)
+  list    The tokens on this machine, by id (never the tokens themselves)
+  remove  Remove a token
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent profile token add`
+
+```text
+Make a token for a profile (shown once)
+
+Usage: sion agent profile token add [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile (on a gateway, a profile served from elsewhere)
+
+Options:
+      --agent <AGENT>  The profile's agent, for a profile served from another machine: a gateway routes the profile only to a host that proves this agent's key. A profile of this machine names its own
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --approve        Let it approve and decline what the profile's sessions wait on
+  -h, --help           Print help
+```
+
+## `sion agent profile token list`
+
+```text
+The tokens on this machine, by id (never the tokens themselves)
+
+Usage: sion agent profile token list [OPTIONS] [PROFILE]
+
+Arguments:
+  [PROFILE]  Only this profile's
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent profile token remove`
+
+```text
+Remove a token
+
+Usage: sion agent profile token remove [OPTIONS] <PROFILE> <ID>
+
+Arguments:
+  <PROFILE>  The profile
+  <ID>       The token's id, as `list` shows it
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -1388,14 +1458,14 @@ A run that was missed while the scheduler was not running happens once, late (`a
 ## `sion agent serve`
 
 ```text
-Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token
+Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
 
 Usage: sion agent serve [OPTIONS]
 
 Options:
       --listen <LISTEN>        Where to listen [default: 127.0.0.1:8790]
       --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --token-env <TOKEN_ENV>  The environment variable holding the bearer token (at least 16 characters) [default: SION_AGENT_TOKEN]
+      --token-env <TOKEN_ENV>  The environment variable holding the machine's token, which reaches every profile and session (at least 16 characters); without it, only profiles' own tokens are taken [default: SION_AGENT_TOKEN]
   -h, --help                   Print help
 ```
 
@@ -1412,13 +1482,65 @@ Arguments:
   <PROFILE>  The agent profile
 
 Options:
-      --allow <ALLOW>  The chats it answers (comma-separated ids); others are ignored
-      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --once           Answer one batch of messages, then stop
-  -h, --help           Print help
+      --allow <ALLOW>          The chats it answers (comma-separated ids); others are ignored
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --approvers <APPROVERS>  Who may approve or decline (comma-separated Telegram user ids); without it, anyone in an allowed chat
+      --once                   Answer one batch of messages, then stop
+  -h, --help                   Print help
 ```
 
 In a group chat, every member speaks for you, approvals included (`agent:telegram-chats`). See [Teams, schedules and channels](../guides/agent-teams.md#telegram).
+
+## `sion agent bridge`
+
+```text
+Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api) or telegram
+
+Usage: sion agent bridge [OPTIONS] --via <VIA> --allow <ALLOW> <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --via <VIA>              The messenger
+      --allow <ALLOW>          The chats it answers (comma-separated: channel ids, room ids or numbers); others are ignored
+      --approvers <APPROVERS>  Who may approve or decline (comma-separated, as the messenger names people); without it, anyone in an allowed chat
+      --once                   Answer one batch of messages, then stop
+  -h, --help                   Print help
+```
+
+## `sion agent gateway`
+
+```text
+Run a gateway: people write to profiles served from other machines, through POST /v1/profiles/<name>/messages with a profile's token (`sion agent profile token add`); hosts connect out to it and prove they hold each profile's agent key, and messages reach an agent only while the ledger has it in good standing
+
+Usage: sion agent gateway [OPTIONS] --name <NAME>
+
+Options:
+      --listen <LISTEN>        Where to listen [default: 127.0.0.1:8793]
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --name <NAME>            The gateway's name, which hosts sign: a login cannot be replayed at another gateway
+      --token-env <TOKEN_ENV>  The environment variable holding a token that reaches every profile, if one is wanted [default: SION_GATEWAY_TOKEN]
+  -h, --help                   Print help
+```
+
+## `sion agent host`
+
+```text
+Serve profiles through a gateway: connect out to it, prove the agents' keys, and answer the messages it passes on
+
+Usage: sion agent host [OPTIONS] --profile <PROFILES> <GATEWAY>
+
+Arguments:
+  <GATEWAY>  The gateway's address, for example https://gateway.example.org
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILES>   A profile to serve. Repeat for more
+      --messages <MESSAGES>  Answer this many messages, then stop
+  -h, --help                 Print help
+```
 
 ## `sion task`
 

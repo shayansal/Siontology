@@ -406,13 +406,15 @@ pub enum AgentCommand {
     },
     /// Serve the HTTP channel: POST /v1/profiles/<name>/messages with
     /// {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a
-    /// bearer token.
+    /// bearer token: the machine's, or a profile's own (`sion agent
+    /// profile token add`).
     Serve {
         /// Where to listen.
         #[arg(long, default_value = "127.0.0.1:8790")]
         listen: String,
-        /// The environment variable holding the bearer token (at least 16
-        /// characters).
+        /// The environment variable holding the machine's token, which
+        /// reaches every profile and session (at least 16 characters);
+        /// without it, only profiles' own tokens are taken.
         #[arg(long, default_value = "SION_AGENT_TOKEN")]
         token_env: String,
     },
@@ -424,9 +426,65 @@ pub enum AgentCommand {
         /// The chats it answers (comma-separated ids); others are ignored.
         #[arg(long, value_delimiter = ',', required = true)]
         allow: Vec<i64>,
+        /// Who may approve or decline (comma-separated Telegram user ids);
+        /// without it, anyone in an allowed chat.
+        #[arg(long, value_delimiter = ',')]
+        approvers: Vec<String>,
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
+    },
+    /// Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN),
+    /// discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER,
+    /// MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for
+    /// signal-cli-rest-api) or telegram.
+    Bridge {
+        /// The agent profile.
+        profile: String,
+        /// The messenger.
+        #[arg(long)]
+        via: String,
+        /// The chats it answers (comma-separated: channel ids, room ids or
+        /// numbers); others are ignored.
+        #[arg(long, value_delimiter = ',', required = true)]
+        allow: Vec<String>,
+        /// Who may approve or decline (comma-separated, as the messenger
+        /// names people); without it, anyone in an allowed chat.
+        #[arg(long, value_delimiter = ',')]
+        approvers: Vec<String>,
+        /// Answer one batch of messages, then stop.
+        #[arg(long)]
+        once: bool,
+    },
+    /// Run a gateway: people write to profiles served from other machines,
+    /// through POST /v1/profiles/<name>/messages with a profile's token
+    /// (`sion agent profile token add`); hosts connect out to it and prove
+    /// they hold each profile's agent key, and messages reach an agent only
+    /// while the ledger has it in good standing.
+    Gateway {
+        /// Where to listen.
+        #[arg(long, default_value = "127.0.0.1:8793")]
+        listen: String,
+        /// The gateway's name, which hosts sign: a login cannot be replayed
+        /// at another gateway.
+        #[arg(long)]
+        name: String,
+        /// The environment variable holding a token that reaches every
+        /// profile, if one is wanted.
+        #[arg(long, default_value = "SION_GATEWAY_TOKEN")]
+        token_env: String,
+    },
+    /// Serve profiles through a gateway: connect out to it, prove the
+    /// agents' keys, and answer the messages it passes on.
+    Host {
+        /// The gateway's address, for example https://gateway.example.org.
+        gateway: String,
+        /// A profile to serve. Repeat for more.
+        #[arg(long = "profile", required = true)]
+        profiles: Vec<String>,
+        /// Answer this many messages, then stop.
+        #[arg(long)]
+        messages: Option<usize>,
     },
 }
 
@@ -627,17 +685,64 @@ pub fn run(
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Scheduler { once, poll } => crate::schedules::scheduler(shared, once, poll),
         AgentCommand::Serve { listen, token_env } => {
-            let token = std::env::var(&token_env)
-                .map_err(|_| CliError::Usage(format!("set {token_env} to the channel's token")))?;
-            crate::channels::serve(shared, &listen, &token, None)
+            let token = std::env::var(&token_env).ok().filter(|t| !t.is_empty());
+            if token.is_none() && crate::channels::tokens()?.is_empty() {
+                return Err(CliError::Usage(format!(
+                    "set {token_env} to the channel's token, or make a profile's own with `sion agent profile token add`"
+                )));
+            }
+            crate::channels::serve_with(shared, &listen, token.as_deref(), None)
         }
         AgentCommand::Telegram {
             profile,
             allow,
+            approvers,
             once,
         } => {
             let profile = crate::profiles::get(&profile)?;
-            crate::channels::telegram(shared, &profile, &allow, once)
+            crate::channels::telegram_with(shared, &profile, &allow, &approvers, once)
+        }
+        AgentCommand::Bridge {
+            profile,
+            via,
+            allow,
+            approvers,
+            once,
+        } => {
+            let profile = crate::profiles::get(&profile)?;
+            let messenger = crate::messengers::from_env(&via, &allow).map_err(CliError::Usage)?;
+            crate::messengers::bridge(
+                shared,
+                &profile,
+                messenger.as_ref(),
+                &allow,
+                &approvers,
+                once,
+            )
+        }
+        AgentCommand::Gateway {
+            listen,
+            name,
+            token_env,
+        } => {
+            let admin = std::env::var(&token_env).ok().filter(|t| !t.is_empty());
+            if admin.as_ref().is_some_and(|t| t.len() < 16) {
+                return Err(CliError::Usage(format!(
+                    "{token_env} has at least 16 characters"
+                )));
+            }
+            crate::gateway::serve(crate::gateway::Gateway::new(&name, shared, admin), &listen)
+        }
+        AgentCommand::Host {
+            gateway,
+            profiles,
+            messages,
+        } => {
+            let profiles = profiles
+                .iter()
+                .map(|name| crate::profiles::get(name))
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::gateway::host(shared, &gateway, &profiles, messages)
         }
         AgentCommand::KillSwitch { state } => {
             let path = crate::runtime::kill_switch();

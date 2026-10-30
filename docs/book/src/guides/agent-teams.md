@@ -1,18 +1,20 @@
 # Teams, schedules and channels
 
 An agent can hand work to others, run on a schedule, and be reached over
-HTTP or Telegram. None of this loosens its [charter](charters.md). A
+HTTP, Telegram, Slack, Discord, Matrix or Signal, on its own machine or
+through an agent gateway. None of this loosens its [charter](charters.md). A
 subagent's budget is carved from its parent's, work hired from another
 agent is paid from the agent's own budget, and every payment still goes
 through the ledger.
 
 Every output below is from a real run on a local devnet (long identifiers
 and some JSON shortened with `…`). The models are scripted, as in
-[Agents at work](agent-runtime.md). The Telegram part runs against a
-stand-in for Telegram's Bot API, because this environment cannot reach
-Telegram. The runs predate specification v1.13. Run again on v1.13, the
+[Agents at work](agent-runtime.md). The Telegram and Slack parts run
+against stand-ins for their APIs, because this environment cannot reach
+either. The runs predate specification v1.13. Run again on v1.13, the
 subagents and hiring part printed the same lines with other identifiers,
-and `lead-buyer` was a keyless subagent.
+and `lead-buyer` was a keyless subagent. A profile's own tokens, Slack
+and the agent gateway are from a later run, on v1.15.
 
 ## Subagents
 
@@ -178,8 +180,9 @@ over, and `/status` says where the session stands.
 
 `sion agent serve` answers `POST /v1/profiles/<name>/messages` with
 `{"text": …, "conversation": …}`, and `GET /v1/sessions/<id>`. Every
-request needs the bearer token in `SION_AGENT_TOKEN` (at least 16
-characters):
+request needs a bearer token: the machine's, in `SION_AGENT_TOKEN` (at
+least 16 characters), which reaches every profile and session, or one of
+a profile's own (below):
 
 ```text
 $ SION_AGENT_TOKEN=… sion agent serve --listen 127.0.0.1:8791
@@ -197,12 +200,58 @@ $ curl -s -X POST http://127.0.0.1:8791/v1/profiles/lead/messages -H "Authorizat
 
 Requests are handled one at a time.
 
+### A profile's own tokens
+
+`sion agent profile token add <profile>` makes a token that reaches only
+that profile, and names the profile's agent. It is shown once, and the
+machine keeps only its hash. Its holder may talk to the profile; with
+`--approve`, they may also approve or decline what the profile's
+sessions wait on. `sion agent serve` takes these tokens with or without
+the machine's token:
+
+```text
+$ sion agent profile token add lead
+token 4a69e79b for profile lead, agent 0d7240c5 (messages only); it is shown once, and kept here only as its hash:
+sion_ch_351fd3ba…
+$ sion agent profile token add payer
+token f4da1db6 for profile payer, agent 1ec0b150 (messages only); it is shown once, and kept here only as its hash:
+sion_ch_3714254c…
+$ sion agent profile token add payer --approve
+token 110f8b2f for profile payer, agent 1ec0b150 (messages, approvals and declines); it is shown once, and kept here only as its hash:
+sion_ch_9754b3bb…
+$ sion agent profile token list
+4a69e79b  lead  agent 0d7240c5  messages
+f4da1db6  payer  agent 1ec0b150  messages
+110f8b2f  payer  agent 1ec0b150  messages, approvals
+$ sion agent serve --listen 127.0.0.1:8794
+agent channel on http://127.0.0.1:8794 (POST /v1/profiles/<name>/messages)
+```
+
+Below, `$LEAD_TOKEN` is lead's token, `$TALK` payer's first and `$DECIDE`
+its second. payer runs at L5, where a payment waits for a person:
+
+```text
+$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $LEAD_TOKEN" -d '{"text": "Pay bob 1 USD for invoice 7.", "conversation": "ops"}'
+{"error":"this token does not reach this profile"} (HTTP 401)
+$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $TALK" -d '{"text": "Pay bob 1 USD for invoice 7.", "conversation": "ops"}'
+{"conversation":"ops","lines":["  → ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"}","  ← waiting for a person's approval","session 68e27c311ccd9f5e: waiting for you: ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (spending at autonomy L5). Answer with `sion agent continue 68e27c311ccd9f5e --approve` or `--decline <why>`."],"said":"waiting for your approval: ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (spending at autonomy L5)","session":"68e27c311ccd9f5e"} (HTTP 200)
+$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $TALK" -d '{"text": "/approve", "conversation": "ops"}'
+{"error":"this token may talk to the profile, not approve or decline"} (HTTP 403)
+$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $DECIDE" -d '{"text": "/approve", "conversation": "ops"}'
+{"conversation":"ops","lines":["  → ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (decided)","  ← Pulse 17: Done: agent paid 1 USD to bob (receipt claim 1d3c6347); fee 0.0012 USD. Transaction 98561ad7…ff95.","agent: Paid bob 1 USD for invoice 7.","session 68e27c311ccd9f5e: done"],"said":"Paid bob 1 USD for invoice 7.","session":"68e27c311ccd9f5e"} (HTTP 200)
+```
+
+lead's token does not reach payer. `$TALK` starts the payment, which
+waits, but cannot approve it; `$DECIDE` can.
+`sion agent profile token remove <profile> <id>` takes a token back.
+
 ### Telegram
 
 `sion agent telegram` answers a profile's chats by long polling, with the
-bot token in `TELEGRAM_BOT_TOKEN`. It answers only the chats in `--allow`.
-Here `TELEGRAM_API_BASE` points it at the stand-in, which returned two
-messages, from chat 42 and from chat 99:
+bot token in `TELEGRAM_BOT_TOKEN`. It answers only the chats in `--allow`,
+and with `--approvers`, only the Telegram users named may approve or
+decline. Here `TELEGRAM_API_BASE` points it at the stand-in, which
+returned two messages, from chat 42 and from chat 99:
 
 ```text
 $ TELEGRAM_BOT_TOKEN=… TELEGRAM_API_BASE=http://127.0.0.1:8792 sion agent telegram lead --allow 42 --once
@@ -221,16 +270,137 @@ The stand-in received one message, for chat 42:
 sendMessage {"chat_id": 42, "text": "85 USD left in the budget."}
 ```
 
+### Slack, Discord, Matrix and Signal
+
+`sion agent bridge <profile> --via <messenger>` answers a messenger's
+chats with a profile, through the messenger's own HTTP API, with
+credentials from the environment:
+
+| `--via` | Receives by | Credentials | `--allow` names |
+|---|---|---|---|
+| `slack` | polling `conversations.history` | `SLACK_BOT_TOKEN` | channel ids |
+| `discord` | polling each channel's messages | `DISCORD_BOT_TOKEN` | channel ids |
+| `matrix` | long polling `/sync` | `MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN` | room ids |
+| `signal` | polling the `receive` endpoint of [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) | `SIGNAL_API_BASE`, `SIGNAL_NUMBER` | phone numbers |
+| `telegram` | long polling `getUpdates` | `TELEGRAM_BOT_TOKEN` | chat ids |
+
+`sion agent telegram` is the same bridge. It does not answer bots:
+Telegram does not show a bot other bots' messages, Slack and Discord mark
+them, and on Matrix the bridge skips its own. On Signal it answers direct
+messages only. It keeps its place, so a restarted bridge goes on where
+it stopped, and the first time it polls Slack, Discord or Matrix, it
+starts from the latest message rather than answering the history. With `--approvers`, only the people named, as the
+messenger names them, may approve or decline.
+
+Here `SLACK_API_BASE` points the bridge at a stand-in for Slack's Web API.
+Its first poll found one old message, which the bridge took as where to
+start; the second found two new messages and a bot's:
+
+```text
+$ SLACK_BOT_TOKEN=… SLACK_API_BASE=http://127.0.0.1:8796 sion agent bridge lead --via slack --allow C042 --approvers U07 --once
+$ SLACK_BOT_TOKEN=… SLACK_API_BASE=http://127.0.0.1:8796 sion agent bridge lead --via slack --allow C042 --approvers U07 --once
+channel C042 (U07): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 3c0aa9d0beb2afb0: done
+to channel C042: 100 USD left in the budget.
+channel C042 (U19): /approve
+to channel C042: Only U07 may approve or decline here.
+```
+
+The stand-in received:
+
+```text
+chat.postMessage {"channel": "C042", "text": "100 USD left in the budget."}
+chat.postMessage {"channel": "C042", "text": "Only U07 may approve or decline here."}
+```
+
+### Through an agent gateway
+
+The channels above answer on the machine that runs the profile. An agent
+gateway (`sion agent gateway`, not the node's `sion gateway`) lets people
+reach profiles served from other machines, without opening those
+machines to the internet: it takes the messages, and each machine that
+serves profiles connects out to it with `sion agent host`. The gateway
+checks the profiles' tokens, so they are made on its machine (here with
+a `SION_HOME` of its own). There, `--agent` names each profile's agent:
+the gateway routes a profile only to a host that proves that agent's
+key, so no other agent can take the profile's name:
+
+```text
+$ sion agent profile token add lead --agent 0d7240c5…05aa
+token 878455fa for profile lead, agent 0d7240c5 (messages only); it is shown once, and kept here only as its hash:
+sion_ch_6822a022…
+$ sion agent gateway --name gateway-1 --listen 127.0.0.1:8795
+gateway gateway-1 on http://127.0.0.1:8795: hosts connect to /v1/hosts, people write to /v1/profiles/<name>/messages
+```
+
+On the agent's machine, the host proves for each profile that it holds the
+agent's key. It asks the gateway for a challenge and signs it, with the
+gateway's name, the agent and the profile, under the account's policy on
+the ledger, so the login cannot be replayed at another gateway. Then it
+asks the gateway for messages, each request waiting up to 50 seconds, and
+never accepts a connection itself. With `--messages 1` it stops after one:
+
+```text
+$ sion agent host http://127.0.0.1:8795 --profile lead --messages 1
+serving lead at gateway gateway-1
+lead (gateway:lead:ops): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 03f902cd42c4bc7c: done
+```
+
+The message it answered was written to the gateway with the token made
+there (`$TOKEN`):
+
+```text
+$ curl -s -X POST http://127.0.0.1:8795/v1/profiles/lead/messages -d '{"text": "How much budget is left?"}'
+{"error":"a bearer token is needed"} (HTTP 401)
+$ curl -s -X POST http://127.0.0.1:8795/v1/profiles/lead/messages -H "Authorization: Bearer $TOKEN" -d '{"text": "How much budget is left?", "conversation": "ops"}'
+{"conversation":"ops","lines":["  → ledger_balance {}","  ← {\"budget_remaining_usd\":\"100\",…}","agent: 100 USD left in the budget.","session 03f902cd42c4bc7c: done"],"said":"100 USD left in the budget.","session":"03f902cd42c4bc7c"} (HTTP 200)
+```
+
+The gateway passes a message only while the ledger has the agent in good
+standing, as of at most five seconds before. Once alice suspended lead,
+its messages stopped at the gateway, which answered them itself:
+
+```text
+$ sion agent suspend alice 0d7240c5…05aa
+alice signs: Suspend agent 0d7240c5 and every agent below it. Fee 0.0011 USD; valid until Pulse 38.
+Pulse 20: Done: agent 0d7240c5 suspended by alice, with everything below it; fee 0.0011 USD.
+$ curl -s -X POST http://127.0.0.1:8795/v1/profiles/lead/messages -H "Authorization: Bearer $TOKEN" -d '{"text": "How much budget is left?", "conversation": "ops"}'
+{"conversation":"ops","lines":[],"said":"Agent 0d7240c5 is suspended on the ledger: the gateway passes it no messages.","session":null} (HTTP 200)
+$ sion agent resume alice 0d7240c5…05aa
+alice signs: Lift the suspension of agent 0d7240c5. Fee 0.0011 USD; valid until Pulse 41.
+Pulse 24: Done: agent 0d7240c5 resumed; fee 0.0011 USD.
+```
+
+A profile goes to the host that proved the agent's key most recently. A
+gateway keeps its routes in memory; when it restarts, its hosts log in
+again.
+
 ## What this does not do yet
 
-- The HTTP channel's token is one secret for every profile on the
-  machine. Whoever holds it can start and continue sessions, approvals
-  included, within each profile's autonomy and the agent's charter. The
-  channel speaks plain HTTP: keep it on a local address, or put it behind
-  TLS (`agent:channel-token`).
-- A Telegram bot trusts Telegram for who writes in a chat it is allowed
-  to answer. In a group chat, every member speaks for you, approvals
-  included (`agent:telegram-chats`). Only text messages are read.
+- Whoever holds the machine's channel token can start and continue the
+  sessions of every profile on the machine, approvals included; whoever
+  holds a profile's token, that profile's, approvals only with a token
+  made for them; always within each profile's autonomy and the agent's
+  charter. The HTTP channel and the agent gateway speak plain HTTP: keep
+  them on a local address, or put them behind TLS
+  (`agent:channel-token`).
+- A bridge trusts its messenger for who writes in a chat it answers. In a
+  group chat, everyone who can write there speaks for you, approvals
+  included unless `--approvers` names who may decide
+  (`agent:telegram-chats`, `agent:messenger-identity`). Only text
+  messages are read. Slack, Discord, Matrix and Signal have been run only
+  against stand-ins for their APIs.
+- An agent gateway sees, and could change, the messages and answers it
+  passes. It cannot act as the agent, holding no key, and checks the
+  agent's standing as of up to five seconds before (`agent:gateway`).
+  Messages waiting for an answer are lost if it restarts.
 - Jobs run only while the scheduler runs on this machine
   (`agent:local-scheduler`). Schedules are in UTC.
 - A subagent's answer and a hired agent's output are checked only by
@@ -241,5 +411,3 @@ sendMessage {"chat_id": 42, "text": "85 USD left in the budget."}
   (`agent:keyless-signer`). Its payments are gathered with those of the
   subagents working beside it; its other transactions (memory, tasks) are
   each signed as a batch of one.
-- There is no gateway that routes channels across machines, and no
-  messenger other than Telegram.

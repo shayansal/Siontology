@@ -10,6 +10,28 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Channels across machines
+
+- **A profile's own tokens.** `sion agent profile token add <profile>`
+  makes a token that reaches only that profile, kept only as its hash and
+  naming the profile's agent (`--agent`, for a profile served elsewhere);
+  with `--approve` it also decides what the profile's sessions wait on.
+  `sion agent serve` takes them, with or without the machine's token.
+- **Slack, Discord, Matrix and Signal.** `sion agent bridge <profile>
+  --via slack|discord|matrix|signal|telegram --allow <chats>` answers a
+  messenger's chats with a profile, all through one interface; with
+  `--approvers`, only the people named may approve or decline. Telegram
+  goes through the same bridge, and `sion agent telegram` takes
+  `--approvers` too.
+- **An agent gateway.** `sion agent gateway` answers people's messages for
+  profiles served from other machines, with the profiles' tokens. A host,
+  `sion agent host <gateway> --profile <name>`, connects out to it and
+  proves for each profile that it holds the key of the agent the
+  gateway's tokens name, signing the gateway's challenge under the
+  account's policy on the ledger. The
+  gateway passes an agent's messages only while the ledger has it in good
+  standing, checked at most five seconds before.
+
 ### An agent's past: search, consolidation and archives
 
 - **Searching past sessions.** An agent with a memory log has a

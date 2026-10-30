@@ -223,9 +223,12 @@ of their own, two levels deep at most), and posts, follows and delivers
 Task Charters; profiles keep how to run an agent under a name;
 `sion agent schedule` and `sion agent scheduler` run a profile's task
 once, every interval or on cron (UTC), and deliver its answer to a file,
-a webhook or Telegram; `sion agent serve` (HTTP with a bearer token) and
-`sion agent telegram` (long polling, chats allowed by id) carry
-conversations, each a session, with approvals answered in the channel.
+a webhook or Telegram; `sion agent serve` (HTTP with the machine's token
+or a profile's own) and `sion agent bridge` (Slack, Discord, Matrix,
+Signal and Telegram, chats allowed by id) carry conversations, each a
+session, with approvals answered in the channel, by named approvers if
+given; `sion agent gateway` routes a profile's messages to the machine
+that proved the agent's key with `sion agent host`.
 Commands, scripts and MCP servers
 ([Commands, scripts and MCP servers](book/src/guides/agent-tools.md)):
 `--shell` runs `/bin/sh` commands in a sandbox (bubblewrap, or a Docker
@@ -243,20 +246,26 @@ journaled, and a replayed outcome says so. The spawns of one turn go
 together, in one `SpawnAgents` transaction and one transfer of fee money,
 and their sessions run at the same time; their keyless payments are signed
 in batches as they arrive. Tested with the scripted model and with
-stand-ins for the providers' and Telegram's APIs: this environment reaches
-neither. The sandbox tests run bubblewrap for real, and Docker with
-`SION_TEST_DOCKER_IMAGE`. An agent with a memory log searches its past
-sessions (`session_search`, `sion agent sessions search`: BM25), each hit
-checked against the trajectory digest its episode committed to the ledger;
-`sion memory consolidate` turns episodes into derived notes under gates,
+stand-ins for the providers' and the messengers' APIs: this environment
+reaches none of them. The sandbox tests run bubblewrap for real, and
+Docker with `SION_TEST_DOCKER_IMAGE`. An agent with a memory log searches
+its past sessions (`session_search`, `sion agent sessions search`:
+BM25), each hit checked against the trajectory digest its episode
+committed to the ledger; `sion memory consolidate` turns episodes into
+derived notes under gates,
 superseding and never deleting; what a tainted session records, its
 episode and the notes consolidated from it are marked as prompt-injection
 risks and kept out of prompts; `sion memory archive` and `restore` keep a
 log with a storage provider as an archive encrypted for its writer, named
 as the head's manifest, and bring it back checked against the ledger,
-providers serving retrievals to their deals' clients. Not built:
-permissions that skills declare and the runtime enforces, MCP over HTTP,
-and routing channels across machines
+providers serving retrievals to their deals' clients. Channels reach a
+profile through its own tokens, kept as hashes (approvals only with
+tokens made for them); Slack, Discord, Matrix, Signal and Telegram behind
+one bridge, with approvers; and an agent gateway that passes a profile's
+messages to the host that proved the agent's key, only while the agent is
+in good standing. The messengers are tested against stand-ins for their
+APIs. Not built: permissions that skills declare and the runtime
+enforces, and MCP over HTTP
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
@@ -739,8 +748,10 @@ the architecture's own:
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
 | `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again. |
 | `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. The ledger refuses an attestation by the version's author (specification v1.15), but not one by an account the author controls under another name: such an attestation is worth its own bond. |
-| `agent:channel-token` | Whoever holds the HTTP channel's bearer token can start and continue the sessions of every profile on the machine, approvals included, within each profile's autonomy and the agent's charter. The channel speaks plain HTTP. |
-| `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included. |
+| `agent:channel-token` | Whoever holds the machine's channel token can start and continue the sessions of every profile on the machine, approvals included; whoever holds a profile's own token, that profile's, and approvals only with a token made for them; always within each profile's autonomy and the agent's charter. Tokens are kept as their hashes. The channel speaks plain HTTP. |
+| `agent:gateway` | An agent gateway sees, and could change, the messages and answers it passes; it cannot act as an agent on the ledger, holding no key. It routes a profile's messages only to a host that proved the key of the agent its tokens name for the profile, and checks the agent's standing at most five seconds old, from the node it trusts: a message can reach an agent suspended within those seconds. It speaks plain HTTP unless put behind TLS. |
+| `agent:messenger-identity` | Slack, Discord, Matrix, Signal and Telegram say who wrote a message: a bridge's approvers are who the messenger says they are, and anyone who can write in an allowed chat talks to the profile. |
+| `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included unless `--approvers` names who may decide. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
 | `agent:sandbox` | Commands an agent runs (its shell, its skills' scripts, MCP servers started in a sandbox) are contained only as far as the kernel's namespaces (bubblewrap) or the container runtime (Docker) hold: an escape gives them the runtime's user. Bubblewrap bounds how long a command runs and the size of each process, not how many processes it starts; Docker bounds those too. A container started by a runtime that is killed runs until its command ends. |
