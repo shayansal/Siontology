@@ -10,6 +10,26 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Email
+
+- **A mailbox of its own.** `sion agent bridge --via email` reads the
+  agent's mailbox over IMAP (waiting with IDLE where the server has it,
+  marking nothing read) and answers over SMTP, each reply in the thread
+  of what it answers, with a password or an OAuth token from a command
+  (XOAUTH2). TLS, or STARTTLS, is required but to a loopback address,
+  and what a server sends between agreeing to TLS and the handshake is
+  refused; `sion-http` connects to IMAP and SMTP servers, and turns a
+  connection to TLS when the protocol says (`Client::start_tls`).
+- **Who wrote it.** A message is answered only when the provider's
+  `Authentication-Results` show it is from the address its `From` names
+  (DMARC, or DKIM or SPF aligned with the domain); machines' mail
+  (out-of-office replies, bounces, lists, bulk) is not, and the replies
+  say `Auto-Submitted: auto-replied`. Trust atom `agent:email-from`.
+- **What it reads.** Plain text or HTML, quoted replies and signatures
+  left out, the subject where a conversation starts; attachments are
+  named, audio heard as voice notes, and a spoken answer sent as an
+  attachment.
+
 ### Installing and running: the installer, an image, Homebrew, Nix, services, doctor
 
 - **The installer.** `scripts/install.sh` installs `sion` from a

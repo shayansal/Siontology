@@ -174,11 +174,13 @@ impl Client {
 
     /// A connection of its own to `url`'s host, for a protocol that takes
     /// over from HTTP (WebSocket: `ws`, `wss`, `http` or `https` URLs) or
-    /// has its own (IRC: `irc`, `ircs`): TLS for `wss`, `https` and `ircs`,
-    /// with the client's roots, address rules,
-    /// connect timeout and proxy (a `CONNECT` tunnel, unless `NO_PROXY`
-    /// names the host). Reads and writes time out after the client's
-    /// timeout, until the caller sets another.
+    /// has its own (IRC: `irc`, `ircs`; mail: `imap`, `imaps`, `smtp`,
+    /// `smtps`): TLS for `wss`, `https`, `ircs`, `imaps` and `smtps`, with
+    /// the client's roots, address rules, connect timeout and proxy (a
+    /// `CONNECT` tunnel, unless `NO_PROXY` names the host). The others
+    /// start in the clear, for a protocol that turns to TLS itself
+    /// ([`Client::start_tls`]). Reads and writes time out after the
+    /// client's timeout, until the caller sets another.
     pub fn connect(&self, url: &str) -> Result<Stream, HttpError> {
         let target = Target::parse(url)?;
         let through = match (&self.tunnel, &self.proxied) {
@@ -209,16 +211,39 @@ impl Client {
         tcp.set_write_timeout(Some(self.options.timeout))
             .map_err(failed)?;
         let _ = tcp.set_nodelay(true);
+        let plain = Stream {
+            inner: Inner::Plain(tcp),
+            host: target.host,
+        };
         if !target.tls {
-            return Ok(Stream(Inner::Plain(tcp)));
+            return Ok(plain);
         }
-        let name = ServerName::try_from(target.host.clone())
-            .map_err(|e| HttpError::Refused(format!("{}: {e}", target.host)))?;
+        self.start_tls(plain)
+    }
+
+    /// `stream`, a connection [`Client::connect`] made in the clear, as TLS
+    /// from here on: for a protocol's `STARTTLS`, once the server has agreed
+    /// to it. The server is checked as the host the connection was made
+    /// to, with the client's roots; the handshake is made with the first
+    /// read or write.
+    pub fn start_tls(&self, stream: Stream) -> Result<Stream, HttpError> {
+        let Stream { inner, host } = stream;
+        let tcp = match inner {
+            Inner::Plain(tcp) => tcp,
+            Inner::Tls(_) => {
+                return Err(HttpError::Refused(format!(
+                    "the connection to {host} is TLS already"
+                )))
+            }
+        };
+        let name = ServerName::try_from(host.clone())
+            .map_err(|e| HttpError::Refused(format!("{host}: {e}")))?;
         let connection = ClientConnection::new(self.config.clone(), name)
             .map_err(|e| HttpError::Config(e.to_string()))?;
-        Ok(Stream(Inner::Tls(Box::new(StreamOwned::new(
-            connection, tcp,
-        )))))
+        Ok(Stream {
+            inner: Inner::Tls(Box::new(StreamOwned::new(connection, tcp))),
+            host,
+        })
     }
 
     /// The options.
@@ -483,7 +508,9 @@ pub(crate) struct Target {
 }
 
 impl Target {
-    /// The target of a `ws`, `wss`, `http`, `https`, `irc` or `ircs` URL.
+    /// The target of a `ws`, `wss`, `http`, `https`, `irc`, `ircs`, `imap`,
+    /// `imaps`, `smtp` or `smtps` URL (`smtp` is mail submission, port 587
+    /// by default).
     pub(crate) fn parse(url: &str) -> Result<Target, HttpError> {
         let (scheme, rest) = url
             .split_once("://")
@@ -493,9 +520,13 @@ impl Target {
             "ws" | "http" => (false, 80),
             "ircs" => (true, 6697),
             "irc" => (false, 6667),
+            "imaps" => (true, 993),
+            "imap" => (false, 143),
+            "smtps" => (true, 465),
+            "smtp" => (false, 587),
             _ => {
                 return Err(HttpError::Refused(format!(
-                    "{url}: only ws, wss, http, https, irc and ircs URLs"
+                    "{url}: only ws, wss, http, https, irc, ircs, imap, imaps, smtp and smtps URLs"
                 )))
             }
         };
@@ -566,7 +597,11 @@ impl Target {
 }
 
 /// A connection made by [`Client::connect`]: TCP, or TLS over TCP.
-pub struct Stream(Inner);
+pub struct Stream {
+    inner: Inner,
+    /// The host it was made to, lower-cased, without brackets.
+    host: String,
+}
 
 enum Inner {
     Plain(TcpStream),
@@ -575,9 +610,9 @@ enum Inner {
 
 impl std::fmt::Debug for Stream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Inner::Plain(_) => f.write_str("Stream(tcp)"),
-            Inner::Tls(_) => f.write_str("Stream(tls)"),
+        match &self.inner {
+            Inner::Plain(_) => write!(f, "Stream(tcp, {})", self.host),
+            Inner::Tls(_) => write!(f, "Stream(tls, {})", self.host),
         }
     }
 }
@@ -585,16 +620,27 @@ impl std::fmt::Debug for Stream {
 impl Stream {
     /// How long a read waits for bytes (`None`: as long as it takes).
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
-        match &self.0 {
+        match &self.inner {
             Inner::Plain(tcp) => tcp.set_read_timeout(timeout),
             Inner::Tls(tls) => tls.sock.set_read_timeout(timeout),
         }
+    }
+
+    /// Whether it is TLS.
+    pub fn is_tls(&self) -> bool {
+        matches!(self.inner, Inner::Tls(_))
+    }
+
+    /// The host it was made to, as its URL names it (lower-cased, an IPv6
+    /// address without brackets).
+    pub fn host(&self) -> &str {
+        &self.host
     }
 }
 
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match &mut self.0 {
+        match &mut self.inner {
             Inner::Plain(tcp) => tcp.read(buf),
             Inner::Tls(tls) => tls.read(buf),
         }
@@ -603,14 +649,14 @@ impl Read for Stream {
 
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match &mut self.0 {
+        match &mut self.inner {
             Inner::Plain(tcp) => tcp.write(buf),
             Inner::Tls(tls) => tls.write(buf),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        match &mut self.0 {
+        match &mut self.inner {
             Inner::Plain(tcp) => tcp.flush(),
             Inner::Tls(tls) => tls.flush(),
         }
@@ -1127,6 +1173,45 @@ mod tests {
             client.get("file:///etc/passwd", 10),
             Err(HttpError::Refused(_))
         ));
+    }
+
+    #[test]
+    fn a_connection_in_the_clear_turns_to_tls_when_asked() {
+        // A server that greets in the clear, as IMAP does before STARTTLS,
+        // then tells what came next and answers it in the clear.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut tcp, _) = server.accept().unwrap();
+            tcp.write_all(b"* OK ready\r\n").unwrap();
+            let mut next = [0u8; 1];
+            let _ = said.send(tcp.read_exact(&mut next).map(|()| next[0]).ok());
+            let _ = tcp.write_all(b"* BYE not TLS\r\n");
+        });
+        let client = Client::new(Options {
+            allow_private: true,
+            proxy_from_env: false,
+            ..Options::default()
+        })
+        .unwrap();
+        let mut plain = client.connect(&format!("imap://{address}")).unwrap();
+        assert!(!plain.is_tls());
+        assert_eq!(plain.host(), "127.0.0.1");
+        let mut greeting = [0u8; 12];
+        plain.read_exact(&mut greeting).unwrap();
+        assert_eq!(&greeting, b"* OK ready\r\n");
+        let mut tls = client.start_tls(plain).unwrap();
+        assert!(tls.is_tls());
+        // The first write starts a TLS handshake (a record of type 22),
+        // which a server speaking in the clear fails.
+        let written = tls
+            .write_all(b"a1 CAPABILITY\r\n")
+            .and_then(|()| tls.flush());
+        let mut byte = [0u8; 1];
+        assert!(written.is_err() || tls.read(&mut byte).is_err());
+        assert_eq!(heard.recv().unwrap(), Some(22));
+        assert!(matches!(client.start_tls(tls), Err(HttpError::Refused(_))));
     }
 
     #[test]

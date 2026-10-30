@@ -261,11 +261,17 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
             ],
         ),
     ];
-    let ready: Vec<&str> = messengers
+    let mut ready: Vec<&str> = messengers
         .iter()
         .filter(|(_, names)| set(names).len() == names.len())
         .map(|(name, _)| *name)
         .collect();
+    // Email logs in with a password or with a command's token.
+    if set(&["EMAIL_ADDRESS", "EMAIL_IMAP_URL", "EMAIL_SMTP_URL"]).len() == 3
+        && !set(&["EMAIL_PASSWORD", "EMAIL_TOKEN_COMMAND"]).is_empty()
+    {
+        ready.push("email");
+    }
     out.push(finding(
         true,
         "messengers",

@@ -642,6 +642,16 @@ mod tests {
         let irc = Target::parse("ircs://irc.libera.chat").unwrap();
         assert_eq!((irc.port, irc.tls), (6697, true));
         assert_eq!(Target::parse("irc://127.0.0.1:6667").unwrap().port, 6667);
+        // Mail: implicit TLS, or in the clear until STARTTLS.
+        for (url, port, tls) in [
+            ("imaps://imap.example.org", 993, true),
+            ("imap://imap.example.org", 143, false),
+            ("smtps://smtp.example.org", 465, true),
+            ("smtp://smtp.example.org", 587, false),
+        ] {
+            let t = Target::parse(url).unwrap();
+            assert_eq!((t.port, t.tls), (port, tls), "{url}");
+        }
         assert!(Target::parse("ws://example.org:x/").is_err());
         assert_eq!(
             crate::proxy_authorization("http://us%40er:p%3Ass@127.0.0.1:3128").as_deref(),

@@ -32,6 +32,7 @@ pub mod delegation;
 pub mod demos;
 pub mod describe;
 pub mod doctor;
+pub mod email;
 pub mod error;
 pub mod gateway;
 pub mod irc;

@@ -503,12 +503,13 @@ pub enum AgentCommand {
     /// (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE,
     /// SIGNAL_NUMBER, for signal-cli-rest-api), telegram, mattermost
     /// (MATTERMOST_URL, MATTERMOST_TOKEN), irc (IRC_SERVER, IRC_NICK,
-    /// IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), or through
-    /// webhooks to --listen: whatsapp (WHATSAPP_TOKEN,
-    /// WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN),
-    /// line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET) or sms through
-    /// Twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_NUMBER,
-    /// TWILIO_WEBHOOK_URL).
+    /// IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), email
+    /// (EMAIL_ADDRESS, EMAIL_IMAP_URL, EMAIL_SMTP_URL, EMAIL_PASSWORD or
+    /// EMAIL_TOKEN_COMMAND), or through webhooks to --listen: whatsapp
+    /// (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET,
+    /// WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN,
+    /// LINE_CHANNEL_SECRET) or sms through Twilio (TWILIO_ACCOUNT_SID,
+    /// TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL).
     Bridge {
         /// The agent profile.
         profile: String,

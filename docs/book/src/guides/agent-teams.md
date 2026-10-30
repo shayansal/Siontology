@@ -545,6 +545,110 @@ POST /line/v2/bot/message/reply {"messages":[{"text":"100 USD left in the budget
 POST /twilio/2010-04-01/Accounts/AC0001/Messages.json To=%2B15550001111&From=%2B15559990000&Body=100%20USD%20left%20in%20the%20budget.
 ```
 
+### Email
+
+`--via email` reads the agent's own mailbox over IMAP and answers over
+SMTP. Each person who writes is a chat, named by their address
+(`--allow alice@example.org`), and the reply goes to them alone, in the
+thread of what they wrote. What the agent reads is what they wrote
+themselves: the message they quote and their signature are left out, and
+the subject comes first where a conversation starts.
+
+| Variable | What it is |
+|---|---|
+| `EMAIL_ADDRESS` | the agent's address |
+| `EMAIL_IMAP_URL` | `imaps://imap.example.org` (TLS, port 993), or `imap://…` (STARTTLS, port 143) |
+| `EMAIL_SMTP_URL` | `smtps://smtp.example.org` (TLS, port 465), or `smtp://…` (STARTTLS, port 587) |
+| `EMAIL_PASSWORD` | the password: an app password, where the provider has them |
+| `EMAIL_TOKEN_COMMAND` | instead of a password, a command that prints an OAuth access token, for providers that want one (XOAUTH2) |
+| `EMAIL_USERNAME`, `EMAIL_MAILBOX`, `EMAIL_NAME` | the login if it is not the address, the mailbox read (`INBOX`), and the name replies are sent under |
+| `EMAIL_AUTHSERV_ID` | the name your provider signs its `Authentication-Results` with (`mx.google.com`; a domain stands for its servers) |
+| `EMAIL_TRUST_FROM` | `1` to take `From` as it is, on a server that checks nothing and where no stranger can write |
+
+Anyone can put any address in `From`. The bridge believes it only as far
+as your provider vouches for it: it reads the `Authentication-Results`
+the provider adds to each message it receives (RFC 8601), and answers
+only where DMARC passed for the sender's domain, or DKIM or SPF passed
+for a domain aligned with it. It reads the topmost results, which the
+provider writes above everything a sender wrote, or with
+`EMAIL_AUTHSERV_ID`, the topmost the provider signed with that name. A
+message the provider did not check is not answered; `EMAIL_TRUST_FROM=1`
+takes `From` as it is. Mail written by machines is not answered either:
+out-of-office replies, bounces and delivery reports, mailing lists and
+bulk mail. The replies say `Auto-Submitted: auto-replied` (RFC 3834), so
+that two machines do not answer each other.
+
+Nothing is sent in the clear: an `imap://` or `smtp://` server must offer
+STARTTLS, unless it is on a loopback address (a bridge on the machine
+itself, as Proton Mail's is), and anything a server sends between
+agreeing to TLS and the handshake is refused. The bridge reads with
+`BODY.PEEK`, so no message is marked read or changed. It keeps its place
+by UID, starts after the newest message the first time, and waits for
+mail with IDLE where the server has it. Attachments are named to the
+agent, not read; audio ones are voice notes for `--hear`, and an answer
+spoken with `--speak` goes back as an audio attachment.
+
+Here a stand-in for a provider offered STARTTLS on both servers, with a
+certificate from a CA made for the recording (`SSL_CERT_FILE` names it).
+The first run answered nothing, starting after the message already
+there. Then three came: Alice's question; one saying it was from Alice
+that her domain's DMARC failed, the sender having written a passing
+result below the provider's; and her out-of-office reply.
+
+```text
+$ EMAIL_ADDRESS=lead@example.net EMAIL_PASSWORD=… EMAIL_IMAP_URL=imap://localhost:8791 EMAIL_SMTP_URL=smtp://localhost:8792 EMAIL_AUTHSERV_ID=mx.example.net SSL_CERT_FILE=ca.pem sion agent bridge lead --via email --allow alice@example.org --once
+$ sion agent bridge lead --via email --allow alice@example.org --once
+address alice@example.org: DMARC fail for example.org, ignored
+address alice@example.org: an automatic message (Auto-Submitted: auto-replied), ignored
+address alice@example.org: Subject: Budget
+
+How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 98398c65086bd867: done
+to address alice@example.org: 100 USD left in the budget.
+```
+
+What the servers were told on the second run, the logins shown as `…`:
+
+```text
+imap: s1 STARTTLS
+imap: (TLS from here)
+imap: s2 CAPABILITY
+imap: s3 AUTHENTICATE PLAIN …
+imap: s4 CAPABILITY
+imap: s5 SELECT "INBOX"
+imap: s6 UID FETCH 2:* (UID RFC822.SIZE)
+imap: s7 UID FETCH 2 (BODY.PEEK[])
+imap: s8 UID FETCH 3 (BODY.PEEK[])
+imap: s9 UID FETCH 4 (BODY.PEEK[])
+smtp: EHLO example.net
+smtp: STARTTLS
+smtp: (TLS from here)
+smtp: EHLO example.net
+smtp: AUTH PLAIN …
+smtp: MAIL FROM:<lead@example.net>
+smtp: RCPT TO:<alice@example.org>
+smtp: DATA
+smtp: (the message)
+  From: <lead@example.net>
+  To: <alice@example.org>
+  Subject: Re: Budget
+  Date: Fri, 30 Oct 2026 22:10:13 +0000
+  Message-ID: <936c7a877f9df40f0d4c6f0d442381a3@example.net>
+  In-Reply-To: <c1f3@mail.example.org>
+  References: <c1f3@mail.example.org>
+  Auto-Submitted: auto-replied
+  MIME-Version: 1.0
+  Content-Type: text/plain; charset=utf-8
+  Content-Transfer-Encoding: quoted-printable
+
+  100 USD left in the budget.
+smtp: QUIT
+imap: s10 LOGOUT
+```
+
 ### Pairing and voice notes
 
 With `--pairing`, a bridge gives someone who writes to it directly, and
@@ -742,6 +846,15 @@ again.
   against stand-ins for their APIs (the WebSocket client also against
   Discord's real gateway, which it reached and was greeted by), and voice
   notes only against stand-ins for the speech services'.
+- An email is answered as from whom the provider's
+  `Authentication-Results` say (`agent:email-from`): a provider that adds
+  none, or does not check what it says it checked, leaves the bridge
+  nothing to go on. Domains are taken as aligned where one is the other
+  or under it, not by the public suffix list. Mailboxes are named in
+  ASCII; text is read in UTF-8, Latin-1, Windows-1252 and Latin-9 (other
+  character sets as UTF-8, where they agree), and HTML for its text. A
+  reply goes in the thread of the last message its writer sent. The
+  bridge has been run only against stand-ins for IMAP and SMTP servers.
 - An agent gateway sees, and could change, the messages and answers it
   passes. It cannot act as the agent, holding no key, and checks the
   agent's standing as of up to five seconds before (`agent:gateway`).

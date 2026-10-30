@@ -16,6 +16,7 @@
 //! | Mattermost | its WebSocket ([`crate::mattermost`]) | `MATTERMOST_URL`, `MATTERMOST_TOKEN` | channel ids |
 //! | IRC, Twitch | a connection of its own ([`crate::irc`]) | `IRC_SERVER`, `IRC_NICK`; `TWITCH_NICK`, `TWITCH_TOKEN` | `#channels`, nicks |
 //! | WhatsApp, LINE, SMS | signed webhooks ([`crate::webhooks`]) | see there | numbers, ids |
+//! | Email | IMAP, IDLE where the server has it ([`crate::email`]) | `EMAIL_ADDRESS`, `EMAIL_IMAP_URL`, `EMAIL_SMTP_URL`, `EMAIL_PASSWORD` | addresses |
 //!
 //! Each `*_API_BASE` variable points a messenger at another server (a
 //! stand-in, in the tests). Bots are not answered: Telegram does not show a
@@ -1190,9 +1191,10 @@ pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, S
         "mattermost" => Box::new(crate::mattermost::Mattermost::from_env()?),
         "irc" => Box::new(crate::irc::Irc::irc_from_env(chats)?),
         "twitch" => Box::new(crate::irc::Irc::twitch_from_env(chats)?),
+        "email" => Box::new(crate::email::Email::from_env()?),
         other => {
             return Err(format!(
-                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line or sms"
+                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line, sms or email"
             ))
         }
     })

@@ -294,7 +294,12 @@ own, over TLS) are answered too; trust atom `agent:irc-nicks`. WhatsApp
 (the Cloud API), LINE and SMS (Twilio) reach a bridge as
 webhooks on an address of its own, each checked against the service's
 signature (HMAC-SHA256, or Twilio's HMAC-SHA1) before anything reaches
-the profile; trust atom `agent:webhooks`. Voice notes are heard on every messenger (OpenAI-compatible
+the profile; trust atom `agent:webhooks`. Email is read over IMAP (IDLE
+where the server has it, without marking anything read) and answered over
+SMTP in the writer's thread, TLS or STARTTLS required but to a loopback
+address, and only what the provider's `Authentication-Results` show to be
+from the address it names, and not written by a machine, is answered;
+trust atom `agent:email-from`. Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, or a command) and answered aloud (OpenAI,
 ElevenLabs, or a command): a voice note on Telegram, a voice message on
 Matrix, audio attached to the reply on Discord, Slack and Signal; trust
@@ -858,6 +863,7 @@ the architecture's own:
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included unless `--approvers` names who may decide. |
 | `agent:pairing` | An approved pairing code lets in the chat it was sent to, on that channel and profile, until revoked: the operator trusts that whoever gave them the code is the person they mean to let in, and the messenger for who writes in that chat afterwards (`agent:messenger-identity`). Codes are kept in a file only the operator's user can read. |
 | `agent:irc-nicks` | On IRC, who wrote a message is the nick the server gives: on a network that does not hold nicks to accounts, anyone can take a nick that is free, approvals included where `--approvers` names nicks. |
+| `agent:email-from` | An email is taken as from the address its `From` names only as far as the mail provider's `Authentication-Results` show (DMARC passing for its domain, or DKIM or SPF passing for a domain aligned with it), read from the topmost results or the topmost of the server `EMAIL_AUTHSERV_ID` names: the provider is trusted to write its results above everything a sender wrote, and to check what it says it checked. With `EMAIL_TRUST_FROM`, `From` is taken as it is. Alignment is taken as one domain being the other or under it, not by the public suffix list. |
 | `agent:service-tokens` | A service's tokens (`sion agent service install --env`) are kept in plain text in a file only the user reads (systemd's environment file, or the launchd agent): whoever can read the user's files can read them. |
 | `agent:webhooks` | A webhook (WhatsApp, LINE, SMS through Twilio) is taken as its service's when it carries the service's signature with the secret the operator gave. The signatures name no time, so a webhook copied on its way could be sent again later and is answered again once its id has left the last thousand remembered; the bridge listens on plain HTTP, and TLS is the operator's proxy's. |
 | `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
