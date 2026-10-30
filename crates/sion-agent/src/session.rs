@@ -469,7 +469,11 @@ impl Runtime<'_> {
             },
             Checked::Ready(ready) => {
                 let tool = self.tools.get(&ready.tool).expect("checked");
-                let outcome = tool.call(&ready.input, &ready.key);
+                let outcome = if state.standing.tainted((self.now)()) {
+                    tool.call_tainted(&ready.input, &ready.key)
+                } else {
+                    tool.call(&ready.input, &ready.key)
+                };
                 self.finish(state, &ready, &outcome);
                 Called::Ran(outcome)
             }

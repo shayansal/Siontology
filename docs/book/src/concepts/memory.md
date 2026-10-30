@@ -87,7 +87,10 @@ pays providers to keep its atoms with [storage deals](storage.md): it can
 commit, as the head's manifest, the root of an archive of its atoms and
 post a deal with that same root, so a reader can check from the ledger
 alone that the memory committed is the data a provider proves it keeps,
-round after round (the `storage` demo does this).
+round after round. `sion memory archive` does this for any log, with the
+archive encrypted for its writer, and `sion memory restore` brings it back
+from the provider, checked against the head
+([Memory from the command line](../guides/memory.md)).
 
 ## Off the ledger: the `sion-memory` library
 
@@ -143,8 +146,12 @@ peak.
   `remember`, `commit`, `recall` and `show`
   ([Memory from the command line](../guides/memory.md)); the MCP tools
   `sion_memory_open`, `sion_memory_remember`, `sion_memory_commit` and
-  `sion_memory_recall`; and the `robots` demo, which runs agent
-  identities, memory logs and the library together on a devnet.
+  `sion_memory_recall`; `sion memory archive` and `restore`; for agents,
+  episodes of every finished session, search over past sessions checked
+  against them, and consolidation into derived notes
+  ([Agents at work](../guides/agent-runtime.md#memory)); and the `robots`
+  demo, which runs agent identities, memory logs and the library together
+  on a devnet.
 - **Simplified**: the index is rebuilt from scratch for every head (under
   a second at 10⁶ atoms, too slow for a robot checkpointing every few
   seconds at that size); a log is held in memory, about 1 KB per atom; the
@@ -155,4 +162,4 @@ peak.
   it); proving one field of an atom without revealing the rest;
   aggregators that commit many logs at once; curated shared world memory
   beyond the first building block (cell digests and their omission
-  proofs); storage with proofs.
+  proofs).

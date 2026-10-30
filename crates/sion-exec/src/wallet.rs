@@ -51,6 +51,12 @@ impl StateView for State {
     }
 }
 
+/// The seed of the devnet wallet called `name`: anyone who knows the name
+/// can derive it (for devnets, tests and demos only).
+pub fn devnet_seed(name: &str) -> [u8; 32] {
+    sion_core::hash::hash_domain("sion/wallet/devnet-seed", name.as_bytes()).0
+}
+
 /// An account's keys and transaction builder.
 #[derive(Clone, Debug)]
 pub struct Wallet {
@@ -77,8 +83,7 @@ impl Wallet {
 
     /// A wallet from a name (deterministic; for devnets, tests and demos only).
     pub fn named(name: &str) -> Wallet {
-        let digest = sion_core::hash::hash_domain("sion/wallet/devnet-seed", name.as_bytes());
-        Self::from_seed(&digest.0)
+        Self::from_seed(&devnet_seed(name))
     }
 
     /// A wallet around existing keys.

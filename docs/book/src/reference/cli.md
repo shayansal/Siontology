@@ -692,7 +692,7 @@ Commands:
   materialize    Materialize members of a cohort: their charters and allotments, at their lineage ids, with proofs of their leaves. The cohort parent's wallet signs, and signs for them afterwards
   run            Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
   continue       Continue a session: approve or decline the call it waits on, or tell it more
-  sessions       The agent sessions on this machine
+  sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
@@ -1050,13 +1050,34 @@ See [Agents at work](../guides/agent-runtime.md#approvals).
 ## `sion agent sessions`
 
 ```text
-The agent sessions on this machine
+The agent sessions on this machine; `search` finds an agent's past sessions by words
 
-Usage: sion agent sessions [OPTIONS]
+Usage: sion agent sessions [OPTIONS] [COMMAND]
+
+Commands:
+  search  Search an agent's past sessions on this machine by words (BM25): each hit is checked against the trajectory digest its episode recorded in the agent's memory log, whose head is on the ledger
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent sessions search`
+
+```text
+Search an agent's past sessions on this machine by words (BM25): each hit is checked against the trajectory digest its episode recorded in the agent's memory log, whose head is on the ledger
+
+Usage: sion agent sessions search [OPTIONS] <AGENT> <QUERY>...
+
+Arguments:
+  <AGENT>     The agent: its wallet's name, or its id (or a prefix of it)
+  <QUERY>...  The words to look for
+
+Options:
+      --limit <LIMIT>  How many sessions at most [default: 5]
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help           Print help
 ```
 
 ## `sion agent trace`
@@ -1677,12 +1698,15 @@ Memory logs for agents and robots: open a log, record atoms locally, commit head
 Usage: sion memory [OPTIONS] <COMMAND>
 
 Commands:
-  open      Open a memory log on the ledger, owned by the wallet (for an agent identity with --agent, whose agent must be the wallet), and a local store for its atoms
-  remember  Record an atom in a log's local store. It reaches the ledger's commitment with the next `sion memory commit`
-  commit    Commit the local log's head to the ledger, with a proof that it extends the head the ledger holds
-  recall    Everything the log had recorded in a box during an interval, as of its committed head, with a proof checked against the index root the ledger holds
-  show      A log's head on the ledger and its local store
-  help      Print this message or the help of the given subcommand(s)
+  open         Open a memory log on the ledger, owned by the wallet (for an agent identity with --agent, whose agent must be the wallet), and a local store for its atoms
+  remember     Record an atom in a log's local store. It reaches the ledger's commitment with the next `sion memory commit`
+  commit       Commit the local log's head to the ledger, with a proof that it extends the head the ledger holds
+  recall       Everything the log had recorded in a box during an interval, as of its committed head, with a proof checked against the index root the ledger holds
+  show         A log's head on the ledger and its local store
+  consolidate  Consolidate an agent's memory: a model reads the episodes recorded since the last consolidation and the notes the log keeps, and proposes facts, procedures and preferences worth keeping, each citing its episodes. What the gates keep is recorded as derived atoms (the notes they replace are superseded, not deleted), and the log is committed
+  archive      Archive a log for safekeeping: every atom the ledger holds, encrypted for the writer, named on the ledger as the log's manifest and kept by a storage provider under a deal
+  restore      Restore a log's local store from its latest archive, checked against the head on the ledger before anything is replaced
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -1782,6 +1806,68 @@ Arguments:
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion memory consolidate`
+
+```text
+Consolidate an agent's memory: a model reads the episodes recorded since the last consolidation and the notes the log keeps, and proposes facts, procedures and preferences worth keeping, each citing its episodes. What the gates keep is recorded as derived atoms (the notes they replace are superseded, not deleted), and the log is committed
+
+Usage: sion memory consolidate [OPTIONS] --model <MODEL> <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet (the agent's)
+  <LOG>     The log (its id, or a unique prefix of it)
+
+Options:
+      --model <MODEL>  The model that proposes: anthropic:<model>, openai:<model> or script:<file>
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help           Print help
+```
+
+## `sion memory archive`
+
+```text
+Archive a log for safekeeping: every atom the ledger holds, encrypted for the writer, named on the ledger as the log's manifest and kept by a storage provider under a deal
+
+Usage: sion memory archive [OPTIONS] --price <PRICE> --rounds <ROUNDS> <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet
+  <LOG>     The log (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <OUT>                      Where to write the archive (default: $SION_HOME/memory/archives/<log>-<size>.bin)
+      --price <PRICE>                  Paid per proven round (decimal USD)
+      --rounds <ROUNDS>                Rounds
+      --round-length <ROUND_LENGTH>    Pulses per round: a multiple of 8, from 8 to 100,000 [default: 16]
+      --collateral <COLLATERAL>        Collateral the provider must post (decimal USD). Default: the escrow, for a deal open to anyone (which must ask for some); none for a named provider
+      --challenges <CHALLENGES>        Leaves challenged per round (1 to 16) [default: 4]
+      --provider <PROVIDER>            The provider (wallet name or account); without it, anyone may accept
+      --accept-within <ACCEPT_WITHIN>  How many Pulses the deal stays open for acceptance [default: 200]
+      --locator <LOCATOR>              Where providers fetch the data: an https:// URL serving the file
+      --local                          Point providers at the file itself (file://<its path>): only a provider on this machine can fetch it, and the deal publishes the path
+  -h, --help                           Print help
+```
+
+## `sion memory restore`
+
+```text
+Restore a log's local store from its latest archive, checked against the head on the ledger before anything is replaced
+
+Usage: sion memory restore [OPTIONS] --from <FROM> <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet
+  <LOG>     The log (its full id, if the local store is gone)
+
+Options:
+      --from <FROM>  The archive: a file, or the retrieval address of the provider that keeps it (http:// or https://)
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --deal <DEAL>  With a provider: the deal that keeps the archive (default: your latest accepted deal for the log's manifest)
+      --replace      Restore over the local store there is
   -h, --help         Print help
 ```
 
@@ -2092,16 +2178,17 @@ Storage deals: have data kept by a provider who proves every round that it still
 Usage: sion storage [OPTIONS] <COMMAND>
 
 Commands:
-  prepare  Split a file into leaves and print the root a deal would commit to
-  post     Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
-  deals    List storage deals
-  show     One deal: its terms, its state and its provider's progress
-  accept   Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
-  prove    Prove the round under way for every deal you hold
-  settle   Collect for the rounds you proved
-  close    Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
-  serve    Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
-  help     Print this message or the help of the given subcommand(s)
+  prepare   Split a file into leaves and print the root a deal would commit to
+  post      Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
+  deals     List storage deals
+  show      One deal: its terms, its state and its provider's progress
+  accept    Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
+  prove     Prove the round under way for every deal you hold
+  settle    Collect for the rounds you proved
+  retrieve  Retrieve a deal's data as its client from the provider that keeps it (the address its `sion storage serve --listen` gives), checked against the deal's root
+  close     Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
+  serve     Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2226,6 +2313,24 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion storage retrieve`
+
+```text
+Retrieve a deal's data as its client from the provider that keeps it (the address its `sion storage serve --listen` gives), checked against the deal's root
+
+Usage: sion storage retrieve [OPTIONS] --provider-url <PROVIDER_URL> --out <OUT> <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet (the client)
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --provider-url <PROVIDER_URL>  The provider's retrieval address, for example http://127.0.0.1:8740
+      --out <OUT>                    Where to write the data
+  -h, --help                         Print help
+```
+
 ## `sion storage close`
 
 ```text
@@ -2271,6 +2376,8 @@ Options:
           Fetch file:// locators (a provider on the clients' machine)
       --allow-private
           Fetch from local and private network addresses
+      --listen <LISTEN>
+          Serve the data of the deals you keep to their clients on this address: POST /v1/deals/<deal>/retrieve, signed by the deal's client
       --pulses <PULSES>
           Stop after this many Pulses
   -h, --help

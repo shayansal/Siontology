@@ -655,6 +655,14 @@ impl Saved {
             for tool in memory.tools() {
                 tools.add_boxed(tool);
             }
+            // An agent that remembers can search its past sessions, checked
+            // against the episodes its log recorded.
+            tools.add(crate::recall::SessionSearch {
+                ledger: acting.ledger.clone(),
+                agent: self.agent,
+                memory: Some(memory.log),
+                current: self.state.id.clone(),
+            });
         }
         let mut quarantined = Vec::new();
         if let Some(root) = &self.skills {
@@ -774,7 +782,12 @@ impl Saved {
                         &self.state.id,
                         &task,
                         text,
-                        &sion_agent::trace::digest(&self.state),
+                        &crate::agent_memory::Trajectory {
+                            digest: sion_agent::trace::digest(&self.state),
+                            messages: self.state.messages.len(),
+                            compactions: self.state.compactions,
+                            from_outside: self.state.standing.tainted_until.is_some(),
+                        },
                     )
                 }
                 _ => memory.commit(),

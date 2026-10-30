@@ -122,6 +122,93 @@ Pulse 11: Done: memory log 9755b633 now holds 4 atoms (head 2); fee 0.0011 USD.
 commits, the Pulse of the last one, whether the log is sealed) and how many
 atoms the local store holds. `--seal` on a commit closes the log for good.
 
+## 6. Archive with a storage provider
+
+`sion memory archive` packs every atom the ledger holds (committing
+first what the local store holds beyond it), encrypts them for the
+writer, names the archive's storage root as the log's manifest on the
+ledger, and posts a storage deal for it, on the same terms as
+`sion storage post`:
+
+```text
+$ sion memory archive alice 52f798dc…cc92 --price 0.05 --rounds 20 --round-length 8 --provider bob --local
+alice signs: Commit memory log 52f798dc at 3 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 52.
+alice signs: Commit memory log 52f798dc at 3 atoms, proving it only grew, its manifest naming archive 83913807. Fee 0.0011 USD; valid until Pulse 54.
+Pulse 34: Done: memory log 52f798dc now holds 3 atoms (head 1); fee 0.0011 USD.
+Pulse 36: Done: memory log 52f798dc now holds 3 atoms (head 2); fee 0.0011 USD.
+archive $SION_HOME/memory/archives/52f798dc…-3.bin (530 bytes, encrypted for alice): 3 atoms at root d96b7379; storage root 83913807, now the log's manifest
+alice signs: Escrow 1 USD to have data 83913807 (1 leaves) kept by bob for 20 rounds of 8 Pulses: 0.05 USD per round proven by 4 random leaves, with 0 USD of collateral at stake. Fee 0.0011 USD; valid until Pulse 56.
+Pulse 38: Done: storage deal dcc80610 posted: 1 leaves, 20 rounds at 0.05 USD each, 0 USD of collateral, for bob; fee 0.0011 USD.
+deal dcc80610…a00f
+```
+
+The archive is encrypted with ChaCha20-Poly1305 under a key derived from
+the writer's wallet seed and the log, so bob keeps 530 bytes he cannot
+read; its header, in the clear, names the log and its size and root. The
+second commit is at the same size: it keeps the root and moves only the
+manifest, which later commits carry forward:
+
+```text
+$ sion memory show 52f798dc…cc92
+{
+  "committed": {
+    "at_pulse": 36,
+    "commits": 2,
+    "index": "7af1af08…94f8",
+    "manifest": "83913807…53ea",
+    "root": "d96b7379…9350",
+    "sealed": false,
+    "size": 3
+  },
+  "local_atoms": 3
+}
+```
+
+The provider, started with `--listen`, fetches the archive, accepts the
+deal and proves every round; it also serves the data of the deals it
+keeps to their clients:
+
+```text
+$ sion storage serve bob --allow-local --listen 127.0.0.1:8741 --pulses 40
+bob provides storage from Pulse 38; copies under $SION_HOME/storage/bob
+retrievals for clients on http://127.0.0.1:8741 (POST /v1/deals/<deal>/retrieve)
+fetching deal dcc80610 from file://$SION_HOME/memory/archives/52f798dc287f0dc85881d7f342295b5567e28d6e70ad…
+bob signs: Accept storage deal dcc80610, posting its collateral; prove each round or lose it. Fee 0.0011 USD; valid until Pulse 58.
+Pulse 41: Done: bob accepted storage deal dcc80610 (custody record f8769f9a); rounds start at Pulse 48; fee 0.0011 USD.
+```
+
+## 7. Restore
+
+When the local store is lost, `sion memory restore` brings it back from
+the provider: it finds the deal whose root is the log's manifest, asks
+the provider for the data with a request the deal's client signs, and
+checks the archive before it writes anything: its storage root is the
+manifest the head names on the ledger, it opens with the wallet's key,
+and its atoms rebuild the root of a head the ledger committed.
+
+```text
+$ sion memory restore alice 52f798dc…cc92 --from http://127.0.0.1:8741
+{
+  "atoms_on_ledger": 3,
+  "checked": "the archive is the one the log's head names as its manifest, opens with this wallet's key, and rebuilds the head the ledger committed at Pulse 36",
+  "log": "52f798dc…cc92",
+  "restored_atoms": 3,
+  "root": "d96b7379…9350"
+}
+```
+
+```text
+$ sion memory restore mallory 52f798dc…cc92 --from http://127.0.0.1:8741
+error: log 52f798dc is written by another account
+```
+
+If the log grew after its latest archive, the restore says how many
+atoms the archive does not hold, and the log takes no new atoms until
+they are back: archive as often as atoms matter (a scheduled job can run
+`sion memory archive`). An archive never holds the store's epoch keys, so
+payloads sealed under them stay sealed, forgetting holds for archives
+too, and a restore keeps the key file it finds.
+
 ## For agents
 
 The MCP server offers `sion_memory_open`, `sion_memory_remember`,

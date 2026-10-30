@@ -363,8 +363,13 @@ pub enum AgentCommand {
         #[arg(long)]
         say: Option<String>,
     },
-    /// The agent sessions on this machine.
-    Sessions,
+    /// The agent sessions on this machine; `search` finds an agent's past
+    /// sessions by words.
+    Sessions {
+        /// Search instead of listing.
+        #[command(subcommand)]
+        command: Option<SessionsCommand>,
+    },
     /// A session as one JSON line in chat format with tool calls, with its
     /// outcome: for review, evaluation or training.
     Trace {
@@ -422,6 +427,24 @@ pub enum AgentCommand {
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
+    },
+}
+
+/// `sion agent sessions …`
+#[derive(Debug, Subcommand)]
+pub enum SessionsCommand {
+    /// Search an agent's past sessions on this machine by words (BM25):
+    /// each hit is checked against the trajectory digest its episode
+    /// recorded in the agent's memory log, whose head is on the ledger.
+    Search {
+        /// The agent: its wallet's name, or its id (or a prefix of it).
+        agent: String,
+        /// The words to look for.
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// How many sessions at most.
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
     },
 }
 
@@ -528,7 +551,30 @@ pub fn run(
             }
             Ok(())
         }
-        AgentCommand::Sessions => {
+        AgentCommand::Sessions {
+            command:
+                Some(SessionsCommand::Search {
+                    agent,
+                    query,
+                    limit,
+                }),
+        } => {
+            let (agent, memory) = crate::recall::agent_named(&agent)?;
+            let found = crate::recall::search(
+                ledger,
+                &agent,
+                memory.as_ref(),
+                &query.join(" "),
+                limit,
+                None,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&found.json).unwrap_or_default()
+            );
+            Ok(())
+        }
+        AgentCommand::Sessions { command: None } => {
             let dir = crate::runtime::sessions_dir();
             let mut rows = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&dir) {

@@ -245,10 +245,18 @@ and their sessions run at the same time; their keyless payments are signed
 in batches as they arrive. Tested with the scripted model and with
 stand-ins for the providers' and Telegram's APIs: this environment reaches
 neither. The sandbox tests run bubblewrap for real, and Docker with
-`SION_TEST_DOCKER_IMAGE`. Not built: permissions that skills declare and
-the runtime enforces, search over past sessions, consolidation, the memory
-archive with storage providers, MCP over HTTP, and routing channels across
-machines
+`SION_TEST_DOCKER_IMAGE`. An agent with a memory log searches its past
+sessions (`session_search`, `sion agent sessions search`: BM25), each hit
+checked against the trajectory digest its episode committed to the ledger;
+`sion memory consolidate` turns episodes into derived notes under gates,
+superseding and never deleting; what a tainted session records, its
+episode and the notes consolidated from it are marked as prompt-injection
+risks and kept out of prompts; `sion memory archive` and `restore` keep a
+log with a storage provider as an archive encrypted for its writer, named
+as the head's manifest, and bring it back checked against the ledger,
+providers serving retrievals to their deals' clients. Not built:
+permissions that skills declare and the runtime enforces, MCP over HTTP,
+and routing channels across machines
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
@@ -741,6 +749,10 @@ the architecture's own:
 | `agent:workspace-content` | What an agent reads from its own workspace (files, and the output of commands without the network) does not taint its session, even content it saved there from outside in an earlier session. |
 | `agent:mcp-unsandboxed` | An MCP server added without a sandbox runs as the operator's user, with the environment variables its configuration names: it can do whatever that user can. |
 | `agent:mcp-effects` | What an MCP tool's call does is what its server does. The runtime knows it only from the annotations reviewed with the tool, or from the effect its operator set: a tool that does more than it says (moves money elsewhere, say) is caught only by the review, and an agent's charter does not bound money a tool moves outside the ledger. A pin shows that a tool's definition is the one reviewed, not that its server's code is. |
+| `agent:consolidation` | A consolidated note is a model's reading of the episodes it cites. The gates check that it cites episodes it was shown, that the notes it replaces exist, its kind and its size, not that it reads the episodes right. Each note links to its episodes and names the model and the consolidator, so it can be checked against them. |
+| `agent:recall-local` | Session search reads the sessions kept on the machine the agent runs on. A hit's check shows whether a stored session still hashes to the digest its episode recorded; a session never recorded (it did not finish, or ran without a memory log) is searched unchecked. |
+| `memory:archive-key` | A memory archive is encrypted under a key derived from its writer's wallet seed: whoever holds the seed can open it, and on a devnet anyone who knows a named wallet's name. A provider sees an archive's size, which log it is of, and when it was made. |
+| `storage:retrieval-replay` | A provider checks a retrieval request's signature and expiry (at most five minutes ahead), not whether it was seen before: within that window a copied request retrieves the data again. Retrieval speaks plain HTTP unless put behind TLS. |
 | `agent:storage-from-account` | A storage deal an agent posts is paid from its account's balance, the money it pays fees with, not from its charter's budget: the charter's caveats do not bound it. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |

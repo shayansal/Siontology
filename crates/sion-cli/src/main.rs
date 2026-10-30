@@ -1262,7 +1262,12 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
         Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
         Command::Skill(command) => sion_cli::skills::run(&mut session, ledger, command)?,
-        Command::Storage(command) => sion_cli::storage::run(&mut session, ledger, command)?,
+        Command::Storage(command) => sion_cli::storage::run(
+            &mut session,
+            ledger,
+            std::sync::Arc::new(http.clone()),
+            command,
+        )?,
         Command::Charter(CharterCommand::Create {
             principal,
             agent,
