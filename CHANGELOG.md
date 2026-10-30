@@ -10,6 +10,27 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Microsoft Teams and Google Chat
+
+- **Teams.** `sion agent bridge --via teams` takes the Bot Connector's
+  webhooks, each with a token checked against the keys
+  `login.botframework.com` publishes: issued for the bot's app ID, within
+  its times, endorsed for the channel, and naming the service URL the
+  reply goes to. Replies go through the Connector API with a token from
+  Microsoft Entra ID (client credentials; a single-tenant bot's tenant
+  with `TEAMS_TENANT_ID`), in the conversation and as a reply to the
+  message.
+- **Google Chat.** `--via google-chat` takes a Chat app's webhooks, in
+  either shape Chat sends (an interaction event, a Workspace add-on's),
+  with Chat's own token for the project number or a Google ID token for
+  the endpoint's URL. The answer goes back in the webhook's answer, held
+  open for it within Chat's thirty seconds, or, with a service account's
+  key, through the Chat API in the message's thread, voice notes fetched.
+- **RS256.** `sion-http` checks and makes RSA signatures with the TLS
+  stack (`rsa_sha256_verify`, `rsa_sha256_sign`); `sion_cli::jwt` reads
+  key sets, checks tokens and makes them. Trust atoms
+  `agent:teams-tokens` and `agent:google-chat-tokens`.
+
 ### Email
 
 - **A mailbox of its own.** `sion agent bridge --via email` reads the

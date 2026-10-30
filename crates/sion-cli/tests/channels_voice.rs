@@ -1285,3 +1285,313 @@ fn email_answers_who_is_shown_to_have_written_in_their_thread() {
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// A key made for these tests, and its modulus: the stand-ins publish it
+/// as Microsoft's and Google's would theirs.
+const TEST_KEY: &str = include_str!("fixtures/rsa-2048.pem");
+const TEST_N: &str = include_str!("fixtures/rsa-2048.n");
+
+fn test_keys(kid: &str, endorsements: &[&str]) -> Vec<u8> {
+    json!({"keys": [{"kty": "RSA", "use": "sig", "kid": kid, "n": TEST_N.trim(), "e": "AQAB",
+        "endorsements": endorsements}]})
+    .to_string()
+    .into_bytes()
+}
+
+#[test]
+fn teams_and_google_chat_answer_only_what_their_services_signed() {
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-teams-chat");
+    use common::{http_stand_in, sent_to};
+    let reply = "85 USD left in the budget.";
+    let poster = sion_http::Client::new(sion_http::Options {
+        allow_private: true,
+        proxy_from_env: false,
+        ..sion_http::Options::default()
+    })
+    .unwrap();
+    let post = |url: &str, token: Option<&str>, body: &str| {
+        let auth = token.map(|t| format!("Bearer {t}"));
+        let mut headers = vec![("Content-Type", "application/json")];
+        if let Some(auth) = &auth {
+            headers.push(("Authorization", auth.as_str()));
+        }
+        poster
+            .send("POST", url, &headers, Some(body.as_bytes()))
+            .unwrap()
+            .status
+    };
+    let free = || {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("127.0.0.1:{}", probe.local_addr().unwrap().port())
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let sign =
+        |claims: Value, kid: &str| sion_cli::jwt::signed(&claims, TEST_KEY, Some(kid)).unwrap();
+
+    // Teams: the Bot Connector's keys, Entra ID's tokens and the
+    // Connector API, stood in for.
+    let base = Arc::new(std::sync::OnceLock::<String>::new());
+    let at = base.clone();
+    let (microsoft, microsoft_seen) =
+        http_stand_in(
+            move |sent| match (sent.method.as_str(), sent.url.as_str()) {
+                ("GET", "/openid") => (
+                    200,
+                    json!({"issuer": "https://api.botframework.com",
+                    "jwks_uri": format!("{}/keys", at.get().unwrap()),
+                    "id_token_signing_alg_values_supported": ["RS256"]})
+                    .to_string()
+                    .into_bytes(),
+                ),
+                ("GET", "/keys") => (200, test_keys("bf1", &["msteams"])),
+                ("POST", "/tenant-1/oauth2/v2.0/token") => (
+                    200,
+                    json!({"access_token": "bf-token", "expires_in": 3600, "token_type": "Bearer"})
+                        .to_string()
+                        .into_bytes(),
+                ),
+                ("POST", _) => (201, b"{\"id\": \"r1\"}".to_vec()),
+                _ => (404, b"{}".to_vec()),
+            },
+        );
+    base.set(microsoft.clone()).unwrap();
+    std::env::set_var("TEAMS_APP_ID", "app-1");
+    std::env::set_var("TEAMS_APP_PASSWORD", "bf-secret");
+    std::env::set_var("TEAMS_TENANT_ID", "tenant-1");
+    std::env::set_var("TEAMS_OPENID_URL", format!("{microsoft}/openid"));
+    std::env::set_var("TEAMS_LOGIN_URL", &microsoft);
+    let listen = free();
+    let options = sion_cli::messengers::Options {
+        allow: vec!["a:1chat".into()],
+        once: true,
+        listen: listen.clone(),
+        ..Default::default()
+    };
+    let teams = sion_cli::messengers::for_bridge("teams", &options).unwrap();
+    let service = format!("{microsoft}/amer/");
+    let activity = json!({
+        "type": "message", "id": "act-1", "channelId": "msteams", "serviceUrl": service,
+        "from": {"id": "29:alice", "aadObjectId": "aad-alice", "name": "Alice"},
+        "recipient": {"id": "28:app-1", "name": "Lead"},
+        "conversation": {"id": "a:1chat", "conversationType": "personal"},
+        "text": "How much budget is left?", "textFormat": "plain"
+    })
+    .to_string();
+    let connector = |aud: &str, service: &str| {
+        sign(
+            json!({"iss": "https://api.botframework.com", "aud": aud, "exp": now + 600,
+                "nbf": now - 10, "serviceUrl": service}),
+            "bf1",
+        )
+    };
+    let url = format!("http://{listen}/api/messages");
+    assert_eq!(post(&url, None, &activity), 401, "no token");
+    assert_eq!(
+        post(&url, Some(&connector("app-2", &service)), &activity),
+        401,
+        "another bot's"
+    );
+    assert_eq!(
+        post(
+            &url,
+            Some(&connector("app-1", "https://elsewhere.example/")),
+            &activity
+        ),
+        401,
+        "for another service URL"
+    );
+    let forged = sion_cli::jwt::signed(
+        &json!({"iss": "https://api.botframework.com", "aud": "app-1", "exp": now + 600, "serviceUrl": service}),
+        TEST_KEY,
+        Some("someone-else"),
+    )
+    .unwrap();
+    assert_eq!(
+        post(&url, Some(&forged), &activity),
+        401,
+        "a key not published"
+    );
+    assert_eq!(
+        post(&url, Some(&connector("app-1", &service)), &activity),
+        200
+    );
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, teams.as_ref(), &options).unwrap();
+    drop(teams);
+    let token = sent_to(&microsoft_seen, "POST", "/tenant-1/oauth2/v2.0/token").remove(0);
+    assert_eq!(
+        common::form(&token.body),
+        [
+            ("grant_type".to_string(), "client_credentials".to_string()),
+            ("client_id".to_string(), "app-1".to_string()),
+            ("client_secret".to_string(), "bf-secret".to_string()),
+            (
+                "scope".to_string(),
+                "https://api.botframework.com/.default".to_string()
+            ),
+        ]
+    );
+    let answered = sent_to(
+        &microsoft_seen,
+        "POST",
+        "/amer/v3/conversations/a%3A1chat/activities/act-1",
+    )
+    .remove(0);
+    assert_eq!(answered.header("authorization"), Some("Bearer bf-token"));
+    assert_eq!(
+        answered.json(),
+        json!({"type": "message", "text": reply, "textFormat": "markdown", "replyToId": "act-1"})
+    );
+
+    // Google Chat: Chat's keys and Google's, the token endpoint and the
+    // Chat API, stood in for.
+    let (google, google_seen) =
+        http_stand_in(|sent| match (sent.method.as_str(), sent.url.as_str()) {
+            ("GET", "/jwk/chat") => (200, test_keys("g1", &[])),
+            ("GET", "/certs") => (200, test_keys("g2", &[])),
+            ("POST", "/token") => (
+                200,
+                json!({"access_token": "g-token", "expires_in": 3600, "token_type": "Bearer"})
+                    .to_string()
+                    .into_bytes(),
+            ),
+            ("POST", _) => (200, b"{\"name\": \"spaces/AAA/messages/r1\"}".to_vec()),
+            _ => (404, b"{}".to_vec()),
+        });
+    // Answered in the webhook's own answer: Chat's own tokens, for the
+    // project number.
+    std::env::set_var("GOOGLE_CHAT_AUDIENCE", "1234567890");
+    std::env::set_var("GOOGLE_CHAT_KEYS_URL", format!("{google}/jwk/chat"));
+    std::env::set_var("GOOGLE_CHAT_API_BASE", &google);
+    for unset in ["GOOGLE_CHAT_CREDENTIALS", "GOOGLE_CHAT_SENDER"] {
+        std::env::remove_var(unset);
+    }
+    let listen = free();
+    let options = sion_cli::messengers::Options {
+        allow: vec!["spaces/DM1".into()],
+        once: true,
+        listen: listen.clone(),
+        ..Default::default()
+    };
+    let chat = sion_cli::messengers::for_bridge("google-chat", &options).unwrap();
+    let event = json!({"type": "MESSAGE",
+        "space": {"name": "spaces/DM1", "spaceType": "DIRECT_MESSAGE"},
+        "message": {"name": "spaces/DM1/messages/m1", "sender": {"name": "users/111", "type": "HUMAN"},
+            "text": "How much budget is left?", "thread": {"name": "spaces/DM1/threads/t1"}}})
+    .to_string();
+    let chats = |aud: &str| {
+        sign(
+            json!({"iss": "chat@system.gserviceaccount.com", "aud": aud, "iat": now, "exp": now + 600}),
+            "g1",
+        )
+    };
+    let url = format!("http://{listen}/");
+    assert_eq!(
+        post(&url, Some(&chats("999")), &event),
+        401,
+        "another project's"
+    );
+    let (held, token) = (poster.clone(), chats("1234567890"));
+    let (to, body) = (url.clone(), event.clone());
+    let waiting = std::thread::spawn(move || {
+        let auth = format!("Bearer {token}");
+        let answer = held
+            .send(
+                "POST",
+                &to,
+                &[
+                    ("Authorization", &auth),
+                    ("Content-Type", "application/json"),
+                ],
+                Some(body.as_bytes()),
+            )
+            .unwrap();
+        (answer.status, answer.read_all(1 << 16).unwrap())
+    });
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, chat.as_ref(), &options).unwrap();
+    drop(chat);
+    let (status, answer) = waiting.join().unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&answer).unwrap(),
+        json!({"text": reply})
+    );
+
+    // Answered through the Chat API, with a service account's key: an
+    // add-on's event, its ID token for the endpoint's URL.
+    let credentials = home.join("service-account.json");
+    std::fs::write(
+        &credentials,
+        json!({"type": "service_account", "client_email": "lead@proj.iam.gserviceaccount.com",
+            "private_key": TEST_KEY, "private_key_id": "sa1", "token_uri": format!("{google}/token")})
+        .to_string(),
+    )
+    .unwrap();
+    let sender = "service-1234567890@gcp-sa-gsuiteaddons.iam.gserviceaccount.com";
+    std::env::set_var("GOOGLE_CHAT_AUDIENCE", "https://bot.example.org/chat");
+    std::env::set_var("GOOGLE_CHAT_KEYS_URL", format!("{google}/certs"));
+    std::env::set_var("GOOGLE_CHAT_SENDER", sender);
+    std::env::set_var("GOOGLE_CHAT_CREDENTIALS", &credentials);
+    let listen = free();
+    let options = sion_cli::messengers::Options {
+        allow: vec!["spaces/AAA".into()],
+        require_mention: true,
+        once: true,
+        listen: listen.clone(),
+        ..Default::default()
+    };
+    let chat = sion_cli::messengers::for_bridge("google-chat", &options).unwrap();
+    let event = json!({"chat": {"user": {"name": "users/111"}, "messagePayload": {
+        "space": {"name": "spaces/AAA", "spaceType": "SPACE"},
+        "message": {"name": "spaces/AAA/messages/m2", "sender": {"name": "users/111", "type": "HUMAN"},
+            "text": "@Lead How much budget is left?", "argumentText": "How much budget is left?",
+            "thread": {"name": "spaces/AAA/threads/t9"},
+            "annotations": [{"type": "USER_MENTION", "userMention": {"user": {"name": "users/999", "type": "BOT"}}}]}}}})
+    .to_string();
+    let id_token = |email: &str| {
+        sign(
+            json!({"iss": "https://accounts.google.com", "aud": "https://bot.example.org/chat",
+                "email": email, "email_verified": true, "iat": now, "exp": now + 600}),
+            "g2",
+        )
+    };
+    let url = format!("http://{listen}/chat");
+    assert_eq!(
+        post(&url, Some(&id_token("someone@example.org")), &event),
+        401,
+        "not the add-on's"
+    );
+    assert_eq!(post(&url, Some(&id_token(sender)), &event), 200);
+    sion_cli::messengers::bridge_with(ledger, &profile, chat.as_ref(), &options).unwrap();
+    drop(chat);
+    let grant = common::form(&sent_to(&google_seen, "POST", "/token").remove(0).body);
+    assert_eq!(
+        grant[0],
+        (
+            "grant_type".into(),
+            "urn:ietf:params:oauth:grant-type:jwt-bearer".into()
+        )
+    );
+    // The assertion is the service account's, signed with its key.
+    let keys = sion_cli::jwt::keys(&serde_json::from_slice(&test_keys("sa1", &[])).unwrap());
+    let (claims, _) = sion_cli::jwt::verified(&grant[1].1, &keys).unwrap();
+    assert_eq!(claims["iss"], "lead@proj.iam.gserviceaccount.com");
+    assert_eq!(claims["scope"], "https://www.googleapis.com/auth/chat.bot");
+    assert_eq!(claims["aud"], format!("{google}/token"));
+    let posted = sent_to(
+        &google_seen,
+        "POST",
+        "/v1/spaces/AAA/messages?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
+    )
+    .remove(0);
+    assert_eq!(posted.header("authorization"), Some("Bearer g-token"));
+    assert_eq!(
+        posted.json(),
+        json!({"text": reply, "thread": {"name": "spaces/AAA/threads/t9"}})
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}

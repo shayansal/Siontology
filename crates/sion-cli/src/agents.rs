@@ -508,8 +508,11 @@ pub enum AgentCommand {
     /// EMAIL_TOKEN_COMMAND), or through webhooks to --listen: whatsapp
     /// (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET,
     /// WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN,
-    /// LINE_CHANNEL_SECRET) or sms through Twilio (TWILIO_ACCOUNT_SID,
-    /// TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL).
+    /// LINE_CHANNEL_SECRET), sms through Twilio (TWILIO_ACCOUNT_SID,
+    /// TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL), teams
+    /// (TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID for a
+    /// single-tenant bot) or google-chat (GOOGLE_CHAT_AUDIENCE, and
+    /// GOOGLE_CHAT_CREDENTIALS to answer through the Chat API).
     Bridge {
         /// The agent profile.
         profile: String,
@@ -528,8 +531,8 @@ pub enum AgentCommand {
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
-        /// Where whatsapp, line and sms send their webhooks (expose it to
-        /// them behind TLS).
+        /// Where whatsapp, line, sms, teams and google-chat send their
+        /// webhooks (expose it to them behind TLS).
         #[arg(long, default_value = crate::webhooks::LISTEN)]
         listen: String,
         #[command(flatten)]

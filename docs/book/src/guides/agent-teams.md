@@ -545,6 +545,73 @@ POST /line/v2/bot/message/reply {"messages":[{"text":"100 USD left in the budget
 POST /twilio/2010-04-01/Accounts/AC0001/Messages.json To=%2B15550001111&From=%2B15559990000&Body=100%20USD%20left%20in%20the%20budget.
 ```
 
+### Microsoft Teams and Google Chat
+
+Teams and Google Chat send what is said to the bridge as webhooks too,
+to its `--listen` address, which you expose to them behind TLS. Neither
+signs a webhook with a secret you share: each sends a token (a JWT,
+signed with RS256), which the bridge checks against the keys the service
+publishes, fetched over TLS and kept a day, before anything reaches the
+profile.
+
+| `--via` | Credentials | The token taken | Answers through |
+|---|---|---|---|
+| `teams` | `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, and `TEAMS_TENANT_ID` for a single-tenant bot | the Bot Connector's (`https://api.botframework.com`), for the app ID, by a key endorsed for the channel, naming the activity's service URL | the Connector API at that service URL, with a token Microsoft Entra ID gives the app, as a reply to the message |
+| `google-chat` | `GOOGLE_CHAT_AUDIENCE` (the project number, or the endpoint's URL), and `GOOGLE_CHAT_CREDENTIALS` (a service account's key file) to answer at any time | Chat's own (`chat@system.gserviceaccount.com`) for the project number, or Google's ID token of `GOOGLE_CHAT_SENDER` for the URL | the webhook's own answer, while Chat waits (thirty seconds); with a service account's key, the Chat API, in the message's thread |
+
+In a Teams channel the bot is written to by mentioning it, and the
+mention is cut from what the agent reads; a personal chat is a direct
+one, for pairing. Google Chat's events come in either of the shapes Chat
+sends: an interaction event, or a Workspace add-on's. Without a service
+account, an answer the agent takes longer over than Chat waits is not
+delivered, and the bridge says so; with one, it goes whenever it comes,
+and voice notes are fetched to be heard.
+
+Here each bridge ran with `--once` while a stand-in sent it what the
+service would, its tokens signed with a key the stand-in for the service
+published (`TEAMS_OPENID_URL`, `TEAMS_LOGIN_URL` and
+`GOOGLE_CHAT_KEYS_URL` pointed the bridge at it):
+
+```text
+$ TEAMS_APP_ID=app-1 TEAMS_APP_PASSWORD=… TEAMS_TENANT_ID=tenant-1 TEAMS_OPENID_URL=http://127.0.0.1:8790/openid TEAMS_LOGIN_URL=http://127.0.0.1:8790 sion agent bridge lead --via teams --allow a:1chat --listen 127.0.0.1:8789 --once
+teams: webhooks on http://127.0.0.1:8789/
+conversation a:1chat (aad-alice): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session c92b696768ee4fb1: done
+to conversation a:1chat: 100 USD left in the budget.
+$ GOOGLE_CHAT_AUDIENCE=1234567890 GOOGLE_CHAT_KEYS_URL=http://127.0.0.1:8790/jwk/chat sion agent bridge lead --via google-chat --allow spaces/DM1 --listen 127.0.0.1:8788 --once
+google-chat: webhooks on http://127.0.0.1:8788/
+space spaces/DM1 (users/111): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 4d0f4925547a856c: done
+to space spaces/DM1: 100 USD left in the budget.
+```
+
+What the stand-ins for Teams and Chat sent the bridge, and the answers:
+
+```text
+POST (no token): HTTP 401 no token
+POST (a token for another bot): HTTP 401 a token for another audience ("app-2")
+POST (the Bot Connector's token): HTTP 200 ok
+POST (a token for another project): HTTP 401 a token for another audience ("999")
+POST (Chat's token): HTTP 200 {"text":"100 USD left in the budget."}
+```
+
+What the stand-ins for Microsoft and Google were asked, the secrets
+named and not shown:
+
+```text
+GET /openid
+GET /keys
+POST /tenant-1/oauth2/v2.0/token (client_id, client_secret, grant_type, scope)
+POST /amer/v3/conversations/a%3A1chat/activities/act-1 (Authorization: Bearer …) {"replyToId":"act-1","text":"100 USD left in the budget.","textFormat":"markdown","type":"message"}
+GET /jwk/chat
+```
+
 ### Email
 
 `--via email` reads the agent's own mailbox over IMAP and answers over
@@ -846,6 +913,16 @@ again.
   against stand-ins for their APIs (the WebSocket client also against
   Discord's real gateway, which it reached and was greeted by), and voice
   notes only against stand-ins for the speech services'.
+- Teams and Google Chat are taken as their services' by their tokens
+  (`agent:teams-tokens`, `agent:google-chat-tokens`): a webhook copied
+  on its way could be sent again while its token lasts (about an hour),
+  and is answered again once its message's id has left the last thousand
+  remembered.
+  Teams carries no voice notes here (its audio comes as files), and
+  Google Chat's spoken answers go as text; a Google Chat answer the agent
+  takes more than 25 seconds over goes only with a service account's key.
+  Both have been run only against stand-ins for Microsoft's and Google's
+  side.
 - An email is answered as from whom the provider's
   `Authentication-Results` say (`agent:email-from`): a provider that adds
   none, or does not check what it says it checked, leaves the bridge

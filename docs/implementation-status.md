@@ -299,7 +299,14 @@ where the server has it, without marking anything read) and answered over
 SMTP in the writer's thread, TLS or STARTTLS required but to a loopback
 address, and only what the provider's `Authentication-Results` show to be
 from the address it names, and not written by a machine, is answered;
-trust atom `agent:email-from`. Voice notes are heard on every messenger (OpenAI-compatible
+trust atom `agent:email-from`. Microsoft Teams (the Bot Framework) and
+Google Chat (an HTTP endpoint app) reach a bridge as webhooks whose
+tokens are checked (RS256, against the keys the services publish, with
+the TLS stack's RSA) before anything reaches the profile; Teams is
+answered through the Connector API with the app's token, Google Chat in
+the webhook's own answer or, with a service account's key, through the
+Chat API; trust atoms `agent:teams-tokens`, `agent:google-chat-tokens`.
+Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, or a command) and answered aloud (OpenAI,
 ElevenLabs, or a command): a voice note on Telegram, a voice message on
 Matrix, audio attached to the reply on Discord, Slack and Signal; trust
@@ -866,6 +873,8 @@ the architecture's own:
 | `agent:email-from` | An email is taken as from the address its `From` names only as far as the mail provider's `Authentication-Results` show (DMARC passing for its domain, or DKIM or SPF passing for a domain aligned with it), read from the topmost results or the topmost of the server `EMAIL_AUTHSERV_ID` names: the provider is trusted to write its results above everything a sender wrote, and to check what it says it checked. With `EMAIL_TRUST_FROM`, `From` is taken as it is. Alignment is taken as one domain being the other or under it, not by the public suffix list. |
 | `agent:service-tokens` | A service's tokens (`sion agent service install --env`) are kept in plain text in a file only the user reads (systemd's environment file, or the launchd agent): whoever can read the user's files can read them. |
 | `agent:webhooks` | A webhook (WhatsApp, LINE, SMS through Twilio) is taken as its service's when it carries the service's signature with the secret the operator gave. The signatures name no time, so a webhook copied on its way could be sent again later and is answered again once its id has left the last thousand remembered; the bridge listens on plain HTTP, and TLS is the operator's proxy's. |
+| `agent:teams-tokens` | A Teams webhook is taken as the Bot Connector's when its token is signed by a key `login.botframework.com` publishes (fetched over TLS, kept a day), issued by `https://api.botframework.com` for the bot's app ID, within five minutes of its times, by a key endorsed for the activity's channel, and naming the activity's service URL, where the reply goes with the app's token; who wrote a message is who the Bot Connector says (`agent:messenger-identity`). |
+| `agent:google-chat-tokens` | A Google Chat webhook is taken as Chat's when its token is signed by a key Google publishes for `chat@system.gserviceaccount.com`, for the app's project number (or, with the endpoint URL as audience, is Google's ID token of the sender named, for that URL), within five minutes of its times; who wrote a message is who Chat says. With a service account's key, the bridge signs its token requests with it: whoever reads the key file can act as the app. |
 | `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |

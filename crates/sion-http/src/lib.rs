@@ -496,6 +496,69 @@ pub fn random(buf: &mut [u8]) -> Result<(), HttpError> {
         .map_err(|_| HttpError::Config("the system gave no random bytes".into()))
 }
 
+/// A DER length.
+fn der_length(len: usize) -> Vec<u8> {
+    if len < 0x80 {
+        return vec![len as u8];
+    }
+    let bytes: Vec<u8> = len
+        .to_be_bytes()
+        .into_iter()
+        .skip_while(|b| *b == 0)
+        .collect();
+    let mut out = vec![0x80 | bytes.len() as u8];
+    out.extend(bytes);
+    out
+}
+
+/// A DER INTEGER of the unsigned big-endian `bytes`.
+fn der_unsigned(bytes: &[u8]) -> Vec<u8> {
+    let mut value: Vec<u8> = bytes.iter().copied().skip_while(|b| *b == 0).collect();
+    if value.first().map_or(true, |b| b & 0x80 != 0) {
+        value.insert(0, 0);
+    }
+    let mut out = vec![0x02];
+    out.extend(der_length(value.len()));
+    out.extend(value);
+    out
+}
+
+/// Whether `signature` is RSASSA-PKCS1-v1_5 with SHA-256 (JWT's `RS256`)
+/// over `message` by the RSA key of modulus `n` and exponent `e`
+/// (big-endian), of 2048 to 8192 bits, checked by the TLS stack
+/// (aws-lc-rs) as it checks certificates.
+pub fn rsa_sha256_verify(n: &[u8], e: &[u8], message: &[u8], signature: &[u8]) -> bool {
+    // The key as an RSAPublicKey (RFC 8017): SEQUENCE { n, e }.
+    let mut body = der_unsigned(n);
+    body.extend(der_unsigned(e));
+    let mut key = vec![0x30];
+    key.extend(der_length(body.len()));
+    key.extend(body);
+    aws_lc_rs::default_provider()
+        .signature_verification_algorithms
+        .mapping
+        .iter()
+        .filter(|(scheme, _)| *scheme == rustls::SignatureScheme::RSA_PKCS1_SHA256)
+        .flat_map(|(_, algorithms)| algorithms.iter())
+        .any(|algorithm| algorithm.verify_signature(&key, message, signature).is_ok())
+}
+
+/// RSASSA-PKCS1-v1_5 with SHA-256 (`RS256`) over `message`, by the RSA
+/// private key in `pem` (PKCS#8 or PKCS#1), with the TLS stack.
+pub fn rsa_sha256_sign(pem: &str, message: &[u8]) -> Result<Vec<u8>, HttpError> {
+    let refused = |e: &dyn std::fmt::Display| HttpError::Config(format!("the private key: {e}"));
+    let der =
+        rustls_pki_types::PrivateKeyDer::from_pem_slice(pem.as_bytes()).map_err(|e| refused(&e))?;
+    let key = aws_lc_rs::default_provider()
+        .key_provider
+        .load_private_key(der)
+        .map_err(|e| refused(&e))?;
+    let signer = key
+        .choose_scheme(&[rustls::SignatureScheme::RSA_PKCS1_SHA256])
+        .ok_or_else(|| refused(&"not an RSA key"))?;
+    signer.sign(message).map_err(|e| refused(&e))
+}
+
 /// Where a connection goes ([`Client::connect`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Target {
@@ -1212,6 +1275,77 @@ mod tests {
         assert!(written.is_err() || tls.read(&mut byte).is_err());
         assert_eq!(heard.recv().unwrap(), Some(22));
         assert!(matches!(client.start_tls(tls), Err(HttpError::Refused(_))));
+    }
+
+    /// A key made for these tests (`openssl genpkey -algorithm RSA`): it
+    /// signs nothing else.
+    const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC8TD/OCBgIPjSx\nAuFzHFmrJ+NkihIkJAwh7iz8Jid9tKk+YECr47SzgbNAma3z1NdpAemUVo/RWrLt\nKXXlfbdnWW+RlwCDW9iceePOeXIiLvE1gc5u9fFytaGEthzNArd5PtLXInR2YOfr\nhMWI8OHXewnWcm8YmACpw5BfbTGzIRocbmlpjAxr3XBrmzTJ6oQ9I2UNgDPRaOEX\n0uIO/3uq7lCBOeDh4b87LwSaOA/iFDs+OsqiHX0SOq0+cjcp5VaBr5ivdPMw0Bea\niXqyQAS+/Z7WeC/VSP2LPir1x56E7t1uOaQA4dzvvR10WhxQ1qouWX9g1z12OL9K\nWiTG2ln3AgMBAAECggEAUBv4gUU8RDWC4VQiaoDDPWgI/DspoKqdZsoX5WauInL8\nFgeJPBfyRvSFOJSpRzVkN86Se4OgSCdYPEIJYIttvdB1APHHTBuFOn05CBzvC9AA\n2wzQsLB9+pl/kCCSfD4NpM2vkcuc1MhBoxenmq0wyCYWd1/UGBiDH7aN86tXG6fc\nkpWvGhFzlkCQ+R1kNeYElbg8R1RbKx1SZzYd3qybFZ55NK/wgCqiPFGcb3Q42tqD\nscoR5bO/sY8/uqMPk0MmYYNLf8UYp+02jqBcYHYB6dyipSNEynRO0sv8D56o001z\n2/EIjcLNRnpArwuJDloMzJAhAfkpQEHEp7jI79B3QQKBgQDmqP31rJXe3oPlcnGt\ng6QZrW3i9NDzKgMQ1tKYeaLDzI6pl7wR9yq4/tQwFCSxqtsL3qzaFTnFoaYbHVwp\nrMo80Li6IR1lqShvkYBRFgDKMCLWDfPjZJPO4PK/2Gdk5Q92VsBW0V61BPyxGXJ9\nnqrR27lbsWXKLkkDKyoFkZlZpwKBgQDQ+9/v93+EzEdaJhM0gAsUpI/dJQmArCro\nuh6O6k42rqI17n56D1t2VXCxlluRpBE4zyF9c9hyeWw3GrmqfYDRHTx0ywuB4Nh/\nb5qItI5jfZaY8xCcmQXlDkY2unvk6nYGSXfmv7lDMVyzcfLNVtwaE00RlA/uVmWw\n6BqTcOJnMQKBgQC2EqeFCdqztkm/EHuTT9p1OmUHReC6UWtiG3DZUwqcLBhg3pli\nRQzAQscTvJLKe+e0ku02qJKV4mfP93kMnIx3PPrUUdd2q/RzPRNg7lFpSF33QcRG\nttnF7+MudJAJIJb3/rqMzXBIy8r7sO6jImAMj7jdHEcRNUAE9EmTY778+QKBgQCH\nLRS5rFaAeH4CsrQjdls0fAlOWwGdiD+tD45qlOYIescTqXOH0l0v2q4tQHt0ZjJ5\nk4kvE3rC+QVlU1UbEVj8ajPLu/ZyiRSgwXisylV7xyVdQ4PQNy7X7Xa/Obqf5IR5\nJpZ23DaiXtB+hcsuxOtTtn5YS3ROjvXyCv/9tLvNUQKBgHVTMluGaVfsd/VemwMK\nIsiUrdLTcNVvFYhWz3g0hlPWw3QYmgoEbV+v3t/oSmdxyVxQrPnpD2z2ob5PBLDO\nbAuDg06BoUrAfK/9Vy4iVzctRC3Ag5hpR9Rpr0DDMzp6osnnIGDdMayrKqXcpNVz\nlC7ht8tPGw3yR8PC8q6Rm2bn\n-----END PRIVATE KEY-----";
+    const TEST_N: &str = "vEw_zggYCD40sQLhcxxZqyfjZIoSJCQMIe4s_CYnfbSpPmBAq-O0s4GzQJmt89TXaQHplFaP0Vqy7Sl15X23Z1lvkZcAg1vYnHnjznlyIi7xNYHObvXxcrWhhLYczQK3eT7S1yJ0dmDn64TFiPDh13sJ1nJvGJgAqcOQX20xsyEaHG5paYwMa91wa5s0yeqEPSNlDYAz0WjhF9LiDv97qu5QgTng4eG_Oy8EmjgP4hQ7PjrKoh19EjqtPnI3KeVWga-Yr3TzMNAXmol6skAEvv2e1ngv1Uj9iz4q9ceehO7dbjmkAOHc770ddFocUNaqLll_YNc9dji_SlokxtpZ9w";
+    /// `openssl dgst -sha256 -sign` of `header.payload` with the key.
+    const TEST_SIGNATURE: &str = "GQilAVT2bC6vYKlglgfoj6YeC1zpo0WbwVa3smO2NJGyGt-3DWGr0qalsq0OuTKz76CACtHm8s-MUvh9mBjXSU5JDAhGIZucgpFVCGW6g17VKS8tC7pWxhIJ2tocl0rVSDG95WAtRkDHWJzrIN-MLJCX3sX5YqeKSVC9873I-5v2_meWt_yikBs6ZdSLFnRGUMavMkSNkewfNxmjYJ7F4ngAYvAxp1C_MCQKPGbJLpCctIbcLi7EUeJyJYMlX4dD6XDV-dzOzMcTx7FgajKIFuH7Q0veF-QS9f_btcX8y2kraMlEwuutEyc0Ygc_nP6Z-LkgkXEekf8lPQMzC3u1Fw";
+
+    fn from_base64url(text: &str) -> Vec<u8> {
+        let value = |c: u8| -> u32 {
+            match c {
+                b'A'..=b'Z' => u32::from(c - b'A'),
+                b'a'..=b'z' => u32::from(c - b'a') + 26,
+                b'0'..=b'9' => u32::from(c - b'0') + 52,
+                b'-' => 62,
+                _ => 63,
+            }
+        };
+        let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0);
+        for c in text.bytes() {
+            acc = (acc << 6) | value(c);
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+                acc &= (1 << bits) - 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn rsa_signatures_are_made_and_checked_as_rs256_wants() {
+        let n = from_base64url(TEST_N);
+        let e = [1, 0, 1];
+        let expected = from_base64url(TEST_SIGNATURE);
+        // PKCS#1 v1.5 is deterministic: the same as OpenSSL's.
+        let signature = rsa_sha256_sign(TEST_KEY, b"header.payload").unwrap();
+        assert_eq!(signature, expected);
+        assert!(rsa_sha256_verify(&n, &e, b"header.payload", &signature));
+        assert!(!rsa_sha256_verify(&n, &e, b"header.payloaD", &signature));
+        let mut wrong = signature.clone();
+        wrong[0] ^= 1;
+        assert!(!rsa_sha256_verify(&n, &e, b"header.payload", &wrong));
+        // Leading zeros of the modulus do not change the key.
+        let mut padded = vec![0, 0];
+        padded.extend(&n);
+        assert!(rsa_sha256_verify(
+            &padded,
+            &e,
+            b"header.payload",
+            &signature
+        ));
+        assert!(!rsa_sha256_verify(
+            &n[..128],
+            &e,
+            b"header.payload",
+            &signature
+        ));
+        assert!(matches!(
+            rsa_sha256_sign(
+                "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----",
+                b"x"
+            ),
+            Err(HttpError::Config(_))
+        ));
+        assert_eq!(der_length(0x7f), [0x7f]);
+        assert_eq!(der_length(0x100), [0x82, 1, 0]);
+        assert_eq!(der_unsigned(&[0x80]), [2, 2, 0, 0x80]);
+        assert_eq!(der_unsigned(&[0, 0, 1]), [2, 1, 1]);
     }
 
     #[test]

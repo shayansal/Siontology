@@ -79,15 +79,23 @@ pub struct Answer {
 }
 
 impl Answer {
-    fn ok() -> Answer {
+    pub(crate) fn ok() -> Answer {
         Answer::text(200, "ok")
     }
 
-    fn text(status: u16, body: &str) -> Answer {
+    pub(crate) fn text(status: u16, body: &str) -> Answer {
         Answer {
             status,
             content_type: "text/plain; charset=utf-8",
             body: body.as_bytes().to_vec(),
+        }
+    }
+
+    pub(crate) fn json(status: u16, body: &Value) -> Answer {
+        Answer {
+            status,
+            content_type: "application/json",
+            body: body.to_string().into_bytes(),
         }
     }
 }
@@ -147,7 +155,7 @@ pub fn decode_form(body: &[u8]) -> Vec<(String, String)> {
 }
 
 /// `fields` form-encoded.
-fn encode_form(fields: &[(&str, &str)]) -> String {
+pub(crate) fn encode_form(fields: &[(&str, &str)]) -> String {
     let encode = |text: &str| {
         text.bytes()
             .map(|b| {
@@ -172,20 +180,93 @@ fn encode_form(fields: &[(&str, &str)]) -> String {
 pub fn inbox(
     name: &str,
     listen: &str,
-    handle: impl FnMut(&Hook) -> (Answer, Vec<Incoming>) + Send + 'static,
+    mut handle: impl FnMut(&Hook) -> (Answer, Vec<Incoming>) + Send + 'static,
+) -> Result<Live, String> {
+    inbox_holding(name, listen, None, move |hook| {
+        let (answer, messages) = handle(hook);
+        Handled {
+            answer,
+            messages,
+            hold: None,
+        }
+    })
+}
+
+/// A webhook held open for the reply to its chat ([`inbox_holding`]).
+pub(crate) struct HeldHook {
+    pub(crate) request: tiny_http::Request,
+    /// When to stop waiting, and answer with `fallback`.
+    pub(crate) until: Instant,
+    pub(crate) fallback: Answer,
+    /// What kind of webhook it is, for the shape of the reply.
+    pub(crate) kind: &'static str,
+}
+
+/// The webhooks held open, by chat.
+pub(crate) type Held = Arc<Mutex<BTreeMap<String, HeldHook>>>;
+
+/// What a webhook is answered with, and what it brought.
+pub(crate) struct Handled {
+    pub(crate) answer: Answer,
+    pub(crate) messages: Vec<Incoming>,
+    /// To hold the webhook open for the reply to a chat: the chat, until
+    /// when (then answered with `answer`), and its kind.
+    pub(crate) hold: Option<(String, Instant, &'static str)>,
+}
+
+/// [`inbox`], where a webhook can be held open for its reply, in `held`,
+/// for a service that takes the reply as the webhook's answer.
+pub(crate) fn inbox_holding(
+    name: &str,
+    listen: &str,
+    held: Option<Held>,
+    handle: impl FnMut(&Hook) -> Handled + Send + 'static,
 ) -> Result<Live, String> {
     let server = tiny_http::Server::http(listen).map_err(|e| format!("{listen}: {e}"))?;
     println!("{name}: webhooks on http://{listen}/");
-    Ok(Live::start(name, move |link| serve(server, &link, handle)))
+    Ok(Live::start(name, move |link| {
+        serve(server, &link, held.as_ref(), handle)
+    }))
+}
+
+/// Answers a webhook.
+pub(crate) fn respond(request: tiny_http::Request, answer: Answer) {
+    let header =
+        tiny_http::Header::from_bytes(&b"Content-Type"[..], answer.content_type).expect("a header");
+    let _ = request.respond(
+        tiny_http::Response::from_data(answer.body)
+            .with_status_code(answer.status)
+            .with_header(header),
+    );
+}
+
+/// Answers the webhooks held past their time, or all of them.
+fn release(held: &Held, all: bool) {
+    let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    let done: Vec<String> = held
+        .iter()
+        .filter(|(_, hook)| all || hook.until <= now)
+        .map(|(chat, _)| chat.clone())
+        .collect();
+    for chat in done {
+        if let Some(hook) = held.remove(&chat) {
+            respond(hook.request, hook.fallback);
+        }
+    }
 }
 
 fn serve(
     server: tiny_http::Server,
     link: &Link,
-    mut handle: impl FnMut(&Hook) -> (Answer, Vec<Incoming>),
+    held: Option<&Held>,
+    mut handle: impl FnMut(&Hook) -> Handled,
 ) {
-    while !link.stopped() {
-        let mut request = match server.recv_timeout(Duration::from_millis(500)) {
+    'serving: while !link.stopped() {
+        if let Some(held) = held {
+            release(held, false);
+        }
+        let mut request = match server.recv_timeout(Duration::from_millis(200)) {
             Ok(Some(request)) => request,
             Ok(None) => continue,
             Err(e) => {
@@ -198,17 +279,8 @@ fn serve(
             .as_reader()
             .take(MAX_HOOK + 1)
             .read_to_end(&mut body);
-        let answer = |request: tiny_http::Request, answer: Answer| {
-            let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], answer.content_type)
-                .expect("a header");
-            let _ = request.respond(
-                tiny_http::Response::from_data(answer.body)
-                    .with_status_code(answer.status)
-                    .with_header(header),
-            );
-        };
         if read.is_err() || body.len() as u64 > MAX_HOOK {
-            answer(request, Answer::text(413, "too long"));
+            respond(request, Answer::text(413, "too long"));
             continue;
         }
         let hook = Hook {
@@ -226,25 +298,45 @@ fn serve(
                 .collect(),
             body,
         };
-        let (reply, messages) = handle(&hook);
-        answer(request, reply);
-        for message in messages {
+        let handled = handle(&hook);
+        match (handled.hold, held) {
+            (Some((chat, until, kind)), Some(held)) => {
+                // Held before the message is passed on, for its reply.
+                let earlier = held.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                    chat,
+                    HeldHook {
+                        request,
+                        until,
+                        fallback: handled.answer,
+                        kind,
+                    },
+                );
+                if let Some(earlier) = earlier {
+                    respond(earlier.request, earlier.fallback);
+                }
+            }
+            _ => respond(request, handled.answer),
+        }
+        for message in handled.messages {
             if !link.pass(message) {
-                return;
+                break 'serving;
             }
         }
     }
+    if let Some(held) = held {
+        release(held, true);
+    }
 }
 
-fn env(name: &str) -> Option<String> {
+pub(crate) fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-fn needed(name: &str, what: &str) -> Result<String, String> {
+pub(crate) fn needed(name: &str, what: &str) -> Result<String, String> {
     env(name).ok_or_else(|| format!("set {name} ({what})"))
 }
 
-fn client() -> Result<sion_http::Client, String> {
+pub(crate) fn client() -> Result<sion_http::Client, String> {
     sion_http::Client::new(sion_http::Options {
         timeout: Duration::from_secs(60),
         // The operator names the service's address.
@@ -254,12 +346,12 @@ fn client() -> Result<sion_http::Client, String> {
     .map_err(|e| e.to_string())
 }
 
-fn json_of(body: &[u8], service: &str) -> Result<Value, String> {
+pub(crate) fn json_of(body: &[u8], service: &str) -> Result<Value, String> {
     serde_json::from_slice(body)
         .map_err(|e| format!("{service} answered with something other than JSON: {e}"))
 }
 
-fn cut(text: &str, chars: usize) -> String {
+pub(crate) fn cut(text: &str, chars: usize) -> String {
     let text: String = text.chars().take(chars).collect();
     if text.is_empty() {
         "(nothing)".into()

@@ -260,6 +260,8 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
                 "TWILIO_WEBHOOK_URL",
             ],
         ),
+        ("teams", &["TEAMS_APP_ID", "TEAMS_APP_PASSWORD"]),
+        ("google-chat", &["GOOGLE_CHAT_AUDIENCE"]),
     ];
     let mut ready: Vec<&str> = messengers
         .iter()
