@@ -10,6 +10,18 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Voice notes on every messenger
+
+- **Heard everywhere.** Besides Telegram's, voice notes are heard from
+  Discord's and Signal's audio attachments, Slack's audio clips (fetched
+  with the bot's token, and only from Slack's own addresses) and
+  Matrix's `m.audio` messages (authenticated media, or the older
+  download path).
+- **Spoken everywhere.** A voice note is answered aloud on Matrix as a
+  voice message (MSC3245), and on Discord, Slack (its upload flow:
+  `files.getUploadURLExternal`, the bytes, `files.completeUploadExternal`)
+  and Signal as the reply with the audio attached.
+
 ### Live connections: Discord's gateway, Slack's Socket Mode, mentions
 
 - **WebSocket.** `sion_http::ws`: RFC 6455 connections over the guarded

@@ -708,29 +708,12 @@ impl Telegram {
         caption: &str,
     ) -> Result<(), String> {
         let fits = caption.chars().count() <= 1024;
-        let boundary = format!("sion-{}", crate::runtime::new_id());
-        let mut body = Vec::new();
-        let mut field = |name: &str, value: &str| {
-            body.extend_from_slice(
-                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
-                    .as_bytes(),
-            );
-        };
-        field("chat_id", &chat.to_string());
+        let mut form = crate::voice::Form::new().text("chat_id", &chat.to_string());
         if fits && !caption.is_empty() {
-            field("caption", caption);
+            form = form.text("caption", caption);
         }
-        body.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
-                audio.name, audio.media_type
-            )
-            .as_bytes(),
-        );
-        body.extend_from_slice(&audio.bytes);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let (content_type, body) = form.file("voice", audio).finish();
         let url = format!("{}/bot{}/sendVoice", self.base, self.token);
-        let content_type = format!("multipart/form-data; boundary={boundary}");
         let response = self
             .client
             .send(

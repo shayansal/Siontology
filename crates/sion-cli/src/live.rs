@@ -488,6 +488,35 @@ pub fn slack_mentions(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The audio clip a Slack message shares, if it shares one: its private
+/// address (fetched with the bot's token) and media type.
+pub fn slack_voice(message: &Value) -> Option<Note> {
+    let file = message["files"].as_array()?.iter().find(|file| {
+        file["subtype"] == "slack_audio"
+            || file["mimetype"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("audio/"))
+    })?;
+    Some(Note {
+        id: file["url_private_download"]
+            .as_str()
+            .or(file["url_private"].as_str())?
+            .to_string(),
+        media_type: file["mimetype"].as_str().map(str::to_string),
+    })
+}
+
+/// Whether a Slack message is what someone said to the bot: not an edit,
+/// a join or a bot's, though a shared audio clip is.
+pub fn slack_said(message: &Value, voice: &Option<Note>) -> bool {
+    message["bot_id"].is_null()
+        && match message["subtype"].as_str() {
+            None => true,
+            Some("file_share") => voice.is_some(),
+            Some(_) => false,
+        }
+}
+
 /// A message from a Socket Mode event, keyed by its channel and time so
 /// that the same message as a `message` and an `app_mention` is passed on
 /// once.
@@ -496,8 +525,8 @@ pub fn slack_message(event: &Value, me: Option<&str>) -> Option<(String, Incomin
     if kind != "message" && kind != "app_mention" {
         return None;
     }
-    // Edits, joins and bots' messages are not what people say to it.
-    if !event["bot_id"].is_null() || event["subtype"].is_string() {
+    let voice = slack_voice(event);
+    if !slack_said(event, &voice) {
         return None;
     }
     let chat = event["channel"].as_str()?;
@@ -518,7 +547,7 @@ pub fn slack_message(event: &Value, me: Option<&str>) -> Option<(String, Incomin
         }
         text = text.replace(&format!("<@{me}>"), "").trim().to_string();
     }
-    if text.is_empty() {
+    if text.is_empty() && voice.is_none() {
         return None;
     }
     Some((
@@ -527,7 +556,7 @@ pub fn slack_message(event: &Value, me: Option<&str>) -> Option<(String, Incomin
             chat: chat.to_string(),
             from: from.to_string(),
             text,
-            voice: None,
+            voice,
             direct: event["channel_type"] == "im",
             mentions,
         },

@@ -92,6 +92,65 @@ impl Audio {
     }
 }
 
+/// A `multipart/form-data` body, for the APIs that take files so.
+#[derive(Debug)]
+pub struct Form {
+    boundary: String,
+    body: Vec<u8>,
+}
+
+impl Default for Form {
+    fn default() -> Form {
+        Form::new()
+    }
+}
+
+impl Form {
+    /// An empty form, with a boundary of its own.
+    pub fn new() -> Form {
+        Form {
+            boundary: format!("sion-{}", crate::runtime::new_id()),
+            body: Vec::new(),
+        }
+    }
+
+    /// The form with a field `name` holding `value`.
+    pub fn text(mut self, name: &str, value: &str) -> Form {
+        self.body.extend_from_slice(
+            format!(
+                "--{}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n",
+                self.boundary
+            )
+            .as_bytes(),
+        );
+        self
+    }
+
+    /// The form with a field `name` holding `audio` as a file.
+    pub fn file(mut self, name: &str, audio: &Audio) -> Form {
+        self.body.extend_from_slice(
+            format!(
+                "--{}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
+                self.boundary, audio.name, audio.media_type
+            )
+            .as_bytes(),
+        );
+        self.body.extend_from_slice(&audio.bytes);
+        self.body.extend_from_slice(b"\r\n");
+        self
+    }
+
+    /// The `Content-Type` to send it with, and the body.
+    pub fn finish(mut self) -> (String, Vec<u8>) {
+        self.body
+            .extend_from_slice(format!("--{}--\r\n", self.boundary).as_bytes());
+        (
+            format!("multipart/form-data; boundary={}", self.boundary),
+            self.body,
+        )
+    }
+}
+
 fn client() -> Result<sion_http::Client, String> {
     sion_http::Client::new(sion_http::Options {
         timeout: Duration::from_secs(PROVIDER_SECS),
@@ -167,24 +226,11 @@ impl Hearing {
         }
         let text = match self {
             Hearing::Api { base, key, model } => {
-                let boundary = format!("sion-{}", crate::runtime::new_id());
-                let mut body = Vec::new();
-                for (name, value) in [("model", model.as_str()), ("response_format", "json")] {
-                    write!(
-                        body,
-                        "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-                write!(
-                    body,
-                    "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
-                    audio.name, audio.media_type
-                )
-                .map_err(|e| e.to_string())?;
-                body.extend_from_slice(&audio.bytes);
-                write!(body, "\r\n--{boundary}--\r\n").map_err(|e| e.to_string())?;
-                let content_type = format!("multipart/form-data; boundary={boundary}");
+                let (content_type, body) = Form::new()
+                    .text("model", model)
+                    .text("response_format", "json")
+                    .file("file", audio)
+                    .finish();
                 let authorization = match key {
                     Some(var) => Some(format!(
                         "Bearer {}",

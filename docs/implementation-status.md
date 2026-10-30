@@ -287,13 +287,12 @@ what mentions the bot or answers it. Pairing codes (8 consonants and
 digits, an hour each, three waiting per channel, a lockout after five
 wrong approvals) let in one direct chat on one channel and profile, from
 a store only the operator's user reads, changed by one process at a
-time. Voice notes are heard on
-Telegram and Discord (OpenAI-compatible transcription, Groq, or a
-command) and spoken on Telegram (OpenAI, ElevenLabs, or a command); trust
+time. Voice notes are heard on every messenger (OpenAI-compatible
+transcription, Groq, or a command) and answered aloud (OpenAI,
+ElevenLabs, or a command): a voice note on Telegram, a voice message on
+Matrix, audio attached to the reply on Discord, Slack and Signal; trust
 atoms `agent:pairing`, `agent:voice`. The messengers and the speech
-services are tested against stand-ins for their APIs. Not built: voice
-replies on Discord, Slack, Matrix and Signal, and voice notes heard on
-Slack, Matrix and Signal. What a skill may do
+services are tested against stand-ins for their APIs. What a skill may do
 ([What a skill may do](book/src/guides/skill-permissions.md)) is
 declared in its front matter and enforced: `allowed-tools` pre-approves
 calls once a session has read the skill (never past a refusal, spending

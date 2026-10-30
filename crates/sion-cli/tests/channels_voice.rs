@@ -21,6 +21,70 @@ use sion_exec::execute::Event;
 use sion_exec::TxKind;
 use sion_node::{Devnet, DevnetConfig};
 
+mod common;
+use common::part;
+
+/// The tests here set the environment: one at a time.
+static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    ENVIRONMENT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A home of its own, a devnet, and the profile `lead`, whose scripted
+/// model says the budget left.
+fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile) {
+    let home = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    std::env::set_var("SION_HOME", &home);
+    let devnet = Arc::new(
+        Devnet::start(DevnetConfig {
+            rounds_per_pulse: 2,
+            prove_chunk: None,
+            ..DevnetConfig::default()
+        })
+        .unwrap(),
+    );
+    let ledger: SharedLedger = devnet.clone();
+    let mut session = Session::open(ledger.as_ref()).unwrap();
+    session
+        .fund("alice", AssetId::usd(), Amount::units(1_000))
+        .unwrap();
+    let agent = register(&mut session, &ledger, "lead");
+    session
+        .fund("lead", AssetId::usd(), Amount::units(1))
+        .unwrap();
+    let script = home.join("say.json");
+    std::fs::write(
+        &script,
+        json!([{"say": "85 USD left in the budget."}]).to_string(),
+    )
+    .unwrap();
+    let profile = Profile {
+        name: "lead".into(),
+        wallet: "lead".into(),
+        agent,
+        models: vec![format!("script:{}", script.display())],
+        autonomy: Autonomy::L3,
+        memory: None,
+        skills: None,
+        workspace: None,
+        web: false,
+        delegate: false,
+        subagent_models: Vec::new(),
+        adjudicator: None,
+        reflect: false,
+        shell: None,
+        mcp: Vec::new(),
+        storage: false,
+        instructions: None,
+        skill_approvals: true,
+        screen: Default::default(),
+    };
+    (home, devnet, ledger, profile)
+}
+
 /// What the stand-ins were asked: Telegram's methods with their bodies, and
 /// the speech provider's paths with what they carried.
 #[derive(Default)]
@@ -122,69 +186,10 @@ fn register(session: &mut Session<'_>, ledger: &SharedLedger, wallet: &str) -> O
         .unwrap()
 }
 
-/// The multipart part named `name`, in `body`.
-fn part<'a>(body: &'a [u8], name: &str) -> Option<&'a [u8]> {
-    let marker = format!("name=\"{name}\"");
-    let at = body
-        .windows(marker.len())
-        .position(|w| w == marker.as_bytes())?;
-    let rest = &body[at..];
-    let start = rest.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
-    let end = rest[start..].windows(4).position(|w| w == b"\r\n--")?;
-    Some(&rest[start..start + end])
-}
-
 #[test]
 fn a_voice_note_is_heard_and_answered_aloud_and_a_stranger_pairs() {
-    let home = std::env::temp_dir().join(format!("sion-channels-voice-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).unwrap();
-    // The only test in this binary, so the environment is its own.
-    std::env::set_var("SION_HOME", &home);
-    let devnet = Arc::new(
-        Devnet::start(DevnetConfig {
-            rounds_per_pulse: 2,
-            prove_chunk: None,
-            ..DevnetConfig::default()
-        })
-        .unwrap(),
-    );
-    let ledger: SharedLedger = devnet.clone();
-    let mut session = Session::open(ledger.as_ref()).unwrap();
-    session
-        .fund("alice", AssetId::usd(), Amount::units(1_000))
-        .unwrap();
-    let agent = register(&mut session, &ledger, "lead");
-    session
-        .fund("lead", AssetId::usd(), Amount::units(1))
-        .unwrap();
-    let script = home.join("say.json");
-    std::fs::write(
-        &script,
-        json!([{"say": "85 USD left in the budget."}]).to_string(),
-    )
-    .unwrap();
-    let profile = Profile {
-        name: "lead".into(),
-        wallet: "lead".into(),
-        agent,
-        models: vec![format!("script:{}", script.display())],
-        autonomy: Autonomy::L3,
-        memory: None,
-        skills: None,
-        workspace: None,
-        web: false,
-        delegate: false,
-        subagent_models: Vec::new(),
-        adjudicator: None,
-        reflect: false,
-        shell: None,
-        mcp: Vec::new(),
-        storage: false,
-        instructions: None,
-        skill_approvals: true,
-        screen: Default::default(),
-    };
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-channels-voice");
 
     let seen = Arc::new(Mutex::new(Seen::default()));
     let (telegram, speech) = stand_ins(
@@ -386,4 +391,243 @@ fn stand_in(
         }
     });
     (base, kept)
+}
+
+#[test]
+fn voice_notes_are_heard_and_spoken_on_every_messenger() {
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-voice-everywhere");
+    use common::{http_stand_in, live_stand_in, sent_to};
+    use std::sync::OnceLock;
+
+    // A speech service in OpenAI's shape: it hears "How much budget is
+    // left?" and speaks an Ogg file.
+    let (speech, heard) = http_stand_in(|sent| match sent.url.as_str() {
+        "/v1/audio/transcriptions" => (
+            200,
+            json!({"text": "How much budget is left?"})
+                .to_string()
+                .into_bytes(),
+        ),
+        "/v1/audio/speech" => (200, b"OggS-spoken-reply".to_vec()),
+        _ => (404, b"{}".to_vec()),
+    });
+    std::env::set_var("OPENAI_BASE_URL", format!("{speech}/v1"));
+    std::env::set_var("OPENAI_API_KEY", "sk-speech");
+    let voiced = |chat: &str| sion_cli::messengers::Options {
+        allow: vec![chat.into()],
+        once: true,
+        hearing: Some(sion_cli::voice::Hearing::parse("openai:whisper-1").unwrap()),
+        speaking: Some(sion_cli::voice::Speaking::parse("openai:tts-1:alloy").unwrap()),
+        ..Default::default()
+    };
+    let last_heard = || {
+        let file = sent_to(&heard, "POST", "/v1/audio/transcriptions")
+            .pop()
+            .expect("a voice note was heard");
+        part(&file.body, "file").unwrap().to_vec()
+    };
+    let spoken = b"OggS-spoken-reply".to_vec();
+    let reply = "85 USD left in the budget.";
+
+    // Discord: an audio attachment, through the gateway; the reply posted
+    // with the audio attached.
+    let gateway = Arc::new(OnceLock::new());
+    let url = gateway.clone();
+    let (discord, discord_seen) =
+        http_stand_in(
+            move |sent| match (sent.method.as_str(), sent.url.as_str()) {
+                ("GET", "/gateway/bot") => (
+                    200,
+                    json!({"url": url.get().unwrap()}).to_string().into_bytes(),
+                ),
+                ("GET", "/attachments/note.ogg") => (200, b"OggS-discord-note".to_vec()),
+                ("POST", "/channels/900/messages") => (200, b"{\"id\": \"1\"}".to_vec()),
+                _ => (404, b"{}".to_vec()),
+            },
+        );
+    let note = format!("{discord}/attachments/note.ogg");
+    let (socket, _) = live_stand_in(move |peer| {
+        peer.send(json!({"op": 10, "d": {"heartbeat_interval": 45000}}));
+        peer.expect(1);
+        peer.send(
+            json!({"op": 0, "s": 1, "t": "READY", "d": {"session_id": "s",
+            "resume_gateway_url": "ws://127.0.0.1:9", "user": {"id": "B7"}}}),
+        );
+        peer.send(
+            json!({"op": 0, "s": 2, "t": "MESSAGE_CREATE", "d": {"channel_id": "900",
+            "guild_id": "1", "author": {"id": "A1"}, "content": "",
+            "attachments": [{"url": note, "content_type": "audio/ogg"}]}}),
+        );
+    });
+    gateway.set(socket).unwrap();
+    std::env::set_var("DISCORD_BOT_TOKEN", "discord-voice");
+    std::env::set_var("DISCORD_API_BASE", &discord);
+    let options = voiced("900");
+    let messenger = sion_cli::messengers::for_bridge("discord", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, messenger.as_ref(), &options)
+        .unwrap();
+    drop(messenger);
+    assert_eq!(last_heard(), b"OggS-discord-note");
+    let posted = sent_to(&discord_seen, "POST", "/channels/900/messages").remove(0);
+    let payload: Value =
+        serde_json::from_slice(part(&posted.body, "payload_json").unwrap()).unwrap();
+    assert_eq!(payload["content"], reply);
+    assert_eq!(part(&posted.body, "files[0]").unwrap(), spoken);
+
+    // Slack in Socket Mode: an audio clip, fetched with the bot's token;
+    // the reply uploaded and shared with the text.
+    let (socket_at, base_at) = (
+        Arc::new(OnceLock::new()),
+        Arc::new(OnceLock::<String>::new()),
+    );
+    let (socket_url, slack_base) = (socket_at.clone(), base_at.clone());
+    let (slack, slack_seen) = http_stand_in(move |sent| {
+        let answer = match sent.url.as_str() {
+            "/apps.connections.open" => json!({"ok": true, "url": socket_url.get().unwrap()}),
+            "/auth.test" => json!({"ok": true, "user_id": "UBOT"}),
+            "/files/clip.webm" if sent.header("authorization") == Some("Bearer xoxb-voice") => {
+                return (200, b"slack-webm-clip".to_vec())
+            }
+            "/files/clip.webm" => return (403, b"no token".to_vec()),
+            "/files.getUploadURLExternal" => json!({"ok": true, "file_id": "F1",
+                "upload_url": format!("{}/upload/F1", slack_base.get().unwrap())}),
+            "/upload/F1" => return (200, b"OK".to_vec()),
+            "/files.completeUploadExternal" => json!({"ok": true}),
+            _ => return (404, b"{}".to_vec()),
+        };
+        (200, answer.to_string().into_bytes())
+    });
+    base_at.set(slack.clone()).unwrap();
+    let clip = format!("{slack}/files/clip.webm");
+    let (socket, acks) = live_stand_in(move |peer| {
+        peer.send(json!({"type": "hello"}));
+        peer.send(
+            json!({"envelope_id": "v1", "type": "events_api", "payload": {"event": {
+            "type": "message", "subtype": "file_share", "channel": "C3", "user": "U9",
+            "text": "", "ts": "400.1", "channel_type": "channel",
+            "files": [{"id": "F0", "subtype": "slack_audio", "mimetype": "audio/webm",
+                "url_private_download": clip}]}}}),
+        );
+    });
+    socket_at.set(socket).unwrap();
+    std::env::set_var("SLACK_BOT_TOKEN", "xoxb-voice");
+    std::env::set_var("SLACK_APP_TOKEN", "xapp-voice");
+    std::env::set_var("SLACK_API_BASE", &slack);
+    let options = voiced("C3");
+    let messenger = sion_cli::messengers::for_bridge("slack", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &profile, messenger.as_ref(), &options)
+        .unwrap();
+    drop(messenger);
+    std::env::remove_var("SLACK_APP_TOKEN");
+    assert_eq!(last_heard(), b"slack-webm-clip");
+    assert_eq!(common::wait_for(&acks, 1), [json!({"envelope_id": "v1"})]);
+    let asked = sent_to(&slack_seen, "POST", "/files.getUploadURLExternal").remove(0);
+    assert_eq!(
+        common::form(&asked.body),
+        [
+            ("filename".to_string(), "voice.ogg".to_string()),
+            ("length".to_string(), spoken.len().to_string())
+        ]
+    );
+    let uploaded = sent_to(&slack_seen, "POST", "/upload/F1").remove(0);
+    assert_eq!(uploaded.body, spoken);
+    assert!(
+        uploaded.header("authorization").is_none(),
+        "the upload takes no token"
+    );
+    let shared = common::form(
+        &sent_to(&slack_seen, "POST", "/files.completeUploadExternal")
+            .remove(0)
+            .body,
+    );
+    assert!(
+        shared.contains(&("channel_id".to_string(), "C3".to_string())),
+        "{shared:?}"
+    );
+    assert!(
+        shared.contains(&("initial_comment".to_string(), reply.to_string())),
+        "{shared:?}"
+    );
+
+    // Matrix: an m.audio message, fetched as authenticated media; the
+    // reply uploaded and sent as a voice message.
+    let (matrix, matrix_seen) = http_stand_in(|sent| {
+        let answer = match (sent.method.as_str(), sent.url.as_str()) {
+            ("GET", "/_matrix/client/v3/account/whoami") => json!({"user_id": "@lead:example.org"}),
+            ("GET", "/_matrix/client/v3/sync?timeout=0") => json!({"next_batch": "m1"}),
+            ("GET", "/_matrix/client/v3/sync?timeout=0&since=m1") => json!({"next_batch": "m2",
+                "rooms": {"join": {"!ops:example.org": {"summary": {"m.joined_member_count": 3},
+                    "timeline": {"events": [{"type": "m.room.message", "sender": "@ana:example.org",
+                        "content": {"msgtype": "m.audio", "body": "voice-message.ogg",
+                            "url": "mxc://example.org/note1", "info": {"mimetype": "audio/ogg"}}}]}}}}}),
+            ("GET", "/_matrix/client/v1/media/download/example.org/note1") => {
+                return (200, b"OggS-matrix-note".to_vec())
+            }
+            ("POST", u) if u.starts_with("/_matrix/media/v3/upload?filename=voice.ogg") => {
+                json!({"content_uri": "mxc://example.org/reply1"})
+            }
+            ("PUT", u) if u.starts_with("/_matrix/client/v3/rooms/%21ops%3Aexample.org/send/") => {
+                json!({"event_id": "$1"})
+            }
+            _ => return (404, b"{}".to_vec()),
+        };
+        (200, answer.to_string().into_bytes())
+    });
+    std::env::set_var("MATRIX_HOMESERVER", &matrix);
+    std::env::set_var("MATRIX_ACCESS_TOKEN", "matrix-voice");
+    let options = voiced("!ops:example.org");
+    let room = sion_cli::messengers::for_bridge("matrix", &options).unwrap();
+    for _ in 0..2 {
+        sion_cli::messengers::bridge_with(ledger.clone(), &profile, room.as_ref(), &options)
+            .unwrap();
+    }
+    assert_eq!(last_heard(), b"OggS-matrix-note");
+    let upload = sent_to(&matrix_seen, "POST", "/_matrix/media/v3/upload").remove(0);
+    assert_eq!(upload.body, spoken);
+    let message = sent_to(&matrix_seen, "PUT", "/_matrix/client/v3/rooms/")
+        .remove(0)
+        .json();
+    assert_eq!(
+        (&message["msgtype"], &message["url"], &message["body"]),
+        (
+            &json!("m.audio"),
+            &json!("mxc://example.org/reply1"),
+            &json!(reply)
+        )
+    );
+    assert!(message["org.matrix.msc3245.voice"].is_object(), "{message}");
+
+    // Signal: an audio attachment; the reply sent with the audio attached.
+    let (signal, signal_seen) =
+        http_stand_in(|sent| match (sent.method.as_str(), sent.url.as_str()) {
+            ("GET", "/v1/receive/%2B15559990000") => (
+                200,
+                json!([{"envelope": {"sourceNumber": "+15550001111", "dataMessage": {
+                    "attachments": [{"id": "att1", "contentType": "audio/aac", "size": 16}]}}}])
+                .to_string()
+                .into_bytes(),
+            ),
+            ("GET", "/v1/attachments/att1") => (200, b"signal-aac-note".to_vec()),
+            ("POST", "/v2/send") => (201, b"{\"timestamp\": \"1\"}".to_vec()),
+            _ => (404, b"{}".to_vec()),
+        });
+    std::env::set_var("SIGNAL_API_BASE", &signal);
+    std::env::set_var("SIGNAL_NUMBER", "+15559990000");
+    let options = voiced("+15550001111");
+    let number = sion_cli::messengers::for_bridge("signal", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger, &profile, number.as_ref(), &options).unwrap();
+    assert_eq!(last_heard(), b"signal-aac-note");
+    let sent = sent_to(&signal_seen, "POST", "/v2/send").remove(0).json();
+    assert_eq!(sent["message"], reply);
+    assert_eq!(sent["recipients"], json!(["+15550001111"]));
+    assert_eq!(
+        sent["base64_attachments"],
+        json!([format!(
+            "data:audio/ogg;filename=voice.ogg;base64,{}",
+            sion_http::base64(&spoken)
+        )])
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
 }

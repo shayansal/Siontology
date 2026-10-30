@@ -245,13 +245,28 @@ impl Slack {
     }
 
     fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
+        self.call_as(method, "application/json", body.to_string().as_bytes())
+    }
+
+    /// `method` with form fields, for the methods that take no JSON.
+    fn call_form(&self, method: &str, fields: &[(&str, &str)]) -> Result<Value, String> {
+        let body = fields
+            .iter()
+            .map(|(name, value)| format!("{}={}", segment(name), segment(value)))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.call_as(method, "application/x-www-form-urlencoded", body.as_bytes())
+    }
+
+    fn call_as(&self, method: &str, content_type: &str, body: &[u8]) -> Result<Value, String> {
         let auth = format!("Bearer {}", self.token);
         let fetched = self
             .client
-            .post_json(
+            .request(
+                "POST",
                 &format!("{}/{method}", self.base),
-                &[("Authorization", &auth)],
-                body.to_string().as_bytes(),
+                &[("Authorization", &auth), ("Content-Type", content_type)],
+                Some(body),
                 4 << 20,
             )
             .map_err(|e| hide(e.to_string(), &self.token))?;
@@ -264,6 +279,20 @@ impl Slack {
         }
         Ok(value)
     }
+
+    /// Whether `url` is Slack's own (its files', or the API's server), the
+    /// only addresses the bot's token goes to.
+    fn is_own(&self, url: &str) -> bool {
+        url.starts_with("https://files.slack.com/")
+            || origin(&self.base).is_some_and(|own| url.starts_with(&format!("{own}/")))
+    }
+}
+
+/// The scheme and authority of `url` (`https://slack.com`).
+fn origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    (!authority.is_empty()).then(|| format!("{scheme}://{authority}"))
 }
 
 impl Messenger for Slack {
@@ -314,11 +343,12 @@ impl Messenger for Slack {
                     continue;
                 }
                 latest = Some(ts.to_string());
-                let from_bot = !message["bot_id"].is_null() || !message["subtype"].is_null();
-                if oldest.is_none() || from_bot {
+                let voice = crate::live::slack_voice(message);
+                if oldest.is_none() || !crate::live::slack_said(message, &voice) {
                     continue;
                 }
-                if let Some(text) = message["text"].as_str() {
+                let text = message["text"].as_str().unwrap_or_default();
+                if !text.is_empty() || voice.is_some() {
                     let mut mentions = crate::live::slack_mentions(text);
                     if let Some(parent) = message["parent_user_id"].as_str() {
                         mentions.push(parent.to_string());
@@ -327,7 +357,7 @@ impl Messenger for Slack {
                         chat: channel.clone(),
                         from: message["user"].as_str().unwrap_or_default().to_string(),
                         text: text.to_string(),
-                        voice: None,
+                        voice,
                         // Direct messages' channels begin with D.
                         direct: channel.starts_with('D'),
                         mentions,
@@ -345,6 +375,66 @@ impl Messenger for Slack {
             &json!({"channel": chat, "text": cut(text, 3_000)}),
         )
         .map(|_| ())
+    }
+
+    fn fetch_voice(&self, note: &Note) -> Result<crate::voice::Audio, String> {
+        if !self.is_own(&note.id) {
+            return Err("a file that is not on Slack is not fetched with the bot's token".into());
+        }
+        let auth = format!("Bearer {}", self.token);
+        let fetched = self
+            .client
+            .request(
+                "GET",
+                &note.id,
+                &[("Authorization", &auth)],
+                None,
+                crate::voice::MAX_HEARD as u64,
+            )
+            .map_err(|e| hide(e.to_string(), &self.token))?;
+        let media_type = note
+            .media_type
+            .clone()
+            .unwrap_or_else(|| crate::voice::Audio::sniff(&fetched.body).to_string());
+        Ok(crate::voice::Audio::new(&media_type, fetched.body))
+    }
+
+    fn send_voice(
+        &self,
+        chat: &str,
+        audio: &crate::voice::Audio,
+        caption: &str,
+    ) -> Result<bool, String> {
+        // Slack's upload: an address for the file, the bytes to it (it
+        // takes no token), then the file shared in the chat with the reply.
+        let length = audio.bytes.len().to_string();
+        let to = self.call_form(
+            "files.getUploadURLExternal",
+            &[("filename", &audio.name), ("length", &length)],
+        )?;
+        let url = to["upload_url"]
+            .as_str()
+            .ok_or("Slack gave no address to upload to")?;
+        let id = to["file_id"].as_str().ok_or("Slack gave no file id")?;
+        self.client
+            .request(
+                "POST",
+                url,
+                &[("Content-Type", &audio.media_type)],
+                Some(&audio.bytes),
+                1 << 20,
+            )
+            .map_err(|e| format!("the upload to Slack: {e}"))?;
+        let files = json!([{"id": id, "title": audio.name}]).to_string();
+        self.call_form(
+            "files.completeUploadExternal",
+            &[
+                ("files", &files),
+                ("channel_id", chat),
+                ("initial_comment", &cut(caption, 3_000)),
+            ],
+        )?;
+        Ok(true)
     }
 
     fn long_polls(&self) -> bool {
@@ -488,6 +578,32 @@ impl Messenger for Discord {
             .clone()
             .unwrap_or_else(|| crate::voice::Audio::sniff(&fetched.body).to_string());
         Ok(crate::voice::Audio::new(&media_type, fetched.body))
+    }
+
+    fn send_voice(
+        &self,
+        chat: &str,
+        audio: &crate::voice::Audio,
+        caption: &str,
+    ) -> Result<bool, String> {
+        // The audio as an attachment, which Discord plays where it shows
+        // the message; the reply as the message's text.
+        let payload = json!({"content": cut(caption, 2_000)});
+        let (content_type, body) = crate::voice::Form::new()
+            .text("payload_json", &payload.to_string())
+            .file("files[0]", audio)
+            .finish();
+        let auth = format!("Bot {}", self.token);
+        self.client
+            .request(
+                "POST",
+                &format!("{}/channels/{}/messages", self.base, segment(chat)),
+                &[("Authorization", &auth), ("Content-Type", &content_type)],
+                Some(&body),
+                4 << 20,
+            )
+            .map_err(|e| hide(e.to_string(), &self.token))?;
+        Ok(true)
     }
 }
 
@@ -641,13 +757,31 @@ impl Messenger for Matrix {
                     .flatten()
                 {
                     let sender = event["sender"].as_str().unwrap_or_default();
+                    let content = &event["content"];
+                    // A voice message is an `m.audio` one; its body is its
+                    // caption only where a file name is given apart.
+                    let voice = (content["msgtype"] == "m.audio")
+                        .then(|| content["url"].as_str())
+                        .flatten()
+                        .map(|url| Note {
+                            id: url.to_string(),
+                            media_type: content["info"]["mimetype"].as_str().map(str::to_string),
+                        });
                     if event["type"] != "m.room.message"
-                        || event["content"]["msgtype"] != "m.text"
+                        || (content["msgtype"] != "m.text" && voice.is_none())
                         || sender == self.me
                     {
                         continue;
                     }
-                    if let Some(text) = event["content"]["body"].as_str() {
+                    let body = content["body"].as_str();
+                    let captioned =
+                        content["filename"].is_string() && content["filename"] != content["body"];
+                    let said = match &voice {
+                        Some(_) if captioned => body,
+                        Some(_) => Some(""),
+                        None => body,
+                    };
+                    if let Some(text) = said {
                         // Mentions as the spec has them, and the account
                         // named in the text by older clients.
                         let mut mentions: Vec<String> = event["content"]["m.mentions"]["user_ids"]
@@ -663,7 +797,7 @@ impl Messenger for Matrix {
                             chat: room.clone(),
                             from: sender.to_string(),
                             text: text.to_string(),
-                            voice: None,
+                            voice: voice.clone(),
                             direct: self.direct(room),
                             mentions,
                         });
@@ -679,6 +813,106 @@ impl Messenger for Matrix {
     }
 
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
+        self.send_content(
+            chat,
+            &json!({"msgtype": "m.text", "body": cut(text, 16_000)}),
+        )
+    }
+
+    fn long_polls(&self) -> bool {
+        true
+    }
+
+    fn fetch_voice(&self, note: &Note) -> Result<crate::voice::Audio, String> {
+        // mxc://<server>/<media id>, each a plain name.
+        let (server, media) = note
+            .id
+            .strip_prefix("mxc://")
+            .and_then(|rest| rest.split_once('/'))
+            .filter(|(server, media)| {
+                !server.is_empty()
+                    && !media.is_empty()
+                    && !format!("{server}{media}").contains(['/', '?', '#', '\\'])
+            })
+            .ok_or("the voice message's address is not a Matrix one")?;
+        let auth = format!("Bearer {}", self.token);
+        let fetch = |path: String| {
+            self.client.request(
+                "GET",
+                &format!("{}{path}", self.base),
+                &[("Authorization", &auth)],
+                None,
+                crate::voice::MAX_HEARD as u64,
+            )
+        };
+        // Authenticated media (Matrix 1.11), or the older path.
+        let fetched = fetch(format!(
+            "/_matrix/client/v1/media/download/{}/{}",
+            segment(server),
+            segment(media)
+        ))
+        .or_else(|_| {
+            fetch(format!(
+                "/_matrix/media/v3/download/{}/{}",
+                segment(server),
+                segment(media)
+            ))
+        })
+        .map_err(|e| hide(e.to_string(), &self.token))?;
+        let media_type = note
+            .media_type
+            .clone()
+            .unwrap_or_else(|| crate::voice::Audio::sniff(&fetched.body).to_string());
+        Ok(crate::voice::Audio::new(&media_type, fetched.body))
+    }
+
+    fn send_voice(
+        &self,
+        chat: &str,
+        audio: &crate::voice::Audio,
+        caption: &str,
+    ) -> Result<bool, String> {
+        let auth = format!("Bearer {}", self.token);
+        let uploaded = self
+            .client
+            .request(
+                "POST",
+                &format!(
+                    "{}/_matrix/media/v3/upload?filename={}",
+                    self.base,
+                    segment(&audio.name)
+                ),
+                &[
+                    ("Authorization", &auth),
+                    ("Content-Type", &audio.media_type),
+                ],
+                Some(&audio.bytes),
+                1 << 20,
+            )
+            .map_err(|e| hide(e.to_string(), &self.token))?;
+        let uri = json_of(&uploaded.body, "the homeserver")?["content_uri"]
+            .as_str()
+            .ok_or("the homeserver gave no address for the upload")?
+            .to_string();
+        // A voice message (MSC3245), the reply as its caption.
+        self.send_content(
+            chat,
+            &json!({
+                "msgtype": "m.audio",
+                "body": cut(caption, 16_000),
+                "filename": audio.name,
+                "url": uri,
+                "info": {"mimetype": audio.media_type, "size": audio.bytes.len()},
+                "org.matrix.msc1767.audio": {},
+                "org.matrix.msc3245.voice": {},
+            }),
+        )?;
+        Ok(true)
+    }
+}
+
+impl Matrix {
+    fn send_content(&self, chat: &str, content: &Value) -> Result<(), String> {
         let txn = format!(
             "sion-{}",
             std::time::SystemTime::now()
@@ -692,13 +926,9 @@ impl Messenger for Matrix {
                 "/_matrix/client/v3/rooms/{}/send/m.room.message/{txn}",
                 segment(chat)
             ),
-            Some(&json!({"msgtype": "m.text", "body": cut(text, 16_000)})),
+            Some(content),
         )
         .map(|_| ())
-    }
-
-    fn long_polls(&self) -> bool {
-        true
     }
 }
 
@@ -762,12 +992,29 @@ impl Messenger for Signal {
                 .as_str()
                 .or(envelope["source"].as_str())
                 .unwrap_or_default();
-            if let (Some(text), false) = (message["message"].as_str(), from.is_empty()) {
+            // A voice note is an audio attachment.
+            let voice = message["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|a| {
+                    a["contentType"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("audio/"))
+                })
+                .and_then(|a| {
+                    Some(Note {
+                        id: a["id"].as_str()?.to_string(),
+                        media_type: a["contentType"].as_str().map(str::to_string),
+                    })
+                });
+            let text = message["message"].as_str().unwrap_or_default();
+            if !from.is_empty() && (!text.is_empty() || voice.is_some()) {
                 out.push(Incoming {
                     chat: from.to_string(),
                     from: from.to_string(),
                     text: text.to_string(),
-                    voice: None,
+                    voice,
                     direct: true,
                     mentions: Vec::new(),
                 });
@@ -778,21 +1025,64 @@ impl Messenger for Signal {
     }
 
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
-        self.client
-            .post_json(
-                &format!("{}/v2/send", self.base),
-                &[],
-                json!({"message": cut(text, 4_000), "number": self.number, "recipients": [chat]})
-                    .to_string()
-                    .as_bytes(),
-                1 << 20,
-            )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.post(
+            &json!({"message": cut(text, 4_000), "number": self.number, "recipients": [chat]}),
+        )
     }
 
     fn long_polls(&self) -> bool {
         false
+    }
+
+    fn fetch_voice(&self, note: &Note) -> Result<crate::voice::Audio, String> {
+        if note.id.is_empty() || note.id.contains(['/', '?', '#', '\\']) {
+            return Err("not an attachment's id".into());
+        }
+        let fetched = self
+            .client
+            .get(
+                &format!("{}/v1/attachments/{}", self.base, segment(&note.id)),
+                crate::voice::MAX_HEARD as u64,
+            )
+            .map_err(|e| e.to_string())?;
+        let media_type = note
+            .media_type
+            .clone()
+            .unwrap_or_else(|| crate::voice::Audio::sniff(&fetched.body).to_string());
+        Ok(crate::voice::Audio::new(&media_type, fetched.body))
+    }
+
+    fn send_voice(
+        &self,
+        chat: &str,
+        audio: &crate::voice::Audio,
+        caption: &str,
+    ) -> Result<bool, String> {
+        let attachment = format!(
+            "data:{};filename={};base64,{}",
+            audio.media_type,
+            audio.name,
+            sion_http::base64(&audio.bytes)
+        );
+        self.post(
+            &json!({"message": cut(caption, 4_000), "number": self.number,
+            "recipients": [chat], "base64_attachments": [attachment]}),
+        )?;
+        Ok(true)
+    }
+}
+
+impl Signal {
+    fn post(&self, body: &Value) -> Result<(), String> {
+        self.client
+            .post_json(
+                &format!("{}/v2/send", self.base),
+                &[],
+                body.to_string().as_bytes(),
+                1 << 20,
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 

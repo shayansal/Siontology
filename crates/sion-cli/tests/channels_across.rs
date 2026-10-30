@@ -10,7 +10,6 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 use sion_agent::Autonomy;
@@ -24,6 +23,9 @@ use sion_exec::charter::Caveats;
 use sion_exec::execute::Event;
 use sion_exec::TxKind;
 use sion_node::{Devnet, DevnetConfig};
+
+mod common;
+use common::{live_stand_in, wait_for};
 
 fn register(session: &mut Session<'_>, ledger: &SharedLedger, wallet: &str) -> ObjectId {
     let pulse = ledger.as_ref().pulse().unwrap();
@@ -178,71 +180,6 @@ impl StandIn {
             .map(|(_, _, body)| body.clone())
             .collect()
     }
-}
-
-/// A WebSocket stand-in's end: what it sends goes to the bridge, and what
-/// the bridge sends it is kept, as JSON.
-struct Peer {
-    socket: sion_http::ws::WebSocket<std::net::TcpStream>,
-    kept: Arc<Mutex<Vec<Value>>>,
-}
-
-impl Peer {
-    fn send(&mut self, value: Value) {
-        self.socket.send_text(&value.to_string()).unwrap();
-    }
-
-    /// Keeps what comes for up to `wait`: false once the bridge has gone.
-    fn keep(&mut self, wait: Duration) -> bool {
-        match self.socket.receive(wait) {
-            Ok(Some(sion_http::ws::Message::Text(text))) => {
-                self.kept
-                    .lock()
-                    .unwrap()
-                    .push(serde_json::from_str(&text).unwrap_or(Value::Null));
-                true
-            }
-            Ok(_) => true,
-            Err(_) => false,
-        }
-    }
-
-    /// Keeps what comes until `n` messages are kept.
-    fn expect(&mut self, n: usize) {
-        let until = std::time::Instant::now() + Duration::from_secs(20);
-        while self.kept.lock().unwrap().len() < n && std::time::Instant::now() < until {
-            self.keep(Duration::from_millis(200));
-        }
-    }
-}
-
-/// A WebSocket server for one connection (`ws://…`), which runs `script`
-/// and then keeps what the bridge sends until it goes.
-fn live_stand_in(
-    script: impl FnOnce(&mut Peer) + Send + 'static,
-) -> (String, Arc<Mutex<Vec<Value>>>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("ws://{}", listener.local_addr().unwrap());
-    let kept = Arc::new(Mutex::new(Vec::new()));
-    let keep = kept.clone();
-    std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
-        let (socket, _) = sion_http::ws::WebSocket::accept(tcp, 1 << 20).unwrap();
-        let mut peer = Peer { socket, kept: keep };
-        script(&mut peer);
-        let until = std::time::Instant::now() + Duration::from_secs(60);
-        while std::time::Instant::now() < until && peer.keep(Duration::from_secs(1)) {}
-    });
-    (url, kept)
-}
-
-/// What is kept, once there are at least `n` of them.
-fn wait_for(kept: &Arc<Mutex<Vec<Value>>>, n: usize) -> Vec<Value> {
-    let until = std::time::Instant::now() + Duration::from_secs(20);
-    while kept.lock().unwrap().len() < n && std::time::Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    kept.lock().unwrap().clone()
 }
 
 #[test]

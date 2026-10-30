@@ -399,10 +399,14 @@ answer stays ignored. Slack without Socket Mode is polled channel by
 channel, so no direct message from someone it does not know reaches the
 bridge, and it refuses `--pairing` there.
 
-With `--hear`, voice notes (Telegram's voice notes and audio files,
-Discord's audio attachments) are transcribed and reach the profile as
-`(voice note) …`. With `--speak`, a voice note is answered aloud on
-Telegram, with the reply as its caption, and in text elsewhere:
+With `--hear`, voice notes are transcribed and reach the profile as
+`(voice note) …`: Telegram's voice notes and audio files, Discord's and
+Signal's audio attachments, Slack's audio clips (with the `files:read`
+scope) and Matrix's audio messages (fetched as authenticated media).
+With `--speak`, a voice note is answered aloud: on Telegram as a voice
+note with the reply as its caption, on Matrix as a voice message, and
+on Discord, Slack (with `files:write`) and Signal as the reply with the
+audio attached:
 
 | Flag | What hears or speaks | Credentials |
 |---|---|---|
@@ -546,10 +550,10 @@ again.
   included unless `--approvers` names who may decide
   (`agent:telegram-chats`, `agent:messenger-identity`). An approved
   pairing code lets in whoever gave it to you (`agent:pairing`).
-- Voice notes are heard on Telegram and Discord, and spoken on Telegram
-  only; on Slack, Matrix and Signal only text messages are read. The
-  services `--hear` and `--speak` name hear the voice notes and the
-  replies (`agent:voice`). Pairing needs a messenger that shows direct
+- A spoken reply reaches Discord, Slack and Signal as audio attached to
+  the text, not as those apps' own voice messages. The services
+  `--hear` and `--speak` name hear the voice notes and the replies
+  (`agent:voice`). Pairing needs a messenger that shows direct
   messages from people it does not know: not Slack without Socket Mode.
   Discord's gateway and Slack's Socket Mode do not answer later what was
   said while the bridge was not listening, and one Discord bot runs one
