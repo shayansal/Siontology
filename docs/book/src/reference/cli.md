@@ -681,6 +681,7 @@ Commands:
   spawn          Launch subagents, each with its own identity, account, caveats and budget carved from the parent's allotment
   pay-batch      Pay from several agents in one batch (spec v1.13): one payment from each agent's own budget, all authorized by one signature of `signer`, the agents' own wallet or, for keyless agents, the wallet of their nearest keyed ancestor
   show           Show an agent: account, principal, lineage, card, status, budget
+  status         An agent's standing, checked as a light client: its charter and the overlays of its lineage proven against a certified header, its status worked out from them, its budget proven too
   card           Replace an agent's card with a file's commitment
   card-template  Print an agent card template (A2A-style JSON with a `sion` section)
   suspend        Suspend an agent and everything below it (an overseer in good standing: the backer, or the agent of a charter above it that is neither revoked nor suspended). The highest suspender is recorded
@@ -692,15 +693,19 @@ Commands:
   materialize    Materialize members of a cohort: their charters and allotments, at their lineage ids, with proofs of their leaves. The cohort parent's wallet signs, and signs for them afterwards
   run            Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
   continue       Continue a session: approve or decline the call it waits on, or tell it more
-  sessions       The agent sessions on this machine
+  evolve         Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
+  sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
-  serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token
+  serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
   telegram       Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
+  bridge         Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api) or telegram
+  gateway        Run a gateway: people write to profiles served from other machines, through POST /v1/profiles/<name>/messages with a profile's token (`sion agent profile token add`); hosts connect out to it and prove they hold each profile's agent key, and messages reach an agent only while the ledger has it in good standing
+  host           Serve profiles through a gateway: connect out to it, prove the agents' keys, and answer the messages it passes on
   help           Print this message or the help of the given subcommand(s)
 
 Options:
@@ -802,6 +807,23 @@ Options:
 ```
 
 Reads the agent's charter and the overlays of its lineage; the node's `GET /v1/agents/{id}` returns the same with state proofs ([HTTP API](http-api.md#get-v1agentsid)).
+
+## `sion agent status`
+
+```text
+An agent's standing, checked as a light client: its charter and the overlays of its lineage proven against a certified header, its status worked out from them, its budget proven too
+
+Usage: sion agent status [OPTIONS] <AGENT>
+
+Arguments:
+  <AGENT>  Agent id
+
+Options:
+      --chain <CHAIN>          The chain identity the proofs must verify against. Without it the node vouches for itself [env: SION_CHAIN=]
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --min-pulse <MIN_PULSE>  A certified Pulse you know of from elsewhere: a proof from more than 16 Pulses before it is refused as stale
+  -h, --help                   Print help
+```
 
 ## `sion agent card`
 
@@ -1047,16 +1069,56 @@ Options:
 
 See [Agents at work](../guides/agent-runtime.md#approvals).
 
+## `sion agent evolve`
+
+```text
+Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
+
+Usage: sion agent evolve [OPTIONS] --evals <EVALS> --mutator <MUTATOR> <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --evals <EVALS>              The evaluation set (a JSON file)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --mutator <MUTATOR>          The model that proposes variants
+      --generations <GENERATIONS>  Generations, at most [default: 3]
+      --apply                      Make the best version the profile's instructions
+  -h, --help                       Print help
+```
+
 ## `sion agent sessions`
 
 ```text
-The agent sessions on this machine
+The agent sessions on this machine; `search` finds an agent's past sessions by words
 
-Usage: sion agent sessions [OPTIONS]
+Usage: sion agent sessions [OPTIONS] [COMMAND]
+
+Commands:
+  search  Search an agent's past sessions on this machine by words (BM25): each hit is checked against the trajectory digest its episode recorded in the agent's memory log, whose head is on the ledger
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent sessions search`
+
+```text
+Search an agent's past sessions on this machine by words (BM25): each hit is checked against the trajectory digest its episode recorded in the agent's memory log, whose head is on the ledger
+
+Usage: sion agent sessions search [OPTIONS] <AGENT> <QUERY>...
+
+Arguments:
+  <AGENT>     The agent: its wallet's name, or its id (or a prefix of it)
+  <QUERY>...  The words to look for
+
+Options:
+      --limit <LIMIT>  How many sessions at most [default: 5]
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help           Print help
 ```
 
 ## `sion agent trace`
@@ -1100,6 +1162,7 @@ Commands:
   add     Add a profile, or replace the one of that name
   list    The profiles on this machine
   remove  Remove a profile
+  token   A profile's channel tokens: each reaches only that profile, through the HTTP channel or a gateway, and is kept only as its hash
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1156,6 +1219,8 @@ Options:
           Give it the reviewed tools of this MCP server. Repeat for more
       --storage
           Give it the storage-deal tools
+      --instructions <INSTRUCTIONS>
+          What to tell it beyond the fixed system prompt
   -h, --help
           Print help
 ```
@@ -1181,6 +1246,72 @@ Usage: sion agent profile remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent profile token`
+
+```text
+A profile's channel tokens: each reaches only that profile, through the HTTP channel or a gateway, and is kept only as its hash
+
+Usage: sion agent profile token [OPTIONS] <COMMAND>
+
+Commands:
+  add     Make a token for a profile (shown once)
+  list    The tokens on this machine, by id (never the tokens themselves)
+  remove  Remove a token
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent profile token add`
+
+```text
+Make a token for a profile (shown once)
+
+Usage: sion agent profile token add [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile (on a gateway, a profile served from elsewhere)
+
+Options:
+      --agent <AGENT>  The profile's agent, for a profile served from another machine: a gateway routes the profile only to a host that proves this agent's key. A profile of this machine names its own
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --approve        Let it approve and decline what the profile's sessions wait on
+  -h, --help           Print help
+```
+
+## `sion agent profile token list`
+
+```text
+The tokens on this machine, by id (never the tokens themselves)
+
+Usage: sion agent profile token list [OPTIONS] [PROFILE]
+
+Arguments:
+  [PROFILE]  Only this profile's
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent profile token remove`
+
+```text
+Remove a token
+
+Usage: sion agent profile token remove [OPTIONS] <PROFILE> <ID>
+
+Arguments:
+  <PROFILE>  The profile
+  <ID>       The token's id, as `list` shows it
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -1367,14 +1498,14 @@ A run that was missed while the scheduler was not running happens once, late (`a
 ## `sion agent serve`
 
 ```text
-Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token
+Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
 
 Usage: sion agent serve [OPTIONS]
 
 Options:
       --listen <LISTEN>        Where to listen [default: 127.0.0.1:8790]
       --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --token-env <TOKEN_ENV>  The environment variable holding the bearer token (at least 16 characters) [default: SION_AGENT_TOKEN]
+      --token-env <TOKEN_ENV>  The environment variable holding the machine's token, which reaches every profile and session (at least 16 characters); without it, only profiles' own tokens are taken [default: SION_AGENT_TOKEN]
   -h, --help                   Print help
 ```
 
@@ -1391,13 +1522,65 @@ Arguments:
   <PROFILE>  The agent profile
 
 Options:
-      --allow <ALLOW>  The chats it answers (comma-separated ids); others are ignored
-      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --once           Answer one batch of messages, then stop
-  -h, --help           Print help
+      --allow <ALLOW>          The chats it answers (comma-separated ids); others are ignored
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --approvers <APPROVERS>  Who may approve or decline (comma-separated Telegram user ids); without it, anyone in an allowed chat
+      --once                   Answer one batch of messages, then stop
+  -h, --help                   Print help
 ```
 
 In a group chat, every member speaks for you, approvals included (`agent:telegram-chats`). See [Teams, schedules and channels](../guides/agent-teams.md#telegram).
+
+## `sion agent bridge`
+
+```text
+Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api) or telegram
+
+Usage: sion agent bridge [OPTIONS] --via <VIA> --allow <ALLOW> <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --via <VIA>              The messenger
+      --allow <ALLOW>          The chats it answers (comma-separated: channel ids, room ids or numbers); others are ignored
+      --approvers <APPROVERS>  Who may approve or decline (comma-separated, as the messenger names people); without it, anyone in an allowed chat
+      --once                   Answer one batch of messages, then stop
+  -h, --help                   Print help
+```
+
+## `sion agent gateway`
+
+```text
+Run a gateway: people write to profiles served from other machines, through POST /v1/profiles/<name>/messages with a profile's token (`sion agent profile token add`); hosts connect out to it and prove they hold each profile's agent key, and messages reach an agent only while the ledger has it in good standing
+
+Usage: sion agent gateway [OPTIONS] --name <NAME>
+
+Options:
+      --listen <LISTEN>        Where to listen [default: 127.0.0.1:8793]
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --name <NAME>            The gateway's name, which hosts sign: a login cannot be replayed at another gateway
+      --token-env <TOKEN_ENV>  The environment variable holding a token that reaches every profile, if one is wanted [default: SION_GATEWAY_TOKEN]
+  -h, --help                   Print help
+```
+
+## `sion agent host`
+
+```text
+Serve profiles through a gateway: connect out to it, prove the agents' keys, and answer the messages it passes on
+
+Usage: sion agent host [OPTIONS] --profile <PROFILES> <GATEWAY>
+
+Arguments:
+  <GATEWAY>  The gateway's address, for example https://gateway.example.org
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILES>   A profile to serve. Repeat for more
+      --messages <MESSAGES>  Answer this many messages, then stop
+  -h, --help                 Print help
+```
 
 ## `sion task`
 
@@ -1677,12 +1860,15 @@ Memory logs for agents and robots: open a log, record atoms locally, commit head
 Usage: sion memory [OPTIONS] <COMMAND>
 
 Commands:
-  open      Open a memory log on the ledger, owned by the wallet (for an agent identity with --agent, whose agent must be the wallet), and a local store for its atoms
-  remember  Record an atom in a log's local store. It reaches the ledger's commitment with the next `sion memory commit`
-  commit    Commit the local log's head to the ledger, with a proof that it extends the head the ledger holds
-  recall    Everything the log had recorded in a box during an interval, as of its committed head, with a proof checked against the index root the ledger holds
-  show      A log's head on the ledger and its local store
-  help      Print this message or the help of the given subcommand(s)
+  open         Open a memory log on the ledger, owned by the wallet (for an agent identity with --agent, whose agent must be the wallet), and a local store for its atoms
+  remember     Record an atom in a log's local store. It reaches the ledger's commitment with the next `sion memory commit`
+  commit       Commit the local log's head to the ledger, with a proof that it extends the head the ledger holds
+  recall       Everything the log had recorded in a box during an interval, as of its committed head, with a proof checked against the index root the ledger holds
+  show         A log's head on the ledger and its local store
+  consolidate  Consolidate an agent's memory: a model reads the episodes recorded since the last consolidation and the notes the log keeps, and proposes facts, procedures and preferences worth keeping, each citing its episodes. What the gates keep is recorded as derived atoms (the notes they replace are superseded, not deleted), and the log is committed
+  archive      Archive a log for safekeeping: every atom the ledger holds, encrypted for the writer, named on the ledger as the log's manifest and kept by a storage provider under a deal
+  restore      Restore a log's local store from its latest archive, checked against the head on the ledger before anything is replaced
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -1785,6 +1971,68 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion memory consolidate`
+
+```text
+Consolidate an agent's memory: a model reads the episodes recorded since the last consolidation and the notes the log keeps, and proposes facts, procedures and preferences worth keeping, each citing its episodes. What the gates keep is recorded as derived atoms (the notes they replace are superseded, not deleted), and the log is committed
+
+Usage: sion memory consolidate [OPTIONS] --model <MODEL> <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet (the agent's)
+  <LOG>     The log (its id, or a unique prefix of it)
+
+Options:
+      --model <MODEL>  The model that proposes: anthropic:<model>, openai:<model> or script:<file>
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help           Print help
+```
+
+## `sion memory archive`
+
+```text
+Archive a log for safekeeping: every atom the ledger holds, encrypted for the writer, named on the ledger as the log's manifest and kept by a storage provider under a deal
+
+Usage: sion memory archive [OPTIONS] --price <PRICE> --rounds <ROUNDS> <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet
+  <LOG>     The log (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <OUT>                      Where to write the archive (default: $SION_HOME/memory/archives/<log>-<size>.bin)
+      --price <PRICE>                  Paid per proven round (decimal USD)
+      --rounds <ROUNDS>                Rounds
+      --round-length <ROUND_LENGTH>    Pulses per round: a multiple of 8, from 8 to 100,000 [default: 16]
+      --collateral <COLLATERAL>        Collateral the provider must post (decimal USD). Default: the escrow, for a deal open to anyone (which must ask for some); none for a named provider
+      --challenges <CHALLENGES>        Leaves challenged per round (1 to 16) [default: 4]
+      --provider <PROVIDER>            The provider (wallet name or account); without it, anyone may accept
+      --accept-within <ACCEPT_WITHIN>  How many Pulses the deal stays open for acceptance [default: 200]
+      --locator <LOCATOR>              Where providers fetch the data: an https:// URL serving the file
+      --local                          Point providers at the file itself (file://<its path>): only a provider on this machine can fetch it, and the deal publishes the path
+  -h, --help                           Print help
+```
+
+## `sion memory restore`
+
+```text
+Restore a log's local store from its latest archive, checked against the head on the ledger before anything is replaced
+
+Usage: sion memory restore [OPTIONS] --from <FROM> <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet
+  <LOG>     The log (its full id, if the local store is gone)
+
+Options:
+      --from <FROM>  The archive: a file, or the retrieval address of the provider that keeps it (http:// or https://)
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --deal <DEAL>  With a provider: the deal that keeps the archive (default: your latest accepted deal for the log's manifest)
+      --replace      Restore over the local store there is
+  -h, --help         Print help
+```
+
 ## `sion skill`
 
 ```text
@@ -1800,7 +2048,7 @@ Commands:
   show     A release: what it names, the backing behind it, and the decision rule for a value at risk
   install  Install a release for an agent: fetch and check its bundle, accept the release with the agent's remaining budget at risk, and only then put the skill in the agent's skills
   eval     Run an evaluation set on a skill: each case with stand-in tools, then its checks. Needs no node
-  evolve   Evolve a skill against an evaluation set: a model proposes variants for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
+  evolve   Evolve a skill against an evaluation set: a model proposes variants (new instructions, and other files but never scripts) for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
   vouch    Vouch for an evaluation set on your bond: claim that it has no known way to be passed without doing what the skill describes
   bounty   Post a bounty for a better version of a release: a Task Charter whose spec names the release, the evaluation set and the cases to pass, and whose verifiers are fixed now, before any version exists
   verify   Verify a version for a bounty, as one of its verifiers: check that it keeps the skill's purpose, run the evaluation set on it yourself, and attest on your bond only if enough cases pass
@@ -1958,7 +2206,7 @@ Needs no node. See [Skills that get better](../guides/skill-improvement.md#measu
 ## `sion skill evolve`
 
 ```text
-Evolve a skill against an evaluation set: a model proposes variants for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
+Evolve a skill against an evaluation set: a model proposes variants (new instructions, and other files but never scripts) for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
 
 Usage: sion skill evolve [OPTIONS] --evals <EVALS> --model <MODELS> --mutator <MUTATOR> <DIR>
 
@@ -2092,16 +2340,17 @@ Storage deals: have data kept by a provider who proves every round that it still
 Usage: sion storage [OPTIONS] <COMMAND>
 
 Commands:
-  prepare  Split a file into leaves and print the root a deal would commit to
-  post     Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
-  deals    List storage deals
-  show     One deal: its terms, its state and its provider's progress
-  accept   Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
-  prove    Prove the round under way for every deal you hold
-  settle   Collect for the rounds you proved
-  close    Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
-  serve    Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
-  help     Print this message or the help of the given subcommand(s)
+  prepare   Split a file into leaves and print the root a deal would commit to
+  post      Post a deal for a file: escrow PRICE × ROUNDS to have it kept and proven every round
+  deals     List storage deals
+  show      One deal: its terms, its state and its provider's progress
+  accept    Accept a deal as its provider: fetch its data (from --file or its locator), check it hashes to the deal's root, keep a copy and post the collateral
+  prove     Prove the round under way for every deal you hold
+  settle    Collect for the rounds you proved
+  retrieve  Retrieve a deal's data as its client from the provider that keeps it (the address its `sion storage serve --listen` gives), checked against the deal's root
+  close     Close a deal: refund an open one (client), or end an accepted one at its end (client or provider) or once its provider abandoned it (client)
+  serve     Run a provider: accept deals whose data you can fetch, prove every round, collect and close, every second until stopped
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2226,6 +2475,24 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion storage retrieve`
+
+```text
+Retrieve a deal's data as its client from the provider that keeps it (the address its `sion storage serve --listen` gives), checked against the deal's root
+
+Usage: sion storage retrieve [OPTIONS] --provider-url <PROVIDER_URL> --out <OUT> <FROM> <DEAL>
+
+Arguments:
+  <FROM>  Your wallet (the client)
+  <DEAL>  The deal (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --provider-url <PROVIDER_URL>  The provider's retrieval address, for example http://127.0.0.1:8740
+      --out <OUT>                    Where to write the data
+  -h, --help                         Print help
+```
+
 ## `sion storage close`
 
 ```text
@@ -2271,6 +2538,8 @@ Options:
           Fetch file:// locators (a provider on the clients' machine)
       --allow-private
           Fetch from local and private network addresses
+      --listen <LISTEN>
+          Serve the data of the deals you keep to their clients on this address: POST /v1/deals/<deal>/retrieve, signed by the deal's client
       --pulses <PULSES>
           Stop after this many Pulses
   -h, --help

@@ -1,12 +1,17 @@
 //! Channels: how people reach an agent profile from outside the command
-//! line, through an HTTP endpoint (for webhooks and other programs) or
-//! Telegram.
+//! line, through an HTTP endpoint (for webhooks and other programs), a
+//! messenger ([`crate::messengers`]: Telegram, Slack, Discord, Matrix,
+//! Signal), or a gateway on another machine ([`crate::gateway`]).
 //!
 //! Each conversation is a session, continued message by message. A session
 //! that waits for a person's approval is answered from the same channel:
 //! `/approve`, or `/decline <why>`. `/new` starts over, and `/status` says
-//! where the session stands. The HTTP endpoint needs a bearer token; a
-//! Telegram bot answers only the chats it is told to.
+//! where the session stands. The HTTP endpoint needs a bearer token: the
+//! machine's, which reaches every profile, or one of a profile's own
+//! ([`add_token`]), kept only as its hash, which reaches that profile and
+//! decides what it waits on only if it was made to. A messenger answers
+//! only the chats it is told to, and lets only the approvers it is given
+//! decide.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -50,6 +55,186 @@ fn remember(key: &str, value: Option<&str>) -> Result<(), CliError> {
         None => all.remove(key),
     };
     crate::profiles::write_json(&conversations_path(), &all)
+}
+
+/// A channel's own state under `key` (a messenger's cursor, say).
+pub fn state(key: &str) -> Result<Option<String>, CliError> {
+    Ok(conversations()?.get(key).cloned())
+}
+
+/// Sets, or with `None` clears, a channel's own state under `key`.
+pub fn set_state(key: &str, value: Option<&str>) -> Result<(), CliError> {
+    remember(key, value)
+}
+
+/// A profile's channel token, kept as its hash: whoever holds the token may
+/// talk to the profile through a channel, and with `approve`, decide what
+/// its sessions wait on.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChannelToken {
+    /// A short id, to name it when removing it.
+    pub id: String,
+    /// The profile.
+    pub profile: String,
+    /// The profile's agent. A gateway routes the profile only to a host
+    /// that proves this agent's key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<sion_core::ids::ObjectId>,
+    /// The token's hash.
+    pub hash: sion_core::hash::Hash32,
+    /// Whether it may approve or decline.
+    pub approve: bool,
+    /// When it was made (seconds since the Unix epoch).
+    pub created: u64,
+}
+
+fn tokens_path() -> PathBuf {
+    wallet_dir()
+        .parent()
+        .map(|home| home.join("agents").join("channel-tokens.json"))
+        .unwrap_or_else(|| PathBuf::from(".sion/agents/channel-tokens.json"))
+}
+
+fn hash_token(secret: &str) -> sion_core::hash::Hash32 {
+    sion_core::hash::hash_domain("sion/agent/channel-token/v1", secret.as_bytes())
+}
+
+/// The channel tokens of every profile on this machine.
+pub fn tokens() -> Result<Vec<ChannelToken>, CliError> {
+    let path = tokens_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| CliError::Usage(format!("{}: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(CliError::Usage(format!("{}: {e}", path.display()))),
+    }
+}
+
+/// Makes a channel token for `profile` (a profile name: on a gateway, the
+/// profile lives on another machine), whose agent is `agent`. Returns its
+/// record and the token, which is shown once and kept only as its hash.
+pub fn add_token(
+    profile: &str,
+    agent: sion_core::ids::ObjectId,
+    approve: bool,
+) -> Result<(ChannelToken, String), CliError> {
+    if !crate::profiles::valid_name(profile) {
+        return Err(CliError::Usage(format!(
+            "{profile:?} is not a profile name"
+        )));
+    }
+    let mut all = tokens()?;
+    // One agent per profile name, so that every token of a profile means
+    // the same agent.
+    if let Some(other) = all
+        .iter()
+        .find(|t| t.profile == profile && t.agent.is_some_and(|a| a != agent))
+    {
+        return Err(CliError::Usage(format!(
+            "profile {profile}'s token {} names agent {}: remove its tokens first, or use another name",
+            other.id,
+            other.agent.map(|a| a.0.short()).unwrap_or_default()
+        )));
+    }
+    let mut bytes = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+    let secret = format!("sion_ch_{}", hex::encode(bytes));
+    let hash = hash_token(&secret);
+    let record = ChannelToken {
+        id: hash.to_hex()[..8].to_string(),
+        profile: profile.to_string(),
+        agent: Some(agent),
+        hash,
+        approve,
+        created: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    all.push(record.clone());
+    crate::profiles::write_json(&tokens_path(), &all)?;
+    Ok((record, secret))
+}
+
+/// Whether a token on this machine says that `profile` is `agent`'s: what
+/// a gateway asks before it routes the profile.
+pub fn names_agent(profile: &str, agent: &sion_core::ids::ObjectId) -> Result<bool, CliError> {
+    Ok(tokens()?
+        .iter()
+        .any(|t| t.profile == profile && t.agent.as_ref() == Some(agent)))
+}
+
+/// Removes every token of `profile`. Returns how many there were.
+pub fn remove_tokens(profile: &str) -> Result<usize, CliError> {
+    let mut all = tokens()?;
+    let before = all.len();
+    all.retain(|t| t.profile != profile);
+    let removed = before - all.len();
+    if removed > 0 {
+        crate::profiles::write_json(&tokens_path(), &all)?;
+    }
+    Ok(removed)
+}
+
+/// Removes `profile`'s token `id`. Returns whether there was one.
+pub fn remove_token(profile: &str, id: &str) -> Result<bool, CliError> {
+    let mut all = tokens()?;
+    let before = all.len();
+    all.retain(|t| !(t.profile == profile && t.id == id));
+    let removed = all.len() < before;
+    if removed {
+        crate::profiles::write_json(&tokens_path(), &all)?;
+    }
+    Ok(removed)
+}
+
+/// What a presented token may do with a profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Access {
+    /// Nothing.
+    None,
+    /// Start and continue sessions.
+    Message,
+    /// That, and approve or decline.
+    Approve,
+}
+
+/// What `presented` may do with `profile`: the machine's `admin` token may
+/// do everything with every profile; a token of the profile, what it was
+/// made for.
+pub fn access(profile: &str, presented: Option<&str>, admin: Option<&str>) -> Access {
+    let Some(presented) = presented else {
+        return Access::None;
+    };
+    if admin.is_some_and(|admin| same_token(presented, admin)) {
+        return Access::Approve;
+    }
+    let hash = hash_token(presented);
+    match tokens()
+        .unwrap_or_default()
+        .iter()
+        .find(|t| t.profile == profile && t.hash == hash)
+    {
+        Some(t) if t.approve => Access::Approve,
+        Some(_) => Access::Message,
+        None => Access::None,
+    }
+}
+
+/// Why a request with `presented` (or none) may not reach a profile.
+pub fn refusal(presented: Option<&str>) -> &'static str {
+    match presented {
+        Some(_) => "this token does not reach this profile",
+        None => "a bearer token is needed",
+    }
+}
+
+/// Whether a message decides what a session waits on.
+pub fn is_decision(text: &str) -> bool {
+    matches!(
+        text.split_whitespace().next(),
+        Some("/approve" | "/decline")
+    )
 }
 
 /// What a conversation's next message leads to: the session and the reply.
@@ -161,17 +346,30 @@ fn respond(request: tiny_http::Request, status: u16, body: &Value) {
 }
 
 /// Serves the HTTP channel on `listen` until stopped (or for `requests`
-/// requests, if given): `POST /v1/profiles/<name>/messages` with
-/// `{"text": …, "conversation": …}`, and `GET /v1/sessions/<id>`. Every
-/// request needs `Authorization: Bearer <token>`. Requests are handled one
-/// at a time.
+/// requests, if given), with the machine's `token`: see [`serve_with`].
 pub fn serve(
     ledger: SharedLedger,
     listen: &str,
     token: &str,
     requests: Option<usize>,
 ) -> Result<(), CliError> {
-    if token.len() < 16 {
+    serve_with(ledger, listen, Some(token), requests)
+}
+
+/// Serves the HTTP channel on `listen` until stopped (or for `requests`
+/// requests, if given): `POST /v1/profiles/<name>/messages` with
+/// `{"text": …, "conversation": …}`, and `GET /v1/sessions/<id>`. Every
+/// request needs `Authorization: Bearer <token>`: the machine's `admin`
+/// token, which reaches every profile and every session, or one of the
+/// profile's own, which reaches only it, and decides what it waits on only
+/// if it was made to. Requests are handled one at a time.
+pub fn serve_with(
+    ledger: SharedLedger,
+    listen: &str,
+    admin: Option<&str>,
+    requests: Option<usize>,
+) -> Result<(), CliError> {
+    if admin.is_some_and(|token| token.len() < 16) {
         return Err(CliError::Usage(
             "the channel's token has at least 16 characters".into(),
         ));
@@ -180,12 +378,11 @@ pub fn serve(
         .map_err(|e| CliError::Usage(format!("cannot listen on {listen}: {e}")))?;
     println!("agent channel on http://{listen} (POST /v1/profiles/<name>/messages)");
     for (index, mut request) in server.incoming_requests().enumerate() {
-        let authorized = request
+        let presented = request
             .headers()
             .iter()
             .find(|h| h.field.equiv("Authorization"))
-            .and_then(|h| h.value.as_str().strip_prefix("Bearer ").map(str::to_string))
-            .is_some_and(|given| same_token(&given, token));
+            .and_then(|h| h.value.as_str().strip_prefix("Bearer ").map(str::to_string));
         let path = request
             .url()
             .split('?')
@@ -193,8 +390,28 @@ pub fn serve(
             .unwrap_or_default()
             .to_string();
         let method = request.method().as_str().to_string();
-        if !authorized {
-            respond(request, 401, &json!({"error": "a bearer token is needed"}));
+        let profile = path
+            .strip_prefix("/v1/profiles/")
+            .and_then(|p| p.strip_suffix("/messages"))
+            .unwrap_or_default()
+            .to_string();
+        let allowed = if profile.is_empty() {
+            // Sessions are the machine's: only its token reads them.
+            if admin.is_some_and(|a| presented.as_deref().is_some_and(|p| same_token(p, a))) {
+                Access::Approve
+            } else {
+                Access::None
+            }
+        } else {
+            access(&profile, presented.as_deref(), admin)
+        };
+        if allowed == Access::None {
+            let error = if profile.is_empty() && presented.is_some() {
+                "only the machine's token reads sessions"
+            } else {
+                refusal(presented.as_deref())
+            };
+            respond(request, 401, &json!({ "error": error }));
         } else if let (Some(name), "POST") = (
             path.strip_prefix("/v1/profiles/")
                 .and_then(|p| p.strip_suffix("/messages")),
@@ -207,6 +424,16 @@ pub fn serve(
                 .read_to_string(&mut body);
             let parsed: Option<Value> = read.ok().and_then(|_| serde_json::from_str(&body).ok());
             match parsed {
+                Some(value)
+                    if allowed != Access::Approve
+                        && is_decision(value["text"].as_str().unwrap_or_default()) =>
+                {
+                    respond(
+                        request,
+                        403,
+                        &json!({"error": "this token may talk to the profile, not approve or decline"}),
+                    )
+                }
                 Some(value) if value["text"].is_string() => {
                     let conversation = value["conversation"]
                         .as_str()
@@ -271,6 +498,8 @@ pub struct Update {
     pub id: i64,
     /// The chat.
     pub chat: i64,
+    /// Who wrote it (a Telegram user id), if Telegram says.
+    pub from: Option<i64>,
     /// The message's text.
     pub text: String,
 }
@@ -359,6 +588,7 @@ impl Telegram {
                         Some(Update {
                             id: u["update_id"].as_i64()?,
                             chat: u["message"]["chat"]["id"].as_i64()?,
+                            from: u["message"]["from"]["id"].as_i64(),
                             text: u["message"]["text"].as_str()?.to_string(),
                         })
                     })
@@ -369,11 +599,23 @@ impl Telegram {
 }
 
 /// Answers the chats in `allow` with `profile`, by long polling, until
-/// stopped; with `once`, one batch of messages. Returns what to print.
+/// stopped; with `once`, one batch of messages.
 pub fn telegram(
     ledger: SharedLedger,
     profile: &Profile,
     allow: &[i64],
+    once: bool,
+) -> Result<(), CliError> {
+    telegram_with(ledger, profile, allow, &[], once)
+}
+
+/// [`telegram`], where only `approvers` (Telegram user ids), if any are
+/// given, may approve or decline.
+pub fn telegram_with(
+    ledger: SharedLedger,
+    profile: &Profile,
+    allow: &[i64],
+    approvers: &[String],
     once: bool,
 ) -> Result<(), CliError> {
     if allow.is_empty() {
@@ -382,40 +624,8 @@ pub fn telegram(
         ));
     }
     let bot = Telegram::from_env().map_err(CliError::Usage)?;
-    let offset_key = format!("telegram-offset:{}", profile.name);
-    loop {
-        let offset: i64 = conversations()?
-            .get(&offset_key)
-            .and_then(|o| o.parse().ok())
-            .unwrap_or(0);
-        let updates = bot
-            .updates(offset, if once { 0 } else { 50 })
-            .map_err(CliError::Connection)?;
-        for update in updates {
-            remember(&offset_key, Some(&(update.id + 1).to_string()))?;
-            if !allow.contains(&update.chat) {
-                println!("chat {}: not allowed, ignored", update.chat);
-                continue;
-            }
-            println!("chat {}: {}", update.chat, update.text);
-            let key = format!("telegram:{}:{}", profile.name, update.chat);
-            let reply = match converse(ledger.clone(), profile, &key, &update.text) {
-                Ok(answer) => {
-                    for line in &answer.lines {
-                        println!("  {line}");
-                    }
-                    answer.reply
-                }
-                Err(e) => format!("That did not work: {e}"),
-            };
-            println!("to chat {}: {reply}", update.chat);
-            bot.send(update.chat, &reply)
-                .map_err(CliError::Connection)?;
-        }
-        if once {
-            return Ok(());
-        }
-    }
+    let allow: Vec<String> = allow.iter().map(i64::to_string).collect();
+    crate::messengers::bridge(ledger, profile, &bot, &allow, approvers, once)
 }
 
 #[cfg(test)]

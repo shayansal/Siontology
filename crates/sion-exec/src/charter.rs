@@ -418,6 +418,86 @@ impl AgentOverlay {
     }
 }
 
+/// Where an agent stands for a transaction in some Pulse, as its charter
+/// and the overlays of its lineage say. It sums up, for clients (the
+/// node's agent query, light clients, gateways), the checks of spec §5.13
+/// that a payment or a spawn must pass: no charter of the lineage revoked,
+/// none suspended, and neither the caveats nor a narrowing ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AgentStatus {
+    /// It may act within its caveats.
+    Active,
+    /// It may act within its caveats and the narrowings of it or of a
+    /// charter above it.
+    Narrowed,
+    /// Its caveats or a narrowing in its lineage ended before the Pulse.
+    Expired,
+    /// A charter above it is revoked or suspended.
+    StoppedByAncestor,
+    /// It is suspended.
+    Suspended,
+    /// It is revoked.
+    Revoked,
+}
+
+impl AgentStatus {
+    /// How clients name it: `active`, `active, narrowed`, `expired`,
+    /// `stopped by an ancestor`, `suspended` or `revoked`.
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentStatus::Active => "active",
+            AgentStatus::Narrowed => "active, narrowed",
+            AgentStatus::Expired => "expired",
+            AgentStatus::StoppedByAncestor => "stopped by an ancestor",
+            AgentStatus::Suspended => "suspended",
+            AgentStatus::Revoked => "revoked",
+        }
+    }
+
+    /// Whether the agent can act: active, narrowed or not.
+    pub fn can_act(self) -> bool {
+        matches!(self, AgentStatus::Active | AgentStatus::Narrowed)
+    }
+}
+
+/// `agent`'s status for a transaction in `pulse`, from its `charter` and
+/// the overlays of its lineage (each charter's id with its overlay;
+/// charters without one are left out). Its own revocation comes first,
+/// then its suspension, a revoked or suspended charter above it, the end
+/// of its caveats or of a narrowing in the lineage, and a narrowing.
+pub fn agent_status<'a>(
+    agent: &ObjectId,
+    charter: &Charter,
+    overlays: impl IntoIterator<Item = (&'a ObjectId, &'a AgentOverlay)>,
+    pulse: Pulse,
+) -> AgentStatus {
+    let (mut revoked, mut suspended, mut stopped, mut narrowed) = (false, false, false, false);
+    let mut expired = pulse > charter.caveats.expires_at;
+    for (id, overlay) in overlays {
+        let own = id == agent;
+        revoked |= own && overlay.revoked_at.is_some();
+        suspended |= own && overlay.suspended_by.is_some();
+        stopped |= !own && (overlay.revoked_at.is_some() || overlay.suspended_by.is_some());
+        if let Some(narrowing) = &overlay.narrowing {
+            narrowed = true;
+            expired |= pulse > narrowing.expires_at;
+        }
+    }
+    if revoked {
+        AgentStatus::Revoked
+    } else if suspended {
+        AgentStatus::Suspended
+    } else if stopped {
+        AgentStatus::StoppedByAncestor
+    } else if expired {
+        AgentStatus::Expired
+    } else if narrowed {
+        AgentStatus::Narrowed
+    } else {
+        AgentStatus::Active
+    }
+}
+
 /// A single-writer allotment: part of a charter's budget or of a bounded
 /// total, spendable by its writer alone.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -500,6 +580,65 @@ impl Allotment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agents_status_follows_its_lineage() {
+        let root = ObjectId::derive(b"root");
+        let lineage = Lineage::root(root).child(0);
+        let me = *lineage.ancestry().last().unwrap();
+        let principal = AccountId::derive(b"principal");
+        let charter = Charter {
+            principal,
+            agent: AccountId::derive(b"agent"),
+            caveats: caveats(),
+            agent_atom: AtomId(hash_domain("test/atom", b"agent")),
+            backer: principal,
+            parent: Some(root),
+            lineage,
+            allotments: BTreeSet::new(),
+            created_at: Pulse(0),
+            identity: None,
+        };
+        let status = |overlays: &[(&ObjectId, &AgentOverlay)], pulse: u64| {
+            agent_status(&me, &charter, overlays.iter().copied(), Pulse(pulse))
+        };
+        let (mut mine, mut above) = (AgentOverlay::new(me), AgentOverlay::new(root));
+        assert_eq!(status(&[], 100), AgentStatus::Active);
+        assert_eq!(status(&[], 101), AgentStatus::Expired, "the caveats end");
+        above.narrowing = Some(Narrowing {
+            payees: None,
+            max_per_payment: Amount::units(1),
+            expires_at: Pulse(50),
+            may_delegate: false,
+        });
+        assert_eq!(status(&[(&root, &above)], 50), AgentStatus::Narrowed);
+        assert_eq!(
+            status(&[(&root, &above)], 51),
+            AgentStatus::Expired,
+            "the narrowing ends"
+        );
+        above.suspended_by = Some(principal);
+        assert_eq!(
+            status(&[(&root, &above)], 5),
+            AgentStatus::StoppedByAncestor
+        );
+        mine.suspended_by = Some(principal);
+        assert_eq!(
+            status(&[(&root, &above), (&me, &mine)], 5),
+            AgentStatus::Suspended
+        );
+        mine.revoked_at = Some(Pulse(3));
+        assert_eq!(
+            status(&[(&root, &above), (&me, &mine)], 5),
+            AgentStatus::Revoked
+        );
+        assert!(AgentStatus::Narrowed.can_act() && AgentStatus::Active.can_act());
+        assert!(!AgentStatus::StoppedByAncestor.can_act() && !AgentStatus::Expired.can_act());
+        assert_eq!(
+            AgentStatus::StoppedByAncestor.label(),
+            "stopped by an ancestor"
+        );
+    }
 
     fn caveats() -> Caveats {
         Caveats {

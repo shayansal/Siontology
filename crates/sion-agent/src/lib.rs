@@ -44,8 +44,13 @@
 //! Skills ([`skills`]) are how an agent gets better at its work: it writes
 //! down what worked, and a skill is measured against an evaluation set
 //! ([`evals`]) and improved by evolving variants against it ([`evolve`]).
+//!
+//! An agent's past is searchable ([`search`]: BM25 over its sessions'
+//! messages), and what it did can be consolidated into notes worth keeping
+//! ([`consolidate`]: a model proposes, gates decide).
 
 pub mod builtin;
+pub mod consolidate;
 pub mod evals;
 pub mod evolve;
 pub mod journal;
@@ -56,6 +61,7 @@ pub mod providers;
 pub mod sandbox;
 pub mod schedule;
 pub mod scripted;
+pub mod search;
 pub mod session;
 pub mod skills;
 pub mod tools;

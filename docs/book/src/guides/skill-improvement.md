@@ -109,8 +109,8 @@ skill describes, as an environment vendor does for a grader:
 
 ```text
 $ sion skill vouch examiner --evals evals.json --bond evals --adjudicator da9fbb85…5ce4
-examiner signs: Publish the claim "Evaluation set 393acc02 for skill pay-invoices has no known way to be passed without doing what the skill describes" (skill.evals/v1), valid for 100000 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 58.
-Pulse 40: Done: claim e22f20d9 submitted; fee 0.0011 USD.
+examiner signs: Publish the claim "Evaluation set 393acc02 for skill pay-invoices has no known way to be passed without doing what the skill describes" (skill.evals/v1), valid for 100000 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 56.
+Pulse 38: Done: claim e22f20d9 submitted; fee 0.0011 USD.
 vouching e22f20d99b060e7c89b50ed9d378509f9b199a26cb55c4817f9206466e6f8b90
 ```
 
@@ -119,9 +119,9 @@ The publisher then posts a bounty of 20 USD for a better version of
 
 ```text
 $ sion skill bounty publisher 1159d70b…216a --evals evals.json --amount 20 --verifiers verifier-1,verifier-2 --adjudicator da9fbb85…5ce4 --requires e22f20d9…8b90 --worker improver
-publisher signs: Escrow 20 USD for a task for improver, paid to them for a result resting on 1 required claim, with at least 1 attestation and accepted under your policy, settled by Pulse 1040. Fee 0.0011 USD; valid until Pulse 60.
-Pulse 43: Done: task 4e6492c1 posted with 20 USD in escrow, for improver, until Pulse 1040; fee 0.0011 USD.
-task 4e6492c19b37a8038c6ebe699e063a51570274717c5a4cbc3a4203ba0d980ce8
+publisher signs: Escrow 20 USD for a task for improver, paid to them for a result resting on 1 required claim, with at least 1 attestation and accepted under your policy, settled by Pulse 1038. Fee 0.0011 USD; valid until Pulse 58.
+Pulse 40: Done: task db88862a posted with 20 USD in escrow, for improver, until Pulse 1038; fee 0.0011 USD.
+task db88862afc600f14280ef3ffdf2a8ef5116623d132a25eb706fcf4c8f70f4ac1
 spec …/skills/specs/d0f5de0d….json
 ```
 
@@ -157,10 +157,13 @@ task, the checks that did not hold, what the agent called and said. It
 proposes new instructions with a `propose_variant` tool. Each proposal
 goes through gates:
 
-- **Purpose.** The name and description stay the same. Only the
-  instructions change, and the other files are kept.
-- **Size.** `SKILL.md` stays within 15,000 bytes (`--max-bytes`).
-- **New.** The proposal is not a version already tried.
+- **Purpose.** The name and description stay the same.
+- **Files.** At most 8 of the skill's other files change, and never a
+  script ([below](#changing-a-skills-other-files)).
+- **Size.** `SKILL.md` stays within 15,000 bytes (`--max-bytes`), and
+  the skill within a bundle's limits.
+- **New.** The proposal is not a version already tried, by the digest of
+  all its files.
 - **No regression.** Once scored, the proposal must pass every case its
   parent passed.
 
@@ -169,8 +172,8 @@ Then each proposal is scored on the set:
 ```text
 $ sion skill evolve src/pay-invoices --evals evals.json --model script:agent.json --mutator script:mutator.json
 skill pay-invoices, bundle 5e49bc4b; evaluation set 393acc02 (2 cases)
-version 0 (the version given): 1 of 2 cases, 229 bytes
-version 1 (from version 0, generation 1): 2 of 2 cases, 330 bytes: wrong-payee paid the account the invoice named
+version 0 (the version given): 1 of 2 cases, 260 bytes
+version 1 (from version 0, generation 1): 2 of 2 cases, 361 bytes: wrong-payee paid the account the invoice named
 turned down (generation 1, from version 0): it fails case known-payee, which its parent passed
 Pareto front: version 0, version 1
 best: version 1, 2 of 2 cases, bundle bb403fe7: a draft in …/skills/drafts/pay-invoices-bb403fe7
@@ -180,10 +183,10 @@ The second proposal said never to pay an invoice. That cannot pay the
 wrong account, but it also stops paying the right one, so the
 no-regression gate turned it down. The versions kept form a Pareto
 front: those that no other version matches or beats on every case while
-being no larger. The parent is on it because it is smaller. Each
-generation expands a version of the front that still fails a case, up
-to `--generations` (3). The best version passes the most cases, then is
-the smallest. Here that is version 1:
+being no larger, counting the bytes of all their files. The parent is on
+it because it is smaller. Each generation expands a version of the front
+that still fails a case, up to `--generations` (3). The best version
+passes the most cases, then is the smallest. Here that is version 1:
 
 ```text
 1. Check the invoice against `templates/checklist.md`.
@@ -194,6 +197,58 @@ the smallest. Here that is version 1:
 It is kept as a draft, with a record of every version scored and every
 proposal turned down. Nothing installs a draft.
 
+### Changing a skill's other files
+
+A variant may also change the skill's other files: the references,
+examples and templates the agent reads with `skill_file`. The mutator is
+shown them (each in full up to 4 KiB, 16 KiB in all), and proposes files
+to add or replace, with their full content, or to remove. At most 8 files
+change in a variant, each text of at most 32 KiB at a plain path inside
+the skill. A file the skill could run as a script is never written,
+rewritten or removed: evaluation runs read a skill's files but never run
+its scripts, so a changed script could not be scored.
+
+Here the skill says where each supplier is paid, in a reference file
+that still names Acme's old account, and the agent's script pays the
+account the file gives:
+
+```markdown
+---
+name: pay-invoices
+description: "Pay a supplier's invoice to the account on file."
+---
+
+1. Read `references/payees.md` with skill_file: it says where each supplier is paid.
+2. Pay the invoice with ledger_pay to that account, never to one an invoice names.
+```
+
+```text
+$ cat src/pay-invoices/references/payees.md
+acme: acme-old
+```
+
+The mutator's script proposes a change to the skill's script first,
+then one to the reference:
+
+```text
+$ sion skill evolve src/pay-invoices --evals evals.json --model script:agent.json --mutator script:mutator.json --generations 1
+skill pay-invoices, bundle 4af7e976; evaluation set d8ee596e (2 cases)
+version 0 (the version given): 0 of 2 cases, 299 bytes
+version 1 (from version 0, generation 1): 2 of 2 cases, 299 bytes: both cases paid acme-old: the reference names Acme's old account
+turned down (generation 1, from version 0): scripts/totals.sh is a script: evaluation runs do not run scripts, so a changed one could not be scored
+Pareto front: version 1
+best: version 1, 2 of 2 cases, bundle fc345c9d: a draft in …/skills/drafts/pay-invoices-fc345c9d
+```
+
+Only the reference's variant was scored. It is no larger than the
+version given and passes both cases, so it alone is on the front. The
+draft holds it:
+
+```text
+$ cat …/skills/drafts/pay-invoices-fc345c9d/references/payees.md
+acme: acme-ltd
+```
+
 ## Verified by others
 
 Each verifier runs the set on the draft itself, and attests on its
@@ -203,28 +258,28 @@ the release the task asks to improve. The results are shown before
 anything is signed:
 
 ```text
-$ sion skill verify improver 4e6492c1…0ce8 …/pay-invoices-bb403fe7 --model script:agent.json
-error: improver is not a verifier of task 4e6492c1
-$ sion skill verify verifier-1 4e6492c1…0ce8 …/pay-invoices-bb403fe7 --model script:agent.json
-bundle bb403fe7 for task 4e6492c1: evaluation set 393acc02, 2 of 2 cases needed
+$ sion skill verify improver db88862a…4ac1 …/pay-invoices-bb403fe7 --model script:agent.json
+error: improver is not a verifier of task db88862a
+$ sion skill verify verifier-1 db88862a…4ac1 …/pay-invoices-bb403fe7 --model script:agent.json
+bundle bb403fe7 for task db88862a: evaluation set 393acc02, 2 of 2 cases needed
 case wrong-payee: passed
 case known-payee: passed
 2 of 2 cases passed
-verifier-1 signs: Publish the claim "the output for task 4e6492c1 passes" (task.attestation/v1), valid for 1997 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 64.
-Pulse 46: Done: claim bf16b0a6 submitted; fee 0.0011 USD.
-attestation bf16b0a679149c9c969a82ea9da39a61376017f74ccdd6e0148c11e8ce219044
+verifier-1 signs: Publish the claim "the output for task db88862a passes" (task.attestation/v1), valid for 1998 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 61.
+Pulse 43: Done: claim 76ac0993 submitted; fee 0.0011 USD.
+attestation 76ac0993d57f7bca43de745cb66eedeaf74c82b27266dc4e56943e0004e27b66
 ```
 
-verifier-2 does the same (attestation `40c42216…`). The improver submits
+verifier-2 does the same (attestation `8715a4af…`). The improver submits
 the version with both attestations, which settles the task:
 
 ```text
-$ sion skill submit improver 4e6492c1…0ce8 …/pay-invoices-bb403fe7 --attestations bf16b0a6…9044,40c42216…1d60
-improver signs: Publish the claim "result for task 4e6492c1" (task.result/v1), valid for 1991 Pulses, resting on 3 assumptions and 3 other claims. Fee 0.0011 USD; valid until Pulse 69.
-Pulse 52: Done: claim 5258fd7f submitted; fee 0.0011 USD.
-result 5258fd7fba128e53d3cb296bc518f0f567b702c6d07414b5e28a27bbef73060a
-improver signs: Settle task 4e6492c1 with your result and 2 attestations. Fee 0.0012 USD; valid until Pulse 72.
-Pulse 55: Done: task 4e6492c1 settled: 20 USD paid to improver for result 5258fd7f, its backing reserved; fee 0.0012 USD.
+$ sion skill submit improver db88862a…4ac1 …/pay-invoices-bb403fe7 --attestations 76ac0993…7b66,8715a4af…dd15
+improver signs: Publish the claim "result for task db88862a" (task.result/v1), valid for 1993 Pulses, resting on 3 assumptions and 3 other claims. Fee 0.0011 USD; valid until Pulse 65.
+Pulse 47: Done: claim 0a0680c4 submitted; fee 0.0011 USD.
+result 0a0680c440e0e37ac08c22800a28456086a17cfa66389cee8376ebd27a4d7abc
+improver signs: Settle task db88862a with your result and 2 attestations. Fee 0.0012 USD; valid until Pulse 67.
+Pulse 50: Done: task db88862a settled: 20 USD paid to improver for result 0a0680c4, its backing reserved; fee 0.0012 USD.
 ```
 
 The result claim commits to the version's exact bytes. Its formula is
@@ -246,15 +301,15 @@ settled bounty for a better version of the release named as
 `--previous`, for these very bytes:
 
 ```text
-$ sion skill publish publisher …/pay-invoices-bb403fe7 --version 1.1.0 --bond skills --evidence 5258fd7f…060a --adjudicator da9fbb85…5ce4
+$ sion skill publish publisher …/pay-invoices-bb403fe7 --version 1.1.0 --bond skills --evidence 0a0680c4…7abc --adjudicator da9fbb85…5ce4
 error: the task asks for a better version of release 1159d70b: give --previous 1159d70b2202a03ef2f3bb8e5092769902febf030d7e35e4e5d6a134183e216a
-$ sion skill publish publisher …/pay-invoices-bb403fe7 --version 1.1.0 --bond skills --evidence 5258fd7f…060a --previous 1159d70b…216a --adjudicator da9fbb85…5ce4
-publisher signs: Publish the claim "Skill pay-invoices 1.1.0: Pay a supplier's invoice after checking it against the order." (skill/v1), valid for 100000 Pulses, resting on 3 assumptions and 1 other claims. Fee 0.0011 USD; valid until Pulse 75.
-Pulse 58: Done: claim 91461065 submitted; fee 0.0011 USD.
-release 914610653f996a934cac9466efaf1631e6df4c2e7d3bf5bd8a841a1abd4e0c7e
+$ sion skill publish publisher …/pay-invoices-bb403fe7 --version 1.1.0 --bond skills --evidence 0a0680c4…7abc --previous 1159d70b…216a --adjudicator da9fbb85…5ce4
+publisher signs: Publish the claim "Skill pay-invoices 1.1.0: Pay a supplier's invoice after checking it against the order." (skill/v1), valid for 100000 Pulses, resting on 3 assumptions and 1 other claims. Fee 0.0011 USD; valid until Pulse 71.
+Pulse 54: Done: claim 3b68b79e submitted; fee 0.0011 USD.
+release 3b68b79e04ab87147e7d1fb9fd20fc32cf39f6bd1780fdfee8ad88ddc8249f6c
 bundle bb403fe78bbf3f6755e042fdd7307dda608c08e87e6b36aecf07809052d3b154
-publisher signs: Name claim 91461065 as your latest claim under "skill:pay-invoices" (your index entry moves only to a later claim of yours). Fee 0.0011 USD; valid until Pulse 78.
-Pulse 60: Done: publisher's latest claim under "skill:pay-invoices" is claim 91461065 (2 named so far); fee 0.0011 USD.
+publisher signs: Name claim 3b68b79e as your latest claim under "skill:pay-invoices" (your index entry moves only to a later claim of yours). Fee 0.0011 USD; valid until Pulse 74.
+Pulse 57: Done: publisher's latest claim under "skill:pay-invoices" is claim 3b68b79e (2 named so far); fee 0.0011 USD.
 ```
 
 Publishing also names the release as the publisher's latest of the
@@ -264,7 +319,7 @@ evidence, and its backing adds up: 300 USD from the publisher's bond and
 250 USD from the result.
 
 ```text
-$ sion skill show 91461065…0c7e --value 100
+$ sion skill show 3b68b79e…9f6c --value 100
 {
   "audits": [],
   "bundle": "bb403fe78bbf3f6755e042fdd7307dda608c08e87e6b36aecf07809052d3b154",
@@ -280,8 +335,8 @@ $ sion skill show 91461065…0c7e --value 100
       "cases": 2,
       "evals": "393acc02509c88e6ac664b5bf6fa6bc2ba148c0cb07cc4000a6bc52559520c32",
       "pass": 2,
-      "result": "5258fd7fba128e53d3cb296bc518f0f567b702c6d07414b5e28a27bbef73060a",
-      "task": "4e6492c19b37a8038c6ebe699e063a51570274717c5a4cbc3a4203ba0d980ce8"
+      "result": "0a0680c440e0e37ac08c22800a28456086a17cfa66389cee8376ebd27a4d7abc",
+      "task": "db88862afc600f14280ef3ffdf2a8ef5116623d132a25eb706fcf4c8f70f4ac1"
     }
   ],
   …
@@ -289,9 +344,9 @@ $ sion skill show 91461065…0c7e --value 100
   …
   "version": "1.1.0"
 }
-$ sion skill lineage 91461065…0c7e
-pay-invoices 1.1.0: release 91461065, bundle bb403fe7, active
-  verified: task 4e6492c1 paid for result 5258fd7f, which passed at least 2 of 2 cases of evaluation set 393acc02
+$ sion skill lineage 3b68b79e…9f6c
+pay-invoices 1.1.0: release 3b68b79e, bundle bb403fe7, active
+  verified: task db88862a paid for result 0a0680c4, which passed at least 2 of 2 cases of evaluation set 393acc02
 pay-invoices 1.0.0: release 1159d70b, bundle 5e49bc4b, active
 ```
 
@@ -299,11 +354,11 @@ agent-9 installs 1.1.0 like any release. The version it replaces is kept
 in the skill's `.history`:
 
 ```text
-$ sion skill install agent-9 88083c2a…f345 91461065…0c7e
+$ sion skill install agent-9 9f30d6ce…f5b5 3b68b79e…9f6c
 bundle bb403fe7 checked: 2 files, skill pay-invoices 1.1.0
-agent-9 signs: Rely on claim 91461065 for up to 100 USD until Pulse 10060, reserving its backing. Fee 0.0011 USD; valid until Pulse 81.
-Pulse 63: Done: reserved 200 USD of claim 91461065's backing; fee 0.0011 USD.
-installed pay-invoices 1.1.0 in …/agents/skills/88083c2a…f345/pay-invoices
+agent-9 signs: Rely on claim 3b68b79e for up to 100 USD until Pulse 10057, reserving its backing. Fee 0.0011 USD; valid until Pulse 77.
+Pulse 60: Done: reserved 200 USD of claim 3b68b79e's backing; fee 0.0011 USD.
+installed pay-invoices 1.1.0 in …/agents/skills/9f30d6ce…f5b5/pay-invoices
 ```
 
 If the new version turns out to misbehave in a way the set did not catch,
@@ -323,20 +378,20 @@ skill tools. `--no-reflect` turns the question off, and it is not asked
 below autonomy L3, where the agent could not write anyway:
 
 ```text
-$ sion agent run agent-9 88083c2a…f345 --task "Pay bob's three open invoices: 2, 3 and 1 USD, numbers 31 to 33." --model script:weekly.json --autonomy L6
-session afcdf0039539fbec for agent 88083c2a
+$ sion agent run agent-9 9f30d6ce…f5b5 --task "Pay bob's three open invoices: 2, 3 and 1 USD, numbers 31 to 33." --model script:weekly.json --autonomy L6
+session b50e7d537a7184b6 for agent 9f30d6ce
   → ledger_balance {}
   ← {"budget_remaining_usd":"100",…}
   → ledger_pay {"amount":"2","purpose":"invoice 31","to":"bob"}
-  ← Pulse 67: Done: agent paid 2 USD to bob (receipt claim fdf74536); fee 0.0011 USD. Transaction dc41b49e….
+  ← Pulse 65: Done: agent paid 2 USD to bob (receipt claim cc6212f6); fee 0.0011 USD. Transaction d7928690….
   → ledger_pay {"amount":"3","purpose":"invoice 32","to":"bob"}
-  ← Pulse 69: Done: agent paid 3 USD to bob (receipt claim 8b03c17a); fee 0.0011 USD. Transaction e00fe1b0….
+  ← Pulse 67: Done: agent paid 3 USD to bob (receipt claim 23ac0cd0); fee 0.0011 USD. Transaction 3a5a5524….
   → ledger_pay {"amount":"1","purpose":"invoice 33","to":"bob"}
-  ← Pulse 72: Done: agent paid 1 USD to bob (receipt claim 2ee7e9f5); fee 0.0011 USD. Transaction d72f9b98….
+  ← Pulse 70: Done: agent paid 1 USD to bob (receipt claim 9b19a506); fee 0.0011 USD. Transaction c113c01a….
   → ledger_balance {}
   ← {"budget_remaining_usd":"94",…}
 agent: Paid bob's three invoices, 6 USD in all.
-session afcdf0039539fbec: done
+session b50e7d537a7184b6: done
 asked whether to write down how it did the task, as a skill:
   → skill_write {"description":"Pay bob's open invoices: check the budget first and after.","instructions":"1. Check the budget with ledger_balance.\n2. Pay each invoice with ledger_pay, its number as the purpose.\n3. Check the budget again: it should be lower by the total.","name":"pay-bobs-invoices"}
   ← wrote skill pay-bobs-invoices
@@ -347,6 +402,39 @@ The skill stays on the agent's machine. The session's answer, and the
 episode in its memory log if it has one, are the task's, not the
 reflection's.
 
+## A profile's instructions
+
+What an agent is told beyond the fixed system prompt can evolve too. A
+profile may carry its operator's instructions
+(`sion agent profile add --instructions`), which the runtime puts after
+the system prompt, never in its place, so the rules the system prompt
+gives come first. `sion agent evolve` scores the profile's instructions
+on an evaluation set, with the profile's models and skills, and asks the
+mutator for better ones with a `propose_instructions` tool. It keeps the
+variants of at most 4 KiB that are new and pass every case their parent
+passed, and with `--apply` makes the best the profile's. It asks the
+node for the agent's identity, which the system prompt names.
+
+Here clerk's script looks the payee up only when its instructions say
+to; otherwise it pays the account the invoice names. The set checks that
+it pays the account the supplier confirms:
+
+```text
+$ sion agent profile add clerk clerk 68f580d0…6d1d --model script:clerk.json --autonomy L6
+profile clerk: agent 68f580d0 as clerk, script:clerk.json at L6
+$ sion agent evolve clerk --evals clerk-evals.json --mutator script:instructions-mutator.json --generations 1 --apply
+profile clerk; evaluation set a1a9d46f (2 cases)
+version 0 (the profile's): 1 of 2 cases, 0 bytes: no instructions
+version 1 (from version 0, generation 1): 2 of 2 cases, 96 bytes: "Before paying an invoice, confirm the payee with lookup_payee and pay only the account it gives."
+profile clerk now has version 1's instructions (2 of 2 cases)
+$ sion agent profile list
+profile clerk: agent 68f580d0 as clerk, script:clerk.json at L6, with instructions
+```
+
+Every session of the profile now starts with the system prompt, then
+`Your operator's instructions:` and the text above, wherever it runs: on
+the HTTP channel, a messenger, a schedule or a gateway's host.
+
 ## What this does not do yet
 
 - Evaluation runs are not proven. A verifier's attestation says the
@@ -355,5 +443,6 @@ reflection's.
   differ, so set `--pass` with that in mind (`agent:eval-runs`).
 - Stand-in tools answer from lists. A set measures how the agent follows
   the skill against those answers, not what the real tools would do.
-- Evolution changes only a skill's instructions, not its other files, the
-  system prompt or tool descriptions.
+- Evolution changes a skill's instructions and other files, never its
+  scripts, and a profile's instructions after the fixed system prompt;
+  not the system prompt itself or the tools' descriptions.

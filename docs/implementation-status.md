@@ -204,9 +204,11 @@ command knows of no later Pulse). Self-improvement
 ([Skills that get better](book/src/guides/skill-improvement.md)): an
 evaluation set is cases with stand-in tools and checks, fixed by the
 digest of its bytes; `sion skill evolve` shows a model the cases a
-version fails and scores the variants it proposes, under gates (purpose,
-size, novelty, no regression), keeping a Pareto front, and keeps the best
-as a draft; a bounty is a Task Charter whose spec names the release, the
+version fails and scores the variants it proposes (new instructions, and
+the skill's other files but never its scripts), under gates (purpose,
+files, size, novelty, no regression), keeping a Pareto front, and keeps
+the best as a draft; `sion agent evolve` does the same for a profile's
+own instructions, which follow the fixed system prompt; a bounty is a Task Charter whose spec names the release, the
 set and the cases to pass, with its verifiers, adjudicator and required
 claims (such as the set's author vouching for it, `skill.evals/v1`) fixed
 before any version exists; verifiers run the set themselves and attest;
@@ -223,9 +225,12 @@ of their own, two levels deep at most), and posts, follows and delivers
 Task Charters; profiles keep how to run an agent under a name;
 `sion agent schedule` and `sion agent scheduler` run a profile's task
 once, every interval or on cron (UTC), and deliver its answer to a file,
-a webhook or Telegram; `sion agent serve` (HTTP with a bearer token) and
-`sion agent telegram` (long polling, chats allowed by id) carry
-conversations, each a session, with approvals answered in the channel.
+a webhook or Telegram; `sion agent serve` (HTTP with the machine's token
+or a profile's own) and `sion agent bridge` (Slack, Discord, Matrix,
+Signal and Telegram, chats allowed by id) carry conversations, each a
+session, with approvals answered in the channel, by named approvers if
+given; `sion agent gateway` routes a profile's messages to the machine
+that proved the agent's key with `sion agent host`.
 Commands, scripts and MCP servers
 ([Commands, scripts and MCP servers](book/src/guides/agent-tools.md)):
 `--shell` runs `/bin/sh` commands in a sandbox (bubblewrap, or a Docker
@@ -243,12 +248,26 @@ journaled, and a replayed outcome says so. The spawns of one turn go
 together, in one `SpawnAgents` transaction and one transfer of fee money,
 and their sessions run at the same time; their keyless payments are signed
 in batches as they arrive. Tested with the scripted model and with
-stand-ins for the providers' and Telegram's APIs: this environment reaches
-neither. The sandbox tests run bubblewrap for real, and Docker with
-`SION_TEST_DOCKER_IMAGE`. Not built: permissions that skills declare and
-the runtime enforces, search over past sessions, consolidation, the memory
-archive with storage providers, MCP over HTTP, and routing channels across
-machines
+stand-ins for the providers' and the messengers' APIs: this environment
+reaches none of them. The sandbox tests run bubblewrap for real, and
+Docker with `SION_TEST_DOCKER_IMAGE`. An agent with a memory log searches
+its past sessions (`session_search`, `sion agent sessions search`:
+BM25), each hit checked against the trajectory digest its episode
+committed to the ledger; `sion memory consolidate` turns episodes into
+derived notes under gates,
+superseding and never deleting; what a tainted session records, its
+episode and the notes consolidated from it are marked as prompt-injection
+risks and kept out of prompts; `sion memory archive` and `restore` keep a
+log with a storage provider as an archive encrypted for its writer, named
+as the head's manifest, and bring it back checked against the ledger,
+providers serving retrievals to their deals' clients. Channels reach a
+profile through its own tokens, kept as hashes (approvals only with
+tokens made for them); Slack, Discord, Matrix, Signal and Telegram behind
+one bridge, with approvers; and an agent gateway that passes a profile's
+messages to the host that proved the agent's key, only while the agent is
+in good standing. The messengers are tested against stand-ins for their
+APIs. Not built: permissions that skills declare and the runtime
+enforces, and MCP over HTTP
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
@@ -497,10 +516,18 @@ background from the internet only (not from the device or its network,
 unless told), keeps the data and proves every round, and that keeps
 proving deals it holds when turned off. Settings are written atomically;
 unreadable ones are kept aside and nothing is pinned on first use without
-the person's say. Tested against a devnet over HTTP
+the person's say. It watches agents: those it backs, answers for or is,
+found among the registrations and spawns the node keeps, and any added
+by id, each one's charter and the overlays of its whole lineage proven
+against one certified header and its status worked out from them by the
+rule the node uses; it suspends, resumes or revokes those it oversees,
+with proven receipts. Tested against a devnet over HTTP
 (`crates/sion-app-core/tests/devnet.rs`). The Tauri 2 shell in
 `apps/sion-app` (its own Cargo workspace) builds and runs on Linux; it was
-run under a virtual display against a devnet and its tabs captured.
+run under a virtual display against a devnet and its tabs captured. The
+Agents tab came later: the shell with it was type-checked
+(`cargo check`), and the core it calls is tested against a devnet, but
+it has not been run in a window.
 **Not built:** the Android and iOS builds (configured, not attempted: no
 SDK here), a key in the platform's keystore (`app:plain-key`), proofs of
 the balances it shows (`app:unproven-balances`), bandwidth served by
@@ -723,6 +750,7 @@ the architecture's own:
 | `storage:no-replication` | A storage proof shows that the provider could produce the challenged leaves during the round, not that it keeps a copy of its own: it could fetch them from another copy (or from the client) when challenged. Two deals with two providers are not proof of two copies. |
 | `storage:raw-proofs` | Every storage proof carries its challenged leaves and paths on the ledger, about 17 to 22 KiB a deal a round with 4 challenges. Proofs are not aggregated across deals or rounds, so ledger bandwidth bounds how many deals a network can keep. |
 | `storage:no-retrieval` | Getting data back is not part of the protocol: a provider proves custody, and returning the data to its client is up to them. |
+| `app:agent-search` | The agents the app finds for the device come from the node's history of events, unproven, and only the Pulses the node still keeps: a node can leave out an agent the device backs, and the Agents tab would not show it. The standing and budget of every agent it shows are proven. |
 | `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
 | `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |
 | `app:unproven-balances` | The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven. |
@@ -731,8 +759,10 @@ the architecture's own:
 | `agent:plain-sessions` | Agent sessions, with their conversations and journals, are stored unencrypted under `$SION_HOME/agents/sessions`. |
 | `agent:local-skill-checks` | The runtime on the agent's machine checks a skill's bundle against its release when installing it, and takes a skill out of use when its release is no longer active at the start of each run. A session already running keeps the skill until it ends, and installed files changed on disk afterwards are not checked again. |
 | `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. The ledger refuses an attestation by the version's author (specification v1.15), but not one by an account the author controls under another name: such an attestation is worth its own bond. |
-| `agent:channel-token` | Whoever holds the HTTP channel's bearer token can start and continue the sessions of every profile on the machine, approvals included, within each profile's autonomy and the agent's charter. The channel speaks plain HTTP. |
-| `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included. |
+| `agent:channel-token` | Whoever holds the machine's channel token can start and continue the sessions of every profile on the machine, approvals included; whoever holds a profile's own token, that profile's, and approvals only with a token made for them; always within each profile's autonomy and the agent's charter. Tokens are kept as their hashes. The channel speaks plain HTTP. |
+| `agent:gateway` | An agent gateway sees, and could change, the messages and answers it passes; it cannot act as an agent on the ledger, holding no key. It routes a profile's messages only to a host that proved the key of the agent its tokens name for the profile, and checks the agent's standing at most five seconds old, from the node it trusts: a message can reach an agent suspended within those seconds. It speaks plain HTTP unless put behind TLS. |
+| `agent:messenger-identity` | Slack, Discord, Matrix, Signal and Telegram say who wrote a message: a bridge's approvers are who the messenger says they are, and anyone who can write in an allowed chat talks to the profile. |
+| `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included unless `--approvers` names who may decide. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
 | `agent:sandbox` | Commands an agent runs (its shell, its skills' scripts, MCP servers started in a sandbox) are contained only as far as the kernel's namespaces (bubblewrap) or the container runtime (Docker) hold: an escape gives them the runtime's user. Bubblewrap bounds how long a command runs and the size of each process, not how many processes it starts; Docker bounds those too. A container started by a runtime that is killed runs until its command ends. |
@@ -741,6 +771,10 @@ the architecture's own:
 | `agent:workspace-content` | What an agent reads from its own workspace (files, and the output of commands without the network) does not taint its session, even content it saved there from outside in an earlier session. |
 | `agent:mcp-unsandboxed` | An MCP server added without a sandbox runs as the operator's user, with the environment variables its configuration names: it can do whatever that user can. |
 | `agent:mcp-effects` | What an MCP tool's call does is what its server does. The runtime knows it only from the annotations reviewed with the tool, or from the effect its operator set: a tool that does more than it says (moves money elsewhere, say) is caught only by the review, and an agent's charter does not bound money a tool moves outside the ledger. A pin shows that a tool's definition is the one reviewed, not that its server's code is. |
+| `agent:consolidation` | A consolidated note is a model's reading of the episodes it cites. The gates check that it cites episodes it was shown, that the notes it replaces exist, its kind and its size, not that it reads the episodes right. Each note links to its episodes and names the model and the consolidator, so it can be checked against them. |
+| `agent:recall-local` | Session search reads the sessions kept on the machine the agent runs on. A hit's check shows whether a stored session still hashes to the digest its episode recorded; a session never recorded (it did not finish, or ran without a memory log) is searched unchecked. |
+| `memory:archive-key` | A memory archive is encrypted under a key derived from its writer's wallet seed: whoever holds the seed can open it, and on a devnet anyone who knows a named wallet's name. A provider sees an archive's size, which log it is of, and when it was made. |
+| `storage:retrieval-replay` | A provider checks a retrieval request's signature and expiry (at most five minutes ahead), not whether it was seen before: within that window a copied request retrieves the data again. Retrieval speaks plain HTTP unless put behind TLS. |
 | `agent:storage-from-account` | A storage deal an agent posts is paid from its account's balance, the money it pays fees with, not from its charter's budget: the charter's caveats do not bound it. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |

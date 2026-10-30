@@ -101,6 +101,31 @@ fn storage_status(core: State<'_, AppCore>) -> Answer {
     flat(core.storage_status())
 }
 
+#[tauri::command(async)]
+fn agents(core: State<'_, AppCore>) -> Answer {
+    flat(core.agents())
+}
+
+#[tauri::command(async)]
+fn watch_agent(core: State<'_, AppCore>, agent: String) -> Answer {
+    flat(core.watch_agent(&agent))
+}
+
+#[tauri::command(async)]
+fn unwatch_agent(core: State<'_, AppCore>, agent: String) -> Answer {
+    flat(core.unwatch_agent(&agent))
+}
+
+#[tauri::command(async)]
+fn find_agents(core: State<'_, AppCore>) -> Answer {
+    flat(core.find_agents())
+}
+
+#[tauri::command(async)]
+fn agent_action(core: State<'_, AppCore>, action: String, agent: String) -> Answer {
+    flat(core.agent_action(&action, &agent))
+}
+
 /// Starts the app.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -134,7 +159,12 @@ pub fn run() {
             delegation_action,
             set_storage,
             storage_tick,
-            storage_status
+            storage_status,
+            agents,
+            watch_agent,
+            unwatch_agent,
+            find_agents,
+            agent_action
         ])
         .run(tauri::generate_context!())
         .expect("the Siontology app failed to start");

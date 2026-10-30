@@ -3,10 +3,10 @@
 The Siontology app turns a laptop or a phone into a **light node**. It
 holds the device's own key, and it checks every Pulse it shows instead of
 trusting the server it talks to. Its owner can pay, delegate stake to a
-validator without handing the stake over, and let the device keep data
-for others ([storage deals](../concepts/storage.md)), on test networks
-with test USD. Every amount it shows says so, in receipts and activity
-too.
+validator without handing the stake over, let the device keep data
+for others ([storage deals](../concepts/storage.md)), and watch and stop
+the AI agents it backs, on test networks with test USD. Every amount it
+shows says so, in receipts and activity too.
 
 One Rust core, `sion-app-core`, does the work. A [Tauri 2](https://v2.tauri.app)
 shell wraps it for desktop and mobile, under `apps/sion-app`.
@@ -75,6 +75,15 @@ reports for the device's account, unproven; the Node tab says whether the
 node's latest Pulse checked out, and the device's own receipts are proven.
 Proving every balance against the state root is the next step.
 
+**It does not run the agents it watches.** The Agents tab checks their
+standing and budgets and can stop them, but their sessions, skills and
+memory stay on the machines that run them ([Agents at
+work](../guides/agent-runtime.md)). The agents it finds come from the
+node's history, unproven: a node could leave one out
+(`app:agent-search`), though it cannot show a stopped agent as active. The tab has been type-checked with
+the shell and its core tested against a devnet; it has not yet been run
+in a window.
+
 ## Build and run it on a desktop
 
 Linux needs WebKitGTK 4.1 and its companions; macOS and Windows need
@@ -105,7 +114,7 @@ cargo install tauri-cli --version "^2" --locked
 cargo tauri build
 ```
 
-## The five tabs
+## The six tabs
 
 - **Node**: the latest verified Pulse, the checks behind it, and the tally
   of verifications.
@@ -131,6 +140,19 @@ cargo tauri build
   no new deals but keeps proving the ones it holds until they end, while
   the app runs: turning it off never abandons a deal. The tab shows the
   deals kept, what was collected and what is due.
+- **Agents**: the AI agents the device watches. *Find the agents I back*
+  looks for the agents registered or spawned with the device as their
+  backer or principal, or as the agent itself, among the Pulses the node
+  still keeps; others are added by id. Each one's standing is checked as
+  a light client checks it: its charter and the overlays of every charter
+  above it are proven against a certified header of the pinned chain, so
+  a node cannot show a suspended agent, or one whose parent is
+  suspended, as active. The tab shows its status, depth, backer, limit
+  per payment and proven budget, and the checks. For the agents the
+  device oversees (as their backer, their principal or the agent of a
+  charter above them), *Suspend* stops the agent and everything below it
+  at once, *Resume* lifts the suspension, and *Revoke*, pressed twice,
+  ends it for good; the receipts are proven like any other.
 - **Settings**: the node, and the pinned chain identity.
 
 ## Pinning the chain identity

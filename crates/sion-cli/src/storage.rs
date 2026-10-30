@@ -52,38 +52,9 @@ pub enum StorageCommand {
         from: String,
         /// The file to have kept.
         file: PathBuf,
-        /// Paid per proven round (decimal USD).
-        #[arg(long)]
-        price: String,
-        /// Rounds.
-        #[arg(long)]
-        rounds: u32,
-        /// Pulses per round: a multiple of 8, from 8 to 100,000.
-        #[arg(long, default_value_t = 16)]
-        round_length: u64,
-        /// Collateral the provider must post (decimal USD). Default: the
-        /// escrow, for a deal open to anyone (which must ask for some); none
-        /// for a named provider.
-        #[arg(long)]
-        collateral: Option<String>,
-        /// Leaves challenged per round (1 to 16).
-        #[arg(long, default_value_t = 4)]
-        challenges: u8,
-        /// The provider (wallet name or account); without it, anyone may
-        /// accept.
-        #[arg(long)]
-        provider: Option<String>,
-        /// How many Pulses the deal stays open for acceptance.
-        #[arg(long, default_value_t = 200)]
-        accept_within: u64,
-        /// Where providers fetch the data: an https:// URL serving the file.
-        #[arg(long, conflicts_with = "local")]
-        locator: Option<String>,
-        /// Point providers at the file itself (file://<its path>): only a
-        /// provider on this machine can fetch it, and the deal publishes the
-        /// path.
-        #[arg(long)]
-        local: bool,
+        /// The deal's terms.
+        #[command(flatten)]
+        terms: DealTerms,
     },
     /// List storage deals.
     Deals {
@@ -119,6 +90,22 @@ pub enum StorageCommand {
         from: String,
         /// The deal (its id, or a unique prefix of it).
         deal: String,
+    },
+    /// Retrieve a deal's data as its client from the provider that keeps
+    /// it (the address its `sion storage serve --listen` gives), checked
+    /// against the deal's root.
+    Retrieve {
+        /// Your wallet (the client).
+        from: String,
+        /// The deal (its id, or a unique prefix of it).
+        deal: String,
+        /// The provider's retrieval address, for example
+        /// http://127.0.0.1:8740.
+        #[arg(long)]
+        provider_url: String,
+        /// Where to write the data.
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Close a deal: refund an open one (client), or end an accepted one
     /// at its end (client or provider) or once its provider abandoned it
@@ -159,10 +146,318 @@ pub enum StorageCommand {
         /// Fetch from local and private network addresses.
         #[arg(long)]
         allow_private: bool,
+        /// Serve the data of the deals you keep to their clients on this
+        /// address: POST /v1/deals/<deal>/retrieve, signed by the deal's
+        /// client.
+        #[arg(long)]
+        listen: Option<String>,
         /// Stop after this many Pulses.
         #[arg(long)]
         pulses: Option<u64>,
     },
+}
+
+/// The terms of a storage deal, as `sion storage post` and `sion memory
+/// archive` take them.
+#[derive(Clone, Debug, clap::Args)]
+pub struct DealTerms {
+    /// Paid per proven round (decimal USD).
+    #[arg(long)]
+    pub price: String,
+    /// Rounds.
+    #[arg(long)]
+    pub rounds: u32,
+    /// Pulses per round: a multiple of 8, from 8 to 100,000.
+    #[arg(long, default_value_t = 16)]
+    pub round_length: u64,
+    /// Collateral the provider must post (decimal USD). Default: the
+    /// escrow, for a deal open to anyone (which must ask for some); none
+    /// for a named provider.
+    #[arg(long)]
+    pub collateral: Option<String>,
+    /// Leaves challenged per round (1 to 16).
+    #[arg(long, default_value_t = 4)]
+    pub challenges: u8,
+    /// The provider (wallet name or account); without it, anyone may
+    /// accept.
+    #[arg(long)]
+    pub provider: Option<String>,
+    /// How many Pulses the deal stays open for acceptance.
+    #[arg(long, default_value_t = 200)]
+    pub accept_within: u64,
+    /// Where providers fetch the data: an https:// URL serving the file.
+    #[arg(long, conflicts_with = "local")]
+    pub locator: Option<String>,
+    /// Point providers at the file itself (file://<its path>): only a
+    /// provider on this machine can fetch it, and the deal publishes the
+    /// path.
+    #[arg(long)]
+    pub local: bool,
+}
+
+/// Posts a deal for `data`, the contents of `file`, on `terms`: returns the
+/// transaction and the deal it created.
+pub fn post_deal(
+    session: &mut Session<'_>,
+    ledger: &dyn Ledger,
+    from: &str,
+    file: &Path,
+    data: &[u8],
+    terms: &DealTerms,
+) -> Result<(sion_node::TxView, Option<ObjectId>), CliError> {
+    let tree = DataTree::of_data(data);
+    let locator = match (&terms.locator, terms.local) {
+        (Some(locator), _) => locator.clone(),
+        (None, true) => format!(
+            "file://{}",
+            std::fs::canonicalize(file)
+                .map_err(|e| CliError::Usage(e.to_string()))?
+                .display()
+        ),
+        (None, false) => {
+            return Err(CliError::Usage(
+                "give --locator <https URL serving the file>, or --local for a provider on this machine (the deal then publishes the file's path)".into(),
+            ))
+        }
+    };
+    let price = crate::agents::parse_amount(&terms.price)?;
+    let collateral = match (&terms.collateral, &terms.provider) {
+        (Some(text), _) => crate::agents::parse_amount(text)?,
+        (None, Some(_)) => Amount::ZERO,
+        (None, None) => Amount(price.0.saturating_mul(u128::from(terms.rounds))),
+    };
+    let provider = terms.provider.as_ref().map(|p| session.id(p));
+    let accept_by = Pulse(ledger.pulse()?.0 + terms.accept_within.max(1));
+    let view = session.send(
+        from,
+        TxKind::PostDeal {
+            root: tree.root(),
+            size: tree.size(),
+            challenges: terms.challenges,
+            price,
+            rounds: terms.rounds,
+            round_length: terms.round_length,
+            collateral,
+            provider,
+            accept_by,
+            locator,
+        },
+        Vec::new(),
+    )?;
+    let deal = view.effects.events.iter().find_map(|event| match event {
+        Event::DealPosted { deal, .. } => Some(*deal),
+        _ => None,
+    });
+    Ok((view, deal))
+}
+
+/// The domain of the message a deal's client signs to retrieve its data.
+pub const RETRIEVE_DOMAIN: &str = "sion/storage/retrieve/v1";
+
+/// How far ahead a retrieval request may expire, in seconds.
+pub const MAX_REQUEST_SECONDS: u64 = 300;
+
+/// The largest retrieval request a provider reads.
+const MAX_REQUEST_BYTES: u64 = 256 << 10;
+
+/// What a deal's client signs to retrieve its data until `expires`
+/// (seconds since the Unix epoch).
+pub fn retrieve_message(deal: &ObjectId, expires: u64) -> Vec<u8> {
+    sion_core::encode::encode(&(*deal, expires))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Checks a request to retrieve `deal`'s data, at `now`: it has not
+/// expired, and the deal's client signed it, under the account's policy on
+/// the ledger (or the policy the account was created with, if it has not
+/// acted yet). Returns the deal.
+pub fn check_retrieval(
+    ledger: &dyn Ledger,
+    deal_id: &ObjectId,
+    body: &Value,
+    now: u64,
+) -> Result<Deal, String> {
+    let expires = body["expires"]
+        .as_u64()
+        .ok_or("expires is a time in seconds since the Unix epoch")?;
+    if expires < now || expires > now.saturating_add(MAX_REQUEST_SECONDS) {
+        return Err(format!(
+            "the request expires at {expires}: within {MAX_REQUEST_SECONDS} seconds of now ({now}), please"
+        ));
+    }
+    let hex_field = |name: &str| -> Result<Vec<u8>, String> {
+        hex::decode(body[name].as_str().ok_or(format!("{name} is missing"))?)
+            .map_err(|_| format!("{name} is hex"))
+    };
+    let offered: sion_crypto::AuthPolicy = sion_core::encode::decode(&hex_field("policy")?)
+        .map_err(|_| "policy is hex of its Borsh encoding".to_string())?;
+    let authorization: sion_crypto::Authorization =
+        sion_core::encode::decode(&hex_field("authorization")?)
+            .map_err(|_| "authorization is hex of its Borsh encoding".to_string())?;
+    let record = deal(ledger, *deal_id).map_err(|e| e.to_string())?;
+    let account = ledger.account(record.client).map_err(|e| e.to_string())?;
+    let policy = match account.object.map(|o| o.data) {
+        Some(ObjectData::Account(state)) => state.policy,
+        _ if offered.account_id() == record.client => offered,
+        _ => return Err("the policy offered is not the deal's client's".into()),
+    };
+    policy
+        .verify(
+            RETRIEVE_DOMAIN,
+            &retrieve_message(deal_id, expires),
+            &authorization,
+        )
+        .map_err(|e| format!("the request is not signed by the deal's client: {e}"))?;
+    Ok(record)
+}
+
+fn respond_json(request: tiny_http::Request, status: u16, body: &Value) {
+    let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+        .expect("a valid header");
+    let _ = request.respond(
+        tiny_http::Response::from_string(body.to_string())
+            .with_status_code(status)
+            .with_header(header),
+    );
+}
+
+/// Serves the copies in `store`, kept by `provider`, to the deals' clients
+/// on `listen`, on a thread of its own: `POST /v1/deals/<deal>/retrieve`
+/// with `{expires, policy, authorization}`, the client's signature under
+/// [`RETRIEVE_DOMAIN`] over [`retrieve_message`]. Only a deal this provider
+/// holds is served, and only to its client. Requests are handled one at a
+/// time.
+pub fn serve_retrievals(
+    listen: &str,
+    ledger: crate::runtime::SharedLedger,
+    store: Store,
+    provider: AccountId,
+) -> Result<std::thread::JoinHandle<()>, CliError> {
+    let server = tiny_http::Server::http(listen)
+        .map_err(|e| CliError::Usage(format!("cannot listen on {listen}: {e}")))?;
+    Ok(std::thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let path = request
+                .url()
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let post = request.method() == &tiny_http::Method::Post;
+            let deal_id = path
+                .strip_prefix("/v1/deals/")
+                .and_then(|rest| rest.strip_suffix("/retrieve"))
+                .and_then(|hex| Hash32::from_hex(hex).ok())
+                .map(ObjectId::from_hash);
+            let answer: Result<Vec<u8>, (u16, String)> = match (deal_id, post) {
+                (Some(deal_id), true) => {
+                    let mut text = String::new();
+                    let read = request
+                        .as_reader()
+                        .take(MAX_REQUEST_BYTES)
+                        .read_to_string(&mut text);
+                    match read
+                        .ok()
+                        .and_then(|_| serde_json::from_str::<Value>(&text).ok())
+                    {
+                        None => Err((
+                            400,
+                            "send {\"expires\", \"policy\", \"authorization\"} as JSON".into(),
+                        )),
+                        Some(body) => {
+                            match check_retrieval(ledger.as_ref(), &deal_id, &body, unix_now()) {
+                                Err(e) => Err((403, e)),
+                                Ok(record) => match record.state {
+                                    DealState::Active { provider: p, .. } if p == provider => {
+                                        store.get(&deal_id).ok_or((
+                                            404,
+                                            "this provider keeps no copy of that deal".into(),
+                                        ))
+                                    }
+                                    _ => Err((404, "this provider does not keep that deal".into())),
+                                },
+                            }
+                        }
+                    }
+                }
+                _ => Err((404, "not found: POST /v1/deals/<deal>/retrieve".into())),
+            };
+            match answer {
+                Ok(bytes) => {
+                    let header = tiny_http::Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/octet-stream"[..],
+                    )
+                    .expect("a valid header");
+                    let _ =
+                        request.respond(tiny_http::Response::from_data(bytes).with_header(header));
+                }
+                Err((status, error)) => respond_json(request, status, &json!({ "error": error })),
+            }
+        }
+    }))
+}
+
+/// Retrieves `deal`'s data as its client `wallet` from the provider whose
+/// retrieval address is `base`, and checks it against the deal's root.
+pub fn retrieve(
+    session: &mut Session<'_>,
+    ledger: &dyn Ledger,
+    wallet: &str,
+    base: &str,
+    deal_id: ObjectId,
+) -> Result<Vec<u8>, CliError> {
+    let record = deal(ledger, deal_id)?;
+    if record.client != session.id(wallet) {
+        return Err(CliError::Usage(format!(
+            "deal {} is another client's",
+            deal_id.0.short()
+        )));
+    }
+    let expires = unix_now() + MAX_REQUEST_SECONDS / 2;
+    let signer = session.wallet(wallet);
+    let authorization = signer
+        .keys
+        .authorize(RETRIEVE_DOMAIN, &retrieve_message(&deal_id, expires))
+        .map_err(|e| CliError::Usage(e.to_string()))?;
+    let body = json!({
+        "expires": expires,
+        "policy": hex::encode(sion_core::encode::encode(&signer.policy)),
+        "authorization": hex::encode(sion_core::encode::encode(&authorization)),
+    });
+    // The address is the caller's own choice, so a local one is allowed.
+    let client = sion_http::Client::new(sion_http::Options {
+        allow_private: true,
+        timeout: std::time::Duration::from_secs(600),
+        ..sion_http::Options::default()
+    })
+    .map_err(|e| CliError::Usage(e.to_string()))?;
+    let url = format!(
+        "{}/v1/deals/{}/retrieve",
+        base.trim_end_matches('/'),
+        deal_id.0.to_hex()
+    );
+    let fetched = client
+        .post_json(
+            &url,
+            &[],
+            body.to_string().as_bytes(),
+            deal_bytes(&record).saturating_add(1),
+        )
+        .map_err(|e| CliError::Usage(format!("{url}: {e}")))?;
+    if !matches_deal(&fetched.body, &record) {
+        return Err(CliError::Usage(format!(
+            "what {base} answered does not hash to deal {}'s root",
+            deal_id.0.short()
+        )));
+    }
+    Ok(fetched.body)
 }
 
 /// Where providers keep their copies: `$SION_HOME/storage` (default
@@ -1016,10 +1311,12 @@ pub fn deal_json(ledger: &dyn Ledger, id: ObjectId, deal: &Deal) -> Result<Value
     Ok(value)
 }
 
-/// Runs a storage command.
+/// Runs a storage command. `shared` is the same ledger, for a provider's
+/// retrieval server.
 pub fn run(
     session: &mut Session<'_>,
     ledger: &dyn Ledger,
+    shared: crate::runtime::SharedLedger,
     command: StorageCommand,
 ) -> Result<(), CliError> {
     match command {
@@ -1036,66 +1333,32 @@ pub fn run(
             );
             Ok(())
         }
-        StorageCommand::Post {
-            from,
-            file,
-            price,
-            rounds,
-            round_length,
-            collateral,
-            challenges,
-            provider,
-            accept_within,
-            locator,
-            local,
-        } => {
+        StorageCommand::Post { from, file, terms } => {
             let data = std::fs::read(&file)
                 .map_err(|e| CliError::Usage(format!("{}: {e}", file.display())))?;
-            let tree = DataTree::of_data(&data);
-            let locator = match (locator, local) {
-                (Some(locator), _) => locator,
-                (None, true) => format!(
-                    "file://{}",
-                    std::fs::canonicalize(&file)
-                        .map_err(|e| CliError::Usage(e.to_string()))?
-                        .display()
-                ),
-                (None, false) => {
-                    return Err(CliError::Usage(
-                        "give --locator <https URL serving the file>, or --local for a provider on this machine (the deal then publishes the file's path)".into(),
-                    ))
-                }
-            };
-            let price_amount = crate::agents::parse_amount(&price)?;
-            let collateral = match (collateral, &provider) {
-                (Some(text), _) => crate::agents::parse_amount(&text)?,
-                (None, Some(_)) => Amount::ZERO,
-                (None, None) => Amount(price_amount.0.saturating_mul(u128::from(rounds))),
-            };
-            let provider = provider.map(|p| session.id(&p));
-            let accept_by = Pulse(ledger.pulse()?.0 + accept_within.max(1));
-            let view = session.send(
-                &from,
-                TxKind::PostDeal {
-                    root: tree.root(),
-                    size: tree.size(),
-                    challenges,
-                    price: price_amount,
-                    rounds,
-                    round_length,
-                    collateral,
-                    provider,
-                    accept_by,
-                    locator,
-                },
-                Vec::new(),
-            )?;
+            let (view, deal) = post_deal(session, ledger, &from, &file, &data, &terms)?;
             crate::agents::print_receipt(session, &view);
-            for event in &view.effects.events {
-                if let Event::DealPosted { deal, .. } = event {
-                    println!("deal {deal}");
-                }
+            if let Some(deal) = deal {
+                println!("deal {deal}");
             }
+            Ok(())
+        }
+        StorageCommand::Retrieve {
+            from,
+            deal,
+            provider_url,
+            out,
+        } => {
+            let id = find_deal(ledger, &deal)?;
+            let data = retrieve(session, ledger, &from, &provider_url, id)?;
+            std::fs::write(&out, &data)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", out.display())))?;
+            println!(
+                "{} bytes of deal {} from {provider_url}, checked against its root, in {}",
+                data.len(),
+                id.0.short(),
+                out.display()
+            );
             Ok(())
         }
         StorageCommand::Deals { open } => {
@@ -1192,6 +1455,7 @@ pub fn run(
             max_duration,
             allow_local,
             allow_private,
+            listen,
             pulses,
         } => {
             let policy = ProviderPolicy {
@@ -1214,6 +1478,17 @@ pub fn run(
                 session.names().account(&session.id(&from)),
                 storage_dir().join(&from).display()
             );
+            if let Some(listen) = &listen {
+                serve_retrievals(
+                    listen,
+                    shared,
+                    Store::new(storage_dir().join(&from)),
+                    session.id(&from),
+                )?;
+                println!(
+                    "retrievals for clients on http://{listen} (POST /v1/deals/<deal>/retrieve)"
+                );
+            }
             loop {
                 match provider.tick(session, ledger) {
                     Ok(lines) => lines.iter().for_each(|line| println!("{line}")),

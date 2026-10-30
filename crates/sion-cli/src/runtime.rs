@@ -655,6 +655,14 @@ impl Saved {
             for tool in memory.tools() {
                 tools.add_boxed(tool);
             }
+            // An agent that remembers can search its past sessions, checked
+            // against the episodes its log recorded.
+            tools.add(crate::recall::SessionSearch {
+                ledger: acting.ledger.clone(),
+                agent: self.agent,
+                memory: Some(memory.log),
+                current: self.state.id.clone(),
+            });
         }
         let mut quarantined = Vec::new();
         if let Some(root) = &self.skills {
@@ -774,7 +782,12 @@ impl Saved {
                         &self.state.id,
                         &task,
                         text,
-                        &sion_agent::trace::digest(&self.state),
+                        &crate::agent_memory::Trajectory {
+                            digest: sion_agent::trace::digest(&self.state),
+                            messages: self.state.messages.len(),
+                            compactions: self.state.compactions,
+                            from_outside: self.state.standing.tainted_until.is_some(),
+                        },
                     )
                 }
                 _ => memory.commit(),
@@ -1105,6 +1118,8 @@ pub struct Equipment {
     /// Whether to ask the agent, after a long task it finished, whether to
     /// write down how it did it as a skill.
     pub reflect: bool,
+    /// What its operator tells it after the system prompt.
+    pub instructions: Option<String>,
     /// Whether it may hand work to other agents.
     pub delegate: bool,
     /// The models its subagents run with (default: its own).
@@ -1144,6 +1159,7 @@ pub fn start(
         memory,
         skills,
         system,
+        instructions,
         reflect,
         delegate,
         subagent_models,
@@ -1201,7 +1217,10 @@ pub fn start(
         models,
         policy,
         limits: limits.clone(),
-        system: system.unwrap_or_else(|| default_system(&did)),
+        system: sion_agent::evolve::with_instructions(
+            &system.unwrap_or_else(|| default_system(&did)),
+            instructions.as_deref().unwrap_or_default(),
+        ),
         workspace,
         web,
         memory,

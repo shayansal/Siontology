@@ -4,8 +4,11 @@
 //! against the head the ledger holds.
 //!
 //! The local store of a log lives in `$SION_HOME/memory/<log id>`. Its
-//! atoms never leave the machine unless the writer serves them; what the
-//! ledger holds is the log's size, its Merkle root and its index root.
+//! atoms never leave the machine unless the writer serves them or archives
+//! them; what the ledger holds is the log's size, its Merkle root, its
+//! index root and, once archived, its manifest: the storage root of its
+//! latest archive ([`crate::archive`]). An agent's episodes are consolidated
+//! into notes with `sion memory consolidate` ([`crate::consolidate`]).
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -114,6 +117,57 @@ pub enum MemoryCommand {
     Show {
         /// The log (its id, or a unique prefix of it).
         log: String,
+    },
+    /// Consolidate an agent's memory: a model reads the episodes recorded
+    /// since the last consolidation and the notes the log keeps, and
+    /// proposes facts, procedures and preferences worth keeping, each
+    /// citing its episodes. What the gates keep is recorded as derived
+    /// atoms (the notes they replace are superseded, not deleted), and the
+    /// log is committed.
+    Consolidate {
+        /// The writer's wallet (the agent's).
+        wallet: String,
+        /// The log (its id, or a unique prefix of it).
+        log: String,
+        /// The model that proposes: anthropic:<model>, openai:<model> or
+        /// script:<file>.
+        #[arg(long)]
+        model: String,
+    },
+    /// Archive a log for safekeeping: every atom the ledger holds,
+    /// encrypted for the writer, named on the ledger as the log's manifest
+    /// and kept by a storage provider under a deal.
+    Archive {
+        /// The writer's wallet.
+        wallet: String,
+        /// The log (its id, or a unique prefix of it).
+        log: String,
+        /// Where to write the archive (default:
+        /// $SION_HOME/memory/archives/<log>-<size>.bin).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// The storage deal's terms.
+        #[command(flatten)]
+        terms: crate::storage::DealTerms,
+    },
+    /// Restore a log's local store from its latest archive, checked against
+    /// the head on the ledger before anything is replaced.
+    Restore {
+        /// The writer's wallet.
+        wallet: String,
+        /// The log (its full id, if the local store is gone).
+        log: String,
+        /// The archive: a file, or the retrieval address of the provider
+        /// that keeps it (http:// or https://).
+        #[arg(long)]
+        from: String,
+        /// With a provider: the deal that keeps the archive (default: your
+        /// latest accepted deal for the log's manifest).
+        #[arg(long)]
+        deal: Option<String>,
+        /// Restore over the local store there is.
+        #[arg(long)]
+        replace: bool,
     },
 }
 
@@ -236,6 +290,7 @@ pub fn run(
                         "size": state.size,
                         "root": state.root,
                         "index": state.index,
+                        "manifest": state.manifest,
                         "commits": state.commits,
                         "at_pulse": state.committed_at,
                         "sealed": state.sealed,
@@ -243,6 +298,76 @@ pub fn run(
                     "local_atoms": local,
                 }))
                 .unwrap_or_default()
+            );
+            Ok(())
+        }
+        MemoryCommand::Consolidate { wallet, log, model } => {
+            let id = find_log(ledger, &log)?;
+            let limits = sion_agent::Limits::default();
+            let answer = crate::consolidate::run(session, ledger, &wallet, &id, &model, &limits)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&answer).unwrap_or_default()
+            );
+            Ok(())
+        }
+        MemoryCommand::Archive {
+            wallet,
+            log,
+            out,
+            terms,
+        } => {
+            let id = find_log(ledger, &log)?;
+            let made = crate::archive::make(session, ledger, &wallet, &id, out.as_deref())?;
+            for line in &made.receipts {
+                println!("{line}");
+            }
+            let bytes = std::fs::read(&made.path)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", made.path.display())))?;
+            println!(
+                "archive {} ({} bytes, encrypted for {wallet}): {} atoms at root {}; storage root {}, now the log's manifest",
+                made.path.display(),
+                bytes.len(),
+                made.header.size,
+                made.header.root.short(),
+                made.tree.root().short()
+            );
+            let (view, deal) =
+                crate::storage::post_deal(session, ledger, &wallet, &made.path, &bytes, &terms)?;
+            crate::agents::print_receipt(session, &view);
+            if let Some(deal) = deal {
+                println!("deal {deal}");
+            }
+            Ok(())
+        }
+        MemoryCommand::Restore {
+            wallet,
+            log,
+            from,
+            deal,
+            replace,
+        } => {
+            let id = find_log(ledger, &log)?;
+            let head = committed(ledger, &id)?;
+            if head.writer != session.id(&wallet) {
+                return Err(CliError::Usage(format!(
+                    "log {} is written by another account",
+                    id.0.short()
+                )));
+            }
+            let bytes = if from.starts_with("http://") || from.starts_with("https://") {
+                let deal = match deal {
+                    Some(text) => crate::storage::find_deal(ledger, &text)?,
+                    None => crate::archive::deal_for(ledger, &head.writer, &head.manifest)?,
+                };
+                crate::storage::retrieve(session, ledger, &wallet, &from, deal)?
+            } else {
+                std::fs::read(&from).map_err(|e| CliError::Usage(format!("{from}: {e}")))?
+            };
+            let answer = crate::archive::restore(session, ledger, &wallet, &id, &bytes, replace)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&answer).unwrap_or_default()
             );
             Ok(())
         }
@@ -373,15 +498,42 @@ pub fn commit(
         .consistency_proof(on_chain.size)
         .map_err(memory_error)?;
     let reference = session.reference(log)?;
+    // The manifest names the log's latest archive; a commit carries it
+    // forward.
     session.send(
         wallet,
         TxKind::CommitMemory {
             size: head.size,
             root: head.root,
             index: head.index_root,
-            manifest: Hash32::ZERO,
+            manifest: on_chain.manifest,
             proof,
             seal,
+        },
+        vec![reference],
+    )
+}
+
+/// Names `manifest` as the storage root of `log`'s latest archive: a
+/// commit at the size the ledger holds, which keeps its root and index.
+pub fn set_manifest(
+    session: &mut Session<'_>,
+    ledger: &dyn Ledger,
+    wallet: &str,
+    log: &ObjectId,
+    manifest: Hash32,
+) -> Result<sion_node::TxView, CliError> {
+    let on_chain = committed(ledger, log)?;
+    let reference = session.reference(log)?;
+    session.send(
+        wallet,
+        TxKind::CommitMemory {
+            size: on_chain.size,
+            root: on_chain.root,
+            index: on_chain.index,
+            manifest,
+            proof: Vec::new(),
+            seal: false,
         },
         vec![reference],
     )
@@ -445,7 +597,7 @@ pub fn statement_text(statement: &Statement) -> String {
     }
 }
 
-fn value_text(value: &Value) -> String {
+pub(crate) fn value_text(value: &Value) -> String {
     match value {
         Value::Entity(name) => name.clone(),
         Value::Text(text) => format!("{text:?}"),

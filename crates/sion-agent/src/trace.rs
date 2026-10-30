@@ -9,6 +9,7 @@
 
 use serde_json::{json, Value};
 
+use crate::model::Message;
 use crate::providers::openai_messages;
 use crate::session::{Ended, State};
 
@@ -34,6 +35,13 @@ pub fn chat_line(state: &State, system: &str, ended: Option<&Ended>) -> String {
 /// A commitment to a session's conversation (SHA3-256, domain-separated):
 /// the same conversation always gives the same digest.
 pub fn digest(state: &State) -> sion_core::hash::Hash32 {
-    let body = serde_json::to_vec(&state.messages).unwrap_or_default();
-    sion_core::hash::hash_parts("sion-agent/trajectory/v1", &[state.id.as_bytes(), &body])
+    digest_of(&state.id, &state.messages)
+}
+
+/// The digest of the conversation `messages` of session `id`: a prefix of
+/// a session's messages has the digest the session had when it held just
+/// those.
+pub fn digest_of(id: &str, messages: &[Message]) -> sion_core::hash::Hash32 {
+    let body = serde_json::to_vec(messages).unwrap_or_default();
+    sion_core::hash::hash_parts("sion-agent/trajectory/v1", &[id.as_bytes(), &body])
 }

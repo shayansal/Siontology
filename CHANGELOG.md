@@ -10,6 +10,101 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### An agent's standing, checked as a light client
+
+- **`sion agent status <agent>`** checks an agent's standing as a light
+  client: its charter and the overlays of every charter of its lineage
+  are proven against one certified header (`--chain` names the chain to
+  verify against, `--min-pulse` refuses stale proofs), and its
+  allotments are proven too, for its budget; a stopped agent's says
+  nothing can be spent. A node that leaves out an ancestor's overlay,
+  which could hide that ancestor's suspension, is caught. The status is
+  worked out from the proven objects by one rule,
+  `sion_exec::charter::agent_status`, which the node's agent query and
+  `sion agent show` now use as well.
+- **The app's Agents tab** lists the agents the device watches: those it
+  backs, answers for or is, found among the Pulses the node keeps, and
+  any added by id. Each one's standing is checked that way against the
+  pinned chain, with its budget, and the device suspends, resumes or
+  revokes (asked twice) the agents it oversees.
+
+### Evolution beyond a skill's instructions
+
+- **A skill's other files.** In `sion skill evolve`, a variant may add,
+  replace or remove the skill's references, examples and templates as
+  well as rewrite its instructions: at most 8 files a variant, each text
+  of at most 32 KiB inside the skill. A script is never written,
+  rewritten or removed: evaluation runs read a skill's files but never
+  run its scripts, so a changed script could not be scored. A version's
+  size, for the Pareto front and the best, is the bytes of all its
+  files, and a version is new by the digest of all of them.
+- **A profile's instructions.** `sion agent profile add --instructions`
+  gives a profile its operator's instructions, which follow the fixed
+  system prompt. `sion agent evolve <profile> --evals <set> --mutator
+  <model>` evolves them on an evaluation set under the same gates (at
+  most 4 KiB, new, no case lost that the parent passed), and `--apply`
+  makes the best the profile's.
+
+### Channels across machines
+
+- **A profile's own tokens.** `sion agent profile token add <profile>`
+  makes a token that reaches only that profile, kept only as its hash and
+  naming the profile's agent (`--agent`, for a profile served elsewhere);
+  with `--approve` it also decides what the profile's sessions wait on.
+  `sion agent serve` takes them, with or without the machine's token.
+- **Slack, Discord, Matrix and Signal.** `sion agent bridge <profile>
+  --via slack|discord|matrix|signal|telegram --allow <chats>` answers a
+  messenger's chats with a profile, all through one interface; with
+  `--approvers`, only the people named may approve or decline. Telegram
+  goes through the same bridge, and `sion agent telegram` takes
+  `--approvers` too.
+- **An agent gateway.** `sion agent gateway` answers people's messages for
+  profiles served from other machines, with the profiles' tokens. A host,
+  `sion agent host <gateway> --profile <name>`, connects out to it and
+  proves for each profile that it holds the key of the agent the
+  gateway's tokens name, signing the gateway's challenge under the
+  account's policy on the ledger. The
+  gateway passes an agent's messages only while the ledger has it in good
+  standing, checked at most five seconds before.
+
+### An agent's past: search, consolidation and archives
+
+- **Searching past sessions.** An agent with a memory log has a
+  `session_search` tool, and `sion agent sessions search <agent> <words>`
+  does the same from the command line: BM25 over the messages of the
+  agent's sessions on this machine. Each hit says how the session as stored
+  stands against the trajectory digest its episode recorded in the memory
+  log: `checked` once the episode is committed to the ledger, `changed` if
+  the stored session was edited since, `compacted` if it was compacted
+  since. Episodes now record how many messages their digest covers and the
+  session's compactions.
+- **Consolidation.** `sion memory consolidate <wallet> <log> --model …`: a
+  model reads the episodes recorded since the last consolidation and the
+  notes the log keeps, and proposes facts, procedures and preferences, each
+  citing its episodes. Gates keep only grounded, new and small notes; each
+  is a derived atom linked to its episodes, naming the model and the
+  consolidator in its extraction trace, and a note it replaces is
+  superseded by a revision, never deleted.
+- **Outside content stays out of prompts.** What an agent records while
+  its session is tainted, the episode of a session that was ever tainted,
+  and a note consolidated from one are marked as prompt-injection risks:
+  kept and recalled, never put into the agent's prompt as core memory. A
+  search that finds a tainted session taints the session that searched.
+  Tools see the taint through `Tool::call_tainted`.
+- **Archives with storage providers.** `sion memory archive` encrypts every
+  committed atom of a log for its writer (ChaCha20-Poly1305, under a key
+  derived from the wallet's seed and the log), names the archive's storage
+  root as the log's manifest on the ledger, and posts a storage deal for
+  it; later commits carry the manifest forward. `sion memory restore` takes
+  the archive from a file or from the provider that keeps it, and checks
+  it against the ledger before it replaces the local store. An archive
+  never holds the store's epoch keys, so forgetting holds for archives too.
+- **Retrieval from providers.** `sion storage serve --listen` serves the
+  data of the deals a provider keeps to their clients (`POST
+  /v1/deals/<deal>/retrieve`, signed by the deal's client under its account
+  policy on the ledger); `sion storage retrieve` fetches it and checks it
+  against the deal's root.
+
 ### Attested tasks and an index of claims (specification v1.15)
 
 - **Required attestations.** A task's acceptance rule can name verifiers

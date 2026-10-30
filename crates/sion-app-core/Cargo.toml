@@ -22,6 +22,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 sion-node.workspace = true
+sion-assurance.workspace = true
 
 [lints]
 workspace = true

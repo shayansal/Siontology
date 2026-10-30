@@ -103,6 +103,13 @@ pub trait Tool: Send + Sync {
     /// on.
     fn call(&self, input: &Value, key: &str) -> Outcome;
 
+    /// Runs one call of a session that read content from outside (it is
+    /// tainted): by default as [`Tool::call`]. A tool that records what it
+    /// is given, such as memory, marks it as coming from such a session.
+    fn call_tainted(&self, input: &Value, key: &str) -> Outcome {
+        self.call(input, key)
+    }
+
     /// Whether the calls of this tool that follow one another in a turn run
     /// together ([`Tool::call_batch`]), each once it passed the policy by
     /// itself: subagents that work at the same time, say.

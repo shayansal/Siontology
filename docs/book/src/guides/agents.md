@@ -2,12 +2,14 @@
 
 This guide registers an agent, launches subagents with their own
 identities, limits how fast the tree spends, narrows it, commits to a
-hundred thousand subagents in one transaction, and stops and resumes the
-tree. It assumes a devnet is running (`sion devnet`) and uses its
-deterministic wallets `alice` and `carol`. For background, see [Agent
+hundred thousand subagents in one transaction, stops and resumes the
+tree, and checks an agent's standing as a light client. It assumes a
+devnet is running (`sion devnet`) and uses its deterministic wallets
+`alice` and `carol`. For background, see [Agent
 identities and subagents](../concepts/agent-identities.md).
 
-Every output below is from one run on a local devnet, in order.
+Every output below is from one run on a local devnet, in order, except
+section 10, which is from a later run, on specification v1.15.
 
 ## 1. Write a card
 
@@ -475,3 +477,71 @@ the reverse, and only the recorded suspender or the backer may resume.
 An agent may revoke itself. Only a revoked or expired agent can be
 reclaimed, by its principal or its backer, and the funds go to the
 backer.
+
+## 10. Check an agent's standing as a light client
+
+`sion agent show` reports what the node says. `sion agent status` checks
+it instead, as a light client would: the agent's charter and the
+overlays of every charter of its lineage are proven against one
+certified header, the status is worked out here from what was proven,
+by the same rule the node uses, and the agent's allotments are proven
+too, for its budget.
+`--chain` names the chain identity the proofs must verify against (or
+`SION_CHAIN`); without it the node vouches for itself. `--min-pulse`
+refuses proofs from more than 16 Pulses before a Pulse you know of.
+
+lead launches a helper, whose standing depends on lead's:
+
+```text
+$ sion agent spawn lead 908f6ddc…7432 e469664a…adb4 --count 1 --budget 20 --max-payment 5 --prefix helper
+lead signs: As agent 908f6ddc, launch 1 subagent with its own identity, 20 USD in budgets and 20 USD at once, refilled by 0.1 USD a Pulse in all. Fee 0.0012 USD; valid until Pulse 26.
+Pulse 9: Done: subagent 5ff8d547 launched by 908f6ddc, signing as helper-1; fee 0.0012 USD.
+helper-1: agent 5ff8d547…3906 allotment b0a68512…e6c7
+$ sion agent status 5ff8d547…3906 --chain 94425d72…6e5a
+agent 5ff8d547: active after Pulse 9 (depth 1, backed by alice)
+budget: 20 USD left, 20 USD can be spent in the next Pulse
+3 objects proven against Pulse 9's header, certified by 300000 of the committee's stake (quorum 266667), chain 94425d72
+budget: state proven against Pulse 9's header, certified by 300000 of the committee's stake (quorum 266667), chain 94425d72
+```
+
+The three objects are the helper's charter and the overlays of lead and
+the helper, each proven present or absent: neither has been suspended,
+revoked or narrowed yet.
+
+When alice suspends lead, the helper is stopped too, and the check shows
+it from the proven overlay of the charter above it. A node that left
+that overlay out, to show the helper as active, would fail the check:
+every charter of the lineage must be proven.
+
+```text
+$ sion agent suspend alice 908f6ddc…7432
+alice signs: Suspend agent 908f6ddc and every agent below it. Fee 0.0011 USD; valid until Pulse 29.
+Pulse 12: Done: agent 908f6ddc suspended by alice, with everything below it; fee 0.0011 USD.
+$ sion agent status 5ff8d547…3906 --chain 94425d72…6e5a
+agent 5ff8d547: stopped by an ancestor after Pulse 12 (depth 1, backed by alice)
+budget: 20 USD left; nothing can be spent while it is stopped by an ancestor
+3 objects proven against Pulse 12's header, certified by 300000 of the committee's stake (quorum 266667), chain 94425d72
+budget: state proven against Pulse 12's header, certified by 300000 of the committee's stake (quorum 266667), chain 94425d72
+```
+
+Against another chain identity, nothing verifies:
+
+```text
+$ sion agent status 5ff8d547…3906 --chain 00000000…0001
+error: verification failed: header chain: the node serves chain 94425d72, not the pinned chain 00000000
+[exit 1]
+```
+
+```text
+$ sion agent resume alice 908f6ddc…7432
+alice signs: Lift the suspension of agent 908f6ddc. Fee 0.0011 USD; valid until Pulse 32.
+Pulse 15: Done: agent 908f6ddc resumed; fee 0.0011 USD.
+$ sion agent status 5ff8d547…3906 --chain 94425d72…6e5a
+agent 5ff8d547: active after Pulse 15 (depth 1, backed by alice)
+budget: 20 USD left, 20 USD can be spent in the next Pulse
+3 objects proven against Pulse 15's header, certified by 300000 of the committee's stake (quorum 266667), chain 94425d72
+budget: state proven against Pulse 15's header, certified by 300000 of the committee's stake (quorum 266667), chain 94425d72
+```
+
+The app's Agents tab makes the same check for the agents a device
+watches ([The app](../getting-started/app.md)).

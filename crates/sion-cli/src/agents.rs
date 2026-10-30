@@ -142,6 +142,21 @@ pub enum AgentCommand {
         /// Agent id.
         agent: String,
     },
+    /// An agent's standing, checked as a light client: its charter and the
+    /// overlays of its lineage proven against a certified header, its
+    /// status worked out from them, its budget proven too.
+    Status {
+        /// Agent id.
+        agent: String,
+        /// The chain identity the proofs must verify against. Without it
+        /// the node vouches for itself.
+        #[arg(long, env = "SION_CHAIN")]
+        chain: Option<String>,
+        /// A certified Pulse you know of from elsewhere: a proof from more
+        /// than 16 Pulses before it is refused as stale.
+        #[arg(long)]
+        min_pulse: Option<u64>,
+    },
     /// Replace an agent's card with a file's commitment.
     Card {
         /// The agent's wallet.
@@ -363,8 +378,33 @@ pub enum AgentCommand {
         #[arg(long)]
         say: Option<String>,
     },
-    /// The agent sessions on this machine.
-    Sessions,
+    /// Evolve a profile's instructions (what follows the fixed system
+    /// prompt) against an evaluation set: a mutator proposes variants for
+    /// the cases its agent fails, each is scored under gates (size, new, no
+    /// regression), and with --apply the best becomes the profile's.
+    Evolve {
+        /// The agent profile.
+        profile: String,
+        /// The evaluation set (a JSON file).
+        #[arg(long)]
+        evals: std::path::PathBuf,
+        /// The model that proposes variants.
+        #[arg(long)]
+        mutator: String,
+        /// Generations, at most.
+        #[arg(long, default_value_t = 3)]
+        generations: usize,
+        /// Make the best version the profile's instructions.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// The agent sessions on this machine; `search` finds an agent's past
+    /// sessions by words.
+    Sessions {
+        /// Search instead of listing.
+        #[command(subcommand)]
+        command: Option<SessionsCommand>,
+    },
     /// A session as one JSON line in chat format with tool calls, with its
     /// outcome: for review, evaluation or training.
     Trace {
@@ -401,13 +441,15 @@ pub enum AgentCommand {
     },
     /// Serve the HTTP channel: POST /v1/profiles/<name>/messages with
     /// {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a
-    /// bearer token.
+    /// bearer token: the machine's, or a profile's own (`sion agent
+    /// profile token add`).
     Serve {
         /// Where to listen.
         #[arg(long, default_value = "127.0.0.1:8790")]
         listen: String,
-        /// The environment variable holding the bearer token (at least 16
-        /// characters).
+        /// The environment variable holding the machine's token, which
+        /// reaches every profile and session (at least 16 characters);
+        /// without it, only profiles' own tokens are taken.
         #[arg(long, default_value = "SION_AGENT_TOKEN")]
         token_env: String,
     },
@@ -419,9 +461,83 @@ pub enum AgentCommand {
         /// The chats it answers (comma-separated ids); others are ignored.
         #[arg(long, value_delimiter = ',', required = true)]
         allow: Vec<i64>,
+        /// Who may approve or decline (comma-separated Telegram user ids);
+        /// without it, anyone in an allowed chat.
+        #[arg(long, value_delimiter = ',')]
+        approvers: Vec<String>,
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
+    },
+    /// Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN),
+    /// discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER,
+    /// MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for
+    /// signal-cli-rest-api) or telegram.
+    Bridge {
+        /// The agent profile.
+        profile: String,
+        /// The messenger.
+        #[arg(long)]
+        via: String,
+        /// The chats it answers (comma-separated: channel ids, room ids or
+        /// numbers); others are ignored.
+        #[arg(long, value_delimiter = ',', required = true)]
+        allow: Vec<String>,
+        /// Who may approve or decline (comma-separated, as the messenger
+        /// names people); without it, anyone in an allowed chat.
+        #[arg(long, value_delimiter = ',')]
+        approvers: Vec<String>,
+        /// Answer one batch of messages, then stop.
+        #[arg(long)]
+        once: bool,
+    },
+    /// Run a gateway: people write to profiles served from other machines,
+    /// through POST /v1/profiles/<name>/messages with a profile's token
+    /// (`sion agent profile token add`); hosts connect out to it and prove
+    /// they hold each profile's agent key, and messages reach an agent only
+    /// while the ledger has it in good standing.
+    Gateway {
+        /// Where to listen.
+        #[arg(long, default_value = "127.0.0.1:8793")]
+        listen: String,
+        /// The gateway's name, which hosts sign: a login cannot be replayed
+        /// at another gateway.
+        #[arg(long)]
+        name: String,
+        /// The environment variable holding a token that reaches every
+        /// profile, if one is wanted.
+        #[arg(long, default_value = "SION_GATEWAY_TOKEN")]
+        token_env: String,
+    },
+    /// Serve profiles through a gateway: connect out to it, prove the
+    /// agents' keys, and answer the messages it passes on.
+    Host {
+        /// The gateway's address, for example https://gateway.example.org.
+        gateway: String,
+        /// A profile to serve. Repeat for more.
+        #[arg(long = "profile", required = true)]
+        profiles: Vec<String>,
+        /// Answer this many messages, then stop.
+        #[arg(long)]
+        messages: Option<usize>,
+    },
+}
+
+/// `sion agent sessions …`
+#[derive(Debug, Subcommand)]
+pub enum SessionsCommand {
+    /// Search an agent's past sessions on this machine by words (BM25):
+    /// each hit is checked against the trajectory digest its episode
+    /// recorded in the agent's memory log, whose head is on the ledger.
+    Search {
+        /// The agent: its wallet's name, or its id (or a prefix of it).
+        agent: String,
+        /// The words to look for.
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// How many sessions at most.
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
     },
 }
 
@@ -493,6 +609,7 @@ pub fn run(
                     memory,
                     skills,
                     system,
+                    instructions: None,
                     reflect: !no_reflect,
                     delegate,
                     subagent_models,
@@ -528,7 +645,118 @@ pub fn run(
             }
             Ok(())
         }
-        AgentCommand::Sessions => {
+        AgentCommand::Sessions {
+            command:
+                Some(SessionsCommand::Search {
+                    agent,
+                    query,
+                    limit,
+                }),
+        } => {
+            let (agent, memory) = crate::recall::agent_named(&agent)?;
+            let found = crate::recall::search(
+                ledger,
+                &agent,
+                memory.as_ref(),
+                &query.join(" "),
+                limit,
+                None,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&found.json).unwrap_or_default()
+            );
+            Ok(())
+        }
+        AgentCommand::Evolve {
+            profile,
+            evals,
+            mutator,
+            generations,
+            apply,
+        } => {
+            let mut found = crate::profiles::get(&profile)?;
+            let (set, _, digest) = crate::skill_improve::load_evals(&evals)?;
+            let base = crate::runtime::default_system(&did(ledger, &found.agent)?);
+            let skills = found
+                .skills
+                .clone()
+                .unwrap_or_else(|| crate::runtime::skills_dir(&found.agent));
+            std::fs::create_dir_all(&skills)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", skills.display())))?;
+            let proposer = crate::runtime::model(&mutator, 0)?;
+            let settings = sion_agent::evolve::Settings {
+                generations,
+                ..sion_agent::evolve::Settings::default()
+            };
+            let evolution = sion_agent::evolve::evolve_instructions(
+                &set,
+                &skills,
+                &base,
+                found.instructions.as_deref().unwrap_or_default(),
+                &crate::skill_improve::models_of(&found.models),
+                proposer.as_ref(),
+                &settings,
+            )
+            .map_err(CliError::Usage)?;
+            let cases = set.cases.len();
+            println!(
+                "profile {profile}; evaluation set {} ({cases} cases)",
+                digest.short()
+            );
+            for candidate in &evolution.candidates {
+                let text = candidate
+                    .instructions
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let from = match candidate.parent {
+                    Some(parent) => {
+                        format!("from version {parent}, generation {}", candidate.generation)
+                    }
+                    None => "the profile's".to_string(),
+                };
+                println!(
+                    "version {} ({from}): {} of {cases} cases, {} bytes: {}",
+                    candidate.index,
+                    candidate.passed(),
+                    candidate.size,
+                    if text.is_empty() {
+                        "no instructions".to_string()
+                    } else {
+                        format!("{text:?}")
+                    }
+                );
+            }
+            for rejected in &evolution.rejected {
+                println!(
+                    "turned down (generation {}, from version {}): {}",
+                    rejected.generation, rejected.parent, rejected.reason
+                );
+            }
+            let best = &evolution.candidates[evolution.best];
+            if evolution.best == 0 {
+                println!("no version did better than the profile's");
+            } else if apply {
+                found.instructions = Some(best.instructions.trim().to_string());
+                let mut profiles = crate::profiles::all()?;
+                profiles.insert(found.name.clone(), found.clone());
+                crate::profiles::save_all(&profiles)?;
+                println!(
+                    "profile {profile} now has version {}'s instructions ({} of {cases} cases)",
+                    best.index,
+                    best.passed()
+                );
+            } else {
+                println!(
+                    "the best is version {} ({} of {cases} cases): give --apply to make it the profile's",
+                    best.index,
+                    best.passed()
+                );
+            }
+            Ok(())
+        }
+        AgentCommand::Sessions { command: None } => {
             let dir = crate::runtime::sessions_dir();
             let mut rows = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -581,17 +809,64 @@ pub fn run(
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Scheduler { once, poll } => crate::schedules::scheduler(shared, once, poll),
         AgentCommand::Serve { listen, token_env } => {
-            let token = std::env::var(&token_env)
-                .map_err(|_| CliError::Usage(format!("set {token_env} to the channel's token")))?;
-            crate::channels::serve(shared, &listen, &token, None)
+            let token = std::env::var(&token_env).ok().filter(|t| !t.is_empty());
+            if token.is_none() && crate::channels::tokens()?.is_empty() {
+                return Err(CliError::Usage(format!(
+                    "set {token_env} to the channel's token, or make a profile's own with `sion agent profile token add`"
+                )));
+            }
+            crate::channels::serve_with(shared, &listen, token.as_deref(), None)
         }
         AgentCommand::Telegram {
             profile,
             allow,
+            approvers,
             once,
         } => {
             let profile = crate::profiles::get(&profile)?;
-            crate::channels::telegram(shared, &profile, &allow, once)
+            crate::channels::telegram_with(shared, &profile, &allow, &approvers, once)
+        }
+        AgentCommand::Bridge {
+            profile,
+            via,
+            allow,
+            approvers,
+            once,
+        } => {
+            let profile = crate::profiles::get(&profile)?;
+            let messenger = crate::messengers::from_env(&via, &allow).map_err(CliError::Usage)?;
+            crate::messengers::bridge(
+                shared,
+                &profile,
+                messenger.as_ref(),
+                &allow,
+                &approvers,
+                once,
+            )
+        }
+        AgentCommand::Gateway {
+            listen,
+            name,
+            token_env,
+        } => {
+            let admin = std::env::var(&token_env).ok().filter(|t| !t.is_empty());
+            if admin.as_ref().is_some_and(|t| t.len() < 16) {
+                return Err(CliError::Usage(format!(
+                    "{token_env} has at least 16 characters"
+                )));
+            }
+            crate::gateway::serve(crate::gateway::Gateway::new(&name, shared, admin), &listen)
+        }
+        AgentCommand::Host {
+            gateway,
+            profiles,
+            messages,
+        } => {
+            let profiles = profiles
+                .iter()
+                .map(|name| crate::profiles::get(name))
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::gateway::host(shared, &gateway, &profiles, messages)
         }
         AgentCommand::KillSwitch { state } => {
             let path = crate::runtime::kill_switch();
@@ -879,6 +1154,42 @@ pub fn run(
                 "{}",
                 serde_json::to_string_pretty(&describe(ledger, id)?).unwrap_or_default()
             );
+            Ok(())
+        }
+        AgentCommand::Status {
+            agent,
+            chain,
+            min_pulse,
+        } => {
+            let id = parse_id(&agent, "agent")?;
+            let pinned = chain
+                .as_deref()
+                .map(|c| Hash32::from_hex(c.trim()))
+                .transpose()
+                .map_err(|_| CliError::Usage("--chain is 64 hex digits".into()))?;
+            let standing = crate::verify::agent_standing(ledger, pinned, id, min_pulse.map(Pulse))?;
+            let names = session.names();
+            println!(
+                "agent {}: {} after Pulse {} (depth {}, backed by {})",
+                id.short(),
+                standing.status,
+                standing.pulse.0,
+                standing.charter.lineage.depth(),
+                names.account(&standing.charter.backer)
+            );
+            match standing.budget {
+                Some((remaining, can_spend)) if standing.in_good_standing() => println!(
+                    "budget: {remaining} USD left, {can_spend} USD can be spent in the next Pulse"
+                ),
+                Some((remaining, _)) => println!(
+                    "budget: {remaining} USD left; nothing can be spent while it is {}",
+                    standing.status
+                ),
+                None => {}
+            }
+            for line in &standing.lines {
+                println!("{line}");
+            }
             Ok(())
         }
         AgentCommand::Card {
@@ -1190,8 +1501,9 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
     // (spec §4.3).
     let mut lineage = Vec::new();
     let mut signer = None;
-    let mut stopped = false;
-    let mut narrowed = own.as_ref().is_some_and(|o| o.narrowing.is_some());
+    // The overlays found, the agent's own first, for its status.
+    let mut found: Vec<(ObjectId, sion_exec::charter::AgentOverlay)> =
+        own.iter().map(|o| (id, o.clone())).collect();
     for ancestor in charter.lineage.ancestry().iter().rev().skip(1) {
         if lineage.len() == MAX_LINEAGE_DEPTH {
             break;
@@ -1201,10 +1513,9 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
             signer = Some(above.agent);
         }
         let o = overlay(ledger, ancestor)?;
-        stopped |= o
-            .as_ref()
-            .is_some_and(|o| o.revoked_at.is_some() || o.suspended_by.is_some());
-        narrowed |= o.as_ref().is_some_and(|o| o.narrowing.is_some());
+        if let Some(o) = &o {
+            found.push((*ancestor, o.clone()));
+        }
         lineage.push(json!({
             "agent": ancestor,
             "account": above.agent,
@@ -1226,32 +1537,28 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
             }
         }
     }
-    let narrowings_end = lineage
-        .iter()
-        .filter_map(|entry| entry["narrowing"]["expires_at"].as_u64())
-        .chain(
+    use sion_exec::charter::AgentStatus;
+    let status = match sion_exec::charter::agent_status(
+        &id,
+        &charter,
+        found.iter().map(|(agent, overlay)| (agent, overlay)),
+        next,
+    ) {
+        AgentStatus::Revoked => format!(
+            "revoked at Pulse {}",
             own.as_ref()
-                .and_then(|o| o.narrowing.as_ref())
-                .map(|n| n.expires_at.0),
-        )
-        .min();
-    let expired =
-        next > charter.caveats.expires_at || narrowings_end.is_some_and(|end| next.0 > end);
-    let status = match &own {
-        Some(o) if o.revoked_at.is_some() => {
-            format!(
-                "revoked at Pulse {}",
-                o.revoked_at.map(|p| p.0).unwrap_or(0)
-            )
-        }
-        Some(o) if o.suspended_by.is_some() => format!(
-            "suspended by {}",
-            o.suspended_by.map(|a| a.to_string()).unwrap_or_default()
+                .and_then(|o| o.revoked_at)
+                .map(|p| p.0)
+                .unwrap_or(0)
         ),
-        _ if stopped => "stopped by an ancestor".into(),
-        _ if expired => "expired".into(),
-        _ if narrowed => "active, narrowed".into(),
-        _ => "active".into(),
+        AgentStatus::Suspended => format!(
+            "suspended by {}",
+            own.as_ref()
+                .and_then(|o| o.suspended_by)
+                .map(|a| a.to_string())
+                .unwrap_or_default()
+        ),
+        other => other.label().to_string(),
     };
     Ok(json!({
         "agent": id,

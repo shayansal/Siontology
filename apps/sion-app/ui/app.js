@@ -92,6 +92,7 @@ function show(view) {
   if (view === "wallet") refreshWallet();
   if (view === "stake") refreshStake();
   if (view === "storage") refreshStorage();
+  if (view === "agents") refreshAgents();
   if (view === "settings") refreshSettings();
 }
 
@@ -424,6 +425,106 @@ $("storage-form").addEventListener("submit", async (event) => {
     storageEnabled = Boolean(answer.provide_storage);
     refreshStorage();
     storageTick();
+  }
+});
+
+// ----------------------------------------------------------------- agents
+let agentsActing = 0;
+// A revocation is for good: the first press asks, a second within five
+// seconds does it.
+const armed = new Map();
+
+function agentAction(agent, action, label) {
+  const button = el("button", { class: `button button--small${action === "resume" ? "" : " button--quiet"}` }, label);
+  button.addEventListener("click", async () => {
+    if (action === "revoke" && armed.get(agent.agent) !== button) {
+      armed.set(agent.agent, button);
+      button.textContent = "Revoke for good?";
+      setTimeout(() => {
+        if (armed.get(agent.agent) === button) {
+          armed.delete(agent.agent);
+          button.textContent = label;
+        }
+      }, 5000);
+      return;
+    }
+    armed.delete(agent.agent);
+    agentsActing += 1;
+    const answer = await busy(button, () => invoke("agent_action", { action, agent: agent.agent }));
+    agentsActing -= 1;
+    if (!answer) return;
+    receiptToast(answer);
+    refreshAgents();
+  });
+  return button;
+}
+
+function renderAgents(answer) {
+  const rows = $("agents");
+  rows.replaceChildren();
+  if (!answer.agents.length) {
+    rows.append(el("p", { class: "empty" }, "None yet: find the agents you back, or add one by id."));
+    return;
+  }
+  for (const a of answer.agents) {
+    const unwatch = el("button", { class: "link" }, "Stop watching");
+    unwatch.addEventListener("click", async () => {
+      await busy(unwatch, () => invoke("unwatch_agent", { agent: a.agent }));
+      refreshAgents();
+    });
+    if (a.error) {
+      rows.append(el("div", { class: "row refused" },
+        el("div", { class: "row-head" }, el("strong", {}, "Not verified"), el("span", { class: "mono" }, a.short)),
+        el("div", { class: "facts" }, el("span", {}, a.error)), unwatch));
+      continue;
+    }
+    const facts = [
+      el("span", {}, `depth ${a.depth}`),
+      el("span", {}, `backed by ${a.mine ? "this device" : a.backer}`),
+      el("span", {}, `at most ${a.max_per_payment} test USD a payment`),
+    ];
+    if (a.budget) facts.push(el("span", {}, `${a.budget.remaining} test USD left, ${a.budget.can_spend_next_pulse} spendable now`));
+    // The kill switch, for the agents this device oversees: their backer,
+    // their principal, or the agent of a charter above them.
+    const actions = [];
+    if (a.oversees) {
+      if (a.good_standing) actions.push(agentAction(a, "suspend", "Suspend"));
+      if (a.status === "suspended") actions.push(agentAction(a, "resume", "Resume"));
+      if (a.status !== "revoked") actions.push(agentAction(a, "revoke", "Revoke"));
+    } else {
+      facts.push(el("span", {}, "overseen by others"));
+    }
+    const checks = el("ol", { class: "checks" }, ...(a.verified || []).map((line) => el("li", { class: a.pinned ? "" : "info" }, line)));
+    rows.append(el("div", { class: `row${a.good_standing ? "" : " refused"}` },
+      el("div", { class: "row-head" },
+        el("strong", {}, a.status.charAt(0).toUpperCase() + a.status.slice(1)),
+        el("span", { class: "mono" }, a.short),
+        el("span", { class: "weight" }, `after Pulse ${a.pulse}`)),
+      el("div", { class: "facts" }, ...facts),
+      checks,
+      el("div", { class: "actions" }, ...actions, unwatch)));
+  }
+}
+
+async function refreshAgents() {
+  if (agentsActing > 0) return;
+  const answer = await invoke("agents").catch((error) => { toast(String(error), true); return null; });
+  if (answer && agentsActing === 0) renderAgents(answer);
+}
+
+$("find-agents").addEventListener("click", async (event) => {
+  const answer = await busy(event.currentTarget, () => invoke("find_agents"));
+  if (!answer) return;
+  toast(answer.added.length ? `Watching ${answer.added.length} more agent${answer.added.length === 1 ? "" : "s"}` : "No other agent backed by this device in the Pulses the node keeps");
+  refreshAgents();
+});
+
+$("watch-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const answer = await busy(event.submitter, () => invoke("watch_agent", { agent: $("watch-agent").value.trim() }));
+  if (answer) {
+    $("watch-form").reset();
+    refreshAgents();
   }
 });
 

@@ -93,8 +93,9 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   and a skill's better version is released only once verifiers, fixed
   before it existed, have run its evaluation set and attested. Agents
   spawn subagents with budgets carved from their own, hire each other
-  through Task Charters, run on schedules, and answer over HTTP and
-  Telegram.
+  through Task Charters, run on schedules, and answer over HTTP, Telegram,
+  Slack, Discord, Matrix and Signal, on their own machine or through an
+  agent gateway.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,

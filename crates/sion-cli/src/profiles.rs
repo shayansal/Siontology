@@ -58,6 +58,10 @@ pub struct Profile {
     /// Whether it has the storage-deal tools.
     #[serde(default)]
     pub storage: bool,
+    /// What its operator tells it beyond the fixed system prompt, which
+    /// stays first (`sion agent evolve` improves it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 fn yes() -> bool {
@@ -81,6 +85,7 @@ impl Profile {
             shell: self.shell.clone(),
             mcp: self.mcp.clone(),
             storage: self.storage,
+            instructions: self.instructions.clone(),
         }
     }
 
@@ -213,6 +218,9 @@ pub enum ProfileCommand {
         /// Give it the storage-deal tools.
         #[arg(long)]
         storage: bool,
+        /// What to tell it beyond the fixed system prompt.
+        #[arg(long)]
+        instructions: Option<String>,
     },
     /// The profiles on this machine.
     List,
@@ -220,6 +228,40 @@ pub enum ProfileCommand {
     Remove {
         /// Its name.
         name: String,
+    },
+    /// A profile's channel tokens: each reaches only that profile, through
+    /// the HTTP channel or a gateway, and is kept only as its hash.
+    #[command(subcommand)]
+    Token(TokenCommand),
+}
+
+/// `sion agent profile token …`
+#[derive(Debug, clap::Subcommand)]
+pub enum TokenCommand {
+    /// Make a token for a profile (shown once).
+    Add {
+        /// The profile (on a gateway, a profile served from elsewhere).
+        profile: String,
+        /// The profile's agent, for a profile served from another machine:
+        /// a gateway routes the profile only to a host that proves this
+        /// agent's key. A profile of this machine names its own.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Let it approve and decline what the profile's sessions wait on.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// The tokens on this machine, by id (never the tokens themselves).
+    List {
+        /// Only this profile's.
+        profile: Option<String>,
+    },
+    /// Remove a token.
+    Remove {
+        /// The profile.
+        profile: String,
+        /// The token's id, as `list` shows it.
+        id: String,
     },
 }
 
@@ -248,6 +290,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             shell,
             mcp,
             storage,
+            instructions,
         } => {
             let shell = shell.sandbox()?;
             for server in &mcp {
@@ -288,7 +331,19 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 shell,
                 mcp,
                 storage,
+                instructions: instructions.filter(|i| !i.trim().is_empty()),
             };
+            if let Some(other) = crate::channels::tokens()?
+                .iter()
+                .find(|t| t.profile == name && t.agent.is_some_and(|a| a != profile.agent))
+            {
+                return Err(CliError::Usage(format!(
+                    "profile {name}'s token {} is for agent {}: remove it first (sion agent profile token remove {name} {})",
+                    other.id,
+                    other.agent.map(|a| a.0.short()).unwrap_or_default(),
+                    other.id
+                )));
+            }
             let mut profiles = all()?;
             profiles.insert(name.clone(), profile.clone());
             save_all(&profiles)?;
@@ -309,7 +364,84 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 return Err(CliError::Usage(format!("no agent profile {name}")));
             }
             save_all(&profiles)?;
-            println!("removed profile {name}");
+            match crate::channels::remove_tokens(&name)? {
+                0 => println!("removed profile {name}"),
+                1 => println!("removed profile {name} and its channel token"),
+                n => println!("removed profile {name} and its {n} channel tokens"),
+            }
+        }
+        ProfileCommand::Token(TokenCommand::Add {
+            profile,
+            agent,
+            approve,
+        }) => {
+            let named = agent
+                .map(|a| hex_id(&a, "--agent").map(sion_core::ids::ObjectId::from_hash))
+                .transpose()?;
+            let agent = match (all()?.get(&profile).map(|p| p.agent), named) {
+                (Some(own), Some(named)) if own != named => {
+                    return Err(CliError::Usage(format!(
+                        "profile {profile} here is agent {}, not {}",
+                        own.0.short(),
+                        named.0.short()
+                    )))
+                }
+                (Some(own), _) => own,
+                (None, Some(named)) => named,
+                (None, None) => {
+                    return Err(CliError::Usage(format!(
+                        "no profile {profile} on this machine: for one served elsewhere, name its agent with --agent"
+                    )))
+                }
+            };
+            let (record, secret) = crate::channels::add_token(&profile, agent, approve)?;
+            println!(
+                "token {} for profile {profile}, agent {} ({}); it is shown once, and kept here only as its hash:",
+                record.id,
+                agent.0.short(),
+                if approve {
+                    "messages, approvals and declines"
+                } else {
+                    "messages only"
+                }
+            );
+            println!("{secret}");
+        }
+        ProfileCommand::Token(TokenCommand::List { profile }) => {
+            let tokens: Vec<_> = crate::channels::tokens()?
+                .into_iter()
+                .filter(|t| match &profile {
+                    Some(wanted) => *wanted == t.profile,
+                    None => true,
+                })
+                .collect();
+            if tokens.is_empty() {
+                println!("no channel tokens");
+            }
+            for token in tokens {
+                println!(
+                    "{}  {}  {}  {}",
+                    token.id,
+                    token.profile,
+                    token
+                        .agent
+                        .map(|a| format!("agent {}", a.0.short()))
+                        .unwrap_or_else(|| "no agent".to_string()),
+                    if token.approve {
+                        "messages, approvals"
+                    } else {
+                        "messages"
+                    }
+                );
+            }
+        }
+        ProfileCommand::Token(TokenCommand::Remove { profile, id }) => {
+            if !crate::channels::remove_token(&profile, &id)? {
+                return Err(CliError::Usage(format!(
+                    "profile {profile} has no token {id}"
+                )));
+            }
+            println!("removed token {id} of profile {profile}");
         }
     }
     Ok(())
@@ -320,6 +452,9 @@ pub fn describe(profile: &Profile) -> String {
     let mut extras = Vec::new();
     if profile.memory.is_some() {
         extras.push("memory".to_string());
+    }
+    if profile.instructions.is_some() {
+        extras.push("instructions".to_string());
     }
     if profile.web {
         extras.push("web".to_string());

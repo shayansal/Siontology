@@ -113,17 +113,18 @@ release.
 | Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use; evaluation, evolution and verified promotion (part 3) |
 | Schedules | Jobs at a time, every interval or on a cron expression, each run a session whose result goes to a channel | Built (`sion agent schedule`, `sion agent scheduler`): once, every interval or on cron (UTC), each run a session of a profile, its answer to a file, a webhook or Telegram |
 | Subagents | Spawned with identities, accounts and budgets carved from the parent's; one suspension stops the tree | Built: `agent_spawn` registers keyless subagents with budgets carved from the parent's allotment, gives them fee money from the parent's account, and runs their tasks in sessions of their own, two levels deep at most; those of one turn are spawned in one transaction and work at the same time, their payments signed in batches |
-| Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Built: the command line, an HTTP endpoint with a bearer token and Telegram (tested against a stand-in for its API), each conversation a session, approvals answered in the channel, routed by profile on one machine. Not built: routing across machines, other messengers |
+| Channels | A command line, an HTTP endpoint for webhooks, and Telegram first; the gateway routes each to its agent | Built: the command line, an HTTP endpoint with the machine's token or a profile's own, and Telegram, Slack, Discord, Matrix and Signal behind one bridge (tested against stand-ins for their APIs), each conversation a session, approvals answered in the channel, by named approvers if given; an agent gateway passes a profile's messages to the machine that proved the agent's key, while the ledger has the agent in good standing |
 | Hiring | An agent hands work to another through a Task Charter, paid only for an accepted result | Built: `task_post` from the agent's budget, `task_status`, and `task_submit` for the worker, on its task bond |
 | Traces | Every session exports as a trajectory in chat format with its outcome, and as a digest | Built |
 
 ### 3. Self-improvement that cannot fool itself
 
 **Status: built** (`sion skill eval`, `evolve`, `vouch`, `bounty`,
-`verify`, `submit` and `lineage`; see
-[Skills that get better](../guides/skill-improvement.md)), except an
-overseer's approval as a required claim (step 4). No change to the state
-transition: it uses claims, bonds and Task Charters as they are.
+`verify`, `submit` and `lineage`, and `sion agent evolve`; see
+[Skills that get better](../guides/skill-improvement.md)). Requiring a
+named verifier's attestation, such as an overseer's (step 4), came with
+specification v1.15; the rest uses claims, bonds and Task Charters as
+they are.
 
 1. **Experience.** Every session is a trajectory: messages, tool calls,
    results, and an outcome (the user's verdict, a check, a task's
@@ -142,7 +143,11 @@ transition: it uses claims, bonds and Task Charters as they are.
    tests pass, a size limit, the purpose unchanged. *Built: evaluation
    sets of cases with stand-in tools and checks; the gates are the name
    and description unchanged, 15,000 bytes, a version not tried before,
-   and no case lost that the parent passed. Only the instructions evolve.*
+   and no case lost that the parent passed. A variant may change the
+   instructions and the skill's other files, never its scripts; a
+   profile's own instructions, after the fixed system prompt, evolve the
+   same way (`sion agent evolve`). The system prompt itself and the
+   tools' descriptions do not evolve.*
 4. **Promotion, verified by others.** A variant becomes the new version
    only when **verifiers who did not write it** attest that it passes the
    evaluation, through a Task Charter whose acceptance rule was fixed
@@ -165,8 +170,13 @@ transition: it uses claims, bonds and Task Charters as they are.
 
 ### 4. In the app
 
-**Status: later.** An Agents tab: the device's agents, their budgets,
-skills and memory, and a switch that suspends them all.
+**Status: partly built.** The app's Agents tab lists the agents the
+device watches, each one's standing and budget proven as a light client
+proves them (its charter and the overlays of its whole lineage, against
+one certified header), and suspends, resumes or revokes those the device
+oversees ([The app](../getting-started/app.md)). Suspending an agent
+stops everything below it. Not built: its skills and memory in the tab,
+and one switch for all of the device's agents at once.
 
 ## What this does not claim
 

@@ -156,6 +156,25 @@ and 100 USD in all (`--max-total-collateral`); 64 MiB a deal
 `file://` locators, and without `--allow-private` it does not fetch from
 loopback, private or other local network addresses.
 
+## Get the data back
+
+A provider started with `--listen` also serves the data of the deals it
+keeps, to their clients only: `POST /v1/deals/<deal>/retrieve` with a
+request the deal's client signs, checked against the client's account
+policy on the ledger and good for at most five minutes.
+`sion storage retrieve` makes the request and checks the answer against
+the deal's root. From the run in
+[Memory from the command line](memory.md#6-archive-with-a-storage-provider):
+
+```text
+$ sion storage retrieve alice dcc80610…a00f --provider-url http://127.0.0.1:8741 --out archive-copy.bin
+530 bytes of deal dcc80610 from http://127.0.0.1:8741, checked against its root, in archive-copy.bin
+$ sion storage retrieve mallory dcc80610…a00f --provider-url http://127.0.0.1:8741 --out stolen.bin
+error: deal dcc80610 is another client's
+```
+
+`sion memory restore` does the same for a memory log's archive.
+
 ## Refunds and refusals
 
 An open deal nobody accepts is refunded by its client; nobody else can

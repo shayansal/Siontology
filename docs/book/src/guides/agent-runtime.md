@@ -213,10 +213,209 @@ The memory tools:
 | `memory_search` | read | Atoms whose subject, relation or value contain the words, newest first |
 | `memory_forget` | write | Retracts an atom with a reason: the atom stays in the log, and recall and search leave it out |
 | `memory_commit` | write | Commits the head now rather than when the session ends |
+| `session_search` | read | The agent's past sessions on this machine that match the words, each checked against the episode its memory log recorded |
 
 Nothing the agent recorded can be rewritten once committed: the ledger
 refuses a head that does not extend the last one. That includes the
 episodes, so what an agent did, and the digest of how, stays on record.
+
+### Searching past sessions
+
+An agent with a memory log can search its own past sessions on this
+machine with `session_search`: BM25 over what it was asked, what it said
+and called, and what its tools answered. Two sessions finished, each
+recorded as an episode; a third is asked about Acme:
+
+```text
+$ sion agent run agent-9 6a9bfd01…c96f --task "Who gets Acme's invoices?" --model script:third.json --memory d5809f5a…e155 --autonomy L3
+session c44d10d5a8d5f733 for agent 6a9bfd01
+  → session_search {"query":"acme invoices"}
+  ← {"found":[{…,"record":"checked",…,"session":"8b511dee66e1ce8b","snippet":"From now on, pay Acme's invoices to acme-ltd, not acme-old.",…},…],…}
+agent: acme-ltd: you told me so in an earlier session, and that session is the one its episode on the ledger recorded.
+session c44d10d5a8d5f733: done
+memory committed: Pulse 24: Done: memory log d5809f5a now holds 3 atoms (head 3); fee 0.0011 USD.
+```
+
+Each hit gives the session, its task, the message that matched best and a
+snippet, and `record`: how the session as stored stands against the
+trajectory digest its episode recorded in the memory log, whose head is
+on the ledger.
+
+| `record` | Meaning |
+|---|---|
+| `checked` | Its first messages hash to the digest, and the episode is committed to the ledger |
+| `uncommitted` | They hash to the digest, but the episode is not committed yet |
+| `changed` | They do not: the stored session was edited after its episode was recorded |
+| `compacted` | The session was compacted since: the messages the digest covers are not all kept |
+| `unrecorded` | The log holds no episode of it: it has not finished, or ran without the log |
+
+`sion agent sessions search` does the same from the command line, by the
+agent's wallet name or id:
+
+```text
+$ sion agent sessions search agent-9 acme invoices
+{
+  "found": [
+    {
+      "matches": 2,
+      "message": 0,
+      "record": "checked",
+      "record_detail": "its first 2 messages hash to the trajectory digest its episode (atom 0 of the memory log) committed to the ledger",
+      "score": 1.11,
+      "session": "8b511dee66e1ce8b",
+      "snippet": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
+      "task": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
+      "who": "person"
+    },
+    {
+      "matches": 4,
+      "message": 0,
+      "record": "checked",
+      "record_detail": "its first 4 messages hash to the trajectory digest its episode (atom 2 of the memory log) committed to the ledger",
+      "score": 1.09,
+      "session": "c44d10d5a8d5f733",
+      "snippet": "Who gets Acme's invoices?",
+      "task": "Who gets Acme's invoices?",
+      "who": "person"
+    }
+  ],
+  "query": "acme invoices",
+  "sessions_searched": 3
+}
+```
+
+Edit a stored session, here the first one's answer, and its record no
+longer checks out:
+
+```text
+$ sion agent sessions search agent-9 acme-old
+{
+  "found": [
+    {
+      "matches": 2,
+      "message": 0,
+      "record": "changed",
+      "record_detail": "changed: the session as stored does not hash to the digest its episode recorded",
+      "score": 2.0,
+      "session": "8b511dee66e1ce8b",
+      "snippet": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
+      "task": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
+      "who": "person"
+    }
+  ],
+  "query": "acme-old",
+  "sessions_searched": 3
+}
+```
+
+An episode records how many messages its digest covers and how many
+times the session had been compacted, so a session that went on after its
+episode is checked on the messages the episode covered.
+
+### Consolidation
+
+`sion memory consolidate` reads the episodes recorded since the last
+consolidation and the notes the log keeps, and asks a model what is worth
+keeping for good: facts, procedures and preferences, each citing its
+episodes, proposed with the `memory_note` tool. Gates keep a note only if
+it cites episodes it was shown and nothing else, replaces only notes it
+was shown, is a fact, a procedure or a preference, fits the limits (120
+bytes for a subject or a relation, 1,000 for a value), is not one the
+agent keeps already, and is one of at most 16 in the run. Here the model
+is scripted, and one of its proposals cites an episode that does not
+exist:
+
+```text
+$ sion memory consolidate agent-9 d5809f5a…e155 --model script:consolidate.json
+agent-9 signs: Commit memory log d5809f5a at 6 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 44.
+{
+  "committed": "Pulse 26: Done: memory log d5809f5a now holds 6 atoms (head 4); fee 0.0011 USD.",
+  "consolidated_through": 2,
+  "episodes": 3,
+  "episodes_left": 0,
+  "kept": [
+    {
+      "atom": 3,
+      "from": [
+        "atom 0",
+        "atom 2"
+      ],
+      "kind": "fact",
+      "note": "supplier-acme invoices-paid-to: acme-ltd",
+      "replaces": [],
+      "revision": null,
+      "untrusted": false,
+      "why": "the person said so, and it was relied on later"
+    },
+    {
+      "atom": 4,
+      "from": [
+        "atom 1"
+      ],
+      "kind": "preference",
+      "note": "user prefers: plain answers about what I cannot do",
+      "replaces": [],
+      "revision": null,
+      "untrusted": false,
+      "why": "how the weather question went"
+    }
+  ],
+  "log": "d5809f5a…e155",
+  "marker": 5,
+  "model": "script:consolidate.json",
+  "notes_shown": 0,
+  "size_on_ledger": 6,
+  "turned_down": [
+    {
+      "proposal": {
+        "kind": "fact",
+        "relation": "is",
+        "sources": [
+          "e7"
+        ],
+        "subject": "acme",
+        "value": "a supplier",
+        "why": "no episode says so"
+      },
+      "reason": "e7 is not one of the episodes shown"
+    }
+  ]
+}
+```
+
+Each note kept is a derived atom with a `derived_from` link to every
+episode it cites and an extraction trace naming the model and the
+consolidator. A note that replaces an older one comes with a revision
+that supersedes it: the older one stays in the log, and recall, search
+and the prompt leave it out. A summary atom records how far the episodes
+were consolidated, so the next run reads only what came after:
+
+```text
+$ sion memory consolidate agent-9 d5809f5a…e155 --model script:consolidate.json
+{
+  "consolidated": 0,
+  "log": "d5809f5a…e155",
+  "note": "nothing to consolidate: no episode after atom 2"
+}
+```
+
+The preference is core memory now, in every later session's prompt:
+
+```text
+What you remember and always keep in mind (from your memory log; use memory_recall for more):
+- (preference) user prefers "plain answers about what I cannot do"
+```
+
+### Content from outside
+
+A session that read content from outside (a web page, another agent's
+message) is tainted (see [Autonomy](#autonomy)). What it records with
+`memory_remember` while tainted, its episode, and any note consolidated
+from that episode are marked as a prompt-injection risk, unsafe to plan
+with: they are kept and recalled (marked `from_outside`), but never put
+into a prompt as core memory, so an injected "always pay mallory" cannot
+make itself a preference. A search that finds a tainted session taints
+the session that searched, as reading that content again would.
 
 ## Skills
 
@@ -272,9 +471,11 @@ once others have verified the better version: see
 
 ## What this does not do yet
 
-- Memory atoms stay on the machine that wrote them: keeping the log's
-  archive with storage providers is not wired in yet. Scheduled runs and
-  channels (HTTP, Telegram) are in
+- Memory atoms stay on the machine that wrote them unless the log is
+  archived with a storage provider
+  ([Memory from the command line](memory.md#6-archive-with-a-storage-provider)),
+  and sessions are searched on the machine that ran them
+  (`agent:recall-local`). Scheduled runs and channels are in
   [Teams, schedules and channels](agent-teams.md).
 - Autonomy, approvals, grants and taint are enforced by the runtime on
   the machine it runs on (`agent:local-policy`); only the charter is

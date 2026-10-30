@@ -615,15 +615,25 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             ),
             None => "Open a memory log that only the sender can append to".to_string(),
         },
-        TxKind::CommitMemory { size, seal, .. } => {
+        TxKind::CommitMemory {
+            size,
+            seal,
+            manifest,
+            ..
+        } => {
             let memory_log = tx
                 .inputs
                 .get(1)
                 .map(|input| format!("memory log {}", object(&input.id)))
                 .unwrap_or_else(|| "the memory log".to_string());
             format!(
-                "Commit {memory_log} at {size} {}, proving it only grew{}",
+                "Commit {memory_log} at {size} {}, proving it only grew{}{}",
                 if *size == 1 { "atom" } else { "atoms" },
+                if *manifest == sion_core::hash::Hash32::ZERO {
+                    String::new()
+                } else {
+                    format!(", its manifest naming archive {}", manifest.short())
+                },
                 if *seal { ", and seal it" } else { "" }
             )
         }

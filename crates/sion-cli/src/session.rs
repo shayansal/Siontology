@@ -67,15 +67,32 @@ pub fn wallet_dir() -> PathBuf {
 /// the deterministic devnet wallet of that name (devnet only — anyone who
 /// knows the name can derive its keys).
 pub fn wallet_for(name: &str) -> Wallet {
+    Wallet::from_seed(&seed_of(name))
+}
+
+/// The seed of the wallet called `name`: its seed file's, or the devnet
+/// wallet's.
+fn seed_of(name: &str) -> zeroize::Zeroizing<[u8; 32]> {
     let path = wallet_dir().join(format!("{name}.seed"));
     if let Ok(text) = std::fs::read_to_string(&path) {
         if let Ok(bytes) = hex::decode(text.trim()) {
             if let Ok(seed) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                return Wallet::from_seed(&seed);
+                return zeroize::Zeroizing::new(seed);
             }
         }
     }
-    Wallet::named(name)
+    zeroize::Zeroizing::new(sion_exec::wallet::devnet_seed(name))
+}
+
+/// The secret a wallet derives its other keys from (an archive's, say):
+/// its seed. A keyless subagent has none of its own, so its signer's is
+/// used. A devnet wallet's seed, like its keys, anyone can derive from its
+/// name.
+pub fn wallet_seed(name: &str) -> zeroize::Zeroizing<[u8; 32]> {
+    match keyless_alias(name) {
+        Some(alias) => seed_of(&alias.signer),
+        None => seed_of(name),
+    }
 }
 
 /// A keyless subagent's wallet file, `<name>.keyless` under

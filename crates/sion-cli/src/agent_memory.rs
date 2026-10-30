@@ -15,7 +15,8 @@
 //! is rendered into the system prompt of every session ([`core`]), and each
 //! finished session is recorded as an episode with its trajectory's digest
 //! ([`record_episode`]), so that what the agent did cannot be rewritten
-//! afterwards.
+//! afterwards: `session_search` ([`crate::recall`]) checks the sessions it
+//! finds against those digests.
 
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,8 +27,8 @@ use sion_agent::ToolSpec;
 use sion_core::hash::Hash32;
 use sion_core::ids::ObjectId;
 use sion_memory::{
-    prove_subject, verify_subject, AtomClass, BeliefState, Interval, LogStore, MemoryAtom,
-    MemoryAtomId, MemoryKind, Statement,
+    prove_subject, verify_subject, AiUsage, AtomClass, BeliefState, Interval, LogStore, MemoryAtom,
+    MemoryAtomId, MemoryKind, Statement, Taint,
 };
 
 use crate::error::CliError;
@@ -72,7 +73,7 @@ fn kind_name(kind: MemoryKind) -> String {
 }
 
 /// The atoms the log's own revisions retracted, refuted or superseded.
-fn withdrawn(store: &LogStore) -> BTreeSet<MemoryAtomId> {
+pub(crate) fn withdrawn(store: &LogStore) -> BTreeSet<MemoryAtomId> {
     let mut out = BTreeSet::new();
     for atom in store.log().atoms() {
         if let Statement::Revision { targets, state, .. } = &atom.statement {
@@ -91,11 +92,28 @@ fn line(atom: &MemoryAtom, committed_size: u64) -> Json {
     let mut value = describe_atom(atom);
     value["kind"] = json!(kind_name(atom.kind));
     value["committed"] = json!(atom.seq < committed_size);
+    if !promptable(atom) {
+        value["from_outside"] = json!(true);
+    }
     value
 }
 
+/// Whether an atom may be put into a prompt as something to keep in mind:
+/// not one that may carry instructions from outside, nor one marked unsafe
+/// to plan with.
+pub fn promptable(atom: &MemoryAtom) -> bool {
+    !matches!(
+        atom.policy.taint,
+        Taint::PromptInjectionRisk | Taint::Poisoned
+    ) && !matches!(
+        atom.policy.ai_usage,
+        AiUsage::UnsafeForPlanning | AiUsage::SimulationOnly
+    )
+}
+
 /// The agent's core memory as prompt text: its live preferences, goals and
-/// procedures, newest first, within [`MAX_CORE_CHARS`].
+/// procedures, newest first, within [`MAX_CORE_CHARS`]. Atoms that may
+/// carry instructions from outside are left out ([`promptable`]).
 pub fn core(log: &ObjectId) -> String {
     let Ok(store) = LogStore::open(store_dir(log)) else {
         return String::new();
@@ -104,7 +122,7 @@ pub fn core(log: &ObjectId) -> String {
     let mut lines = Vec::new();
     let mut used = 0;
     for atom in store.log().atoms().iter().rev() {
-        if !CORE.contains(&atom.kind) || gone.contains(&atom.id()) {
+        if !CORE.contains(&atom.kind) || gone.contains(&atom.id()) || !promptable(atom) {
             continue;
         }
         if let Statement::Claim { .. } = atom.statement {
@@ -155,9 +173,21 @@ impl Memory {
         class: AtomClass,
         statement: Statement,
     ) -> Result<(MemoryAtomId, u64), CliError> {
+        self.append_marked(kind, class, statement, false)
+    }
+
+    /// Appends an atom; one `from_outside` is marked as a prompt-injection
+    /// risk, unsafe to plan with.
+    fn append_marked(
+        &self,
+        kind: MemoryKind,
+        class: AtomClass,
+        statement: Statement,
+        from_outside: bool,
+    ) -> Result<(MemoryAtomId, u64), CliError> {
         let mut store = self.store()?;
         let now = nanos();
-        let atom = MemoryAtom::builder(
+        let mut builder = MemoryAtom::builder(
             store.log().writer(),
             store.log().len(),
             kind,
@@ -165,9 +195,15 @@ impl Memory {
             statement,
         )
         .valid(Interval::starting(now))
-        .observed_at(now)
-        .build()
-        .map_err(|e| CliError::Usage(e.to_string()))?;
+        .observed_at(now);
+        if from_outside {
+            builder = builder
+                .taint(Taint::PromptInjectionRisk)
+                .ai_usage(AiUsage::UnsafeForPlanning);
+        }
+        let atom = builder
+            .build()
+            .map_err(|e| CliError::Usage(e.to_string()))?;
         let id = atom.id();
         store.append(atom).map_err(crate::memory::memory_error)?;
         let committed = committed(self.acting.ledger.as_ref(), &self.log)?;
@@ -234,6 +270,19 @@ impl Tool for Remember {
     }
 
     fn call(&self, input: &Json, _key: &str) -> Outcome {
+        self.remember(input, false)
+    }
+
+    fn call_tainted(&self, input: &Json, _key: &str) -> Outcome {
+        self.remember(input, true)
+    }
+}
+
+impl Remember {
+    /// Records the atom; one recorded `from_outside` (by a tainted session)
+    /// is marked as a prompt-injection risk, kept and recalled but never
+    /// shown in a prompt as core memory.
+    fn remember(&self, input: &Json, from_outside: bool) -> Outcome {
         let subject = input["subject"].as_str().unwrap_or_default().trim();
         let relation = input["relation"].as_str().unwrap_or_default().trim();
         let value = input["value"]
@@ -248,10 +297,18 @@ impl Tool for Remember {
             ));
         };
         let statement = Statement::claim(subject, relation, parse_value(&value));
-        match self.0.append(*kind, AtomClass::AgentMemory, statement) {
+        match self
+            .0
+            .append_marked(*kind, AtomClass::AgentMemory, statement, from_outside)
+        {
             Ok((id, pending)) => Outcome::ok(format!(
-                "remembered as atom {} ({pending} atom(s) not committed to the ledger yet)",
-                id.short()
+                "remembered as atom {} ({pending} atom(s) not committed to the ledger yet){}",
+                id.short(),
+                if from_outside {
+                    "; this session read content from outside, so the atom is marked as such and never shown in your prompt"
+                } else {
+                    ""
+                }
             )),
             Err(e) => Outcome::error(e.to_string()),
         }
@@ -505,14 +562,55 @@ impl Tool for Commit {
     }
 }
 
-/// Records a finished session as an episode, with its trajectory's digest,
-/// and commits the log.
+/// What a finished session's episode records about its conversation: the
+/// trajectory's digest, how many messages it covers, how many times the
+/// session had been compacted, and whether the session read content from
+/// outside (a tainted session's episode is marked as a prompt-injection
+/// risk, so neither it nor what is consolidated from it reaches a prompt
+/// as something to keep in mind).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Trajectory {
+    /// The digest ([`sion_agent::trace::digest`]).
+    pub digest: Hash32,
+    /// The messages it covers.
+    pub messages: usize,
+    /// The session's compactions so far.
+    pub compactions: u32,
+    /// Whether the session was ever tainted.
+    pub from_outside: bool,
+}
+
+/// How an episode names its trajectory: `trajectory <hex> over <n>
+/// messages`, and ` after <c> compactions` if there were any
+/// ([`crate::recall::parse_episode`] reads it).
+pub fn trajectory_text(trajectory: &Trajectory) -> String {
+    let plural = |n: u64, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let mut text = format!(
+        "trajectory {} over {}",
+        trajectory.digest.to_hex(),
+        plural(trajectory.messages as u64, "message", "messages")
+    );
+    if trajectory.compactions > 0 {
+        text.push_str(&format!(
+            " after {}",
+            plural(
+                u64::from(trajectory.compactions),
+                "compaction",
+                "compactions"
+            )
+        ));
+    }
+    text
+}
+
+/// Records a finished session as an episode, with its trajectory, and
+/// commits the log.
 pub fn record_episode(
     memory: &Memory,
     session: &str,
     task: &str,
     outcome: &str,
-    digest: &Hash32,
+    trajectory: &Trajectory,
 ) -> Result<Option<String>, CliError> {
     let short = |text: &str, n: usize| -> String {
         let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -523,16 +621,21 @@ pub fn record_episode(
         }
     };
     let text = format!(
-        "task: {}; outcome: {}; trajectory {}",
+        "task: {}; outcome: {}; {}",
         short(task, 300),
         short(outcome, 600),
-        digest.to_hex()
+        trajectory_text(trajectory)
     );
     let statement = Statement::claim(
         format!("session-{session}"),
         "episode",
         sion_memory::Value::Text(text),
     );
-    memory.append(MemoryKind::Episodic, AtomClass::Event, statement)?;
+    memory.append_marked(
+        MemoryKind::Episodic,
+        AtomClass::Event,
+        statement,
+        trajectory.from_outside,
+    )?;
     memory.commit()
 }

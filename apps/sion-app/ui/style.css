@@ -239,6 +239,9 @@ input:focus { border-color: var(--color-ink); outline: none; }
 .facts { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); font-size: 0.8125rem; color: var(--color-ink-2); }
 .facts b { color: var(--color-ink); font-weight: 560; }
 .row form { display: flex; gap: var(--space-2); }
+.row .actions, .view > .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.row.refused .row-head strong { color: var(--color-signal); }
+.row .checks { margin: 0; }
 .row form input { flex: 1; min-width: 0; }
 
 .cards { display: grid; gap: var(--space-3); }
