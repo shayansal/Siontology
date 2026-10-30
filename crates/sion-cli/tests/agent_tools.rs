@@ -33,8 +33,8 @@ fn register(session: &mut Session<'_>, ledger: &SharedLedger, wallet: &str) -> O
                 caveats: Caveats {
                     payees: None,
                     max_per_payment: Amount::units(10),
-                    max_per_window: Amount::units(50),
-                    window: 1_000,
+                    burst: Amount::units(50),
+                    rate: Amount(50_000),
                     expires_at: Pulse(pulse.0 + 100_000),
                     evidence_above: None,
                     evidence_policy: sion_assurance::Policy::standard(),

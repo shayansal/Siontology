@@ -69,6 +69,11 @@ pub enum Query {
         /// Only deals open for acceptance.
         open: bool,
     },
+    /// An agent's standing (spec v1.14): its charter and the overlays of
+    /// its lineage, from the agent up to the root, each with its proof
+    /// against the latest state, so a resolver can check the agent's status
+    /// against a certified header.
+    Agent(ObjectId),
 }
 
 /// Chain status.

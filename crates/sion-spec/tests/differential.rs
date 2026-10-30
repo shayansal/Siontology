@@ -32,8 +32,12 @@ use sion_core::Amount;
 use sion_crypto::{
     validator_id, CommitteeEnvelope, DualKeypair, KemKeypair, Scheme, VALIDATOR_DOMAIN,
 };
-use sion_exec::charter::{card_commitment, Caveats, Spawn, MAX_CHARTER_CHAIN, MAX_SPAWN_BATCH};
+use sion_exec::charter::{
+    card_commitment, lineage_id, overlay_id, Caveats, Narrowing, Spawn, MAX_LINEAGE_DEPTH,
+    MAX_SPAWN_BATCH,
+};
 use sion_exec::claim::{claim_id, formulas, ClaimBody, Payload};
+use sion_exec::cohort::{CohortMember, CohortTree, Materialize, MAX_MATERIALIZE};
 use sion_exec::delegation::{Delegation, DelegationBook, DelegationState, Join, Pool};
 use sion_exec::execute::{bond_atom, registered_atom, Deferred, Event, ExecStatus};
 use sion_exec::market::{BatchStatus, Market, OrderTerms, Submission, SEALED_ORDER_DOMAIN};
@@ -157,6 +161,13 @@ fn kind_name(kind: &TxKind) -> &'static str {
         TxKind::ProveStorage { .. } => "ProveStorage",
         TxKind::SettleDeal { .. } => "SettleDeal",
         TxKind::CloseDeal { .. } => "CloseDeal",
+        TxKind::SpawnCohort { full: true, .. } => "SpawnCohort(full)",
+        TxKind::SpawnCohort { .. } => "SpawnCohort",
+        TxKind::MaterializeAgents { .. } => "MaterializeAgents",
+        TxKind::NarrowAgent {
+            narrowing: None, ..
+        } => "NarrowAgent(lift)",
+        TxKind::NarrowAgent { .. } => "NarrowAgent",
     }
 }
 
@@ -1991,8 +2002,9 @@ fn charter_caveats(vendor: AccountId) -> Caveats {
     Caveats {
         payees: Some([vendor].into_iter().collect()),
         max_per_payment: units(100),
-        max_per_window: units(250),
-        window: 1_000,
+        // 250 USD at once, refilled at 250 USD per 1,000 Pulses.
+        burst: units(250),
+        rate: Amount(250_000),
         expires_at: Pulse(10_000),
         evidence_above: None,
         evidence_policy: Policy::standard(),
@@ -2234,7 +2246,8 @@ fn charters(chunk_size: usize) -> Harness {
     expect(&out, &bad, Outcome::Failed);
     let mut narrow = charter_caveats(vendor);
     narrow.max_per_payment = units(20);
-    narrow.max_per_window = units(40);
+    narrow.burst = units(40);
+    narrow.rate = Amount(40_000);
     narrow.may_delegate = false;
     let input = h.reference(&allotment);
     let delegate = h.tx_with(
@@ -2422,6 +2435,20 @@ fn charter_state(h: &Harness, id: &ObjectId) -> sion_exec::charter::Charter {
     }
 }
 
+fn overlay_state(h: &Harness, agent: &ObjectId) -> Option<sion_exec::charter::AgentOverlay> {
+    match h
+        .chain
+        .state
+        .objects
+        .get(&overlay_id(agent))
+        .map(|o| &o.data)
+    {
+        Some(ObjectData::AgentOverlay(overlay)) => Some(overlay.clone()),
+        Some(other) => panic!("the overlay of {agent} holds {other:?}"),
+        None => None,
+    }
+}
+
 fn spawn_child(agent: AccountId, caveats: Caveats, budget: Amount, card: &[u8]) -> Spawn {
     Spawn {
         agent: Some(agent),
@@ -2564,14 +2591,17 @@ fn agents(chunk_size: usize) -> Harness {
 
     let mut leaf = charter_caveats(vendor);
     leaf.max_per_payment = units(20);
-    leaf.max_per_window = units(40);
+    leaf.burst = units(40);
+    leaf.rate = Amount(40_000);
     leaf.may_delegate = false;
     let mut lead = charter_caveats(vendor);
-    lead.max_per_window = units(100);
-    // Window limits are carved too: two children asking for 200 of a
-    // 250 USD window between them fail, whatever their budgets.
+    lead.burst = units(100);
+    lead.rate = Amount(100_000);
+    // Buckets are carved too: two children asking for 200 of a 250 USD
+    // burst between them fail, whatever their budgets.
     let mut half = charter_caveats(vendor);
-    half.max_per_window = units(200);
+    half.burst = units(200);
+    half.rate = Amount(100_000);
     let too_fast = spawn(
         &mut h,
         "orchestrator",
@@ -2652,7 +2682,8 @@ fn agents(chunk_size: usize) -> Harness {
 
     // Suspension: a stranger may not; the orchestrator (worker-a's
     // principal) may, and the whole subtree stops; the backer's second
-    // suspension keeps the first suspender; a suspended charter is not dead.
+    // suspension replaces the orchestrator's, since the highest suspender
+    // is kept (v1.14); a suspended charter is not dead.
     let stranger_suspends = h.tx("stranger", TxKind::SuspendAgent { charter: a });
     let suspend = h.tx("orchestrator", TxKind::SuspendAgent { charter: a });
     let out = h.pulse(vec![stranger_suspends.clone(), suspend.clone()]);
@@ -2678,16 +2709,31 @@ fn agents(chunk_size: usize) -> Harness {
     expect(&out, &halted_spawn, Outcome::Failed);
     expect(&out, &again, Outcome::Success);
     expect(&out, &reclaim_suspended, Outcome::Failed);
-    assert_eq!(charter_state(&h, &a).suspended_by, Some(orchestrator));
+    assert_eq!(
+        overlay_state(&h, &a).and_then(|o| o.suspended_by),
+        Some(h.id("principal"))
+    );
 
-    // Resumption: neither the subagent nor a sibling may lift it; the backer
-    // may; resuming what is not suspended fails.
+    // Resumption: neither the subagent, nor a sibling, nor the orchestrator
+    // (below the recorded suspender now) may lift it; the backer may;
+    // resuming what is not suspended fails.
     let by_sub = h.tx("sub-a", TxKind::ResumeAgent { charter: a });
     let by_sibling = h.tx("worker-b", TxKind::ResumeAgent { charter: a });
-    let resume = h.tx("principal", TxKind::ResumeAgent { charter: a });
-    let out = h.pulse(vec![by_sub.clone(), by_sibling.clone(), resume.clone()]);
+    let by_lower = h.tx("orchestrator", TxKind::ResumeAgent { charter: a });
+    let out = h.pulse(vec![by_sub.clone(), by_sibling.clone(), by_lower.clone()]);
     expect(&out, &by_sub, Outcome::Failed);
     expect(&out, &by_sibling, Outcome::Failed);
+    expect(&out, &by_lower, Outcome::Failed);
+    // A lower overseer's suspension does not replace the backer's.
+    let lower_again = h.tx("orchestrator", TxKind::SuspendAgent { charter: a });
+    let out = h.pulse(vec![lower_again.clone()]);
+    expect(&out, &lower_again, Outcome::Success);
+    assert_eq!(
+        overlay_state(&h, &a).and_then(|o| o.suspended_by),
+        Some(h.id("principal"))
+    );
+    let resume = h.tx("principal", TxKind::ResumeAgent { charter: a });
+    let out = h.pulse(vec![resume.clone()]);
     expect(&out, &resume, Outcome::Success);
     let twice = h.tx("principal", TxKind::ResumeAgent { charter: a });
     let pays_again = agent_pay(&mut h, "sub-a", sub, sub_allotment, vendor, units(1));
@@ -2749,7 +2795,8 @@ fn agents(chunk_size: usize) -> Harness {
 
     // A full batch of 64 subagents in one transaction.
     let mut quiet = leaf.clone();
-    quiet.max_per_window = Amount::ZERO;
+    quiet.burst = Amount::ZERO;
+    quiet.rate = Amount::ZERO;
     let swarm: Vec<Spawn> = (0..MAX_SPAWN_BATCH)
         .map(|i| {
             spawn_child(
@@ -2766,7 +2813,7 @@ fn agents(chunk_size: usize) -> Harness {
     assert_eq!(agents_spawned(&out, &launch).len(), MAX_SPAWN_BATCH);
 
     // Depth: one account spawns itself generation after generation; the
-    // charter that is the sixteenth of its chain cannot spawn.
+    // charter at depth MAX_LINEAGE_DEPTH (8) cannot spawn.
     let register_deep = h.tx(
         "principal",
         TxKind::RegisterAgent {
@@ -2779,7 +2826,7 @@ fn agents(chunk_size: usize) -> Harness {
     );
     let out = h.pulse(vec![register_deep.clone()]);
     let (mut current, mut current_allotment) = agent_registered(&out, &register_deep);
-    for generation in 1..MAX_CHARTER_CHAIN {
+    for generation in 1..=MAX_LINEAGE_DEPTH {
         let tx = spawn(
             &mut h,
             "deep",
@@ -2845,6 +2892,1028 @@ fn agents_register_spawn_suspend_resume_and_revoke() {
 #[test]
 fn agents_many_transactions_per_chunk() {
     agents(5).summary("agents (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: lineage ids, token buckets, overlays and cohorts (spec v1.14)
+// ---------------------------------------------------------------------------
+
+/// `base` with another burst and rate.
+fn with_bucket(base: &Caveats, burst: Amount, rate: Amount) -> Caveats {
+    let mut caveats = base.clone();
+    caveats.burst = burst;
+    caveats.rate = rate;
+    caveats
+}
+
+fn allotment_state(h: &Harness, id: &ObjectId) -> sion_exec::charter::Allotment {
+    match &h.chain.state.objects[id].data {
+        ObjectData::Allotment(allotment) => allotment.clone(),
+        other => panic!("{id} holds {other:?}"),
+    }
+}
+
+fn cohort_spawned(out: &PulseOutput, tx: &SignedTransaction) -> ObjectId {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .and_then(|e| {
+            e.events.iter().find_map(|event| match event {
+                Event::CohortSpawned { cohort, .. } => Some(*cohort),
+                _ => None,
+            })
+        })
+        .expect("cohort spawned")
+}
+
+/// The (agent, allotment) pairs a materialization created, in order.
+fn materialized(out: &PulseOutput, tx: &SignedTransaction) -> Vec<(ObjectId, ObjectId)> {
+    out.effects
+        .iter()
+        .find(|e| e.digest == tx.digest())
+        .map(|e| {
+            e.events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::AgentMaterialized {
+                        agent, allotment, ..
+                    } => Some((*agent, *allotment)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn cohort_member(
+    agent: Option<AccountId>,
+    budget: Amount,
+    burst: Amount,
+    rate: Amount,
+) -> CohortMember {
+    CohortMember {
+        agent,
+        card: card_commitment(b"member card"),
+        budget,
+        burst,
+        rate,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize(
+    h: &mut Harness,
+    who: &str,
+    cohort: ObjectId,
+    allotment: ObjectId,
+    tree: &CohortTree,
+    members: &[CohortMember],
+    indices: &[u32],
+) -> SignedTransaction {
+    let input = h.reference(&allotment);
+    let members = indices
+        .iter()
+        .map(|i| Materialize {
+            index: *i,
+            member: members[*i as usize].clone(),
+            siblings: tree.prove(*i).expect("in the tree"),
+        })
+        .collect();
+    h.tx_with(
+        who,
+        TxKind::MaterializeAgents { cohort, members },
+        vec![input],
+    )
+}
+
+fn narrowing(payees: Option<Vec<AccountId>>, max: Amount, expires: u64, spawn: bool) -> Narrowing {
+    Narrowing {
+        payees: payees.map(|p| p.into_iter().collect()),
+        max_per_payment: max,
+        expires_at: Pulse(expires),
+        may_delegate: spawn,
+    }
+}
+
+fn lineage(chunk_size: usize) -> Harness {
+    let mut h = Harness::new(
+        &[
+            "principal",
+            "root",
+            "child",
+            "grandchild",
+            "vendor",
+            "other",
+            "stranger",
+            "deep",
+        ],
+        10_000,
+        6,
+        chunk_size,
+    );
+    let (root_account, child_account, grandchild_account, vendor, other, deep) = (
+        h.id("root"),
+        h.id("child"),
+        h.id("grandchild"),
+        h.id("vendor"),
+        h.id("other"),
+        h.id("deep"),
+    );
+    // A root whose bucket holds 100 USD and refills 1 USD a Pulse.
+    let mut root_caveats = with_bucket(&charter_caveats(vendor), units(100), units(1));
+    root_caveats.payees = Some([vendor, other].into_iter().collect());
+    let register = h.tx(
+        "principal",
+        TxKind::RegisterAgent {
+            agent: root_account,
+            card: card_commitment(b"root"),
+            caveats: root_caveats.clone(),
+            funding: units(2_000),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![register.clone()]);
+    expect(&out, &register, Outcome::Success);
+    let (root, root_allotment) = agent_registered(&out, &register);
+    let state = charter_state(&h, &root);
+    assert_eq!(state.lineage.root, root);
+    assert!(state.lineage.path.is_empty());
+    assert_eq!(
+        allotment_state(&h, &root_allotment).bucket.tokens,
+        units(100)
+    );
+
+    // The bucket: 60 leaves 40; 50 a Pulse later fails (41); ten Pulses
+    // later it has refilled enough.
+    let first = agent_pay(&mut h, "root", root, root_allotment, vendor, units(60));
+    let out = h.pulse(vec![first.clone()]);
+    expect(&out, &first, Outcome::Success);
+    let too_soon = agent_pay(&mut h, "root", root, root_allotment, vendor, units(50));
+    let out = h.pulse(vec![too_soon.clone()]);
+    expect(&out, &too_soon, Outcome::Failed);
+    h.advance(10);
+    let refilled = agent_pay(&mut h, "root", root, root_allotment, vendor, units(50));
+    let out = h.pulse(vec![refilled.clone()]);
+    expect(&out, &refilled, Outcome::Success);
+
+    // Spawning carves burst, rate and the child's starting tokens: a child
+    // asking for more than the bucket holds fails; once it has refilled, two
+    // children take 30 and 20 of it.
+    let starving = spawn(
+        &mut h,
+        "root",
+        root,
+        root_allotment,
+        vec![spawn_child(
+            child_account,
+            with_bucket(&root_caveats, units(90), cents(10)),
+            units(100),
+            b"child",
+        )],
+    );
+    let out = h.pulse(vec![starving.clone()]);
+    expect(&out, &starving, Outcome::Failed);
+    h.advance(100);
+    let child_caveats = with_bucket(&root_caveats, units(30), cents(20));
+    let leaf_caveats = with_bucket(&root_caveats, units(20), cents(10));
+    let children = spawn(
+        &mut h,
+        "root",
+        root,
+        root_allotment,
+        vec![
+            spawn_child(child_account, child_caveats.clone(), units(300), b"child"),
+            spawn_child(other, leaf_caveats, units(100), b"sibling"),
+        ],
+    );
+    let out = h.pulse(vec![children.clone()]);
+    expect(&out, &children, Outcome::Success);
+    let spawned = agents_spawned(&out, &children);
+    let ((child, child_allotment), (sibling, _)) = (spawned[0], spawned[1]);
+    assert_eq!(child, lineage_id(&root, 0));
+    assert_eq!(sibling, lineage_id(&root, 1));
+    let kept = allotment_state(&h, &root_allotment);
+    assert_eq!(kept.spawned, 2);
+    assert_eq!(kept.bucket.burst, units(50));
+    assert_eq!(kept.bucket.rate, Amount(units(1).0 - cents(30).0));
+    let grandchildren = spawn(
+        &mut h,
+        "child",
+        child,
+        child_allotment,
+        vec![spawn_child(
+            grandchild_account,
+            with_bucket(&child_caveats, units(10), cents(5)),
+            units(50),
+            b"grandchild",
+        )],
+    );
+    let out = h.pulse(vec![grandchildren.clone()]);
+    expect(&out, &grandchildren, Outcome::Success);
+    let (grandchild, grandchild_allotment) = agents_spawned(&out, &grandchildren)[0];
+    assert_eq!(grandchild, lineage_id(&child, 0));
+    assert_eq!(charter_state(&h, &grandchild).lineage.path, vec![0, 0]);
+
+    // Overlays: suspending the child writes its overlay and stops the
+    // grandchild; resuming lets it pay again.
+    let suspend = h.tx("root", TxKind::SuspendAgent { charter: child });
+    let out = h.pulse(vec![suspend.clone()]);
+    expect(&out, &suspend, Outcome::Success);
+    assert_eq!(
+        overlay_state(&h, &child).and_then(|o| o.suspended_by),
+        Some(root_account)
+    );
+    let halted = agent_pay(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        vendor,
+        units(1),
+    );
+    let out = h.pulse(vec![halted.clone()]);
+    expect(&out, &halted, Outcome::Failed);
+    let resume = h.tx("root", TxKind::ResumeAgent { charter: child });
+    let out = h.pulse(vec![resume.clone()]);
+    expect(&out, &resume, Outcome::Success);
+    let pays = agent_pay(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        vendor,
+        units(1),
+    );
+    let out = h.pulse(vec![pays.clone()]);
+    expect(&out, &pays, Outcome::Success);
+
+    // Narrowing: the root's agent narrows its child's subtree to payments
+    // of at most 2 USD to the vendor; the grandchild may pay 2, not 3, and
+    // not `other`; a stranger may not narrow; the child may narrow itself
+    // further but not widen; only the backer lifts it.
+    let narrow = h.tx(
+        "root",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: Some(narrowing(Some(vec![vendor]), units(2), 9_000, true)),
+        },
+    );
+    let by_stranger = h.tx(
+        "stranger",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: Some(narrowing(None, units(1), 9_000, false)),
+        },
+    );
+    let out = h.pulse(vec![narrow.clone(), by_stranger.clone()]);
+    expect(&out, &narrow, Outcome::Success);
+    expect(&out, &by_stranger, Outcome::Failed);
+    let small = agent_pay(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        vendor,
+        units(2),
+    );
+    let out = h.pulse(vec![small.clone()]);
+    expect(&out, &small, Outcome::Success);
+    let big = agent_pay(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        vendor,
+        units(3),
+    );
+    let out = h.pulse(vec![big.clone()]);
+    expect(&out, &big, Outcome::Failed);
+    let elsewhere = agent_pay(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        other,
+        units(1),
+    );
+    let out = h.pulse(vec![elsewhere.clone()]);
+    expect(&out, &elsewhere, Outcome::Failed);
+    let widen = h.tx(
+        "child",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: Some(narrowing(None, units(50), 9_000, true)),
+        },
+    );
+    let out = h.pulse(vec![widen.clone()]);
+    expect(&out, &widen, Outcome::Failed);
+    let further = h.tx(
+        "child",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: Some(narrowing(Some(vec![vendor]), units(1), 9_000, false)),
+        },
+    );
+    let out = h.pulse(vec![further.clone()]);
+    expect(&out, &further, Outcome::Success);
+    // Nothing below a narrowing that forbids it spawns.
+    let barred = spawn(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        vec![spawn_child(
+            deep,
+            with_bucket(&child_caveats, units(1), Amount::ZERO),
+            units(1),
+            b"barred",
+        )],
+    );
+    let out = h.pulse(vec![barred.clone()]);
+    expect(&out, &barred, Outcome::Failed);
+    let unlift = h.tx(
+        "root",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: None,
+        },
+    );
+    let lift = h.tx(
+        "principal",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: None,
+        },
+    );
+    let out = h.pulse(vec![unlift.clone(), lift.clone()]);
+    expect(&out, &unlift, Outcome::Failed);
+    expect(&out, &lift, Outcome::Success);
+    let unbound = agent_pay(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        other,
+        units(3),
+    );
+    let out = h.pulse(vec![unbound.clone()]);
+    expect(&out, &unbound, Outcome::Success);
+
+    // A cohort of five under the root, keyed and keyless members, with
+    // buckets that fill from the cohort's creation.
+    let members: Vec<CohortMember> = vec![
+        cohort_member(Some(deep), units(10), units(4), cents(10)),
+        cohort_member(None, units(10), units(4), cents(10)),
+        cohort_member(None, units(20), units(4), cents(10)),
+        cohort_member(Some(other), units(5), units(2), cents(5)),
+        cohort_member(None, units(5), units(2), cents(5)),
+    ];
+    let tree = CohortTree::build(&members).expect("a tree");
+    let top = tree.root();
+    let mut cohort_caveats = with_bucket(&root_caveats, units(4), cents(10));
+    cohort_caveats.may_delegate = false;
+    let cohort_tx = |h: &mut Harness, count: u32, burst: Amount, full: bool| {
+        let input = h.reference(&root_allotment);
+        h.tx_with(
+            "root",
+            TxKind::SpawnCohort {
+                charter: root,
+                root: top.hash,
+                count,
+                burst,
+                rate: top.rate,
+                full,
+                caveats: cohort_caveats.clone(),
+            },
+            vec![input],
+        )
+    };
+    let empty = cohort_tx(&mut h, 0, top.burst, false);
+    let out = h.pulse(vec![empty.clone()]);
+    expect(&out, &empty, Outcome::Failed);
+    let greedy = cohort_tx(&mut h, 5, units(1_000), false);
+    let out = h.pulse(vec![greedy.clone()]);
+    expect(&out, &greedy, Outcome::Failed);
+    let create = cohort_tx(&mut h, 5, top.burst, false);
+    let out = h.pulse(vec![create.clone()]);
+    expect(&out, &create, Outcome::Success);
+    let cohort = cohort_spawned(&out, &create);
+    assert_eq!(allotment_state(&h, &root_allotment).spawned, 7);
+
+    // Materializing: members 0 and 3 together; member 0 again, a leaf that
+    // is not the committed one, and members out of order all fail.
+    h.advance(4);
+    let both = materialize(
+        &mut h,
+        "root",
+        cohort,
+        root_allotment,
+        &tree,
+        &members,
+        &[0, 3],
+    );
+    let out = h.pulse(vec![both.clone()]);
+    expect(&out, &both, Outcome::Success);
+    let made = materialized(&out, &both);
+    assert_eq!(made[0].0, lineage_id(&root, 2));
+    assert_eq!(made[1].0, lineage_id(&root, 5));
+    assert_eq!(charter_state(&h, &made[1].0).lineage.path, vec![5]);
+    let mut forged = members.clone();
+    forged[1].budget = units(1_000);
+    let attempts: [(&[CohortMember], &[u32]); 3] =
+        [(&members, &[0]), (&forged, &[1]), (&members, &[2, 1])];
+    for (leaves, indices) in attempts {
+        let tx = materialize(
+            &mut h,
+            "root",
+            cohort,
+            root_allotment,
+            &tree,
+            leaves,
+            indices,
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Failed);
+    }
+    let by_stranger = materialize(
+        &mut h,
+        "stranger",
+        cohort,
+        root_allotment,
+        &tree,
+        &members,
+        &[2],
+    );
+    let out = h.pulse(vec![by_stranger.clone()]);
+    assert_ne!(outcome_of(&status_of(&out, &by_stranger)), Outcome::Success);
+    // A member's bucket filled at its rate from the cohort's creation.
+    let (first_member, first_allotment) = made[0];
+    let tokens = allotment_state(&h, &first_allotment).bucket.tokens;
+    assert!(tokens > Amount::ZERO && tokens < units(4), "{tokens}");
+    let member_pays = agent_pay(
+        &mut h,
+        "deep",
+        first_member,
+        first_allotment,
+        vendor,
+        cents(50),
+    );
+    let out = h.pulse(vec![member_pays.clone()]);
+    expect(&out, &member_pays, Outcome::Success);
+
+    // A narrowing of the root that forbids spawning stops materializing; the
+    // backer lifts it and a keyless member materializes.
+    let freeze = h.tx(
+        "principal",
+        TxKind::NarrowAgent {
+            charter: root,
+            narrowing: Some(narrowing(None, units(100), 9_000, false)),
+        },
+    );
+    let out = h.pulse(vec![freeze.clone()]);
+    expect(&out, &freeze, Outcome::Success);
+    let frozen = materialize(
+        &mut h,
+        "root",
+        cohort,
+        root_allotment,
+        &tree,
+        &members,
+        &[1],
+    );
+    let out = h.pulse(vec![frozen.clone()]);
+    expect(&out, &frozen, Outcome::Failed);
+    let thaw = h.tx(
+        "principal",
+        TxKind::NarrowAgent {
+            charter: root,
+            narrowing: None,
+        },
+    );
+    let out = h.pulse(vec![thaw.clone()]);
+    expect(&out, &thaw, Outcome::Success);
+    let keyless_member = materialize(
+        &mut h,
+        "root",
+        cohort,
+        root_allotment,
+        &tree,
+        &members,
+        &[1],
+    );
+    let out = h.pulse(vec![keyless_member.clone()]);
+    expect(&out, &keyless_member, Outcome::Success);
+
+    // A cohort whose members start full: the root gives up the tokens now.
+    let full_members = vec![
+        cohort_member(Some(deep), units(1), units(1), Amount::ZERO),
+        cohort_member(None, units(1), units(1), Amount::ZERO),
+    ];
+    let full_tree = CohortTree::build(&full_members).expect("a tree");
+    let input = h.reference(&root_allotment);
+    let full_cohort = h.tx_with(
+        "root",
+        TxKind::SpawnCohort {
+            charter: root,
+            root: full_tree.root().hash,
+            count: 2,
+            burst: full_tree.root().burst,
+            rate: full_tree.root().rate,
+            full: true,
+            caveats: cohort_caveats.clone(),
+        },
+        vec![input],
+    );
+    let out = h.pulse(vec![full_cohort.clone()]);
+    expect(&out, &full_cohort, Outcome::Success);
+    let full_id = cohort_spawned(&out, &full_cohort);
+    let full_member = materialize(
+        &mut h,
+        "root",
+        full_id,
+        root_allotment,
+        &full_tree,
+        &full_members,
+        &[0],
+    );
+    let out = h.pulse(vec![full_member.clone()]);
+    expect(&out, &full_member, Outcome::Success);
+    let (_, full_allotment) = materialized(&out, &full_member)[0];
+    assert_eq!(allotment_state(&h, &full_allotment).bucket.tokens, units(1));
+
+    // A batch larger than MAX_MATERIALIZE is refused before anything is read.
+    let oversized = {
+        let input = h.reference(&root_allotment);
+        let members = (0..=MAX_MATERIALIZE as u32)
+            .map(|index| Materialize {
+                index,
+                member: members[0].clone(),
+                siblings: Vec::new(),
+            })
+            .collect();
+        h.tx_with(
+            "root",
+            TxKind::MaterializeAgents { cohort, members },
+            vec![input],
+        )
+    };
+    let out = h.pulse(vec![oversized.clone()]);
+    expect(&out, &oversized, Outcome::Failed);
+
+    // Revoking the root stops everything below it, materialized or not.
+    let revoke = h.tx("principal", TxKind::RevokeCharter { charter: root });
+    let out = h.pulse(vec![revoke.clone()]);
+    expect(&out, &revoke, Outcome::Success);
+    let stopped = agent_pay(
+        &mut h,
+        "deep",
+        first_member,
+        first_allotment,
+        vendor,
+        cents(1),
+    );
+    let late = materialize(
+        &mut h,
+        "root",
+        cohort,
+        root_allotment,
+        &tree,
+        &members,
+        &[4],
+    );
+    let out = h.pulse(vec![stopped.clone(), late.clone()]);
+    expect(&out, &stopped, Outcome::Failed);
+    expect(&out, &late, Outcome::Failed);
+    let reclaim = h.tx("principal", TxKind::ReclaimCharter { charter: root });
+    let out = h.pulse(vec![reclaim.clone()]);
+    expect(&out, &reclaim, Outcome::Success);
+
+    h.assert_covered(&[
+        "SpawnCohort/ok",
+        "SpawnCohort/failed",
+        "SpawnCohort(full)/ok",
+        "MaterializeAgents/ok",
+        "MaterializeAgents/failed",
+        "NarrowAgent/ok",
+        "NarrowAgent/failed",
+        "NarrowAgent(lift)/ok",
+        "NarrowAgent(lift)/failed",
+        "SpawnAgents/ok",
+        "SpawnAgents/failed",
+        "AgentPay/ok",
+        "AgentPay/failed",
+        "SuspendAgent/ok",
+        "ResumeAgent/ok",
+        "RevokeCharter/ok",
+        "ReclaimCharter/ok",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn lineage_buckets_overlays_and_cohorts() {
+    lineage(1).summary("lineage");
+}
+
+#[test]
+fn lineage_many_transactions_per_chunk() {
+    lineage(5).summary("lineage (chunks of 5)");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: who may stop, narrow and spawn (spec v1.14, from its review)
+// ---------------------------------------------------------------------------
+
+/// An overseer acts only in good standing; the highest suspender is kept;
+/// nothing spawns once it has expired, or already expired; and a child
+/// judges the evidence its parent requires by its parent's policy.
+fn oversight(chunk_size: usize) -> Harness {
+    let mut h = Harness::new(
+        &[
+            "principal",
+            "root",
+            "child",
+            "grandchild",
+            "great",
+            "vendor",
+            "short",
+            "strict",
+            "helper",
+        ],
+        10_000,
+        6,
+        chunk_size,
+    );
+    let (root_account, child_account, grandchild_account, great_account, vendor) = (
+        h.id("root"),
+        h.id("child"),
+        h.id("grandchild"),
+        h.id("great"),
+        h.id("vendor"),
+    );
+    let (short_account, strict_account, helper) = (h.id("short"), h.id("strict"), h.id("helper"));
+    let base = charter_caveats(vendor);
+    let register = |h: &mut Harness, agent: AccountId, caveats: Caveats| {
+        let tx = h.tx(
+            "principal",
+            TxKind::RegisterAgent {
+                agent,
+                card: Hash32::ZERO,
+                caveats,
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Success);
+        agent_registered(&out, &tx)
+    };
+    let one = |h: &mut Harness,
+               who: &str,
+               charter: ObjectId,
+               allotment: ObjectId,
+               agent: AccountId,
+               caveats: Caveats,
+               budget: Amount| {
+        let tx = spawn(
+            h,
+            who,
+            charter,
+            allotment,
+            vec![spawn_child(agent, caveats, budget, b"card")],
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        (tx, out)
+    };
+
+    // A chain root → child → grandchild → great.
+    let (root, root_allotment) = register(&mut h, root_account, base.clone());
+    let (tx, out) = one(
+        &mut h,
+        "root",
+        root,
+        root_allotment,
+        child_account,
+        with_bucket(&base, units(100), cents(10)),
+        units(300),
+    );
+    expect(&out, &tx, Outcome::Success);
+    let (child, child_allotment) = agents_spawned(&out, &tx)[0];
+    let (tx, out) = one(
+        &mut h,
+        "child",
+        child,
+        child_allotment,
+        grandchild_account,
+        with_bucket(&base, units(40), cents(4)),
+        units(100),
+    );
+    expect(&out, &tx, Outcome::Success);
+    let (grandchild, grandchild_allotment) = agents_spawned(&out, &tx)[0];
+    let (tx, out) = one(
+        &mut h,
+        "grandchild",
+        grandchild,
+        grandchild_allotment,
+        great_account,
+        with_bucket(&base, units(10), cents(1)),
+        units(20),
+    );
+    expect(&out, &tx, Outcome::Success);
+    let (great, _) = agents_spawned(&out, &tx)[0];
+    let suspender =
+        |h: &Harness, agent: &ObjectId| overlay_state(h, agent).and_then(|o| o.suspended_by);
+
+    // The highest suspender is kept: the child suspends `great`; the
+    // grandchild, lower, changes nothing; the root, higher, replaces the
+    // child, which can then no longer lift it.
+    for (who, expected) in [
+        ("child", child_account),
+        ("grandchild", child_account),
+        ("root", root_account),
+    ] {
+        let tx = h.tx(who, TxKind::SuspendAgent { charter: great });
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Success);
+        assert_eq!(suspender(&h, &great), Some(expected), "after {who}");
+    }
+    let lower = h.tx("child", TxKind::ResumeAgent { charter: great });
+    let out = h.pulse(vec![lower.clone()]);
+    expect(&out, &lower, Outcome::Failed);
+    let higher = h.tx("root", TxKind::ResumeAgent { charter: great });
+    let out = h.pulse(vec![higher.clone()]);
+    expect(&out, &higher, Outcome::Success);
+
+    // A suspended overseer has no power below it: while the backer has the
+    // child suspended, the child may not suspend, narrow or revoke what is
+    // below it; the root, above it and in good standing, may.
+    let freeze = h.tx("principal", TxKind::SuspendAgent { charter: child });
+    let out = h.pulse(vec![freeze.clone()]);
+    expect(&out, &freeze, Outcome::Success);
+    let suspends = h.tx(
+        "child",
+        TxKind::SuspendAgent {
+            charter: grandchild,
+        },
+    );
+    let narrows = h.tx(
+        "child",
+        TxKind::NarrowAgent {
+            charter: grandchild,
+            narrowing: Some(narrowing(None, units(1), 9_000, false)),
+        },
+    );
+    let revokes = h.tx("child", TxKind::RevokeCharter { charter: great });
+    let out = h.pulse(vec![suspends.clone(), narrows.clone(), revokes.clone()]);
+    expect(&out, &suspends, Outcome::Failed);
+    expect(&out, &narrows, Outcome::Failed);
+    expect(&out, &revokes, Outcome::Failed);
+    assert!(overlay_state(&h, &great)
+        .and_then(|o| o.revoked_at)
+        .is_none());
+    let from_above = h.tx(
+        "root",
+        TxKind::SuspendAgent {
+            charter: grandchild,
+        },
+    );
+    let out = h.pulse(vec![from_above.clone()]);
+    expect(&out, &from_above, Outcome::Success);
+    let lifted = h.tx(
+        "root",
+        TxKind::ResumeAgent {
+            charter: grandchild,
+        },
+    );
+    let thaw = h.tx("principal", TxKind::ResumeAgent { charter: child });
+    let out = h.pulse(vec![lifted.clone(), thaw.clone()]);
+    expect(&out, &lifted, Outcome::Success);
+    expect(&out, &thaw, Outcome::Success);
+
+    // A suspender that loses its standing cannot lift its suspension until
+    // it is back in good standing.
+    let hold = h.tx("child", TxKind::SuspendAgent { charter: great });
+    let out = h.pulse(vec![hold.clone()]);
+    expect(&out, &hold, Outcome::Success);
+    let freeze = h.tx("principal", TxKind::SuspendAgent { charter: child });
+    let out = h.pulse(vec![freeze.clone()]);
+    expect(&out, &freeze, Outcome::Success);
+    let stuck = h.tx("child", TxKind::ResumeAgent { charter: great });
+    let out = h.pulse(vec![stuck.clone()]);
+    expect(&out, &stuck, Outcome::Failed);
+    let thaw = h.tx("principal", TxKind::ResumeAgent { charter: child });
+    let out = h.pulse(vec![thaw.clone()]);
+    expect(&out, &thaw, Outcome::Success);
+    let release = h.tx("child", TxKind::ResumeAgent { charter: great });
+    let narrows = h.tx(
+        "child",
+        TxKind::NarrowAgent {
+            charter: grandchild,
+            narrowing: Some(narrowing(Some(vec![vendor]), units(50), 9_000, true)),
+        },
+    );
+    let out = h.pulse(vec![release.clone(), narrows.clone()]);
+    expect(&out, &release, Outcome::Success);
+    expect(&out, &narrows, Outcome::Success);
+
+    // Expiry: a short-lived agent commits to a cohort, cannot spawn a child
+    // that would already be expired, and once it has expired spawns and
+    // materializes nothing.
+    let end = h.pulse_number() + 12;
+    let mut brief = with_bucket(&base, units(50), cents(5));
+    brief.expires_at = Pulse(end);
+    let (short, short_allotment) = register(&mut h, short_account, brief.clone());
+    let members = vec![
+        cohort_member(None, units(1), units(1), Amount::ZERO),
+        cohort_member(None, units(1), units(1), Amount::ZERO),
+    ];
+    let tree = CohortTree::build(&members).expect("a tree");
+    let mut cohort_caveats = with_bucket(&brief, units(1), Amount::ZERO);
+    cohort_caveats.may_delegate = false;
+    let input = h.reference(&short_allotment);
+    let commit = h.tx_with(
+        "short",
+        TxKind::SpawnCohort {
+            charter: short,
+            root: tree.root().hash,
+            count: 2,
+            burst: tree.root().burst,
+            rate: tree.root().rate,
+            full: false,
+            caveats: cohort_caveats,
+        },
+        vec![input],
+    );
+    let out = h.pulse(vec![commit.clone()]);
+    expect(&out, &commit, Outcome::Success);
+    let cohort = cohort_spawned(&out, &commit);
+    let mut stillborn = with_bucket(&brief, units(1), Amount::ZERO);
+    stillborn.expires_at = Pulse(h.pulse_number() + 1);
+    let (tx, out) = one(
+        &mut h,
+        "short",
+        short,
+        short_allotment,
+        helper,
+        stillborn,
+        units(1),
+    );
+    expect(&out, &tx, Outcome::Failed);
+    let early = materialize(
+        &mut h,
+        "short",
+        cohort,
+        short_allotment,
+        &tree,
+        &members,
+        &[0],
+    );
+    let out = h.pulse(vec![early.clone()]);
+    expect(&out, &early, Outcome::Success);
+    h.advance_to(end + 1);
+    let (tx, out) = one(
+        &mut h,
+        "short",
+        short,
+        short_allotment,
+        helper,
+        with_bucket(&brief, units(1), Amount::ZERO),
+        units(1),
+    );
+    expect(&out, &tx, Outcome::Failed);
+    let late = materialize(
+        &mut h,
+        "short",
+        cohort,
+        short_allotment,
+        &tree,
+        &members,
+        &[1],
+    );
+    let out = h.pulse(vec![late.clone()]);
+    expect(&out, &late, Outcome::Failed);
+    let reclaim = h.tx("principal", TxKind::ReclaimCharter { charter: short });
+    let out = h.pulse(vec![reclaim.clone()]);
+    expect(&out, &reclaim, Outcome::Success);
+
+    // A narrowing that ends stops spawning below it too.
+    let soon = h.pulse_number() + 4;
+    let narrow = h.tx(
+        "root",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: Some(narrowing(None, units(100), soon, true)),
+        },
+    );
+    let out = h.pulse(vec![narrow.clone()]);
+    expect(&out, &narrow, Outcome::Success);
+    let leaf = with_bucket(&base, units(1), Amount::ZERO);
+    let (tx, out) = one(
+        &mut h,
+        "child",
+        child,
+        child_allotment,
+        helper,
+        leaf.clone(),
+        units(1),
+    );
+    expect(&out, &tx, Outcome::Success);
+    h.advance_to(soon + 1);
+    let (tx, out) = one(
+        &mut h,
+        "child",
+        child,
+        child_allotment,
+        helper,
+        leaf,
+        units(1),
+    );
+    expect(&out, &tx, Outcome::Failed);
+    let lift = h.tx(
+        "principal",
+        TxKind::NarrowAgent {
+            charter: child,
+            narrowing: None,
+        },
+    );
+    let out = h.pulse(vec![lift.clone()]);
+    expect(&out, &lift, Outcome::Success);
+
+    // Evidence: under a parent that requires it above 50 USD, a child or a
+    // sub-agent with a laxer policy is refused; one with the parent's
+    // policy is launched.
+    let mut demanding = base.clone();
+    demanding.evidence_above = Some(units(50));
+    let (strict, strict_allotment) = register(&mut h, strict_account, demanding.clone());
+    let mut lax = with_bucket(&demanding, units(10), cents(1));
+    lax.evidence_policy
+        .trusted_classes
+        .insert(sion_assurance::AtomClass::Economic);
+    let (tx, out) = one(
+        &mut h,
+        "strict",
+        strict,
+        strict_allotment,
+        helper,
+        lax.clone(),
+        units(10),
+    );
+    expect(&out, &tx, Outcome::Failed);
+    let input = h.reference(&strict_allotment);
+    let delegated = h.tx_with(
+        "strict",
+        TxKind::Delegate {
+            charter: strict,
+            sub_agent: helper,
+            caveats: lax,
+            amount: units(10),
+        },
+        vec![input],
+    );
+    let out = h.pulse(vec![delegated.clone()]);
+    expect(&out, &delegated, Outcome::Failed);
+    let (tx, out) = one(
+        &mut h,
+        "strict",
+        strict,
+        strict_allotment,
+        helper,
+        with_bucket(&demanding, units(10), cents(1)),
+        units(10),
+    );
+    expect(&out, &tx, Outcome::Success);
+
+    h.assert_covered(&[
+        "RegisterAgent/ok",
+        "SpawnAgents/ok",
+        "SpawnAgents/failed",
+        "SpawnCohort/ok",
+        "MaterializeAgents/ok",
+        "MaterializeAgents/failed",
+        "SuspendAgent/ok",
+        "SuspendAgent/failed",
+        "ResumeAgent/ok",
+        "ResumeAgent/failed",
+        "NarrowAgent/ok",
+        "NarrowAgent/failed",
+        "NarrowAgent(lift)/ok",
+        "RevokeCharter/failed",
+        "ReclaimCharter/ok",
+        "Delegate/failed",
+    ]);
+    h.assert_minimal_witnesses();
+    h
+}
+
+#[test]
+fn overseers_need_good_standing_and_expired_charters_spawn_nothing() {
+    oversight(1).summary("oversight");
+}
+
+#[test]
+fn oversight_many_transactions_per_chunk() {
+    oversight(4).summary("oversight (chunks of 4)");
 }
 
 // ---------------------------------------------------------------------------
@@ -3083,7 +4152,8 @@ fn batches(chunk_size: usize) -> Harness {
     // Two keyless subagents and a keyed one in one spawn.
     let mut lean = charter_caveats(vendor);
     lean.max_per_payment = units(20);
-    lean.max_per_window = units(50);
+    lean.burst = units(50);
+    lean.rate = Amount(50_000);
     let spawn_tx = spawn(
         &mut h,
         "lead",
@@ -3233,7 +4303,11 @@ fn batches(chunk_size: usize) -> Harness {
         "lead",
         k1,
         k1_allotment,
-        vec![keyless_child(lean.clone(), units(20), b"g1")],
+        vec![keyless_child(
+            with_bucket(&lean, units(10), Amount(10_000)),
+            units(20),
+            b"g1",
+        )],
     );
     let out = h.pulse(vec![grandchild.clone()]);
     expect(&out, &grandchild, Outcome::Success);
@@ -3262,7 +4336,11 @@ fn batches(chunk_size: usize) -> Harness {
         "worker",
         w,
         w_allotment,
-        vec![keyless_child(lean.clone(), units(10), b"w1")],
+        vec![keyless_child(
+            with_bucket(&lean, units(10), Amount(10_000)),
+            units(10),
+            b"w1",
+        )],
     );
     let out = h.pulse(vec![worker_spawn.clone()]);
     expect(&out, &worker_spawn, Outcome::Success);
@@ -3489,7 +4567,8 @@ proptest! {
         let out = h.pulse(vec![register.clone()]);
         let (root, root_allotment) = agent_registered(&out, &register);
         let mut lean = charter_caveats(vendor);
-        lean.max_per_window = units(50);
+        lean.burst = units(50);
+        lean.rate = Amount(50_000);
         let spawn_tx = spawn(
             &mut h,
             "lead",
@@ -6925,11 +8004,12 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn probe_delegation_chain_depth_limit() {
-    // One agent delegates to itself, building a chain of charters one link
-    // deeper per Pulse. §5.13 (v1.1): at most MAX_CHARTER_CHAIN (16)
-    // charters are loaded; if the 16th still has a parent, the check fails
-    // without loading it.
+fn probe_lineage_depth_limit() {
+    // One agent delegates to itself, one generation deeper per Pulse.
+    // §5.13 (v1.14): a lineage is at most MAX_LINEAGE_DEPTH (8) generations
+    // below its root, so a charter at depth 8 cannot delegate; checking a
+    // charter reads its own record and at most nine overlays, never its
+    // ancestors' charters.
     let mut h = Harness::new(&["principal", "agent", "vendor"], 10_000, 4, 1);
     let (agent, vendor) = (h.id("agent"), h.id("vendor"));
     let mut caveats = charter_caveats(vendor);
@@ -6946,12 +8026,13 @@ fn probe_delegation_chain_depth_limit() {
     let out = h.pulse(vec![create.clone()]);
     let mut chain = vec![charter_created(&out, &create)];
     let mut outcomes = Vec::new();
-    for depth in 1..=18u64 {
+    for depth in 1..=10u64 {
         let (charter, allotment) = *chain.last().unwrap();
         let input = h.reference(&allotment);
-        // Each level keeps 5 USD of its window limit (carved like budgets).
+        // Each level keeps 5 USD of its burst and 0.01 USD of its rate.
         let mut narrower = caveats.clone();
-        narrower.max_per_window = Amount(caveats.max_per_window.0 - units(5 * depth).0);
+        narrower.burst = Amount(caveats.burst.0 - units(5 * depth).0);
+        narrower.rate = Amount(caveats.rate.0 - 10_000 * u128::from(depth));
         let delegate = h.tx_with(
             "agent",
             TxKind::Delegate {
@@ -6968,7 +8049,10 @@ fn probe_delegation_chain_depth_limit() {
         if outcome != Outcome::Success {
             break;
         }
-        chain.push(charter_created(&out, &delegate));
+        let child = charter_created(&out, &delegate);
+        // Each delegation is its parent's first: index 0.
+        assert_eq!(child.0, lineage_id(&charter, 0));
+        chain.push(child);
     }
     // Pay from the deepest charters.
     let mut pays = Vec::new();
@@ -6986,55 +8070,56 @@ fn probe_delegation_chain_depth_limit() {
             vec![input],
         );
         let out = h.pulse(vec![pay.clone()]);
-        pays.push((depth + 1, outcome_of(&status_of(&out, &pay))));
+        pays.push((depth, outcome_of(&status_of(&out, &pay))));
     }
     eprintln!("delegations from depth: {outcomes:?}; payments at depth: {pays:?}");
-    // A chain of 16 charters passes, one of 17 fails ...
-    let limit = sion_exec::charter::MAX_CHARTER_CHAIN;
+    let limit = MAX_LINEAGE_DEPTH;
+    assert_eq!(chain.len(), limit + 1, "the root and eight generations");
     assert_eq!(
-        chain.len(),
-        limit + 1,
-        "delegating from a 17-charter chain fails"
+        outcomes.last(),
+        Some(&(limit as u64 + 1, Outcome::Failed)),
+        "a charter at depth 8 cannot delegate"
     );
     assert_eq!(
         pays,
         vec![
-            (limit + 1, Outcome::Failed),
             (limit, Outcome::Success),
-            (limit - 1, Outcome::Success)
+            (limit - 1, Outcome::Success),
+            (limit - 2, Outcome::Success)
         ]
     );
-    // ... and neither stack loads the 17th charter: stack A's witnesses for
-    // the 17-charter checks hold nothing stack B does not read. (Under v1.0
-    // stack A also loaded the root.)
+    // Neither stack reads an ancestor's charter: the witnesses hold nothing
+    // stack B does not read.
     h.assert_minimal_witnesses();
-    h.summary("chain depth");
+    h.summary("lineage depth");
 }
 
 #[test]
-fn probe_saturating_charter_windows() {
-    // §5.13 (v1.1): `window_start + k.window` saturates, so a window that
-    // would end after u64::MAX never resets and its per-window limit becomes
-    // a lifetime limit. (Under v1.0 the sum overflowed into an error; stack
-    // A already saturated.)
-    let mut h = Harness::new(&["principal", "agent", "helper", "vendor"], 10_000, 4, 1);
+fn probe_bucket_boundaries() {
+    // §5.13 (v1.14): a bucket that never refills is a lifetime limit; one
+    // that refills by u128::MAX saturates; a bucket refills exactly `rate`
+    // a Pulse, and a failed payment's refill is not kept; a child cannot
+    // start with more tokens than its parent's bucket holds.
+    let mut h = Harness::new(&["principal", "agent", "helper", "vendor"], 10_000, 6, 1);
     let (agent, helper, vendor) = (h.id("agent"), h.id("helper"), h.id("vendor"));
-    let mut caveats = charter_caveats(vendor);
-    caveats.window = u64::MAX;
-    caveats.max_per_window = units(150);
-    caveats.receipts = false;
-    let create = h.tx(
-        "principal",
-        TxKind::CreateCharter {
-            agent,
-            caveats: caveats.clone(),
-            funding: units(1_000),
-            agent_bond: Amount::ZERO,
-        },
-    );
-    let out = h.pulse(vec![create.clone()]);
-    expect(&out, &create, Outcome::Success);
-    let (charter, allotment) = charter_created(&out, &create);
+    let charter_with = |h: &mut Harness, burst: Amount, rate: Amount| {
+        let mut caveats = charter_caveats(vendor);
+        caveats.receipts = false;
+        caveats.burst = burst;
+        caveats.rate = rate;
+        let create = h.tx(
+            "principal",
+            TxKind::CreateCharter {
+                agent,
+                caveats,
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        );
+        let out = h.pulse(vec![create.clone()]);
+        expect(&out, &create, Outcome::Success);
+        charter_created(&out, &create)
+    };
     let pay =
         |h: &mut Harness, charter: ObjectId, allotment: ObjectId, who: &str, amount: Amount| {
             let input = h.reference(&allotment);
@@ -7044,7 +8129,7 @@ fn probe_saturating_charter_windows() {
                     charter,
                     payee: vendor,
                     amount,
-                    purpose: "lifetime".into(),
+                    purpose: "bucket".into(),
                     evidence: None,
                 },
                 vec![input],
@@ -7052,6 +8137,8 @@ fn probe_saturating_charter_windows() {
             let out = h.pulse(vec![tx.clone()]);
             outcome_of(&status_of(&out, &tx))
         };
+    // A lifetime limit.
+    let (charter, allotment) = charter_with(&mut h, units(150), Amount::ZERO);
     assert_eq!(
         pay(&mut h, charter, allotment, "agent", units(100)),
         Outcome::Success
@@ -7060,7 +8147,7 @@ fn probe_saturating_charter_windows() {
     assert_eq!(
         pay(&mut h, charter, allotment, "agent", units(100)),
         Outcome::Failed,
-        "no new window"
+        "nothing refilled"
     );
     assert_eq!(
         pay(&mut h, charter, allotment, "agent", units(50)),
@@ -7070,51 +8157,81 @@ fn probe_saturating_charter_windows() {
         pay(&mut h, charter, allotment, "agent", Amount(1)),
         Outcome::Failed
     );
-    // A sub-charter must keep a window at least as long: the same lifetime
-    // rule, with a window one short of u64::MAX (also saturating, since its
-    // window starts after Pulse 1).
-    let mut child_caveats = caveats.clone();
-    child_caveats.window = u64::MAX - 1;
-    let input = h.reference(&allotment);
-    let narrower = h.tx_with(
-        "agent",
-        TxKind::Delegate {
-            charter,
-            sub_agent: helper,
-            caveats: child_caveats.clone(),
-            amount: units(10),
-        },
-        vec![input],
-    );
-    let out = h.pulse(vec![narrower.clone()]);
-    expect(&out, &narrower, Outcome::Failed);
-    let mut child_caveats = caveats;
-    child_caveats.max_per_window = units(40);
-    let input = h.reference(&allotment);
-    let delegate = h.tx_with(
-        "agent",
-        TxKind::Delegate {
-            charter,
-            sub_agent: helper,
-            caveats: child_caveats,
-            amount: units(100),
-        },
-        vec![input],
-    );
-    let out = h.pulse(vec![delegate.clone()]);
-    expect(&out, &delegate, Outcome::Success);
-    let (child, child_allotment) = charter_created(&out, &delegate);
+    // A torrent saturates instead of overflowing.
+    let (charter, allotment) = charter_with(&mut h, units(150), Amount(u128::MAX));
     assert_eq!(
-        pay(&mut h, child, child_allotment, "helper", units(40)),
+        pay(&mut h, charter, allotment, "agent", units(100)),
         Outcome::Success
     );
-    h.advance(10);
     assert_eq!(
-        pay(&mut h, child, child_allotment, "helper", units(1)),
+        pay(&mut h, charter, allotment, "agent", units(100)),
+        Outcome::Success
+    );
+    // Exact refills: 3 USD a Pulse.
+    let (charter, allotment) = charter_with(&mut h, units(100), units(3));
+    assert_eq!(
+        pay(&mut h, charter, allotment, "agent", units(100)),
+        Outcome::Success
+    );
+    assert_eq!(
+        pay(&mut h, charter, allotment, "agent", units(3)),
+        Outcome::Success
+    );
+    assert_eq!(
+        pay(&mut h, charter, allotment, "agent", units(4)),
+        Outcome::Failed,
+        "one Pulse refills 3"
+    );
+    assert_eq!(
+        pay(&mut h, charter, allotment, "agent", units(6)),
+        Outcome::Success,
+        "two Pulses since the last payment refill 6: the failed one kept nothing"
+    );
+    // The bucket is empty: a child cannot start with any of it, until it
+    // refills.
+    let delegate = |h: &mut Harness, burst: Amount| {
+        let mut caveats = charter_caveats(vendor);
+        caveats.receipts = false;
+        caveats.burst = burst;
+        caveats.rate = units(1);
+        let input = h.reference(&allotment);
+        let tx = h.tx_with(
+            "agent",
+            TxKind::Delegate {
+                charter,
+                sub_agent: helper,
+                caveats,
+                amount: units(10),
+            },
+            vec![input],
+        );
+        let out = h.pulse(vec![tx.clone()]);
+        (outcome_of(&status_of(&out, &tx)), out, tx)
+    };
+    assert_eq!(
+        delegate(&mut h, Amount(units(3).0 + 1)).0,
+        Outcome::Failed,
+        "3 USD in the bucket"
+    );
+    let (outcome, out, tx) = delegate(&mut h, units(3));
+    assert_eq!(outcome, Outcome::Success);
+    let (child, child_allotment) = charter_created(&out, &tx);
+    assert_eq!(
+        pay(&mut h, child, child_allotment, "helper", units(3)),
+        Outcome::Success
+    );
+    assert_eq!(
+        pay(
+            &mut h,
+            child,
+            child_allotment,
+            "helper",
+            Amount(units(1).0 + 1)
+        ),
         Outcome::Failed
     );
     h.assert_minimal_witnesses();
-    h.summary("saturating windows");
+    h.summary("bucket boundaries");
 }
 
 #[test]
@@ -7963,7 +9080,8 @@ fn probe_charter_boundaries_and_attenuation() {
     let now = h.pulse_number() + 1;
     let mut base = charter_caveats(vendor);
     base.receipts = false;
-    base.window = 10;
+    // 250 USD at once, refilled at 25 USD a Pulse.
+    base.rate = units(25);
     base.expires_at = Pulse(now + 60);
     base.evidence_above = Some(units(80));
     let create = |h: &mut Harness, caveats: Caveats| {
@@ -7979,14 +9097,15 @@ fn probe_charter_boundaries_and_attenuation() {
     };
     let mut at_now = base.clone();
     at_now.expires_at = Pulse(now);
-    let mut zero_window = base.clone();
-    zero_window.window = 0;
+    let mut empty_bucket = base.clone();
+    empty_bucket.burst = Amount::ZERO;
     let expiring = create(&mut h, at_now);
-    let windowless = create(&mut h, zero_window);
+    // A bucket of nothing is a valid charter that can never pay.
+    let inert = create(&mut h, empty_bucket);
     let main = create(&mut h, base.clone());
-    let out = h.pulse(vec![expiring.clone(), windowless.clone(), main.clone()]);
+    let out = h.pulse(vec![expiring.clone(), inert.clone(), main.clone()]);
     expect(&out, &expiring, Outcome::Failed);
-    expect(&out, &windowless, Outcome::Failed);
+    expect(&out, &inert, Outcome::Success);
     expect(&out, &main, Outcome::Success);
     let (charter, allotment) = charter_created(&out, &main);
     let created_at = h.pulse_number();
@@ -8007,35 +9126,40 @@ fn probe_charter_boundaries_and_attenuation() {
         let out = h.pulse(vec![tx.clone()]);
         outcome_of(&status_of(&out, &tx))
     };
-    // Each payment runs in its own Pulse; the window (10 Pulses) started at
-    // the creation Pulse C.
+    // Each payment runs in its own Pulse; the bucket was full (250) at the
+    // creation Pulse C and refills 25 a Pulse.
     // C+1: exactly the evidence threshold needs no evidence (an unneeded
     // evidence claim is never looked up); C+2: one micro-unit more does.
-    assert_eq!(pay(&mut h, units(80)), Outcome::Success);
+    assert_eq!(pay(&mut h, units(80)), Outcome::Success); // 170 left
     assert_eq!(pay(&mut h, Amount(units(80).0 + 1)), Outcome::Failed);
-    // C+3..C+5: filling the window exactly (250) works.
+    // C+3..C+6: 220 → 140, 165 → 85, 110 → 30, then exactly the 55 it holds.
     assert_eq!(pay(&mut h, units(80)), Outcome::Success);
     assert_eq!(pay(&mut h, units(80)), Outcome::Success);
-    assert_eq!(pay(&mut h, units(10)), Outcome::Success);
-    assert_eq!(h.pulse_number(), created_at + 5);
-    // C+6 and C+9: one more micro-unit fails within the window.
-    assert_eq!(pay(&mut h, Amount(1)), Outcome::Failed, "a full window");
-    h.advance_to(created_at + 8);
+    assert_eq!(pay(&mut h, units(80)), Outcome::Success);
     assert_eq!(
-        pay(&mut h, Amount(1)),
-        Outcome::Failed,
-        "the last Pulse of the window"
+        pay(&mut h, units(55)),
+        Outcome::Success,
+        "exactly what it holds"
     );
-    // C+10: `ctx.pulse ≥ window_start + window` starts a new window.
-    assert_eq!(pay(&mut h, units(10)), Outcome::Success, "a new window");
+    assert_eq!(h.pulse_number(), created_at + 6);
+    // C+7: one micro-unit more than the Pulse's refill fails.
+    assert_eq!(
+        pay(&mut h, Amount(units(25).0 + 1)),
+        Outcome::Failed,
+        "an empty bucket"
+    );
+    // C+8: two Pulses' refill since the last payment, exactly.
+    assert_eq!(pay(&mut h, units(50)), Outcome::Success, "refilled");
+    h.advance(10);
 
     // Attenuation, one dimension at a time.
     let parent = base.clone();
-    // Window limits are carved out of the parent's (v1.8), so the probes
-    // that should pass ask for none of it; "identical" takes all of it last.
+    // Buckets are carved out of the parent's (v1.14), so the probes that
+    // should pass ask for none of it; "identical" takes all of it last.
     let narrower = |change: fn(&mut Caveats)| {
         let mut caveats = parent.clone();
-        caveats.max_per_window = Amount::ZERO;
+        caveats.burst = Amount::ZERO;
+        caveats.rate = Amount::ZERO;
         change(&mut caveats);
         caveats
     };
@@ -8076,18 +9200,18 @@ fn probe_charter_boundaries_and_attenuation() {
             Outcome::Failed,
         ),
         (
-            "larger windows",
-            narrower(|c| c.max_per_window = units(251)),
+            "a larger burst",
+            narrower(|c| c.burst = units(251)),
             Outcome::Failed,
         ),
         (
-            "shorter window",
-            narrower(|c| c.window = 9),
+            "a faster rate",
+            narrower(|c| c.rate = Amount(units(25).0 + 1)),
             Outcome::Failed,
         ),
         (
-            "longer window",
-            narrower(|c| c.window = 11),
+            "a slower rate",
+            narrower(|c| c.rate = Amount(1)),
             Outcome::Success,
         ),
         (
@@ -8105,10 +9229,23 @@ fn probe_charter_boundaries_and_attenuation() {
             narrower(|c| c.may_delegate = false),
             Outcome::Success,
         ),
-        ("identical", parent.clone(), Outcome::Success),
         (
-            "window allowance exhausted",
-            narrower(|c| c.max_per_window = Amount(1)),
+            "identical but the slower rate",
+            {
+                let mut c = parent.clone();
+                c.rate = Amount(units(25).0 - 1);
+                c
+            },
+            Outcome::Success,
+        ),
+        (
+            "burst exhausted",
+            narrower(|c| c.burst = Amount(1)),
+            Outcome::Failed,
+        ),
+        (
+            "rate exhausted",
+            narrower(|c| c.rate = Amount(1)),
             Outcome::Failed,
         ),
     ];
@@ -8142,10 +9279,10 @@ fn probe_charter_boundaries_and_attenuation() {
     let again = h.tx("principal", TxKind::RevokeCharter { charter });
     let out = h.pulse(vec![again.clone()]);
     expect(&out, &again, Outcome::Success);
-    let ObjectData::Charter(state) = &h.chain.state.objects[&charter].data else {
-        panic!("charter")
-    };
-    assert_eq!(state.revoked_at, Some(Pulse(revoked_at)));
+    assert_eq!(
+        overlay_state(&h, &charter).and_then(|o| o.revoked_at),
+        Some(Pulse(revoked_at))
+    );
     let reclaim = h.tx("principal", TxKind::ReclaimCharter { charter });
     let out = h.pulse(vec![reclaim.clone()]);
     expect(&out, &reclaim, Outcome::Success);
@@ -8552,7 +9689,6 @@ fn probe_new_account_edges() {
 /// stack B verifies every chunk it produces and every witness is minimal.
 #[test]
 fn stack_a_bounds_scenario_verifies() {
-    use sion_exec::charter::MAX_CHARTER_CHAIN;
     use sion_exec::market::MAX_PERIOD;
     use sion_exec::sim::FAUCET;
     use sion_exec::tx::MAX_GRANT;
@@ -8609,10 +9745,11 @@ fn stack_a_bounds_scenario_verifies() {
     let out = h.pulse(vec![paying.clone()]);
     expect(&out, &paying, Outcome::Rejected);
 
-    // A charter window of u64::MAX never resets.
+    // A bucket that never refills is a lifetime limit, and one that refills
+    // by u128::MAX a Pulse saturates.
     let mut caveats = charter_caveats(vendor);
-    caveats.window = u64::MAX;
-    caveats.max_per_window = units(150);
+    caveats.rate = Amount::ZERO;
+    caveats.burst = units(150);
     let create = h.tx(
         "principal",
         TxKind::CreateCharter {
@@ -8646,15 +9783,50 @@ fn stack_a_bounds_scenario_verifies() {
     let second = pay(&mut h, root, root_allotment, 100);
     let out = h.pulse(vec![second.clone()]);
     expect(&out, &second, Outcome::Failed);
+    let mut torrent = charter_caveats(vendor);
+    torrent.burst = units(150);
+    torrent.rate = Amount(u128::MAX);
+    let create = h.tx(
+        "principal",
+        TxKind::CreateCharter {
+            agent,
+            caveats: torrent,
+            funding: units(1_000),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![create.clone()]);
+    expect(&out, &create, Outcome::Success);
+    let (fast, fast_allotment) = charter_created(&out, &create);
+    for _ in 0..2 {
+        let tx = pay(&mut h, fast, fast_allotment, 100);
+        let out = h.pulse(vec![tx.clone()]);
+        expect(&out, &tx, Outcome::Success);
+    }
 
-    // Delegation chains up to MAX_CHARTER_CHAIN charters, and one deeper.
+    // Lineages up to MAX_LINEAGE_DEPTH generations, and no deeper.
+    caveats.burst = units(1_000);
+    caveats.rate = units(1);
+    let create = h.tx(
+        "principal",
+        TxKind::CreateCharter {
+            agent,
+            caveats: caveats.clone(),
+            funding: units(1_000),
+            agent_bond: Amount::ZERO,
+        },
+    );
+    let out = h.pulse(vec![create.clone()]);
+    expect(&out, &create, Outcome::Success);
+    let (root, root_allotment) = charter_created(&out, &create);
     let (mut charter, mut allotment) = (root, root_allotment);
     let mut levels = vec![(charter, allotment)];
-    for level in 1..=MAX_CHARTER_CHAIN as u64 {
-        let passed = 5 * (MAX_CHARTER_CHAIN as u64 + 1 - level) + 10;
-        // Each level keeps 5 USD of its window limit (carved like budgets).
+    for level in 1..=MAX_LINEAGE_DEPTH as u64 {
+        let passed = 5 * (MAX_LINEAGE_DEPTH as u64 + 1 - level) + 10;
+        // Each level keeps 5 USD of burst and 0.01 USD of rate.
         let mut narrower = caveats.clone();
-        narrower.max_per_window = Amount(caveats.max_per_window.0 - units(5 * level).0);
+        narrower.burst = Amount(caveats.burst.0 - units(5 * level).0);
+        narrower.rate = Amount(caveats.rate.0 - 10_000 * u128::from(level));
         let input = h.reference(&allotment);
         let delegate = h.tx_with(
             "agent",
@@ -8671,14 +9843,26 @@ fn stack_a_bounds_scenario_verifies() {
         (charter, allotment) = charter_created(&out, &delegate);
         levels.push((charter, allotment));
     }
-    let (at_limit, at_limit_allotment) = levels[MAX_CHARTER_CHAIN - 1];
-    let ok = pay(&mut h, at_limit, at_limit_allotment, 5);
+    let (deepest, deepest_allotment) = levels[MAX_LINEAGE_DEPTH];
+    let ok = pay(&mut h, deepest, deepest_allotment, 5);
     let out = h.pulse(vec![ok.clone()]);
     expect(&out, &ok, Outcome::Success);
-    let (beyond, beyond_allotment) = levels[MAX_CHARTER_CHAIN];
-    let deep = pay(&mut h, beyond, beyond_allotment, 5);
-    let out = h.pulse(vec![deep.clone()]);
-    expect(&out, &deep, Outcome::Failed);
+    let mut deeper = caveats.clone();
+    deeper.burst = units(1);
+    deeper.rate = Amount::ZERO;
+    let input = h.reference(&deepest_allotment);
+    let too_deep = h.tx_with(
+        "agent",
+        TxKind::Delegate {
+            charter: deepest,
+            sub_agent: agent,
+            caveats: deeper,
+            amount: units(1),
+        },
+        vec![input],
+    );
+    let out = h.pulse(vec![too_deep.clone()]);
+    expect(&out, &too_deep, Outcome::Failed);
     h.assert_minimal_witnesses();
     h.summary("stack A bounds scenario");
 }

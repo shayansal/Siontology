@@ -17,7 +17,7 @@ use sion_core::ids::{AccountId, ObjectId};
 use sion_core::merkle;
 use sion_crypto::AuthPolicy;
 
-use crate::charter::{is_keyless, keyless_account, MAX_CHARTER_CHAIN};
+use crate::charter::{is_keyless, keyless_account, MAX_LINEAGE_DEPTH};
 use crate::error::ExecError;
 use crate::object::{well_known, Object, ObjectData};
 use crate::state::ChainConfig;
@@ -79,10 +79,9 @@ pub fn find_authority(
             let Some(id) = next else {
                 return Ok(Err("the subagent has no keyed ancestor".into()));
             };
-            if loaded == MAX_CHARTER_CHAIN - 1 {
+            if loaded == MAX_LINEAGE_DEPTH {
                 return Ok(Err(format!(
-                    "no keyed ancestor within {} charters",
-                    MAX_CHARTER_CHAIN - 1
+                    "no keyed ancestor within {MAX_LINEAGE_DEPTH} charters"
                 )));
             }
             loaded += 1;

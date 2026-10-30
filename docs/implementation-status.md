@@ -100,26 +100,47 @@ act) and a bond behind each agent's receipts beyond the agent atom.
 v1.8).** An agent identity is a charter with an identity record (a card
 commitment and a depth); its id is the agent's id. `SpawnAgents` launches
 up to 256 subagents per transaction, each with its own account, card,
-attenuated caveats, a window limit carved from its parent's and a budget
-carved from its parent's allotment. Any overseer (the backer, the
-principal, an ancestor's agent) can suspend a subtree, the suspender or the
-backer can resume it, and the agent or any overseer can revoke it. Both
-proof stacks implement it, and the differential tests cover every
-operation and its failure cases. The `swarm` demo runs it on a devnet.
-Specification v1.13 adds **keyless subagents**: a subagent spawned without
-an account gets one derived from its id, which no key controls, and acts
-only as a member of batches its nearest keyed ancestor signs (see
-[Batched authorization](book/src/concepts/batched-authorization.md)); the runtime's
+attenuated caveats, a bucket carved from its parent's and a budget carved
+from its parent's allotment. Any overseer (the backer, the principal, an
+ancestor's agent) can suspend a subtree, the suspender or the backer can
+resume it, and the agent or any overseer can revoke it. Both proof stacks
+implement it, and the differential tests cover every operation and its
+failure cases. The `swarm` demo runs it on a devnet. Specification v1.13
+adds **keyless subagents**: a subagent spawned without an account gets one
+derived from its id, which no key controls, and acts only as a member of
+batches its nearest keyed ancestor signs (see [Batched
+authorization](book/src/concepts/batched-authorization.md)); the runtime's
 `agent_spawn` makes keyless subagents, and `sion agent spawn --keyless`
-does from the command line. Not built, and named in the [design
-note](book/src/research/agent-scale.md): cohorts that create a million
-identities in one transaction and materialize each on first use, lineage
-ids, additive token-bucket rate limits (window limits are fixed windows, so
-a subtree can spend up to twice its root's limit in an interval that
-straddles two windows), overlays that revoke a subtree with one write and
-absence proofs, and a rule that makes a certified agent payment final
-before it executes (today a suspension or revocation that executes first
-makes it fail).
+does from the command line.
+
+**Lineage ids, token buckets, overlays and cohorts: built (devnet scale,
+specification v1.14).** A spawned charter's id is `lineage_id(parent,
+index)`, the index from a counter in the parent's allotment, and every
+charter keeps its lineage, so its ancestors' ids are computed; depths run
+from 0 to 8. Rate limits are token buckets (`burst`, `rate`)
+carved down the tree with the children's starting tokens, so a subtree
+pays at most `σ + ρ·τ` in any `τ + 1` Pulses: a property test checks it on
+random trees and cohorts (`sion-exec/tests/buckets.rs`), and fails when a
+spawn is made to give tokens it does not take. What happens to an agent
+afterwards (revoked, suspended, narrowed) is in its overlay; a check reads
+the overlays of the agent and its ancestors, at most 9, most of them proofs
+of absence. `NarrowAgent` narrows a subtree with one write. An overseer
+acts only in good standing (its own charter and those above it neither
+revoked nor suspended), the highest suspender is recorded, an expired
+charter spawns nothing, and a subagent that must cite evidence judges it
+by its parent's policy (fixes from a review of v1.14). `SpawnCohort`
+commits to up to 2²⁰ subagents in one transaction by a Merkle sum tree over
+their bursts and rates; `MaterializeAgents` creates up to 128 of them with
+proofs of their leaves. The node answers `GET /v1/agents/{id}` with the
+charter and its lineage's overlays, each with its state proof. Both proof
+stacks implement it, with differential tests for every new operation and
+its failures. Not built, and named in the [design
+note](book/src/research/agent-scale.md): a rule that makes a certified
+agent payment final before it executes (today a suspension, narrowing or
+revocation that executes first applies to it), agent keys of ML-DSA-44
+alone, and lane keys. A narrowing cannot narrow a bucket (it would need
+tokens of its own), and a cohort's unmaterialized members cannot be
+revoked one by one: revoking or narrowing their parent stops them all.
 
 **Batched authorization: built (devnet scale, specification v1.13).** One
 authorization signs a batch of up to 256 transactions (`TxBatch { signer,

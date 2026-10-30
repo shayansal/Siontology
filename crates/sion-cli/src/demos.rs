@@ -338,8 +338,9 @@ fn charter_caveats(vendor: sion_core::ids::AccountId) -> Caveats {
     Caveats {
         payees: Some([vendor].into_iter().collect()),
         max_per_payment: usd(100),
-        max_per_window: usd(250),
-        window: 10_000,
+        // 250 USD at once, refilled at 0.025 USD a Pulse (250 per 10,000).
+        burst: usd(250),
+        rate: Amount(25_000),
         expires_at: Pulse(1_000_000),
         evidence_above: None,
         evidence_policy: Policy::standard(),
@@ -380,8 +381,8 @@ pub fn agents(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
         _ => None,
     })?;
     out.say(format!(
-        "Pulse {:>3}  acme charters its agent: pay only gpu-cloud, ≤ 100 USD per payment, ≤ 250 USD per window, \
-         1,000 USD budget, receipts on, 500 USD bond behind the agent's receipts",
+        "Pulse {:>3}  acme charters its agent: pay only gpu-cloud, ≤ 100 USD per payment, ≤ 250 USD at once \
+         (refilled at 0.025 USD a Pulse), 1,000 USD budget, receipts on, 500 USD bond behind the agent's receipts",
         view.pulse
     ));
     let pay = |session: &mut Session<'_>,
@@ -451,7 +452,8 @@ pub fn agents(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliEr
     }
     let mut narrow = charter_caveats(vendor);
     narrow.max_per_payment = usd(20);
-    narrow.max_per_window = usd(40);
+    narrow.burst = usd(40);
+    narrow.rate = Amount(4_000);
     narrow.may_delegate = false;
     let input = session.reference(&allotment)?;
     let view = session.must(
@@ -1006,8 +1008,9 @@ pub fn x402(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErro
     let caveats = Caveats {
         payees: Some([carol].into_iter().collect()),
         max_per_payment: usd(1),
-        max_per_window: usd(2),
-        window: 10_000,
+        // 2 USD at once, refilled at 0.0002 USD a Pulse.
+        burst: usd(2),
+        rate: Amount(200),
         expires_at: Pulse(1_000_000),
         evidence_above: None,
         evidence_policy: Policy::standard(),
@@ -1029,7 +1032,8 @@ pub fn x402(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErro
         _ => None,
     })?;
     out.say(format!(
-        "Pulse {:>3}  acme charters its agent: pay only carol, ≤ 1 USD per payment, ≤ 2 USD per window, 20 USD budget",
+        "Pulse {:>3}  acme charters its agent: pay only carol, ≤ 1 USD per payment, ≤ 2 USD at once \
+         (refilled at 0.0002 USD a Pulse), 20 USD budget",
         view.pulse
     ));
 
@@ -1728,7 +1732,8 @@ pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     let orchestrator = session.id("orchestrator");
     let mut caveats = charter_caveats(vendor);
     caveats.max_per_payment = usd(25);
-    caveats.max_per_window = usd(500);
+    caveats.burst = usd(500);
+    caveats.rate = Amount(50_000);
     let card = card_commitment(
         br#"{"name":"acme research orchestrator","url":"https://agents.acme.example/a2a"}"#,
     );
@@ -1758,7 +1763,8 @@ pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
 
     let mut worker = caveats.clone();
     worker.max_per_payment = usd(10);
-    worker.max_per_window = usd(40);
+    worker.burst = usd(40);
+    worker.rate = Amount(4_000);
     let children: Vec<Spawn> = researchers
         .iter()
         .map(|name| Spawn {
@@ -1797,7 +1803,8 @@ pub fn swarm(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     let (lead, lead_allotment) = spawned[0];
     let mut leaf = worker.clone();
     leaf.max_per_payment = usd(5);
-    leaf.max_per_window = usd(10);
+    leaf.burst = usd(10);
+    leaf.rate = Amount(1_000);
     leaf.may_delegate = false;
     let children: Vec<Spawn> = subs
         .iter()
@@ -1983,7 +1990,8 @@ pub fn batch(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     let orchestrator = session.id("orchestrator");
     let mut caveats = charter_caveats(vendor);
     caveats.max_per_payment = usd(25);
-    caveats.max_per_window = usd(1_000);
+    caveats.burst = usd(1_000);
+    caveats.rate = Amount(100_000);
     let view = session.must(
         "acme",
         TxKind::RegisterAgent {
@@ -2011,7 +2019,8 @@ pub fn batch(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     // the subagent's id, and only the orchestrator can sign for it.
     let mut worker = caveats.clone();
     worker.max_per_payment = usd(5);
-    worker.max_per_window = usd(10);
+    worker.burst = usd(10);
+    worker.rate = Amount(1_000);
     let children: Vec<Spawn> = (0..WORKERS)
         .map(|_| Spawn {
             agent: None,
@@ -2240,7 +2249,8 @@ pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     let mut caveats = charter_caveats(lab);
     caveats.payees = None;
     caveats.max_per_payment = usd(500);
-    caveats.max_per_window = usd(1_000);
+    caveats.burst = usd(1_000);
+    caveats.rate = Amount(100_000);
     let view = session.must(
         "lab",
         TxKind::RegisterAgent {

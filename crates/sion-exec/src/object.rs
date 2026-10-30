@@ -147,6 +147,12 @@ pub enum ObjectData {
     /// The beacon of a recorded Pulse, in one of the reusable slots
     /// (specification v1.12, §6.3).
     Beacon(crate::beacons::BeaconRecord),
+    /// What happened to an agent after it was created: revoked, suspended,
+    /// narrowed (specification v1.14, §5.13).
+    AgentOverlay(crate::charter::AgentOverlay),
+    /// A cohort of subagents committed to by a sum tree (specification
+    /// v1.14, §5.55).
+    Cohort(Box<crate::cohort::Cohort>),
 }
 
 /// Something the protocol must do at a given Pulse.

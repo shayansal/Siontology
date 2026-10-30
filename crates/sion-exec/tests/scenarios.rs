@@ -570,8 +570,9 @@ fn charter_caveats(vendor: AccountId) -> Caveats {
     Caveats {
         payees: Some([vendor].into_iter().collect()),
         max_per_payment: units(100),
-        max_per_window: units(250),
-        window: 1_000,
+        // 250 USD at once, refilled at 250 USD per 1,000 Pulses.
+        burst: units(250),
+        rate: Amount(250_000),
         expires_at: Pulse(10_000),
         evidence_above: None,
         evidence_policy: Policy::standard(),
@@ -663,9 +664,11 @@ fn agent_charters_enforce_caveats_delegation_and_revocation() {
     let ok = pay(&mut chain, "agent", charter, allotment, vendor, 100);
     let out = chain.pulse(vec![ok.clone()]).unwrap();
     assert_success(&out, &ok);
+    // The bucket held 250; two payments of 100 a few Pulses apart leave
+    // about 51 in it.
     let over = pay(&mut chain, "agent", charter, allotment, vendor, 100);
     let out = chain.pulse(vec![over.clone()]).unwrap();
-    assert_failed(&out, &over, "window total");
+    assert_failed(&out, &over, "the bucket holds");
 
     // Delegation only narrows.
     let mut wide = charter_caveats(vendor);
@@ -687,7 +690,8 @@ fn agent_charters_enforce_caveats_delegation_and_revocation() {
     assert_failed(&out, &bad, "at least as strict");
     let mut narrow = charter_caveats(vendor);
     narrow.max_per_payment = units(20);
-    narrow.max_per_window = units(40);
+    narrow.burst = units(40);
+    narrow.rate = Amount(40_000);
     narrow.may_delegate = false;
     let input = reference(&chain, &allotment);
     let delegate = chain
@@ -719,7 +723,7 @@ fn agent_charters_enforce_caveats_delegation_and_revocation() {
     // same Pulse still executes; afterwards the charter and its children stop.
     chain
         .advance_to(Pulse(chain.state.pulse.0 + 1_000))
-        .unwrap(); // new window
+        .unwrap(); // the bucket refills
     let revoke = chain
         .tx("principal", TxKind::RevokeCharter { charter })
         .unwrap();
@@ -823,11 +827,12 @@ fn an_agent_swarm_is_contained_and_stopped_from_any_ancestor() {
             )
             .unwrap()
     };
-    // Window limits are carved like budgets: 100 + 50 of the root's 250,
-    // then 40 of w1's 100.
-    let child = |agent, budget: u64, window: u64| {
+    // Buckets are carved like budgets: bursts of 100 + 50 of the root's 250,
+    // then 40 of w1's 100, each with the rate of that much per 1,000 Pulses.
+    let child = |agent, budget: u64, burst: u64| {
         let mut caveats = charter_caveats(vendor);
-        caveats.max_per_window = units(window);
+        caveats.burst = units(burst);
+        caveats.rate = Amount(u128::from(burst) * 1_000);
         Spawn {
             agent: Some(agent),
             card: card_commitment(b"worker"),
@@ -1468,12 +1473,12 @@ fn contended_transactions_cannot_ride_the_owned_path() {
     );
 }
 
-/// Found by proof stack B (N-version testing): user-chosen periods, windows
-/// and grants must never reach an arithmetic overflow, and a delegation chain
-/// is read no further than its limit.
+/// Found by proof stack B (N-version testing): user-chosen periods, rates
+/// and grants must never reach an arithmetic overflow, and a lineage grows
+/// no deeper than its limit.
 #[test]
 fn bounds_keep_user_chosen_numbers_far_from_overflow() {
-    use sion_exec::charter::MAX_CHARTER_CHAIN;
+    use sion_exec::charter::MAX_LINEAGE_DEPTH;
     use sion_exec::market::MAX_PERIOD;
     use sion_exec::object::well_known;
     use sion_exec::sim::FAUCET;
@@ -1535,11 +1540,11 @@ fn bounds_keep_user_chosen_numbers_far_from_overflow() {
     let out = chain.pulse(vec![paying.clone()]).unwrap();
     assert!(matches!(status_of(&out, &paying), ExecStatus::Rejected(_)));
 
-    // A charter window of u64::MAX never resets (saturating), so its window
-    // limit becomes a lifetime limit.
+    // A bucket that never refills is a lifetime limit, and one that refills
+    // by u128::MAX a Pulse saturates instead of overflowing.
     let mut caveats = charter_caveats(vendor);
-    caveats.window = u64::MAX;
-    caveats.max_per_window = units(150);
+    caveats.rate = Amount::ZERO;
+    caveats.burst = units(150);
     let create = chain
         .tx(
             "principal",
@@ -1582,19 +1587,70 @@ fn bounds_keep_user_chosen_numbers_far_from_overflow() {
     chain.advance_to(Pulse(chain.state.pulse.0 + 50)).unwrap();
     let second = pay(&mut chain, root, root_allotment, 100);
     let out = chain.pulse(vec![second.clone()]).unwrap();
-    assert_failed(&out, &second, "window total");
+    assert_failed(&out, &second, "the bucket holds");
+    let mut torrent = charter_caveats(vendor);
+    torrent.burst = units(150);
+    torrent.rate = Amount(u128::MAX);
+    let create = chain
+        .tx(
+            "principal",
+            TxKind::CreateCharter {
+                agent,
+                caveats: torrent,
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+        .unwrap();
+    let out = chain.pulse(vec![create.clone()]).unwrap();
+    assert_success(&out, &create);
+    let (fast, fast_allotment) = all_events(&out)
+        .into_iter()
+        .find_map(|e| match e {
+            Event::CharterCreated { charter, allotment } => Some((charter, allotment)),
+            _ => None,
+        })
+        .unwrap();
+    for _ in 0..2 {
+        let tx = pay(&mut chain, fast, fast_allotment, 100);
+        let out = chain.pulse(vec![tx.clone()]).unwrap();
+        assert_success(&out, &tx);
+    }
 
-    // Delegation chains: the agent delegates to itself until the chain holds
-    // MAX_CHARTER_CHAIN charters; payments still work at that depth, and one
-    // level deeper they fail without the root being read.
+    // Lineages: the agent delegates to itself until the chain is
+    // MAX_LINEAGE_DEPTH generations deep; payments still work at that depth,
+    // and the next delegation fails.
+    caveats.burst = units(1_000);
+    caveats.rate = units(1);
+    let create = chain
+        .tx(
+            "principal",
+            TxKind::CreateCharter {
+                agent,
+                caveats: caveats.clone(),
+                funding: units(1_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+        .unwrap();
+    let out = chain.pulse(vec![create.clone()]).unwrap();
+    assert_success(&out, &create);
+    let (root, root_allotment) = all_events(&out)
+        .into_iter()
+        .find_map(|e| match e {
+            Event::CharterCreated { charter, allotment } => Some((charter, allotment)),
+            _ => None,
+        })
+        .unwrap();
     let (mut charter, mut allotment) = (root, root_allotment);
     let mut levels = vec![(charter, allotment)];
-    for level in 1..=MAX_CHARTER_CHAIN as u64 {
-        // Each level keeps 5 USD, and 5 USD of its window limit (which is
-        // carved like the budget), and passes the rest down.
-        let passed = 5 * (MAX_CHARTER_CHAIN as u64 + 1 - level) + 10;
+    for level in 1..=MAX_LINEAGE_DEPTH as u64 {
+        // Each level keeps 5 USD, 5 USD of burst and 0.01 USD of rate (which
+        // are carved like the budget), and passes the rest down.
+        let passed = 5 * (MAX_LINEAGE_DEPTH as u64 + 1 - level) + 10;
         let mut narrower = caveats.clone();
-        narrower.max_per_window = minus(caveats.max_per_window, units(5 * level));
+        narrower.burst = minus(caveats.burst, units(5 * level));
+        narrower.rate = minus(caveats.rate, Amount(10_000 * u128::from(level)));
         let input = reference(&chain, &allotment);
         let delegate = chain
             .tx_with(
@@ -1619,14 +1675,32 @@ fn bounds_keep_user_chosen_numbers_far_from_overflow() {
             .unwrap();
         levels.push((charter, allotment));
     }
-    let (at_limit, at_limit_allotment) = levels[MAX_CHARTER_CHAIN - 1];
-    let ok = pay(&mut chain, at_limit, at_limit_allotment, 5);
+    let (deepest, deepest_allotment) = levels[MAX_LINEAGE_DEPTH];
+    match &chain.state.objects[&deepest].data {
+        ObjectData::Charter(c) => assert_eq!(c.lineage.depth(), MAX_LINEAGE_DEPTH),
+        other => panic!("{other:?}"),
+    }
+    let ok = pay(&mut chain, deepest, deepest_allotment, 5);
     let out = chain.pulse(vec![ok.clone()]).unwrap();
     assert_success(&out, &ok);
-    let (beyond, beyond_allotment) = levels[MAX_CHARTER_CHAIN];
-    let deep = pay(&mut chain, beyond, beyond_allotment, 5);
-    let out = chain.pulse(vec![deep.clone()]).unwrap();
-    assert_failed(&out, &deep, "too deep");
+    let mut deeper = caveats.clone();
+    deeper.burst = units(1);
+    deeper.rate = Amount::ZERO;
+    let input = reference(&chain, &deepest_allotment);
+    let too_deep = chain
+        .tx_with(
+            "agent",
+            TxKind::Delegate {
+                charter: deepest,
+                sub_agent: agent,
+                caveats: deeper,
+                amount: units(1),
+            },
+            vec![input],
+        )
+        .unwrap();
+    let out = chain.pulse(vec![too_deep.clone()]).unwrap();
+    assert_failed(&out, &too_deep, "too deep");
 }
 
 fn stream_state(chain: &Chain, id: &ObjectId) -> sion_exec::stream::Stream {

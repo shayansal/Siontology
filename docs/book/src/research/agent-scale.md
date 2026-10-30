@@ -1,12 +1,13 @@
 # Billions of agents
 
-> **Status.** A design note, written on 28 October 2026. One part of it is
-> built: agent identities and subagents (specification v1.8), in both proof
-> stacks, with the `sion agent` commands and the `swarm` demo. Everything
-> else here is a design that is not built, reviewed or measured: a memory
-> layer for agents and robots, Task Charters for orchestrating work, a
-> network that anyone can join with a phone, a desktop or pooled stake, and
-> the signature amortization that billions of agents would need. Every
+> **Status.** A design note, written on 28 October 2026 and updated as its
+> parts are built. Built so far, in both proof stacks and at devnet scale:
+> agent identities and subagents (specification v1.8, with lineage ids,
+> cohorts, token buckets and overlays in v1.14), memory logs (v1.9), Task
+> Charters (v1.10, without batch claims), delegation (v1.11), storage deals
+> (v1.12) and batched authorization (v1.13). [Section 8](#8-order-of-work)
+> lists them. Everything else here is a design that is not built, reviewed
+> or measured. Every
 > figure is labelled: **measured** (in this repository, with the command
 > that reproduces it), **reported** or **claimed** (by the party named, on
 > the date given; nobody has checked claims independently), **design
@@ -40,13 +41,15 @@
   signature share a batch's members split.
 - **Identities (built).** Every agent can have an identity of its own, and
   launch up to 256 subagents with identities of their own in one
-  transaction. Budgets and rate limits are carved down the tree, so a
-  subtree never spends more than its root was given, and one transaction
-  from any agent above stops a whole subtree. Children without keys of
-  their own, signed for in batch roots, are built (v1.13). The rest of the
-  path to ten billion is designed: cohorts of a million identities created
-  in one transaction, additive rate limits, and certificates that stay
-  final under revocation.
+  transaction, or commit to a cohort of up to 2²⁰ (1,048,576) and create
+  each member when it is first needed. Budgets and token buckets are carved
+  down the tree, so a subtree never spends more than its root was given nor
+  pays faster than its root's bucket allows, and one transaction from any
+  agent above stops or narrows a whole subtree.
+  Children without keys of their own, signed for in batch roots, are built
+  (v1.13), and so are lineage ids, cohorts, buckets whose rates add up and
+  overlays (v1.14). Certificates that stay final under revocation are
+  designed, not built.
 - **Memory (design).** An agent's or a robot's memory becomes a
   single-writer, append-only log of atoms that carry space and two kinds of
   time, after [Hotgraph](https://github.com/shayansal/Hotgraph)'s Reality
@@ -75,8 +78,8 @@
   can start at about EUR 104 a month, against the 7,000 USD a month our
   networking plan estimated on AWS.
 - **What it is not.** Nothing at this scale has run. Nothing has run
-  across machines yet. The identities and batched authorization are built
-  at devnet scale; the rest is a design.
+  across machines yet. What section 8 lists as built is built at devnet
+  scale; the rest is a design.
 
 ## 1. The target in numbers
 
@@ -187,20 +190,30 @@ streams small. It is an open problem.
 
 Specification v1.8 makes an agent identity an [Agent
 Charter](../concepts/agent-charters.md) with an identity record: a
-commitment to the agent's card and its depth in a tree. The charter's id is
-the agent's id, and its DID is `did:sion:<chain>:<id>`. The full account is
-in [Agent identities and subagents](../concepts/agent-identities.md).
+commitment to the agent's card and its place in a tree. The charter's id is
+the agent's id, and its DID is `did:sion:<chain>:<id>`. Version 1.13 adds
+keyless subagents, and version 1.14 lineage ids, cohorts, token buckets and
+overlays. The full account is in [Agent identities and
+subagents](../concepts/agent-identities.md).
 
 - `RegisterAgent` gives an account an identity, a budget only the agent
   can spend, caveats the ledger enforces and a bond behind its receipts.
 - `SpawnAgents` launches up to 256 subagents in one transaction. Each gets
-  its own account and keys, a card, caveats at least as strict as its
-  parent's, a budget carved from its parent's allotment and a window limit
-  carved from its parent's.
+  an account (its own, with keys, or a keyless one its nearest keyed
+  ancestor signs for), a card, caveats at least as strict as its parent's,
+  a budget carved from its parent's allotment and a token bucket (a burst
+  and a rate) carved from its parent's bucket. Its id is its lineage id,
+  computed from its parent's id and an index only the parent writes.
+- `SpawnCohort` commits to up to 2²⁰ subagents in one transaction, as the
+  root of a Merkle sum tree over their bursts and rates, and
+  `MaterializeAgents` creates up to 128 of them at a time, each with a
+  proof of its leaf.
 - Any overseer (the backer, the principal, or the agent of any charter
-  above) can suspend a subtree with one transaction, and the agent or any
-  overseer can revoke it. Every check walks the chain to the root, at most
-  16 charters.
+  above) can suspend or narrow a subtree with one transaction, and the
+  agent or any overseer can revoke it. Each writes one overlay, at a hash
+  of the agent's id. Every check computes the ids of the agent's ancestors
+  and reads their overlays: at most 9, for depths 0 to 8, most of them
+  proofs that none exists.
 - Both proof stacks implement every operation, and the differential tests
   run each one, including every way it can fail, through both.
 
@@ -218,35 +231,41 @@ races an action already approved; and post-quantum signatures.
 | Entra Agent ID (generally available) | One level | Disabling a blueprint stops its identities | Entra tokens |
 | IETF delegation-chain drafts (Mar and Sep 2026) | Attenuating token chains, depth "a low value, such as 5" | Status lists and expiry; cascading only through an optional online server | Ed25519; ML-DSA optional |
 | Siontology v1.8 (built, devnet) | Up to 16 generations, 256 per transaction | One transaction stops a subtree; checks walk at most 16 charters | Dual post-quantum |
+| Siontology v1.14 (built, devnet) | Depths 0 to 8; 256 per transaction, or 2²⁰ per cohort | One transaction stops or narrows a subtree; checks read at most 9 overlays | Dual post-quantum; keyless subagents signed for in batches |
 
-v1.8 has all four, with two weaknesses it documents: rate limits are fixed
-windows, so a subtree can spend up to twice its root's limit in an interval
-that straddles two windows; and a certified agent payment is final only
-when it executes, because a suspension or revocation that executes first
-makes it fail.
+v1.8 had all four, with two weaknesses it documented: rate limits were
+fixed windows, so a subtree could spend up to twice its root's limit in an
+interval that straddled two windows; and a certified agent payment is final
+only when it executes, because a suspension or revocation that executes
+first makes it fail. v1.14 replaces the windows with token buckets whose
+rates add up. The second weakness remains: certificate stamps (section 3.2)
+are designed to remove it and are not built.
 
 ### 3.2 The path to ten billion identities
 
 At ten billion agents, v1.8 had five limits. Each has a designed fix.
 Specification v1.13 builds part of the second, keyless agents signed for
-in batches; the rest is not built:
+in batches, and v1.14 builds the first, third and fourth; the rest is not
+built:
 
 | Limit at 10¹⁰ agents | Fix |
 |---|---|
-| **Heavy creation.** An agent costs a charter, an allotment and an account with full keys: about 2.5 KB of state, 25 TB for 10¹⁰ agents (our arithmetic) | **Lineage ids and cohorts.** An agent's id is `H("sion/id/agent", parent ‖ index)`, with the index from a counter only the parent writes: unique by construction, and anyone holding the root and the path can recompute every ancestor's id. A cohort creates up to 2²⁰ identities in one transaction as a Merkle sum tree over their budgets and rates; each is materialized on first use |
+| **Heavy creation.** An agent costs a charter, an allotment and an account with full keys: about 2.5 KB of state, 25 TB for 10¹⁰ agents (our arithmetic) | **Lineage ids and cohorts.** An agent's id is `H("sion/id/agent", parent ‖ index)`, with the index from a counter only the parent writes: unique by construction, and anyone holding the root and the path can recompute every ancestor's id. A cohort creates up to 2²⁰ identities in one transaction as a Merkle sum tree over their budgets and rates; each is materialized on first use. *Built in v1.14:* the tree sums the members' bursts and rates, and `MaterializeAgents` creates up to 128 members a transaction, each a charter and an allotment of 868 bytes when keyless (measured) |
 | **Every action dual-signed** | **Three signing tiers.** Root accounts sign with full dual keys. Keyed agents sign with their own ML-DSA-44 key and either SLH-DSA or a one-time lane key (LM-OTS, about 4.7 KB per action). Keyless agents are signed for by their nearest keyed ancestor in batch roots over up to 256 transactions (about 0.33 KB each by our arithmetic; 0.42 KB measured in v1.13). Two roots for the same sequence number are equivocation, slashable against the signer's bond. *Built in v1.13:* keyless agents and batch roots, with the root dual-signed; batches have no sequence number, so a signer's conflicting batches are settled by lane locks and not slashed. *Not built:* agent keys of ML-DSA-44 alone and lane keys |
-| **Fixed windows** | **Additive token buckets.** Each agent has a bucket (σ, ρ), and a spawn requires the children's σ and ρ to sum to at most what the parent keeps. Every subtree then pays at most σ + ρ·τ in any τ Pulses, a bound to prove and property-test |
-| **Every ancestor read** (up to 16 shared objects per action) | **Overlays.** Revoking, suspending or narrowing a subtree writes one overlay object at its root. A check computes its ancestors' ids by hashing and proves the absence of their overlays: at most 8 lookups, with the maximum depth lowered to 8 |
+| **Fixed windows** | **Additive token buckets.** Each agent has a bucket (σ, ρ), and a spawn requires the children's σ and ρ to sum to at most what the parent keeps. Every subtree then pays at most σ + ρ·τ in any τ + 1 consecutive Pulses. *Built in v1.14*, with the bound property-tested on random trees of spawns, cohorts and payments; it is not proven |
+| **Every ancestor read** (up to 16 shared objects per action) | **Overlays.** Revoking, suspending or narrowing a subtree writes one overlay object at its root. A check computes its ancestors' ids by hashing and proves the absence of their overlays: at most 9 lookups, with depths lowered to 0 to 8. *Built in v1.14:* a payment at depth 8 reads 14 objects, 10 of them proven absent (measured) |
 | **Certified agent payments can still fail** | **Certificate stamps.** Each approval carries the last Pulse its validator executed, and an action executes only if every approval is at most Δ = 8 Pulses old. If a revocation commits at Pulse r, nothing below it executes after r + Δ, even with a wholly Byzantine lane committee. With an honest committee, nothing can void a certificate, so a seller can serve as soon as it holds one. Exposure between r and r + Δ is at most σ + ρ·Δ |
 
-**What it would cost** (our arithmetic, with the repository's measured
-costs and devnet fees):
+**What it would cost** (the second and third columns are our arithmetic,
+with the repository's measured costs and devnet fees; the last is measured
+on the v1.14 build, `sion bench --only lineage`, with our arithmetic where
+marked):
 
-| | v1.8 | With the fixes |
-|---|---|---|
-| State per materialized agent | about 2.5 KB | about 1.0 KB, plus 1.3 KB if the agent stores an ML-DSA key |
-| Creating 10¹⁰ agents | one transaction per 256: 3.9 × 10⁷ transactions, 2 to 3 × 10⁵ USD in fees at devnet prices | cohorts: about 9,500 transactions, about 10 USD |
-| One ledger action | 19.5 KB, 1.02 ms | lane key: about 4.7 KB, 0.4 ms; batched: 0.42 KB and a 150th of the dual check, about 7 µs (measured in v1.13 as a ratio) |
+| | v1.8 | With the fixes | Built in v1.14 (measured) |
+|---|---|---|---|
+| State per materialized agent | about 2.5 KB | about 1.0 KB, plus 1.3 KB if the agent stores an ML-DSA key | 868 B for a keyless cohort member: its charter and allotment |
+| Creating 10¹⁰ agents | one transaction per 256: 3.9 × 10⁷ transactions, 2 to 3 × 10⁵ USD in fees at devnet prices | cohorts: about 9,500 transactions, about 10 USD | 9,537 `SpawnCohort` transactions of 19,906 B, about 10.5 USD at the measured fee of 0.0011 USD each (our arithmetic); each member then costs 1,523 B and 0.000142 USD to materialize, 128 to a transaction |
+| One ledger action | 19.5 KB, 1.02 ms | lane key: about 4.7 KB, 0.4 ms; batched: 0.42 KB and a 150th of the dual check, about 7 µs (measured in v1.13 as a ratio) | not changed by v1.14 |
 
 **Risks.**
 
@@ -936,7 +955,7 @@ round with 7 validators. A desktop community node needs no server at all.
 | v1.11 | Non-custodial delegation (pooled stake) | Built |
 | v1.12 | Storage deals: devices paid by clients to keep data and prove it every round, with challenges from recorded beacons | Built |
 | v1.13 | Amortized authorization: batches of up to 256 transactions under one authorization, a fee floor that shares the signature check, keyless subagents signed for by their nearest keyed ancestor | Built |
-| v1.14 | Lineage ids and cohorts, token buckets, overlays | Planned (next) |
+| v1.14 | Lineage ids and cohorts of up to 2²⁰ identities, token buckets whose rates add up, overlays that suspend, narrow or revoke a subtree with one write | Built |
 | Later | Node registration, bond-weighted archival assignments and custody challenges paid from fees (§6.3); the light-client accumulator; certificate stamps, once the consensus simulator can test lagging and Byzantine committees; aggregators and curators for memory; storage proofs aggregated per provider | Design |
 | In parallel | Networking between machines, phase by phase | Simplified: QUIC between processes, peers from files |
 | In parallel | The app: one Rust core with desktop and mobile shells | Desktop built and run; mobile configured, not built |
@@ -948,8 +967,10 @@ differential tests, as every version so far has been.
 
 1. **Netting**: paying many payees from one escrow, with settlement cost
    independent of the number of payees. It sets the ledger's load at scale.
-2. **Rate limits that add up**: a proof that token buckets carved
-   additively bound every subtree to σ + ρ·τ, in both proof stacks.
+2. **Rate limits that add up**: v1.14 bounds every subtree to σ + ρ·τ
+   over any τ + 1 Pulses by carving token buckets additively. A property
+   test checks the bound on random trees, and the two proof stacks agree
+   on every bucket operation; a machine-checked proof is still open.
 3. **Certificates that survive revocation**: proofs of the stamp rule's
    guarantees, and tests with lagging and Byzantine committees.
 4. **The verification gap.** The most valuable work, agentic coding and

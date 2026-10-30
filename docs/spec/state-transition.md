@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.13
+# The Siontology state transition — specification v1.14
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -24,7 +24,7 @@ It does **not** re-specify:
 
 - **Data layouts.** The Rust type definitions in `sion_core`, `sion_crypto`,
   `sion_assurance`, `sion_clearing` and the *type definitions* in
-  `sion_exec` (`object`, `account`, `claim`, `charter`, `escrow`, `market`,
+  `sion_exec` (`object`, `account`, `claim`, `charter`, `cohort`, `escrow`, `market`,
   `stream`, `memory`, `task`, `delegation` (its types and constants),
   `storage` (its types and constants), `beacons` (its types and
   constants),
@@ -63,7 +63,11 @@ helpers (`challenge_index`, `round_seed`, `current_round`,
 `DataTree`, `split_leaves`, `Deal::end`), the `sion_exec::beacons` helpers
 (`slot_of`, `next_boundary`), the `sion_exec::tx` helpers `fee_floor`,
 `required_fee` and `sign_batch`, nor
-the methods `Allotment::spend`, `Caveats::attenuates`, `OrderTerms::escrow`,
+the `sion_exec::charter` helpers (`Bucket::{level, refill, carve, take}`,
+`Lineage::{child, ancestry}`, `Narrowing::{attenuates, permits}`), the
+`sion_exec::cohort` helpers (`member_node`, `empty_node`, `join`,
+`height`, `verify_member`, `CohortTree`), the methods `Allotment::spend`,
+`Caveats::attenuates`, `OrderTerms::escrow`,
 `Market::clearing_batch`, `Market::batch_index`, `Equivocation::offender`
 and the `ValidatorSet` methods. It MAY call the type
 helpers `Transaction::{digest, domain, class, size}`,
@@ -72,7 +76,8 @@ is_tombstone, reference, as_coin}`, `ChainConfig::{min_fee, digest}`,
 `Payload::size`, `WorldCommitment::digest`, `ChunkStatement::digest`,
 `claim::{claim_id, knowledge_leaf, formulas::*}`, `object::{created_id,
 well_known::*}`, `tx::object_domain`, `tx::signing_context`,
-`tx::batch_signing_context`, `charter::keyless_account`,
+`tx::batch_signing_context`, `charter::{keyless_account, lineage_id,
+overlay_id}`,
 `market::sealing_aad`, `execute::{bond_atom, registered_atom,
 bond_owner}`, and `validators::{weight, permille_of, share_of,
 possession_digest, rotation_seed}`.
@@ -166,6 +171,10 @@ The transaction keeps:
 - **create(owner, data)** computes `id = created_id(digest, next_index)`,
   increments `next_index`, stores `Object { id, version: 0, owner, data }`
   and returns `id`.
+- **create_at(id, owner, data)** stores `Object { id, version: 0, owner,
+  data }` under an `id` the operation derived (a lineage id, §5.13);
+  `next_index` is unchanged. The operation makes sure that `id` does not
+  exist: by construction, or by a `try_load` where this document says so.
 - **mint(owner, asset, amount)**: if `amount = 0` do nothing; otherwise
   `create(Owner::Account(owner), Coin { asset, amount })`.
 - **consume(id)**: `load(id)`, then store
@@ -294,8 +303,8 @@ checking an authorization, and a batch's members split it.
    be `tx.sender`. Then load `c.parent`, its parent, and so on (each MUST
    be a charter), until one whose agent is not keyless: a charter `a` with
    id `id_a` is keyless if `a.agent = keyless_account(id_a)`. The search
-   fails at a charter without a parent, and after `MAX_CHARTER_CHAIN − 1`
-   ancestors (`MAX_CHARTER_CHAIN` is 16, §5.13): if the last one loaded
+   fails at a charter without a parent, and after `MAX_LINEAGE_DEPTH`
+   ancestors (8, §5.13): if the last one loaded
    is keyless, its parent is not loaded. The ancestor found MUST have `agent = m.batch.signer`. Then
    `try_load(well_known::account(m.batch.signer))` MUST exist and be
    `ObjectData::Account`; its `policy` is the policy. Nothing is stored,
@@ -455,7 +464,7 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 
 ### 5.12 CreateCharter { agent, caveats, funding, agent_bond }
 
-1. `caveats.expires_at > ctx.pulse`; `caveats.window > 0`.
+1. `caveats.expires_at > ctx.pulse`.
 2. `draw(USD, funding + agent_bond)`.
 3. `charter_id = created_id(digest, next_index)` (the id the next create
    will use); `agent_atom = bond_atom(Economic, sender,
@@ -463,11 +472,13 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
    form (`ObjectId`'s `Display`).
 4. `create(Shared(object_domain("charter", charter_id)), Charter {
    principal: sender, agent, caveats, agent_atom: agent_atom.id, backer:
-   sender, revoked_at: None, parent: None, allotments: ∅, created_at:
-   ctx.pulse, suspended_by: None, identity: None })`.
+   sender, parent: None, lineage: Lineage { root: charter_id, path: [] },
+   allotments: ∅, created_at: ctx.pulse, identity: None })`.
 5. `allotment = create(Account(agent), Allotment { source: charter_id,
    writer: agent, asset: USD, remaining: funding, caveats: Some(caveats),
-   window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`.
+   bucket: full(caveats), spawned: 0 })`, where `full(k) = Bucket { tokens:
+   k.burst, refilled_at: ctx.pulse, burst: k.burst, rate: k.rate }`: an
+   agent starts with a full bucket.
 6. Load the charter, insert `allotment` into `allotments`, store it.
 7. Defer `RegisterAtom { atom: agent_atom }`; if `agent_bond > 0`, defer
    `PostBond { atom: agent_atom, owner: sender, amount: agent_bond }`.
@@ -475,78 +486,148 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 
 ### 5.13 Charter checks
 
-- **Chain check** of charter `c`: follow `c, c.parent, …`, loading each
-  (MUST be a charter); for each in turn, `revoked_at` set fails
-  ("revoked"), then `suspended_by` set fails ("suspended"). At most
-  `MAX_CHARTER_CHAIN` (16, `sion_exec::charter::MAX_CHARTER_CHAIN`)
-  charters are loaded: if the last one loaded still has a parent, the check
-  fails without loading that parent. A chain check **ignoring suspension**
-  skips the `suspended_by` test. A passing check also yields `n`, the
-  number of charters it loaded.
-- **carve(allotment, k, limit)**: `limit > k.max_per_window −
-  allotment.carved_window` fails ("window allowance exhausted"); otherwise
-  `carved_window += limit`. A child's window limit is carved out of its
-  parent's, as its budget is out of the parent's allotment, so the window
-  limits of a whole subtree add up to at most its root's.
-- **Overseers** of charter `c`, for a sender `s`: `s` is an overseer if
-  `s = c.backer` or `s = c.principal`; otherwise load `c.parent`, then its
-  parent, and so on (each MUST be a charter), stopping as soon as one has
-  `agent = s` (an overseer), or has no parent, or `MAX_CHARTER_CHAIN − 1`
-  have been loaded (not an overseer).
+A charter's limits are its caveats, copied into its allotment when it is
+funded. What happens to it afterwards (a revocation, a suspension, a
+narrowing) is kept in its **overlay**, and its place in its tree is its
+**lineage** (v1.14).
+
+- **Lineage.** A root charter (§5.12, §5.35) has `lineage = { root: its
+  id, path: [] }`. A charter spawned under a parent `p` with index `i`
+  (§5.14, §5.36, §5.56) has the id `lineage_id(p, i) =
+  ObjectId(H("sion/id/agent", enc((p, i))))` (`i` a `u64`,
+  `sion_exec::charter::lineage_id`) and `lineage = { root:
+  p.lineage.root, path: p.lineage.path ++ [i] }`. Its **depth** is `|path|`,
+  at most `MAX_LINEAGE_DEPTH` (8, `sion_exec::charter::MAX_LINEAGE_DEPTH`).
+  Indices come from the `spawned` counter of the parent's allotment, which
+  only the parent's agent writes, so lineage ids never repeat, and spawning
+  reads nothing at the new ids.
+- **ancestry(c)** of a charter whose lineage is `{ root, path }` is the
+  list `a₀ = root`, `aⱼ₊₁ = lineage_id(aⱼ, path[j])`, computed, not read;
+  `a_|path|` is the charter itself.
+- **Overlays.** The overlay of charter `c` is the object at `overlay_id(c)
+  = ObjectId(H("sion/overlay", c bytes))` (`sion_exec::charter::overlay_id`),
+  an `AgentOverlay { agent, revoked_at, suspended_by, narrowing }` owned by
+  `Shared(object_domain("charter", c))`, written only by §5.16, §5.38,
+  §5.39 and §5.57. **overlay(c)** is `try_load(overlay_id(c))` (MUST be an
+  overlay if it exists), or else `AgentOverlay { agent: c, revoked_at:
+  None, suspended_by: None, narrowing: None }`; **storing** it stores
+  `Object { id: overlay_id(c), version: 0, owner: Shared(object_domain(
+  "charter", c)), data: o }` (store assigns the version, §3.1).
+- **Standing** of charter `c` (already loaded), with its id: ancestry(c)
+  MUST end at that id. For each `a` of ancestry(c), from the charter itself
+  up to the root (`a_d`, …, `a₀`): `try_load(overlay_id(a))`; if it exists
+  it MUST be an overlay `o`, and then `o.revoked_at` set fails ("revoked"),
+  then `o.suspended_by` set fails ("suspended"), then `o.narrowing =
+  Some(n)` appends `n` to `N`. The check stops at the first failure. A
+  standing check **ignoring suspension** skips the `suspended_by` test. A
+  passing check yields `d = |c.lineage.path|` and the narrowings `N`, in
+  the order found. It reads at most `MAX_LINEAGE_DEPTH + 1` overlays, most
+  of them usually absent, and no charter but `c`.
+- **refill(b)** of a bucket `b`: if `ctx.pulse > b.refilled_at`, then
+  `b.tokens = min(b.burst, b.tokens + b.rate × (ctx.pulse −
+  b.refilled_at))` (saturating) and `b.refilled_at = ctx.pulse`.
+- **carve(b, burst, rate, take)**: `burst > b.burst` fails ("burst
+  exhausted"); `rate > b.rate` fails ("rate exhausted"); `take > b.tokens`
+  fails ("bucket too low"); then `b.burst −= burst`, `b.rate −= rate` and
+  `b.tokens = min(b.tokens − take, b.burst)`. A child's burst and rate are
+  carved out of its parent's bucket, as its budget is out of the parent's
+  allotment, and the tokens it starts with out of the parent's tokens.
+- **may_spawn(k, N)**: `k.may_delegate` ("delegation not allowed"), and
+  `n.may_delegate` for every `n ∈ N` ("narrowed: delegation not allowed");
+  then `ctx.pulse ≤ k.expires_at` ("charter expired") and `ctx.pulse ≤
+  n.expires_at` for every `n ∈ N` ("narrowed: expired"). An expired charter
+  spawns nothing, so it cannot move its budget into children while its
+  backer waits to reclaim it.
+- **born(k)**: a charter about to be spawned with caveats `k` MUST have
+  `k.expires_at > ctx.pulse` ("charter would already be expired"), as a
+  root charter must (§5.12 step 1).
+- **position(c, s)** of an account `s` under charter `c` (v1.14): 0 if `s =
+  c.backer`; otherwise, with ancestry(c) = `a₀ … a_d`, load `a₀`, `a₁`, …,
+  `a_{d−1}` in that order (each MUST be a charter), stopping at the first
+  whose `agent = s`: for `a_j` the position is `j + 1`. If none matches,
+  `s` has no position. A lower position is higher in the tree. At most
+  `MAX_LINEAGE_DEPTH` charters are loaded.
+- **Oversight.** `s` is an **overseer in good standing** of `c`, at
+  position `r`, if `r = position(c, s)` exists and, when `r > 0`, for each
+  of `a₀ … a_{r−1}`, in that order, `try_load(overlay_id(a))` finds nothing
+  or an overlay (it MUST be one) with neither `revoked_at` nor
+  `suspended_by` set: an overseer whose own charter, or one above it, has
+  been stopped has no power over those below. The backer always is one. A
+  spawned charter's principal is its parent's agent and a root charter's
+  is its backer, so the principal is an overseer whenever it is in good
+  standing.
 - **attenuates(child, parent)** holds when: `parent.payees = None`, or both
   are sets and `child.payees ⊆ parent.payees`; `parent.evidence_above =
-  None`, or both are set and `child ≤ parent`; `child.max_per_payment ≤
-  parent.max_per_payment`; `child.max_per_window ≤ parent.max_per_window`;
-  `child.window ≥ parent.window`; `child.expires_at ≤ parent.expires_at`;
+  None`, or both are set, `child ≤ parent` and `child.evidence_policy =
+  parent.evidence_policy` (v1.14: a laxer policy would pass evidence the
+  parent's rejects); `child.max_per_payment ≤
+  parent.max_per_payment`; `child.burst ≤ parent.burst`; `child.rate ≤
+  parent.rate`; `child.expires_at ≤ parent.expires_at`;
   `parent.receipts ⇒ child.receipts`; `child.may_delegate ⇒
   parent.may_delegate`.
-- **spend(allotment, payee, amount, evidence_ok)**, in this order:
+- **narrows(n, prev)** holds for narrowings when: `prev.payees = None`, or
+  both are sets and `n.payees ⊆ prev.payees`; `n.max_per_payment ≤
+  prev.max_per_payment`; `n.expires_at ≤ prev.expires_at`; `n.may_delegate
+  ⇒ prev.may_delegate`.
+- **spend(allotment, payee, amount, evidence_ok, N)**, in this order:
   1. `amount > remaining` fails.
   2. If the allotment has caveats `k`: `ctx.pulse > k.expires_at` fails;
      `k.payees` set and `payee ∉ k.payees` fails; `amount >
-     k.max_per_payment` fails; if `ctx.pulse ≥ window_start + k.window`
-     (saturating, so a window that would end after `u64::MAX` never
-     resets), set `window_start = ctx.pulse` and `spent_in_window = 0`;
-     `spent_in_window + amount > k.max_per_window − carved_window` fails; if
-     `k.evidence_above = Some(t)` and `amount > t` and `evidence_ok ≠
-     Some(true)` fails; then `spent_in_window += amount`.
+     k.max_per_payment` fails; then for each `n ∈ N`, in order:
+     `ctx.pulse > n.expires_at` fails, `n.payees` set and `payee ∉
+     n.payees` fails, `amount > n.max_per_payment` fails; then
+     **refill**(bucket); `amount > bucket.tokens` fails ("bucket too
+     low"); if `k.evidence_above = Some(t)` and `amount > t` and
+     `evidence_ok ≠ Some(true)` fails; then `bucket.tokens −= amount`.
   3. `remaining -= amount`.
+
+**What the buckets bound.** A subtree whose root has caveats with `burst =
+σ` and `rate = ρ` pays at most `σ + ρ·τ` in any `τ + 1` consecutive
+Pulses, however it is shaped and whatever it spawns: spawning only moves
+burst, rate and tokens down the tree, so at every Pulse the subtree's
+buckets hold at most `σ` together and refill by at most `ρ` together.
+Until v1.13, window limits reset at fixed Pulses, so a subtree could pay
+twice its limit across a window's boundary. The bound is property-tested
+(`sion-exec/tests/buckets.rs`).
 
 ### 5.14 Delegate { charter, sub_agent, caveats, amount }
 
 1. `allotment_id = tx.inputs[1].id` (error if absent); load it (MUST be an
    allotment).
-2. Load `charter` (MUST be a charter); **chain check** it.
+2. Load `charter` (MUST be a charter, call it `p`); **standing** of it,
+   yielding `d` and `N`; `d < MAX_LINEAGE_DEPTH` ("too deep").
 3. The allotment's `source` MUST be `charter`, its `writer` and the
    charter's `agent` MUST be the sender.
-4. The allotment MUST have caveats `k`; `k.may_delegate`;
-   `attenuates(caveats, k)`; **carve**(allotment, k,
-   `caveats.max_per_window`).
-5. `remaining -= amount` (error if insufficient); store the allotment.
-6. `child_id = created_id(digest, next_index)`;
-   `create(Shared(object_domain("charter", child_id)), Charter { principal:
-   sender, agent: sub_agent, caveats, agent_atom: parent.agent_atom,
-   backer: parent.backer, revoked_at: None, parent: Some(charter),
-   allotments: ∅, created_at: ctx.pulse, suspended_by: None, identity:
-   None })`.
+4. The allotment MUST have caveats `k`; **may_spawn**(k, N);
+   `attenuates(caveats, k)`; **born**(caveats); **refill**(its bucket);
+   **carve**(its bucket, `caveats.burst`, `caveats.rate`, `caveats.burst`).
+5. `remaining -= amount` (error if insufficient); `index = spawned`;
+   `spawned += 1`; store the allotment.
+6. `child_id = lineage_id(charter, index)`; `create_at(child_id,
+   Shared(object_domain("charter", child_id)), Charter { principal: sender,
+   agent: sub_agent, caveats, agent_atom: p.agent_atom, backer: p.backer,
+   parent: Some(charter), lineage: p.lineage.child(index), allotments: ∅,
+   created_at: ctx.pulse, identity: None })`, where `l.child(i) = { root:
+   l.root, path: l.path ++ [i] }`.
 7. `child_allotment = create(Account(sub_agent), Allotment { source:
    child_id, writer: sub_agent, asset: USD, remaining: amount, caveats:
-   Some(caveats), window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`.
+   Some(caveats), bucket: full(caveats), spawned: 0 })`.
 8. Load the child charter, insert `child_allotment`, store it.
 9. Event `CharterCreated { charter: child_id, allotment: child_allotment }`.
 
 ### 5.15 AgentPay { charter, payee, amount, purpose, evidence }
 
 1. Load `allotment_id = tx.inputs[1].id` (MUST be an allotment); load
-   `charter` (MUST be a charter); **chain check** it; `source = charter`,
-   `writer = sender`, `charter.agent = sender`; the allotment MUST have
-   caveats `k`.
+   `charter` (MUST be a charter); **standing** of it, yielding `N`;
+   `source = charter`, `writer = sender`, `charter.agent = sender`; the
+   allotment MUST have caveats `k`.
 2. `evidence_ok = None`, unless `evidence = Some(c)` and `k.evidence_above
    = Some(t)` and `amount > t`: then load the assurance object and
    `evidence_ok = Some(b)` where `b` is false if `c` is unknown to the
    registry or not `Active`, and otherwise `sion_assurance::decide(registry,
    k.evidence_policy, c, amount, insured = false).accept`.
-3. **spend**; store the allotment; `mint(payee, USD, amount)`.
+3. **spend**(allotment, payee, amount, evidence_ok, N); store the
+   allotment; `mint(payee, USD, amount)`.
 4. If `k.receipts`: build `body = ClaimBody { schema:
    "receipt.agent.payment/v1", subject: "agent paid {amount} USD for:
    {purpose}" (amount in `Amount`'s display form), payload:
@@ -561,22 +642,23 @@ ctx.pulse)`; `vault -= amount`; `mint(sender, USD, amount)`; store; event
 ### 5.16 RevokeCharter { charter }
 
 Load it (MUST be a charter); the sender MUST be its `agent` (an agent may
-retire itself) or one of its **overseers** (§5.13): the agent is compared
-first, so the overseer search loads nothing when the agent revokes. If
-`revoked_at` is unset set it to `ctx.pulse`; store; event `CharterRevoked
-{ charter }`. Every charter below a revoked one fails its chain check, so
-one revocation stops a whole subtree.
+retire itself) or an **overseer in good standing** (§5.13): the agent is
+compared first, so the overseer search loads nothing when the agent
+revokes. `o =
+overlay(charter)`; if `o.revoked_at` is unset set it to `ctx.pulse`; store
+`o`; event `CharterRevoked { charter }`. Every charter below a revoked one
+fails its standing check, so one revocation, one write, stops a whole
+subtree.
 
 ### 5.17 ReclaimCharter { charter }
 
 1. Load it (MUST be a charter, call it `s`); the sender MUST be
    `s.principal` or `s.backer`.
-2. The charter MUST be dead: `s.revoked_at` set, or `ctx.pulse >
-   s.caveats.expires_at`, or its **chain check ignoring suspension** fails.
-   (Evaluate in this order and stop at the first that holds; the chain
-   check is only run if the first two do not hold.) A suspended charter is
-   not dead: its funds wait for the suspension to be lifted or for a
-   revocation.
+2. The charter MUST be dead: `ctx.pulse > s.caveats.expires_at`, or its
+   **standing check ignoring suspension** fails (run only if it has not
+   expired); its own revocation is in its overlay, which that check reads
+   first. A suspended charter is not dead: its funds wait for the
+   suspension to be lifted or for a revocation.
 3. `total = 0`; for each id in `s.allotments`, in order: load it; if it is
    an allotment, `total += remaining` and **consume** it.
 4. `mint(s.backer, USD, total)`; event `CharterReclaimed { charter, amount:
@@ -593,7 +675,8 @@ one revocation stops a whole subtree.
    allotments: ∅, returned: 0 })`.
 4. For each `(writer, amount)` in order: `id = create(Account(writer),
    Allotment { source: bounded_id, writer, asset, remaining: amount,
-   caveats: None, window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`; record
+   caveats: None, bucket: none, spawned: 0 })`, where `none = Bucket {
+   tokens: 0, refilled_at: ctx.pulse, burst: 0, rate: 0 }`; record
    `id → (writer, amount)`.
 5. Load the bounded total, set `allotments` to the record, store it.
 6. Event `BoundedCreated { bounded: bounded_id, allotments: [ids in
@@ -619,7 +702,7 @@ Load `bounded` (MUST be a bounded total); `manager` MUST be the sender;
 created_id(digest, next_index)`; insert `allotment → (holder, amount)`
 into its `allotments`; store it; `create(Account(holder), Allotment {
 source: bounded, writer: holder, asset: <bounded asset>, remaining: amount,
-caveats: None, window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`; event
+caveats: None, bucket: none, spawned: 0 })` (`none` as in §5.18); event
 `AllotmentUsed { allotment, amount }`.
 
 ### 5.22 CreateMarket { label, good, numeraire, batch_length, clear_deadline, committee, threshold }
@@ -900,27 +983,29 @@ and which acts only through batches its nearest keyed ancestor signs
    `sion_exec::charter::MAX_SPAWN_BATCH`).
 2. `allotment_id = tx.inputs[1].id` (error if absent); load it (MUST be an
    allotment).
-3. Load `charter` (MUST be a charter, call it `p`); **chain check** it,
-   yielding `n`; `n < MAX_CHARTER_CHAIN` ("too deep").
+3. Load `charter` (MUST be a charter, call it `p`); **standing** of it,
+   yielding `d` and `N`; `d < MAX_LINEAGE_DEPTH` ("too deep").
 4. The allotment's `source` MUST be `charter`; its `writer` and `p.agent`
    MUST be the sender.
-5. The allotment MUST have caveats `k`; `k.may_delegate`.
-6. For each child, in order: `attenuates(child.caveats, k)`; then
-   **carve**(allotment, k, `child.caveats.max_per_window`); then
-   `remaining −= child.budget` (error if insufficient).
-7. Store the allotment.
-8. For each child, in order:
-   1. `child_id = created_id(digest, next_index)`; `account =
+5. The allotment MUST have caveats `k`; **may_spawn**(k, N).
+6. **refill**(its bucket). For each child, in order:
+   `attenuates(child.caveats, k)`; **born**(child.caveats); then
+   **carve**(its bucket, `child.caveats.burst`, `child.caveats.rate`,
+   `child.caveats.burst`); then `remaining −= child.budget` (error if
+   insufficient).
+7. `first = spawned`; `spawned += |children|`; store the allotment.
+8. For each child, the `j`-th (from 0), in order:
+   1. `child_id = lineage_id(charter, first + j)`; `account =
       child.agent`, or `keyless_account(child_id)` if `child.agent = None`;
-      `create(Shared(object_domain("charter", child_id)), Charter {
-      principal: sender, agent: account, caveats: child.caveats,
-      agent_atom: p.agent_atom, backer: p.backer, revoked_at: None, parent:
-      Some(charter), allotments: ∅, created_at: ctx.pulse, suspended_by:
-      None, identity: Some(AgentIdentity { card: child.card, depth: n })
-      })`.
+      `create_at(child_id, Shared(object_domain("charter", child_id)),
+      Charter { principal: sender, agent: account, caveats: child.caveats,
+      agent_atom: p.agent_atom, backer: p.backer, parent: Some(charter),
+      lineage: p.lineage.child(first + j), allotments: ∅, created_at:
+      ctx.pulse, identity: Some(AgentIdentity { card: child.card, depth:
+      d + 1 }) })`.
    2. `a = create(Account(account), Allotment { source: child_id,
       writer: account, asset: USD, remaining: child.budget, caveats:
-      Some(child.caveats), window_start: ctx.pulse, spent_in_window: 0, carved_window: 0 })`.
+      Some(child.caveats), bucket: full(child.caveats), spawned: 0 })`.
    3. Load the child charter, insert `a` into `allotments`, store it.
    4. Event `AgentSpawned { agent: child_id, parent: charter, account,
       allotment: a }`.
@@ -936,24 +1021,29 @@ that the operation will succeed.
 ### 5.37 SetAgentCard { charter, card }
 
 Contended, in the charter's domain. Load `charter` (MUST be a charter with
-`identity = Some(i)`); the sender MUST be its `agent`; **chain check** it;
+`identity = Some(i)`); the sender MUST be its `agent`; **standing** of it;
 `i.card = card`; store; event `AgentCardSet { agent: charter, card }`.
 
 ### 5.38 SuspendAgent { charter }
 
 Contended, in the charter's domain. Load it (MUST be a charter); the
-sender MUST be one of its **overseers** (§5.13). If `suspended_by` is
-unset, set it to the sender (the first suspension is kept); store; event
-`AgentSuspended { agent: charter, by: suspended_by }`. Until the
-suspension is lifted, the chain check of the charter and of every charter
-below it fails, so nothing in the subtree can pay or spawn.
+sender MUST be an **overseer in good standing** (§5.13), at position `r`.
+`o = overlay(charter)`; if `o.suspended_by` is unset, set it to the
+sender; if it is `Some(p)`, `p` has a position `q = position(charter, p)`
+and `r < q`, set it to the sender (v1.14): the highest suspender is kept,
+so an overseer below it cannot lift its suspension (§5.39). Store `o`;
+event `AgentSuspended { agent: charter, by: o.suspended_by }`. Until the
+suspension is lifted, the standing check of the charter and of every
+charter below it fails, so nothing in the subtree can pay or spawn.
 
 ### 5.39 ResumeAgent { charter }
 
 Contended, in the charter's domain. Load it (MUST be a charter);
-`suspended_by = Some(s)` ("not suspended" otherwise); the sender MUST be
-`s` or the charter's `backer`; set `suspended_by = None`; store; event
-`AgentResumed { agent: charter }`.
+`try_load(overlay_id(charter))` MUST exist (an overlay `o`) with
+`o.suspended_by = Some(s)` ("not suspended" otherwise); the sender MUST be
+`s` or the charter's `backer`, and an **overseer in good standing**
+(§5.13); set `o.suspended_by = None`; store `o`; event `AgentResumed {
+agent: charter }`.
 
 ### 5.40 OpenMemory { agent, policy }
 
@@ -965,7 +1055,7 @@ stores without checking, `index` and `manifest`. Constant of
 `sion_exec::memory`: `MAX_CONSISTENCY_PROOF` (128).
 
 1. If `agent = Some(a)`: load `a` (MUST be a charter with `identity` set);
-   its `agent` MUST be the sender; **chain check** it.
+   its `agent` MUST be the sender; **standing** of it.
 2. `log = created_id(digest, next_index)`; `create(Account(sender),
    MemoryLog { writer: sender, agent, policy, size: 0, root:
    merkle::empty_root(), index: Hash32::ZERO, manifest: Hash32::ZERO,
@@ -982,7 +1072,8 @@ can never both execute: a log cannot fork.
 1. `log_id = tx.inputs[1].id` (error if absent); load it (MUST be a memory
    log, call it `l`); `l.writer` MUST be the sender; `l.sealed` MUST be
    false.
-2. If `l.agent = Some(a)`: **chain check** `a`.
+2. If `l.agent = Some(a)`: load `a` (MUST be a charter); **standing** of
+   it.
 3. `|proof| ≤ MAX_CONSISTENCY_PROOF`; `size ≥ l.size`; if `size = 0`, `root
    = merkle::empty_root()`; `merkle::verify_consistency(l.root, l.size,
    root, size, proof)` MUST succeed.
@@ -1031,14 +1122,15 @@ rule fixed now, when the task is posted. Owned-linear, or bounded with
      sender`.
    - `charter = Some(c)`: `allotment_id = tx.inputs[1].id` (error if
      absent); load it (MUST be an allotment), then load `c` (MUST be a
-     charter); **chain check** `c`; the allotment's `source` MUST be `c`,
-     and its `writer` and `c.agent` MUST be the sender; it MUST have
-     caveats `k`. If `worker = None`, `k.payees` MUST be `None`: an agent
-     limited to listed payees cannot post work anyone may take.
+     charter); **standing** of `c`, yielding `N`; the allotment's `source`
+     MUST be `c`, and its `writer` and `c.agent` MUST be the sender; it MUST
+     have caveats `k`. If `worker = None`, `k.payees` MUST be `None`, and so
+     MUST every `n.payees` for `n ∈ N`: an agent limited to listed payees
+     cannot post work anyone may take.
      `evidence_ok = (acceptance.policy = k.evidence_policy)`;
      **spend**(allotment, `worker` or, for an open task, the sender,
-     `amount`, `Some(evidence_ok)`) (§5.13), so the escrow counts against
-     the agent's balance, payees, per-payment and window limits, and a task
+     `amount`, `Some(evidence_ok)`, N) (§5.13), so the escrow counts against
+     the agent's balance, payees, per-payment limits and bucket, and a task
      above the evidence threshold must be accepted under the charter's own
      policy; store the allotment; `funder = Some(c)`; `refund_to =
      c.backer`.
@@ -1413,6 +1505,121 @@ Forfeited collateral goes to the treasury, not to the client, so that
 nobody profits from making a provider fail (by flooding its network, say).
 The client gets back the escrow of every round not proven.
 
+### 5.55 SpawnCohort { charter, root, count, burst, rate, full, caveats }
+
+A **cohort** commits to up to `MAX_COHORT` (2²⁰,
+`sion_exec::cohort::MAX_COHORT`) subagents in one transaction, as the root
+of a Merkle sum tree over its members. A member costs nothing on the
+ledger until it is **materialized** (§5.56), when first needed. Bounded,
+like SpawnAgents: it writes only the sender's allotment and creates the
+cohort.
+
+1. `1 ≤ count ≤ MAX_COHORT`.
+2. `allotment_id = tx.inputs[1].id` (error if absent); load it (MUST be an
+   allotment).
+3. Load `charter` (MUST be a charter, call it `p`); **standing** of it,
+   yielding `d` and `N`; `d < MAX_LINEAGE_DEPTH` ("too deep").
+4. The allotment's `source` MUST be `charter`; its `writer` and `p.agent`
+   MUST be the sender.
+5. The allotment MUST have caveats `k`; **may_spawn**(k, N);
+   `attenuates(caveats, k)`; **born**(caveats).
+6. **refill**(its bucket); **carve**(its bucket, `burst`, `rate`, `burst`
+   if `full`, else 0).
+7. `first = spawned`; `spawned += count`; store the allotment.
+8. `cohort = created_id(digest, next_index)`;
+   `create(Shared(object_domain("cohort", cohort)), Cohort { parent:
+   charter, first, count, root, burst, rate, full, caveats, created_at:
+   ctx.pulse })`.
+9. Event `CohortSpawned { cohort, parent: charter, first, count }`.
+
+The cohort is never written again: materializing a member only reads it.
+Member `i` will be `lineage_id(charter, first + i)`.
+
+**The sum tree.** Members are `CohortMember { agent, card, budget, burst,
+rate }`. The tree has height `h = ⌈log₂ count⌉` (0 for one member) and
+`2^h` leaves: member `i` at leaf `i`, and `empty = (H("sion/cohort/empty",
+""), 0, 0)` at the rest. A node is a `SumNode { hash, burst, rate }`: a
+member's is `(H("sion/cohort/member", enc(member)), member.burst,
+member.rate)`; the node over `l` and `r` is `(H("sion/cohort/node",
+enc((l.hash, l.burst, l.rate, r.hash, r.burst, r.rate))), l.burst +
+r.burst, l.rate + r.rate)`. The cohort's `root`, `burst` and `rate` are
+the root node's. **verify(q, index, member, siblings)** for a cohort `q`:
+`index < q.count` and `|siblings| = h`; then, starting from the member's
+node, for each `j` from 0 to `h − 1`, join the node with `siblings[j]`,
+the node on the left if bit `j` of `index` is 0 and on the right otherwise
+(a sum overflowing fails); the last node MUST equal `(q.root, q.burst,
+q.rate)`.
+
+Every node on a path that verifies carries the sums that the node above
+it commits to, so the members that can ever be materialized together carry
+at most the `burst` and `rate` carved at step 6, whatever the tree's
+creator put in the rest of it.
+
+### 5.56 MaterializeAgents { cohort, members }
+
+1. `1 ≤ |members| ≤ MAX_MATERIALIZE` (128,
+   `sion_exec::cohort::MAX_MATERIALIZE`), with strictly increasing
+   `index`es.
+2. `allotment_id = tx.inputs[1].id` (error if absent); load it (MUST be an
+   allotment).
+3. Load `cohort` (MUST be a cohort, call it `q`); load `q.parent` (MUST be
+   a charter, call it `p`); **standing** of it, yielding `d` and `N`.
+4. The allotment's `source` MUST be `q.parent`; its `writer` and `p.agent`
+   MUST be the sender.
+5. The allotment MUST have caveats `k`; **may_spawn**(k, N);
+   **born**(q.caveats).
+6. For each member `m`, in order: **verify**(q, m.index, m.member,
+   m.siblings) ("not in the cohort"); `m.member.burst ≤ q.caveats.burst`
+   and `m.member.rate ≤ q.caveats.rate`; `id = lineage_id(q.parent,
+   q.first + m.index)`; `try_load(id)` MUST find nothing ("already
+   materialized"); `remaining −= m.member.budget` (error if insufficient).
+7. Store the allotment.
+8. For each member `m`, in order, with `id` as in step 6: `caveats =
+   q.caveats` with `burst = m.member.burst` and `rate = m.member.rate`;
+   `account = m.member.agent`, or `keyless_account(id)` if it is `None`;
+   `create_at(id, Shared(object_domain("charter", id)), Charter {
+   principal: sender, agent: account, caveats, agent_atom: p.agent_atom,
+   backer: p.backer, parent: Some(q.parent), lineage: p.lineage.child(
+   q.first + m.index), allotments: ∅, created_at: ctx.pulse, identity:
+   Some(AgentIdentity { card: m.member.card, depth: d + 1 }) })`; `a =
+   create(Account(account), Allotment { source: id, writer: account,
+   asset: USD, remaining: m.member.budget, caveats: Some(caveats), bucket:
+   Bucket { tokens: min(m.member.burst, start + m.member.rate × (ctx.pulse
+   − q.created_at)) (saturating), refilled_at: ctx.pulse, burst:
+   m.member.burst, rate: m.member.rate }, spawned: 0 })`, where `start =
+   m.member.burst` if `q.full`, else 0; load the charter, insert `a`, store
+   it; event `AgentMaterialized { agent: id, cohort, index: m.index,
+   account, allotment: a }`.
+
+A member's bucket is what it would hold had it existed since the cohort:
+full if the parent gave up the tokens (`full`), otherwise filling at its
+rate from the cohort's creation. Its budget comes from the parent's
+allotment when it is materialized; a cohort escrows nothing, so a parent
+whose allotment runs low cannot materialize more members, and a revoked,
+suspended or expired parent none. Materializing reads the cohort and the new ids, and writes
+only the sender's allotment and new objects: materializations of
+different parents never contend.
+
+### 5.57 NarrowAgent { charter, narrowing }
+
+Contended, in the charter's domain. An overseer adds limits to an agent
+and everything below it: every payment in the subtree is also checked
+against them (§5.13 **spend**), and nothing in it spawns unless
+`narrowing.may_delegate`.
+
+1. Load `charter` (MUST be a charter, call it `c`); the sender MUST be its
+   `agent` or an **overseer in good standing** (§5.13), the agent compared
+   first.
+2. `o = overlay(charter)`.
+3. Unless the sender is `c.backer`: `narrowing` MUST be `Some(n)`, and if
+   `o.narrowing = Some(prev)`, **narrows**(n, prev) ("only the backer may
+   widen or lift a narrowing").
+4. `o.narrowing = narrowing`; store `o`; event `AgentNarrowed { agent:
+   charter, by: sender, narrowing }` (`None` when it was lifted).
+
+A narrowing binds the subtree as soon as it executes; payments certified
+before then but executed after are checked against it.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -1781,6 +1988,47 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.14.** Lineage ids, token buckets, overlays and cohorts (§5.13).
+  A spawned charter's id is `lineage_id(parent, index)`, with the index
+  from a counter in the parent's allotment (`Allotment::spawned`), and every
+  charter keeps its `Lineage` (its tree's root and the path down to it), so
+  its ancestors' ids are computed, not read; depths run from 0 to
+  `MAX_LINEAGE_DEPTH` (8), down from chains of up to 16 charters. Window
+  limits become token buckets: caveats carry `burst` and `rate` instead of
+  `max_per_window` and `window`; allotments carry a `Bucket` instead of
+  `window_start`, `spent_in_window` and `carved_window`, start full, and a
+  spawn carves its children's burst, rate and starting tokens out of its
+  parent's bucket, so a subtree pays at most `σ + ρ·τ` in any `τ + 1`
+  Pulses, where until v1.13 it could pay twice its window's limit across a
+  boundary. What happens to a charter after it is created moves into its
+  overlay, an `AgentOverlay` at `overlay_id(charter)`: `RevokeCharter`,
+  `SuspendAgent` and `ResumeAgent` write it, charters lose `revoked_at`
+  and `suspended_by`, and the chain check, which loaded up to 16 charters,
+  becomes the standing check, which reads up to 9 overlays, most of them
+  absent. New operations: `SpawnCohort` (§5.55) commits to up to 2²⁰
+  subagents in one transaction as the root of a Merkle sum tree over their
+  bursts and rates, carved from the parent's bucket; `MaterializeAgents`
+  (§5.56) creates up to 128 of them at their lineage ids, each with a proof
+  of its leaf, its budget from the parent's allotment; `NarrowAgent`
+  (§5.57) adds limits (payees, per-payment, expiry, spawning) to a whole
+  subtree with one write, which only the backer may widen or lift. New
+  primitive `create_at` (§3.1). New types `sion_exec::charter::{Bucket,
+  Lineage, Narrowing, AgentOverlay}` and `sion_exec::cohort::{Cohort,
+  CohortMember, SumNode, Materialize}`, objects `ObjectData::{AgentOverlay,
+  Cohort}`, constants `MAX_LINEAGE_DEPTH`, `MAX_COHORT` and
+  `MAX_MATERIALIZE` (`MAX_CHARTER_CHAIN` is gone), transaction kinds and
+  events `CohortSpawned`, `AgentMaterialized` and `AgentNarrowed`. The
+  keyless ancestor search (§4.3) and the overseer search stop after
+  `MAX_LINEAGE_DEPTH` ancestors. From a review of this version: an
+  overseer acts only in good standing, its own charter and those above it
+  neither revoked nor suspended (**oversight**, replacing the overseer
+  search); a suspension by an overseer above the recorded suspender
+  replaces it, where the first suspender used to be kept and could lift
+  the suspension of one above it (§5.38); an expired charter, or one under
+  an expired narrowing, spawns nothing, and nothing is spawned already
+  expired (**may_spawn**, **born**); and a child that requires evidence
+  judges it by its parent's policy (**attenuates**).
 
 - **v1.13.** Batched authorization and keyless subagents (§4.3). One
   authorization can sign a batch of up to 256 transactions: the Merkle

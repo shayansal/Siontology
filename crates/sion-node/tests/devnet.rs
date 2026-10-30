@@ -345,8 +345,8 @@ fn keyless_subagents_pay_in_one_batch_that_is_certified_executed_and_proven() {
     let caveats = sion_exec::charter::Caveats {
         payees: Some([bob.id].into_iter().collect()),
         max_per_payment: Amount::units(5),
-        max_per_window: Amount::units(1_000),
-        window: 1_000,
+        burst: Amount::units(1_000),
+        rate: Amount::units(1),
         expires_at: Pulse(100_000),
         evidence_above: None,
         evidence_policy: sion_assurance::Policy::standard(),
@@ -380,7 +380,8 @@ fn keyless_subagents_pay_in_one_batch_that_is_certified_executed_and_proven() {
         .unwrap();
     alice.settle();
     let mut child = caveats.clone();
-    child.max_per_window = Amount::units(10);
+    child.burst = Amount::units(10);
+    child.rate = Amount(10_000);
     let spawn = alice
         .build(
             &remote,
@@ -473,6 +474,26 @@ fn keyless_subagents_pay_in_one_batch_that_is_certified_executed_and_proven() {
         bob_view.balances,
         vec![(AssetId::usd(), Amount::units(100_016))]
     );
+    // A subagent's standing (spec v1.14): its charter and the overlays of
+    // its lineage, each proven against the state its Pulse committed to.
+    let standing = devnet.query(Query::Agent(spawned[0].0)).unwrap();
+    assert_eq!(standing["status"], "active", "{standing}");
+    assert_eq!(standing["depth"], 1);
+    let at = standing["pulse"].as_u64().unwrap();
+    let view: PulseView =
+        serde_json::from_value(devnet.query(Query::Pulse(Some(Pulse(at)))).unwrap()).unwrap();
+    let charter: sion_light::ObjectProof =
+        serde_json::from_value(standing["charter"].clone()).unwrap();
+    assert!(charter.object.is_some());
+    sion_light::verify_object(&view.header, &charter).unwrap();
+    let overlays = standing["overlays"].as_array().unwrap();
+    assert_eq!(overlays.len(), 2, "the subagent's and its parent's");
+    for entry in overlays {
+        let proof: sion_light::ObjectProof =
+            serde_json::from_value(entry["overlay"].clone()).unwrap();
+        assert!(proof.object.is_none(), "nothing happened to either");
+        sion_light::verify_object(&view.header, &proof).unwrap();
+    }
     // The prover folded every Pulse the members executed in.
     for pulse in pulses {
         let mut world: Option<Value> = None;

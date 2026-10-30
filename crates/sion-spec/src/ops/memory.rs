@@ -13,7 +13,7 @@ use sion_exec::memory::{MemoryLog, MAX_CONSISTENCY_PROOF};
 use sion_exec::object::{ObjectData, Owner};
 
 use crate::error::{fail, Step};
-use crate::ops::charter::{chain_check, load_identity};
+use crate::ops::charter::{as_charter, load_identity, standing};
 use crate::tx::TxRun;
 
 /// §5.40 OpenMemory.
@@ -25,7 +25,7 @@ pub(super) fn open(run: &mut TxRun<'_>, agent: Option<ObjectId>, policy: Hash32)
         if charter.agent != sender {
             return Err(fail("only the agent opens its own memory log"));
         }
-        chain_check(run, agent_id)?;
+        standing(run, agent_id, &charter)?;
     }
     // Step 2.
     let pulse = run.ctx.pulse;
@@ -86,7 +86,8 @@ pub(super) fn commit(run: &mut TxRun<'_>, head: NewHead<'_>) -> Step {
     }
     // Step 2.
     if let Some(agent) = log.agent {
-        chain_check(run, agent)?;
+        let charter = as_charter(&run.load(&agent)?)?;
+        standing(run, agent, &charter)?;
     }
     // Step 3.
     if head.proof.len() > MAX_CONSISTENCY_PROOF {

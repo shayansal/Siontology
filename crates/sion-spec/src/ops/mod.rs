@@ -89,6 +89,21 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
         TxKind::SetAgentCard { charter, card } => charter::set_agent_card(run, *charter, *card),
         TxKind::SuspendAgent { charter } => charter::suspend_agent(run, *charter),
         TxKind::ResumeAgent { charter } => charter::resume_agent(run, *charter),
+        TxKind::SpawnCohort {
+            charter,
+            root,
+            count,
+            burst,
+            rate,
+            full,
+            caveats,
+        } => charter::spawn_cohort(run, *charter, *root, *count, *burst, *rate, *full, caveats),
+        TxKind::MaterializeAgents { cohort, members } => {
+            charter::materialize_agents(run, *cohort, members)
+        }
+        TxKind::NarrowAgent { charter, narrowing } => {
+            charter::narrow_agent(run, *charter, narrowing)
+        }
         TxKind::CreateBounded {
             label,
             asset,
@@ -277,7 +292,9 @@ mod tests {
     fn shared_bounds_are_the_specified_values() {
         assert_eq!(sion_exec::tx::MAX_GRANT, Amount::units(1_000_000_000));
         assert_eq!(sion_exec::market::MAX_PERIOD, 1_000_000);
-        assert_eq!(sion_exec::charter::MAX_CHARTER_CHAIN, 16);
+        assert_eq!(sion_exec::charter::MAX_LINEAGE_DEPTH, 8);
+        assert_eq!(sion_exec::cohort::MAX_COHORT, 1 << 20);
+        assert_eq!(sion_exec::cohort::MAX_MATERIALIZE, 128);
         assert_eq!(sion_exec::tx::MAX_INPUTS, 256);
         assert_eq!(sion_exec::escrow::MAX_ALLOTMENTS, 256);
         assert_eq!(sion_exec::market::MAX_BATCH_ORDERS, 1_024);

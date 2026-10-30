@@ -623,8 +623,8 @@ Options:
       --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --payees <PAYEES>            Allowed payees (comma-separated; empty: any)
       --max-payment <MAX_PAYMENT>  Largest payment (USD) [default: 100]
-      --max-window <MAX_WINDOW>    Largest total per window (USD) [default: 500]
-      --window <WINDOW>            Window (Pulses) [default: 1000]
+      --burst <BURST>              The most the agent may spend at once: its bucket's capacity, full when it starts (USD) [default: 500]
+      --rate <RATE>                What refills its bucket each Pulse (USD) [default: 0.5]
       --funding <FUNDING>          Budget (USD) [default: 1000]
       --bond <BOND>                Bond behind the agent's receipts (USD) [default: 0]
       --lifetime <LIFETIME>        Charter lifetime (Pulses) [default: 100000]
@@ -683,10 +683,13 @@ Commands:
   show           Show an agent: account, principal, lineage, card, status, budget
   card           Replace an agent's card with a file's commitment
   card-template  Print an agent card template (A2A-style JSON with a `sion` section)
-  suspend        Suspend an agent and everything below it (an overseer: the backer, the principal or an ancestor's agent)
-  resume         Lift a suspension (the suspender or the backer)
-  revoke         Revoke an agent and everything below it, for good (the agent itself or an overseer)
+  suspend        Suspend an agent and everything below it (an overseer in good standing: the backer, or the agent of a charter above it that is neither revoked nor suspended). The highest suspender is recorded
+  resume         Lift a suspension (the recorded suspender, in good standing, or the backer)
+  revoke         Revoke an agent and everything below it, for good (the agent itself or an overseer in good standing)
   reclaim        Return a revoked or expired agent's unspent budget to its backer (its principal or its backer)
+  narrow         Add limits to an agent and everything below it (spec v1.14): its payees, its largest payment, its last Pulse, whether it may spawn. What is not given stays as it is. Only the backer may widen or lift a narrowing
+  cohort         Commit to up to 1,048,576 keyless subagents in one transaction (spec v1.14): a cohort, the root of a sum tree over their buckets. A member costs nothing on the ledger until `agent materialize` creates it, with its budget from the parent's allotment then. The cohort is kept in $SION_HOME/agents/cohorts, to prove its members later
+  materialize    Materialize members of a cohort: their charters and allotments, at their lineage ids, with proofs of their leaves. The cohort parent's wallet signs, and signs for them afterwards
   run            Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
   continue       Continue a session: approve or decline the call it waits on, or tell it more
   sessions       The agent sessions on this machine
@@ -723,8 +726,8 @@ Options:
       --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --payees <PAYEES>            Allowed payees (comma-separated; empty: any)
       --max-payment <MAX_PAYMENT>  Largest payment (USD) [default: 100]
-      --max-window <MAX_WINDOW>    Largest total per window (USD) [default: 500]
-      --window <WINDOW>            Window (Pulses) [default: 1000]
+      --burst <BURST>              The most it may spend at once: its bucket's capacity, full when it starts (USD) [default: 500]
+      --rate <RATE>                What refills its bucket each Pulse (USD) [default: 0.5]
       --funding <FUNDING>          Budget (USD) [default: 1000]
       --bond <BOND>                Bond behind the agent's receipts (USD) [default: 0]
       --lifetime <LIFETIME>        Lifetime (Pulses) [default: 100000]
@@ -751,7 +754,8 @@ Options:
       --prefix <PREFIX>            Wallet names are `<prefix>-1`, `<prefix>-2`, …; a wallet that does not exist yet is created with a random seed [default: subagent]
       --card <CARD>                The subagents' card file
       --max-payment <MAX_PAYMENT>  Largest payment of each (USD); default: the parent's
-      --max-window <MAX_WINDOW>    Largest total per window of each (USD); default: an equal share of the window allowance the parent has not carved out yet
+      --burst <BURST>              The bucket capacity of each (USD), taken from what the parent's bucket holds; default: its budget, or an equal share of what the parent's bucket holds if that is less
+      --rate <RATE>                What refills each one's bucket each Pulse (USD); default: the share of the parent's refill that its budget is of the parent's remaining budget
       --may-spawn                  The subagents may launch subagents of their own
       --keyless                    Keyless subagents (spec v1.13): no keys are made for them. Each account is derived from the subagent's id, and the wallet that signs for the parent signs for them, in batches. Their names become `.keyless` wallet files that hold no secret
       --gas <GAS>                  Give each subagent this much USD from the parent's account for its transaction fees (all in one transaction)
@@ -797,6 +801,8 @@ Options:
   -h, --help         Print help
 ```
 
+Reads the agent's charter and the overlays of its lineage; the node's `GET /v1/agents/{id}` returns the same with state proofs ([HTTP API](http-api.md#get-v1agentsid)).
+
 ## `sion agent card`
 
 ```text
@@ -834,7 +840,7 @@ Options:
 ## `sion agent suspend`
 
 ```text
-Suspend an agent and everything below it (an overseer: the backer, the principal or an ancestor's agent)
+Suspend an agent and everything below it (an overseer in good standing: the backer, or the agent of a charter above it that is neither revoked nor suspended). The highest suspender is recorded
 
 Usage: sion agent suspend [OPTIONS] <WALLET> <AGENT>
 
@@ -850,7 +856,7 @@ Options:
 ## `sion agent resume`
 
 ```text
-Lift a suspension (the suspender or the backer)
+Lift a suspension (the recorded suspender, in good standing, or the backer)
 
 Usage: sion agent resume [OPTIONS] <WALLET> <AGENT>
 
@@ -866,7 +872,7 @@ Options:
 ## `sion agent revoke`
 
 ```text
-Revoke an agent and everything below it, for good (the agent itself or an overseer)
+Revoke an agent and everything below it, for good (the agent itself or an overseer in good standing)
 
 Usage: sion agent revoke [OPTIONS] <WALLET> <AGENT>
 
@@ -894,6 +900,76 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
+
+## `sion agent narrow`
+
+```text
+Add limits to an agent and everything below it (spec v1.14): its payees, its largest payment, its last Pulse, whether it may spawn. What is not given stays as it is. Only the backer may widen or lift a narrowing
+
+Usage: sion agent narrow [OPTIONS] <WALLET> <AGENT>
+
+Arguments:
+  <WALLET>  The wallet (the agent, an overseer or the backer)
+  <AGENT>   Agent id
+
+Options:
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --payees <PAYEES>            Allowed payees (comma-separated)
+      --max-payment <MAX_PAYMENT>  Largest payment (USD)
+      --expires-in <EXPIRES_IN>    The subtree may pay for this many more Pulses
+      --no-spawn                   The subtree may no longer launch subagents
+      --lift                       Lift the narrowing (the backer only)
+  -h, --help                       Print help
+```
+
+The agent itself or any overseer in good standing may narrow; only the backer may widen or lift. A narrowing applies to the agent and everything below it, and a payment checks every narrowing above it. See [Agent identities from the command line](../guides/agents.md#6-narrow-a-subtree).
+
+## `sion agent cohort`
+
+```text
+Commit to up to 1,048,576 keyless subagents in one transaction (spec v1.14): a cohort, the root of a sum tree over their buckets. A member costs nothing on the ledger until `agent materialize` creates it, with its budget from the parent's allotment then. The cohort is kept in $SION_HOME/agents/cohorts, to prove its members later
+
+Usage: sion agent cohort [OPTIONS] --count <COUNT> <PARENT> <AGENT> <ALLOTMENT>
+
+Arguments:
+  <PARENT>     The parent agent's wallet
+  <AGENT>      The parent's agent id
+  <ALLOTMENT>  The parent's allotment
+
+Options:
+      --count <COUNT>              How many members
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --budget <BUDGET>            Budget of each, paid when it is materialized (USD) [default: 1]
+      --burst <BURST>              Bucket capacity of each (USD) [default: 1]
+      --rate <RATE>                What refills each one's bucket each Pulse (USD) [default: 0]
+      --full                       The members' buckets start full, their tokens taken from the parent's now; otherwise they start empty and fill at their rate from the cohort's creation
+      --card <CARD>                The members' card file
+      --max-payment <MAX_PAYMENT>  Largest payment of each (USD); default: the parent's
+      --prefix <PREFIX>            Wallet names of materialized members are `<prefix>-<index>` [default: member]
+  -h, --help                       Print help
+```
+
+Members are keyless. The plan (their budget, bucket, card, prefix and signer) is kept in `$SION_HOME/agents/cohorts/<cohort>.json`, from which `sion agent materialize` rebuilds the sum tree to prove each member. See [Agent identities from the command line](../guides/agents.md#7-a-hundred-thousand-subagents-in-one-transaction).
+
+## `sion agent materialize`
+
+```text
+Materialize members of a cohort: their charters and allotments, at their lineage ids, with proofs of their leaves. The cohort parent's wallet signs, and signs for them afterwards
+
+Usage: sion agent materialize [OPTIONS] <PARENT> <COHORT>
+
+Arguments:
+  <PARENT>  The cohort parent's wallet
+  <COHORT>  The cohort (its id, or a unique prefix of it)
+
+Options:
+      --index <INDEX>  The members' indices (comma-separated); default: the next `--next` not materialized yet
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --next <NEXT>    How many of the next members not materialized yet [default: 1]
+  -h, --help           Print help
+```
+
+Up to 128 members a transaction. A member is materialized once: a second attempt finds its id taken. Its name becomes a `.keyless` wallet file, signed for by the cohort's parent.
 
 ## `sion agent run`
 
@@ -2621,7 +2697,7 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --quick        Smaller sizes
       --no-devnet    Skip the end-to-end devnet measurement
-      --only <ONLY>  Run only these groups: signatures, authorization, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
+      --only <ONLY>  Run only these groups: signatures, authorization, state, data, clearing, assurance, execution, streams, lineage, devnet (comma-separated)
       --json <JSON>  Write the measurements as JSON to this file
   -h, --help         Print help
 ```

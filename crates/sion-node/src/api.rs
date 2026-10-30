@@ -23,6 +23,7 @@
 //! | GET | `/v1/forced` | forced-inclusion obligations: the window, a summary (pending and overdue counts, the overdue root), each pending obligation, and this epoch's shard rotations |
 //! | GET | `/v1/committees` | the current committees and registered keys, Borsh in hex (what a gateway in another process follows) |
 //! | GET | `/v1/deals` | every storage deal with its state (spec v1.12) |
+//! | GET | `/v1/agents/{id}` | an agent's charter and the overlays of its lineage, each with its state proof, its status and bucket (spec v1.14) |
 //! | POST | `/v1/devnet/censor` | **adversary simulation**: `{accounts: [hex], gateway, validators}` |
 //!
 //! The same routes serve an in-process devnet, one validator of a network
@@ -304,6 +305,7 @@ fn route<B: Backend>(backend: &B, request: &mut Request) -> Result<Value, HttpEr
         }
         (Method::Get, ["v1", "forced"]) => q(Query::Forced),
         (Method::Get, ["v1", "committees"]) => q(Query::Committees),
+        (Method::Get, ["v1", "agents", id]) => q(Query::Agent(ObjectId::from_hash(hash(id)?))),
         (Method::Get, ["v1", "deals"]) => q(Query::Deals {
             open: query_param(&url, "open").is_some_and(|v| v == "1" || v == "true"),
         }),
