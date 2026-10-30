@@ -10,6 +10,23 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Evolution beyond a skill's instructions
+
+- **A skill's other files.** In `sion skill evolve`, a variant may add,
+  replace or remove the skill's references, examples and templates as
+  well as rewrite its instructions: at most 8 files a variant, each text
+  of at most 32 KiB inside the skill. A script is never written,
+  rewritten or removed: evaluation runs read a skill's files but never
+  run its scripts, so a changed script could not be scored. A version's
+  size, for the Pareto front and the best, is the bytes of all its
+  files, and a version is new by the digest of all of them.
+- **A profile's instructions.** `sion agent profile add --instructions`
+  gives a profile its operator's instructions, which follow the fixed
+  system prompt. `sion agent evolve <profile> --evals <set> --mutator
+  <model>` evolves them on an evaluation set under the same gates (at
+  most 4 KiB, new, no case lost that the parent passed), and `--apply`
+  makes the best the profile's.
+
 ### Channels across machines
 
 - **A profile's own tokens.** `sion agent profile token add <profile>`

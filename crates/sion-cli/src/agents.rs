@@ -363,6 +363,26 @@ pub enum AgentCommand {
         #[arg(long)]
         say: Option<String>,
     },
+    /// Evolve a profile's instructions (what follows the fixed system
+    /// prompt) against an evaluation set: a mutator proposes variants for
+    /// the cases its agent fails, each is scored under gates (size, new, no
+    /// regression), and with --apply the best becomes the profile's.
+    Evolve {
+        /// The agent profile.
+        profile: String,
+        /// The evaluation set (a JSON file).
+        #[arg(long)]
+        evals: std::path::PathBuf,
+        /// The model that proposes variants.
+        #[arg(long)]
+        mutator: String,
+        /// Generations, at most.
+        #[arg(long, default_value_t = 3)]
+        generations: usize,
+        /// Make the best version the profile's instructions.
+        #[arg(long)]
+        apply: bool,
+    },
     /// The agent sessions on this machine; `search` finds an agent's past
     /// sessions by words.
     Sessions {
@@ -574,6 +594,7 @@ pub fn run(
                     memory,
                     skills,
                     system,
+                    instructions: None,
                     reflect: !no_reflect,
                     delegate,
                     subagent_models,
@@ -630,6 +651,94 @@ pub fn run(
                 "{}",
                 serde_json::to_string_pretty(&found.json).unwrap_or_default()
             );
+            Ok(())
+        }
+        AgentCommand::Evolve {
+            profile,
+            evals,
+            mutator,
+            generations,
+            apply,
+        } => {
+            let mut found = crate::profiles::get(&profile)?;
+            let (set, _, digest) = crate::skill_improve::load_evals(&evals)?;
+            let base = crate::runtime::default_system(&did(ledger, &found.agent)?);
+            let skills = found
+                .skills
+                .clone()
+                .unwrap_or_else(|| crate::runtime::skills_dir(&found.agent));
+            std::fs::create_dir_all(&skills)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", skills.display())))?;
+            let proposer = crate::runtime::model(&mutator, 0)?;
+            let settings = sion_agent::evolve::Settings {
+                generations,
+                ..sion_agent::evolve::Settings::default()
+            };
+            let evolution = sion_agent::evolve::evolve_instructions(
+                &set,
+                &skills,
+                &base,
+                found.instructions.as_deref().unwrap_or_default(),
+                &crate::skill_improve::models_of(&found.models),
+                proposer.as_ref(),
+                &settings,
+            )
+            .map_err(CliError::Usage)?;
+            let cases = set.cases.len();
+            println!(
+                "profile {profile}; evaluation set {} ({cases} cases)",
+                digest.short()
+            );
+            for candidate in &evolution.candidates {
+                let text = candidate
+                    .instructions
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let from = match candidate.parent {
+                    Some(parent) => {
+                        format!("from version {parent}, generation {}", candidate.generation)
+                    }
+                    None => "the profile's".to_string(),
+                };
+                println!(
+                    "version {} ({from}): {} of {cases} cases, {} bytes: {}",
+                    candidate.index,
+                    candidate.passed(),
+                    candidate.size,
+                    if text.is_empty() {
+                        "no instructions".to_string()
+                    } else {
+                        format!("{text:?}")
+                    }
+                );
+            }
+            for rejected in &evolution.rejected {
+                println!(
+                    "turned down (generation {}, from version {}): {}",
+                    rejected.generation, rejected.parent, rejected.reason
+                );
+            }
+            let best = &evolution.candidates[evolution.best];
+            if evolution.best == 0 {
+                println!("no version did better than the profile's");
+            } else if apply {
+                found.instructions = Some(best.instructions.trim().to_string());
+                let mut profiles = crate::profiles::all()?;
+                profiles.insert(found.name.clone(), found.clone());
+                crate::profiles::save_all(&profiles)?;
+                println!(
+                    "profile {profile} now has version {}'s instructions ({} of {cases} cases)",
+                    best.index,
+                    best.passed()
+                );
+            } else {
+                println!(
+                    "the best is version {} ({} of {cases} cases): give --apply to make it the profile's",
+                    best.index,
+                    best.passed()
+                );
+            }
             Ok(())
         }
         AgentCommand::Sessions { command: None } => {

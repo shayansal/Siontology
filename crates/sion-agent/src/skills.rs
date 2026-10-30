@@ -548,6 +548,34 @@ pub const SKILL_MOUNT: &str = "/skill";
 /// The most arguments of a skill's script.
 pub const MAX_ARGS: usize = 64;
 
+/// The extensions that name a script's interpreter, with the interpreter.
+const INTERPRETERS: [(&str, &str); 8] = [
+    ("py", "python3"),
+    ("sh", "sh"),
+    ("bash", "bash"),
+    ("js", "node"),
+    ("mjs", "node"),
+    ("cjs", "node"),
+    ("rb", "ruby"),
+    ("pl", "perl"),
+];
+
+/// The interpreter `path`'s extension names, if it names one.
+fn interpreter_of(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?;
+    INTERPRETERS
+        .iter()
+        .find(|(e, _)| *e == extension)
+        .map(|(_, interpreter)| *interpreter)
+}
+
+/// Whether a skill's file at `path` with `content` could be run as a
+/// script by `skill_run`: it starts with `#!`, or its extension names an
+/// interpreter (the same rules `skill_run` runs it by).
+pub fn runnable(path: &str, content: &[u8]) -> bool {
+    content.starts_with(b"#!") || interpreter_of(Path::new(path)).is_some()
+}
+
 /// How to run a script: its `#!` line, or else an interpreter for its
 /// extension.
 fn interpreter(path: &Path) -> Result<Vec<String>, String> {
@@ -563,20 +591,10 @@ fn interpreter(path: &Path) -> Result<Vec<String>, String> {
             return Ok(argv);
         }
     }
-    let by_extension = match path.extension().and_then(|e| e.to_str()) {
-        Some("py") => "python3",
-        Some("sh") => "sh",
-        Some("bash") => "bash",
-        Some("js" | "mjs" | "cjs") => "node",
-        Some("rb") => "ruby",
-        Some("pl") => "perl",
-        _ => {
-            return Err(
-                "the script has no #! line and no extension that names its interpreter".into(),
-            )
-        }
-    };
-    Ok(vec![by_extension.to_string()])
+    match interpreter_of(path) {
+        Some(interpreter) => Ok(vec![interpreter.to_string()]),
+        None => Err("the script has no #! line and no extension that names its interpreter".into()),
+    }
 }
 
 /// Runs a script that comes with one of the agent's skills, in a sandbox:

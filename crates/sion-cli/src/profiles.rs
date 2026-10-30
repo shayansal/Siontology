@@ -58,6 +58,10 @@ pub struct Profile {
     /// Whether it has the storage-deal tools.
     #[serde(default)]
     pub storage: bool,
+    /// What its operator tells it beyond the fixed system prompt, which
+    /// stays first (`sion agent evolve` improves it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 fn yes() -> bool {
@@ -81,6 +85,7 @@ impl Profile {
             shell: self.shell.clone(),
             mcp: self.mcp.clone(),
             storage: self.storage,
+            instructions: self.instructions.clone(),
         }
     }
 
@@ -213,6 +218,9 @@ pub enum ProfileCommand {
         /// Give it the storage-deal tools.
         #[arg(long)]
         storage: bool,
+        /// What to tell it beyond the fixed system prompt.
+        #[arg(long)]
+        instructions: Option<String>,
     },
     /// The profiles on this machine.
     List,
@@ -282,6 +290,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             shell,
             mcp,
             storage,
+            instructions,
         } => {
             let shell = shell.sandbox()?;
             for server in &mcp {
@@ -322,6 +331,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 shell,
                 mcp,
                 storage,
+                instructions: instructions.filter(|i| !i.trim().is_empty()),
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()
@@ -442,6 +452,9 @@ pub fn describe(profile: &Profile) -> String {
     let mut extras = Vec::new();
     if profile.memory.is_some() {
         extras.push("memory".to_string());
+    }
+    if profile.instructions.is_some() {
+        extras.push("instructions".to_string());
     }
     if profile.web {
         extras.push("web".to_string());

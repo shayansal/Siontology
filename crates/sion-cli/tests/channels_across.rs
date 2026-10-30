@@ -83,6 +83,7 @@ fn profile(
         shell: None,
         mcp: Vec::new(),
         storage: false,
+        instructions: None,
     }
 }
 

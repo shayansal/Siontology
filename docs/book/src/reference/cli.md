@@ -692,6 +692,7 @@ Commands:
   materialize    Materialize members of a cohort: their charters and allotments, at their lineage ids, with proofs of their leaves. The cohort parent's wallet signs, and signs for them afterwards
   run            Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
   continue       Continue a session: approve or decline the call it waits on, or tell it more
+  evolve         Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
   sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
@@ -1050,6 +1051,25 @@ Options:
 
 See [Agents at work](../guides/agent-runtime.md#approvals).
 
+## `sion agent evolve`
+
+```text
+Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
+
+Usage: sion agent evolve [OPTIONS] --evals <EVALS> --mutator <MUTATOR> <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --evals <EVALS>              The evaluation set (a JSON file)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --mutator <MUTATOR>          The model that proposes variants
+      --generations <GENERATIONS>  Generations, at most [default: 3]
+      --apply                      Make the best version the profile's instructions
+  -h, --help                       Print help
+```
+
 ## `sion agent sessions`
 
 ```text
@@ -1181,6 +1201,8 @@ Options:
           Give it the reviewed tools of this MCP server. Repeat for more
       --storage
           Give it the storage-deal tools
+      --instructions <INSTRUCTIONS>
+          What to tell it beyond the fixed system prompt
   -h, --help
           Print help
 ```
@@ -2008,7 +2030,7 @@ Commands:
   show     A release: what it names, the backing behind it, and the decision rule for a value at risk
   install  Install a release for an agent: fetch and check its bundle, accept the release with the agent's remaining budget at risk, and only then put the skill in the agent's skills
   eval     Run an evaluation set on a skill: each case with stand-in tools, then its checks. Needs no node
-  evolve   Evolve a skill against an evaluation set: a model proposes variants for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
+  evolve   Evolve a skill against an evaluation set: a model proposes variants (new instructions, and other files but never scripts) for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
   vouch    Vouch for an evaluation set on your bond: claim that it has no known way to be passed without doing what the skill describes
   bounty   Post a bounty for a better version of a release: a Task Charter whose spec names the release, the evaluation set and the cases to pass, and whose verifiers are fixed now, before any version exists
   verify   Verify a version for a bounty, as one of its verifiers: check that it keeps the skill's purpose, run the evaluation set on it yourself, and attest on your bond only if enough cases pass
@@ -2166,7 +2188,7 @@ Needs no node. See [Skills that get better](../guides/skill-improvement.md#measu
 ## `sion skill evolve`
 
 ```text
-Evolve a skill against an evaluation set: a model proposes variants for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
+Evolve a skill against an evaluation set: a model proposes variants (new instructions, and other files but never scripts) for the cases it fails, each is scored under gates, and the best version found is kept as a draft. Needs no node
 
 Usage: sion skill evolve [OPTIONS] --evals <EVALS> --model <MODELS> --mutator <MUTATOR> <DIR>
 

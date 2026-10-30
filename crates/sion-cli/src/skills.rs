@@ -196,8 +196,9 @@ pub enum SkillCommand {
         trajectories: Option<PathBuf>,
     },
     /// Evolve a skill against an evaluation set: a model proposes variants
-    /// for the cases it fails, each is scored under gates, and the best
-    /// version found is kept as a draft. Needs no node.
+    /// (new instructions, and other files but never scripts) for the cases
+    /// it fails, each is scored under gates, and the best version found is
+    /// kept as a draft. Needs no node.
     Evolve {
         /// The skill directory (with a SKILL.md).
         dir: PathBuf,

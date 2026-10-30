@@ -120,10 +120,11 @@ release.
 ### 3. Self-improvement that cannot fool itself
 
 **Status: built** (`sion skill eval`, `evolve`, `vouch`, `bounty`,
-`verify`, `submit` and `lineage`; see
-[Skills that get better](../guides/skill-improvement.md)), except an
-overseer's approval as a required claim (step 4). No change to the state
-transition: it uses claims, bonds and Task Charters as they are.
+`verify`, `submit` and `lineage`, and `sion agent evolve`; see
+[Skills that get better](../guides/skill-improvement.md)). Requiring a
+named verifier's attestation, such as an overseer's (step 4), came with
+specification v1.15; the rest uses claims, bonds and Task Charters as
+they are.
 
 1. **Experience.** Every session is a trajectory: messages, tool calls,
    results, and an outcome (the user's verdict, a check, a task's
@@ -142,7 +143,11 @@ transition: it uses claims, bonds and Task Charters as they are.
    tests pass, a size limit, the purpose unchanged. *Built: evaluation
    sets of cases with stand-in tools and checks; the gates are the name
    and description unchanged, 15,000 bytes, a version not tried before,
-   and no case lost that the parent passed. Only the instructions evolve.*
+   and no case lost that the parent passed. A variant may change the
+   instructions and the skill's other files, never its scripts; a
+   profile's own instructions, after the fixed system prompt, evolve the
+   same way (`sion agent evolve`). The system prompt itself and the
+   tools' descriptions do not evolve.*
 4. **Promotion, verified by others.** A variant becomes the new version
    only when **verifiers who did not write it** attest that it passes the
    evaluation, through a Task Charter whose acceptance rule was fixed

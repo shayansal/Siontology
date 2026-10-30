@@ -204,9 +204,11 @@ command knows of no later Pulse). Self-improvement
 ([Skills that get better](book/src/guides/skill-improvement.md)): an
 evaluation set is cases with stand-in tools and checks, fixed by the
 digest of its bytes; `sion skill evolve` shows a model the cases a
-version fails and scores the variants it proposes, under gates (purpose,
-size, novelty, no regression), keeping a Pareto front, and keeps the best
-as a draft; a bounty is a Task Charter whose spec names the release, the
+version fails and scores the variants it proposes (new instructions, and
+the skill's other files but never its scripts), under gates (purpose,
+files, size, novelty, no regression), keeping a Pareto front, and keeps
+the best as a draft; `sion agent evolve` does the same for a profile's
+own instructions, which follow the fixed system prompt; a bounty is a Task Charter whose spec names the release, the
 set and the cases to pass, with its verifiers, adjudicator and required
 claims (such as the set's author vouching for it, `skill.evals/v1`) fixed
 before any version exists; verifiers run the set themselves and attest;

@@ -1118,6 +1118,8 @@ pub struct Equipment {
     /// Whether to ask the agent, after a long task it finished, whether to
     /// write down how it did it as a skill.
     pub reflect: bool,
+    /// What its operator tells it after the system prompt.
+    pub instructions: Option<String>,
     /// Whether it may hand work to other agents.
     pub delegate: bool,
     /// The models its subagents run with (default: its own).
@@ -1157,6 +1159,7 @@ pub fn start(
         memory,
         skills,
         system,
+        instructions,
         reflect,
         delegate,
         subagent_models,
@@ -1214,7 +1217,10 @@ pub fn start(
         models,
         policy,
         limits: limits.clone(),
-        system: system.unwrap_or_else(|| default_system(&did)),
+        system: sion_agent::evolve::with_instructions(
+            &system.unwrap_or_else(|| default_system(&did)),
+            instructions.as_deref().unwrap_or_default(),
+        ),
         workspace,
         web,
         memory,
