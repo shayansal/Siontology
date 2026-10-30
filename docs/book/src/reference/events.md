@@ -56,6 +56,9 @@ The same event as a sentence: `epoch 1 began with 5 active validators;
 | `AgentPaid` | `charter`, `payee`, `amount`, `receipt` | `AgentPay` | `agent paid <amount> USD to <payee>[ (receipt claim <id>)]` |
 | `AgentRegistered` | `agent`, `account`, `allotment` | `RegisterAgent` | `agent <id> registered, signing as <account>` |
 | `AgentSpawned` | `agent`, `parent`, `account`, `allotment` | `SpawnAgents` (one per subagent) | `subagent <id> launched by <parent>, signing as <account>`, or for a keyless subagent (`account` is `keyless_account(agent)`) `subagent <id> launched by <parent>, keyless: its nearest keyed ancestor signs for it` |
+| `CohortSpawned` | `cohort`, `parent`, `first`, `count` | `SpawnCohort` | `cohort <id> of <n> committed under <parent> (lineage indices <first> to <last>)` |
+| `AgentMaterialized` | `agent`, `cohort`, `index`, `account`, `allotment` | `MaterializeAgents` (one per member) | `member <index> of cohort <id> materialized as agent <id>, keyless`, or `…, signing as <account>` |
+| `AgentNarrowed` | `agent`, `by`, `narrowing` (`None` when lifted) | `NarrowAgent` | `agent <id> narrowed by <account>, with everything below it`, or `the narrowing of agent <id> lifted by <account>` |
 | `AgentCardSet` | `agent`, `card` | `SetAgentCard` | `agent <id>'s card is now <hash>` |
 | `AgentSuspended` | `agent`, `by` | `SuspendAgent` | `agent <id> suspended by <account>, with everything below it` |
 | `AgentResumed` | `agent` | `ResumeAgent` | `agent <id> resumed` |

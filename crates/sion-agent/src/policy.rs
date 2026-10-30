@@ -1,7 +1,7 @@
 //! Whether a call runs: autonomy levels, grants, approvals and taint.
 //!
 //! Spending limits are not here. The ledger enforces the agent's charter
-//! (payees, per-payment and per-window caps, budget, expiry) whatever the
+//! (payees, per-payment caps, its token bucket, budget, expiry) whatever the
 //! runtime decides, so a runtime that is misconfigured or compromised still
 //! cannot spend beyond it.
 

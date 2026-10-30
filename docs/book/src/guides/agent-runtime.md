@@ -16,13 +16,15 @@ runtime is the same; only the `--model` changes.
 ## An agent and its limits
 
 alice registers agent-7: it may pay only bob, at most 10 USD a payment and
-50 USD per 1,000 Pulses, from a budget of 100 USD. The agent's account
+50 USD at once, its bucket refilled by 0.05 USD a Pulse, from a budget of
+100 USD. The agent's account
 pays its transactions' fees, so it gets 1 USD for them:
 
 ```text
-$ sion agent register alice agent-7 --payees bob --max-payment 10 --max-window 50 --funding 100
-Pulse 6: Done: agent 5552c0b8 registered, signing as agent-7; fee 0.0011 USD.
-agent 5552c0b886768c31a1b3adb93c97a0ae40327150077439e2f98d327d05724d00
+$ sion agent register alice agent-7 --payees bob --max-payment 10 --burst 50 --rate 0.05 --funding 100
+alice signs: Register agent-7 as an agent, funded with 100 USD: only to bob, at most 10 USD per payment, 50 USD at once, refilled by 0.05 USD a Pulse, until Pulse 100116, a receipt claim for every payment, may delegate narrower limits. Fee 0.0011 USD; valid until Pulse 136.
+Pulse 118: Done: agent 1e6739d2 registered, signing as agent-7; fee 0.0011 USD.
+agent 1e6739d22704e3a8d11f45e383253240c1b4c78217f0f081b37396874e9d1967
 …
 $ sion faucet agent-7 1
 ```
@@ -34,18 +36,18 @@ its charter forbids: a tip to carol, and 50 USD to bob. At autonomy L6
 the runtime lets every call through, so the ledger is what refuses them:
 
 ```text
-$ sion agent run agent-7 5552c0b8…4d00 --task "Pay bob 5 USD for inference." --model script:pay.json --autonomy L6
-session b0684b26844b4c3a for agent 5552c0b8
+$ sion agent run agent-7 1e6739d2…1967 --task 'Pay bob 5 USD for inference.' --model script:pay.json --autonomy L6
+session 7fa7a7ab979c4da7 for agent 1e6739d2
   → ledger_balance {}
-  ← {"budget_remaining_usd":"100","expires_at_pulse":100003,"fee_balance_usd":"1","max_per_payment_usd":"10","max_per_window_usd":"50","payees":["bob"],"status":"active","window_pulses":1000}
+  ← {"budget_remaining_usd":"100","burst_usd":"50","can_spend_now_usd":"50","expires_at_pulse":100116,"fee_balance_usd":"1","max_per_payment_usd":"10","payees":["bob"],"refill_usd_per_pulse":"0.05","status":"active"}
   → ledger_pay {"amount":"5","purpose":"inference","to":"bob"}
-  ← Pulse 25: Done: agent paid 5 USD to bob (receipt claim 928874b5); fee 0.0012 USD. Transaction d16eeb90….
+  ← Pulse 123: Done: agent paid 5 USD to bob (receipt claim 3d512f94); fee 0.0012 USD. Transaction 5350fd4e….
   → ledger_pay {"amount":"5","purpose":"a tip","to":"carol"}
-  ✗ refused by the ledger at Pulse 28: Failed (charter caveat violated: payee not allowed); nothing happened except the fee of 0.0011 USD.
+  ✗ refused by the ledger at Pulse 125: Failed (charter caveat violated: payee not allowed); nothing happened except the fee of 0.0011 USD.
   → ledger_pay {"amount":"50","purpose":"a big order","to":"bob"}
-  ✗ refused by the ledger at Pulse 30: Failed (charter caveat violated: payment 50 above per-payment limit 10); nothing happened except the fee of 0.0011 USD.
+  ✗ refused by the ledger at Pulse 127: Failed (charter caveat violated: payment 50 above per-payment limit 10); nothing happened except the fee of 0.0011 USD.
 agent: Paid bob 5 USD for inference. The ledger refused a tip to carol, who is not a payee my charter allows, and a 50 USD order, above my 10 USD limit per payment.
-session b0684b26844b4c3a: done
+session 7fa7a7ab979c4da7: done
 ```
 
 A script is a JSON array of steps: `{"call": "<tool>", "input": {…}}`,
@@ -54,7 +56,7 @@ finish. The agent's tools:
 
 | Tool | Effect | What it does |
 |---|---|---|
-| `ledger_balance` | read | The budget left, the limits per payment and per window, the payees allowed, the account's balance for fees, the agent's status |
+| `ledger_balance` | read | The budget left, the limit per payment, what the agent's bucket lets it spend now and how fast it refills, the payees allowed, the account's balance for fees, the agent's status |
 | `ledger_pay` | spend | Pays from the charter's budget; the receipt records which runtime call made the payment |
 | `ledger_transaction` | read | Whether a transaction executed, by digest, to check a payment whose outcome is unknown |
 | `read_file`, `write_file`, `list_files` | read, write | Files in the directory `--workspace` gives, and nowhere else |
@@ -108,29 +110,29 @@ at L6, so instructions hidden in a page cannot move money on their own.
 At L5 the payment waits. The session is saved, and the command returns:
 
 ```text
-$ sion agent run agent-7 5552c0b8…4d00 --task "Plan the labelling job and pay bob 3 USD for it." --model script:ask.json --workspace work
-session 8ddd1f79ba8f43a1 for agent 5552c0b8
+$ sion agent run agent-7 1e6739d2…1967 --task 'Plan the labelling job and pay bob 3 USD for it.' --model script:ask.json --workspace work
+session 403d8d22d822eda5 for agent 1e6739d2
   → write_file {"content":"Buy 1 GPU-hour of data labelling from bob for 3 USD.\n","path":"plan.md"}
   ← wrote 53 bytes to plan.md
   → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"}
   ← waiting for a person's approval
-session 8ddd1f79ba8f43a1: waiting for you: ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (spending at autonomy L5). Answer with `sion agent continue 8ddd1f79ba8f43a1 --approve` or `--decline <why>`.
-$ sion agent continue 8ddd1f --approve
+session 403d8d22d822eda5: waiting for you: ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (spending at autonomy L5). Answer with `sion agent continue 403d8d22d822eda5 --approve` or `--decline <why>`.
+$ sion agent continue 403d8d --approve
   → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (decided)
-  ← Pulse 71: Done: agent paid 3 USD to bob (receipt claim 5b0bc441); fee 0.0011 USD. Transaction d16e10f0….
+  ← Pulse 130: Done: agent paid 3 USD to bob (receipt claim 42733002); fee 0.0011 USD. Transaction 4c086f4e….
 agent: Wrote the plan to plan.md and paid bob 3 USD for data labelling.
-session 8ddd1f79ba8f43a1: done
+session 403d8d22d822eda5: done
 ```
 
 An approval covers that one call and lasts 15 minutes. Declined, the call
 is not made and the model is told why:
 
 ```text
-$ sion agent continue 277c16 --decline "we already paid bob for this job"
+$ sion agent continue ec2bdc --decline 'we already paid bob for this job'
   → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (decided)
   ✗ a person declined this call: we already paid bob for this job
 agent: I did not pay bob: you declined, since the job is already paid for.
-session 277c16c20ae0bd31: done
+session ec2bdc0df92e8230: done
 ```
 
 `sion agent continue <session> --say "…"` tells a finished session more
@@ -258,9 +260,9 @@ once others have verified the better version: see
   ```text
   $ sion agent kill-switch on
   kill switch on: every agent run stops before its next call (…/agents/STOP)
-  $ sion agent run agent-7 5552c0b8…4d00 --task "Pay bob 1 USD." --model script:pay.json --autonomy L6
-  session b8a2d4554c212298 for agent 5552c0b8
-  session b8a2d4554c212298: stopped by the kill switch (…/agents/STOP)
+  $ sion agent run agent-7 1e6739d2…1967 --task 'Pay bob 1 USD.' --model script:pay.json --autonomy L6
+  session c58d85c8dae08969 for agent 1e6739d2
+  session c58d85c8dae08969: stopped by the kill switch (…/agents/STOP)
   $ sion agent kill-switch off
   ```
 

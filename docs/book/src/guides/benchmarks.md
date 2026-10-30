@@ -13,7 +13,7 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --quick        Smaller sizes
       --no-devnet    Skip the end-to-end devnet measurement
-      --only <ONLY>  Run only these groups: signatures, authorization, state, data, clearing, assurance, execution, streams, devnet (comma-separated)
+      --only <ONLY>  Run only these groups: signatures, authorization, state, data, clearing, assurance, execution, streams, lineage, devnet (comma-separated)
       --json <JSON>  Write the measurements as JSON to this file
   -h, --help         Print help
 ```
@@ -183,6 +183,50 @@ to 43 ms over three runs, and a Pulse of 256 payments each signed by its
 own keyed subagent in 1.25 to 1.36 s: 29 to 47 times longer, run by run.
 Both include everything else executing a payment costs: its caveats, its
 allotment and its coins.
+
+## Lineage and cohorts
+
+The `lineage` group measures what [cohorts and lineage
+ids](../concepts/agent-identities.md#cohorts-a-million-subagents-in-one-transaction)
+cost: building a cohort's sum tree, the transactions that commit to it and
+materialize its members, a member's state, and what a payment by an agent
+at the deepest level reads. On the 2-core virtual machine of the
+authorization runs (Intel Xeon at 2.80 GHz), idle, release build of
+specification v1.14, 30 October 2026 (`sion bench --only lineage`, the
+second of three runs; the whole group takes about 3 seconds):
+
+```text
+group        measurement                                                   value unit     note
+lineage      cohort of 1048576: build its sum tree                       1789.84 ms       every leaf and inner node, one core, by the client
+lineage      SpawnCohort of 1048576: bytes                              19906.00 B        the whole signed transaction
+lineage      SpawnCohort of 1048576: fee                                 1100.00 µUSD     devnet prices
+lineage      10^10 identities: SpawnCohort transactions                  9537.00 tx       our arithmetic: cohorts of 2^20; about 10 USD in fees at the measured fee per cohort
+lineage      MaterializeAgents of 128: bytes per member                  1522.99 B        proofs of 20 siblings each
+lineage      MaterializeAgents of 128: fee per member                     142.19 µUSD     devnet prices
+lineage      MaterializeAgents of 128: execution per member               124.34 µs       proof checks, creates and the signature check, one core
+lineage      a materialized member: state                                 868.00 B        its charter and allotment, encoded (a keyless member has no account object)
+lineage      a payment at depth 8: objects read                            14.00 objects  10 of them proven absent (the overlays of the agent and its ancestors, and the coins it creates)
+lineage      a payment at depth 8: witness                               7317.00 B        objects and their state proofs
+```
+
+**A million identities in one transaction.** The client built the sum
+tree over 1,048,576 members in 1.78 to 1.85 s over three runs, on one
+core. The `SpawnCohort` that commits to them is 19,906 bytes, almost all
+of them its dual signature, and pays a fee of 0.0011 USD. Ten
+billion identities would take 9,537 of them, about 10.5 USD in fees at
+devnet prices (our arithmetic).
+
+**A member costs nothing until it is materialized.** Then it costs 1,523
+bytes of transaction (most of them its proof: 20 siblings of 64 bytes
+each, a hash and two sums) and 142 µUSD of fee, 128 to a transaction, and
+119 to 127 µs to execute on one core, the transaction's signature check
+included. A keyless member's state is 868 bytes: its charter and its
+allotment, and no account object.
+
+**A payment at depth 8 reads 14 objects.** Ten of them are proven absent:
+the overlays of the agent and its eight ancestors, none of which was ever
+revoked, suspended or narrowed, and the coin the payment creates. With
+their state proofs, the witness is 7,317 bytes.
 
 ## Measuring your own machine
 

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 977688fbf2ee7149a5c325730ec9b1f85cf558d8306ed781f4ac242d6431fb44 # shrinks to burst = 278, rate = 10, ops = [Pay { node: 0, amount: 108 }, Next { gap: 0 }, Spawn { parent: 0, wallet: 0, burst: 179, rate: 0 }, Next { gap: 0 }, Pay { node: 7, amount: 173 }]
+cc df79665eb6897f3234c5f3d427596134b68ed4ff92372426e14eed72453c6dc1 # shrinks to burst = 192, rate = 6, ops = [Pay { node: 0, amount: 87 }, Next { gap: 0 }, Delegate { parent: 0, wallet: 0, burst: 110, rate: 0 }, Next { gap: 0 }, Pay { node: 13, amount: 107 }]

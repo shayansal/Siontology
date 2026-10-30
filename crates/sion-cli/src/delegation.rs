@@ -259,29 +259,33 @@ fn launch(delegation: &Delegation, orders: &[&Order]) -> Result<Vec<Launched>, S
     if !charter.caveats.may_delegate {
         return Err("your charter does not let you spawn subagents".into());
     }
-    let left_window = match ledger.object(allotment).map_err(|e| e.to_string())? {
+    // What the parent's bucket keeps (spec v1.14): its capacity and refill,
+    // and what it holds now. Children start with full buckets, taken from
+    // what it holds.
+    let pulse = ledger.pulse().map_err(|e| e.to_string())?;
+    let (kept, remaining) = match ledger.object(allotment).map_err(|e| e.to_string())? {
         Some(object) => match object.data {
-            ObjectData::Allotment(a) => a
-                .caveats
-                .as_ref()
-                .map(|k| k.max_per_window.0.saturating_sub(a.carved_window.0))
-                .unwrap_or(0),
-            _ => 0,
+            ObjectData::Allotment(a) => (a.bucket, a.remaining),
+            _ => return Err("the budget is not an allotment".into()),
         },
-        None => 0,
+        None => return Err("the budget is gone".into()),
     };
-    // The window left is shared out in proportion to the budgets, so that
-    // together the children never carve more than the parent has left.
+    let holds = kept.level(pulse).min(kept.burst);
+    // Each child may spend its whole budget at once if the bucket holds
+    // that much for all of them; otherwise they share what it holds, in
+    // proportion to their budgets. Each gets the share of the parent's
+    // refill that its budget is of the parent's remaining budget.
     let children: Vec<Spawn> = orders
         .iter()
         .map(|order| {
             let mut caveats = charter.caveats.clone();
-            let window = if total.0 <= left_window {
+            let burst = if total.0 <= holds.0 {
                 order.budget.0
             } else {
-                left_window.saturating_mul(order.budget.0) / total.0.max(1)
+                holds.0.saturating_mul(order.budget.0) / total.0.max(1)
             };
-            caveats.max_per_window = Amount(window.min(order.budget.0));
+            caveats.burst = Amount(burst.min(order.budget.0));
+            caveats.rate = Amount(kept.rate.0.saturating_mul(order.budget.0) / remaining.0.max(1));
             caveats.max_per_payment = Amount(caveats.max_per_payment.0.min(order.budget.0));
             caveats.may_delegate = caveats.may_delegate && delegation.depth + 1 < MAX_DEPTH;
             // Keyless (spec v1.13): no key is made or kept for it; the wallet

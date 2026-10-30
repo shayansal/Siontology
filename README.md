@@ -46,10 +46,10 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   sealed orders and beacon-derived tie-breaking, so no solver or sequencer
   can choose winners.
 - **Agent Charters.** AI agents spend inside limits the protocol enforces:
-  payees, per-payment and per-window budgets, expiry, evidence
-  requirements, receipts and delegation that can only narrow. A
-  prompt-injected agent cannot exceed them; revoking a charter stops every
-  sub-agent at once.
+  payees, a per-payment limit, a token bucket carved down the tree of
+  sub-agents, expiry, evidence requirements, receipts and delegation that
+  can only narrow. A prompt-injected agent cannot exceed them; suspending,
+  narrowing or revoking a charter applies to every sub-agent at once.
 - **Post-quantum from the start.** Every account and validator signs with
   two unrelated families at once (ML-DSA-44 and SLH-DSA-SHA2-128f), so a
   forger must break both; payloads are encrypted with ML-KEM-768.

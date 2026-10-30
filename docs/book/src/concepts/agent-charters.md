@@ -38,7 +38,7 @@ subagents](agent-identities.md).
 |---|---|
 | `payees` | Allowed payees; none means any payee |
 | `max_per_payment` | The largest single payment |
-| `max_per_window`, `window` | The largest total within a window of `window` Pulses |
+| `burst`, `rate` | A token bucket: the most the agent may spend at once, and what refills it each Pulse. It starts full |
 | `expires_at` | The last Pulse in which the agent may act |
 | `evidence_above`, `evidence_policy` | Payments above this amount must cite an evidence claim that passes the decision rule under the principal's policy, for the payment's amount |
 | `receipts` | Whether every payment issues a receipt claim |
@@ -53,27 +53,32 @@ subagents](agent-identities.md).
   bonded atom `bond:<principal>:charter:<id>` behind the agent's receipts,
   with `agent_bond` posted behind it.
 - **`AgentPay { charter, payee, amount, purpose, evidence }`** (bounded).
-  The agent pays from its allotment. The ledger checks the charter chain
-  (this charter and up to 15 ancestors; any revoked one stops the payment),
-  then each caveat, in this order: enough remaining, not expired, payee
-  allowed, per-payment limit, window total, evidence. With receipts on, it
+  The agent pays from its allotment. The ledger checks the charter's
+  standing (the overlays of this charter and of its ancestors, at most 9;
+  a revoked or suspended one stops the payment, a narrowing adds its
+  limits), then each caveat, in this order: enough remaining, not expired,
+  payee allowed, per-payment limit, the limits of any narrowing above it,
+  enough in the bucket, evidence. With receipts on, it
   issues a claim with schema `receipt.agent.payment/v1` whose subject is
   `agent paid <amount> USD for: <purpose>`, resting on the dual signature
   and the charter's agent atom.
 - **`Delegate { charter, sub_agent, caveats, amount }`** (bounded). The
   agent moves part of its allotment to a sub-agent under a child charter.
   The child's caveats must attenuate the parent's: payees a subset, limits
-  no higher, the window no shorter, expiry no later, receipts kept,
+  no higher, burst and rate no higher, expiry no later, receipts kept,
   delegation only if the parent allows it, and evidence required at no
-  higher threshold. The child's window limit is carved out of the parent's
-  (specification v1.8): the parent's own limit becomes what it has not
-  handed down.
+  higher threshold. The child's burst and rate are carved out of the
+  parent's bucket, and the tokens it starts with out of what the bucket
+  holds (specification v1.14): the parent keeps only what it has not handed
+  down, so a whole tree whose root has a burst σ and a rate ρ pays at most
+  σ + ρ·τ over any τ + 1 consecutive Pulses.
 - **`RevokeCharter { charter }`** (contended). The principal revokes (since
-  v1.8 also the backer, any ancestor's agent, or the agent itself). Every
-  payment under the charter, or under any charter delegated from it, that
-  executes after the revocation fails. Payments in the same Pulse run
-  first, because owned-path transactions execute before contended ones
-  (see [Pulses](pulses.md)).
+  v1.8 also the backer, any ancestor's agent, or the agent itself). The
+  revocation is written to the charter's overlay (v1.14). Every payment
+  under the charter, or under any charter delegated from it, that executes
+  after the revocation fails. Payments in the same Pulse run first, because
+  owned-path transactions execute before contended ones (see
+  [Pulses](pulses.md)).
 - **`ReclaimCharter { charter }`** (contended). Once a charter is dead
   (revoked, expired, or an ancestor revoked), its principal or root
   principal returns what is left in its allotments to the root principal,
@@ -87,28 +92,28 @@ delegates.
 ## On the devnet
 
 A charter that lets `agent7` pay only `gpu-cloud`, at most 50 USD per
-payment and 80 USD per 100 Pulses:
+payment and 80 USD at once, its bucket refilled by 0.1 USD a Pulse:
 
 ```text
-$ sion charter create acme agent7 --payees gpu-cloud --max-payment 50 --max-window 80 --window 100 --funding 200 --bond 100 --lifetime 5000
-acme signs: Give agent7 an Agent Charter funded with 200 USD and a 100 USD bond behind its receipts: only to gpu-cloud, at most 50 USD per payment, 80 USD per 100 Pulses, until Pulse 5078, a receipt claim for every payment, may delegate narrower limits. Fee 0.0012 USD; valid until Pulse 98.
-Pulse 81: Done: charter b5a996a1 created; fee 0.0012 USD.
-  digest dd6f1072604e2a537b12d032ce3382c328bd0f49143af36d62bda333ea82e10f
-charter b5a996a110d819b4aff62bade475dc17a1a29edc7cbca838535ccac9e5884c22
-allotment a78700d352f435d63964e670fd7e95f47367e5769c8616983de6c165784e1b44
+$ sion charter create acme agent7 --payees gpu-cloud --max-payment 50 --burst 80 --rate 0.1 --funding 200 --bond 100 --lifetime 5000
+acme signs: Give agent7 an Agent Charter funded with 200 USD and a 100 USD bond behind its receipts: only to gpu-cloud, at most 50 USD per payment, 80 USD at once, refilled by 0.1 USD a Pulse, until Pulse 5005, a receipt claim for every payment, may delegate narrower limits. Fee 0.0012 USD; valid until Pulse 25.
+Pulse 7: Done: charter 080027af created; fee 0.0012 USD.
+  digest 4753898eb688e58574a372b6f5d7bfec695214f11411221d4fed06823df6133b
+charter 080027af99f5541e72560fbc961349c486c4623e4622a5fc23bff96668a14cea
+allotment 3a51139ff80e74baf2c49f40627288db4833a493bce4a6fd75ed714b27a31f6e
 ```
 
 What the ledger did with five payments and one revocation (the full
 commands are in [Charters for AI agents](../guides/charters.md)):
 
 ```text
-Pulse 85: Done: agent paid 30 USD to gpu-cloud (receipt claim 9d0032a4); fee 0.0012 USD.
-Pulse 88: Failed (charter caveat violated: payee not allowed); nothing happened except the fee of 0.0011 USD.
-Pulse 90: Failed (charter caveat violated: payment 60 above per-payment limit 50); nothing happened except the fee of 0.0011 USD.
-Pulse 92: Done: agent paid 45 USD to gpu-cloud (receipt claim c70a4257); fee 0.0011 USD.
-Pulse 94: Failed (charter caveat violated: window total 85 above limit 80); nothing happened except the fee of 0.0011 USD.
-Pulse 99: Done: charter b5a996a1 revoked; fee 0.0011 USD.
-Pulse 101: Failed (charter caveat violated: charter revoked); nothing happened except the fee of 0.0011 USD.
+Pulse 10: Done: agent paid 30 USD to gpu-cloud (receipt claim e06955c0); fee 0.0012 USD.
+Pulse 13: Failed (charter caveat violated: payee not allowed); nothing happened except the fee of 0.0011 USD.
+Pulse 16: Failed (charter caveat violated: payment 60 above per-payment limit 50); nothing happened except the fee of 0.0011 USD.
+Pulse 19: Done: agent paid 45 USD to gpu-cloud (receipt claim 38c2ea63); fee 0.0011 USD.
+Pulse 22: Failed (charter caveat violated: the bucket holds 6.2, below the payment 10); nothing happened except the fee of 0.0011 USD.
+Pulse 26: Done: charter 080027af revoked; fee 0.0011 USD.
+Pulse 28: Failed (charter caveat violated: charter revoked); nothing happened except the fee of 0.0011 USD.
 ```
 
 A refused payment still costs its fee, paid from the agent's own coins:
@@ -117,14 +122,14 @@ the agent needs a little USD of its own for fees.
 The receipt is a claim backed by the 100 USD agent bond:
 
 ```text
-$ sion claim decide 9d0032a485de130c5900c88a4c647f02be6f3a7c49cadf251856d36859ac807c 40
+$ sion claim decide e06955c0…777e 40
 {
+  …
   "accept": true,
-  ...
+  "adjudicator_cap": "Infinite",
   "reasons": [
     "cost of corruption 100 covers κ·V = 80"
-  ],
-  ...
+  ]
 }
 ```
 

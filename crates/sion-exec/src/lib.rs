@@ -21,8 +21,8 @@
 //!
 //! Modules:
 //!
-//! - [`object`], [`account`], [`claim`], [`charter`], [`escrow`], [`market`],
-//!   [`stream`], [`assurance`]: the sorts of state.
+//! - [`object`], [`account`], [`claim`], [`charter`], [`cohort`], [`escrow`],
+//!   [`market`], [`stream`], [`assurance`]: the sorts of state.
 //! - [`beacons`]: the beacons of recorded Pulses, for randomness fixed in
 //!   advance.
 //! - [`validators`]: stake, epochs, committees, equivocation evidence and
@@ -43,6 +43,7 @@ pub mod auth;
 pub mod beacons;
 pub mod charter;
 pub mod claim;
+pub mod cohort;
 pub mod delegation;
 pub mod error;
 pub mod escrow;

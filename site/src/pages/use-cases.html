@@ -31,12 +31,12 @@
       <dl class="facts">
         <div><dt>For</dt><dd>Companies that let AI agents spend money: on compute, data, API calls or goods, on someone&rsquo;s behalf.</dd></div>
         <div><dt>Today</dt><dd>An agent&rsquo;s limits live in its own code, its prompt or a card&rsquo;s settings, so a prompt injection, a bug or a stolen key can spend whatever the agent can reach. Gartner expects AI agents to intermediate 90% of B2B buying, more than 15 trillion USD, by 2028 (<a href="https://www.gartner.com/en/articles/strategic-predictions-for-2026">Gartner</a>).</dd></div>
-        <div><dt>With Siontology</dt><dd>An Agent Charter is an object on the ledger that fixes whom the agent may pay, how much per payment and per window, its budget, and who answers for it. Validators check every payment against the charter before it executes.</dd></div>
+        <div><dt>With Siontology</dt><dd>An Agent Charter is an object on the ledger that fixes whom the agent may pay, how much per payment and how fast, its budget, and who answers for it. Validators check every payment against the charter before it executes.</dd></div>
         <div><dt>What changes</dt><dd>The worst case is known before the agent starts: at most its budget, only to listed payees. A compromised agent is stopped by the ledger, not by its own judgement, and revoking the charter stops the agent and every sub-agent it created.</dd></div>
         <div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span><br>Not built: limits on which models may act under a charter, and adapters for other agent-payment standards such as AP2 and ERC-8004.</dd></div>
       </dl>
       <ol class="steps">
-        <li><div><strong>Charter</strong><p>The company creates a charter: payees, a limit per payment and per window, a budget, receipts on, and a bond behind the agent&rsquo;s receipts.</p></div></li>
+        <li><div><strong>Charter</strong><p>The company creates a charter: payees, a limit per payment, a burst and a rate that cap how fast it spends, a budget, receipts on, and a bond behind the agent&rsquo;s receipts.</p></div></li>
         <li><div><strong>Pay</strong><p>The agent pays a listed payee within its limits. The payment executes and its receipt joins the knowledge log.</p></div></li>
         <li><div><strong>Refuse</strong><p>A payment to an unlisted payee, or above a limit, is refused by the validators, whatever the agent was told.</p></div></li>
         <li><div><strong>Delegate</strong><p>The agent can give a sub-agent part of its budget under narrower limits, never wider ones.</p></div></li>

@@ -15,7 +15,7 @@ use sion_core::ids::{AccountId, ObjectId};
 use sion_core::merkle;
 use sion_core::Amount;
 use sion_crypto::AuthPolicy;
-use sion_exec::charter::{Charter, MAX_CHARTER_CHAIN};
+use sion_exec::charter::{Charter, MAX_LINEAGE_DEPTH};
 use sion_exec::object::{well_known, Object, ObjectData};
 use sion_exec::state::ChainConfig;
 use sion_exec::tx::{SignedTransaction, TxBatch, MAX_BATCH, SIGNATURE_SHARE_PERMILLE, TX_DOMAIN};
@@ -112,7 +112,7 @@ pub(crate) fn authorizing_policy<E>(
                 let Some(id) = parent else {
                     return Ok(Err("no keyed ancestor: the chain ends".into()));
                 };
-                if ancestors >= MAX_CHARTER_CHAIN - 1 {
+                if ancestors >= MAX_LINEAGE_DEPTH {
                     return Ok(Err("no keyed ancestor within the chain limit".into()));
                 }
                 let Some(ancestor) = as_charter(read(&id)?) else {

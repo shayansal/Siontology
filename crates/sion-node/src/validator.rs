@@ -2200,6 +2200,80 @@ impl Validator {
                     .collect();
                 Ok(json!({ "pulse": pulse, "deals": deals }))
             }
+            Query::Agent(id) => {
+                let pulse = self.state.pulse;
+                // What matters to a client is the next Pulse, in which a
+                // payment would execute.
+                let next = pulse.next();
+                let charter = match self.state.objects.get(&id).map(|o| &o.data) {
+                    Some(ObjectData::Charter(charter)) => charter.clone(),
+                    _ => return Err(format!("{id} is not an agent or charter")),
+                };
+                let ids = charter.lineage.ancestry();
+                let mut overlays = Vec::with_capacity(ids.len());
+                let (mut revoked, mut suspended, mut stopped, mut narrowed) =
+                    (false, false, false, false);
+                let mut expired = next > charter.caveats.expires_at;
+                for agent in ids.iter().rev() {
+                    let overlay_id = sion_exec::charter::overlay_id(agent);
+                    let object = self.state.objects.get(&overlay_id).cloned();
+                    if let Some(ObjectData::AgentOverlay(o)) = object.as_ref().map(|o| &o.data) {
+                        let own = agent == &id;
+                        revoked |= own && o.revoked_at.is_some();
+                        suspended |= own && o.suspended_by.is_some();
+                        stopped |= !own && (o.revoked_at.is_some() || o.suspended_by.is_some());
+                        if let Some(n) = &o.narrowing {
+                            narrowed = true;
+                            expired |= next > n.expires_at;
+                        }
+                    }
+                    let proof = self.snapshot().prove(&overlay_id.0);
+                    overlays.push(json!({
+                        "agent": agent,
+                        "overlay": ObjectProof { id: overlay_id, object, proof },
+                    }));
+                }
+                let mut bucket = json!(null);
+                for allotment in &charter.allotments {
+                    if let Some(ObjectData::Allotment(a)) =
+                        self.state.objects.get(allotment).map(|o| &o.data)
+                    {
+                        bucket = json!({
+                            "allotment": allotment,
+                            "remaining": a.remaining,
+                            "can_spend_next_pulse": a.bucket.level(next).min(a.remaining),
+                            "burst": a.bucket.burst,
+                            "rate_per_pulse": a.bucket.rate,
+                            "spawned": a.spawned,
+                        });
+                    }
+                }
+                let status = if revoked {
+                    "revoked"
+                } else if suspended {
+                    "suspended"
+                } else if stopped {
+                    "stopped by an ancestor"
+                } else if expired {
+                    "expired"
+                } else if narrowed {
+                    "active, narrowed"
+                } else {
+                    "active"
+                };
+                let object = self.state.objects.get(&id).cloned();
+                let proof = self.snapshot().prove(&id.0);
+                Ok(json!({
+                    "pulse": pulse,
+                    "agent": id,
+                    "status": status,
+                    "depth": charter.lineage.depth(),
+                    "lineage": charter.lineage,
+                    "charter": ObjectProof { id, object, proof },
+                    "overlays": overlays,
+                    "bucket": bucket,
+                }))
+            }
             Query::Forced => {
                 let obligations = self.state.forced();
                 Ok(json!({

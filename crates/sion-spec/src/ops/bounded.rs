@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use sion_core::ids::{AccountId, AssetId, ObjectId};
 use sion_core::Amount;
-use sion_exec::charter::Allotment;
+use sion_exec::charter::{Allotment, Bucket};
 use sion_exec::escrow::{BoundedTotal, MAX_ALLOTMENTS};
 use sion_exec::execute::{Deferred, Event};
 use sion_exec::object::{ObjectData, Owner};
@@ -29,9 +29,14 @@ fn bounded_allotment(
         asset,
         remaining,
         caveats: None,
-        window_start: run.ctx.pulse,
-        spent_in_window: Amount::ZERO,
-        carved_window: Amount::ZERO,
+        // `none` (§5.18): a bounded total's allotments have no bucket.
+        bucket: Bucket {
+            tokens: Amount::ZERO,
+            refilled_at: run.ctx.pulse,
+            burst: Amount::ZERO,
+            rate: Amount::ZERO,
+        },
+        spawned: 0,
     })
 }
 
@@ -109,7 +114,7 @@ pub(super) fn spend_allotment(run: &mut TxRun<'_>, to: AccountId, amount: Amount
     if allotment.writer != run.sender() {
         return Err(fail("only the allotment's writer may spend it"));
     }
-    spend(&mut allotment, run.ctx.pulse, &to, amount, None)?;
+    spend(&mut allotment, run.ctx.pulse, &to, amount, None, &[])?;
     let asset = allotment.asset;
     let id = object.id;
     object.data = ObjectData::Allotment(allotment);

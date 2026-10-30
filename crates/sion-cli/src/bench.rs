@@ -497,6 +497,293 @@ fn authorization(r: &mut Recorder, quick: bool) {
     }
 }
 
+/// Lineage ids, overlays and cohorts (spec v1.14): what a client spends
+/// building a cohort's sum tree, what a cohort and its materializations
+/// cost on the wire and in fees, what a materialized agent costs in state,
+/// and what an agent's payment reads at the deepest generation.
+fn lineage(r: &mut Recorder, quick: bool) {
+    use sion_exec::charter::{Caveats, Spawn, MAX_LINEAGE_DEPTH};
+    use sion_exec::cohort::{CohortMember, CohortTree, Materialize, MAX_MATERIALIZE};
+
+    let count: u32 = if quick { 1 << 14 } else { 1 << 20 };
+    let member = CohortMember {
+        agent: None,
+        card: Hash32::ZERO,
+        budget: Amount::units(1),
+        burst: Amount::units(1),
+        rate: Amount(100),
+    };
+    let start = Instant::now();
+    let tree = CohortTree::build(&vec![member.clone(); count as usize]).expect("a tree");
+    r.add(
+        "lineage",
+        &format!("cohort of {count}: build its sum tree"),
+        start.elapsed().as_secs_f64() * 1e3,
+        "ms",
+        "every leaf and inner node, one core, by the client",
+    );
+    let top = tree.root();
+
+    // A root agent, a chain of generations below it, and a cohort.
+    let mut chain = Chain::new(&["principal", "agent", "vendor"], 10_000_000, 8);
+    chain.replay = false;
+    let agent = chain.id("agent");
+    let vendor = chain.id("vendor");
+    let caveats = Caveats {
+        payees: Some([vendor].into_iter().collect()),
+        max_per_payment: Amount::units(10),
+        burst: Amount::units(1_000_000_000),
+        rate: Amount::units(1_000_000),
+        expires_at: Pulse(10_000_000),
+        evidence_above: None,
+        evidence_policy: Policy::standard(),
+        receipts: false,
+        may_delegate: true,
+    };
+    let event_pair = |out: &sion_exec::PulseOutput| {
+        out.effects
+            .iter()
+            .flat_map(|e| e.events.iter())
+            .find_map(|event| match event {
+                sion_exec::Event::AgentRegistered {
+                    agent, allotment, ..
+                }
+                | sion_exec::Event::AgentSpawned {
+                    agent, allotment, ..
+                } => Some((*agent, *allotment)),
+                _ => None,
+            })
+            .expect("an agent")
+    };
+    let register = chain
+        .tx(
+            "principal",
+            TxKind::RegisterAgent {
+                agent,
+                card: Hash32::ZERO,
+                caveats: caveats.clone(),
+                funding: Amount::units(5_000_000),
+                agent_bond: Amount::ZERO,
+            },
+        )
+        .expect("register");
+    let out = chain.pulse(vec![register]).expect("pulse");
+    let (root, root_allotment) = event_pair(&out);
+
+    let input = chain.state.objects[&root_allotment].reference();
+    let mut members_caveats = caveats.clone();
+    members_caveats.burst = Amount::units(1);
+    members_caveats.rate = Amount(100);
+    members_caveats.may_delegate = false;
+    let spawn_cohort = chain
+        .tx_with(
+            "agent",
+            TxKind::SpawnCohort {
+                charter: root,
+                root: top.hash,
+                count,
+                burst: top.burst,
+                rate: top.rate,
+                full: false,
+                caveats: members_caveats,
+            },
+            vec![input],
+        )
+        .expect("cohort");
+    r.add(
+        "lineage",
+        &format!("SpawnCohort of {count}: bytes"),
+        spawn_cohort.size() as f64,
+        "B",
+        "the whole signed transaction",
+    );
+    r.add(
+        "lineage",
+        &format!("SpawnCohort of {count}: fee"),
+        spawn_cohort.tx.fee.0 as f64,
+        "µUSD",
+        "devnet prices",
+    );
+    let identities = 10_000_000_000u64;
+    let cohorts = identities.div_ceil(u64::from(sion_exec::cohort::MAX_COHORT));
+    r.add(
+        "lineage",
+        "10^10 identities: SpawnCohort transactions",
+        cohorts as f64,
+        "tx",
+        format!(
+            "our arithmetic: cohorts of 2^20; about {:.0} USD in fees at the measured fee per cohort",
+            cohorts as f64 * spawn_cohort.tx.fee.0 as f64 / 1e6
+        ),
+    );
+    let out = chain.pulse(vec![spawn_cohort]).expect("pulse");
+    let cohort = out
+        .effects
+        .iter()
+        .flat_map(|e| e.events.iter())
+        .find_map(|event| match event {
+            sion_exec::Event::CohortSpawned { cohort, .. } => Some(*cohort),
+            _ => None,
+        })
+        .expect("a cohort");
+
+    // A full batch of members.
+    let batch = MAX_MATERIALIZE.min(count as usize) as u32;
+    let members: Vec<Materialize> = (0..batch)
+        .map(|index| Materialize {
+            index,
+            member: member.clone(),
+            siblings: tree.prove(index).expect("a proof"),
+        })
+        .collect();
+    let input = chain.state.objects[&root_allotment].reference();
+    let materialize = chain
+        .tx_with(
+            "agent",
+            TxKind::MaterializeAgents { cohort, members },
+            vec![input],
+        )
+        .expect("materialize");
+    r.add(
+        "lineage",
+        &format!("MaterializeAgents of {batch}: bytes per member"),
+        materialize.size() as f64 / f64::from(batch),
+        "B",
+        format!(
+            "proofs of {} siblings each",
+            sion_exec::cohort::height(count)
+        ),
+    );
+    r.add(
+        "lineage",
+        &format!("MaterializeAgents of {batch}: fee per member"),
+        materialize.tx.fee.0 as f64 / f64::from(batch),
+        "µUSD",
+        "devnet prices",
+    );
+    let mut state = chain.state.clone();
+    let pulse = state.pulse.next();
+    let input_pulse = PulseInput {
+        pulse,
+        beacon: sim_beacon(pulse),
+        owned: vec![materialize.clone()],
+        contended: Vec::new(),
+        forced: Vec::new(),
+    };
+    let (elapsed, output) = std::thread::spawn(move || {
+        let start = Instant::now();
+        let output = execute_pulse(&mut state, &input_pulse, true).expect("execute");
+        (start.elapsed(), output)
+    })
+    .join()
+    .expect("thread");
+    assert_eq!(output.status_counts().0, 1, "the materialization succeeds");
+    r.add(
+        "lineage",
+        &format!("MaterializeAgents of {batch}: execution per member"),
+        per_op(elapsed, batch as usize),
+        "µs",
+        "proof checks, creates and the signature check, one core",
+    );
+    let out = chain.pulse(vec![materialize]).expect("pulse");
+    let (first, first_allotment) = out
+        .effects
+        .iter()
+        .flat_map(|e| e.events.iter())
+        .find_map(|event| match event {
+            sion_exec::Event::AgentMaterialized {
+                agent, allotment, ..
+            } => Some((*agent, *allotment)),
+            _ => None,
+        })
+        .expect("a member");
+    let state_bytes = encode(&chain.state.objects[&first]).len()
+        + encode(&chain.state.objects[&first_allotment]).len();
+    r.add(
+        "lineage",
+        "a materialized member: state",
+        state_bytes as f64,
+        "B",
+        "its charter and allotment, encoded (a keyless member has no account object)",
+    );
+
+    // Generations down to the deepest, then a payment from it.
+    let (mut charter, mut allotment) = (root, root_allotment);
+    for _ in 0..MAX_LINEAGE_DEPTH {
+        let input = chain.state.objects[&allotment].reference();
+        let mut child = caveats.clone();
+        child.burst = Amount::units(1_000);
+        child.rate = Amount::units(1);
+        let tx = chain
+            .tx_with(
+                "agent",
+                TxKind::SpawnAgents {
+                    charter,
+                    children: vec![Spawn {
+                        agent: Some(agent),
+                        card: Hash32::ZERO,
+                        caveats: child,
+                        budget: Amount::units(100),
+                    }],
+                },
+                vec![input],
+            )
+            .expect("spawn");
+        let out = chain.pulse(vec![tx]).expect("pulse");
+        (charter, allotment) = event_pair(&out);
+    }
+    let input = chain.state.objects[&allotment].reference();
+    let pay = chain
+        .tx_with(
+            "agent",
+            TxKind::AgentPay {
+                charter,
+                payee: vendor,
+                amount: Amount::units(1),
+                purpose: "bench".into(),
+                evidence: None,
+            },
+            vec![input],
+        )
+        .expect("pay");
+    let mut state = chain.state.clone();
+    let pulse = state.pulse.next();
+    let input = PulseInput {
+        pulse,
+        beacon: sim_beacon(pulse),
+        owned: vec![pay],
+        contended: Vec::new(),
+        forced: Vec::new(),
+    };
+    let (_, traces) = execute_pulse_traced(&mut state, &input, true, 1).expect("execute");
+    let chunk = traces
+        .iter()
+        .find(|t| !t.statement.deferred_phase)
+        .expect("a transaction chunk");
+    let absent = chunk
+        .witness
+        .objects
+        .iter()
+        .filter(|(_, object, _)| object.is_none())
+        .count();
+    r.add(
+        "lineage",
+        &format!("a payment at depth {MAX_LINEAGE_DEPTH}: objects read"),
+        chunk.witness.objects.len() as f64,
+        "objects",
+        format!(
+            "{absent} of them proven absent (the overlays of the agent and its ancestors, and the coins it creates)"
+        ),
+    );
+    r.add(
+        "lineage",
+        &format!("a payment at depth {MAX_LINEAGE_DEPTH}: witness"),
+        encode(&chunk.witness.objects).len() as f64,
+        "B",
+        "objects and their state proofs",
+    );
+}
+
 /// A chain where an agent has `count` subagents with gas and budgets, and
 /// one agent payment from each: signed by each keyed subagent, or by the
 /// parent in one batch for keyless ones.
@@ -514,8 +801,8 @@ fn agent_payments(count: usize, keyless: bool) -> (Chain, Vec<SignedTransaction>
     let caveats = Caveats {
         payees: Some([vendor].into_iter().collect()),
         max_per_payment: Amount::units(10),
-        max_per_window: Amount::units(1_000_000),
-        window: 1_000,
+        burst: Amount::units(1_000_000),
+        rate: Amount::units(1_000),
         expires_at: Pulse(1_000_000),
         evidence_above: None,
         evidence_policy: Policy::standard(),
@@ -548,7 +835,8 @@ fn agent_payments(count: usize, keyless: bool) -> (Chain, Vec<SignedTransaction>
         })
         .expect("registered");
     let mut child = caveats.clone();
-    child.max_per_window = Amount::units(100);
+    child.burst = Amount::units(100);
+    child.rate = Amount::units(1);
     let children: Vec<Spawn> = names
         .iter()
         .map(|name| Spawn {
@@ -1067,7 +1355,7 @@ impl sion_exec::StateView for Prefetched {
 }
 
 /// The benchmark groups, in the order they run.
-pub const GROUPS: [&str; 9] = [
+pub const GROUPS: [&str; 10] = [
     "signatures",
     "authorization",
     "state",
@@ -1076,6 +1364,7 @@ pub const GROUPS: [&str; 9] = [
     "assurance",
     "execution",
     "streams",
+    "lineage",
     "devnet",
 ];
 
@@ -1127,6 +1416,9 @@ pub fn run(
     }
     if wanted("streams") {
         streams(&mut r, quick);
+    }
+    if wanted("lineage") {
+        lineage(&mut r, quick);
     }
     if with_devnet && wanted("devnet") {
         devnet(&mut r, quick)?;

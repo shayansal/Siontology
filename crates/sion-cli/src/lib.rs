@@ -21,6 +21,7 @@ pub mod agents;
 pub mod batcher;
 pub mod bench;
 pub mod channels;
+pub mod cohorts;
 pub mod delegation;
 pub mod demos;
 pub mod describe;

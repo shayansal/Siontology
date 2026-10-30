@@ -58,8 +58,8 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
                 caveats: Caveats {
                     payees: Some([bob].into()),
                     max_per_payment: Amount::units(10),
-                    max_per_window: Amount::units(50),
-                    window: 1_000,
+                    burst: Amount::units(50),
+                    rate: Amount(50_000),
                     expires_at: Pulse(pulse.0 + 100_000),
                     evidence_above: None,
                     evidence_policy: sion_assurance::Policy::standard(),

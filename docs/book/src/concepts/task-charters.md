@@ -92,7 +92,8 @@ withdrawn.
 
 An agent posts tasks from its own allotment, under its caveats: the escrow
 counts against its balance, its payees, its per-payment limit and its
-window limit. An agent limited to listed payees cannot post a bounty that
+token bucket, and every narrowing above it applies. An agent limited to
+listed payees, by its caveats or by a narrowing, cannot post a bounty that
 anyone may take. Since subagents' budgets are carved from their parents'
 ([agent identities](agent-identities.md)), a whole tree of agents posting
 work can never spend more than its root was given, and the escrow of a

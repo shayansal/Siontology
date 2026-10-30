@@ -21,8 +21,9 @@ use sion_crypto::{
     AuthPolicy, Authorization, CryptoError, DualKeypair, KemPublicKey, KeyShare, PublicKey,
 };
 
-use crate::charter::{Caveats, Spawn};
+use crate::charter::{Caveats, Narrowing, Spawn};
 use crate::claim::ClaimBody;
+use crate::cohort::Materialize;
 use crate::market::Submission;
 use crate::object::{well_known, CoordinationClass, ObjectRef};
 use crate::state::ChainConfig;
@@ -728,6 +729,43 @@ pub enum TxKind {
         /// The deal.
         deal: ObjectId,
     },
+    /// An agent commits to up to `MAX_COHORT` subagents by the root of a
+    /// sum tree over them, carving the sums of their bursts and rates from
+    /// its bucket (spec §5.55). Its allotment is `inputs[1]`.
+    SpawnCohort {
+        /// The parent's charter.
+        charter: ObjectId,
+        /// The sum tree's root hash.
+        root: Hash32,
+        /// How many members.
+        count: u32,
+        /// The sum of the members' bursts.
+        burst: Amount,
+        /// The sum of the members' rates.
+        rate: Amount,
+        /// Whether the members start with full buckets, their tokens taken
+        /// from the parent's now.
+        full: bool,
+        /// The members' caveats, each member's own burst and rate in place
+        /// of these, which bound them.
+        caveats: Caveats,
+    },
+    /// The parent of a cohort creates members of it, each with a proof of
+    /// its leaf (spec §5.56). Its allotment is `inputs[1]`.
+    MaterializeAgents {
+        /// The cohort.
+        cohort: ObjectId,
+        /// The members, by increasing index, at most `MAX_MATERIALIZE`.
+        members: Vec<Materialize>,
+    },
+    /// The agent or an overseer adds limits to an agent's whole subtree, or
+    /// the backer widens or lifts them (spec §5.57).
+    NarrowAgent {
+        /// The charter.
+        charter: ObjectId,
+        /// The limits, or `None` to lift them.
+        narrowing: Option<Narrowing>,
+    },
 }
 
 /// A transaction body (what is signed).
@@ -795,7 +833,8 @@ impl Transaction {
             | TxKind::ReclaimCharter { charter }
             | TxKind::SetAgentCard { charter, .. }
             | TxKind::SuspendAgent { charter }
-            | TxKind::ResumeAgent { charter } => Some(object_domain("charter", charter)),
+            | TxKind::ResumeAgent { charter }
+            | TxKind::NarrowAgent { charter, .. } => Some(object_domain("charter", charter)),
             TxKind::Rebalance { bounded, .. } => Some(object_domain("bounded", bounded)),
             TxKind::RevealBatch { market, .. } | TxKind::ClearBatch { market, .. } => {
                 Some(object_domain("market", market))
@@ -836,6 +875,8 @@ impl Transaction {
             | TxKind::ReturnAllotment
             | TxKind::Delegate { .. }
             | TxKind::SpawnAgents { .. }
+            | TxKind::SpawnCohort { .. }
+            | TxKind::MaterializeAgents { .. }
             | TxKind::PostTask {
                 charter: Some(_), ..
             } => CoordinationClass::Bounded,

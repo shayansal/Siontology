@@ -41,9 +41,13 @@ session 35fe88cb470eb08a: done
    of one. `lead-buyer` is a `.keyless` file under `$SION_HOME/wallets`
    that holds no secret, only the subagent's id and the name of the wallet
    that signs for it.
-2. It carves the budget from the parent's allotment. The ledger requires
-   the subagent's caveats to attenuate the parent's: payees, the most per
-   payment and per window (here 10 USD each), and the expiry.
+2. It carves the budget from the parent's allotment, and the subagent's
+   bucket from the parent's bucket: a burst of its budget if the parent's
+   bucket holds that much for every subagent of the turn, and the share of
+   the parent's refill that its budget is of the parent's remaining
+   budget. The ledger requires the subagent's caveats to attenuate the
+   parent's: payees, the most per payment (here at most its budget), the
+   bucket, and the expiry.
 3. It gives the subagent 0.05 USD from the account that signs for it, to
    pay its transactions' fees.
 4. It runs the task in a session of the subagent's own, with the models

@@ -193,7 +193,8 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
           <thead><tr><th scope="col">Caveat</th><th scope="col">What it fixes</th></tr></thead>
           <tbody>
             <tr><th scope="row">Payees</th><td>An allow-list of accounts the agent may pay</td></tr>
-            <tr><th scope="row">Per payment and per window</th><td>The largest single payment, and the most in one window of Pulses</td></tr>
+            <tr><th scope="row">Per payment</th><td>The largest single payment</td></tr>
+            <tr><th scope="row">Burst and rate</th><td>A token bucket: the most the agent may spend at once, refilled by a fixed amount each Pulse. A sub-agent&rsquo;s bucket is carved out of its parent&rsquo;s, so a whole tree of agents pays no faster than its root may</td></tr>
             <tr><th scope="row">Expiry</th><td>The Pulse after which the charter is dead</td></tr>
             <tr><th scope="row">Evidence</th><td>Above a threshold, a payment needs a claim that passes the decision rule under a stated policy</td></tr>
             <tr><th scope="row">Receipts</th><td>Every payment issues a receipt claim, backed by the principal&rsquo;s bond</td></tr>

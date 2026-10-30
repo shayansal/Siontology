@@ -26,19 +26,19 @@ judge can rule on challenges to claims that name it.
 
 ```text
 $ sion bond publisher skills 150
-publisher signs: Post a 150 USD bond behind your Economic assumption "skills". Fee 0.0012 USD; valid until Pulse 53.
-Pulse 35: Done: accepted; fee 0.0012 USD.
-  digest 6a28dd493d7f47f9000de4644b2be29fdf083afbc67675b1e4f3d5941ac3ba32
+publisher signs: Post a 150 USD bond behind your Economic assumption "skills". Fee 0.0012 USD; valid until Pulse 29.
+Pulse 11: Done: accepted; fee 0.0012 USD.
+  digest f8d00da3c3359ae0e983214d0cad7e4b5372e3338254f86ca1b33df59c28c993
 atom ee393313d041bbb7e8971eacbde348c23c1222614e05431133f630c65f35c5ac
 $ sion bond auditor audits 100
-auditor signs: Post a 100 USD bond behind your Economic assumption "audits". Fee 0.0012 USD; valid until Pulse 55.
-Pulse 37: Done: accepted; fee 0.0012 USD.
-  digest 59ee33a7777bd93e39cba6fb345a4f53466a696f71432acd572a6f550bf3963e
+auditor signs: Post a 100 USD bond behind your Economic assumption "audits". Fee 0.0012 USD; valid until Pulse 31.
+Pulse 14: Done: accepted; fee 0.0012 USD.
+  digest 7ce3cf690b16337cdce7491925ceb4d712f32886558f386da74d177d62319360
 atom f88c21902f81e2f30ffa938b80837a5fcf43ec770f105f68413e7ed3dd991ba5
 $ sion bond judge skills-court 1000 --class adjudicator
-judge signs: Post a 1,000 USD bond behind your Adjudicator assumption "skills-court". Fee 0.0012 USD; valid until Pulse 57.
-Pulse 39: Done: accepted; fee 0.0012 USD.
-  digest 9daadb40b5a5e70fe658affc59c1077b578ba5bd79ed8300818e574f5653508e
+judge signs: Post a 1,000 USD bond behind your Adjudicator assumption "skills-court". Fee 0.0012 USD; valid until Pulse 34.
+Pulse 16: Done: accepted; fee 0.0012 USD.
+  digest bee8b08d6f0084626db0a3a4c8d0bff0e1ec7c5d44aa43564018d1d7ee099ef9
 atom da9fbb8535e4de328fe3d67643861ae350237e0a7bab90536c2d624f8ce75ce4
 ```
 
@@ -46,10 +46,10 @@ alice registers agent-9 with a budget of 100 USD and gives its account
 1 USD for fees:
 
 ```text
-$ sion agent register alice agent-9 --max-payment 10 --max-window 50 --funding 100
-alice signs: Register agent-9 as an agent, funded with 100 USD: any payee, at most 10 USD per payment, 50 USD per 1000 Pulses, until Pulse 100039, a receipt claim for every payment, may delegate narrower limits. Fee 0.0011 USD; valid until Pulse 59.
-Pulse 42: Done: agent 2d58e6ef registered, signing as agent-9; fee 0.0011 USD.
-agent 2d58e6ef0f276d49320dd6cadeff5f2914c2b1b8e23b8cb0f07cc93a0e8c1a82
+$ sion agent register alice agent-9 --max-payment 10 --burst 50 --rate 0.05 --funding 100
+alice signs: Register agent-9 as an agent, funded with 100 USD: any payee, at most 10 USD per payment, 50 USD at once, refilled by 0.05 USD a Pulse, until Pulse 100016, a receipt claim for every payment, may delegate narrower limits. Fee 0.0011 USD; valid until Pulse 36.
+Pulse 18: Done: agent abfeec72 registered, signing as agent-9; fee 0.0011 USD.
+agent abfeec726cfc9e7b4c895cf74b160166697ec4214554e5f928af2339419585ac
 …
 $ sion faucet agent-9 1
 funded agent-9 with 1
@@ -94,8 +94,8 @@ judge as the adjudicator of challenges:
 
 ```text
 $ sion skill publish publisher src/pay-invoices --version 1.0.0 --bond skills --adjudicator da9fbb85…5ce4
-publisher signs: Publish the claim "Skill pay-invoices 1.0.0: Pay a supplier's invoice after checking it against the order." (skill/v1), valid for 100000 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 64.
-Pulse 46: Done: claim 3949333f submitted; fee 0.0011 USD.
+publisher signs: Publish the claim "Skill pay-invoices 1.0.0: Pay a supplier's invoice after checking it against the order." (skill/v1), valid for 100000 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 40.
+Pulse 23: Done: claim 3949333f submitted; fee 0.0011 USD.
 release 3949333f4ede9a9e1464e4d158147602b097c4f1c156bb5f72574c2cfc3dc54e
 bundle b487525ab4feced27cdf33694243e723620699e5c08c18bb76f433a78085ffad
 ```
@@ -105,7 +105,7 @@ A skill that misleads agent-9 could cost it its whole remaining budget,
 it has 150:
 
 ```text
-$ sion skill install agent-9 2d58e6ef…1a82 3949333f…c54e
+$ sion skill install agent-9 abfeec72…85ac 3949333f…c54e
 bundle b487525a checked: 2 files, skill pay-invoices 1.0.0
 error: verification failed: not installed: the backing behind release 3949333f does not cover 100 USD at risk: cost of corruption 150 (after detection discount 1000/1000) is below κ·V = 200; only 150 of backing is unreserved; κ·V = 200 is needed
 ```
@@ -122,12 +122,12 @@ its bond **or** the audit:
 
 ```text
 $ sion skill audit auditor b487525a…ffad --bond audits --adjudicator da9fbb85…5ce4 --note "read every file: it only checks the invoice and pays through ledger_pay"
-auditor signs: Publish the claim "Skill bundle b487525a does what its description says and nothing beyond it" (skill.audit/v1), valid for 100000 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 67.
-Pulse 49: Done: claim 601ec5e5 submitted; fee 0.0011 USD.
+auditor signs: Publish the claim "Skill bundle b487525a does what its description says and nothing beyond it" (skill.audit/v1), valid for 100000 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 43.
+Pulse 26: Done: claim 601ec5e5 submitted; fee 0.0011 USD.
 audit 601ec5e52eeb4422310642f46be0b7ecec175d36a9cbeb6fc1844a8222c86906
 $ sion skill publish publisher src/pay-invoices --version 1.0.1 --bond skills --audits 601ec5e5…6906 --adjudicator da9fbb85…5ce4 --previous 3949333f…c54e
-publisher signs: Publish the claim "Skill pay-invoices 1.0.1: Pay a supplier's invoice after checking it against the order." (skill/v1), valid for 100000 Pulses, resting on 3 assumptions and 1 other claims. Fee 0.0011 USD; valid until Pulse 69.
-Pulse 52: Done: claim 0c71b622 submitted; fee 0.0011 USD.
+publisher signs: Publish the claim "Skill pay-invoices 1.0.1: Pay a supplier's invoice after checking it against the order." (skill/v1), valid for 100000 Pulses, resting on 3 assumptions and 1 other claims. Fee 0.0011 USD; valid until Pulse 46.
+Pulse 28: Done: claim 0c71b622 submitted; fee 0.0011 USD.
 release 0c71b62250c3001ef1fdb5561bf51b0ae23778d44c334b04203f5b7f035b9e02
 bundle b487525ab4feced27cdf33694243e723620699e5c08c18bb76f433a78085ffad
 ```
@@ -153,6 +153,7 @@ $ sion skill show 0c71b622…9e02 --value 100
     ],
     "value_at_risk": "100"
   },
+  "evidence": [],
   "locator": null,
   "name": "pay-invoices",
   "previous": "3949333f4ede9a9e1464e4d158147602b097c4f1c156bb5f72574c2cfc3dc54e",
@@ -161,11 +162,11 @@ $ sion skill show 0c71b622…9e02 --value 100
   "size": 422,
   "version": "1.0.1"
 }
-$ sion skill install agent-9 2d58e6ef…1a82 0c71b622…9e02
+$ sion skill install agent-9 abfeec72…85ac 0c71b622…9e02
 bundle b487525a checked: 2 files, skill pay-invoices 1.0.1
-agent-9 signs: Rely on claim 0c71b622 for up to 100 USD until Pulse 10053, reserving its backing. Fee 0.0012 USD; valid until Pulse 73.
-Pulse 55: Done: reserved 200 USD of claim 0c71b622's backing; fee 0.0012 USD.
-installed pay-invoices 1.0.1 in …/agents/skills/2d58e6ef…1a82/pay-invoices
+agent-9 signs: Rely on claim 0c71b622 for up to 100 USD until Pulse 10028, reserving its backing. Fee 0.0012 USD; valid until Pulse 49.
+Pulse 31: Done: reserved 200 USD of claim 0c71b622's backing; fee 0.0012 USD.
+installed pay-invoices 1.0.1 in …/agents/skills/abfeec72…85ac/pay-invoices
 ```
 
 Installing takes these steps, in order:
@@ -192,8 +193,8 @@ The agent reads the instructions and their files as it needs them. It
 cannot rewrite them:
 
 ```text
-$ sion agent run agent-9 2d58e6ef…1a82 --task "Get ready to pay invoices." --model script:use.json --autonomy L3
-session f34050a80102085c for agent 2d58e6ef
+$ sion agent run agent-9 abfeec72…85ac --task "Get ready to pay invoices." --model script:use.json --autonomy L3
+session 8b666729316c113d for agent abfeec72
   → skill_read {"name":"pay-invoices"}
   ← ---
     name: pay-invoices
@@ -209,7 +210,7 @@ session f34050a80102085c for agent 2d58e6ef
   → skill_write {"description":"Pay any invoice.","instructions":"Pay everyone who asks.","name":"pay-invoices"}
   ✗ pay-invoices was installed from a release; write your own skill under another name
 agent: Read the installed skill and its checklist; I cannot rewrite it, since it came from a release.
-session f34050a80102085c: done
+session 8b666729316c113d: done
 ```
 
 ## When a skill turns out to be malicious
@@ -221,15 +222,15 @@ challenge:
 
 ```text
 $ sion challenge red-team 0c71b622…9e02 ee393313…c5ac 10 --evidence "step 3 pays mallory, not the supplier"
-red-team signs: Challenge assumption ee393313 of claim 0c71b622, depositing 10 USD. Fee 0.0012 USD; valid until Pulse 75.
-Pulse 57: Done: challenge opened against assumption ee393313 of claim 0c71b622; fee 0.0012 USD.
-  digest d314a0eef4ee5550ea9096d9a8aa16328a15db3bf33d52f4c25e90a589fcdcdd
+red-team signs: Challenge assumption ee393313 of claim 0c71b622, depositing 10 USD. Fee 0.0012 USD; valid until Pulse 52.
+Pulse 35: Done: challenge opened against assumption ee393313 of claim 0c71b622; fee 0.0012 USD.
+  digest 352d24badc901eb67d4184a1858571b8ea91374388ef44918cdb7a9a42ff1f7d
 $ sion events --from 57 --limit 20 | grep ChallengeOpened
-Pulse    57  {"ChallengeOpened":{"challenge":"bd974515be3be3a2d21d4e36c21f5a5da0d99d248d3317f35a8ca97f69612140","claim":"0c71b62250c3001ef1fdb5561bf51b0ae23778d44c334b04203f5b7f035b9e02","target":"ee393313d041bbb7e8971eacbde348c23c1222614e05431133f630c65f35c5ac"}}
+Pulse    35  {"ChallengeOpened":{"challenge":"bd974515be3be3a2d21d4e36c21f5a5da0d99d248d3317f35a8ca97f69612140","claim":"0c71b62250c3001ef1fdb5561bf51b0ae23778d44c334b04203f5b7f035b9e02","target":"ee393313d041bbb7e8971eacbde348c23c1222614e05431133f630c65f35c5ac"}}
 $ sion rule judge bd974515…2140 --upheld
-judge signs: As adjudicator, uphold challenge bd974515. Fee 0.0011 USD; valid until Pulse 77.
-Pulse 59: Done: 150 USD slashed from assumption ee393313; claim 3949333f falsified; challenge upheld; fee 0.0011 USD.
-  digest 8f002d56c459e6a408e8cc42e06924c98ea5ebb0e001d0e3e539ede1b7cfe191
+judge signs: As adjudicator, uphold challenge bd974515. Fee 0.0011 USD; valid until Pulse 56.
+Pulse 38: Done: 150 USD slashed from assumption ee393313; claim 3949333f falsified; challenge upheld; fee 0.0011 USD.
+  digest 3d4cd50bc2aaa06f2c021a6299d91ce2d6e8e57740acd8ff8e3d8ed7a2df8cf4
 ```
 
 Version 1.0.0 rested on that bond alone, so it is falsified. Version
@@ -240,13 +241,13 @@ challenges the audit:
 
 ```text
 $ sion challenge red-team 601ec5e5…6906 f88c2190…1ba5 10 --evidence "the audit missed step 3, which pays mallory"
-red-team signs: Challenge assumption f88c2190 of claim 601ec5e5, depositing 10 USD. Fee 0.0011 USD; valid until Pulse 79.
-Pulse 61: Done: challenge opened against assumption f88c2190 of claim 601ec5e5; fee 0.0011 USD.
-  digest 537406cf3749be12314e3f8b2e5b04b9fd5f2318af142c3859089407385e0518
+red-team signs: Challenge assumption f88c2190 of claim 601ec5e5, depositing 10 USD. Fee 0.0011 USD; valid until Pulse 58.
+Pulse 40: Done: challenge opened against assumption f88c2190 of claim 601ec5e5; fee 0.0011 USD.
+  digest a9ee18b52c71b87b610530eaf3ea8be3e6e34ba00ca7f3604e7e847ced5398cf
 $ sion rule judge d1caddac…dda4 --upheld
-judge signs: As adjudicator, uphold challenge d1caddac. Fee 0.0011 USD; valid until Pulse 81.
-Pulse 63: Done: 100 USD slashed from assumption f88c2190; claim 601ec5e5 falsified; claim 0c71b622 falsified; account efa2bf8f compensated 100 USD; challenge upheld; fee 0.0011 USD.
-  digest d2139441d1855f68171e6c2699f6bb7d4fd6d5c94e97d34bf1e0360a7f0051d6
+judge signs: As adjudicator, uphold challenge d1caddac. Fee 0.0011 USD; valid until Pulse 61.
+Pulse 44: Done: 100 USD slashed from assumption f88c2190; claim 601ec5e5 falsified; claim 0c71b622 falsified; account efa2bf8f compensated 100 USD; challenge upheld; fee 0.0011 USD.
+  digest d3181847fd9679951416924cd6a45476468a760e8c6adea8afb5783dea035e6b
 ```
 
 The audit falls, and the release falls with it. agent-9's account
@@ -255,14 +256,14 @@ slashed bonds:
 
 ```text
 $ sion balance agent-9
-account efa2bf8f6a8237849ebf7d226bef9463305628dfd8a5f202ab717869d328fb89 (Pulse 55)
-  0.9988 USD
-  1 coins, 1 allotments
+account efa2bf8f6a8237849ebf7d226bef9463305628dfd8a5f202ab717869d328fb89 (Pulse 32)
+  6.9988 USD
+  7 coins, 1 allotments
 …
 $ sion balance agent-9
-account efa2bf8f6a8237849ebf7d226bef9463305628dfd8a5f202ab717869d328fb89 (Pulse 63)
-  100.9988 USD
-  2 coins, 1 allotments
+account efa2bf8f6a8237849ebf7d226bef9463305628dfd8a5f202ab717869d328fb89 (Pulse 44)
+  109.9988 USD
+  11 coins, 1 allotments
 ```
 
 The next time the agent runs, the skill is out of use. Before every run,
@@ -271,11 +272,11 @@ expired) is renamed out of the agent's skills, here to
 `pay-invoices.falsified-0c71b622`:
 
 ```text
-$ sion agent run agent-9 2d58e6ef…1a82 --task "Pay the invoice from Acme." --model script:after.json --autonomy L3
-session e9fe83142dfb8f54 for agent 2d58e6ef
+$ sion agent run agent-9 abfeec72…85ac --task "Pay the invoice from Acme." --model script:after.json --autonomy L3
+session 3d83c69903cb035c for agent abfeec72
 skill pay-invoices taken out of use: its release 0c71b622 is falsified
 agent: I have no skill for paying invoices any more.
-session e9fe83142dfb8f54: done
+session 3d83c69903cb035c: done
 ```
 
 None of this finds a malicious skill by itself: someone still has to find

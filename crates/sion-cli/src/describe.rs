@@ -115,15 +115,7 @@ fn caveats(names: &Names, k: &Caveats) -> String {
     let mut parts = vec![
         payees,
         format!("at most {} per payment", names.usd(k.max_per_payment)),
-        format!(
-            "{} per {} Pulses",
-            names.usd(k.max_per_window),
-            if k.window == u64::MAX {
-                "lifetime of the charter".to_string()
-            } else {
-                k.window.to_string()
-            }
-        ),
+        bucket(names, k.burst, k.rate),
         format!("until Pulse {}", k.expires_at),
     ];
     if let Some(above) = k.evidence_above {
@@ -141,6 +133,40 @@ fn caveats(names: &Names, k: &Caveats) -> String {
         "may not delegate".into()
     });
     parts.join(", ")
+}
+
+/// A token bucket, in words.
+pub fn bucket(names: &Names, burst: Amount, rate: Amount) -> String {
+    if rate == Amount::ZERO {
+        format!("{} at once and in all, never refilled", names.usd(burst))
+    } else {
+        format!(
+            "{} at once, refilled by {} a Pulse",
+            names.usd(burst),
+            names.usd(rate)
+        )
+    }
+}
+
+/// A narrowing, in words.
+fn narrowing(names: &Names, n: &sion_exec::charter::Narrowing) -> String {
+    let payees = match &n.payees {
+        None => "any payee its own limits allow".to_string(),
+        Some(set) => format!(
+            "only to {}",
+            list(set.iter().map(|a| names.account(a)).collect())
+        ),
+    };
+    format!(
+        "{payees}, at most {} per payment, until Pulse {}{}",
+        names.usd(n.max_per_payment),
+        n.expires_at,
+        if n.may_delegate {
+            ""
+        } else {
+            ", no new subagents"
+        }
+    )
 }
 
 /// What a transaction asks for, as one sentence.
@@ -309,15 +335,66 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             caveats(names, k)
         ),
         TxKind::SpawnAgents { charter, children } => {
-            let budget = Amount(children.iter().map(|c| c.budget.0).sum());
+            let sum = |f: fn(&sion_exec::charter::Spawn) -> u128| {
+                Amount(children.iter().map(f).fold(0u128, u128::saturating_add))
+            };
             let n = children.len();
             format!(
-                "As agent {}, launch {n} {} with their own identities, {} in budgets in all",
+                "As agent {}, launch {n} {}, {} in budgets and {} in all",
                 object(charter),
-                if n == 1 { "subagent" } else { "subagents" },
+                if n == 1 {
+                    "subagent with its own identity"
+                } else {
+                    "subagents with their own identities"
+                },
+                names.usd(sum(|c| c.budget.0)),
+                bucket(
+                    names,
+                    sum(|c| c.caveats.burst.0),
+                    sum(|c| c.caveats.rate.0)
+                )
+            )
+        }
+        TxKind::SpawnCohort {
+            charter,
+            count,
+            burst,
+            rate,
+            full,
+            ..
+        } => format!(
+            "As agent {}, commit to a cohort of {count} {}, with {} in all{}",
+            object(charter),
+            if *count == 1 { "subagent" } else { "subagents" },
+            bucket(names, *burst, *rate),
+            if *full {
+                ", their buckets full from now"
+            } else {
+                ", their buckets filling from now"
+            }
+        ),
+        TxKind::MaterializeAgents { cohort, members } => {
+            let budget = Amount(members.iter().map(|m| m.member.budget.0).sum());
+            let n = members.len();
+            format!(
+                "Materialize {n} {} of cohort {}, with {} in budgets in all",
+                if n == 1 { "member" } else { "members" },
+                object(cohort),
                 names.usd(budget)
             )
         }
+        TxKind::NarrowAgent {
+            charter,
+            narrowing: Some(n),
+        } => format!(
+            "Narrow agent {} and every agent below it: {}",
+            object(charter),
+            narrowing(names, n)
+        ),
+        TxKind::NarrowAgent {
+            charter,
+            narrowing: None,
+        } => format!("Lift the narrowing of agent {}", object(charter)),
         TxKind::SetAgentCard { charter, card } => format!(
             "Set agent {}'s card to {}",
             object(charter),
@@ -711,6 +788,58 @@ pub fn event(names: &Names, event: &Event) -> String {
             names.account(by)
         ),
         Event::AgentResumed { agent } => format!("agent {} resumed", object(agent)),
+        Event::CohortSpawned {
+            cohort,
+            parent,
+            first,
+            count,
+        } => format!(
+            "cohort {} of {count} committed under {} (lineage indices {first} to {})",
+            object(cohort),
+            object(parent),
+            first + u64::from(*count).saturating_sub(1)
+        ),
+        Event::AgentMaterialized {
+            agent,
+            cohort,
+            index,
+            account,
+            ..
+        } if *account == sion_exec::charter::keyless_account(agent) => format!(
+            "member {index} of cohort {} materialized as agent {}, keyless",
+            object(cohort),
+            object(agent)
+        ),
+        Event::AgentMaterialized {
+            agent,
+            cohort,
+            index,
+            account,
+            ..
+        } => format!(
+            "member {index} of cohort {} materialized as agent {}, signing as {}",
+            object(cohort),
+            object(agent),
+            names.account(account)
+        ),
+        Event::AgentNarrowed {
+            agent,
+            by,
+            narrowing: Some(_),
+        } => format!(
+            "agent {} narrowed by {}, with everything below it",
+            object(agent),
+            names.account(by)
+        ),
+        Event::AgentNarrowed {
+            agent,
+            by,
+            narrowing: None,
+        } => format!(
+            "the narrowing of agent {} lifted by {}",
+            object(agent),
+            names.account(by)
+        ),
         Event::CharterReclaimed { charter, amount } => format!(
             "{} returned from charter {}",
             names.usd(*amount),

@@ -340,7 +340,8 @@ enum Command {
         #[arg(long)]
         no_devnet: bool,
         /// Run only these groups: signatures, authorization, state, data,
-        /// clearing, assurance, execution, streams, devnet (comma-separated).
+        /// clearing, assurance, execution, streams, lineage, devnet
+        /// (comma-separated).
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
         /// Write the measurements as JSON to this file.
@@ -581,12 +582,13 @@ enum CharterCommand {
         /// Largest payment (USD).
         #[arg(long, default_value = "100")]
         max_payment: String,
-        /// Largest total per window (USD).
+        /// The most the agent may spend at once: its bucket's capacity,
+        /// full when it starts (USD).
         #[arg(long, default_value = "500")]
-        max_window: String,
-        /// Window (Pulses).
-        #[arg(long, default_value_t = 1_000)]
-        window: u64,
+        burst: String,
+        /// What refills its bucket each Pulse (USD).
+        #[arg(long, default_value = "0.5")]
+        rate: String,
         /// Budget (USD).
         #[arg(long, default_value = "1000")]
         funding: String,
@@ -1266,8 +1268,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
             agent,
             payees,
             max_payment,
-            max_window,
-            window,
+            burst,
+            rate,
             funding,
             bond,
             lifetime,
@@ -1281,8 +1283,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
             let caveats = Caveats {
                 payees,
                 max_per_payment: parse_amount(&max_payment)?,
-                max_per_window: parse_amount(&max_window)?,
-                window,
+                burst: parse_amount(&burst)?,
+                rate: parse_amount(&rate)?,
                 expires_at: Pulse(ledger.pulse()?.0 + lifetime),
                 evidence_above: None,
                 evidence_policy: Policy::standard(),

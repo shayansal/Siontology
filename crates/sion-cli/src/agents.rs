@@ -1,11 +1,12 @@
 //! Agent identities (spec v1.8): registering agents, launching subagents
-//! with their own identities, cards, suspension, resumption, revocation.
+//! with their own identities, cards, suspension, resumption, revocation;
+//! cohorts and narrowing (spec v1.14).
 //!
 //! An agent's identity is a charter with an identity record: the charter's
 //! id is the agent's id, its account signs for the agent, and its card
 //! commitment says what the agent is. Subagents get their own identity,
-//! account, narrower caveats and a budget carved from their parent's
-//! allotment.
+//! account, narrower caveats, a budget carved from their parent's allotment
+//! and a bucket carved from its bucket.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -13,7 +14,11 @@ use sion_assurance::Policy;
 use sion_core::hash::Hash32;
 use sion_core::ids::{AccountId, AssetId, ObjectId, Pulse};
 use sion_core::Amount;
-use sion_exec::charter::{card_commitment, Caveats, Charter, Spawn, MAX_SPAWN_BATCH};
+use sion_exec::charter::{
+    card_commitment, overlay_id, Caveats, Charter, Narrowing, Spawn, MAX_LINEAGE_DEPTH,
+    MAX_SPAWN_BATCH,
+};
+use sion_exec::cohort::{Materialize, MAX_COHORT, MAX_MATERIALIZE};
 use sion_exec::execute::Event;
 use sion_exec::object::ObjectData;
 use sion_exec::TxKind;
@@ -41,12 +46,13 @@ pub enum AgentCommand {
         /// Largest payment (USD).
         #[arg(long, default_value = "100")]
         max_payment: String,
-        /// Largest total per window (USD).
+        /// The most it may spend at once: its bucket's capacity, full when
+        /// it starts (USD).
         #[arg(long, default_value = "500")]
-        max_window: String,
-        /// Window (Pulses).
-        #[arg(long, default_value_t = 1_000)]
-        window: u64,
+        burst: String,
+        /// What refills its bucket each Pulse (USD).
+        #[arg(long, default_value = "0.5")]
+        rate: String,
         /// Budget (USD).
         #[arg(long, default_value = "1000")]
         funding: String,
@@ -85,10 +91,16 @@ pub enum AgentCommand {
         /// Largest payment of each (USD); default: the parent's.
         #[arg(long)]
         max_payment: Option<String>,
-        /// Largest total per window of each (USD); default: an equal share
-        /// of the window allowance the parent has not carved out yet.
+        /// The bucket capacity of each (USD), taken from what the parent's
+        /// bucket holds; default: its budget, or an equal share of what the
+        /// parent's bucket holds if that is less.
         #[arg(long)]
-        max_window: Option<String>,
+        burst: Option<String>,
+        /// What refills each one's bucket each Pulse (USD); default: the
+        /// share of the parent's refill that its budget is of the parent's
+        /// remaining budget.
+        #[arg(long)]
+        rate: Option<String>,
         /// The subagents may launch subagents of their own.
         #[arg(long)]
         may_spawn: bool,
@@ -150,15 +162,17 @@ pub enum AgentCommand {
         #[arg(long, default_value = "")]
         url: String,
     },
-    /// Suspend an agent and everything below it (an overseer: the backer,
-    /// the principal or an ancestor's agent).
+    /// Suspend an agent and everything below it (an overseer in good
+    /// standing: the backer, or the agent of a charter above it that is
+    /// neither revoked nor suspended). The highest suspender is recorded.
     Suspend {
         /// The overseer's wallet.
         wallet: String,
         /// Agent id.
         agent: String,
     },
-    /// Lift a suspension (the suspender or the backer).
+    /// Lift a suspension (the recorded suspender, in good standing, or the
+    /// backer).
     Resume {
         /// Wallet.
         wallet: String,
@@ -166,7 +180,7 @@ pub enum AgentCommand {
         agent: String,
     },
     /// Revoke an agent and everything below it, for good (the agent itself
-    /// or an overseer).
+    /// or an overseer in good standing).
     Revoke {
         /// Wallet.
         wallet: String,
@@ -180,6 +194,86 @@ pub enum AgentCommand {
         wallet: String,
         /// Agent id.
         agent: String,
+    },
+    /// Add limits to an agent and everything below it (spec v1.14): its
+    /// payees, its largest payment, its last Pulse, whether it may spawn.
+    /// What is not given stays as it is. Only the backer may widen or lift
+    /// a narrowing.
+    Narrow {
+        /// The wallet (the agent, an overseer or the backer).
+        wallet: String,
+        /// Agent id.
+        agent: String,
+        /// Allowed payees (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        payees: Vec<String>,
+        /// Largest payment (USD).
+        #[arg(long)]
+        max_payment: Option<String>,
+        /// The subtree may pay for this many more Pulses.
+        #[arg(long)]
+        expires_in: Option<u64>,
+        /// The subtree may no longer launch subagents.
+        #[arg(long)]
+        no_spawn: bool,
+        /// Lift the narrowing (the backer only).
+        #[arg(long, conflicts_with_all = ["payees", "max_payment", "expires_in", "no_spawn"])]
+        lift: bool,
+    },
+    /// Commit to up to 1,048,576 keyless subagents in one transaction (spec
+    /// v1.14): a cohort, the root of a sum tree over their buckets. A
+    /// member costs nothing on the ledger until `agent materialize` creates
+    /// it, with its budget from the parent's allotment then. The cohort is
+    /// kept in $SION_HOME/agents/cohorts, to prove its members later.
+    Cohort {
+        /// The parent agent's wallet.
+        parent: String,
+        /// The parent's agent id.
+        agent: String,
+        /// The parent's allotment.
+        allotment: String,
+        /// How many members.
+        #[arg(long)]
+        count: u32,
+        /// Budget of each, paid when it is materialized (USD).
+        #[arg(long, default_value = "1")]
+        budget: String,
+        /// Bucket capacity of each (USD).
+        #[arg(long, default_value = "1")]
+        burst: String,
+        /// What refills each one's bucket each Pulse (USD).
+        #[arg(long, default_value = "0")]
+        rate: String,
+        /// The members' buckets start full, their tokens taken from the
+        /// parent's now; otherwise they start empty and fill at their rate
+        /// from the cohort's creation.
+        #[arg(long)]
+        full: bool,
+        /// The members' card file.
+        #[arg(long)]
+        card: Option<std::path::PathBuf>,
+        /// Largest payment of each (USD); default: the parent's.
+        #[arg(long)]
+        max_payment: Option<String>,
+        /// Wallet names of materialized members are `<prefix>-<index>`.
+        #[arg(long, default_value = "member")]
+        prefix: String,
+    },
+    /// Materialize members of a cohort: their charters and allotments, at
+    /// their lineage ids, with proofs of their leaves. The cohort parent's
+    /// wallet signs, and signs for them afterwards.
+    Materialize {
+        /// The cohort parent's wallet.
+        parent: String,
+        /// The cohort (its id, or a unique prefix of it).
+        cohort: String,
+        /// The members' indices (comma-separated); default: the next
+        /// `--next` not materialized yet.
+        #[arg(long, value_delimiter = ',')]
+        index: Vec<u32>,
+        /// How many of the next members not materialized yet.
+        #[arg(long, default_value_t = 1)]
+        next: u32,
     },
     /// Put an agent to work on a task: a model drives it, with the ledger
     /// (balance, payments under its charter, transactions), optionally
@@ -531,8 +625,8 @@ pub fn run(
             card,
             payees,
             max_payment,
-            max_window,
-            window,
+            burst,
+            rate,
             funding,
             bond,
             lifetime,
@@ -547,8 +641,8 @@ pub fn run(
             let caveats = Caveats {
                 payees,
                 max_per_payment: parse_amount(&max_payment)?,
-                max_per_window: parse_amount(&max_window)?,
-                window,
+                burst: parse_amount(&burst)?,
+                rate: parse_amount(&rate)?,
                 expires_at: Pulse(ledger.pulse()?.0 + lifetime),
                 evidence_above: None,
                 evidence_policy: Policy::standard(),
@@ -590,7 +684,8 @@ pub fn run(
             prefix,
             card,
             max_payment,
-            max_window,
+            burst,
+            rate,
             may_spawn,
             keyless,
             gas,
@@ -605,25 +700,27 @@ pub fn run(
             if let Some(max) = max_payment {
                 caveats.max_per_payment = parse_amount(&max)?;
             }
-            caveats.max_per_window = match max_window {
-                Some(max) => parse_amount(&max)?,
-                // Window limits are carved from the parent's: by default the
-                // children share what the parent has left, equally.
-                None => {
-                    let left = match ledger.object(allotment)?.map(|o| o.data) {
-                        Some(ObjectData::Allotment(a)) => a
-                            .caveats
-                            .as_ref()
-                            .map(|k| k.max_per_window.0.saturating_sub(a.carved_window.0))
-                            .unwrap_or(0),
-                        _ => 0,
-                    };
-                    Amount(left / count as u128)
-                }
+            let budget = parse_amount(&budget)?;
+            // Buckets are carved from the parent's (spec v1.14): by default
+            // each child may spend its budget at once, or an equal share of
+            // what the parent's bucket holds if that is less, and gets the
+            // share of the parent's refill that its budget is of the
+            // parent's remaining budget.
+            let (kept, remaining) = match ledger.object(allotment)?.map(|o| o.data) {
+                Some(ObjectData::Allotment(a)) => (a.bucket, a.remaining),
+                _ => return Err(CliError::Usage(format!("{allotment} is not an allotment"))),
+            };
+            let holds = kept.level(ledger.pulse()?).min(kept.burst);
+            caveats.burst = match burst {
+                Some(burst) => parse_amount(&burst)?,
+                None => Amount(budget.0.min(holds.0 / count as u128)),
+            };
+            caveats.rate = match rate {
+                Some(rate) => parse_amount(&rate)?,
+                None => Amount(kept.rate.0.saturating_mul(budget.0) / remaining.0.max(1)),
             };
             caveats.may_delegate = may_spawn && own.caveats.may_delegate;
             let card = read_card(card.as_deref())?;
-            let budget = parse_amount(&budget)?;
             let gas = gas.as_deref().map(parse_amount).transpose()?;
             let signer = session.signer_of(&parent);
             let names: Vec<String> = (1..=count).map(|i| format!("{prefix}-{i}")).collect();
@@ -837,6 +934,214 @@ pub fn run(
             print_receipt(session, &view);
             Ok(())
         }
+        AgentCommand::Narrow {
+            wallet,
+            agent,
+            payees,
+            max_payment,
+            expires_in,
+            no_spawn,
+            lift,
+        } => {
+            let charter = parse_id(&agent, "agent")?;
+            let narrowing = if lift {
+                None
+            } else {
+                let state = identity(ledger, charter)?;
+                // What is not given stays as the narrowing it has, or else
+                // as its own caveats.
+                let mut n = overlay(ledger, &charter)?
+                    .and_then(|o| o.narrowing)
+                    .unwrap_or(Narrowing {
+                        payees: state.caveats.payees.clone(),
+                        max_per_payment: state.caveats.max_per_payment,
+                        expires_at: state.caveats.expires_at,
+                        may_delegate: state.caveats.may_delegate,
+                    });
+                if !payees.is_empty() {
+                    n.payees = Some(payees.iter().map(|p| session.id(p)).collect());
+                }
+                if let Some(max) = max_payment {
+                    n.max_per_payment = parse_amount(&max)?;
+                }
+                if let Some(pulses) = expires_in {
+                    n.expires_at = Pulse(ledger.pulse()?.0.saturating_add(pulses));
+                }
+                if no_spawn {
+                    n.may_delegate = false;
+                }
+                Some(n)
+            };
+            let view = session.send(
+                &wallet,
+                TxKind::NarrowAgent { charter, narrowing },
+                Vec::new(),
+            )?;
+            print_receipt(session, &view);
+            Ok(())
+        }
+        AgentCommand::Cohort {
+            parent,
+            agent,
+            allotment,
+            count,
+            budget,
+            burst,
+            rate,
+            full,
+            card,
+            max_payment,
+            prefix,
+        } => {
+            if count == 0 || count > MAX_COHORT {
+                return Err(CliError::Usage(format!(
+                    "--count must be between 1 and {MAX_COHORT}"
+                )));
+            }
+            let charter = parse_id(&agent, "agent")?;
+            let allotment = parse_id(&allotment, "allotment")?;
+            let own = identity(ledger, charter)?;
+            let mut plan = crate::cohorts::Plan {
+                cohort: None,
+                parent: charter,
+                first: 0,
+                count,
+                budget: parse_amount(&budget)?,
+                burst: parse_amount(&burst)?,
+                rate: parse_amount(&rate)?,
+                card: read_card(card.as_deref())?,
+                prefix,
+                signer: session.signer_of(&parent),
+            };
+            let mut caveats = own.caveats.clone();
+            if let Some(max) = max_payment {
+                caveats.max_per_payment = parse_amount(&max)?;
+            }
+            caveats.burst = plan.burst;
+            caveats.rate = plan.rate;
+            caveats.may_delegate = false;
+            let started = std::time::Instant::now();
+            let tree = plan.tree()?;
+            let root = tree.root();
+            println!(
+                "sum tree over {count} members built in {} ms: root {}, {} of burst and {} a Pulse of refill in all",
+                started.elapsed().as_millis(),
+                root.hash.short(),
+                root.burst,
+                root.rate
+            );
+            let input = session.reference(&allotment)?;
+            let view = session.send(
+                &parent,
+                TxKind::SpawnCohort {
+                    charter,
+                    root: root.hash,
+                    count,
+                    burst: root.burst,
+                    rate: root.rate,
+                    full,
+                    caveats,
+                },
+                vec![input],
+            )?;
+            print_receipt(session, &view);
+            for event in &view.effects.events {
+                if let Event::CohortSpawned { cohort, first, .. } = event {
+                    plan.cohort = Some(*cohort);
+                    plan.first = *first;
+                    let path = crate::cohorts::save(&plan)?;
+                    println!(
+                        "cohort {cohort}\nmembers: lineage indices {first} to {} under agent {}, kept in {}",
+                        first + u64::from(count) - 1,
+                        charter.short(),
+                        path.display()
+                    );
+                }
+            }
+            Ok(())
+        }
+        AgentCommand::Materialize {
+            parent,
+            cohort,
+            index,
+            next,
+        } => {
+            let plan = crate::cohorts::find(&cohort)?;
+            let indices: Vec<u32> = if index.is_empty() {
+                let mut found = Vec::new();
+                for i in 0..plan.count {
+                    if found.len() as u32 >= next {
+                        break;
+                    }
+                    if ledger.object(plan.member_id(i))?.is_none() {
+                        found.push(i);
+                    }
+                }
+                found
+            } else {
+                let mut sorted = index;
+                sorted.sort_unstable();
+                sorted.dedup();
+                sorted
+            };
+            if indices.is_empty() {
+                return Err(CliError::Usage("no member left to materialize".into()));
+            }
+            let tree = plan.tree()?;
+            let state = identity(ledger, plan.parent)?;
+            let allotment =
+                state.allotments.iter().next().copied().ok_or_else(|| {
+                    CliError::Usage("the cohort's parent has no allotment".into())
+                })?;
+            for chunk in indices.chunks(MAX_MATERIALIZE) {
+                let members = chunk
+                    .iter()
+                    .map(|i| {
+                        tree.prove(*i)
+                            .map(|siblings| Materialize {
+                                index: *i,
+                                member: plan.member(),
+                                siblings,
+                            })
+                            .ok_or_else(|| CliError::Usage(format!("the cohort has no member {i}")))
+                    })
+                    .collect::<Result<Vec<_>, CliError>>()?;
+                let input = session.reference(&allotment)?;
+                let view = session.send(
+                    &parent,
+                    TxKind::MaterializeAgents {
+                        cohort: plan.cohort_id()?,
+                        members,
+                    },
+                    vec![input],
+                )?;
+                print_receipt(session, &view);
+                for event in &view.effects.events {
+                    if let Event::AgentMaterialized {
+                        agent,
+                        index,
+                        account,
+                        allotment,
+                        ..
+                    } = event
+                    {
+                        let name = format!("{}-{index}", plan.prefix);
+                        crate::session::create_keyless_alias(
+                            &name,
+                            &crate::session::KeylessAlias {
+                                charter: *agent,
+                                signer: plan.signer.clone(),
+                            },
+                        )?;
+                        println!(
+                            "{name}: agent {agent} account {account} allotment {allotment} (keyless; {} signs for it)",
+                            plan.signer
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -863,50 +1168,90 @@ pub fn card_template(name: &str, description: &str, url: &str) -> Value {
     })
 }
 
-/// An agent's identity record, lineage and status, as JSON.
+/// The overlay of `agent`: what happened to it after it was created, if
+/// anything did (spec v1.14).
+pub fn overlay(
+    ledger: &dyn Ledger,
+    agent: &ObjectId,
+) -> Result<Option<sion_exec::charter::AgentOverlay>, CliError> {
+    match ledger.object(overlay_id(agent))?.map(|o| o.data) {
+        Some(ObjectData::AgentOverlay(o)) => Ok(Some(o)),
+        _ => Ok(None),
+    }
+}
+
+/// An agent's identity record, lineage, overlays and status, as JSON.
 pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
     let charter = identity(ledger, id)?;
     let keyless = sion_exec::charter::is_keyless(&id, &charter);
-    let mut lineage = Vec::new();
-    // A keyless agent's signer: the agent of its nearest keyed ancestor
+    let own = overlay(ledger, &id)?;
+    // The ancestors' ids come from the lineage (spec v1.14), nearest first.
+    // A keyless agent's signer is the agent of its nearest keyed ancestor
     // (spec §4.3).
+    let mut lineage = Vec::new();
     let mut signer = None;
-    let mut next = charter.parent;
-    while let Some(parent) = next {
-        if lineage.len() == sion_exec::charter::MAX_CHARTER_CHAIN {
+    let mut stopped = false;
+    let mut narrowed = own.as_ref().is_some_and(|o| o.narrowing.is_some());
+    for ancestor in charter.lineage.ancestry().iter().rev().skip(1) {
+        if lineage.len() == MAX_LINEAGE_DEPTH {
             break;
         }
-        let above = identity(ledger, parent)?;
-        if keyless && signer.is_none() && !sion_exec::charter::is_keyless(&parent, &above) {
+        let above = identity(ledger, *ancestor)?;
+        if keyless && signer.is_none() && !sion_exec::charter::is_keyless(ancestor, &above) {
             signer = Some(above.agent);
         }
+        let o = overlay(ledger, ancestor)?;
+        stopped |= o
+            .as_ref()
+            .is_some_and(|o| o.revoked_at.is_some() || o.suspended_by.is_some());
+        narrowed |= o.as_ref().is_some_and(|o| o.narrowing.is_some());
         lineage.push(json!({
-            "agent": parent,
+            "agent": ancestor,
             "account": above.agent,
-            "suspended_by": above.suspended_by,
-            "revoked_at": above.revoked_at,
+            "suspended_by": o.as_ref().and_then(|o| o.suspended_by),
+            "revoked_at": o.as_ref().and_then(|o| o.revoked_at),
+            "narrowing": o.as_ref().and_then(|o| o.narrowing.as_ref()).map(narrowing_json),
         }));
-        next = above.parent;
     }
-    let mut remaining = 0u128;
+    // A payment sent now executes in the next Pulse at the earliest.
+    let next = ledger.pulse()?.next();
+    let (mut remaining, mut now, mut burst, mut rate) = (0u128, 0u128, 0u128, 0u128);
     for allotment in &charter.allotments {
         if let Some(object) = ledger.object(*allotment)? {
             if let ObjectData::Allotment(a) = object.data {
                 remaining += a.remaining.0;
+                now += a.bucket.level(next).min(a.remaining).0;
+                burst += a.bucket.burst.0;
+                rate += a.bucket.rate.0;
             }
         }
     }
-    let status = if let Some(at) = charter.revoked_at {
-        format!("revoked at Pulse {}", at.0)
-    } else if let Some(by) = charter.suspended_by {
-        format!("suspended by {by}")
-    } else if lineage
+    let narrowings_end = lineage
         .iter()
-        .any(|a| !a["revoked_at"].is_null() || !a["suspended_by"].is_null())
-    {
-        "stopped by an ancestor".into()
-    } else {
-        "active".into()
+        .filter_map(|entry| entry["narrowing"]["expires_at"].as_u64())
+        .chain(
+            own.as_ref()
+                .and_then(|o| o.narrowing.as_ref())
+                .map(|n| n.expires_at.0),
+        )
+        .min();
+    let expired =
+        next > charter.caveats.expires_at || narrowings_end.is_some_and(|end| next.0 > end);
+    let status = match &own {
+        Some(o) if o.revoked_at.is_some() => {
+            format!(
+                "revoked at Pulse {}",
+                o.revoked_at.map(|p| p.0).unwrap_or(0)
+            )
+        }
+        Some(o) if o.suspended_by.is_some() => format!(
+            "suspended by {}",
+            o.suspended_by.map(|a| a.to_string()).unwrap_or_default()
+        ),
+        _ if stopped => "stopped by an ancestor".into(),
+        _ if expired => "expired".into(),
+        _ if narrowed => "active, narrowed".into(),
+        _ => "active".into(),
     };
     Ok(json!({
         "agent": id,
@@ -917,17 +1262,36 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
         "principal": charter.principal,
         "backer": charter.backer,
         "card": charter.identity.as_ref().map(|i| i.card),
-        "depth": charter.identity.as_ref().map(|i| i.depth),
+        "depth": charter.lineage.depth(),
+        "lineage_root": charter.lineage.root,
+        "lineage_path": charter.lineage.path,
         "status": status,
+        "narrowing": own.as_ref().and_then(|o| o.narrowing.as_ref()).map(narrowing_json),
         "created_at": charter.created_at,
         "expires_at": charter.caveats.expires_at,
         "may_spawn": charter.caveats.may_delegate,
-        "max_per_payment": charter.caveats.max_per_payment,
-        "max_per_window": charter.caveats.max_per_window,
-        "budget_remaining": Amount(remaining),
+        "max_per_payment_usd": charter.caveats.max_per_payment.to_string(),
+        "burst_usd": charter.caveats.burst.to_string(),
+        "refill_usd_per_pulse": charter.caveats.rate.to_string(),
+        "can_spend_next_pulse_usd": Amount(now).to_string(),
+        "kept_after_children": {
+            "burst_usd": Amount(burst).to_string(),
+            "refill_usd_per_pulse": Amount(rate).to_string(),
+        },
+        "budget_remaining_usd": Amount(remaining).to_string(),
         "allotments": charter.allotments,
         "lineage": lineage,
     }))
+}
+
+/// A narrowing as `sion agent show` prints it, amounts in USD.
+fn narrowing_json(n: &sion_exec::charter::Narrowing) -> Value {
+    json!({
+        "payees": n.payees,
+        "max_per_payment_usd": n.max_per_payment.to_string(),
+        "expires_at": n.expires_at,
+        "may_spawn": n.may_delegate,
+    })
 }
 
 /// An agent's DID: `did:sion:<chain identity>:<agent id>`.

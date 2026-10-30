@@ -44,10 +44,11 @@ seconds against a running devnet.
 Run one with `sion demo <name> --local`, except `light`, which needs a
 devnet that has already proven a Pulse ([light](#light) below).
 
-What follows is real output: the first five demos from one run of
-`sion demo all --local`, and the swarm, batch, tasks, robots, storage,
-streams, censorship, light and staking demos from runs of their own on
-later versions, so chain identities differ between them. Account names
+What follows is real output: the invoice, market and receipts demos from
+one run of `sion demo all --local`, and the others from runs of their own
+on later versions (agents, swarm, batch, x402, tasks and robots on
+specification v1.14), so chain identities and Pulse numbers differ between
+them. Account names
 such as `supplier` and `judge` are deterministic devnet wallets: anyone
 who knows the name can derive the keys.
 
@@ -82,15 +83,15 @@ the invoice. See [The Assurance Algebra](../concepts/assurance/index.md).
 
 ```text
 == Agent Charters: an AI agent with a budget the ledger enforces ==
-Pulse  32  acme charters its agent: pay only gpu-cloud, ≤ 100 USD per payment, ≤ 250 USD per window, 1,000 USD budget, receipts on, 500 USD bond behind the agent's receipts
-Pulse  34  agent pays gpu-cloud 80 USD for inference: Success; receipt claim 2c4e5264 joins the knowledge log
-Pulse  36  a prompt-injected agent tries to pay mallory 90 USD → refused by the ledger: charter caveat violated: payee not allowed
-Pulse  38  the agent tries a 150 USD payment → refused by the ledger: charter caveat violated: payment 150 above per-payment limit 100
-Pulse  41  agent delegates 100 USD to a sub-agent under narrower caveats (≤ 20 USD per payment)
-Pulse  43  sub-agent pays gpu-cloud 20 USD: Success
-Pulse  45  acme revokes the charter (ordered by consensus)
-Pulse  47  acme-agent tries to pay again → charter caveat violated: charter revoked
-Pulse  49  sub-agent tries to pay again → charter caveat violated: charter revoked
+Pulse   5  acme charters its agent: pay only gpu-cloud, ≤ 100 USD per payment, ≤ 250 USD at once (refilled at 0.025 USD a Pulse), 1,000 USD budget, receipts on, 500 USD bond behind the agent's receipts
+Pulse   7  agent pays gpu-cloud 80 USD for inference: accepted; receipt claim 0586a32c joins the knowledge log
+Pulse  11  a prompt-injected agent tries to pay mallory 90 USD → refused by the ledger: charter caveat violated: payee not allowed
+Pulse  13  the agent tries a 150 USD payment → refused by the ledger: charter caveat violated: payment 150 above per-payment limit 100
+Pulse  16  agent delegates 100 USD to a sub-agent under narrower caveats (≤ 20 USD per payment)
+Pulse  19  sub-agent pays gpu-cloud 20 USD: accepted
+Pulse  21  acme revokes the charter (ordered by consensus)
+Pulse  24  acme-agent tries to pay again → charter caveat violated: charter revoked
+Pulse  26  sub-agent tries to pay again → charter caveat violated: charter revoked
            the agent's receipt is a claim backed by acme's bond: cost to forge it 500 USD
 Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived in the ledger, not the agent.
 ```
@@ -101,18 +102,18 @@ See [Agent Charters](../concepts/agent-charters.md).
 
 ```text
 == Agent identities: a swarm of subagents, each with its own identity ==
-Pulse   6  acme registers its orchestrator: agent 90d88d8b, card 94efec04, 1,000 USD budget, may launch subagents
-Pulse   8  the orchestrator launches 12 researchers in one transaction: 12 identities, 12 accounts, 40 USD each, ≤ 10 USD per payment
-Pulse  10  researcher-1 launches 3 sub-researchers of its own (depth 2), 10 USD each, ≤ 5 USD per payment
+Pulse   6  acme registers its orchestrator: agent c980a01e, card 94efec04, 1,000 USD budget, may launch subagents
+Pulse   9  the orchestrator launches 12 researchers in one transaction: 12 identities, 12 accounts, 40 USD each, ≤ 10 USD per payment
+Pulse  12  researcher-1 launches 3 sub-researchers of its own (depth 2), 10 USD each, ≤ 5 USD per payment
 Pulse  17  15 subagents each pay gpu-cloud for a tool call, all at once: no consensus, each spends only its own allotment
-Pulse  19  sub-researcher-3 tries to pay 6 USD, above its own limit → refused by the ledger: charter caveat violated: payment 6 above per-payment limit 5
-Pulse  21  acme suspends the orchestrator: one transaction
-Pulse  23  sub-researcher-3, two levels down, tries to pay 3 USD → refused by the ledger: charter caveat violated: charter suspended
-Pulse  25  acme lifts the suspension
-Pulse  28  sub-researcher-3 pays 3 USD: accepted
-Pulse  30  the orchestrator revokes researcher-2 for good
-Pulse  32  acme reclaims researcher-2's unspent budget: 32 USD
-            sub-researcher-3's lineage: f62d720f → 2c022b22 → 90d88d8b → acme (depth 2, active)
+Pulse  20  sub-researcher-3 tries to pay 6 USD, above its own limit → refused by the ledger: charter caveat violated: payment 6 above per-payment limit 5
+Pulse  23  acme suspends the orchestrator: one transaction
+Pulse  25  sub-researcher-3, two levels down, tries to pay 3 USD → refused by the ledger: charter caveat violated: charter suspended
+Pulse  27  acme lifts the suspension
+Pulse  30  sub-researcher-3 pays 3 USD: accepted
+Pulse  32  the orchestrator revokes researcher-2 for good
+Pulse  34  acme reclaims researcher-2's unspent budget: 32 USD
+            sub-researcher-3's lineage: bd6df779 → 34ee2bf7 → c980a01e → acme (depth 2, active)
             16 identities created in 3 transactions; every limit was checked by the ledger, not by the agents
 ```
 
@@ -125,9 +126,9 @@ subagents](../concepts/agent-identities.md).
 
 ```text
 == Batched authorization: one signature for 64 keyless subagents ==
-Pulse   4  acme registers its orchestrator: agent 83fc8c49, 1,000 USD budget
-Pulse   7  the orchestrator launches 64 keyless subagents in one transaction: no keys, 10 USD each, ≤ 5 USD per payment
-Pulse   9  it gives each 0.01 USD for fees, in one transfer
+Pulse   6  acme registers its orchestrator: agent 94405ef8, 1,000 USD budget
+Pulse   9  the orchestrator launches 64 keyless subagents in one transaction: no keys, 10 USD each, ≤ 5 USD per payment
+Pulse  11  it gives each 0.01 USD for fees, in one transfer
 Pulse  14  64 subagents each pay gpu-cloud 1 USD, all authorized by one signature of 19,524 bytes over the batch's Merkle root
             each pays a fee of 0.000313 USD instead of 0.0011 USD: the signature check is shared by the batch
             signed one by one, the 64 payments would carry 1.25 MB of signatures; batched, 19.5 KB
@@ -146,19 +147,19 @@ each carries its path to that root instead of signatures of its own. See
 ```text
 == Task Charters: paying for work only when the result passes a rule fixed in advance ==
            bonds: sandbox-vendor 5,000 USD behind its environment, arbiter 3,000, reviewers 1,000 each, coder 100
-Pulse  17  sandbox-vendor claims "swe-sandbox-7 has no known exploit that passes grader g-3"  [backed by its 5,000 USD bond]
-Pulse  19  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task
-Pulse  22  the orchestrator posts task 7243db20: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on
+Pulse  22  sandbox-vendor claims "swe-sandbox-7 has no known exploit that passes grader g-3"  [backed by its 5,000 USD bond]
+Pulse  24  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task
+Pulse  27  the orchestrator posts task 250bc44f: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on
            sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2
-Pulse  24  …and task 0e88a347: a 40 USD bounty open to anyone, on the same terms
+Pulse  29  …and task 24c91a63: a 40 USD bounty open to anyone, on the same terms
            coder submits patch-4711; reviewer-1 and reviewer-2 each attest that it passes, on their own bonds
-Pulse  41  coder claims the 150 USD on its own 100 USD bond → refused by the ledger: invalid transaction: result not accepted: cost of corruption 90 (after detection discount 900/1000) is below κ·V = 300; only 100 of backing is unreserved; κ·V = 300 is needed
-Pulse  43  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid 150 USD; 300 USD of that backing reserved for the lab
-Pulse  46  coder settles again → refused by the ledger: invalid transaction: the task is not open: a task is paid once
-Pulse  49  bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD
-Pulse  54  the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab
-Pulse  56  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim
-Pulse  58  arbiter upholds it: the vendor's bond is slashed, and 4 claims fall: the environment's, and the 3 results resting on it, paid or not
+Pulse  46  coder claims the 150 USD on its own 100 USD bond → refused by the ledger: invalid transaction: result not accepted: cost of corruption 90 (after detection discount 900/1000) is below κ·V = 300; only 100 of backing is unreserved; κ·V = 300 is needed
+Pulse  48  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid 150 USD; 300 USD of that backing reserved for the lab
+Pulse  51  coder settles again → refused by the ledger: invalid transaction: the task is not open: a task is paid once
+Pulse  54  bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD
+Pulse  58  the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab
+Pulse  60  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim
+Pulse  63  arbiter upholds it: the vendor's bond is slashed, and 4 claims fall: the environment's, and the 3 results resting on it, paid or not
            the lab is compensated 190 USD from the vendor's bond for the two results it paid for (lab +190 USD)
            red-team gets its deposit back and a share of the slashed bond: +2,505 USD, a bounty for the reward hack paid by the vendor
 ```
@@ -177,17 +178,17 @@ Charters](../concepts/task-charters.md).
 == Memory for robots: a warehouse two robots share, kept append-only by the ledger ==
            fleet gives robot-alpha and robot-beta agent identities of their own
            each robot opens a memory log only it can append to, tied to its identity; the curator opens one too
-Pulse  15  robot-alpha commits its log: pallet-17 seen in aisle 4. This Pulse is the observation's transaction time; the robot cannot backdate it
-Pulse  17  robot-beta commits its log: aisle 4 scanned 10 s later, empty
+Pulse  17  robot-alpha commits its log: pallet-17 seen in aisle 4. This Pulse is the observation's transaction time; the robot cannot backdate it
+Pulse  19  robot-beta commits its log: aisle 4 scanned 10 s later, empty
            a reader asks robot-alpha for everything it recorded in aisle 4 during that minute: 1 atom, with a 263-byte proof checked against the head on the ledger
            and for aisle 9: 0 atoms, with a proof that it recorded nothing there
-Pulse  19  robot-alpha tries to replace its observation with one in aisle 5: refused by the ledger: invalid transaction: the new head does not extend the log: invalid proof: equal sizes require equal roots
-Pulse  23  the curator records that the two robots disagree, then refutes robot-alpha's observation
+Pulse  21  robot-alpha tries to replace its observation with one in aisle 5: refused by the ledger: invalid transaction: the new head does not extend the log: invalid proof: equal sizes require equal roots
+Pulse  25  the curator records that the two robots disagree, then refutes robot-alpha's observation
            a reader trusting the curator believes the observation refuted; one trusting only robot-alpha believes it accepted. Same evidence, two beliefs, each checked against the heads on the ledger
-Pulse  25  robot-beta commits 2 more scans, with an index that leaves out its scan of aisle 4 (the ledger stores index roots without checking them)
+Pulse  29  robot-beta commits 2 more scans, with an index that leaves out its scan of aisle 4 (the ledger stores index roots without checking them)
            anyone holding that scan proves the omission from the head on the ledger alone, with a 517-byte fraud proof
-Pulse  27  robot-alpha stores a camera frame encrypted under its memory space's key (readable: true), then forgets it by destroying the key (readable: false); the log still proves the frame existed
-Pulse  29  fleet suspends robot-alpha; at Pulse 31 its next commit is refused by the ledger: charter caveat violated: charter suspended
+Pulse  31  robot-alpha stores a camera frame encrypted under its memory space's key (readable: true), then forgets it by destroying the key (readable: false); the log still proves the frame existed
+Pulse  34  fleet suspends robot-alpha; at Pulse 37 its next commit is refused by the ledger: charter caveat violated: charter suspended
 ```
 
 The robots' atoms never touch the ledger: it holds each log's size, root
@@ -282,14 +283,14 @@ See [Cost of corruption](../concepts/assurance/cost-of-corruption.md).
 
 ```text
 == x402: an AI agent pays an API per request, inside limits the ledger enforces ==
-Pulse  86  acme charters its agent: pay only carol, ≤ 1 USD per payment, ≤ 2 USD per window, 20 USD budget
-           carol serves a forecast API at http://127.0.0.1:36159: 0.25 USD per call, settled on sion:b016a36ab737405623a15a6a9466c434
-           agent: GET /v1/forecast → 402 Payment Required: 0.25 USD to carol (quote c752275a2dcfb17487dc0f7a829c6417)
-Pulse  89  agent pays under its charter (purpose x402:<quote>) and retries → 200 OK {"region":"eu-west","gpu_hours":18250,"confidence":0.82}
+Pulse   5  acme charters its agent: pay only carol, ≤ 1 USD per payment, ≤ 2 USD at once (refilled at 0.0002 USD a Pulse), 20 USD budget
+           carol serves a forecast API at http://127.0.0.1:40599: 0.25 USD per call, settled on sion:2f26b9fadb06e03c561a06361b3354b3
+           agent: GET /v1/forecast → 402 Payment Required: 0.25 USD to carol (quote 8d1bf36a213b7147c743a76a7b5f591b)
+Pulse   8  agent pays under its charter (purpose x402:<quote>) and retries → 200 OK {"region":"eu-west","gpu_hours":18250,"confidence":0.82}
            carol's server answered only after verifying the receipt as a light client: committee certificate, certified order, inclusion proof
            replaying the same PAYMENT-SIGNATURE → 402: unknown quote, or one already used
            agent: GET /v1/report (5 USD) → pays → the ledger refused the payment: charter caveat violated: payment 5 above per-payment limit 1; carol's API answers 402 and serves nothing
-Pulse  93  bob, a person without a charter, pays the same API with a plain transfer → 200 OK
+Pulse  13  bob, a person without a charter, pays the same API with a plain transfer → 200 OK
 Result: no accounts, no API keys; every request is paid and proven before it is served, and the agent's limits live in the ledger, not in its prompt.
 ```
 

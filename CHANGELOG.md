@@ -10,6 +10,59 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Lineage ids, token buckets, overlays and cohorts (specification v1.14)
+
+- **Lineage ids.** A spawned agent's id is `lineage_id(parent, index)`,
+  the index from a counter in the parent's allotment that only the parent's
+  agent writes, and every charter keeps its lineage: its tree's root and
+  the path of indices down to it. Anyone holding those recomputes every
+  ancestor's id by hashing. Depths run from 0 to 8, down from chains of up
+  to 16 charters.
+- **Token buckets.** Caveats carry a `burst` (what the agent may spend at
+  once) and a `rate` (what refills it each Pulse) instead of a window
+  limit and length. An agent starts with a full bucket, and spawning
+  carves the children's burst, rate and starting tokens out of the
+  parent's bucket, so a subtree whose root has `(σ, ρ)` pays at most `σ +
+  ρ·τ` over any `τ + 1` consecutive Pulses: a property test checks it on
+  random trees. With fixed windows, a subtree could pay twice its limit
+  across a window's boundary.
+- **Overlays.** What happens to an agent after it is created (revoked,
+  suspended, narrowed) is kept in its overlay, an object at a hash of its
+  id. A check reads the overlays of the agent and its ancestors, at most
+  9, most of them proofs that none exists, instead of loading up to 16
+  charters. `NarrowAgent` adds limits to a whole subtree with one write:
+  allowed payees, a smaller largest payment, an earlier end, no spawning;
+  only the backer may widen or lift them.
+- **Cohorts.** `SpawnCohort` commits to up to 1,048,576 subagents in one
+  transaction, as the root of a Merkle sum tree over their bursts and
+  rates, carved from the parent's bucket; `MaterializeAgents` creates up
+  to 128 of them at their lineage ids, each with a proof of its leaf, its
+  budget paid from the parent's allotment then. A member costs nothing on
+  the ledger until then.
+- **Containment, from a review of v1.14.** An overseer acts only in good
+  standing: one whose own charter, or a charter above it, is revoked or
+  suspended can no longer suspend, narrow or revoke the agents below it.
+  The highest suspender is recorded, so an overseer lower in the tree can
+  no longer lift a suspension from higher up by having suspended first.
+  An expired charter, or one under a narrowing that has ended, spawns and
+  materializes nothing, and nothing is spawned already expired; before,
+  an expired agent could move its budget into new subagents while its
+  backer waited to reclaim it. A subagent that must cite evidence judges
+  it by its parent's policy; before, a laxer policy passed delegation.
+- `sion charter create`, `sion agent register` and `spawn` take `--burst`
+  and `--rate` instead of `--max-window` and `--window`; new `sion agent
+  cohort`, `materialize` and `narrow`; `sion agent show` reads the
+  overlays and gives amounts in USD. The node answers `GET
+  /v1/agents/{id}`: an agent's charter and the overlays of its lineage,
+  each with its state proof, so a resolver can check its status against a
+  certified header; its status and what the agent can spend are as of the
+  next Pulse, expiry included.
+- `sion bench --only lineage` measures cohorts, materialization and a
+  payment at the deepest level.
+- Both proof stacks implement v1.14, and the differential tests cover the
+  new operations and the containment rules; the bucket property test
+  covers delegation and checks every subtree, not only the whole tree.
+
 ### Commands, scripts and MCP servers for agents
 
 - A sandbox for commands (`sion_agent::sandbox`): bubblewrap (new user,

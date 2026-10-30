@@ -1,7 +1,8 @@
 /* Agent Charters, as in `sion demo agents`.
  *
  * acme charters its agent: pay only gpu-cloud, at most 100 USD per payment and
- * 250 USD per window, a 1,000 USD budget, receipts on, 500 USD bonded. The
+ * 250 USD at once (refilled at 0.025 USD a Pulse), a 1,000 USD budget, receipts
+ * on, 500 USD bonded. The
  * agent pays 80 (accepted, receipt); a prompt-injected payment of 90 to
  * mallory is refused (payee not allowed); 150 is refused (per-payment limit);
  * it delegates 100 to a sub-agent capped at 20 per payment, which pays 20;
@@ -81,9 +82,9 @@
       U.rect(ctx, K.x, K.y, K.w, K.h, { stroke: revoked > 0.5 ? C.signal : C.ink, lw: 1.25 });
       U.text(ctx, 'Agent Charter', K.x + 12, K.y + 22, { size: L.narrow ? 12 : 13, weight: 600 });
       var lines = L.narrow
-        ? ['pay only gpu-cloud', '≤ 100 USD per payment', '≤ 250 USD per window',
+        ? ['pay only gpu-cloud', '≤ 100 USD per payment', '≤ 250 USD at once',
           'budget 1,000 USD', 'receipts on', '500 USD bonded']
-        : ['pay only: gpu-cloud', 'at most 100 USD per payment', 'at most 250 USD per window',
+        : ['pay only: gpu-cloud', 'at most 100 USD per payment', 'at most 250 USD at once',
           'budget 1,000 USD', 'receipts on', '500 USD bonded behind receipts'];
       lines.forEach(function (s, i) {
         var a = U.span(t, 0.2 + i * 0.18, 0.6 + i * 0.18);

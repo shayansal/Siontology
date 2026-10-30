@@ -25,7 +25,7 @@ use sion_exec::tx::object_domain;
 
 use crate::error::{fail, Step};
 use crate::ops::assurance::{load_assurance, store_assurance};
-use crate::ops::charter::{allotment_input, as_allotment, as_charter, chain_check, spend};
+use crate::ops::charter::{allotment_input, as_allotment, as_charter, spend, standing};
 use crate::tx::{usd, TxRun};
 
 /// The terms of §5.42.
@@ -70,7 +70,7 @@ pub(super) fn post(run: &mut TxRun<'_>, terms: Posting<'_>) -> Step {
             let mut allotment_object = run.load(&allotment_id)?;
             let mut allotment = as_allotment(&allotment_object)?;
             let charter = as_charter(&run.load(&charter_id)?)?;
-            chain_check(run, charter_id)?;
+            let found = standing(run, charter_id, &charter)?.narrowings;
             if allotment.source != charter_id
                 || allotment.writer != sender
                 || charter.agent != sender
@@ -80,7 +80,8 @@ pub(super) fn post(run: &mut TxRun<'_>, terms: Posting<'_>) -> Step {
             let Some(caveats) = allotment.caveats.clone() else {
                 return Err(fail("the allotment has no caveats"));
             };
-            if terms.worker.is_none() && caveats.payees.is_some() {
+            let narrowed_payees = found.iter().any(|n| n.payees.is_some());
+            if terms.worker.is_none() && (caveats.payees.is_some() || narrowed_payees) {
                 return Err(fail("an agent with listed payees cannot post an open task"));
             }
             let evidence_ok = caveats.evidence_policy == acceptance.policy;
@@ -91,6 +92,7 @@ pub(super) fn post(run: &mut TxRun<'_>, terms: Posting<'_>) -> Step {
                 &payee,
                 terms.amount,
                 Some(evidence_ok),
+                &found,
             )?;
             allotment_object.data = ObjectData::Allotment(allotment);
             run.store(allotment_object)?;

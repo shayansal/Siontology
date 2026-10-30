@@ -32,6 +32,7 @@ $ curl -s http://127.0.0.1:8730/v1/accounts/xyz
 | GET | `/v1/genesis` | The genesis specification and its digest |
 | GET | `/v1/accounts/{id}` | An account's coins, balances, allotments, delegations and custody records |
 | GET | `/v1/objects/{id}` | An object with a state proof |
+| GET | `/v1/agents/{id}` | An agent: its charter and the overlays of its lineage, each with a state proof, its status and its bucket (spec v1.14) |
 | GET | `/v1/claims/{id}` | A claim, its status, cost of corruption and inclusion proof |
 | POST | `/v1/claims/{id}/decide` | The decision rule for a value at risk |
 | POST | `/v1/transactions` | Submit a signed transaction |
@@ -181,9 +182,62 @@ $ curl -s http://127.0.0.1:8730/v1/objects/0000000000000000000000000000000000000
 An object is `{id, owner, version, data}`. `owner` is `{"Account": …}` or
 `{"Shared": <domain>}`; `data` is one of `Coin`, `Account`, `Charter`,
 `Allotment`, `Bounded`, `Market`, `Assurance`, `Treasury`, `Schedule`,
-`Validators`, `Forced` or `Tombstone`. Protocol objects have fixed
+`Validators`, `Forced`, `Stream`, `MemoryLog`, `Task`, `Delegations`,
+`Delegation`, `Deal`, `Custody`, `Beacon`, `AgentOverlay`, `Cohort` or
+`Tombstone`. Protocol objects have fixed
 identifiers derived from their names (the validator set, the
 forced-inclusion obligations, …).
+
+## `GET /v1/agents/{id}`
+
+`{pulse, agent, status, depth, lineage, charter, overlays, bucket}` for an
+[agent identity](../concepts/agent-identities.md) or any charter
+(specification v1.14). `charter` is the charter with a state proof, as
+`GET /v1/objects/{id}` gives it. `overlays` has the overlay of the agent and
+of each of its ancestors, from the agent up to the root, each with its
+state proof: an overlay that does not exist (nothing ever happened to that
+agent) comes with a proof of its absence. A client that checks every proof
+against the state root of a certified header for `pulse` knows the agent's
+standing without trusting the node.
+
+`status` is the first that applies of `revoked`, `suspended`, `stopped by
+an ancestor`, `expired`, `active, narrowed` and `active`, as of the next
+Pulse, in which a payment would execute. `bucket` is the agent's
+allotment: `remaining` (its budget), `can_spend_next_pulse` (what its
+bucket lets it pay in the next Pulse), `burst` and `rate_per_pulse` (what
+it keeps after its children's shares) and `spawned` (the lineage indices
+it has used). Amounts are in micro-USD.
+
+For a keyless member of a cohort, at depth 1 under an orchestrator whose
+overlay exists (it was narrowed, then lifted), the answer cut down with
+`jq`:
+
+```text
+$ curl -s $SION_NODE/v1/agents/01fc0eac…5aa2 | jq '{pulse, status, depth, bucket, overlays: [.overlays[] | {agent, present: (.overlay.object != null)}]}'
+{
+  "pulse": 98,
+  "status": "active",
+  "depth": 1,
+  "bucket": {
+    "allotment": "3b828b4f52ec474c3ce31d94d35c0c49970f1d0c82094665cd17934ca4026d46",
+    "burst": 1000,
+    "can_spend_next_pulse": 6,
+    "rate_per_pulse": 1,
+    "remaining": 49000,
+    "spawned": 0
+  },
+  "overlays": [
+    {
+      "agent": "01fc0eac8f1b1b0ca007fa20a0037f814f3d6dcf9224d6aa00d78bee51a35aa2",
+      "present": false
+    },
+    {
+      "agent": "0df519abdf18a35258c4047d5a6cbc36f60edf0b137b8c96236e60dbe0ac2b98",
+      "present": true
+    }
+  ]
+}
+```
 
 ## `GET /v1/claims/{id}`
 
