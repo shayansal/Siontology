@@ -55,6 +55,9 @@ fn http_error(error: sion_http::HttpError) -> ModelError {
             _ => ModelError::Refused(format!("HTTP {status}: {body}")),
         },
         Transport(e) => ModelError::Transport(e),
+        Closed { code, reason } => {
+            ModelError::Transport(format!("the connection was closed ({code}): {reason}"))
+        }
         Refused(e) | Config(e) => ModelError::Refused(e),
         TooLarge(n) => ModelError::Protocol(format!("answer longer than {n} bytes")),
     }

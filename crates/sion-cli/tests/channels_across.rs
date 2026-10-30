@@ -3,10 +3,14 @@
 //! messages to the host that proved the agent's key, and none once the
 //! agent is suspended; messengers (Slack, Discord, Matrix and Signal,
 //! against stand-ins for their APIs) answer the chats they are told to,
-//! and only approvers decide.
+//! and only approvers decide. Discord's gateway and Slack's Socket Mode
+//! run against WebSocket stand-ins: direct messages from people the bridge
+//! does not know are given pairing codes, and in a group with mentions
+//! required, only what mentions the bot is answered.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use sion_agent::Autonomy;
@@ -174,6 +178,71 @@ impl StandIn {
             .map(|(_, _, body)| body.clone())
             .collect()
     }
+}
+
+/// A WebSocket stand-in's end: what it sends goes to the bridge, and what
+/// the bridge sends it is kept, as JSON.
+struct Peer {
+    socket: sion_http::ws::WebSocket<std::net::TcpStream>,
+    kept: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Peer {
+    fn send(&mut self, value: Value) {
+        self.socket.send_text(&value.to_string()).unwrap();
+    }
+
+    /// Keeps what comes for up to `wait`: false once the bridge has gone.
+    fn keep(&mut self, wait: Duration) -> bool {
+        match self.socket.receive(wait) {
+            Ok(Some(sion_http::ws::Message::Text(text))) => {
+                self.kept
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(&text).unwrap_or(Value::Null));
+                true
+            }
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+
+    /// Keeps what comes until `n` messages are kept.
+    fn expect(&mut self, n: usize) {
+        let until = std::time::Instant::now() + Duration::from_secs(20);
+        while self.kept.lock().unwrap().len() < n && std::time::Instant::now() < until {
+            self.keep(Duration::from_millis(200));
+        }
+    }
+}
+
+/// A WebSocket server for one connection (`ws://…`), which runs `script`
+/// and then keeps what the bridge sends until it goes.
+fn live_stand_in(
+    script: impl FnOnce(&mut Peer) + Send + 'static,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let keep = kept.clone();
+    std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        let (socket, _) = sion_http::ws::WebSocket::accept(tcp, 1 << 20).unwrap();
+        let mut peer = Peer { socket, kept: keep };
+        script(&mut peer);
+        let until = std::time::Instant::now() + Duration::from_secs(60);
+        while std::time::Instant::now() < until && peer.keep(Duration::from_secs(1)) {}
+    });
+    (url, kept)
+}
+
+/// What is kept, once there are at least `n` of them.
+fn wait_for(kept: &Arc<Mutex<Vec<Value>>>, n: usize) -> Vec<Value> {
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while kept.lock().unwrap().len() < n && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    kept.lock().unwrap().clone()
 }
 
 #[test]
@@ -415,34 +484,171 @@ fn profiles_are_reached_by_their_own_tokens_across_machines_and_messengers() {
     let history = slack.sent("/conversations.history");
     assert_eq!(history[1]["oldest"], "100.000001", "{history:?}");
 
-    // Discord: the same, by message ids.
-    let discord = StandIn::start(|method, url, _| {
-        if method == "GET" && url.contains("limit=1") && !url.contains("after=") {
-            json!([{"id": "10", "author": {"id": "A1"}, "content": "old"}])
-        } else if method == "GET" {
-            json!([{"id": "11", "author": {"id": "A1"}, "content": "How much budget is left?"},
-                   {"id": "12", "author": {"id": "B", "bot": true}, "content": "a bot"}])
+    // Slack with an app-level token: Socket Mode, each envelope
+    // acknowledged. Someone it does not know writes to it directly and is
+    // given a code; a message in an allowed channel (a new one, so a new
+    // conversation), which Slack sends both
+    // as a message and as a mention, is answered once.
+    let (socket_url, acks) = live_stand_in(|peer| {
+        let envelope = |id: &str, event: Value| {
+            json!({"envelope_id": id, "type": "events_api",
+                "payload": {"type": "event_callback", "event": event}})
+        };
+        peer.send(json!({"type": "hello"}));
+        for envelope in [
+            envelope(
+                "e1",
+                json!({"type": "message", "channel": "D9", "user": "U5",
+                "text": "Hello?", "ts": "200.1", "channel_type": "im"}),
+            ),
+            envelope(
+                "e2",
+                json!({"type": "message", "channel": "C2", "user": "U9",
+                "text": "<@UBOT> How much budget is left?", "ts": "200.2", "channel_type": "channel"}),
+            ),
+            envelope(
+                "e3",
+                json!({"type": "app_mention", "channel": "C2", "user": "U9",
+                "text": "<@UBOT> How much budget is left?", "ts": "200.2"}),
+            ),
+        ] {
+            peer.send(envelope);
+        }
+    });
+    let slack = StandIn::start(move |_, url, _| {
+        if url.ends_with("/apps.connections.open") {
+            json!({"ok": true, "url": socket_url})
+        } else if url.ends_with("/auth.test") {
+            json!({"ok": true, "user_id": "UBOT"})
+        } else {
+            json!({"ok": true})
+        }
+    });
+    std::env::set_var("SLACK_API_BASE", &slack.base);
+    std::env::set_var("SLACK_APP_TOKEN", "xapp-test");
+    let options = sion_cli::messengers::Options {
+        allow: vec!["C2".into()],
+        pairing: true,
+        once: true,
+        ..Default::default()
+    };
+    let messenger = sion_cli::messengers::for_bridge("slack", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &lead_profile, messenger.as_ref(), &options)
+        .unwrap();
+    drop(messenger);
+    std::env::remove_var("SLACK_APP_TOKEN");
+    let posted = slack.sent("/chat.postMessage");
+    assert_eq!(posted.len(), 2, "{posted:?}");
+    assert_eq!(posted[0]["channel"], "D9");
+    assert!(
+        posted[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("sion agent pairing approve"),
+        "{posted:?}"
+    );
+    assert_eq!(
+        (&posted[1]["channel"], &posted[1]["text"]),
+        (&json!("C2"), &json!("Budget checked."))
+    );
+    let acked: Vec<Value> = wait_for(&acks, 3);
+    assert_eq!(
+        acked,
+        [
+            json!({"envelope_id": "e1"}),
+            json!({"envelope_id": "e2"}),
+            json!({"envelope_id": "e3"})
+        ]
+    );
+
+    // Discord: its gateway, messages in servers' channels and direct ones.
+    // In the allowed channel, with mentions required, only what mentions
+    // the bot is answered; another channel is ignored; someone writing
+    // directly is given a code; a bot is not answered.
+    let (gateway_url, identified) = live_stand_in(|peer| {
+        peer.send(json!({"op": 10, "d": {"heartbeat_interval": 45000}}));
+        let dispatch = |s: u64, t: &str, d: Value| json!({"op": 0, "s": s, "t": t, "d": d});
+        // READY follows the bot's identify.
+        peer.expect(1);
+        peer.send(dispatch(
+            1,
+            "READY",
+            json!({"session_id": "s1",
+            "resume_gateway_url": "ws://127.0.0.1:9", "user": {"id": "B7"}}),
+        ));
+        for (s, d) in [
+            (
+                2,
+                json!({"channel_id": "900", "guild_id": "1", "author": {"id": "A1"},
+                "content": "<@B7> How much budget is left?", "mentions": [{"id": "B7"}]}),
+            ),
+            (
+                3,
+                json!({"channel_id": "900", "guild_id": "1", "author": {"id": "A2"},
+                "content": "chatter among people", "mentions": []}),
+            ),
+            (
+                4,
+                json!({"channel_id": "901", "guild_id": "1", "author": {"id": "A3"},
+                "content": "elsewhere", "mentions": []}),
+            ),
+            (
+                5,
+                json!({"channel_id": "77", "author": {"id": "A4"}, "content": "Hello?"}),
+            ),
+            (
+                6,
+                json!({"channel_id": "900", "guild_id": "1",
+                "author": {"id": "B", "bot": true}, "content": "a bot"}),
+            ),
+        ] {
+            peer.send(dispatch(s, "MESSAGE_CREATE", d));
+        }
+    });
+    let discord = StandIn::start(move |method, url, _| {
+        if method == "GET" && url.ends_with("/gateway/bot") {
+            json!({"url": gateway_url})
         } else {
             json!({"id": "13"})
         }
     });
     std::env::set_var("DISCORD_BOT_TOKEN", "discord-test");
     std::env::set_var("DISCORD_API_BASE", &discord.base);
-    let messenger = sion_cli::messengers::from_env("discord", &["900".to_string()]).unwrap();
-    let (first, cursor) = messenger.receive("", 0).unwrap();
-    assert!(first.is_empty());
-    let (next, cursor) = messenger.receive(&cursor, 0).unwrap();
-    assert_eq!(next.len(), 1, "the bot's message is skipped");
+    let options = sion_cli::messengers::Options {
+        allow: vec!["900".into()],
+        pairing: true,
+        require_mention: true,
+        once: true,
+        ..Default::default()
+    };
+    let messenger = sion_cli::messengers::for_bridge("discord", &options).unwrap();
+    sion_cli::messengers::bridge_with(ledger.clone(), &lead_profile, messenger.as_ref(), &options)
+        .unwrap();
+    drop(messenger);
+    let identify = wait_for(&identified, 1).remove(0);
     assert_eq!(
-        (next[0].chat.as_str(), next[0].from.as_str()),
-        ("900", "A1")
+        (
+            &identify["op"],
+            &identify["d"]["token"],
+            &identify["d"]["intents"]
+        ),
+        (
+            &json!(2),
+            &json!("discord-test"),
+            &json!(sion_cli::live::DISCORD_INTENTS)
+        )
     );
-    assert_eq!(cursor, "900=12");
-    messenger.send("900", "Budget checked.").unwrap();
     assert_eq!(
-        discord.sent("/channels/900/messages")[0]["content"],
-        "Budget checked."
+        discord.sent("/channels/900/messages"),
+        [json!({"content": "Budget checked."})]
     );
+    let coded = discord.sent("/channels/77/messages");
+    assert_eq!(coded.len(), 1, "{coded:?}");
+    assert!(coded[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("sion agent pairing approve"));
+    assert!(discord.sent("/channels/901/").is_empty());
 
     // Matrix: whoami, a first sync that only finds where to start, then
     // the room's messages, the account's own skipped.

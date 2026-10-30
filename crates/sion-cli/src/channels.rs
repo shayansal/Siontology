@@ -504,6 +504,11 @@ pub struct Update {
     pub text: String,
     /// The voice note or audio it is, if one: its file id and media type.
     pub voice: Option<(String, String)>,
+    /// Whether the chat is a private one with the bot.
+    pub direct: bool,
+    /// Whom it names: `@usernames` (lower-cased) and user ids, the writer
+    /// of the message it answers included.
+    pub mentions: Vec<String>,
 }
 
 /// A Telegram bot, through the Bot API.
@@ -511,6 +516,7 @@ pub struct Telegram {
     client: sion_http::Client,
     base: String,
     token: String,
+    me: std::sync::OnceLock<Vec<String>>,
 }
 
 impl std::fmt::Debug for Telegram {
@@ -543,7 +549,28 @@ impl Telegram {
             client,
             base: base.trim_end_matches('/').to_string(),
             token,
+            me: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The names messages give the bot: its `@username`, lower-cased, and
+    /// its id (`getMe`, asked once).
+    pub fn me(&self) -> Result<Vec<String>, String> {
+        if let Some(me) = self.me.get() {
+            return Ok(me.clone());
+        }
+        let bot = self.call("getMe", &json!({}))?;
+        let mut names = Vec::new();
+        if let Some(username) = bot["username"].as_str() {
+            names.push(format!("@{}", username.to_ascii_lowercase()));
+        }
+        if let Some(id) = bot["id"].as_i64() {
+            names.push(id.to_string());
+        }
+        if names.is_empty() {
+            return Err("Telegram did not say who the bot is".into());
+        }
+        Ok(self.me.get_or_init(|| names).clone())
     }
 
     fn call(&self, method: &str, body: &Value) -> Result<Value, String> {
@@ -615,12 +642,34 @@ impl Telegram {
                         if text.is_empty() && voice.is_none() {
                             return None;
                         }
+                        // `@username`s in the text, people named without
+                        // one, and the writer of the message answered.
+                        let mut mentions: Vec<String> = text
+                            .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '@'))
+                            .filter(|word| word.len() > 1 && word.starts_with('@'))
+                            .map(str::to_ascii_lowercase)
+                            .collect();
+                        for entity in message["entities"]
+                            .as_array()
+                            .into_iter()
+                            .chain(message["caption_entities"].as_array())
+                            .flatten()
+                        {
+                            if let Some(id) = entity["user"]["id"].as_i64() {
+                                mentions.push(id.to_string());
+                            }
+                        }
+                        if let Some(id) = message["reply_to_message"]["from"]["id"].as_i64() {
+                            mentions.push(id.to_string());
+                        }
                         Some(Update {
                             id: u["update_id"].as_i64()?,
                             chat: message["chat"]["id"].as_i64()?,
                             from: message["from"]["id"].as_i64(),
                             text,
                             voice,
+                            direct: message["chat"]["type"] == "private",
+                            mentions,
                         })
                     })
                     .collect()

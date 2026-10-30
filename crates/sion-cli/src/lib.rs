@@ -34,6 +34,7 @@ pub mod describe;
 pub mod error;
 pub mod gateway;
 pub mod ledger;
+pub mod live;
 pub mod logins;
 pub mod mcp;
 pub mod mcp_auth;

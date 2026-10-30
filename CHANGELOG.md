@@ -10,6 +10,33 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Live connections: Discord's gateway, Slack's Socket Mode, mentions
+
+- **WebSocket.** `sion_http::ws`: RFC 6455 connections over the guarded
+  client's own (`Client::connect`: the same address rules, roots and
+  proxy, through a `CONNECT` tunnel), with the handshake checked, frames
+  masked, pings answered, fragments joined and bounded, and waits that
+  lose nothing of a frame half read; a server side for stand-ins. SHA-1,
+  HMAC-SHA1 and HMAC-SHA256 for the protocols that name them, checked
+  against their RFCs' vectors.
+- **Discord through its gateway.** The bridge receives Discord's messages
+  over the gateway (heartbeats, resuming, reconnecting with backoff; a
+  refused token or a missing message-content intent ends it with why),
+  in servers' channels and direct messages, instead of polling each
+  channel. What is said while the bridge is not listening is not
+  answered later.
+- **Slack through Socket Mode.** With an app-level token in
+  `SLACK_APP_TOKEN`, Slack's events come over Socket Mode, each envelope
+  acknowledged at once and a message Slack sends twice (as a message and
+  as a mention) answered once; without one, the bridge polls as before.
+- **Pairing in direct chats, and mentions.** Pairing now applies to a
+  person writing directly to the bot (a private Telegram chat, a Discord
+  or Slack direct message, a Matrix room of two, Signal); a group chat
+  not answered stays ignored, said once per chat. Discord, and Slack in
+  Socket Mode, now pair too. `--require-mention` answers only what
+  mentions the bot, or answers one of its messages, in the group chats a
+  bridge answers.
+
 ### Pairing and voice notes on channels
 
 - **Pairing.** `--pairing` on `sion agent telegram` and `sion agent bridge`
@@ -23,9 +50,9 @@ Commit messages before the rename use the working name, Fold.
   channel has at most three waiting, and five wrong approvals in a row
   stop approvals for an hour. The store is readable only by the
   operator's user and changed by one process at a time. `--allow` is no
-  longer required with `--pairing`. Pairing works on Telegram, Signal and
-  Matrix, which then joins the rooms it is invited to; Slack and Discord,
-  polled channel by channel, refuse it.
+  longer required with `--pairing`. On Matrix, pairing joins the rooms
+  the account is invited to; Slack polled channel by channel (without
+  Socket Mode) refuses it.
 - **Voice notes in.** `--hear openai:<model>`, `groq:<model>` or
   `command:<program>` transcribes voice notes (Telegram's voice notes and
   audio files, Discord's audio attachments), which reach the profile as

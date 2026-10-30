@@ -229,8 +229,10 @@ a webhook or Telegram; `sion agent serve` (HTTP with the machine's token
 or a profile's own) and `sion agent bridge` (Slack, Discord, Matrix,
 Signal and Telegram, chats allowed by id) carry conversations, each a
 session, with approvals answered in the channel, by named approvers if
-given; with `--pairing`, someone a bridge does not know is given a code
-that the operator approves (`sion agent pairing`); with `--hear` and
+given; with `--pairing`, someone who writes to a bridge directly and
+whom it does not know is given a code that the operator approves
+(`sion agent pairing`); with `--require-mention`, a group is answered
+only where it mentions the bot; with `--hear` and
 `--speak`, voice notes are transcribed and answered aloud;
 `sion agent gateway` routes a profile's messages to the machine
 that proved the agent's key with `sion agent host`.
@@ -276,10 +278,16 @@ profile through its own tokens, kept as hashes (approvals only with
 tokens made for them); Slack, Discord, Matrix, Signal and Telegram behind
 one bridge, with approvers; and an agent gateway that passes a profile's
 messages to the host that proved the agent's key, only while the agent is
-in good standing. Pairing codes (8 consonants and digits, an hour each,
-three waiting per channel, a lockout after five wrong approvals) let in
-one chat on one channel and profile, from a store only the operator's
-user reads, changed by one process at a time. Voice notes are heard on
+in good standing. Discord is reached through its gateway and Slack,
+given an app-level token, through Socket Mode, over the WebSocket client
+of `sion-http` (which also reached Discord's real gateway and a public
+echo server through this environment's proxy, in an ignored test), so
+direct messages arrive too; `--require-mention` answers in a group only
+what mentions the bot or answers it. Pairing codes (8 consonants and
+digits, an hour each, three waiting per channel, a lockout after five
+wrong approvals) let in one direct chat on one channel and profile, from
+a store only the operator's user reads, changed by one process at a
+time. Voice notes are heard on
 Telegram and Discord (OpenAI-compatible transcription, Groq, or a
 command) and spoken on Telegram (OpenAI, ElevenLabs, or a command); trust
 atoms `agent:pairing`, `agent:voice`. The messengers and the speech

@@ -31,6 +31,11 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, ServerName};
 
+mod digest;
+pub mod ws;
+
+pub use digest::{base64, hmac_sha1, hmac_sha256, same_bytes, sha1};
+
 /// What went wrong.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HttpError {
@@ -54,6 +59,14 @@ pub enum HttpError {
     /// Configuration (roots, TLS).
     #[error("configuration: {0}")]
     Config(String),
+    /// The other side closed a WebSocket connection ([`ws`]).
+    #[error("the connection was closed ({code}): {reason}")]
+    Closed {
+        /// The close code (1005 if none was given).
+        code: u16,
+        /// The reason given.
+        reason: String,
+    },
 }
 
 /// How a [`Client`] behaves.
@@ -103,13 +116,18 @@ pub struct Client {
     options: Options,
     direct: ureq::Agent,
     proxied: Option<(ureq::Agent, NoProxy)>,
+    /// The proxy's `host:port`, and its `Proxy-Authorization` if its URL
+    /// names a user, for connections made here ([`Client::connect`]).
+    tunnel: Option<(String, Option<String>)>,
+    config: Arc<ClientConfig>,
 }
 
 impl Client {
     /// A client with `options`.
     pub fn new(options: Options) -> Result<Client, HttpError> {
+        let config = tls_config()?;
         let tls = Arc::new(PostQuantumTls {
-            config: tls_config()?,
+            config: config.clone(),
         });
         let build = |proxy: Option<(&str, ureq::Proxy)>| {
             let mut allowed = Vec::new();
@@ -131,22 +149,75 @@ impl Client {
                 .build()
         };
         let direct = build(None);
-        let proxied = if options.proxy_from_env {
+        let found = if options.proxy_from_env {
             proxy_from_env()
-                .map(|(url, netloc)| -> Result<_, HttpError> {
-                    let proxy = ureq::Proxy::new(&url)
-                        .map_err(|e| HttpError::Config(format!("proxy {url}: {e}")))?;
-                    Ok((build(Some((&netloc, proxy))), NoProxy::from_env()))
-                })
-                .transpose()?
         } else {
             None
         };
+        let proxied = found
+            .as_ref()
+            .map(|(url, netloc)| -> Result<_, HttpError> {
+                let proxy = ureq::Proxy::new(url)
+                    .map_err(|e| HttpError::Config(format!("proxy {url}: {e}")))?;
+                Ok((build(Some((netloc, proxy))), NoProxy::from_env()))
+            })
+            .transpose()?;
+        let tunnel = found.map(|(url, netloc)| (netloc, proxy_authorization(&url)));
         Ok(Client {
             options,
             direct,
             proxied,
+            tunnel,
+            config,
         })
+    }
+
+    /// A connection of its own to `url`'s host, for a protocol that takes
+    /// over from HTTP (WebSocket: `ws`, `wss`, `http` or `https` URLs):
+    /// TLS for `wss` and `https`, with the client's roots, address rules,
+    /// connect timeout and proxy (a `CONNECT` tunnel, unless `NO_PROXY`
+    /// names the host). Reads and writes time out after the client's
+    /// timeout, until the caller sets another.
+    pub fn connect(&self, url: &str) -> Result<Stream, HttpError> {
+        let target = Target::parse(url)?;
+        let through = match (&self.tunnel, &self.proxied) {
+            (Some(tunnel), Some((_, no_proxy))) if !no_proxy.matches(&target.host) => Some(tunnel),
+            _ => None,
+        };
+        let tcp = match through {
+            Some((proxy, authorization)) => {
+                // The proxy resolves the name; refuse what can be seen here.
+                if !self.options.allow_private && !public_host(&target.host) {
+                    return Err(HttpError::Refused(format!(
+                        "{} is a local or private address",
+                        target.host
+                    )));
+                }
+                let tcp = connect_to(proxy, true, self.options.connect_timeout)?;
+                tunnel(tcp, &target, authorization.as_deref(), self.options.timeout)?
+            }
+            None => connect_to(
+                &target.netloc(),
+                self.options.allow_private,
+                self.options.connect_timeout,
+            )?,
+        };
+        let failed = |e: std::io::Error| HttpError::Transport(e.to_string());
+        tcp.set_read_timeout(Some(self.options.timeout))
+            .map_err(failed)?;
+        tcp.set_write_timeout(Some(self.options.timeout))
+            .map_err(failed)?;
+        let _ = tcp.set_nodelay(true);
+        if !target.tls {
+            return Ok(Stream(Inner::Plain(tcp)));
+        }
+        let name = ServerName::try_from(target.host.clone())
+            .map_err(|e| HttpError::Refused(format!("{}: {e}", target.host)))?;
+        let connection = ClientConnection::new(self.config.clone(), name)
+            .map_err(|e| HttpError::Config(e.to_string()))?;
+        Ok(Stream(Inner::Tls(Box::new(StreamOwned::new(
+            connection, tcp,
+        )))))
     }
 
     /// The options.
@@ -397,6 +468,243 @@ pub fn random(buf: &mut [u8]) -> Result<(), HttpError> {
         .secure_random
         .fill(buf)
         .map_err(|_| HttpError::Config("the system gave no random bytes".into()))
+}
+
+/// Where a connection goes ([`Client::connect`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Target {
+    /// The host, lower-cased, without brackets.
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) tls: bool,
+    /// The path and query (`/` if the URL has none).
+    pub(crate) path: String,
+}
+
+impl Target {
+    /// The target of a `ws`, `wss`, `http` or `https` URL.
+    pub(crate) fn parse(url: &str) -> Result<Target, HttpError> {
+        let (scheme, rest) = url
+            .split_once("://")
+            .ok_or_else(|| HttpError::Refused(format!("{url}: not a URL")))?;
+        let (tls, default_port) = match scheme.to_ascii_lowercase().as_str() {
+            "wss" | "https" => (true, 443),
+            "ws" | "http" => (false, 80),
+            _ => {
+                return Err(HttpError::Refused(format!(
+                    "{url}: only ws, wss, http and https URLs"
+                )))
+            }
+        };
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let (authority, after) = rest.split_at(end);
+        if authority.contains('@') {
+            return Err(HttpError::Refused(format!(
+                "{url}: credentials do not go in the URL"
+            )));
+        }
+        let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+            let (host, after) = bracketed
+                .split_once(']')
+                .ok_or_else(|| HttpError::Refused(format!("{url}: an unclosed bracket")))?;
+            (host, after.strip_prefix(':'))
+        } else {
+            match authority.rsplit_once(':') {
+                Some((host, port)) => (host, Some(port)),
+                None => (authority, None),
+            }
+        };
+        if host.is_empty() {
+            return Err(HttpError::Refused(format!("{url}: no host")));
+        }
+        let port = match port {
+            Some(port) => port
+                .parse()
+                .map_err(|_| HttpError::Refused(format!("{url}: not a port")))?,
+            None => default_port,
+        };
+        let path = after.split('#').next().unwrap_or("");
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
+        Ok(Target {
+            host: host.to_ascii_lowercase(),
+            port,
+            tls,
+            path,
+        })
+    }
+
+    /// `host:port`, an IPv6 address in brackets.
+    pub(crate) fn netloc(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
+    /// The `Host` header: the port only where it is not the scheme's own.
+    pub(crate) fn host_header(&self) -> String {
+        let default = if self.tls { 443 } else { 80 };
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        if self.port == default {
+            host
+        } else {
+            format!("{host}:{}", self.port)
+        }
+    }
+}
+
+/// A connection made by [`Client::connect`]: TCP, or TLS over TCP.
+pub struct Stream(Inner);
+
+enum Inner {
+    Plain(TcpStream),
+    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+}
+
+impl std::fmt::Debug for Stream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Inner::Plain(_) => f.write_str("Stream(tcp)"),
+            Inner::Tls(_) => f.write_str("Stream(tls)"),
+        }
+    }
+}
+
+impl Stream {
+    /// How long a read waits for bytes (`None`: as long as it takes).
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        match &self.0 {
+            Inner::Plain(tcp) => tcp.set_read_timeout(timeout),
+            Inner::Tls(tls) => tls.sock.set_read_timeout(timeout),
+        }
+    }
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match &mut self.0 {
+            Inner::Plain(tcp) => tcp.read(buf),
+            Inner::Tls(tls) => tls.read(buf),
+        }
+    }
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match &mut self.0 {
+            Inner::Plain(tcp) => tcp.write(buf),
+            Inner::Tls(tls) => tls.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match &mut self.0 {
+            Inner::Plain(tcp) => tcp.flush(),
+            Inner::Tls(tls) => tls.flush(),
+        }
+    }
+}
+
+/// A TCP connection to `netloc`, resolved here and held to the address
+/// rules unless `allow_private`; each address in turn.
+fn connect_to(
+    netloc: &str,
+    allow_private: bool,
+    timeout: Duration,
+) -> Result<TcpStream, HttpError> {
+    let addresses = ureq::Resolver::resolve(
+        &GuardedResolver {
+            allow_private,
+            allowed: Vec::new(),
+        },
+        netloc,
+    )
+    .map_err(|e| HttpError::Transport(format!("{netloc}: {e}")))?;
+    let mut last = format!("{netloc}: no address");
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(tcp) => return Ok(tcp),
+            Err(e) => last = format!("{netloc}: {e}"),
+        }
+    }
+    Err(HttpError::Transport(last))
+}
+
+/// A tunnel through an HTTP proxy to `target` (`CONNECT`).
+fn tunnel(
+    mut tcp: TcpStream,
+    target: &Target,
+    authorization: Option<&str>,
+    timeout: Duration,
+) -> Result<TcpStream, HttpError> {
+    let failed = |e: std::io::Error| HttpError::Transport(format!("the proxy: {e}"));
+    tcp.set_read_timeout(Some(timeout)).map_err(failed)?;
+    let netloc = target.netloc();
+    let mut request = format!("CONNECT {netloc} HTTP/1.1\r\nHost: {netloc}\r\n");
+    if let Some(authorization) = authorization {
+        request.push_str(&format!("Proxy-Authorization: {authorization}\r\n"));
+    }
+    request.push_str("\r\n");
+    tcp.write_all(request.as_bytes()).map_err(failed)?;
+    // The answer's head, a byte at a time, so that nothing of the tunnel's
+    // own traffic is read with it.
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() > 8 << 10 {
+            return Err(HttpError::Transport(
+                "the proxy's answer is too long".into(),
+            ));
+        }
+        let mut byte = [0u8; 1];
+        if tcp.read(&mut byte).map_err(failed)? == 0 {
+            return Err(HttpError::Transport(
+                "the proxy closed the connection".into(),
+            ));
+        }
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head);
+    let status = head.lines().next().unwrap_or_default();
+    if status.split_whitespace().nth(1) != Some("200") {
+        return Err(HttpError::Transport(format!(
+            "the proxy refused a tunnel to {netloc}: {status}"
+        )));
+    }
+    Ok(tcp)
+}
+
+/// `Proxy-Authorization` for a proxy URL that names a user
+/// (`http://user:password@proxy:3128`), percent-decoded.
+fn proxy_authorization(url: &str) -> Option<String> {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let (user, _) = authority.rsplit_once('@')?;
+    let mut decoded = Vec::new();
+    let bytes = user.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| char::from(b).to_digit(16);
+        match (bytes[i], bytes.get(i + 1), bytes.get(i + 2)) {
+            (b'%', Some(&h), Some(&l)) if hex(h).is_some() && hex(l).is_some() => {
+                decoded.push((hex(h)? * 16 + hex(l)?) as u8);
+                i += 3;
+            }
+            (b, _, _) => {
+                decoded.push(b);
+                i += 1;
+            }
+        }
+    }
+    Some(format!("Basic {}", base64(&decoded)))
 }
 
 /// The host of an `http` or `https` URL, lower-cased, without brackets.

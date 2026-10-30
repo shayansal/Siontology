@@ -1,16 +1,16 @@
 //! Messengers: the chat services a profile answers, behind one interface.
 //!
-//! Each [`Messenger`] receives text messages after a cursor and sends text
-//! back, through the service's own HTTP API, with credentials from the
-//! environment. [`bridge`] answers the chats it is told to with a profile,
-//! one message at a time, and keeps each messenger's cursor so that a
-//! restarted bridge goes on where it stopped.
+//! Each [`Messenger`] receives messages (after a cursor, where the service
+//! keeps them) and sends text back, through the service's own API, with
+//! credentials from the environment. [`bridge`] answers the chats it is
+//! told to with a profile, one message at a time, and keeps each
+//! messenger's cursor so that a restarted bridge goes on where it stopped.
 //!
 //! | Messenger | Receives by | Credentials | Chats are |
 //! |---|---|---|---|
 //! | Telegram | long polling `getUpdates` | `TELEGRAM_BOT_TOKEN` | chat ids |
-//! | Slack | polling `conversations.history` | `SLACK_BOT_TOKEN` | channel ids |
-//! | Discord | polling a channel's messages | `DISCORD_BOT_TOKEN` | channel ids |
+//! | Slack | Socket Mode, or polling `conversations.history` | `SLACK_BOT_TOKEN`, and `SLACK_APP_TOKEN` for Socket Mode | channel ids |
+//! | Discord | the gateway | `DISCORD_BOT_TOKEN` | channel ids |
 //! | Matrix | long polling `/sync` | `MATRIX_ACCESS_TOKEN`, `MATRIX_HOMESERVER` | room ids |
 //! | Signal | polling signal-cli-rest-api's `receive` | `SIGNAL_API_BASE`, `SIGNAL_NUMBER` | phone numbers |
 //!
@@ -18,14 +18,22 @@
 //! stand-in, in the tests). Bots are not answered: Telegram does not show a
 //! bot other bots' messages, Slack and Discord mark them, and on Matrix the
 //! bridge skips its own. On Signal, only direct messages are answered. The
-//! first time a bridge polls Slack, Discord or Matrix it starts from the
-//! latest message instead of answering the whole history.
+//! first time a bridge polls Slack or Matrix it starts from the latest
+//! message instead of answering the whole history; Discord's gateway and
+//! Slack's Socket Mode pass on only what is said while the bridge listens
+//! ([`crate::live`]).
+//!
+//! A chat the bridge does not answer is ignored, or with pairing, if it
+//! is a direct one, given a code ([`crate::pairing`]); with
+//! `require_mention`, a group chat it answers is answered only where a
+//! message mentions the bot or answers it.
 //!
 //! Who may approve or decline a waiting call is the bridge's `approvers`,
 //! by the ids the messenger gives people: without them, anyone who can
 //! write in an allowed chat decides, as the messenger identifies them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -45,6 +53,12 @@ pub struct Incoming {
     pub text: String,
     /// The voice note it is, if it is one.
     pub voice: Option<Note>,
+    /// Whether the chat is between its writer and the bot alone (a
+    /// direct message), not a group's.
+    pub direct: bool,
+    /// Whom it names, as the messenger names people (ids, `@usernames`),
+    /// the writer of a message it answers included.
+    pub mentions: Vec<String>,
 }
 
 /// A voice note a messenger received: its handle for it, and what it is.
@@ -81,6 +95,17 @@ pub trait Messenger: std::fmt::Debug {
     /// yet, which pairing needs; one polled chat by chat does not.
     fn sees_strangers(&self) -> bool {
         true
+    }
+    /// How long one batch (`--once`) waits for messages, in seconds: none
+    /// where the messenger keeps what was said while the bridge was away,
+    /// some where it only passes on what is said while it listens.
+    fn once_wait(&self) -> u64 {
+        0
+    }
+    /// The names its messages give the bot (as [`Incoming::mentions`]
+    /// gives them), for telling which group messages are said to it.
+    fn me(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
     }
     /// The audio of a voice note it received.
     fn fetch_voice(&self, _note: &Note) -> Result<crate::voice::Audio, String> {
@@ -165,13 +190,18 @@ fn write_positions(positions: &BTreeMap<String, String>) -> String {
         .join(",")
 }
 
-/// Slack, through the Web API: polls `conversations.history` of each
-/// channel it answers, and posts with `chat.postMessage`.
+/// Slack, through the Web API, posting with `chat.postMessage`. With an
+/// app-level token it receives through Socket Mode, everything the app
+/// is subscribed to (direct messages included); without one, it polls
+/// `conversations.history` of each channel it answers.
 pub struct Slack {
     client: sion_http::Client,
     base: String,
     token: String,
     channels: Vec<String>,
+    app_token: Option<String>,
+    live: OnceLock<crate::live::Live>,
+    me: OnceLock<Vec<String>>,
 }
 
 impl std::fmt::Debug for Slack {
@@ -182,7 +212,8 @@ impl std::fmt::Debug for Slack {
 
 impl Slack {
     /// The bot whose token is in `SLACK_BOT_TOKEN`, at `SLACK_API_BASE`
-    /// (default `https://slack.com/api`), polling `channels`.
+    /// (default `https://slack.com/api`): through Socket Mode with the
+    /// app-level token in `SLACK_APP_TOKEN`, or polling `channels`.
     pub fn from_env(channels: &[String]) -> Result<Slack, String> {
         Ok(Slack {
             client: client(30)?,
@@ -192,6 +223,24 @@ impl Slack {
                 .to_string(),
             token: env("SLACK_BOT_TOKEN").ok_or("set SLACK_BOT_TOKEN")?,
             channels: channels.to_vec(),
+            app_token: env("SLACK_APP_TOKEN"),
+            live: OnceLock::new(),
+            me: OnceLock::new(),
+        })
+    }
+
+    /// The Socket Mode connection, started the first time it is needed.
+    fn live(&self, app_token: &str) -> &crate::live::Live {
+        self.live.get_or_init(|| {
+            crate::live::Live::start(
+                "slack",
+                crate::live::slack(
+                    self.client.clone(),
+                    self.base.clone(),
+                    app_token.to_string(),
+                    self.token.clone(),
+                ),
+            )
         })
     }
 
@@ -226,7 +275,10 @@ impl Messenger for Slack {
         "channel"
     }
 
-    fn receive(&self, cursor: &str, _wait: u64) -> Result<(Vec<Incoming>, String), String> {
+    fn receive(&self, cursor: &str, wait: u64) -> Result<(Vec<Incoming>, String), String> {
+        if let Some(app_token) = &self.app_token {
+            return Ok((self.live(app_token).receive(wait)?, cursor.to_string()));
+        }
         let mut positions = read_positions(cursor);
         let mut out = Vec::new();
         for channel in &self.channels {
@@ -267,11 +319,18 @@ impl Messenger for Slack {
                     continue;
                 }
                 if let Some(text) = message["text"].as_str() {
+                    let mut mentions = crate::live::slack_mentions(text);
+                    if let Some(parent) = message["parent_user_id"].as_str() {
+                        mentions.push(parent.to_string());
+                    }
                     out.push(Incoming {
                         chat: channel.clone(),
                         from: message["user"].as_str().unwrap_or_default().to_string(),
                         text: text.to_string(),
                         voice: None,
+                        // Direct messages' channels begin with D.
+                        direct: channel.starts_with('D'),
+                        mentions,
                     });
                 }
             }
@@ -289,22 +348,46 @@ impl Messenger for Slack {
     }
 
     fn long_polls(&self) -> bool {
-        false
+        self.app_token.is_some()
     }
 
     fn sees_strangers(&self) -> bool {
-        false
+        self.app_token.is_some()
+    }
+
+    fn once_wait(&self) -> u64 {
+        if self.app_token.is_some() {
+            LIVE_ONCE_WAIT
+        } else {
+            0
+        }
+    }
+
+    fn me(&self) -> Result<Vec<String>, String> {
+        if let Some(me) = self.me.get() {
+            return Ok(me.clone());
+        }
+        let who = self.call("auth.test", &json!({}))?;
+        let me = vec![who["user_id"]
+            .as_str()
+            .ok_or("Slack did not say who the bot is")?
+            .to_string()];
+        Ok(self.me.get_or_init(|| me).clone())
     }
 }
 
-/// Discord, through its HTTP API: polls each channel it answers for
-/// messages after the last one seen, and posts to the channel. The bot
+/// How long one batch waits on a messenger that passes on only what is
+/// said while it listens, in seconds.
+pub const LIVE_ONCE_WAIT: u64 = 30;
+
+/// Discord: its gateway for messages, in servers' channels and direct
+/// messages ([`crate::live`]), and its HTTP API to post them. The bot
 /// needs the message-content intent to read what people write.
 pub struct Discord {
     client: sion_http::Client,
     base: String,
     token: String,
-    channels: Vec<String>,
+    live: OnceLock<crate::live::Live>,
 }
 
 impl std::fmt::Debug for Discord {
@@ -315,8 +398,8 @@ impl std::fmt::Debug for Discord {
 
 impl Discord {
     /// The bot whose token is in `DISCORD_BOT_TOKEN`, at `DISCORD_API_BASE`
-    /// (default `https://discord.com/api/v10`), polling `channels`.
-    pub fn from_env(channels: &[String]) -> Result<Discord, String> {
+    /// (default `https://discord.com/api/v10`).
+    pub fn from_env() -> Result<Discord, String> {
         Ok(Discord {
             client: client(30)?,
             base: env("DISCORD_API_BASE")
@@ -324,7 +407,17 @@ impl Discord {
                 .trim_end_matches('/')
                 .to_string(),
             token: env("DISCORD_BOT_TOKEN").ok_or("set DISCORD_BOT_TOKEN")?,
-            channels: channels.to_vec(),
+            live: OnceLock::new(),
+        })
+    }
+
+    /// The gateway, connected the first time it is needed.
+    fn live(&self) -> &crate::live::Live {
+        self.live.get_or_init(|| {
+            crate::live::Live::start(
+                "discord",
+                crate::live::discord(self.client.clone(), self.base.clone(), self.token.clone()),
+            )
         })
     }
 
@@ -358,68 +451,8 @@ impl Messenger for Discord {
         "channel"
     }
 
-    fn receive(&self, cursor: &str, _wait: u64) -> Result<(Vec<Incoming>, String), String> {
-        let mut positions = read_positions(cursor);
-        let mut out = Vec::new();
-        for channel in &self.channels {
-            let after = positions.get(channel).cloned();
-            let path = match &after {
-                Some(id) => format!(
-                    "/channels/{}/messages?after={id}&limit=50",
-                    segment(channel)
-                ),
-                None => format!("/channels/{}/messages?limit=1", segment(channel)),
-            };
-            let value = self.call("GET", &path, None)?;
-            let mut messages: Vec<&Value> = value
-                .as_array()
-                .map(|m| m.iter().collect())
-                .unwrap_or_default();
-            let id = |m: &Value| {
-                m["id"]
-                    .as_str()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0)
-            };
-            messages.sort_by_key(|m| id(m));
-            let mut latest = after.clone();
-            for message in messages {
-                latest = Some(id(message).to_string());
-                if after.is_none() || message["author"]["bot"] == true {
-                    continue;
-                }
-                let text = message["content"].as_str().unwrap_or_default();
-                // A voice message is an audio attachment.
-                let voice = message["attachments"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|a| {
-                        a["content_type"]
-                            .as_str()
-                            .is_some_and(|t| t.starts_with("audio/"))
-                    })
-                    .and_then(|a| {
-                        Some(Note {
-                            id: a["url"].as_str()?.to_string(),
-                            media_type: a["content_type"].as_str().map(str::to_string),
-                        })
-                    });
-                if !text.is_empty() || voice.is_some() {
-                    out.push(Incoming {
-                        chat: channel.clone(),
-                        from: message["author"]["id"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                        text: text.to_string(),
-                        voice,
-                    });
-                }
-            }
-            positions.insert(channel.clone(), latest.unwrap_or_else(|| "0".to_string()));
-        }
-        Ok((out, write_positions(&positions)))
+    fn receive(&self, cursor: &str, wait: u64) -> Result<(Vec<Incoming>, String), String> {
+        Ok((self.live().receive(wait)?, cursor.to_string()))
     }
 
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
@@ -432,11 +465,15 @@ impl Messenger for Discord {
     }
 
     fn long_polls(&self) -> bool {
-        false
+        true
     }
 
-    fn sees_strangers(&self) -> bool {
-        false
+    fn once_wait(&self) -> u64 {
+        LIVE_ONCE_WAIT
+    }
+
+    fn me(&self) -> Result<Vec<String>, String> {
+        self.live().me(Duration::from_secs(LIVE_ONCE_WAIT))
     }
 
     fn fetch_voice(&self, note: &Note) -> Result<crate::voice::Audio, String> {
@@ -463,6 +500,8 @@ pub struct Matrix {
     token: String,
     me: String,
     join_invites: bool,
+    /// Whether each room seen is a direct one (the account and one other).
+    rooms: Mutex<BTreeMap<String, bool>>,
 }
 
 impl std::fmt::Debug for Matrix {
@@ -484,6 +523,7 @@ impl Matrix {
             token: env("MATRIX_ACCESS_TOKEN").ok_or("set MATRIX_ACCESS_TOKEN")?,
             me: String::new(),
             join_invites: false,
+            rooms: Mutex::new(BTreeMap::new()),
         };
         let whoami = matrix.call("GET", "/_matrix/client/v3/account/whoami", None)?;
         matrix.me = whoami["user_id"]
@@ -498,6 +538,26 @@ impl Matrix {
         Matrix {
             join_invites: true,
             ..self
+        }
+    }
+
+    /// Whether `room` holds the account and one other, as the room's
+    /// summary said, or as its members are now.
+    fn direct(&self, room: &str) -> bool {
+        if let Some(direct) = self.rooms.lock().ok().and_then(|r| r.get(room).copied()) {
+            return direct;
+        }
+        let path = format!("/_matrix/client/v3/rooms/{}/joined_members", segment(room));
+        match self.call("GET", &path, None) {
+            Ok(members) => {
+                let direct = members["joined"].as_object().is_some_and(|j| j.len() == 2);
+                if let Ok(mut rooms) = self.rooms.lock() {
+                    rooms.insert(room.to_string(), direct);
+                }
+                direct
+            }
+            // Not known: taken as a group's, and asked again next time.
+            Err(_) => false,
         }
     }
 
@@ -565,34 +625,57 @@ impl Messenger for Matrix {
             }
         }
         let mut out = Vec::new();
-        if !cursor.is_empty() {
-            if let Some(rooms) = value["rooms"]["join"].as_object() {
-                for (room, joined) in rooms {
-                    for event in joined["timeline"]["events"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
+        if let Some(rooms) = value["rooms"]["join"].as_object() {
+            for (room, joined) in rooms {
+                if let Some(count) = joined["summary"]["m.joined_member_count"].as_u64() {
+                    if let Ok(mut known) = self.rooms.lock() {
+                        known.insert(room.clone(), count == 2);
+                    }
+                }
+                if cursor.is_empty() {
+                    continue;
+                }
+                for event in joined["timeline"]["events"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    let sender = event["sender"].as_str().unwrap_or_default();
+                    if event["type"] != "m.room.message"
+                        || event["content"]["msgtype"] != "m.text"
+                        || sender == self.me
                     {
-                        let sender = event["sender"].as_str().unwrap_or_default();
-                        if event["type"] != "m.room.message"
-                            || event["content"]["msgtype"] != "m.text"
-                            || sender == self.me
-                        {
-                            continue;
+                        continue;
+                    }
+                    if let Some(text) = event["content"]["body"].as_str() {
+                        // Mentions as the spec has them, and the account
+                        // named in the text by older clients.
+                        let mut mentions: Vec<String> = event["content"]["m.mentions"]["user_ids"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|id| id.as_str().map(str::to_string))
+                            .collect();
+                        if text.contains(&self.me) {
+                            mentions.push(self.me.clone());
                         }
-                        if let Some(text) = event["content"]["body"].as_str() {
-                            out.push(Incoming {
-                                chat: room.clone(),
-                                from: sender.to_string(),
-                                text: text.to_string(),
-                                voice: None,
-                            });
-                        }
+                        out.push(Incoming {
+                            chat: room.clone(),
+                            from: sender.to_string(),
+                            text: text.to_string(),
+                            voice: None,
+                            direct: self.direct(room),
+                            mentions,
+                        });
                     }
                 }
             }
         }
         Ok((out, next))
+    }
+
+    fn me(&self) -> Result<Vec<String>, String> {
+        Ok(vec![self.me.clone()])
     }
 
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
@@ -685,6 +768,8 @@ impl Messenger for Signal {
                     from: from.to_string(),
                     text: text.to_string(),
                     voice: None,
+                    direct: true,
+                    mentions: Vec::new(),
                 });
             }
         }
@@ -737,9 +822,15 @@ impl Messenger for crate::channels::Telegram {
                     id,
                     media_type: Some(media_type),
                 }),
+                direct: u.direct,
+                mentions: u.mentions,
             })
             .collect();
         Ok((messages, next.to_string()))
+    }
+
+    fn me(&self) -> Result<Vec<String>, String> {
+        crate::channels::Telegram::me(self)
     }
 
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
@@ -791,7 +882,7 @@ pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, S
     Ok(match name {
         "telegram" => Box::new(crate::channels::Telegram::from_env()?),
         "slack" => Box::new(Slack::from_env(chats)?),
-        "discord" => Box::new(Discord::from_env(chats)?),
+        "discord" => Box::new(Discord::from_env()?),
         "matrix" if options.pairing => Box::new(Matrix::from_env()?.joining_invites()),
         "matrix" => Box::new(Matrix::from_env()?),
         "signal" => Box::new(Signal::from_env()?),
@@ -809,11 +900,16 @@ pub const POLL_PAUSE: u64 = 3;
 /// `--pairing`, `--hear` and `--speak`, for a channel's command.
 #[derive(Clone, Debug, Default, clap::Args)]
 pub struct ChannelArgs {
-    /// Give someone it does not know a pairing code, and answer them once
-    /// you approve it (`sion agent pairing approve`): on Telegram, Matrix
-    /// (joining the rooms it is invited to) and Signal.
+    /// Give someone who writes to it directly, and whom it does not know,
+    /// a pairing code, and answer them once you approve it (`sion agent
+    /// pairing approve`). Matrix joins the rooms it is invited to; Slack
+    /// needs Socket Mode (SLACK_APP_TOKEN).
     #[arg(long)]
     pub pairing: bool,
+    /// In the group chats it answers, answer only what mentions it or
+    /// answers one of its messages (direct messages are always answered).
+    #[arg(long)]
+    pub require_mention: bool,
     /// Hear voice notes: openai:<model>, groq:<model>, or
     /// command:<program> (given the audio's file, it prints the text).
     #[arg(long, value_name = "PROVIDER")]
@@ -838,6 +934,7 @@ impl ChannelArgs {
             approvers,
             once,
             pairing: self.pairing,
+            require_mention: self.require_mention,
             hearing: self
                 .hear
                 .as_deref()
@@ -864,9 +961,12 @@ pub struct Options {
     pub approvers: Vec<String>,
     /// One batch of messages, then stop.
     pub once: bool,
-    /// Give a chat it does not know a pairing code ([`crate::pairing`]),
-    /// and answer it once the operator approves the code.
+    /// Give a direct chat it does not know a pairing code
+    /// ([`crate::pairing`]), and answer it once the operator approves the
+    /// code.
     pub pairing: bool,
+    /// In group chats, answer only what mentions the bot or answers it.
+    pub require_mention: bool,
     /// What hears voice notes, if any are heard.
     pub hearing: Option<crate::voice::Hearing>,
     /// What speaks the replies to voice notes, if they are spoken.
@@ -915,27 +1015,35 @@ pub fn bridge_with(
     }
     if options.pairing && !messenger.sees_strangers() {
         return Err(CliError::Usage(format!(
-            "{} is polled here channel by channel, so no message from a chat it does not answer reaches the bridge: pairing works on Telegram, Matrix and Signal",
+            "{} is polled here channel by channel, so no message from a chat it does not answer reaches the bridge: give Slack an app-level token (SLACK_APP_TOKEN) for Socket Mode",
             messenger.name()
         )));
     }
     let cursor_key = messenger.cursor_key(&profile.name);
     let word = messenger.chat_word();
     let channel = format!("{}:{}", messenger.name(), profile.name);
+    // Chats said to be ignored, each once.
+    let mut ignored = BTreeSet::new();
+    let mut me: Option<Vec<String>> = None;
     loop {
         let cursor = crate::channels::state(&cursor_key)?.unwrap_or_default();
+        let wait = if once { messenger.once_wait() } else { 50 };
         let (messages, next) = messenger
-            .receive(&cursor, if once { 0 } else { 50 })
+            .receive(&cursor, wait)
             .map_err(CliError::Connection)?;
         crate::channels::set_state(&cursor_key, Some(&next))?;
         let quiet = messages.is_empty();
         for message in messages {
             if !allow.contains(&message.chat) {
-                let known =
-                    options.pairing && crate::pairing::load()?.allows(&channel, &message.chat);
+                // Pairing lets in a person, in a chat of their own with the
+                // bot: a group the bridge does not answer stays ignored.
+                let pairs = options.pairing && message.direct;
+                let known = pairs && crate::pairing::load()?.allows(&channel, &message.chat);
                 if !known {
-                    if !options.pairing {
-                        println!("{word} {}: not allowed, ignored", message.chat);
+                    if !pairs {
+                        if ignored.insert(message.chat.clone()) {
+                            println!("{word} {}: not allowed, ignored", message.chat);
+                        }
                         continue;
                     }
                     match crate::pairing::stranger(
@@ -968,6 +1076,19 @@ pub fn bridge_with(
                             continue;
                         }
                     }
+                }
+            } else if options.require_mention && !message.direct {
+                // In a group, only what is said to the bot.
+                if me.is_none() {
+                    me = Some(messenger.me().map_err(CliError::Connection)?);
+                }
+                let names = me.as_deref().unwrap_or_default();
+                let named = message
+                    .mentions
+                    .iter()
+                    .any(|m| names.iter().any(|n| n.eq_ignore_ascii_case(m)));
+                if !named {
+                    continue;
                 }
             }
             // A voice note is heard, and goes to the agent as what its

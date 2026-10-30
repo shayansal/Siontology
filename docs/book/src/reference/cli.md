@@ -1827,7 +1827,8 @@ Options:
       --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --approvers <APPROVERS>  Who may approve or decline (comma-separated Telegram user ids); without it, anyone in an allowed chat
       --once                   Answer one batch of messages, then stop
-      --pairing                Give someone it does not know a pairing code, and answer them once you approve it (`sion agent pairing approve`): on Telegram, Matrix (joining the rooms it is invited to) and Signal
+      --pairing                Give someone who writes to it directly, and whom it does not know, a pairing code, and answer them once you approve it (`sion agent pairing approve`). Matrix joins the rooms it is invited to; Slack needs Socket Mode (SLACK_APP_TOKEN)
+      --require-mention        In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
       --hear <PROVIDER>        Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
       --speak <PROVIDER>       Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
   -h, --help                   Print help
@@ -1851,7 +1852,8 @@ Options:
       --allow <ALLOW>          The chats it answers (comma-separated: channel ids, room ids or numbers); others are ignored, or given a pairing code with --pairing
       --approvers <APPROVERS>  Who may approve or decline (comma-separated, as the messenger names people); without it, anyone in an allowed chat
       --once                   Answer one batch of messages, then stop
-      --pairing                Give someone it does not know a pairing code, and answer them once you approve it (`sion agent pairing approve`): on Telegram, Matrix (joining the rooms it is invited to) and Signal
+      --pairing                Give someone who writes to it directly, and whom it does not know, a pairing code, and answer them once you approve it (`sion agent pairing approve`). Matrix joins the rooms it is invited to; Slack needs Socket Mode (SLACK_APP_TOKEN)
+      --require-mention        In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
       --hear <PROVIDER>        Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
       --speak <PROVIDER>       Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
   -h, --help                   Print help

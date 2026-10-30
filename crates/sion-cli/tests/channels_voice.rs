@@ -3,7 +3,8 @@
 //! heard and answered aloud; someone the bridge does not know is given a
 //! pairing code, and answered once the operator approves it. On Matrix,
 //! the room a stranger invites the account to is joined, and they are
-//! given a code there; Slack, polled channel by channel, refuses pairing.
+//! given a code there; Slack, polled channel by channel without an
+//! app-level token, refuses pairing.
 
 use std::sync::{Arc, Mutex};
 
@@ -188,9 +189,9 @@ fn a_voice_note_is_heard_and_answered_aloud_and_a_stranger_pairs() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let (telegram, speech) = stand_ins(
         vec![
-            json!({"update_id": 7, "message": {"chat": {"id": 42}, "from": {"id": 5},
+            json!({"update_id": 7, "message": {"chat": {"id": 42, "type": "private"}, "from": {"id": 5},
                 "voice": {"file_id": "voice-7", "duration": 2, "mime_type": "audio/ogg"}}}),
-            json!({"update_id": 8, "message": {"chat": {"id": 77}, "from": {"id": 9}, "text": "Hello?"}}),
+            json!({"update_id": 8, "message": {"chat": {"id": 77, "type": "private"}, "from": {"id": 9}, "text": "Hello?"}}),
         ],
         seen.clone(),
     );
@@ -202,6 +203,7 @@ fn a_voice_note_is_heard_and_answered_aloud_and_a_stranger_pairs() {
         pairing: true,
         hear: Some("openai:gpt-4o-mini-transcribe".into()),
         speak: Some("openai:gpt-4o-mini-tts:alloy".into()),
+        require_mention: false,
     }
     .options(vec!["42".into()], Vec::new(), true)
     .unwrap();
@@ -265,7 +267,7 @@ fn a_voice_note_is_heard_and_answered_aloud_and_a_stranger_pairs() {
     let seen_again = Arc::new(Mutex::new(Seen::default()));
     let (telegram, _) = stand_ins(
         vec![
-            json!({"update_id": 9, "message": {"chat": {"id": 77}, "from": {"id": 9}, "text": "Hello again"}}),
+            json!({"update_id": 9, "message": {"chat": {"id": 77, "type": "private"}, "from": {"id": 9}, "text": "Hello again"}}),
         ],
         seen_again.clone(),
     );
@@ -290,7 +292,7 @@ fn a_voice_note_is_heard_and_answered_aloud_and_a_stranger_pairs() {
             ("GET", "/_matrix/client/v3/sync?timeout=0") => json!({"next_batch": "s1",
                 "rooms": {"invite": {"!dm:example.org": {"invite_state": {"events": []}}}}}),
             ("GET", "/_matrix/client/v3/sync?timeout=0&since=s1") => json!({"next_batch": "s2",
-                "rooms": {"join": {"!dm:example.org": {"timeline": {"events": [
+                "rooms": {"join": {"!dm:example.org": {"summary": {"m.joined_member_count": 2}, "timeline": {"events": [
                     {"type": "m.room.message", "sender": "@ana:example.org",
                      "content": {"msgtype": "m.text", "body": "Hello?"}}]}}}}}),
             ("POST", u) if u == format!("/_matrix/client/v3/join/{room}") => {
@@ -356,10 +358,7 @@ fn a_voice_note_is_heard_and_answered_aloud_and_a_stranger_pairs() {
         sion_cli::messengers::bridge_with(ledger, &profile, slack.as_ref(), &pairing_only)
             .unwrap_err()
             .to_string();
-    assert!(
-        refused.contains("pairing works on Telegram, Matrix and Signal"),
-        "{refused}"
-    );
+    assert!(refused.contains("SLACK_APP_TOKEN"), "{refused}");
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }

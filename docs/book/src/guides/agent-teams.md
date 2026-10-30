@@ -273,13 +273,13 @@ sendMessage {"chat_id": 42, "text": "85 USD left in the budget."}
 ### Slack, Discord, Matrix and Signal
 
 `sion agent bridge <profile> --via <messenger>` answers a messenger's
-chats with a profile, through the messenger's own HTTP API, with
-credentials from the environment:
+chats with a profile, through the messenger's own API, with credentials
+from the environment:
 
 | `--via` | Receives by | Credentials | `--allow` names |
 |---|---|---|---|
-| `slack` | polling `conversations.history` | `SLACK_BOT_TOKEN` | channel ids |
-| `discord` | polling each channel's messages | `DISCORD_BOT_TOKEN` | channel ids |
+| `slack` | Socket Mode, given an app-level token; otherwise polling `conversations.history` | `SLACK_BOT_TOKEN`, and `SLACK_APP_TOKEN` for Socket Mode | channel ids |
+| `discord` | its gateway | `DISCORD_BOT_TOKEN` | channel ids |
 | `matrix` | long polling `/sync` | `MATRIX_HOMESERVER`, `MATRIX_ACCESS_TOKEN` | room ids |
 | `signal` | polling the `receive` endpoint of [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) | `SIGNAL_API_BASE`, `SIGNAL_NUMBER` | phone numbers |
 | `telegram` | long polling `getUpdates` | `TELEGRAM_BOT_TOKEN` | chat ids |
@@ -288,9 +288,14 @@ credentials from the environment:
 Telegram does not show a bot other bots' messages, Slack and Discord mark
 them, and on Matrix the bridge skips its own. On Signal it answers direct
 messages only. It keeps its place, so a restarted bridge goes on where
-it stopped, and the first time it polls Slack, Discord or Matrix, it
-starts from the latest message rather than answering the history. With `--approvers`, only the people named, as the
-messenger names them, may approve or decline.
+it stopped, and the first time it polls Slack or Matrix, it starts from
+the latest message rather than answering the history; Discord's gateway
+and Slack's Socket Mode pass on only what is said while the bridge
+listens. With `--approvers`, only the people named, as the messenger
+names them, may approve or decline. With `--require-mention`, the group
+chats it answers are answered only where a message mentions the bot or
+answers one of its messages; direct messages are always answered. A
+chat it does not answer is said to be ignored once.
 
 Here `SLACK_API_BASE` points the bridge at a stand-in for Slack's Web API.
 Its first poll found one old message, which the bridge took as where to
@@ -316,20 +321,83 @@ chat.postMessage {"channel": "C042", "text": "100 USD left in the budget."}
 chat.postMessage {"channel": "C042", "text": "Only U07 may approve or decline here."}
 ```
 
+### Discord's gateway and Slack's Socket Mode
+
+Discord passes a bot what is said over its gateway, a WebSocket the
+bridge keeps open: it sends heartbeats, resumes after a drop, and
+connects again after a pause that doubles up to a minute. The bot needs
+Discord's message-content intent, turned on in its developer portal; if
+Discord refuses the token or the intent, the bridge stops and says why.
+Slack does the same through Socket Mode once the app has an app-level
+token (`SLACK_APP_TOKEN`, `xapp-…`, with `connections:write`): the bridge
+acknowledges each event as it comes, and a message Slack sends twice, as
+a message and as a mention, is answered once. Both pass on direct
+messages as well as channels', so both pair. When the bridge stops, it
+closes the connection, and Discord shows the bot offline.
+
+Here `DISCORD_API_BASE` and `SLACK_API_BASE` point the bridge at
+stand-ins, whose gateway and Socket Mode are WebSockets on this machine.
+Discord's sent four messages: one in channel 900 that mentions the bot,
+another there that does not, one in channel 901, and a direct message
+(channel 1300) from someone the bridge does not know. Slack's sent one
+message in C042, as a message and as a mention, and a direct message
+(D088):
+
+```text
+$ DISCORD_BOT_TOKEN=… DISCORD_API_BASE=http://127.0.0.1:8796/discord sion agent bridge lead --via discord --allow 900 --pairing --require-mention --once
+channel 900 (2201): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 6a0b4d998c8b3a40: done
+to channel 900: 100 USD left in the budget.
+channel 901: not allowed, ignored
+channel 1300: not known yet; sent a pairing code (sion agent pairing list)
+$ SLACK_BOT_TOKEN=… SLACK_APP_TOKEN=… SLACK_API_BASE=http://127.0.0.1:8796/slack sion agent bridge lead --via slack --allow C042 --pairing --once
+channel C042 (U07): How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 573b1fd79d14ee81: done
+to channel C042: 100 USD left in the budget.
+channel D088: not known yet; sent a pairing code (sion agent pairing list)
+```
+
+The stand-ins received:
+
+```text
+gateway: identify op=2 intents=37377 token=…
+POST /channels/900/messages {"content":"100 USD left in the budget."}
+POST /channels/1300/messages {"content":"I do not know you yet. To talk with me, ask the person who runs me to let you in with: sion agent pairing approve VDWH-KNS9"}
+gateway: closed by the bridge
+socket mode: {"envelope_id": "e1"}
+socket mode: {"envelope_id": "e2"}
+socket mode: {"envelope_id": "e3"}
+chat.postMessage {"channel":"C042","text":"100 USD left in the budget."}
+chat.postMessage {"channel":"D088","text":"I do not know you yet. To talk with me, ask the person who runs me to let you in with: sion agent pairing approve QNB5-KNPN"}
+socket mode: closed by the bridge
+```
+
+The intents, 37377, are servers, their messages, direct messages and
+message content.
+
 ### Pairing and voice notes
 
-With `--pairing`, a bridge gives someone it does not know a code instead
-of an answer. They give you the code, and `sion agent pairing approve`
-lets their chat in, on that channel and for that profile only. The bridge
-never prints the code; it goes only to them, so what you approve is the
-chat of whoever gave it to you. A code lasts an hour, a chat is given one
-every ten minutes at most, a channel has three waiting at most, and five
-wrong approvals in a row stop approvals for an hour. Codes are
-consonants and digits, so none spells a word. Pairing works on Telegram,
-on Signal, and on Matrix, where the bridge joins the rooms it is invited
-to; Slack and Discord are polled here channel by channel, so no message
-from a chat they do not answer reaches the bridge, and it refuses
-`--pairing` there.
+With `--pairing`, a bridge gives someone who writes to it directly, and
+whom it does not know, a code instead of an answer. They give you the
+code, and `sion agent pairing approve` lets their chat in, on that
+channel and for that profile only. The bridge never prints the code; it
+goes only to them, so what you approve is the chat of whoever gave it to
+you. A code lasts an hour, a chat is given one every ten minutes at most,
+a channel has three waiting at most, and five wrong approvals in a row
+stop approvals for an hour. Codes are consonants and digits, so none
+spells a word. Pairing is for direct chats: a private chat on Telegram,
+a direct message on Discord, or on Slack with Socket Mode, a room of the
+account and one other on Matrix (where the bridge joins the rooms it is
+invited to), and Signal's messages. A group chat the bridge does not
+answer stays ignored. Slack without Socket Mode is polled channel by
+channel, so no direct message from someone it does not know reaches the
+bridge, and it refuses `--pairing` there.
 
 With `--hear`, voice notes (Telegram's voice notes and audio files,
 Discord's audio attachments) are transcribed and reach the profile as
@@ -356,7 +424,7 @@ chat 42: (voice note) How much budget is left?
     → ledger_balance {}
     ← {"budget_remaining_usd":"100",…}
   agent: 100 USD left in the budget.
-  session 5f5cea7d1f9d2cd4: done
+  session a72dec3af7de6702: done
 to chat 42 (voice note): 100 USD left in the budget.
 chat 77: not known yet; sent a pairing code (sion agent pairing list)
 ```
@@ -367,7 +435,7 @@ The stand-ins received:
 POST /v1/audio/transcriptions model=gpt-4o-mini-transcribe file=voice.ogg (6752 bytes, audio/ogg)
 POST /v1/audio/speech {"input":"100 USD left in the budget.","model":"gpt-4o-mini-tts","response_format":"opus","voice":"alloy"}
 sendVoice chat_id=42 caption="100 USD left in the budget." voice=voice.ogg (7229 bytes, audio/ogg)
-sendMessage {"chat_id":77,"text":"I do not know you yet. To talk with me, ask the person who runs me to let you in with: sion agent pairing approve 6JPC-HWMQ"}
+sendMessage {"chat_id":77,"text":"I do not know you yet. To talk with me, ask the person who runs me to let you in with: sion agent pairing approve QBRS-9XRF"}
 ```
 
 Given the code by the person in chat 77, you let them in:
@@ -375,7 +443,7 @@ Given the code by the person in chat 77, you let them in:
 ```text
 $ sion agent pairing list
 waiting: telegram:lead chat 77 (9), 0 minutes ago: "Hello?"
-$ sion agent pairing approve 6JPC-HWMQ
+$ sion agent pairing approve QBRS-9XRF
 let in telegram:lead chat 77 (9): it is answered from its next message
 $ sion agent pairing list
 no codes waiting
@@ -390,7 +458,7 @@ chat 77 (9): Thanks! How much budget is left?
     → ledger_balance {}
     ← {"budget_remaining_usd":"100",…}
   agent: 100 USD left in the budget.
-  session 4b1a4bbbe9b0bccf: done
+  session ee56d1a1f268678a: done
 to chat 77: 100 USD left in the budget.
 ```
 
@@ -481,11 +549,15 @@ again.
 - Voice notes are heard on Telegram and Discord, and spoken on Telegram
   only; on Slack, Matrix and Signal only text messages are read. The
   services `--hear` and `--speak` name hear the voice notes and the
-  replies (`agent:voice`). Pairing needs a messenger that shows messages
-  from chats it does not answer: not Slack or Discord, polled here
-  channel by channel. Slack, Discord, Matrix and Signal have been run only
-  against stand-ins for their APIs, and voice notes only against
-  stand-ins for the speech services'.
+  replies (`agent:voice`). Pairing needs a messenger that shows direct
+  messages from people it does not know: not Slack without Socket Mode.
+  Discord's gateway and Slack's Socket Mode do not answer later what was
+  said while the bridge was not listening, and one Discord bot runs one
+  gateway connection (no sharding, which Discord asks of bots in 2,500
+  servers or more). Slack, Discord, Matrix and Signal have been run only
+  against stand-ins for their APIs (the WebSocket client also against
+  Discord's real gateway, which it reached and was greeted by), and voice
+  notes only against stand-ins for the speech services'.
 - An agent gateway sees, and could change, the messages and answers it
   passes. It cannot act as the agent, holding no key, and checks the
   agent's standing as of up to five seconds before (`agent:gateway`).
