@@ -500,8 +500,10 @@ pub struct Update {
     pub chat: i64,
     /// Who wrote it (a Telegram user id), if Telegram says.
     pub from: Option<i64>,
-    /// The message's text.
+    /// The message's text (a voice note's caption).
     pub text: String,
+    /// The voice note or audio it is, if one: its file id and media type.
+    pub voice: Option<(String, String)>,
 }
 
 /// A Telegram bot, through the Bot API.
@@ -572,8 +574,8 @@ impl Telegram {
         .map(|_| ())
     }
 
-    /// The text messages after `offset`, waiting up to `timeout` seconds
-    /// for one.
+    /// The text messages and voice notes after `offset`, waiting up to
+    /// `timeout` seconds for one.
     pub fn updates(&self, offset: i64, timeout: u64) -> Result<Vec<Update>, String> {
         let result = self.call(
             "getUpdates",
@@ -585,16 +587,123 @@ impl Telegram {
                 updates
                     .iter()
                     .filter_map(|u| {
+                        let message = &u["message"];
+                        let text = message["text"]
+                            .as_str()
+                            .or_else(|| message["caption"].as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        // A voice note is Ogg Opus; an audio file says what
+                        // it is.
+                        let voice = match (&message["voice"], &message["audio"]) {
+                            (voice, _) if voice.is_object() => voice["file_id"]
+                                .as_str()
+                                .map(|id| (id.to_string(), "audio/ogg".to_string())),
+                            (_, audio) if audio.is_object() => {
+                                audio["file_id"].as_str().map(|id| {
+                                    (
+                                        id.to_string(),
+                                        audio["mime_type"]
+                                            .as_str()
+                                            .unwrap_or("audio/mpeg")
+                                            .to_string(),
+                                    )
+                                })
+                            }
+                            _ => None,
+                        };
+                        if text.is_empty() && voice.is_none() {
+                            return None;
+                        }
                         Some(Update {
                             id: u["update_id"].as_i64()?,
-                            chat: u["message"]["chat"]["id"].as_i64()?,
-                            from: u["message"]["from"]["id"].as_i64(),
-                            text: u["message"]["text"].as_str()?.to_string(),
+                            chat: message["chat"]["id"].as_i64()?,
+                            from: message["from"]["id"].as_i64(),
+                            text,
+                            voice,
                         })
                     })
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// The file `file_id`, as audio of `media_type` (or what its bytes
+    /// show).
+    pub fn file(
+        &self,
+        file_id: &str,
+        media_type: Option<&str>,
+    ) -> Result<crate::voice::Audio, String> {
+        let file = self.call("getFile", &json!({"file_id": file_id}))?;
+        let path = file["file_path"]
+            .as_str()
+            .ok_or("Telegram gave no path for the file")?;
+        let url = format!("{}/file/bot{}/{path}", self.base, self.token);
+        let fetched = self
+            .client
+            .get(&url, crate::voice::MAX_HEARD as u64)
+            .map_err(|e| e.to_string().replace(&self.token, "<token>"))?;
+        let media_type = media_type
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::voice::Audio::sniff(&fetched.body).to_string());
+        Ok(crate::voice::Audio::new(&media_type, fetched.body))
+    }
+
+    /// Sends `audio` to `chat` as a voice note, with `caption` if it fits
+    /// (1,024 characters); a longer one follows as text.
+    pub fn send_voice(
+        &self,
+        chat: i64,
+        audio: &crate::voice::Audio,
+        caption: &str,
+    ) -> Result<(), String> {
+        let fits = caption.chars().count() <= 1024;
+        let boundary = format!("sion-{}", crate::runtime::new_id());
+        let mut body = Vec::new();
+        let mut field = |name: &str, value: &str| {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+                    .as_bytes(),
+            );
+        };
+        field("chat_id", &chat.to_string());
+        if fits && !caption.is_empty() {
+            field("caption", caption);
+        }
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"voice\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
+                audio.name, audio.media_type
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(&audio.bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let url = format!("{}/bot{}/sendVoice", self.base, self.token);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let response = self
+            .client
+            .send(
+                "POST",
+                &url,
+                &[("Content-Type", content_type.as_str())],
+                Some(&body),
+            )
+            .map_err(|e| e.to_string().replace(&self.token, "<token>"))?;
+        let answer: Value =
+            serde_json::from_slice(&response.read_all(1 << 20).map_err(|e| e.to_string())?)
+                .unwrap_or(Value::Null);
+        if answer["ok"] != true {
+            return Err(format!(
+                "Telegram refused sendVoice: {}",
+                answer["description"].as_str().unwrap_or("no reason given")
+            ));
+        }
+        if !fits {
+            self.send(chat, caption)?;
+        }
+        Ok(())
     }
 }
 
@@ -626,6 +735,16 @@ pub fn telegram_with(
     let bot = Telegram::from_env().map_err(CliError::Usage)?;
     let allow: Vec<String> = allow.iter().map(i64::to_string).collect();
     crate::messengers::bridge(ledger, profile, &bot, &allow, approvers, once)
+}
+
+/// [`telegram`], as `options` say (pairing, voice notes).
+pub fn telegram_options(
+    ledger: SharedLedger,
+    profile: &Profile,
+    options: &crate::messengers::Options,
+) -> Result<(), CliError> {
+    let bot = Telegram::from_env().map_err(CliError::Usage)?;
+    crate::messengers::bridge_with(ledger, profile, &bot, options)
 }
 
 #[cfg(test)]

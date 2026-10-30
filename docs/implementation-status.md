@@ -229,7 +229,10 @@ a webhook or Telegram; `sion agent serve` (HTTP with the machine's token
 or a profile's own) and `sion agent bridge` (Slack, Discord, Matrix,
 Signal and Telegram, chats allowed by id) carry conversations, each a
 session, with approvals answered in the channel, by named approvers if
-given; `sion agent gateway` routes a profile's messages to the machine
+given; with `--pairing`, someone a bridge does not know is given a code
+that the operator approves (`sion agent pairing`); with `--hear` and
+`--speak`, voice notes are transcribed and answered aloud;
+`sion agent gateway` routes a profile's messages to the machine
 that proved the agent's key with `sion agent host`.
 Commands, scripts and MCP servers
 ([Commands, scripts and MCP servers](book/src/guides/agent-tools.md)):
@@ -273,8 +276,16 @@ profile through its own tokens, kept as hashes (approvals only with
 tokens made for them); Slack, Discord, Matrix, Signal and Telegram behind
 one bridge, with approvers; and an agent gateway that passes a profile's
 messages to the host that proved the agent's key, only while the agent is
-in good standing. The messengers are tested against stand-ins for their
-APIs. What a skill may do
+in good standing. Pairing codes (8 consonants and digits, an hour each,
+three waiting per channel, a lockout after five wrong approvals) let in
+one chat on one channel and profile, from a store only the operator's
+user reads, changed by one process at a time. Voice notes are heard on
+Telegram and Discord (OpenAI-compatible transcription, Groq, or a
+command) and spoken on Telegram (OpenAI, ElevenLabs, or a command); trust
+atoms `agent:pairing`, `agent:voice`. The messengers and the speech
+services are tested against stand-ins for their APIs. Not built: voice
+replies on Discord, Slack, Matrix and Signal, and voice notes heard on
+Slack, Matrix and Signal. What a skill may do
 ([What a skill may do](book/src/guides/skill-permissions.md)) is
 declared in its front matter and enforced: `allowed-tools` pre-approves
 calls once a session has read the skill (never past a refusal, spending
@@ -814,6 +825,8 @@ the architecture's own:
 | `agent:gateway` | An agent gateway sees, and could change, the messages and answers it passes; it cannot act as an agent on the ledger, holding no key. It routes a profile's messages only to a host that proved the key of the agent its tokens name for the profile, and checks the agent's standing at most five seconds old, from the node it trusts: a message can reach an agent suspended within those seconds. It speaks plain HTTP unless put behind TLS. |
 | `agent:messenger-identity` | Slack, Discord, Matrix, Signal and Telegram say who wrote a message: a bridge's approvers are who the messenger says they are, and anyone who can write in an allowed chat talks to the profile. |
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included unless `--approvers` names who may decide. |
+| `agent:pairing` | An approved pairing code lets in the chat it was sent to, on that channel and profile, until revoked: the operator trusts that whoever gave them the code is the person they mean to let in, and the messenger for who writes in that chat afterwards (`agent:messenger-identity`). Codes are kept in a file only the operator's user can read. |
+| `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
 | `agent:sandbox` | Commands an agent runs (its shell, its skills' scripts, MCP servers started in a sandbox) are contained only as far as the kernel's namespaces (bubblewrap) or the container runtime (Docker) hold: an escape gives them the runtime's user. Bubblewrap bounds how long a command runs and the size of each process, not how many processes it starts; Docker bounds those too. A container started by a runtime that is killed runs until its command ends. |

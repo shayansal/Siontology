@@ -700,6 +700,7 @@ Commands:
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
   secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
   login          Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
+  pairing        People a channel did not know who asked to talk to a profile: the codes waiting, approving one, letting a chat out again
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
@@ -1480,6 +1481,76 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion agent pairing`
+
+```text
+People a channel did not know who asked to talk to a profile: the codes waiting, approving one, letting a chat out again
+
+Usage: sion agent pairing [OPTIONS] <COMMAND>
+
+Commands:
+  list     The codes waiting for approval, and the chats let in
+  approve  Let in the chat a code was given to, on its channel
+  revoke   Let a chat out of a channel again
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+A bridge with `--pairing` gives a chat it does not answer a code; the
+person writing gives it to you, and approving it lets their chat in on
+that channel, for that profile only (`agent:pairing`). See
+[Pairing and voice notes](../guides/agent-teams.md#pairing-and-voice-notes).
+
+## `sion agent pairing list`
+
+```text
+The codes waiting for approval, and the chats let in
+
+Usage: sion agent pairing list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+The codes themselves are not shown: approve the one you were given.
+
+## `sion agent pairing approve`
+
+```text
+Let in the chat a code was given to, on its channel
+
+Usage: sion agent pairing approve [OPTIONS] <CODE>
+
+Arguments:
+  <CODE>  The code (`ABCD-EFGH` or `ABCDEFGH`)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+A wrong code counts: five in a row stop approvals for an hour.
+
+## `sion agent pairing revoke`
+
+```text
+Let a chat out of a channel again
+
+Usage: sion agent pairing revoke [OPTIONS] <CHANNEL> <CHAT>
+
+Arguments:
+  <CHANNEL>  The channel and profile, as `list` shows it (`telegram:support`)
+  <CHAT>     The chat
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
 ## `sion agent mcp`
 
 ```text
@@ -1746,16 +1817,19 @@ Whoever holds the token can start and continue every profile's sessions, approva
 ```text
 Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
 
-Usage: sion agent telegram [OPTIONS] --allow <ALLOW> <PROFILE>
+Usage: sion agent telegram [OPTIONS] <PROFILE>
 
 Arguments:
   <PROFILE>  The agent profile
 
 Options:
-      --allow <ALLOW>          The chats it answers (comma-separated ids); others are ignored
+      --allow <ALLOW>          The chats it answers (comma-separated ids); others are ignored, or given a pairing code with --pairing
       --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --approvers <APPROVERS>  Who may approve or decline (comma-separated Telegram user ids); without it, anyone in an allowed chat
       --once                   Answer one batch of messages, then stop
+      --pairing                Give someone it does not know a pairing code, and answer them once you approve it (`sion agent pairing approve`): on Telegram, Matrix (joining the rooms it is invited to) and Signal
+      --hear <PROVIDER>        Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
+      --speak <PROVIDER>       Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
   -h, --help                   Print help
 ```
 
@@ -1766,7 +1840,7 @@ In a group chat, every member speaks for you, approvals included (`agent:telegra
 ```text
 Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api) or telegram
 
-Usage: sion agent bridge [OPTIONS] --via <VIA> --allow <ALLOW> <PROFILE>
+Usage: sion agent bridge [OPTIONS] --via <VIA> <PROFILE>
 
 Arguments:
   <PROFILE>  The agent profile
@@ -1774,9 +1848,12 @@ Arguments:
 Options:
       --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --via <VIA>              The messenger
-      --allow <ALLOW>          The chats it answers (comma-separated: channel ids, room ids or numbers); others are ignored
+      --allow <ALLOW>          The chats it answers (comma-separated: channel ids, room ids or numbers); others are ignored, or given a pairing code with --pairing
       --approvers <APPROVERS>  Who may approve or decline (comma-separated, as the messenger names people); without it, anyone in an allowed chat
       --once                   Answer one batch of messages, then stop
+      --pairing                Give someone it does not know a pairing code, and answer them once you approve it (`sion agent pairing approve`): on Telegram, Matrix (joining the rooms it is invited to) and Signal
+      --hear <PROVIDER>        Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
+      --speak <PROVIDER>       Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
   -h, --help                   Print help
 ```
 

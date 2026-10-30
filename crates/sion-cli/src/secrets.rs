@@ -79,7 +79,7 @@ fn io(path: &Path, e: std::io::Error) -> CliError {
 }
 
 /// Writes `bytes` to `path` atomically, readable only by its owner.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
     }

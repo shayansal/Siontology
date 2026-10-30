@@ -34,15 +34,26 @@ use crate::error::CliError;
 use crate::profiles::Profile;
 use crate::runtime::SharedLedger;
 
-/// A text message from a chat.
+/// A message from a chat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Incoming {
     /// The chat it came from (a chat, channel or room id, or a number).
     pub chat: String,
     /// Who wrote it, as the messenger names them.
     pub from: String,
-    /// What it says.
+    /// What it says (a voice note's caption, if it has one).
     pub text: String,
+    /// The voice note it is, if it is one.
+    pub voice: Option<Note>,
+}
+
+/// A voice note a messenger received: its handle for it, and what it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    /// The messenger's handle (a file id, an address).
+    pub id: String,
+    /// Its media type, where the messenger says.
+    pub media_type: Option<String>,
 }
 
 /// A chat service a profile answers.
@@ -66,6 +77,25 @@ pub trait Messenger: std::fmt::Debug {
     /// Whether [`Messenger::receive`] waits for messages itself; if not, the
     /// bridge pauses between polls.
     fn long_polls(&self) -> bool;
+    /// Whether it receives messages from chats the bridge does not answer
+    /// yet, which pairing needs; one polled chat by chat does not.
+    fn sees_strangers(&self) -> bool {
+        true
+    }
+    /// The audio of a voice note it received.
+    fn fetch_voice(&self, _note: &Note) -> Result<crate::voice::Audio, String> {
+        Err(format!("{} gives no voice notes", self.name()))
+    }
+    /// Sends `audio` to `chat` as a voice note, with `caption` where it
+    /// takes one: `Ok(false)` if it sends no voice notes.
+    fn send_voice(
+        &self,
+        _chat: &str,
+        _audio: &crate::voice::Audio,
+        _caption: &str,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 fn env(name: &str) -> Option<String> {
@@ -241,6 +271,7 @@ impl Messenger for Slack {
                         chat: channel.clone(),
                         from: message["user"].as_str().unwrap_or_default().to_string(),
                         text: text.to_string(),
+                        voice: None,
                     });
                 }
             }
@@ -258,6 +289,10 @@ impl Messenger for Slack {
     }
 
     fn long_polls(&self) -> bool {
+        false
+    }
+
+    fn sees_strangers(&self) -> bool {
         false
     }
 }
@@ -353,7 +388,24 @@ impl Messenger for Discord {
                 if after.is_none() || message["author"]["bot"] == true {
                     continue;
                 }
-                if let Some(text) = message["content"].as_str().filter(|t| !t.is_empty()) {
+                let text = message["content"].as_str().unwrap_or_default();
+                // A voice message is an audio attachment.
+                let voice = message["attachments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|a| {
+                        a["content_type"]
+                            .as_str()
+                            .is_some_and(|t| t.starts_with("audio/"))
+                    })
+                    .and_then(|a| {
+                        Some(Note {
+                            id: a["url"].as_str()?.to_string(),
+                            media_type: a["content_type"].as_str().map(str::to_string),
+                        })
+                    });
+                if !text.is_empty() || voice.is_some() {
                     out.push(Incoming {
                         chat: channel.clone(),
                         from: message["author"]["id"]
@@ -361,6 +413,7 @@ impl Messenger for Discord {
                             .unwrap_or_default()
                             .to_string(),
                         text: text.to_string(),
+                        voice,
                     });
                 }
             }
@@ -381,15 +434,35 @@ impl Messenger for Discord {
     fn long_polls(&self) -> bool {
         false
     }
+
+    fn sees_strangers(&self) -> bool {
+        false
+    }
+
+    fn fetch_voice(&self, note: &Note) -> Result<crate::voice::Audio, String> {
+        // An attachment's address is Discord's own, signed: no token goes
+        // with it.
+        let fetched = self
+            .client
+            .get(&note.id, crate::voice::MAX_HEARD as u64)
+            .map_err(|e| format!("the voice message could not be fetched: {e}"))?;
+        let media_type = note
+            .media_type
+            .clone()
+            .unwrap_or_else(|| crate::voice::Audio::sniff(&fetched.body).to_string());
+        Ok(crate::voice::Audio::new(&media_type, fetched.body))
+    }
 }
 
 /// Matrix, through the client-server API: long polls `/sync`, and sends
-/// `m.text` messages to rooms.
+/// `m.text` messages to rooms. With pairing, it joins the rooms it is
+/// invited to (someone who writes to it first invites it to a room).
 pub struct Matrix {
     client: sion_http::Client,
     base: String,
     token: String,
     me: String,
+    join_invites: bool,
 }
 
 impl std::fmt::Debug for Matrix {
@@ -410,6 +483,7 @@ impl Matrix {
                 .to_string(),
             token: env("MATRIX_ACCESS_TOKEN").ok_or("set MATRIX_ACCESS_TOKEN")?,
             me: String::new(),
+            join_invites: false,
         };
         let whoami = matrix.call("GET", "/_matrix/client/v3/account/whoami", None)?;
         matrix.me = whoami["user_id"]
@@ -417,6 +491,14 @@ impl Matrix {
             .ok_or("the homeserver did not say who the token is for")?
             .to_string();
         Ok(matrix)
+    }
+
+    /// The same account, joining the rooms it is invited to.
+    pub fn joining_invites(self) -> Matrix {
+        Matrix {
+            join_invites: true,
+            ..self
+        }
     }
 
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
@@ -465,6 +547,23 @@ impl Messenger for Matrix {
             .as_str()
             .ok_or("the homeserver gave no next_batch")?
             .to_string();
+        if self.join_invites {
+            for room in value["rooms"]["invite"]
+                .as_object()
+                .into_iter()
+                .flat_map(|rooms| rooms.keys())
+            {
+                // What is said there next is a stranger's, given a code.
+                match self.call(
+                    "POST",
+                    &format!("/_matrix/client/v3/join/{}", segment(room)),
+                    Some(&json!({})),
+                ) {
+                    Ok(_) => println!("room {room}: invited; joined"),
+                    Err(why) => println!("room {room}: invited; not joined: {why}"),
+                }
+            }
+        }
         let mut out = Vec::new();
         if !cursor.is_empty() {
             if let Some(rooms) = value["rooms"]["join"].as_object() {
@@ -486,6 +585,7 @@ impl Messenger for Matrix {
                                 chat: room.clone(),
                                 from: sender.to_string(),
                                 text: text.to_string(),
+                                voice: None,
                             });
                         }
                     }
@@ -584,6 +684,7 @@ impl Messenger for Signal {
                     chat: from.to_string(),
                     from: from.to_string(),
                     text: text.to_string(),
+                    voice: None,
                 });
             }
         }
@@ -632,6 +733,10 @@ impl Messenger for crate::channels::Telegram {
                 chat: u.chat.to_string(),
                 from: u.from.map(|f| f.to_string()).unwrap_or_default(),
                 text: u.text,
+                voice: u.voice.map(|(id, media_type)| Note {
+                    id,
+                    media_type: Some(media_type),
+                }),
             })
             .collect();
         Ok((messages, next.to_string()))
@@ -647,15 +752,47 @@ impl Messenger for crate::channels::Telegram {
     fn long_polls(&self) -> bool {
         true
     }
+
+    fn fetch_voice(&self, note: &Note) -> Result<crate::voice::Audio, String> {
+        self.file(&note.id, note.media_type.as_deref())
+    }
+
+    fn send_voice(
+        &self,
+        chat: &str,
+        audio: &crate::voice::Audio,
+        caption: &str,
+    ) -> Result<bool, String> {
+        let chat: i64 = chat
+            .parse()
+            .map_err(|_| format!("{chat} is not a Telegram chat id"))?;
+        self.send_voice(chat, audio, caption).map(|()| true)
+    }
 }
 
 /// The messenger called `name`, with credentials from the environment;
 /// `chats` are the channels to poll, for the messengers that poll them.
 pub fn from_env(name: &str, chats: &[String]) -> Result<Box<dyn Messenger>, String> {
+    for_bridge(
+        name,
+        &Options {
+            allow: chats.to_vec(),
+            ..Options::default()
+        },
+    )
+}
+
+/// The messenger called `name`, for a bridge with `options`: polling the
+/// chats they allow, for the messengers that poll chats, and with pairing,
+/// joining the rooms it is invited to, where it must join to be written
+/// to.
+pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, String> {
+    let chats = &options.allow;
     Ok(match name {
         "telegram" => Box::new(crate::channels::Telegram::from_env()?),
         "slack" => Box::new(Slack::from_env(chats)?),
         "discord" => Box::new(Discord::from_env(chats)?),
+        "matrix" if options.pairing => Box::new(Matrix::from_env()?.joining_invites()),
         "matrix" => Box::new(Matrix::from_env()?),
         "signal" => Box::new(Signal::from_env()?),
         other => {
@@ -669,6 +806,73 @@ pub fn from_env(name: &str, chats: &[String]) -> Result<Box<dyn Messenger>, Stri
 /// Seconds between polls of a messenger that does not wait for messages.
 pub const POLL_PAUSE: u64 = 3;
 
+/// `--pairing`, `--hear` and `--speak`, for a channel's command.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct ChannelArgs {
+    /// Give someone it does not know a pairing code, and answer them once
+    /// you approve it (`sion agent pairing approve`): on Telegram, Matrix
+    /// (joining the rooms it is invited to) and Signal.
+    #[arg(long)]
+    pub pairing: bool,
+    /// Hear voice notes: openai:<model>, groq:<model>, or
+    /// command:<program> (given the audio's file, it prints the text).
+    #[arg(long, value_name = "PROVIDER")]
+    pub hear: Option<String>,
+    /// Answer voice notes aloud: openai:<model>:<voice>,
+    /// elevenlabs:<voice id>[:<model>], or command:<program> (given the
+    /// text, it writes Ogg Opus or MP3).
+    #[arg(long, value_name = "PROVIDER", requires = "hear")]
+    pub speak: Option<String>,
+}
+
+impl ChannelArgs {
+    /// The bridge's options, with `allow`, `approvers` and `once`.
+    pub fn options(
+        self,
+        allow: Vec<String>,
+        approvers: Vec<String>,
+        once: bool,
+    ) -> Result<Options, CliError> {
+        Ok(Options {
+            allow,
+            approvers,
+            once,
+            pairing: self.pairing,
+            hearing: self
+                .hear
+                .as_deref()
+                .map(crate::voice::Hearing::parse)
+                .transpose()
+                .map_err(CliError::Usage)?,
+            speaking: self
+                .speak
+                .as_deref()
+                .map(crate::voice::Speaking::parse)
+                .transpose()
+                .map_err(CliError::Usage)?,
+        })
+    }
+}
+
+/// How a bridge answers.
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    /// The chats it answers.
+    pub allow: Vec<String>,
+    /// Who may approve or decline a waiting call (anyone in an allowed
+    /// chat, if none are named).
+    pub approvers: Vec<String>,
+    /// One batch of messages, then stop.
+    pub once: bool,
+    /// Give a chat it does not know a pairing code ([`crate::pairing`]),
+    /// and answer it once the operator approves the code.
+    pub pairing: bool,
+    /// What hears voice notes, if any are heard.
+    pub hearing: Option<crate::voice::Hearing>,
+    /// What speaks the replies to voice notes, if they are spoken.
+    pub speaking: Option<crate::voice::Speaking>,
+}
+
 /// Answers the chats in `allow` with `profile` through `messenger`, until
 /// stopped; with `once`, one batch of messages. With `approvers`, only
 /// they may approve or decline a waiting call; anyone in an allowed chat
@@ -681,13 +885,43 @@ pub fn bridge(
     approvers: &[String],
     once: bool,
 ) -> Result<(), CliError> {
-    if allow.is_empty() {
+    bridge_with(
+        ledger,
+        profile,
+        messenger,
+        &Options {
+            allow: allow.to_vec(),
+            approvers: approvers.to_vec(),
+            once,
+            ..Options::default()
+        },
+    )
+}
+
+/// [`bridge`], as `options` say: with pairing for chats it does not know,
+/// and voice notes heard and answered aloud.
+pub fn bridge_with(
+    ledger: SharedLedger,
+    profile: &Profile,
+    messenger: &dyn Messenger,
+    options: &Options,
+) -> Result<(), CliError> {
+    let (allow, approvers, once) = (&options.allow, &options.approvers, options.once);
+    if allow.is_empty() && !options.pairing {
         return Err(CliError::Usage(
-            "name the chats the profile answers: --allow <chat>,…".into(),
+            "name the chats the profile answers (--allow <chat>,…), or let people pair (--pairing)"
+                .into(),
         ));
+    }
+    if options.pairing && !messenger.sees_strangers() {
+        return Err(CliError::Usage(format!(
+            "{} is polled here channel by channel, so no message from a chat it does not answer reaches the bridge: pairing works on Telegram, Matrix and Signal",
+            messenger.name()
+        )));
     }
     let cursor_key = messenger.cursor_key(&profile.name);
     let word = messenger.chat_word();
+    let channel = format!("{}:{}", messenger.name(), profile.name);
     loop {
         let cursor = crate::channels::state(&cursor_key)?.unwrap_or_default();
         let (messages, next) = messenger
@@ -697,10 +931,73 @@ pub fn bridge(
         let quiet = messages.is_empty();
         for message in messages {
             if !allow.contains(&message.chat) {
-                println!("{word} {}: not allowed, ignored", message.chat);
-                continue;
+                let known =
+                    options.pairing && crate::pairing::load()?.allows(&channel, &message.chat);
+                if !known {
+                    if !options.pairing {
+                        println!("{word} {}: not allowed, ignored", message.chat);
+                        continue;
+                    }
+                    match crate::pairing::stranger(
+                        &channel,
+                        &message.chat,
+                        &message.from,
+                        &message.text,
+                    )? {
+                        crate::pairing::Stranger::Allowed => {}
+                        crate::pairing::Stranger::Code(code) => {
+                            // The code goes to the sender only: the bridge
+                            // does not print it.
+                            println!(
+                                "{word} {}: not known yet; sent a pairing code (sion agent pairing list)",
+                                message.chat
+                            );
+                            messenger
+                                .send(
+                                    &message.chat,
+                                    &format!(
+                                        "I do not know you yet. To talk with me, ask the person who runs me to let you in with: sion agent pairing approve {}",
+                                        crate::pairing::shown(&code)
+                                    ),
+                                )
+                                .map_err(CliError::Connection)?;
+                            continue;
+                        }
+                        crate::pairing::Stranger::Quiet => {
+                            println!("{word} {}: not known yet, ignored", message.chat);
+                            continue;
+                        }
+                    }
+                }
             }
-            if message.from.is_empty() || message.from == message.chat {
+            // A voice note is heard, and goes to the agent as what its
+            // sender said, marked as heard.
+            let mut text = message.text.clone();
+            if let Some(note) = &message.voice {
+                let heard = match &options.hearing {
+                    None => Err("voice notes are not heard here: write instead".to_string()),
+                    Some(hearing) => messenger
+                        .fetch_voice(note)
+                        .and_then(|audio| hearing.transcribe(&audio)),
+                };
+                match heard {
+                    Ok(heard) => {
+                        println!("{word} {}: (voice note) {heard}", message.chat);
+                        text = if text.is_empty() {
+                            format!("(voice note) {heard}")
+                        } else {
+                            format!("{text}\n(voice note) {heard}")
+                        };
+                    }
+                    Err(why) => {
+                        println!("{word} {}: a voice note not heard: {why}", message.chat);
+                        messenger
+                            .send(&message.chat, &format!("I could not hear that: {why}"))
+                            .map_err(CliError::Connection)?;
+                        continue;
+                    }
+                }
+            } else if message.from.is_empty() || message.from == message.chat {
                 println!("{word} {}: {}", message.chat, message.text);
             } else {
                 println!(
@@ -708,6 +1005,7 @@ pub fn bridge(
                     message.chat, message.from, message.text
                 );
             }
+            let message = Incoming { text, ..message };
             let key = format!("{}:{}:{}", messenger.name(), profile.name, message.chat);
             let deciding = crate::channels::is_decision(&message.text);
             let reply = if deciding && !approvers.is_empty() && !approvers.contains(&message.from) {
@@ -723,10 +1021,29 @@ pub fn bridge(
                     Err(e) => format!("That did not work: {e}"),
                 }
             };
-            println!("to {word} {}: {reply}", message.chat);
-            messenger
-                .send(&message.chat, &reply)
-                .map_err(CliError::Connection)?;
+            // A voice note is answered aloud where the messenger sends
+            // voice notes, and in text otherwise.
+            let spoken = match (&message.voice, &options.speaking) {
+                (Some(_), Some(speaking)) => match speaking
+                    .speak(&reply)
+                    .and_then(|audio| messenger.send_voice(&message.chat, &audio, &reply))
+                {
+                    Ok(sent) => sent,
+                    Err(why) => {
+                        println!("  (not spoken: {why})");
+                        false
+                    }
+                },
+                _ => false,
+            };
+            if spoken {
+                println!("to {word} {} (voice note): {reply}", message.chat);
+            } else {
+                println!("to {word} {}: {reply}", message.chat);
+                messenger
+                    .send(&message.chat, &reply)
+                    .map_err(CliError::Connection)?;
+            }
         }
         if once {
             return Ok(());

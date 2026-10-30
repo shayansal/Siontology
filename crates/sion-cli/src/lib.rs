@@ -40,6 +40,7 @@ pub mod mcp_auth;
 pub mod memory;
 pub mod messengers;
 pub mod network;
+pub mod pairing;
 pub mod profiles;
 pub mod recall;
 pub mod runtime;
@@ -54,6 +55,7 @@ pub mod storage;
 pub mod stream;
 pub mod tasks;
 pub mod verify;
+pub mod voice;
 pub mod x402;
 
 pub use error::CliError;

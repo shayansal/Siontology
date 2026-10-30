@@ -437,6 +437,10 @@ pub enum AgentCommand {
     /// that origin, and never shown to the agent.
     #[command(subcommand)]
     Login(crate::logins::LoginCommand),
+    /// People a channel did not know who asked to talk to a profile: the
+    /// codes waiting, approving one, letting a chat out again.
+    #[command(subcommand)]
+    Pairing(crate::pairing::PairingCommand),
     /// MCP servers whose tools agents may use: add one (its tools are
     /// reviewed and pinned), list them, review one again, remove one.
     #[command(subcommand)]
@@ -474,8 +478,9 @@ pub enum AgentCommand {
     Telegram {
         /// The agent profile.
         profile: String,
-        /// The chats it answers (comma-separated ids); others are ignored.
-        #[arg(long, value_delimiter = ',', required = true)]
+        /// The chats it answers (comma-separated ids); others are ignored,
+        /// or given a pairing code with --pairing.
+        #[arg(long, value_delimiter = ',', required_unless_present = "pairing")]
         allow: Vec<i64>,
         /// Who may approve or decline (comma-separated Telegram user ids);
         /// without it, anyone in an allowed chat.
@@ -484,6 +489,8 @@ pub enum AgentCommand {
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
+        #[command(flatten)]
+        channel: crate::messengers::ChannelArgs,
     },
     /// Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN),
     /// discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER,
@@ -496,8 +503,9 @@ pub enum AgentCommand {
         #[arg(long)]
         via: String,
         /// The chats it answers (comma-separated: channel ids, room ids or
-        /// numbers); others are ignored.
-        #[arg(long, value_delimiter = ',', required = true)]
+        /// numbers); others are ignored, or given a pairing code with
+        /// --pairing.
+        #[arg(long, value_delimiter = ',', required_unless_present = "pairing")]
         allow: Vec<String>,
         /// Who may approve or decline (comma-separated, as the messenger
         /// names people); without it, anyone in an allowed chat.
@@ -506,6 +514,8 @@ pub enum AgentCommand {
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
+        #[command(flatten)]
+        channel: crate::messengers::ChannelArgs,
     },
     /// Run a gateway: people write to profiles served from other machines,
     /// through POST /v1/profiles/<name>/messages with a profile's token
@@ -828,6 +838,7 @@ pub fn run(
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
+        AgentCommand::Pairing(command) => crate::pairing::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Scheduler { once, poll } => {
@@ -851,10 +862,13 @@ pub fn run(
             allow,
             approvers,
             once,
+            channel,
         } => {
             crate::screens::keep_between_runs();
             let profile = crate::profiles::get(&profile)?;
-            crate::channels::telegram_with(shared, &profile, &allow, &approvers, once)
+            let allow: Vec<String> = allow.iter().map(i64::to_string).collect();
+            let options = channel.options(allow, approvers, once)?;
+            crate::channels::telegram_options(shared, &profile, &options)
         }
         AgentCommand::Bridge {
             profile,
@@ -862,18 +876,14 @@ pub fn run(
             allow,
             approvers,
             once,
+            channel,
         } => {
             crate::screens::keep_between_runs();
             let profile = crate::profiles::get(&profile)?;
-            let messenger = crate::messengers::from_env(&via, &allow).map_err(CliError::Usage)?;
-            crate::messengers::bridge(
-                shared,
-                &profile,
-                messenger.as_ref(),
-                &allow,
-                &approvers,
-                once,
-            )
+            let options = channel.options(allow, approvers, once)?;
+            let messenger =
+                crate::messengers::for_bridge(&via, &options).map_err(CliError::Usage)?;
+            crate::messengers::bridge_with(shared, &profile, messenger.as_ref(), &options)
         }
         AgentCommand::Gateway {
             listen,

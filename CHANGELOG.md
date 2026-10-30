@@ -10,6 +10,31 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Pairing and voice notes on channels
+
+- **Pairing.** `--pairing` on `sion agent telegram` and `sion agent bridge`
+  gives someone a channel does not know a code instead of an answer; the
+  operator lets their chat in with `sion agent pairing approve <code>`, on
+  that channel and profile only (`sion agent pairing list`, `revoke`). A
+  code is 8 consonants and digits, with no vowels (so it spells no word)
+  and no look-alikes, from the operating system's randomness, sent only to
+  the sender and never printed by the bridge. It
+  lasts an hour; a sender is given one every ten minutes at most, a
+  channel has at most three waiting, and five wrong approvals in a row
+  stop approvals for an hour. The store is readable only by the
+  operator's user and changed by one process at a time. `--allow` is no
+  longer required with `--pairing`. Pairing works on Telegram, Signal and
+  Matrix, which then joins the rooms it is invited to; Slack and Discord,
+  polled channel by channel, refuse it.
+- **Voice notes in.** `--hear openai:<model>`, `groq:<model>` or
+  `command:<program>` transcribes voice notes (Telegram's voice notes and
+  audio files, Discord's audio attachments), which reach the profile as
+  `(voice note) …`. A note that cannot be heard is answered with why.
+- **Voice notes out.** `--speak openai:<model>:<voice>`,
+  `elevenlabs:<voice id>[:<model>]` or `command:<program>` answers a voice
+  note aloud on Telegram (`sendVoice`, the reply as its caption), and in
+  text where the messenger sends no voice notes or speaking fails.
+
 ### A browser and a desktop of the agent's own
 
 - **A browser.** `sion agent run --browser` (and profiles) gives a session

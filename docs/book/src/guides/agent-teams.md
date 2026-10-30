@@ -316,6 +316,88 @@ chat.postMessage {"channel": "C042", "text": "100 USD left in the budget."}
 chat.postMessage {"channel": "C042", "text": "Only U07 may approve or decline here."}
 ```
 
+### Pairing and voice notes
+
+With `--pairing`, a bridge gives someone it does not know a code instead
+of an answer. They give you the code, and `sion agent pairing approve`
+lets their chat in, on that channel and for that profile only. The bridge
+never prints the code; it goes only to them, so what you approve is the
+chat of whoever gave it to you. A code lasts an hour, a chat is given one
+every ten minutes at most, a channel has three waiting at most, and five
+wrong approvals in a row stop approvals for an hour. Codes are
+consonants and digits, so none spells a word. Pairing works on Telegram,
+on Signal, and on Matrix, where the bridge joins the rooms it is invited
+to; Slack and Discord are polled here channel by channel, so no message
+from a chat they do not answer reaches the bridge, and it refuses
+`--pairing` there.
+
+With `--hear`, voice notes (Telegram's voice notes and audio files,
+Discord's audio attachments) are transcribed and reach the profile as
+`(voice note) …`. With `--speak`, a voice note is answered aloud on
+Telegram, with the reply as its caption, and in text elsewhere:
+
+| Flag | What hears or speaks | Credentials |
+|---|---|---|
+| `--hear openai:<model>` | OpenAI's transcriptions, or a compatible server's at `OPENAI_BASE_URL` | `OPENAI_API_KEY` |
+| `--hear groq:<model>` | Groq's transcriptions | `GROQ_API_KEY` |
+| `--hear command:<program>` | A program on this machine, given the audio's file, which prints the text | |
+| `--speak openai:<model>:<voice>` | OpenAI's speech (or a compatible server's), as Ogg Opus | `OPENAI_API_KEY` |
+| `--speak elevenlabs:<voice id>[:<model>]` | ElevenLabs, as MP3 | `ELEVENLABS_API_KEY` |
+| `--speak command:<program>` | A program given the text on its standard input, which writes Ogg Opus or MP3 | |
+
+Here `TELEGRAM_API_BASE` and `OPENAI_BASE_URL` point the bridge at
+stand-ins for Telegram's and OpenAI's APIs. Telegram's returned a voice
+note from chat 42 and a message from chat 77, which the bridge does not
+answer:
+
+```text
+$ TELEGRAM_BOT_TOKEN=… TELEGRAM_API_BASE=http://127.0.0.1:8792 OPENAI_API_KEY=… OPENAI_BASE_URL=http://127.0.0.1:8792/v1 sion agent telegram lead --allow 42 --pairing --hear openai:gpt-4o-mini-transcribe --speak openai:gpt-4o-mini-tts:alloy --once
+chat 42: (voice note) How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 5f5cea7d1f9d2cd4: done
+to chat 42 (voice note): 100 USD left in the budget.
+chat 77: not known yet; sent a pairing code (sion agent pairing list)
+```
+
+The stand-ins received:
+
+```text
+POST /v1/audio/transcriptions model=gpt-4o-mini-transcribe file=voice.ogg (6752 bytes, audio/ogg)
+POST /v1/audio/speech {"input":"100 USD left in the budget.","model":"gpt-4o-mini-tts","response_format":"opus","voice":"alloy"}
+sendVoice chat_id=42 caption="100 USD left in the budget." voice=voice.ogg (7229 bytes, audio/ogg)
+sendMessage {"chat_id":77,"text":"I do not know you yet. To talk with me, ask the person who runs me to let you in with: sion agent pairing approve 6JPC-HWMQ"}
+```
+
+Given the code by the person in chat 77, you let them in:
+
+```text
+$ sion agent pairing list
+waiting: telegram:lead chat 77 (9), 0 minutes ago: "Hello?"
+$ sion agent pairing approve 6JPC-HWMQ
+let in telegram:lead chat 77 (9): it is answered from its next message
+$ sion agent pairing list
+no codes waiting
+let in: telegram:lead chat 77
+```
+
+and the bridge answers them from their next message:
+
+```text
+$ TELEGRAM_BOT_TOKEN=… TELEGRAM_API_BASE=http://127.0.0.1:8792 OPENAI_API_KEY=… OPENAI_BASE_URL=http://127.0.0.1:8792/v1 sion agent telegram lead --allow 42 --pairing --hear openai:gpt-4o-mini-transcribe --speak openai:gpt-4o-mini-tts:alloy --once
+chat 77 (9): Thanks! How much budget is left?
+    → ledger_balance {}
+    ← {"budget_remaining_usd":"100",…}
+  agent: 100 USD left in the budget.
+  session 4b1a4bbbe9b0bccf: done
+to chat 77: 100 USD left in the budget.
+```
+
+`sion agent pairing revoke telegram:lead 77` lets the chat out again.
+Pairings are kept in `agents/pairing.json` under `SION_HOME`, readable
+only by your user.
+
 ### Through an agent gateway
 
 The channels above answer on the machine that runs the profile. An agent
@@ -394,9 +476,16 @@ again.
 - A bridge trusts its messenger for who writes in a chat it answers. In a
   group chat, everyone who can write there speaks for you, approvals
   included unless `--approvers` names who may decide
-  (`agent:telegram-chats`, `agent:messenger-identity`). Only text
-  messages are read. Slack, Discord, Matrix and Signal have been run only
-  against stand-ins for their APIs.
+  (`agent:telegram-chats`, `agent:messenger-identity`). An approved
+  pairing code lets in whoever gave it to you (`agent:pairing`).
+- Voice notes are heard on Telegram and Discord, and spoken on Telegram
+  only; on Slack, Matrix and Signal only text messages are read. The
+  services `--hear` and `--speak` name hear the voice notes and the
+  replies (`agent:voice`). Pairing needs a messenger that shows messages
+  from chats it does not answer: not Slack or Discord, polled here
+  channel by channel. Slack, Discord, Matrix and Signal have been run only
+  against stand-ins for their APIs, and voice notes only against
+  stand-ins for the speech services'.
 - An agent gateway sees, and could change, the messages and answers it
   passes. It cannot act as the agent, holding no key, and checks the
   agent's standing as of up to five seconds before (`agent:gateway`).
