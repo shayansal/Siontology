@@ -234,7 +234,9 @@ whom it does not know is given a code that the operator approves
 (`sion agent pairing`); with `--require-mention`, a group is answered
 only where it mentions the bot; with `--hear` and
 `--speak`, voice notes are transcribed and answered aloud;
-`sion agent gateway` routes a profile's messages to the machine
+`sion agent serve` also answers OpenAI's `/v1/chat/completions` and
+`/v1/models`, each conversation an app sends whole going on in its
+session; `sion agent gateway` routes a profile's messages to the machine
 that proved the agent's key with `sion agent host`.
 Commands, scripts and MCP servers
 ([Commands, scripts and MCP servers](book/src/guides/agent-tools.md)):

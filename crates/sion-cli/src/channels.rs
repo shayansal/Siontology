@@ -358,7 +358,8 @@ pub fn serve(
 
 /// Serves the HTTP channel on `listen` until stopped (or for `requests`
 /// requests, if given): `POST /v1/profiles/<name>/messages` with
-/// `{"text": …, "conversation": …}`, and `GET /v1/sessions/<id>`. Every
+/// `{"text": …, "conversation": …}`, `GET /v1/sessions/<id>`, and OpenAI's
+/// `/v1/chat/completions` and `/v1/models` ([`crate::openai_api`]). Every
 /// request needs `Authorization: Bearer <token>`: the machine's `admin`
 /// token, which reaches every profile and every session, or one of the
 /// profile's own, which reaches only it, and decides what it waits on only
@@ -376,7 +377,9 @@ pub fn serve_with(
     }
     let server = tiny_http::Server::http(listen)
         .map_err(|e| CliError::Usage(format!("cannot listen on {listen}: {e}")))?;
-    println!("agent channel on http://{listen} (POST /v1/profiles/<name>/messages)");
+    println!(
+        "agent channel on http://{listen} (POST /v1/profiles/<name>/messages; OpenAI's /v1/chat/completions and /v1/models)"
+    );
     for (index, mut request) in server.incoming_requests().enumerate() {
         let presented = request
             .headers()
@@ -390,6 +393,40 @@ pub fn serve_with(
             .unwrap_or_default()
             .to_string();
         let method = request.method().as_str().to_string();
+        if crate::openai_api::is_openai(&path) {
+            let mut body = String::new();
+            let read = request
+                .as_reader()
+                .take(crate::openai_api::MAX_REQUEST + 1)
+                .read_to_string(&mut body);
+            let answered = if read.is_err() || body.len() as u64 > crate::openai_api::MAX_REQUEST {
+                crate::openai_api::Answered {
+                    status: 413,
+                    content_type: "application/json",
+                    body: json!({"error": {"message": "the request is too long", "type": "invalid_request_error"}}).to_string(),
+                }
+            } else {
+                crate::openai_api::answer(
+                    ledger.clone(),
+                    &method,
+                    &path,
+                    &body,
+                    presented.as_deref(),
+                    admin,
+                )
+            };
+            let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], answered.content_type)
+                .expect("a valid header");
+            let _ = request.respond(
+                tiny_http::Response::from_string(answered.body)
+                    .with_status_code(answered.status)
+                    .with_header(header),
+            );
+            if requests.is_some_and(|most| index + 1 >= most) {
+                break;
+            }
+            continue;
+        }
         let profile = path
             .strip_prefix("/v1/profiles/")
             .and_then(|p| p.strip_suffix("/messages"))

@@ -41,6 +41,7 @@ pub mod mcp_auth;
 pub mod memory;
 pub mod messengers;
 pub mod network;
+pub mod openai_api;
 pub mod pairing;
 pub mod profiles;
 pub mod recall;

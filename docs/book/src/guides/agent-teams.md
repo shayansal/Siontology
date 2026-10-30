@@ -245,6 +245,48 @@ lead's token does not reach payer. `$TALK` starts the payment, which
 waits, but cannot approve it; `$DECIDE` can.
 `sion agent profile token remove <profile> <id>` takes a token back.
 
+### OpenAI's chat API
+
+The same server answers OpenAI's chat API, so apps made for it (Open
+WebUI, LibreChat, editors, scripts) can talk to a profile: point the app
+at `http://<listen>/v1` with a profile's token as its key, and choose the
+profile as the model. `GET /v1/models` lists the profiles the token
+reaches. Such apps send the whole conversation with every message; the
+server finds the session by what was said before the last message, so a
+conversation goes on in its session, approvals included (`/approve` and
+`/decline <why>`, with a token made to decide). A conversation it has not
+seen (edited in the app, or begun elsewhere) starts a new session, told
+what was said before. With `"stream": true`, the answer comes as
+Server-Sent Events, in one piece once the session has it.
+
+```text
+$ sion agent profile token add assistant
+token 843839a6 for profile assistant, agent 908f6ddc (messages only); it is shown once, and kept here only as its hash:
+sion_ch_0c6b4e7a…
+$ sion agent serve --listen 127.0.0.1:8794
+agent channel on http://127.0.0.1:8794 (POST /v1/profiles/<name>/messages; OpenAI's /v1/chat/completions and /v1/models)
+$ curl -s http://127.0.0.1:8794/v1/models -H "Authorization: Bearer $TOKEN"
+{"data":[{"created":0,"id":"assistant","object":"model","owned_by":"sion"}],"object":"list"} (HTTP 200)
+$ curl -s http://127.0.0.1:8794/v1/chat/completions -H "Authorization: Bearer $TOKEN" -d '{"model": "assistant", "messages": [{"role": "user", "content": "How much budget is left?"}]}'
+{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"100 USD left in the budget.","role":"assistant"}}],"created":1793394351,"id":"chatcmpl-b3362ad0e5d01a89","model":"assistant","object":"chat.completion"} (HTTP 200)
+$ curl -s http://127.0.0.1:8794/v1/chat/completions -H "Authorization: Bearer $TOKEN" -d '{"model": "assistant", "messages": [{"role": "user", "content": "How much budget is left?"}, {"role": "assistant", "content": "100 USD left in the budget."}, {"role": "user", "content": "Is anything waiting for me?"}]}'
+{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"Nothing is waiting for you.","role":"assistant"}}],"created":1793394351,"id":"chatcmpl-b3362ad0e5d01a89","model":"assistant","object":"chat.completion"} (HTTP 200)
+$ curl -s http://127.0.0.1:8794/v1/chat/completions -H "Authorization: Bearer $TOKEN" -d '{"model": "assistant", "stream": true, "messages": [{"role": "user", "content": "How much budget is left?"}]}'
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],"created":1793394352,"id":"chatcmpl-31547ec245a7868a","model":"assistant","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"content":"100 USD left in the budget."},"finish_reason":null,"index":0}],"created":1793394352,"id":"chatcmpl-31547ec245a7868a","model":"assistant","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],"created":1793394352,"id":"chatcmpl-31547ec245a7868a","model":"assistant","object":"chat.completion.chunk"}
+
+data: [DONE]
+
+ (HTTP 200)
+```
+
+The second answer is the same session's (`chatcmpl-b3362ad0e5d01a89`); the
+streamed one, a conversation the server had not seen, began another. The
+answer's `id` names the session (`sion agent trace`).
+
 ### Telegram
 
 `sion agent telegram` answers a profile's chats by long polling, with the
@@ -621,6 +663,10 @@ again.
 
 ## What this does not do yet
 
+- The OpenAI-compatible endpoint takes text: images and files an app
+  sends are left out, the app's own system prompt reaches a new session
+  only as what was said before, and no token counts are given. A stream
+  comes in one piece, when the session has its answer.
 - Whoever holds the machine's channel token can start and continue the
   sessions of every profile on the machine, approvals included; whoever
   holds a profile's token, that profile's, approvals only with a token

@@ -10,6 +10,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use sion_agent::Autonomy;
@@ -279,6 +280,110 @@ fn profiles_are_reached_by_their_own_tokens_across_machines_and_messengers() {
     serving.join().unwrap().unwrap();
     assert!(sion_cli::channels::remove_token("payer", &approver.id).unwrap());
     assert!(!sion_cli::channels::remove_token("payer", &approver.id).unwrap());
+
+    // OpenAI's chat API, for apps made for it: the profiles a token
+    // reaches, as models; a conversation sent whole each time goes on in
+    // its session; a stream ends with [DONE].
+    let chat_profile = Profile {
+        wallet: "lead".into(),
+        ..profile(
+            &home,
+            "chat",
+            lead,
+            Autonomy::L3,
+            json!([{"say": "First."}, {"say": "Second."}]),
+        )
+    };
+    let mut profiles = sion_cli::profiles::all().unwrap();
+    profiles.insert("chat".into(), chat_profile);
+    sion_cli::profiles::save_all(&profiles).unwrap();
+    let (_, chat_token) = sion_cli::channels::add_token("chat", lead, false).unwrap();
+    let listen = free_listen();
+    let openai = format!("http://{listen}/v1");
+    let serving = {
+        let ledger = ledger.clone();
+        let listen = listen.clone();
+        std::thread::spawn(move || sion_cli::channels::serve_with(ledger, &listen, None, Some(5)))
+    };
+    let bearer = format!("Bearer {chat_token}");
+    let auth = [("Authorization", bearer.as_str())];
+    let models = (0..100)
+        .find_map(|_| {
+            let fetched = client()
+                .request("GET", &format!("{openai}/models"), &auth, None, 1 << 20)
+                .ok();
+            if fetched.is_none() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            fetched
+        })
+        .expect("the channel answers");
+    let models: Value = serde_json::from_slice(&models.body).unwrap();
+    assert_eq!(
+        models["data"],
+        json!([{"id": "chat", "object": "model", "created": 0, "owned_by": "sion"}]),
+        "only the profiles the token reaches"
+    );
+    let complete = |headers: &[(&str, &str)], body: Value| {
+        client().post_json(
+            &format!("{openai}/chat/completions"),
+            headers,
+            body.to_string().as_bytes(),
+            1 << 20,
+        )
+    };
+    match complete(
+        &[],
+        json!({"model": "chat", "messages": [{"role": "user", "content": "Hi"}]}),
+    ) {
+        Err(sion_http::HttpError::Status { status, body }) => {
+            assert_eq!(status, 401);
+            assert!(body.contains("authentication_error"), "{body}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let answered =
+        |fetched: sion_http::Fetched| -> Value { serde_json::from_slice(&fetched.body).unwrap() };
+    let first = answered(
+        complete(
+            &auth,
+            json!({"model": "chat", "messages": [{"role": "user", "content": "Hi"}]}),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        first["choices"][0]["message"],
+        json!({"role": "assistant", "content": "First."})
+    );
+    let second = answered(
+        complete(
+            &auth,
+            json!({"model": "chat", "messages": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "First."},
+                {"role": "user", "content": "And then?"}
+            ]}),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        second["choices"][0]["message"]["content"], "Second.",
+        "the conversation goes on in its session"
+    );
+    assert_eq!(second["id"], first["id"]);
+    let streamed = complete(
+        &auth,
+        json!({"model": "chat", "stream": true,
+            "messages": [{"role": "user", "content": "Hello from another app"}]}),
+    )
+    .unwrap();
+    assert_eq!(streamed.content_type.as_deref(), Some("text/event-stream"));
+    let events = String::from_utf8(streamed.body).unwrap();
+    assert!(
+        events.contains("\"content\":\"First.\"") && events.trim_end().ends_with("data: [DONE]"),
+        "{events}"
+    );
+    serving.join().unwrap().unwrap();
 
     // A gateway: the host connects out, proves the agent's key, and answers.
     let gateway_listen = free_listen();

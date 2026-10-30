@@ -704,7 +704,7 @@ Commands:
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
-  serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
+  serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's POST /v1/chat/completions (a profile as the model) and GET /v1/models, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
   telegram       Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
   bridge         Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN, SLACK_APP_TOKEN for Socket Mode), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api), telegram, or through webhooks to --listen: whatsapp (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET) or sms through Twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL)
   gateway        Run a gateway: people write to profiles served from other machines, through POST /v1/profiles/<name>/messages with a profile's token (`sion agent profile token add`); hosts connect out to it and prove they hold each profile's agent key, and messages reach an agent only while the ledger has it in good standing
@@ -1799,7 +1799,7 @@ A run that was missed while the scheduler was not running happens once, late (`a
 ## `sion agent serve`
 
 ```text
-Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
+Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's POST /v1/chat/completions (a profile as the model) and GET /v1/models, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
 
 Usage: sion agent serve [OPTIONS]
 

@@ -460,9 +460,10 @@ pub enum AgentCommand {
         poll: u64,
     },
     /// Serve the HTTP channel: POST /v1/profiles/<name>/messages with
-    /// {"text": …, "conversation": …}, and GET /v1/sessions/<id>, with a
-    /// bearer token: the machine's, or a profile's own (`sion agent
-    /// profile token add`).
+    /// {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's
+    /// POST /v1/chat/completions (a profile as the model) and GET
+    /// /v1/models, with a bearer token: the machine's, or a profile's own
+    /// (`sion agent profile token add`).
     Serve {
         /// Where to listen.
         #[arg(long, default_value = "127.0.0.1:8790")]

@@ -10,6 +10,16 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### OpenAI's chat API on the HTTP channel
+
+- **For apps made for OpenAI.** `sion agent serve` also answers
+  `POST /v1/chat/completions` (a profile as the model, `stream` as
+  Server-Sent Events) and `GET /v1/models` (the profiles the token
+  reaches), with the channel's tokens. A conversation the app sends
+  whole goes on in its session, found by a digest of what was said
+  before its last message; one not seen before starts a new session,
+  told what was said.
+
 ### WhatsApp, LINE and SMS
 
 - **Webhook messengers.** `sion agent bridge --via whatsapp|line|sms`
