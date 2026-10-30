@@ -35,6 +35,10 @@ pub struct Outcome {
     /// Whether the content came from outside the agent's trust (a web page,
     /// another agent's message). It taints the session.
     pub untrusted: bool,
+    /// The calls a skill pre-approves now that it was read: the skill's
+    /// name and its `allowed-tools` rules (see [`crate::permissions`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_approval: Option<(String, Vec<crate::permissions::ToolRule>)>,
 }
 
 impl Outcome {
@@ -45,6 +49,7 @@ impl Outcome {
             is_error: false,
             certain: true,
             untrusted: false,
+            pre_approval: None,
         }
     }
 
@@ -55,6 +60,7 @@ impl Outcome {
             is_error: true,
             certain: true,
             untrusted: false,
+            pre_approval: None,
         }
     }
 
@@ -65,12 +71,26 @@ impl Outcome {
             is_error: true,
             certain: false,
             untrusted: false,
+            pre_approval: None,
         }
     }
 
     /// Marks the content as untrusted.
     pub fn from_outside(mut self) -> Outcome {
         self.untrusted = true;
+        self
+    }
+
+    /// Says that reading this pre-approves the calls `rules` match, for the
+    /// skill `skill`, for the rest of the session.
+    pub fn pre_approving(
+        mut self,
+        skill: &str,
+        rules: Vec<crate::permissions::ToolRule>,
+    ) -> Outcome {
+        if !rules.is_empty() {
+            self.pre_approval = Some((skill.to_string(), rules));
+        }
         self
     }
 }

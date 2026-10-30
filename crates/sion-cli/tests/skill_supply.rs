@@ -116,16 +116,15 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
         .fund("agent-9", AssetId::usd(), Amount::units(1))
         .unwrap();
 
-    // The publisher's skill.
+    // The publisher's skill, which declares permissions: a pre-approval,
+    // and a host its scripts may reach.
     let dir = home.join("src/pay-invoices");
     std::fs::create_dir_all(dir.join("templates")).unwrap();
     std::fs::write(
         dir.join("SKILL.md"),
-        sion_agent::skills::render(
-            "pay-invoices",
-            "Pay a supplier's invoice after checking it against the order.",
-            "1. Check the invoice against templates/checklist.md.\n2. Pay it with ledger_pay.",
-        ),
+        "---\nname: pay-invoices\ndescription: \"Pay a supplier's invoice after checking it against the order.\"\n\
+         allowed-tools: Read(templates/*)\nmetadata:\n  sion-network: api.example.org\n---\n\n\
+         1. Check the invoice against templates/checklist.md.\n2. Pay it with ledger_pay.\n",
     )
     .unwrap();
     std::fs::write(
@@ -163,6 +162,7 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
         2.0,
         1_000,
         Some(skills.clone()),
+        true,
     );
     let error = refused.unwrap_err().to_string();
     assert!(error.contains("does not cover 100 USD"), "{error}");
@@ -266,6 +266,7 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
         2.0,
         1_000,
         Some(skills.clone()),
+        true,
     );
     assert!(bad.unwrap_err().to_string().contains("does not hash"));
 
@@ -282,6 +283,27 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
     assert!(how
         .unwrap()
         .contains("pay-invoices 1.0.1 is publisher's latest release"));
+    // What it declares is granted only with the operator's consent, asked
+    // before anything is signed.
+    let unconsented = sion_cli::skills::install(
+        &mut session,
+        ledger.as_ref(),
+        "agent-9",
+        agent,
+        &by_name,
+        None,
+        None,
+        2.0,
+        1_000,
+        Some(skills.clone()),
+        false,
+    );
+    let error = unconsented.unwrap_err().to_string();
+    assert!(
+        error.contains("asks for the permissions above; nothing was signed"),
+        "{error}"
+    );
+    assert!(!skills.join("pay-invoices").exists());
     let lines = sion_cli::skills::install(
         &mut session,
         ledger.as_ref(),
@@ -293,10 +315,19 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
         2.0,
         1_000,
         Some(skills.clone()),
+        true,
     )
     .unwrap();
     let text = lines.join("\n");
     assert!(text.contains("installed pay-invoices 1.0.1"), "{text}");
+    let source: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(skills.join("pay-invoices").join(sion_cli::skills::SOURCE))
+            .unwrap(),
+    )
+    .unwrap();
+    let granted = source["permissions"].to_string();
+    assert!(granted.contains("read_file(templates/*)"), "{granted}");
+    assert!(granted.contains("api.example.org"), "{granted}");
     assert!(skills.join("pay-invoices/templates/checklist.md").exists());
     let listed = sion_agent::skills::list(&skills);
     let catalog = sion_agent::skills::catalog(&listed);

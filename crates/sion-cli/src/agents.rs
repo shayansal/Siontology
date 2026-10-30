@@ -362,6 +362,10 @@ pub enum AgentCommand {
         /// not its budget), follow its deals and close them.
         #[arg(long)]
         storage: bool,
+        /// Ask before every call its autonomy does not cover, even those a
+        /// skill it read pre-approves with `allowed-tools`.
+        #[arg(long)]
+        no_skill_approvals: bool,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -421,6 +425,11 @@ pub enum AgentCommand {
     /// and channels.
     #[command(subcommand)]
     Profile(crate::profiles::ProfileCommand),
+    /// The secrets skills' scripts may receive (`sion-secrets` in a
+    /// skill's metadata): kept encrypted on this machine, passed to a
+    /// script as environment variables, and cut out of what it prints.
+    #[command(subcommand)]
+    Secret(crate::secrets::SecretCommand),
     /// MCP servers whose tools agents may use: add one (its tools are
     /// reviewed and pinned), list them, review one again, remove one.
     #[command(subcommand)]
@@ -568,6 +577,7 @@ pub fn run(
             shell,
             mcp,
             storage,
+            no_skill_approvals,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shell = shell.sandbox()?;
@@ -588,6 +598,7 @@ pub fn run(
             };
             let policy = sion_agent::Policy {
                 autonomy: autonomy.parse().map_err(CliError::Usage)?,
+                skill_approvals: !no_skill_approvals,
                 ..sion_agent::Policy::default()
             };
             let system = system
@@ -805,6 +816,7 @@ pub fn run(
             Ok(())
         }
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
+        AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Scheduler { once, poll } => crate::schedules::scheduler(shared, once, poll),

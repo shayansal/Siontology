@@ -25,7 +25,7 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts, MCP servers, storage deals) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers, storage deals) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -266,8 +266,24 @@ tokens made for them); Slack, Discord, Matrix, Signal and Telegram behind
 one bridge, with approvers; and an agent gateway that passes a profile's
 messages to the host that proved the agent's key, only while the agent is
 in good standing. The messengers are tested against stand-ins for their
-APIs. Not built: permissions that skills declare and the runtime
-enforces, and MCP over HTTP
+APIs. What a skill may do
+([What a skill may do](book/src/guides/skill-permissions.md)) is
+declared in its front matter and enforced: `allowed-tools` pre-approves
+calls once a session has read the skill (never past a refusal, spending
+or a taint, and never from a skill the agent wrote, whose front matter
+keeps only a name and a description); `sion-network` names the hosts its
+scripts reach through an egress proxy outside the sandbox, which refuses
+private, loopback and link-local addresses and reaches the inside through
+a bridge on a Unix socket (the `declared` network gives commands none);
+`sion-secrets` names secrets from the operator's store, encrypted at rest
+with ChaCha20-Poly1305, passed as environment variables and cut out of
+what scripts print; `sion skill install` shows what a release declares
+before anything is signed and installs it only with
+`--accept-permissions`. A bundle's paths must be portable and distinct
+when case is ignored, so that on macOS or Windows no file takes another's
+place. The filtering runs in bubblewrap for real in the tests. Trust
+atoms: `agent:skill-pre-approval`, `agent:declared-hosts`,
+`agent:secret-store`. Not built: MCP over HTTP
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
@@ -766,7 +782,7 @@ the architecture's own:
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
 | `agent:sandbox` | Commands an agent runs (its shell, its skills' scripts, MCP servers started in a sandbox) are contained only as far as the kernel's namespaces (bubblewrap) or the container runtime (Docker) hold: an escape gives them the runtime's user. Bubblewrap bounds how long a command runs and the size of each process, not how many processes it starts; Docker bounds those too. A container started by a runtime that is killed runs until its command ends. |
-| `agent:sandbox-network` | With the network allowed, a sandboxed command reaches what that network reaches. Bubblewrap's `host` network is the machine's own, unfiltered: local services and a cloud's metadata address included. A Docker network restricts only as its operator set it up: the runtime refuses Docker's `host` and `bridge` networks by name and cannot check the rest. |
+| `agent:sandbox-network` | With the network allowed, a sandboxed command reaches what that network reaches. Bubblewrap's `host` network is the machine's own, unfiltered: local services and a cloud's metadata address included. The `declared` network gives commands none, and skills' scripts only what their skills declare, through the egress proxy (`agent:declared-hosts`). A Docker network restricts only as its operator set it up: the runtime refuses Docker's `host` and `bridge` networks by name and cannot check the rest. |
 | `agent:shell-repeats` | Shell commands, skills' scripts and file writes are not journaled: a command the model gives again runs again, so with the network a repeated command can repeat an action outside the machine. |
 | `agent:workspace-content` | What an agent reads from its own workspace (files, and the output of commands without the network) does not taint its session, even content it saved there from outside in an earlier session. |
 | `agent:mcp-unsandboxed` | An MCP server added without a sandbox runs as the operator's user, with the environment variables its configuration names: it can do whatever that user can. |
@@ -776,6 +792,9 @@ the architecture's own:
 | `memory:archive-key` | A memory archive is encrypted under a key derived from its writer's wallet seed: whoever holds the seed can open it, and on a devnet anyone who knows a named wallet's name. A provider sees an archive's size, which log it is of, and when it was made. |
 | `storage:retrieval-replay` | A provider checks a retrieval request's signature and expiry (at most five minutes ahead), not whether it was seen before: within that window a copied request retrieves the data again. Retrieval speaks plain HTTP unless put behind TLS. |
 | `agent:storage-from-account` | A storage deal an agent posts is paid from its account's balance, the money it pays fees with, not from its charter's budget: the charter's caveats do not bound it. |
+| `agent:skill-pre-approval` | A skill a session has read pre-approves the calls its `allowed-tools` names until the session ends: where the autonomy level would ask a person, they run. A rule naming a command's first words (`Bash(git:*)`) covers whatever that program can be told to do through its arguments, inside the sandbox. A pre-approval never covers a call the level refuses, spending, or a session that has read content from outside, and the agent cannot grant one, since it writes only a skill's name, description and instructions: it comes from whoever placed the skill, or from the operator's consent when installing its release. |
+| `agent:declared-hosts` | The egress proxy holds a skill's scripts to the hosts their skill declares by the name a script asks for, at addresses that are public where they resolve on the machine. A declared host that forwards what it is sent, serves what others put there, or shares a front (a CDN) whose other sites a script can ask for inside the encrypted tunnel takes a script further. Behind an upstream proxy, a name the machine cannot resolve goes to that proxy, and its network decides where the name leads. With Docker, declared hosts are not filtered: the operator's network decides. |
+| `agent:secret-store` | Skills' secrets are kept encrypted under a key in a file beside them, readable only by the operator's user: whoever can read that file can read them. A script that receives a secret can send it wherever its skill may connect, and can change it so that it is not cut out of what the model sees: the runtime removes the value as it is, not every encoding of it. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 

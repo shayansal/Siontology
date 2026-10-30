@@ -263,6 +263,7 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         mcp: Vec::new(),
         storage: false,
         instructions: None,
+        skill_approvals: true,
     };
     sion_cli::profiles::save_all(
         &[("lead".to_string(), profile.clone())]

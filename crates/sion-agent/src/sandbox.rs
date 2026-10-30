@@ -76,11 +76,23 @@ pub enum Network {
     /// A Docker network the operator set up; `host` and `bridge` are
     /// refused.
     Docker(String),
+    /// Only what skills declare (bubblewrap): commands get no network, and
+    /// the scripts of a skill that declares a network reach it through the
+    /// egress proxy ([`crate::egress`]), which refuses private, loopback
+    /// and link-local addresses: the hosts the skill names, or any public
+    /// host if it declares `true`.
+    Declared,
 }
 
 impl Network {
-    /// Whether the command can reach anything outside the sandbox.
+    /// Whether commands reach anything outside the sandbox directly.
     pub fn reaches_out(&self) -> bool {
+        matches!(self, Network::Host | Network::Docker(_))
+    }
+
+    /// Whether the scripts of a skill that declares a network reach
+    /// outside the sandbox, directly or through the egress proxy.
+    pub fn scripts_reach_out(&self) -> bool {
         !matches!(self, Network::None)
     }
 
@@ -90,6 +102,11 @@ impl Network {
             Network::None => "no network".into(),
             Network::Host => "the machine's network, unfiltered".into(),
             Network::Docker(name) => format!("the Docker network {name}"),
+            Network::Declared => {
+                "no network for commands; skills' scripts reach what their skills declare, \
+                 through a filtering proxy"
+                    .into()
+            }
         }
     }
 }
@@ -149,6 +166,18 @@ impl Mount {
             writable: true,
         }
     }
+}
+
+/// A network that reaches only what a filtering proxy lets through: the
+/// sandbox has none of its own, and a bridge inside it hands connections
+/// to the egress proxy outside ([`crate::egress`]). Bubblewrap only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Filtered {
+    /// The directory holding the egress proxy's socket.
+    pub socket_dir: PathBuf,
+    /// The bridge program, then the arguments before its own (the `sion`
+    /// command and `sandbox-bridge`, or the `sion-sandbox-bridge` program).
+    pub bridge: Vec<String>,
 }
 
 /// A sandbox: a backend, a network and limits.
@@ -319,6 +348,13 @@ impl Sandbox {
             (Backend::Bubblewrap, Network::Docker(_)) => {
                 return Err("a Docker network needs the Docker backend".into())
             }
+            (Backend::Docker { .. }, Network::Declared) => {
+                return Err(
+                    "the declared network is filtered for bubblewrap; with Docker, name a network \
+                     you set up to restrict where commands connect"
+                        .into(),
+                )
+            }
             (Backend::Docker { .. }, Network::Host) => {
                 return Err(
                     "with Docker, name a network you set up to restrict where commands connect, \
@@ -360,7 +396,7 @@ impl Sandbox {
     /// The process that runs `script` with `mounts`, starting in `workdir`
     /// (a path inside the sandbox); `name` names a container.
     pub fn command(&self, mounts: &[Mount], workdir: &str, script: &str, name: &str) -> Command {
-        self.build(mounts, workdir, script, name, false)
+        self.build(mounts, workdir, script, name, false, &[])
     }
 
     /// The process for `script`; one that `serves` lives as long as its
@@ -372,6 +408,7 @@ impl Sandbox {
         script: &str,
         name: &str,
         serves: bool,
+        files: &[(PathBuf, String)],
     ) -> Command {
         // Limits a shell sets on itself, before running the script in a
         // child shell under them; `$1` keeps the script out of any quoting.
@@ -392,7 +429,7 @@ impl Sandbox {
             self.limits.file_mib * 2048,
         );
         match &self.backend {
-            Backend::Bubblewrap => self.bubblewrap(mounts, workdir, script, &limits),
+            Backend::Bubblewrap => self.bubblewrap(mounts, workdir, script, &limits, files),
             Backend::Docker { image } => {
                 let mut cmd = self.docker(image, mounts, workdir, script, &limits, name);
                 if serves {
@@ -408,7 +445,14 @@ impl Sandbox {
         }
     }
 
-    fn bubblewrap(&self, mounts: &[Mount], workdir: &str, script: &str, limits: &str) -> Command {
+    fn bubblewrap(
+        &self,
+        mounts: &[Mount],
+        workdir: &str,
+        script: &str,
+        limits: &str,
+        files: &[(PathBuf, String)],
+    ) -> Command {
         let mut cmd = Command::new("bwrap");
         cmd.arg("--unshare-all");
         if self.network.reaches_out() {
@@ -462,6 +506,10 @@ impl Sandbox {
                 "--ro-bind"
             };
             cmd.arg(flag).arg(&mount.host).arg(&mount.inside);
+        }
+        // Single files, read-only (the bridge program).
+        for (host, inside) in files {
+            cmd.arg("--ro-bind").arg(host).arg(inside);
         }
         cmd.args(["--chdir", workdir]);
         // Nothing of the runtime's environment reaches the command: the
@@ -589,7 +637,7 @@ impl Sandbox {
             "exec {}",
             argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
         );
-        let mut command = self.build(mounts, workdir, &script, &name, true);
+        let mut command = self.build(mounts, workdir, &script, &name, true, &[]);
         if let Backend::Docker { .. } = self.backend {
             // `--env NAME` takes the value from the client's environment.
             let mut args: Vec<std::ffi::OsString> = command.get_args().map(Into::into).collect();
@@ -633,10 +681,85 @@ impl Sandbox {
     /// Runs `script` with `mounts`, starting in `workdir`, and waits for it
     /// within the time limit.
     pub fn run(&self, mounts: &[Mount], workdir: &str, script: &str) -> Result<Run, String> {
-        let (mounts, name) = self.ready(mounts)?;
+        self.run_with(mounts, workdir, script, &[], None)
+    }
+
+    /// Runs `script` as [`Sandbox::run`] does, with `env` passed on as
+    /// variables (never as arguments, which other users of the machine can
+    /// read) and, with `filtered`, a network only through the egress proxy:
+    /// the sandbox itself gets none, whatever its own network says.
+    pub fn run_with(
+        &self,
+        mounts: &[Mount],
+        workdir: &str,
+        script: &str,
+        env: &[(String, String)],
+        filtered: Option<&Filtered>,
+    ) -> Result<Run, String> {
+        let mut env = env.to_vec();
+        let mut files = Vec::new();
+        let mut mounts = mounts.to_vec();
+        let mut script = script.to_string();
+        let mut this = self.clone();
+        if let Some(filtered) = filtered {
+            if !matches!(self.backend, Backend::Bubblewrap) {
+                return Err(
+                    "a network filtered by host needs the bubblewrap backend; with Docker, the operator's network decides"
+                        .into(),
+                );
+            }
+            let Some((program, before)) = filtered.bridge.split_first() else {
+                return Err("no bridge program for the filtered network".into());
+            };
+            this.network = Network::None;
+            mounts.push(Mount {
+                host: filtered.socket_dir.clone(),
+                inside: crate::egress::SOCKET_DIR_INSIDE.into(),
+                writable: true,
+            });
+            files.push((
+                PathBuf::from(program),
+                crate::egress::BRIDGE_INSIDE.to_string(),
+            ));
+            let bridge = std::iter::once(crate::egress::BRIDGE_INSIDE.to_string())
+                .chain(before.iter().cloned())
+                .chain([
+                    crate::egress::LISTEN.to_string(),
+                    format!(
+                        "{}/{}",
+                        crate::egress::SOCKET_DIR_INSIDE,
+                        crate::egress::SOCKET_NAME
+                    ),
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    script.clone(),
+                ])
+                .map(|a| quote(&a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            script = format!("exec {bridge}");
+            env.extend(crate::egress::proxy_env());
+        }
+        let (mounts, name) = this.ready(&mounts)?;
         let mounts = mounts.as_slice();
-        let mut command = self.command(mounts, workdir, script, &name);
+        let mut command = this.build(mounts, workdir, &script, &name, false, &files);
+        if let Backend::Docker { .. } = this.backend {
+            // `--env NAME` takes the value from the client's environment.
+            let mut args: Vec<std::ffi::OsString> = command.get_args().map(Into::into).collect();
+            let at = args
+                .iter()
+                .position(|a| a == "--workdir")
+                .unwrap_or(args.len());
+            for (key, _) in &env {
+                args.insert(at, key.into());
+                args.insert(at, "--env".into());
+            }
+            let mut docker = Command::new("docker");
+            docker.args(args);
+            command = docker;
+        }
         command
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -646,7 +769,7 @@ impl Sandbox {
         })?;
         let stdout = capture(child.stdout.take(), self.limits.output_bytes);
         let stderr = capture(child.stderr.take(), self.limits.output_bytes);
-        let (exit, timed_out) = self.wait(&mut child, &name)?;
+        let (exit, timed_out) = this.wait(&mut child, &name)?;
         let (stdout, cut_out) = stdout.join().unwrap_or_default();
         let (stderr, cut_err) = stderr.join().unwrap_or_default();
         Ok(Run {

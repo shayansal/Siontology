@@ -177,6 +177,12 @@ pub enum SkillCommand {
         /// $SION_HOME/agents/skills/<agent>).
         #[arg(long)]
         skills: Option<PathBuf>,
+        /// Grant the permissions the skill declares (calls it pre-approves,
+        /// where its scripts may connect, the secrets they receive), shown
+        /// before anything is signed. Without it, a skill that declares
+        /// any is not installed.
+        #[arg(long)]
+        accept_permissions: bool,
     },
     /// Run an evaluation set on a skill: each case with stand-in tools,
     /// then its checks. Needs no node.
@@ -1063,6 +1069,7 @@ pub fn run(
             kappa,
             pulses,
             skills,
+            accept_permissions,
         } => {
             let agent = ObjectId::from_hash(parse_hash(&agent, "the agent")?);
             let (id, line) = resolve(
@@ -1086,6 +1093,7 @@ pub fn run(
                 kappa,
                 pulses,
                 skills,
+                accept_permissions,
             )?;
             for line in lines {
                 println!("{line}");
@@ -1214,6 +1222,7 @@ pub fn install(
     kappa: f64,
     pulses: u64,
     skills: Option<PathBuf>,
+    accept_permissions: bool,
 ) -> Result<Vec<String>, CliError> {
     let charter = crate::agents::identity(ledger, agent)?;
     if session.id(wallet) != charter.agent {
@@ -1237,6 +1246,13 @@ pub fn install(
             release.name
         )));
     }
+    let permissions = sion_agent::skills::front_matter(&skill_md)
+        .and_then(|front| front.permissions())
+        .map_err(|e| {
+            CliError::Verification(format!(
+                "not installed: the permissions skill {name} declares cannot be read: {e}"
+            ))
+        })?;
     let value_at_risk = match value {
         Some(text) => crate::agents::parse_amount(text)?,
         None => budget(ledger, agent)?,
@@ -1252,6 +1268,21 @@ pub fn install(
         release.name,
         release.version
     );
+    let granted = permissions.describe();
+    if granted.is_empty() {
+        println!("permissions: none (its scripts, if any, get no network and no secrets)");
+    } else {
+        println!("permissions it asks for:");
+        for line in &granted {
+            println!("  {line}");
+        }
+    }
+    if permissions.needs_consent() && !accept_permissions {
+        return Err(CliError::Usage(format!(
+            "not installed: skill {name} asks for the permissions above; nothing was signed. \
+             To grant them, install again with --accept-permissions"
+        )));
+    }
     let mut lines = Vec::new();
     // Ask first, for free: a refusal costs no fee.
     let decision = ledger.decide(release.claim, value_at_risk, policy.clone())?;
@@ -1306,6 +1337,7 @@ pub fn install(
         "value_at_risk": value_at_risk.to_string(),
         "accepted_at": view.pulse.0,
         "relied_on_until": until.0,
+        "permissions": granted,
     });
     let dir = put_in_place(&root, &name, &files, &source)?;
     lines.push(format!(

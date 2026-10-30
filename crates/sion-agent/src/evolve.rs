@@ -81,7 +81,7 @@ pub const MUTATOR_SYSTEM: &str = "You improve an agent skill: instructions that 
 pub fn valid_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= MAX_PATH
-        && path != "SKILL.md"
+        && !path.eq_ignore_ascii_case("SKILL.md")
         && path.split('/').count() <= 4
         && path.split('/').all(|part| {
             !part.is_empty()
@@ -445,6 +445,25 @@ fn file_gates(
             "a variant changes at most {MAX_CHANGED_FILES} files"
         ));
     }
+    // On a file system that ignores case (macOS, Windows), a path that
+    // differs from another only in case is that other file: a script, say.
+    let named: Vec<&str> = files
+        .iter()
+        .map(|(p, _)| p.as_str())
+        .chain(base.keys().map(String::as_str))
+        .chain(proposal.files.iter().map(|(p, _)| p.as_str()))
+        .chain(proposal.remove.iter().map(String::as_str))
+        .collect();
+    if let Some((a, b)) = named.iter().enumerate().find_map(|(i, a)| {
+        named[i + 1..]
+            .iter()
+            .find(|b| a.eq_ignore_ascii_case(b) && a != *b)
+            .map(|b| (*a, *b))
+    }) {
+        return Err(format!(
+            "{a:?} and {b:?} differ only in case: on some systems they are one file"
+        ));
+    }
     let mut changes = base.clone();
     for (path, content) in &proposal.files {
         if !valid_path(path) {
@@ -470,7 +489,7 @@ fn file_gates(
         let Some((_, old)) = files
             .iter()
             .find(|(p, _)| p == path)
-            .filter(|_| path != "SKILL.md")
+            .filter(|_| !path.eq_ignore_ascii_case("SKILL.md"))
         else {
             return Err(format!("{path:?} is not one of the skill's other files"));
         };
@@ -543,7 +562,9 @@ pub fn evolve(
         Ok((dir, skills::unbundle(&bytes)?, digest))
     };
     let size_of = |files: &[(String, Vec<u8>)]| files.iter().map(|(_, c)| c.len()).sum::<usize>();
-    let parent_md = skills::render(&name, &description, &instructions);
+    // Versions keep the skill's front matter as it is (license, metadata,
+    // allowed-tools): only the instructions and the other files change.
+    let parent_md = skills::with_body(&text, &instructions)?;
     let (dir, parent_files, parent_digest) = write(0, &parent_md, &FileChanges::new())?;
     let report = evaluate(set, &dir, agent, &settings.limits)?;
     let mut candidates = vec![Candidate {
@@ -597,7 +618,7 @@ pub fn evolve(
                 .instructions
                 .clone()
                 .unwrap_or_else(|| candidates[parent].instructions.clone());
-            let skill_md = skills::render(&name, &description, &proposed);
+            let skill_md = skills::with_body(&text, &proposed)?;
             if let Err(e) = skills::parse(&skill_md) {
                 rejected.push(reject(format!("not a valid SKILL.md: {e}")));
                 continue;

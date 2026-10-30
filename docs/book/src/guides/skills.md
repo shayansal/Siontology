@@ -378,9 +378,11 @@ own status, which installing checks under the decision rule as before.
   already running keeps a skill whose release falls until it ends, and
   installed files changed on disk afterwards are not checked again
   (`agent:local-skill-checks`).
-- A skill does not declare permissions that the runtime enforces while
-  the skill is in use. The runtime's autonomy level and the agent's
-  charter are the limits.
+- What a skill declares (the calls it pre-approves, the hosts its
+  scripts reach, the secrets they get) is granted on the machine that
+  installs it, with the operator's consent, and enforced by the runtime
+  there ([What a skill may do](skill-permissions.md)). The ledger does
+  not see it: the agent's charter is what bounds its spending.
 - An audit counts only for the releases that name it, and a release names
   the audits that exist when it is published. A later audit needs a new
   release.

@@ -60,10 +60,12 @@ ledger.
 
 ### 1. Skills with a supply chain (on today's primitives)
 
-**Status: built** (`sion skill`; see [Skills from others](../guides/skills.md)),
-except declared permissions: releases and audits do not name permissions
-yet, and nothing enforces them. No change to the state transition: it
-uses claims, bonds, `Accept`, `Challenge` and `Rule` as they are.
+**Status: built** (`sion skill`; see [Skills from others](../guides/skills.md)).
+A skill's permissions are declared in the front matter of its `SKILL.md`,
+so a release and its audits commit to them through the bundle root, and
+the runtime enforces them ([What a skill may do](../guides/skill-permissions.md)).
+No change to the state transition: it uses claims, bonds, `Accept`,
+`Challenge` and `Rule` as they are.
 
 - **A skill bundle** is an Agent Skills directory. Its files, sorted by
   path, are encoded canonically and split into leaves like any data a
@@ -89,11 +91,16 @@ uses claims, bonds, `Accept`, `Challenge` and `Rule` as they are.
 - **The registry** is the knowledge log itself: every release, audit and
   falsification, with lineage from version to version.
 
-Built since: the runtime runs a skill's scripts in the sandbox of part 2,
-without network unless the skill declares it (`metadata: {sion-network:
-"true"}`). Not built: the other permissions a skill could declare, and
+Built since: the runtime runs a skill's scripts in the sandbox of part 2
+with what the skill declares and nothing more: the hosts it names
+(`sion-network`), reached through an egress proxy that refuses the rest
+and every private address; the secrets it names (`sion-secrets`), cut out
+of what the scripts print; its time limit; and the calls its
+`allowed-tools` pre-approve once a session has read it. Installing shows
+all of it and asks for consent before anything is signed. Not built:
 evidence that ties a skill caught reaching further to the bond behind its
-release.
+release (the proxy's log of a script's connections is shown to the model
+and kept with the session, not signed).
 
 ### 2. The runtime
 
@@ -108,7 +115,7 @@ release.
 | Reliability | A journal so that nothing is done twice by accident and an unknown outcome is never repeated; turn budgets that grow with progress; blocking a call that keeps failing; compaction; sessions that pause for approval and resume; a kill switch | Built |
 | Spending | Every payment goes through the agent's charter; a payment above its limits is refused by the ledger, not by the runtime | Built (`ledger_pay`) |
 | Tools | Files in a workspace, web pages, the ledger (balance, payments, transactions), memory and skills; then tasks and storage; MCP servers mounted as tools | Built: files, web pages, the ledger, memory, skills, subagents, tasks, storage deals, and MCP servers, each tool pinned by a digest of its reviewed definition ([Commands, scripts and MCP servers](../guides/agent-tools.md)) |
-| Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Built: bubblewrap, or a Docker image pinned by digest; no network unless the operator gives one; a skill's scripts get it only if the skill declares it. Not built: other declared permissions |
+| Sandbox | Local with an allow-list and approvals; Docker; a skill's declared permissions decide which | Built: bubblewrap, or a Docker image pinned by digest; no network unless the operator gives one; a skill's scripts get only the hosts their skill declares, through a filtering egress proxy (with Docker, the operator's network decides), the secrets it names and its time limit; its `allowed-tools` pre-approve calls |
 | Memory | Episodes, facts and a model of the user as memory atoms; a small core rendered into every prompt; full-text search over past sessions; a consolidation pass that promotes what recurs, keeping provenance | Built: atoms in the agent's memory log, preferences, goals and procedures in every prompt, recall proved complete against the ledger, search, retraction, every session an episode; BM25 search over past sessions' text, each hit checked against the episode on the ledger; consolidation into derived notes under gates, with provenance, superseding and never deleting |
 | Durable memory | The log's archive kept by storage providers, proven every round | Built: `sion memory archive` and `restore`, the archive encrypted for its writer and named by the head's manifest on the ledger, retrieved only by the deal's client |
 | Skills | Progressive disclosure; created and improved by the agent (part 3); installed only through the decision rule | Built: catalog in the prompt, read on use, written and improved with history kept; releases, audits and installation through the decision rule; falsified releases taken out of use; evaluation, evolution and verified promotion (part 3) |

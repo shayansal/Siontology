@@ -62,6 +62,7 @@
 - [Agents at work](guides/agent-runtime.md)
 - [Commands, scripts and MCP servers](guides/agent-tools.md)
 - [Skills from others](guides/skills.md)
+- [What a skill may do](guides/skill-permissions.md)
 - [Skills that get better](guides/skill-improvement.md)
 - [Teams, schedules and channels](guides/agent-teams.md)
 - [Task Charters from the command line](guides/tasks.md)

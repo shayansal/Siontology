@@ -42,6 +42,7 @@ pub mod profiles;
 pub mod recall;
 pub mod runtime;
 pub mod schedules;
+pub mod secrets;
 pub mod session;
 pub mod skill_improve;
 pub mod skills;

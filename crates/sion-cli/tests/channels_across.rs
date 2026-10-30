@@ -84,6 +84,7 @@ fn profile(
         mcp: Vec::new(),
         storage: false,
         instructions: None,
+        skill_approvals: true,
     }
 }
 

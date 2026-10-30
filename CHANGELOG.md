@@ -10,6 +10,54 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### What a skill may do, enforced
+
+- **Pre-approvals.** A skill's `allowed-tools` (Agent Skills) names the
+  calls it pre-approves, in this runtime's tool names or other runtimes'
+  (`Bash(git log:*)`, `Write(notes/*)`, `WebFetch(domain:docs.rs)`).
+  Once a session has read the skill, a call one of its rules matches runs
+  where the autonomy level would ask, and the model is told it ran
+  without asking. A refusal stays a refusal, spending is always asked, a
+  session that has read content from outside asks again, and a shell
+  command with `;`, `|`, `&`, redirections or substitutions is never
+  covered by a prefix. `--no-skill-approvals` (on `sion agent run` and
+  profiles) turns them off.
+- **Where a skill's scripts connect.** `sion-network` in a skill's
+  metadata names hosts (`api.github.com *.example.org:8443`), and the
+  scripts reach those alone: the sandbox gets no network of its own, a
+  bridge inside it passes connections over a Unix socket to an egress
+  proxy outside, and the proxy takes `CONNECT` and plain HTTP only to a
+  declared host and port, at a public address, chaining through the
+  runtime's own proxy when it has one. A plain request whose `Host`
+  header names another site is refused. The connections asked for are
+  shown with the script's output. The new `--sandbox-network declared`
+  gives commands no network and skills' scripts only what their skills
+  declare; `true` there means any public host.
+- **Secrets.** `sion agent secret add|list|remove` keeps secrets in a
+  store encrypted with ChaCha20-Poly1305 under a key only the operator's
+  user can read; a value is typed without echo, piped, or taken with
+  `--from-env`. A skill names the ones its scripts receive in
+  `sion-secrets`; they arrive as environment variables, and their values
+  are cut out of what the scripts print before the model sees it. Names
+  the sandbox needs (`PATH`, the proxy variables, `LD_…`) are refused.
+- **`sion-timeout`** shortens how long a skill's script may run.
+- **Consent at install.** `sion skill install` shows what a release
+  declares before anything is signed and installs it only with
+  `--accept-permissions`; `.source` records what was granted. A release
+  and its audits commit to the permissions through the bundle root.
+- **The agent cannot grant itself any of it.** A skill it writes keeps
+  only a name, a description and instructions (rewriting one the
+  operator placed drops what it declared, and says so), evolution keeps a
+  skill's front matter as it was, and a workspace or MCP directory that
+  overlaps the skills directory is refused, shell or not.
+- **Paths that hold on every file system.** A bundle's paths must be
+  portable ASCII and distinct when case is ignored, and evolution
+  compares paths the same way, so that on macOS or Windows no file
+  (`skill.md`, `scripts/Run.sh`) can take the place of another.
+- Trust atoms `agent:skill-pre-approval`, `agent:declared-hosts` and
+  `agent:secret-store`; `agent:sandbox-network` names the declared
+  network.
+
 ### An agent's standing, checked as a light client
 
 - **`sion agent status <agent>`** checks an agent's standing as a light

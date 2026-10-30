@@ -577,6 +577,7 @@ impl Saved {
         }
         if let Some(root) = &self.workspace {
             check_workspace(root)?;
+            check_apart(root, self.skills.as_deref())?;
             std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
             for tool in sion_agent::builtin::workspace(root) {
                 tools.add_boxed(tool);
@@ -597,11 +598,14 @@ impl Saved {
                 sandbox: sandbox.clone(),
             });
             if let Some(skills) = &self.skills {
-                tools.add(sion_agent::skills::SkillRun {
-                    root: skills.clone(),
-                    workspace: root.clone(),
-                    sandbox: sandbox.clone(),
-                });
+                let mut run = sion_agent::skills::SkillRun::new(
+                    skills.clone(),
+                    root.clone(),
+                    sandbox.clone(),
+                );
+                run.secrets = Some(std::sync::Arc::new(crate::secrets::Snapshot::load()));
+                run.bridge = crate::secrets::bridge();
+                tools.add(run);
             }
         }
         if self.delegate {
@@ -629,6 +633,7 @@ impl Saved {
                 .and_then(|server| {
                     if let Some(dir) = &server.dir {
                         check_workspace(dir).map_err(|e| e.to_string())?;
+                        check_apart(dir, self.skills.as_deref()).map_err(|e| e.to_string())?;
                     }
                     sion_agent::mcp::mount(&server)
                 });
@@ -968,6 +973,25 @@ pub fn check_workspace(workspace: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Why an agent may not write in `dir` (its workspace, or an MCP server's
+/// directory) beside its `skills`: skills change only through their tools
+/// and releases, and what a skill declares (calls it pre-approves, where
+/// its scripts connect, the secrets they get) is granted only by its
+/// operator or a release, so the agent must not be able to write one.
+pub fn check_apart(dir: &Path, skills: Option<&Path>) -> Result<(), CliError> {
+    if let Some(skills) = skills {
+        if overlap(dir, skills) {
+            return Err(CliError::Usage(format!(
+                "the skills directory {} and {} overlap: the agent could change a skill without \
+                 its checks, or grant itself what a skill declares; keep them apart",
+                skills.display(),
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Why `sandbox` may not run commands in `workspace`: besides the
 /// workspace's own rule, the skills (which change only through their
 /// tools and releases) must lie outside it, and no directory it may read
@@ -979,15 +1003,7 @@ pub fn check_shell(
 ) -> Result<(), CliError> {
     check_workspace(workspace)?;
     sandbox.check().map_err(CliError::Usage)?;
-    if let Some(skills) = skills {
-        if overlap(workspace, skills) {
-            return Err(CliError::Usage(format!(
-                "the skills directory {} and the workspace overlap: a command could change a skill \
-                 without its checks; keep them apart",
-                skills.display()
-            )));
-        }
-    }
+    check_apart(workspace, skills)?;
     let home = sion_home();
     for dir in &sandbox.readable {
         if overlap(dir, &home) {
@@ -1010,9 +1026,11 @@ pub struct ShellArgs {
     /// image already on this machine.
     #[arg(long, num_args = 0..=1, default_missing_value = "bwrap", value_name = "SANDBOX")]
     pub shell: Option<String>,
-    /// The network its commands reach: `none` (the default), `host`
-    /// (bubblewrap: this machine's network, unfiltered) or a Docker network
-    /// you set up to restrict where they connect.
+    /// The network its commands reach: `none` (the default); `declared`
+    /// (bubblewrap: commands get none, and skills' scripts reach what their
+    /// skills declare, through a proxy that refuses private addresses);
+    /// `host` (bubblewrap: this machine's network, unfiltered); or a Docker
+    /// network you set up to restrict where they connect.
     #[arg(long, default_value = "none", value_name = "NETWORK")]
     pub sandbox_network: String,
     /// A directory its commands may read, at its own path (a toolchain,
@@ -1049,8 +1067,8 @@ impl ShellArgs {
 }
 
 /// The sandbox the flags describe: `bwrap` or `docker:<image>@sha256:<digest>`,
-/// a network (`none`, `host` or a Docker network's name), directories it may
-/// read, and its time limit.
+/// a network (`none`, `declared`, `host` or a Docker network's name),
+/// directories it may read, and its time limit.
 pub fn sandbox_from(
     backend: &str,
     network: &str,
@@ -1074,10 +1092,18 @@ pub fn sandbox_from(
     let network = match (network, &backend) {
         ("none", _) => Network::None,
         ("host", Backend::Bubblewrap) => Network::Host,
+        ("declared", Backend::Bubblewrap) => Network::Declared,
+        ("declared", Backend::Docker { .. }) => {
+            return Err(CliError::Usage(
+                "the declared network is filtered for bubblewrap; with Docker, name a network \
+                 you set up to restrict where commands connect"
+                    .into(),
+            ))
+        }
         (name, Backend::Docker { .. }) => Network::Docker(name.to_string()),
         (other, Backend::Bubblewrap) => {
             return Err(CliError::Usage(format!(
-                "with bubblewrap the network is none or host, not {other}"
+                "with bubblewrap the network is none, declared or host, not {other}"
             )))
         }
     };
@@ -1172,13 +1198,16 @@ pub fn start(
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
     }
+    let skills = skills.unwrap_or_else(|| skills_dir(&agent));
     if let Some(root) = &workspace {
         check_workspace(root)?;
+        check_apart(root, Some(&skills))?;
     }
     for name in &mcp {
-        crate::agent_mcp::get(name)?;
+        if let Some(dir) = &crate::agent_mcp::get(name)?.dir {
+            check_apart(dir, Some(&skills))?;
+        }
     }
-    let skills = skills.unwrap_or_else(|| skills_dir(&agent));
     if let Some(sandbox) = &shell {
         let root = workspace.as_ref().ok_or_else(|| {
             CliError::Usage("a shell needs a workspace to work in: give --workspace".into())

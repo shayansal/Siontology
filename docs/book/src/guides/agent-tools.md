@@ -87,6 +87,10 @@ twice, as a test suite should after a fix.
 Without network, a command is a write: it runs from L3. With network, it is
 external, it runs from L5 (L4 asks), and what it prints taints the session:
 
+- `--sandbox-network declared` (bubblewrap): no network for commands,
+  and for each skill's scripts only the hosts that skill declares,
+  through a filtering proxy ([What a skill may do](skill-permissions.md)).
+  Commands stay writes.
 - `--sandbox-network host` (bubblewrap): the machine's own network. Nothing
   filters where a command connects: local services and a cloud's metadata
   address included.
@@ -95,16 +99,16 @@ external, it runs from L5 (L4 asks), and what it prints taints the session:
   networks are refused, since neither restricts anything.
 
 ```text
-$ sion agent run coder d85ed254…a248 --task x --model script:shell.json --workspace work --shell --sandbox-network sion-egress
-error: with bubblewrap the network is none or host, not sion-egress
+$ sion agent run coder a888b3fc…b899 --task x --model script:pypi.json --workspace work --shell --sandbox-network sion-egress
+error: with bubblewrap the network is none, declared or host, not sion-egress
 [exit 1]
-$ sion agent run coder d85ed254…a248 --task x --model script:shell.json --workspace work --shell docker:alpine:3.20
+$ sion agent run coder a888b3fc…b899 --task x --model script:pypi.json --workspace work --shell docker:alpine:3.20
 error: alpine:3.20 is not pinned by digest: give name@sha256:<64 hex digits>
 [exit 1]
-$ sion agent run coder d85ed254…a248 --task x --model script:shell.json --workspace work --shell docker:mirror.gcr.io/library/alpine@sha256:d9e853e8…e2a4b6bc --sandbox-network bridge
+$ sion agent run coder a888b3fc…b899 --task x --model script:pypi.json --workspace work --shell docker:mirror.gcr.io/library/alpine@sha256:d9e853e8…b6bc --sandbox-network bridge
 error: Docker's "bridge" network does not restrict where a command connects: name a network you set up
 [exit 1]
-$ sion agent run coder d85ed254…a248 --task x --model script:shell.json --workspace ~/.sion/.. --shell
+$ sion agent run coder a888b3fc…b899 --task x --model script:pypi.json --workspace ~/.sion/.. --shell
 error: the workspace ~/.sion/.. and ~/.sion (wallets, sessions, skills) overlap: give a workspace apart from it
 [exit 1]
 ```
@@ -113,8 +117,9 @@ error: the workspace ~/.sion/.. and ~/.sion (wallets, sessions, skills) overlap:
 
 - The workspace may not hold `$SION_HOME` (wallet keys, sessions, skills)
   or lie inside it, shell or not: `read_file` could otherwise read keys.
-- With a shell, the skills directory may not lie inside the workspace: a
-  command could change a skill without the checks skills go through.
+- The skills directory and the workspace (or an MCP server's directory)
+  may not overlap, shell or not: the agent could change a skill without
+  the checks skills go through, or grant itself what a skill declares.
 - A directory given with `--sandbox-read` may not show `$SION_HOME`.
 - The sandbox must work: a trivial command runs before the session starts.
 - Subagents get no shell of their parent's.
@@ -155,11 +160,15 @@ Only scripts that are part of a skill run this way: the agent writes its
 skills' instructions with `skill_write`, never their scripts, so a script
 is one that came in an installed release (checked against its bundle) or
 that someone put there. A script reaches the network only if its skill
-says so in its front matter and the sandbox has one:
+says so in its front matter and the sandbox has one, and then only the
+hosts it names; it gets the secrets its skill names, from the operator's
+store, and never shows them to the model
+([What a skill may do](skill-permissions.md)):
 
 ```yaml
 metadata:
-  sion-network: "true"
+  sion-network: api.github.com
+  sion-secrets: GITHUB_TOKEN
 ```
 
 ## Tools from MCP servers
@@ -311,9 +320,10 @@ session df7de21c12ac158b: done
   long it runs; Docker does.
 - A Docker container outlives a runtime that is killed, until its command
   ends (`docker ps --filter label=sion-sandbox` finds them).
-- Network filtering is the operator's: the runtime refuses only Docker's
-  `host` and `bridge` networks by name.
-- A skill declares only whether its scripts need the network; it cannot
-  declare, and the runtime does not enforce, other permissions.
+- Commands' network is filtered only as the operator sets it up: the
+  declared network filters skills' scripts by the hosts their skills
+  name, and gives commands none; on `host` or a Docker network, commands
+  reach what that network reaches (the runtime refuses only Docker's
+  `host` and `bridge` networks by name).
 - Subagents' payments are gathered into batches; their other transactions
   (memory, tasks) are each signed by themselves.

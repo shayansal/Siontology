@@ -698,6 +698,7 @@ Commands:
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
+  secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
@@ -1034,7 +1035,7 @@ Options:
       --shell [<SANDBOX>]
           Let it run commands with /bin/sh in a sandbox that can write only its workspace (needs --workspace), and its skills' scripts: `bwrap` (bubblewrap, the default) or `docker:<image>@sha256:<digest>`, an image already on this machine
       --sandbox-network <NETWORK>
-          The network its commands reach: `none` (the default), `host` (bubblewrap: this machine's network, unfiltered) or a Docker network you set up to restrict where they connect [default: none]
+          The network its commands reach: `none` (the default); `declared` (bubblewrap: commands get none, and skills' scripts reach what their skills declare, through a proxy that refuses private addresses); `host` (bubblewrap: this machine's network, unfiltered); or a Docker network you set up to restrict where they connect [default: none]
       --sandbox-read <DIR>
           A directory its commands may read, at its own path (a toolchain, say); with bubblewrap, its bin directory goes on the PATH. Repeat for more
       --sandbox-timeout <SECONDS>
@@ -1043,6 +1044,8 @@ Options:
           Give it the reviewed tools of this MCP server (see `sion agent mcp add`). Repeat for more
       --storage
           Give it the storage-deal tools: keep a file of its workspace with storage providers (the escrow comes from its account's balance, not its budget), follow its deals and close them
+      --no-skill-approvals
+          Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
   -h, --help
           Print help
 ```
@@ -1210,7 +1213,7 @@ Options:
       --shell [<SANDBOX>]
           Let it run commands with /bin/sh in a sandbox that can write only its workspace (needs --workspace), and its skills' scripts: `bwrap` (bubblewrap, the default) or `docker:<image>@sha256:<digest>`, an image already on this machine
       --sandbox-network <NETWORK>
-          The network its commands reach: `none` (the default), `host` (bubblewrap: this machine's network, unfiltered) or a Docker network you set up to restrict where they connect [default: none]
+          The network its commands reach: `none` (the default); `declared` (bubblewrap: commands get none, and skills' scripts reach what their skills declare, through a proxy that refuses private addresses); `host` (bubblewrap: this machine's network, unfiltered); or a Docker network you set up to restrict where they connect [default: none]
       --sandbox-read <DIR>
           A directory its commands may read, at its own path (a toolchain, say); with bubblewrap, its bin directory goes on the PATH. Repeat for more
       --sandbox-timeout <SECONDS>
@@ -1221,6 +1224,8 @@ Options:
           Give it the storage-deal tools
       --instructions <INSTRUCTIONS>
           What to tell it beyond the fixed system prompt
+      --no-skill-approvals
+          Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
   -h, --help
           Print help
 ```
@@ -1312,6 +1317,67 @@ Usage: sion agent profile token remove [OPTIONS] <PROFILE> <ID>
 Arguments:
   <PROFILE>  The profile
   <ID>       The token's id, as `list` shows it
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent secret`
+
+```text
+The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
+
+Usage: sion agent secret [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add a secret, or replace one: its value is read from standard input (not shown when typed), or taken from an environment variable
+  list    The secrets' names (never their values) and when each was added
+  remove  Remove a secret
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent secret add`
+
+```text
+Add a secret, or replace one: its value is read from standard input (not shown when typed), or taken from an environment variable
+
+Usage: sion agent secret add [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name, as the environment variable a script receives it in (capital letters, digits and underscores)
+
+Options:
+      --from-env <VARIABLE>  Take the value from this environment variable instead
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help                 Print help
+```
+
+## `sion agent secret list`
+
+```text
+The secrets' names (never their values) and when each was added
+
+Usage: sion agent secret list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent secret remove`
+
+```text
+Remove a secret
+
+Usage: sion agent secret remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2178,6 +2244,7 @@ Options:
       --kappa <KAPPA>          κ, the margin the backing must have over the value at risk [default: 2]
       --pulses <PULSES>        How long the agent relies on it, in Pulses [default: 10000]
       --skills <SKILLS>        The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
+      --accept-permissions     Grant the permissions the skill declares (calls it pre-approves, where its scripts may connect, the secrets they receive), shown before anything is signed. Without it, a skill that declares any is not installed
   -h, --help                   Print help
 ```
 

@@ -93,6 +93,14 @@ pub struct Policy {
     pub approval_ttl: u64,
     /// How long content from outside taints a session, in seconds.
     pub taint_ttl: u64,
+    /// Whether the skills a session read may pre-approve calls with their
+    /// `allowed-tools` (see [`crate::permissions`]).
+    #[serde(default = "yes")]
+    pub skill_approvals: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Policy {
@@ -102,6 +110,7 @@ impl Default for Policy {
             grants: BTreeSet::new(),
             approval_ttl: 15 * 60,
             taint_ttl: 24 * 3600,
+            skill_approvals: true,
         }
     }
 }
@@ -113,6 +122,10 @@ pub struct Standing {
     pub approvals: BTreeMap<String, u64>,
     /// Until when the session is tainted (seconds), if it is.
     pub tainted_until: Option<u64>,
+    /// The calls the skills the session read pre-approve: each skill's
+    /// `allowed-tools` rules, by its name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pre_approved: BTreeMap<String, Vec<crate::permissions::ToolRule>>,
 }
 
 impl Standing {
@@ -130,6 +143,21 @@ impl Standing {
     /// Whether the session is tainted at `now`.
     pub fn tainted(&self, now: u64) -> bool {
         self.tainted_until.is_some_and(|until| now < until)
+    }
+
+    /// The skill whose `allowed-tools` pre-approve calling `tool` with
+    /// `input`, and the rule, if one does.
+    pub fn pre_approving(
+        &self,
+        tool: &str,
+        input: &serde_json::Value,
+    ) -> Option<(&str, &crate::permissions::ToolRule)> {
+        self.pre_approved.iter().find_map(|(skill, rules)| {
+            rules
+                .iter()
+                .find(|r| r.matches(tool, input))
+                .map(|r| (skill.as_str(), r))
+        })
     }
 }
 

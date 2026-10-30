@@ -216,6 +216,20 @@ struct Ready {
     key: String,
     effect: crate::tools::Effect,
     journaled: bool,
+    /// The skill and rule that pre-approved the call, when the autonomy
+    /// level would have asked.
+    pre_approved: Option<String>,
+}
+
+/// An outcome as the model sees it: a pre-approved call's says so.
+fn marked(ready: &Ready, mut outcome: Outcome) -> Outcome {
+    if let Some(by) = &ready.pre_approved {
+        outcome.content = format!(
+            "[run without asking: pre-approved by skill {by}]\n{}",
+            outcome.content
+        );
+    }
+    outcome
 }
 
 /// What a tool use waiting for approval says to the model meanwhile.
@@ -335,6 +349,7 @@ impl Runtime<'_> {
                         Outcome::uncertain("the tool gave no outcome for this call")
                     });
                     for ((at, ready), outcome) in group.iter().zip(outcomes) {
+                        let outcome = marked(ready, outcome);
                         self.finish(state, ready, &outcome);
                         progress |= !outcome.is_error;
                         results.push(result_block(&calls[*at].0, &outcome));
@@ -474,6 +489,7 @@ impl Runtime<'_> {
                 } else {
                     tool.call(&ready.input, &ready.key)
                 };
+                let outcome = marked(&ready, outcome);
                 self.finish(state, &ready, &outcome);
                 Called::Ran(outcome)
             }
@@ -528,6 +544,7 @@ impl Runtime<'_> {
         let now = (self.now)();
         // A call can do at most what its tool declares.
         let effect = tool.effect_of(input).min(tool.effect());
+        let mut pre_approved = None;
         match self
             .policy
             .decide(&state.standing, name, effect, &call_key, now)
@@ -535,14 +552,28 @@ impl Runtime<'_> {
             Decision::Deny(reason) => {
                 return Checked::Answered(Outcome::error(format!("refused by policy: {reason}")))
             }
-            Decision::Ask(reason) => {
-                return Checked::Wait {
-                    key: call_key,
-                    tool: name.to_string(),
-                    input: input.clone(),
-                    reason,
+            Decision::Ask(reason) => match state.standing.pre_approving(name, input) {
+                // A skill the session read pre-approves the call, and the
+                // session has read nothing from outside since: no one is
+                // asked. What the level refuses stays refused, and spending
+                // is never pre-approved: a person approves it, or the
+                // operator's autonomy level does.
+                Some((skill, rule))
+                    if self.policy.skill_approvals
+                        && effect < crate::tools::Effect::Spend
+                        && !state.standing.tainted(now) =>
+                {
+                    pre_approved = Some(format!("{skill}: {}", rule.describe()));
                 }
-            }
+                _ => {
+                    return Checked::Wait {
+                        key: call_key,
+                        tool: name.to_string(),
+                        input: input.clone(),
+                        reason,
+                    }
+                }
+            },
             Decision::Run => {}
         }
         if (self.stopped)() {
@@ -554,6 +585,7 @@ impl Runtime<'_> {
             key: call_key,
             effect,
             journaled,
+            pre_approved,
         })
     }
 
@@ -563,6 +595,12 @@ impl Runtime<'_> {
         let now = (self.now)();
         if outcome.untrusted {
             state.standing.taint(&self.policy, now);
+        }
+        if let (Some((skill, rules)), false) = (&outcome.pre_approval, outcome.is_error) {
+            state
+                .standing
+                .pre_approved
+                .insert(skill.clone(), rules.clone());
         }
         if outcome.is_error && outcome.certain {
             *state.failures.entry(ready.key.clone()).or_default() += 1;

@@ -62,6 +62,11 @@ pub struct Profile {
     /// stays first (`sion agent evolve` improves it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    /// Whether a skill it reads may pre-approve the calls its
+    /// `allowed-tools` names (never in a tainted session, never past a
+    /// denial or its charter).
+    #[serde(default = "yes")]
+    pub skill_approvals: bool,
 }
 
 fn yes() -> bool {
@@ -103,6 +108,7 @@ impl Profile {
             self.models.clone(),
             Policy {
                 autonomy: self.autonomy,
+                skill_approvals: self.skill_approvals,
                 ..Policy::default()
             },
             self.equipment(),
@@ -221,6 +227,10 @@ pub enum ProfileCommand {
         /// What to tell it beyond the fixed system prompt.
         #[arg(long)]
         instructions: Option<String>,
+        /// Ask before every call its autonomy does not cover, even those a
+        /// skill it read pre-approves with `allowed-tools`.
+        #[arg(long)]
+        no_skill_approvals: bool,
     },
     /// The profiles on this machine.
     List,
@@ -291,10 +301,15 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             mcp,
             storage,
             instructions,
+            no_skill_approvals,
         } => {
             let shell = shell.sandbox()?;
             for server in &mcp {
                 crate::agent_mcp::get(server)?;
+            }
+            if let Some(root) = &workspace {
+                crate::runtime::check_workspace(root)?;
+                crate::runtime::check_apart(root, skills.as_deref())?;
             }
             if let Some(sandbox) = &shell {
                 let root = workspace.as_ref().ok_or_else(|| {
@@ -332,6 +347,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 mcp,
                 storage,
                 instructions: instructions.filter(|i| !i.trim().is_empty()),
+                skill_approvals: !no_skill_approvals,
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()

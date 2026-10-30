@@ -51,11 +51,13 @@
 
 pub mod builtin;
 pub mod consolidate;
+pub mod egress;
 pub mod evals;
 pub mod evolve;
 pub mod journal;
 pub mod mcp;
 pub mod model;
+pub mod permissions;
 pub mod policy;
 pub mod providers;
 pub mod sandbox;

@@ -237,6 +237,7 @@ fn a_better_version_is_released_only_on_evidence_from_others() {
         2.0,
         1_000,
         Some(skills.clone()),
+        false,
     )
     .unwrap();
 
@@ -449,6 +450,7 @@ fn a_better_version_is_released_only_on_evidence_from_others() {
         2.0,
         1_000,
         Some(skills.clone()),
+        false,
     )
     .unwrap();
     assert!(

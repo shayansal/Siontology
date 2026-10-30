@@ -1713,6 +1713,13 @@ fn rand_nonce() -> u64 {
 }
 
 fn main() -> ExitCode {
+    // Inside a skill's sandbox, this program is the bridge to the egress
+    // proxy (`sion_agent::egress`): not a command people run.
+    let mut args = std::env::args();
+    if args.nth(1).as_deref() == Some("sandbox-bridge") {
+        let status = sion_agent::egress::bridge_cli(args);
+        return ExitCode::from(u8::try_from(status).unwrap_or(125));
+    }
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
