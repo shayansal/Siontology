@@ -52,11 +52,14 @@
 pub mod builtin;
 pub mod consolidate;
 pub mod egress;
+pub mod encoding;
 pub mod evals;
 pub mod evolve;
 pub mod journal;
 pub mod mcp;
+pub mod mcp_http;
 pub mod model;
+pub mod oauth;
 pub mod permissions;
 pub mod policy;
 pub mod providers;

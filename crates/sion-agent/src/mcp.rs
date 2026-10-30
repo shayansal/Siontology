@@ -26,6 +26,12 @@
 //! it gets only the environment variables its configuration names, and
 //! what it writes to standard error is discarded, since servers can print
 //! secrets there.
+//!
+//! A server can instead be reached over HTTP at a URL ([`crate::mcp_http`]):
+//! Streamable HTTP in both eras, or the deprecated HTTP+SSE transport, with
+//! the headers its configuration names and, when it asks for one, an OAuth
+//! token ([`crate::oauth`]). Its tools are reviewed and pinned the same
+//! way.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
@@ -39,7 +45,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::mcp_http::{self, Http, Posted, Sse};
 use crate::model::ToolSpec;
+use crate::oauth::Authorizer;
 use crate::sandbox::{Mount, Sandbox, WORKSPACE};
 use crate::tools::{Effect, Outcome, Tool};
 
@@ -84,13 +92,27 @@ fn default_timeout() -> u64 {
     120
 }
 
-/// How to start a server, and what was reviewed of it.
+/// How to start or reach a server, and what was reviewed of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Server {
     /// Its name: 1 to 32 lowercase letters, digits and hyphens.
     pub name: String,
-    /// The program and its arguments.
+    /// The program and its arguments (empty for a server at a URL).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
+    /// The endpoint of a server reached over HTTP, instead of a program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Headers sent to a server over HTTP, as `Name: value`, where
+    /// `${VAR}` is the environment variable's value where the agent runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<String>,
+    /// How a server over HTTP is authorized with OAuth, if it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<crate::oauth::Config>,
+    /// Whether it spoke the deprecated HTTP+SSE transport at its review.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy_sse: bool,
     /// The environment variables it is given, by name, with the values
     /// they have where the runtime runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -400,16 +422,29 @@ impl Process {
     }
 }
 
+/// How a connection reaches its server.
+enum Link {
+    /// A program, over its standard input and output.
+    Stdio(Process),
+    /// A server over Streamable HTTP.
+    Http(Http),
+    /// A server over the deprecated HTTP+SSE transport.
+    Sse(Sse),
+}
+
 /// A running server and the conversation with it.
 pub struct Connection {
     server: String,
-    process: Process,
+    link: Link,
     next: u64,
     timeout: Duration,
+    start: Duration,
     /// The protocol it speaks.
     pub era: Era,
     /// What the server said about itself (`serverInfo`).
     pub info: Value,
+    /// Tools the server listed that this client cannot offer, and why.
+    pub rejected: Vec<String>,
 }
 
 impl std::fmt::Debug for Connection {
@@ -418,7 +453,42 @@ impl std::fmt::Debug for Connection {
             .field("server", &self.server)
             .field("era", &self.era)
             .field("info", &self.info)
+            .field("transport", &self.transport())
             .finish()
+    }
+}
+
+/// The answer a JSON-RPC response gives: its result, or why there is none.
+fn answer(message: &Value) -> Result<Value, Failure> {
+    if let Some(error) = message.get("error") {
+        return Err(Failure::Refused {
+            code: error["code"].as_i64().unwrap_or(0),
+            message: error["message"]
+                .as_str()
+                .unwrap_or("an error without a message")
+                .to_string(),
+            data: error.get("data").cloned().unwrap_or(Value::Null),
+        });
+    }
+    let result = message.get("result").cloned().unwrap_or(Value::Null);
+    match result["resultType"].as_str() {
+        None | Some("complete") => Ok(result),
+        Some("input_required") => Err(Failure::Refused {
+            code: 0,
+            message: format!(
+                "the server asked for more input ({}), which this client does not give",
+                result["inputRequests"]
+                    .as_object()
+                    .map(|r| r.keys().cloned().collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default()
+            ),
+            data: Value::Null,
+        }),
+        Some(other) => Err(Failure::Refused {
+            code: 0,
+            message: format!("the server answered with a result of type {other}"),
+            data: Value::Null,
+        }),
     }
 }
 
@@ -433,13 +503,26 @@ impl Connection {
     /// [`PROBE_SECS`], means an earlier one, which is introduced to with
     /// the `initialize` handshake.
     pub fn start(server: &Server) -> Result<Connection, String> {
+        Connection::start_with(server, None)
+    }
+
+    /// Starts or reaches `server`, with `auth` for a server over HTTP.
+    pub fn start_with(
+        server: &Server,
+        auth: Option<Arc<dyn Authorizer>>,
+    ) -> Result<Connection, String> {
+        if let Some(url) = &server.url {
+            return Connection::reach(server, url, auth);
+        }
         let mut connection = Connection {
             server: server.name.clone(),
-            process: Process::launch(server)?,
+            link: Link::Stdio(Process::launch(server)?),
             next: 0,
             timeout: Duration::from_secs(server.timeout_secs.max(1)),
+            start: Duration::from_secs(START_SECS.max(server.timeout_secs)),
             era: Era::Modern,
             info: Value::Null,
+            rejected: Vec::new(),
         };
         // An earlier protocol it spoke at its review is tried first, so that
         // a server that does not answer the probe for a modern server is
@@ -447,11 +530,10 @@ impl Connection {
         // at once, and the probe says who it is.)
         match server.protocol.as_deref() {
             Some(version) if LEGACY.contains(&version) => {
-                if connection.handshake(server, version).is_ok() {
+                if connection.handshake(version).is_ok() {
                     return Ok(connection);
                 }
-                connection.process.stop();
-                connection.process = Process::launch(server)?;
+                connection.restart(server)?;
                 connection.era = Era::Modern;
             }
             _ => {}
@@ -487,22 +569,175 @@ impl Connection {
                 ));
             }
             // An earlier server; one that stopped at the probe starts again.
-            Err(Failure::Lost(_))
-                if connection.process.child.try_wait().ok().flatten().is_some() =>
-            {
-                connection.process.stop();
-                connection.process = Process::launch(server)?;
-            }
+            Err(Failure::Lost(_)) if connection.exited() => connection.restart(server)?,
             Err(_) => {}
         }
-        connection.handshake(server, LEGACY[0])?;
+        connection.handshake(LEGACY[0])?;
         Ok(connection)
     }
 
-    /// The handshake of the earlier protocol, asking for `version`.
-    fn handshake(&mut self, server: &Server, version: &str) -> Result<(), String> {
-        self.era = Era::Legacy(version.to_string());
+    /// Whether a server program has stopped.
+    fn exited(&mut self) -> bool {
+        match &mut self.link {
+            Link::Stdio(process) => process.child.try_wait().ok().flatten().is_some(),
+            _ => false,
+        }
+    }
+
+    /// Starts a server program again.
+    fn restart(&mut self, server: &Server) -> Result<(), String> {
+        if let Link::Stdio(process) = &mut self.link {
+            process.stop();
+            *process = Process::launch(server)?;
+        }
+        Ok(())
+    }
+
+    /// Reaches a server over HTTP and finds out which transport and era it
+    /// speaks: a modern request first; a `4xx` without a modern error
+    /// means an earlier server, introduced to with the handshake; a
+    /// handshake refused the same way means the deprecated HTTP+SSE
+    /// transport. What it spoke at its review is tried first.
+    fn reach(
+        server: &Server,
+        url: &str,
+        auth: Option<Arc<dyn Authorizer>>,
+    ) -> Result<Connection, String> {
+        let headers = mcp_http::configured_headers(&server.name, &server.headers)?;
         let start = Duration::from_secs(START_SECS.max(server.timeout_secs));
+        let timeout = Duration::from_secs(server.timeout_secs.max(1));
+        let sse = |connection_auth: Option<Arc<dyn Authorizer>>| -> Result<Connection, Failure> {
+            let link = Sse::open(&server.name, url, headers.clone(), connection_auth, start)?;
+            let mut connection = Connection {
+                server: server.name.clone(),
+                link: Link::Sse(link),
+                next: 0,
+                timeout,
+                start,
+                era: Era::Legacy(LEGACY[0].to_string()),
+                info: Value::Null,
+                rejected: Vec::new(),
+            };
+            connection.handshake(LEGACY[0]).map_err(Failure::Lost)?;
+            Ok(connection)
+        };
+        if server.legacy_sse {
+            return sse(auth).map_err(|e| e.to_string());
+        }
+        let link = Http::new(
+            &server.name,
+            url,
+            headers.clone(),
+            auth.clone(),
+            start.max(timeout),
+        )?;
+        let mut connection = Connection {
+            server: server.name.clone(),
+            link: Link::Http(link),
+            next: 0,
+            timeout,
+            start,
+            era: Era::Modern,
+            info: Value::Null,
+            rejected: Vec::new(),
+        };
+        if let Some(version) = server.protocol.as_deref().filter(|v| LEGACY.contains(v)) {
+            connection.set_modern(false);
+            if connection.handshake(version).is_ok() {
+                return Ok(connection);
+            }
+            connection.set_modern(true);
+            connection.era = Era::Modern;
+        }
+        match connection.post_raw("server/discover", json!({}), start)? {
+            Posted {
+                status,
+                message: Some(message),
+            } if (200..300).contains(&status) && message.get("result").is_some() => {
+                let found = answer(&message).map_err(|e| e.to_string())?;
+                let versions: Vec<&str> = found["supportedVersions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                if !versions.contains(&MODERN) {
+                    return Err(format!(
+                        "the MCP server {} speaks protocol versions {}; this client speaks {MODERN} \
+                         and the handshake versions {}",
+                        server.name,
+                        versions.join(", "),
+                        LEGACY.join(", ")
+                    ));
+                }
+                connection.info = found["_meta"]["io.modelcontextprotocol/serverInfo"].clone();
+                Ok(connection)
+            }
+            posted if mcp_http::modern_refusal(&posted) => {
+                let error = &posted.message.as_ref().expect("a refusal has a message")["error"];
+                Err(if error["code"].as_i64() == Some(UNSUPPORTED_VERSION) {
+                    format!(
+                        "the MCP server {} does not speak {MODERN}; it speaks {}",
+                        server.name, error["data"]["supported"]
+                    )
+                } else {
+                    format!(
+                        "the MCP server {} refused this client's request: {}",
+                        server.name,
+                        error["message"].as_str().unwrap_or_default()
+                    )
+                })
+            }
+            _ => {
+                connection.set_modern(false);
+                match connection.handshake(LEGACY[0]) {
+                    Ok(()) => Ok(connection),
+                    Err(first) => match sse(auth) {
+                        Ok(connection) => Ok(connection),
+                        // The old transport's stream asks for authorization:
+                        // that is what is missing.
+                        Err(Failure::Refused {
+                            code: mcp_http::UNAUTHORIZED,
+                            message,
+                            ..
+                        }) => Err(message),
+                        Err(second) => Err(format!(
+                            "the MCP server {} answered neither as Streamable HTTP ({first}) nor as HTTP+SSE ({second})",
+                            server.name
+                        )),
+                    },
+                }
+            }
+        }
+    }
+
+    fn set_modern(&mut self, modern: bool) {
+        if let Link::Http(http) = &mut self.link {
+            http.modern = modern;
+            if modern {
+                http.session = None;
+                http.version = None;
+            }
+        }
+    }
+
+    /// The transport it speaks: `stdio`, `http` or `http+sse`.
+    pub fn transport(&self) -> &'static str {
+        match &self.link {
+            Link::Stdio(_) => "stdio",
+            Link::Http(_) => "http",
+            Link::Sse(_) => "http+sse",
+        }
+    }
+
+    /// The handshake of the earlier protocol, asking for `version`.
+    fn handshake(&mut self, version: &str) -> Result<(), String> {
+        self.era = Era::Legacy(version.to_string());
+        if let Link::Http(http) = &mut self.link {
+            http.session = None;
+            http.version = None;
+        }
+        let start = self.start;
         let hello = self
             .request(
                 "initialize",
@@ -513,18 +748,21 @@ impl Connection {
                 }),
                 start,
             )
-            .map_err(|e| format!("the MCP server {} did not start: {e}", server.name))?;
+            .map_err(|e| format!("the MCP server {} did not start: {e}", self.server))?;
         let agreed = hello["protocolVersion"].as_str().unwrap_or_default();
         if !LEGACY.contains(&agreed) {
             return Err(format!(
                 "the MCP server {} speaks protocol version {agreed:?}; this client speaks {MODERN} \
                  and {}",
-                server.name,
+                self.server,
                 LEGACY.join(", ")
             ));
         }
         self.era = Era::Legacy(agreed.to_string());
         self.info = hello["serverInfo"].clone();
+        if let Link::Http(http) = &mut self.link {
+            http.version = Some(agreed.to_string());
+        }
         self.notify("notifications/initialized")
     }
 
@@ -536,18 +774,27 @@ impl Connection {
         }
     }
 
-    fn send(&mut self, message: &Value) -> Result<(), String> {
-        let mut line = message.to_string();
-        line.push('\n');
-        self.process
-            .stdin
-            .write_all(line.as_bytes())
-            .and_then(|()| self.process.stdin.flush())
-            .map_err(|e| format!("the MCP server {} stopped: {e}", self.server))
+    fn send(&mut self, message: &Value) -> Result<(), Failure> {
+        match &mut self.link {
+            Link::Stdio(process) => {
+                let mut line = message.to_string();
+                line.push('\n');
+                process
+                    .stdin
+                    .write_all(line.as_bytes())
+                    .and_then(|()| process.stdin.flush())
+                    .map_err(|e| {
+                        Failure::Lost(format!("the MCP server {} stopped: {e}", self.server))
+                    })
+            }
+            Link::Http(http) => http.post(message, None, &[]).map(|_| ()),
+            Link::Sse(sse) => sse.send(message),
+        }
     }
 
     fn notify(&mut self, method: &str) -> Result<(), String> {
         self.send(&json!({"jsonrpc": "2.0", "method": method}))
+            .map_err(|e| e.to_string())
     }
 
     /// Sends a request and waits for its answer, answering the server's own
@@ -559,6 +806,11 @@ impl Connection {
         params: Value,
         wait: Duration,
     ) -> Result<Value, Failure> {
+        self.request_with(method, params, wait, &[])
+    }
+
+    /// The request message, its id, for `method` with `params`.
+    fn message(&mut self, method: &str, params: Value) -> (u64, Value) {
         let mut params = match params {
             Value::Object(map) => map,
             _ => serde_json::Map::new(),
@@ -579,12 +831,73 @@ impl Connection {
         }
         self.next += 1;
         let id = self.next;
-        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
-            .map_err(Failure::Lost)?;
+        (
+            id,
+            json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+        )
+    }
+
+    /// Posts a request to a server over Streamable HTTP and returns what
+    /// came back, status included, for finding out its era.
+    fn post_raw(&mut self, method: &str, params: Value, _wait: Duration) -> Result<Posted, String> {
+        let (id, message) = self.message(method, params);
+        match &mut self.link {
+            Link::Http(http) => http
+                .post(&message, Some(id), &[])
+                .map_err(|e| e.to_string()),
+            _ => Err("not a server over HTTP".into()),
+        }
+    }
+
+    /// A request with `extra` headers (a server over HTTP's mirrored
+    /// arguments).
+    pub fn request_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        wait: Duration,
+        extra: &[(String, String)],
+    ) -> Result<Value, Failure> {
+        let (id, message) = self.message(method, params.clone());
+        if let Link::Http(http) = &mut self.link {
+            let mut posted = http.post(&message, Some(id), extra)?;
+            if http.expired {
+                // An earlier-era server forgot the session: a new one, and
+                // the request once more.
+                http.expired = false;
+                let version = http
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| LEGACY[0].to_string());
+                self.handshake(&version).map_err(Failure::Lost)?;
+                let (id, message) = self.message(method, params);
+                let Link::Http(http) = &mut self.link else {
+                    unreachable!("the link stays HTTP")
+                };
+                posted = http.post(&message, Some(id), extra)?;
+            }
+            return match posted.message {
+                Some(message) => answer(&message),
+                None => Err(Failure::Refused {
+                    code: 0,
+                    message: format!(
+                        "the MCP server {} answered HTTP {} with no message",
+                        self.server, posted.status
+                    ),
+                    data: json!({"status": posted.status}),
+                }),
+            };
+        }
+        self.send(&message)?;
         let deadline = Instant::now() + wait;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            let message = match self.process.incoming.recv_timeout(left) {
+            let incoming = match &self.link {
+                Link::Stdio(process) => &process.incoming,
+                Link::Sse(sse) => &sse.incoming,
+                Link::Http(_) => unreachable!("answered above"),
+            };
+            let message = match incoming.recv_timeout(left) {
                 Ok(message) => message,
                 Err(RecvTimeoutError::Timeout) => {
                     return Err(Failure::Lost(format!(
@@ -603,52 +916,13 @@ impl Connection {
             match (message.get("method"), message.get("id")) {
                 // A request from the server.
                 (Some(asked), Some(their)) => {
-                    let answer = match asked.as_str() {
-                        Some("ping") => json!({"jsonrpc": "2.0", "id": their, "result": {}}),
-                        Some("roots/list") => {
-                            json!({"jsonrpc": "2.0", "id": their, "result": {"roots": []}})
-                        }
-                        _ => json!({"jsonrpc": "2.0", "id": their, "error": {
-                            "code": -32601, "message": "this client does not offer that"
-                        }}),
-                    };
-                    self.send(&answer).map_err(Failure::Lost)?;
+                    let answer = mcp_http::answer_to(asked.as_str().unwrap_or_default(), their);
+                    self.send(&answer)?;
                 }
                 // A notification: nothing to do.
                 (Some(_), None) => {}
                 // An answer: ours, or a late one to an earlier request.
-                (None, Some(their)) if their.as_u64() == Some(id) => {
-                    if let Some(error) = message.get("error") {
-                        return Err(Failure::Refused {
-                            code: error["code"].as_i64().unwrap_or(0),
-                            message: error["message"]
-                                .as_str()
-                                .unwrap_or("an error without a message")
-                                .to_string(),
-                            data: error.get("data").cloned().unwrap_or(Value::Null),
-                        });
-                    }
-                    let result = message.get("result").cloned().unwrap_or(Value::Null);
-                    return match result["resultType"].as_str() {
-                        None | Some("complete") => Ok(result),
-                        Some("input_required") => Err(Failure::Refused {
-                            code: 0,
-                            message: format!(
-                                "the server asked for more input ({}), which this client does not give",
-                                result["inputRequests"]
-                                    .as_object()
-                                    .map(|r| r.keys().cloned().collect::<Vec<_>>().join(", "))
-                                    .unwrap_or_default()
-                            ),
-                            data: Value::Null,
-                        }),
-                        Some(other) => Err(Failure::Refused {
-                            code: 0,
-                            message: format!("the server answered with a result of type {other}"),
-                            data: Value::Null,
-                        }),
-                    };
-                }
+                (None, Some(their)) if their.as_u64() == Some(id) => return answer(&message),
                 _ => {}
             }
         }
@@ -678,6 +952,14 @@ impl Connection {
                     _ => json!({"type": "object"}),
                 };
                 let annotations = tool.get("annotations").cloned().unwrap_or(Value::Null);
+                // Over Streamable HTTP, a tool whose schema mirrors its
+                // arguments into headers against the rules is left out.
+                if self.era == Era::Modern && matches!(self.link, Link::Http(_)) {
+                    if let Err(why) = mcp_http::mirrored(&input_schema) {
+                        self.rejected.push(format!("{name}: {why}"));
+                        continue;
+                    }
+                }
                 let digest = digest(&name, &description, &input_schema, &annotations);
                 listed.push(Listed {
                     name,
@@ -705,23 +987,44 @@ impl Connection {
 
     /// Calls the server's tool `name`.
     pub fn call(&mut self, name: &str, arguments: &Value) -> Result<Value, Failure> {
+        self.call_with(name, arguments, &[])
+    }
+
+    /// Calls the server's tool `name`, mirroring the arguments `mirrored`
+    /// names into headers when the server is over Streamable HTTP.
+    pub fn call_with(
+        &mut self,
+        name: &str,
+        arguments: &Value,
+        mirrored: &[(String, Vec<String>)],
+    ) -> Result<Value, Failure> {
         let arguments = if arguments.is_object() {
             arguments.clone()
         } else {
             json!({})
         };
+        let extra = if self.era == Era::Modern && matches!(self.link, Link::Http(_)) {
+            mcp_http::param_headers(mirrored, &arguments)
+        } else {
+            Vec::new()
+        };
         let wait = self.timeout;
-        self.request(
+        self.request_with(
             "tools/call",
             json!({"name": name, "arguments": arguments}),
             wait,
+            &extra,
         )
     }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        self.process.stop();
+        match &mut self.link {
+            Link::Stdio(process) => process.stop(),
+            Link::Http(http) => http.close(),
+            Link::Sse(_) => {}
+        }
     }
 }
 
@@ -770,6 +1073,7 @@ pub fn render(result: &Value) -> String {
 pub struct McpTool {
     server: String,
     remote: String,
+    mirrored: Vec<(String, Vec<String>)>,
     spec: ToolSpec,
     pin: Pin,
     connection: Arc<Mutex<Connection>>,
@@ -800,7 +1104,7 @@ impl Tool for McpTool {
                 .connection
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            connection.call(&self.remote, input)
+            connection.call_with(&self.remote, input, &self.mirrored)
         };
         let outcome = match answer {
             Ok(result) => {
@@ -852,10 +1156,23 @@ impl std::fmt::Debug for Mounted {
 /// Starts `server` and offers its reviewed tools: those whose definitions
 /// still match their pins.
 pub fn mount(server: &Server) -> Result<Mounted, String> {
-    let mut connection = Connection::start(server)?;
+    mount_with(server, None)
+}
+
+/// Starts or reaches `server`, with `auth` for a server over HTTP, and
+/// offers its reviewed tools.
+pub fn mount_with(server: &Server, auth: Option<Arc<dyn Authorizer>>) -> Result<Mounted, String> {
+    let mut connection = Connection::start_with(server, auth)?;
     let listed = connection.tools()?;
+    let rejected = std::mem::take(&mut connection.rejected);
     let connection = Arc::new(Mutex::new(connection));
     let mut mounted = Mounted::default();
+    for why in rejected {
+        mounted.notes.push(format!(
+            "MCP server {}: a tool is not offered: {why}",
+            server.name
+        ));
+    }
     let mut names = BTreeSet::new();
     let mut seen = BTreeSet::new();
     for tool in listed {
@@ -883,6 +1200,7 @@ pub fn mount(server: &Server) -> Result<Mounted, String> {
         mounted.tools.push(Box::new(McpTool {
             server: server.name.clone(),
             remote: tool.name.clone(),
+            mirrored: mcp_http::mirrored(&tool.input_schema).unwrap_or_default(),
             spec: ToolSpec {
                 name: exposed,
                 description: format!(

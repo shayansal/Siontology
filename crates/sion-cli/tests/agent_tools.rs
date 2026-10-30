@@ -216,6 +216,10 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
         let server = sion_agent::mcp::Server {
             name: "notes".into(),
             command: vec!["python3".into(), server_py.to_string_lossy().into_owned()],
+            url: None,
+            headers: Vec::new(),
+            oauth: None,
+            legacy_sse: false,
             env: Vec::new(),
             sandbox: None,
             dir: Some(notes.clone()),

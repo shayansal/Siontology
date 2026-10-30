@@ -35,6 +35,10 @@ fn server(args: &[&str]) -> Server {
     Server {
         name: "fake".into(),
         command,
+        url: None,
+        headers: Vec::new(),
+        oauth: None,
+        legacy_sse: false,
         env: Vec::new(),
         sandbox: None,
         dir: None,
@@ -221,6 +225,10 @@ fn a_server_runs_in_a_sandbox_with_its_own_directory() {
     std::fs::copy(fixture(), dir.join("fake_mcp.py")).unwrap();
     let server = reviewed(Server {
         command: vec!["python3".into(), "/workspace/fake_mcp.py".into()],
+        url: None,
+        headers: Vec::new(),
+        oauth: None,
+        legacy_sse: false,
         env: vec!["CARGO_PKG_NAME".into()],
         sandbox: Some(sandbox),
         dir: Some(dir.clone()),

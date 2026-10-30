@@ -174,17 +174,11 @@ impl Client {
         self.request("POST", url, &all, Some(body), max_bytes)
     }
 
-    /// One request: `method url` with `headers` and an optional body.
-    pub fn request(
-        &self,
-        method: &str,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: Option<&[u8]>,
-        max_bytes: u64,
-    ) -> Result<Fetched, HttpError> {
+    /// The agent for a request to `url`: through the proxy unless
+    /// `NO_PROXY` names its host.
+    fn agent_for(&self, url: &str) -> Result<&ureq::Agent, HttpError> {
         let host = check_url(url)?;
-        let agent = match &self.proxied {
+        Ok(match &self.proxied {
             Some((agent, no_proxy)) if !no_proxy.matches(&host) => {
                 // The proxy resolves the name; refuse what can be seen here.
                 if !self.options.allow_private && !public_host(&host) {
@@ -195,7 +189,73 @@ impl Client {
                 agent
             }
             _ => &self.direct,
+        })
+    }
+
+    /// One request, answered whatever its status: the status, the headers
+    /// and the body as it arrives, for protocols that read the headers of
+    /// an error (`WWW-Authenticate`) or a body that streams (Server-Sent
+    /// Events). The caller bounds what it reads; the client's timeout
+    /// bounds how long the whole response may take.
+    pub fn send(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> Result<Response, HttpError> {
+        let agent = self.agent_for(url)?;
+        let mut request = agent.request(method, url);
+        for (name, value) in headers {
+            request = request.set(name, value);
+        }
+        let result = match body {
+            Some(bytes) => request.send_bytes(bytes),
+            None => request.call(),
         };
+        let response = match result {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => response,
+            Err(ureq::Error::Transport(transport)) => {
+                return Err(HttpError::Transport(transport.to_string()));
+            }
+        };
+        let status = response.status();
+        // ureq names a header once per spelling and gives every value of
+        // it whatever the spelling: each name once, lower-cased.
+        let mut names: Vec<String> = response
+            .headers_names()
+            .into_iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        names.sort();
+        names.dedup();
+        let headers = names
+            .into_iter()
+            .flat_map(|name| {
+                response
+                    .all(&name)
+                    .into_iter()
+                    .map(|value| (name.clone(), value.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        Ok(Response {
+            status,
+            headers,
+            body: response.into_reader(),
+        })
+    }
+
+    /// One request: `method url` with `headers` and an optional body.
+    pub fn request(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+        max_bytes: u64,
+    ) -> Result<Fetched, HttpError> {
+        let agent = self.agent_for(url)?;
         let mut request = agent.request(method, url);
         for (name, value) in headers {
             request = request.set(name, value);
@@ -252,6 +312,91 @@ impl Client {
             body,
         })
     }
+}
+
+/// A response whose body is read as it arrives ([`Client::send`]).
+pub struct Response {
+    /// The status code.
+    pub status: u16,
+    headers: Vec<(String, String)>,
+    body: Box<dyn Read + Send + Sync + 'static>,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Response {
+    /// The first value of the header `name` (case is ignored).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Every value of the header `name` (case is ignored).
+    pub fn all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.headers
+            .iter()
+            .filter(move |(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The media type of the body, lower-cased, without its parameters.
+    pub fn media_type(&self) -> Option<String> {
+        self.header("content-type").map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+        })
+    }
+
+    /// The body, to read as it arrives.
+    pub fn body(&mut self) -> &mut Box<dyn Read + Send + Sync + 'static> {
+        &mut self.body
+    }
+
+    /// The body, read in full: at most `max_bytes` of it.
+    pub fn read_all(mut self, max_bytes: u64) -> Result<Vec<u8>, HttpError> {
+        let mut body = Vec::new();
+        (&mut self.body)
+            .take(max_bytes.saturating_add(1))
+            .read_to_end(&mut body)
+            .map_err(|e| HttpError::Transport(e.to_string()))?;
+        if body.len() as u64 > max_bytes {
+            return Err(HttpError::TooLarge(max_bytes));
+        }
+        Ok(body)
+    }
+}
+
+/// The SHA-256 digest of `data`, by the TLS stack's own implementation
+/// (aws-lc-rs), for protocols that name it (PKCE).
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    let suite = aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256
+        .tls13()
+        .expect("a TLS 1.3 suite");
+    let digest = suite.common.hash_provider.hash(data);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest.as_ref());
+    out
+}
+
+/// Fills `buf` with random bytes from the operating system, through the
+/// TLS stack's generator (aws-lc-rs).
+pub fn random(buf: &mut [u8]) -> Result<(), HttpError> {
+    aws_lc_rs::default_provider()
+        .secure_random
+        .fill(buf)
+        .map_err(|_| HttpError::Config("the system gave no random bytes".into()))
 }
 
 /// The host of an `http` or `https` URL, lower-cased, without brackets.
@@ -619,6 +764,41 @@ mod tests {
                 body: "nope".into()
             })
         );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn digests_and_random_bytes_come_from_the_tls_stack() {
+        let hex: String = sha256(b"abc").iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
+        random(&mut a).unwrap();
+        random(&mut b).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_sent_request_gives_any_status_with_its_headers() {
+        let unauthorized = "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"x\"\r\nwww-authenticate: Basic\r\ncontent-type: Application/JSON; charset=utf-8\r\ncontent-length: 2\r\n\r\n{}";
+        let (port, handle) = serve(vec![unauthorized.into()]);
+        let client = local_client();
+        let url = format!("http://127.0.0.1:{port}/mcp");
+        let response = client
+            .send(
+                "POST",
+                &url,
+                &[("Content-Type", "application/json")],
+                Some(b"{}"),
+            )
+            .unwrap();
+        assert_eq!(response.status, 401);
+        let challenges: Vec<&str> = response.all("www-authenticate").collect();
+        assert_eq!(challenges, ["Bearer realm=\"x\"", "Basic"]);
+        assert_eq!(response.media_type().as_deref(), Some("application/json"));
+        assert_eq!(response.read_all(2).unwrap(), b"{}");
         handle.join().unwrap();
     }
 

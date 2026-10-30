@@ -25,7 +25,7 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers, storage deals) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, storage deals) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -241,7 +241,15 @@ the network only for skills that declare it; `sion agent mcp add` reviews
 an MCP server's tools and pins each by a digest of its definition, and a
 session offers only tools that still match, with effects from the reviewed
 annotations or the operator, in both eras of the protocol (2026-07-28 and
-the handshake of 2025-11-25 and before); `--storage` lets an agent keep a
+the handshake of 2025-11-25 and before), over standard input and output or
+over HTTP (Streamable HTTP in both eras, and the deprecated HTTP+SSE);
+a server over HTTP that asks for authorization is logged in to with OAuth
+as the MCP specification says (protected resource and authorization
+server metadata, a client registered beforehand, named by a client ID
+metadata document or registered dynamically, PKCE, `resource`, the
+issuer checked), its tokens kept encrypted, renewed without a person and
+revoked at logout, or with the client credentials grant for agents that
+run unattended; `--storage` lets an agent keep a
 workspace file with storage providers and follow and close its deals.
 Calls meant to run again (commands, scripts, file writes) are not
 journaled, and a replayed outcome says so. The spawns of one turn go
@@ -283,7 +291,12 @@ before anything is signed and installs it only with
 when case is ignored, so that on macOS or Windows no file takes another's
 place. The filtering runs in bubblewrap for real in the tests. Trust
 atoms: `agent:skill-pre-approval`, `agent:declared-hosts`,
-`agent:secret-store`. Not built: MCP over HTTP
+`agent:secret-store`. MCP over HTTP is tested against the official MCP
+Python SDK (2.3) with its OAuth authorization server, and against a
+stand-in for each era of the transport; trust atoms `agent:mcp-remote`
+and `agent:mcp-oauth`. Not built: MCP resources, prompts, sampling and
+elicitation; client certificates (mutual TLS) for servers over HTTP; the
+device authorization grant
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 
 ### Data availability
@@ -795,6 +808,8 @@ the architecture's own:
 | `agent:skill-pre-approval` | A skill a session has read pre-approves the calls its `allowed-tools` names until the session ends: where the autonomy level would ask a person, they run. A rule naming a command's first words (`Bash(git:*)`) covers whatever that program can be told to do through its arguments, inside the sandbox. A pre-approval never covers a call the level refuses, spending, or a session that has read content from outside, and the agent cannot grant one, since it writes only a skill's name, description and instructions: it comes from whoever placed the skill, or from the operator's consent when installing its release. |
 | `agent:declared-hosts` | The egress proxy holds a skill's scripts to the hosts their skill declares by the name a script asks for, at addresses that are public where they resolve on the machine. A declared host that forwards what it is sent, serves what others put there, or shares a front (a CDN) whose other sites a script can ask for inside the encrypted tunnel takes a script further. Behind an upstream proxy, a name the machine cannot resolve goes to that proxy, and its network decides where the name leads. With Docker, declared hosts are not filtered: the operator's network decides. |
 | `agent:secret-store` | Skills' secrets are kept encrypted under a key in a file beside them, readable only by the operator's user: whoever can read that file can read them. A script that receives a secret can send it wherever its skill may connect, and can change it so that it is not cut out of what the model sees: the runtime removes the value as it is, not every encoding of it. |
+| `agent:mcp-remote` | An MCP server over HTTP runs elsewhere, under whoever runs it: it sees the arguments of every call made to it and answers what it likes. Over HTTPS its certificate shows only that it holds the name in its URL; plain HTTP, which the client allows to any address the operator gives, is as private as the networks it crosses. A header whose value names an environment variable (`${VAR}`) sends that value with every request. |
+| `agent:mcp-oauth` | OAuth tokens for MCP servers are kept encrypted under the secrets' key (`agent:secret-store`): whoever can read that key can act at that server as the person who consented, with the scopes granted, until the tokens expire or are revoked, and a refresh token renews them without the person. The login trusts the authorization server the server's metadata names: it checks that the metadata names the server, that the authorization server's own names it as issuer and that its answer comes back with the state and the issuer sent, and holds discovery and tokens to HTTPS at public addresses (plain HTTP when the MCP server is on this machine, private addresses when it is at one), but an authorization server of an attacker's that a server names is caught only by the person reading the page they consent on. `logout` revokes tokens only where the authorization server takes revocations; elsewhere they stay valid until they expire. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 

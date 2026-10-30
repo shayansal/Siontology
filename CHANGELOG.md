@@ -10,6 +10,52 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### MCP servers over HTTP, with OAuth
+
+- **Every transport.** `sion agent mcp add NAME --url https://…` reaches
+  a server over Streamable HTTP as of 2026-07-28 (each request its own
+  `POST`, its version, method and tool mirrored in headers, and the
+  arguments a tool marks with `x-mcp-header` in `Mcp-Param-*`; a tool
+  whose marks break the rules is left out), over Streamable HTTP of
+  2025-03-26 to 2025-11-25 (the `initialize` handshake, a session in
+  `Mcp-Session-Id` opened again when the server forgets it and closed with
+  `DELETE`, requests of the server's own answered on the stream), and
+  over the deprecated HTTP+SSE transport of 2024-11-05, whose stream is
+  closed when its link is let go. Which one a server speaks is found as
+  the specification says, what it spoke at its review first. Answers come
+  as JSON or as events. `--header 'Name: value'` adds headers, `${VAR}`
+  filled in where the agent runs.
+- **OAuth as MCP's authorization says.** A server that answers `401` is
+  logged in to at `add`, or with `sion agent mcp login`: its protected
+  resource metadata (RFC 9728, from the challenge or the well-known URIs),
+  which must name the server; its authorization server's metadata (RFC
+  8414, then OpenID Connect discovery), which must name itself as issuer
+  and offer PKCE with S256; a client registered beforehand
+  (`--client-id`), named by a client ID metadata document
+  (`--client-metadata-url`), or registered dynamically (RFC 7591); the
+  person's consent in a browser that comes back to a loopback port, or,
+  from a browser on another machine, the address it was sent to pasted at
+  the terminal; the `state` and the issuer (RFC 9207) checked in the
+  answer, PKCE and `resource` (RFC 8707) at the token endpoint. Discovery
+  and tokens go over HTTPS at public addresses, unless the MCP server is
+  on this machine (plain HTTP there) or at a private address itself (that
+  network's too).
+- **Tokens kept, renewed and revoked.** Tokens are kept encrypted beside
+  the secrets, under their key. An access token is renewed with its
+  refresh token (kept rotated) without the person; a `403` asking for
+  more scopes is met where no person is needed, and otherwise says how to
+  log in with them. `--client-credentials` authorizes a client of its own
+  (the client credentials grant), for agents that run unattended, its
+  secret left in its environment variable. `sion agent mcp logout`, and
+  `remove`, revoke the tokens where the authorization server takes
+  revocations (RFC 7009), then forget them.
+- Checked against the official MCP Python SDK (2.3) and its OAuth
+  authorization server, and against a stand-in for each era.
+- `sion-http` sends any method and reads any status; `sha256` and
+  `random` come from the TLS provider already compiled in, so no crate is
+  added.
+- Trust atoms `agent:mcp-remote` and `agent:mcp-oauth`.
+
 ### What a skill may do, enforced
 
 - **Pre-approvals.** A skill's `allowed-tools` (Agent Skills) names the

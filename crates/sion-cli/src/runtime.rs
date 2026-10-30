@@ -635,7 +635,10 @@ impl Saved {
                         check_workspace(dir).map_err(|e| e.to_string())?;
                         check_apart(dir, self.skills.as_deref()).map_err(|e| e.to_string())?;
                     }
-                    sion_agent::mcp::mount(&server)
+                    sion_agent::mcp::mount_with(
+                        &server,
+                        crate::agent_mcp::authorizer(&server).map_err(|e| e.to_string())?,
+                    )
                 });
             match mounted {
                 Ok(mounted) => {

@@ -35,6 +35,7 @@ pub mod error;
 pub mod gateway;
 pub mod ledger;
 pub mod mcp;
+pub mod mcp_auth;
 pub mod memory;
 pub mod messengers;
 pub mod network;

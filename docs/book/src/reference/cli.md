@@ -1395,7 +1395,9 @@ Commands:
   add     Add an MCP server for agents' sessions, and review its tools. The server is started and its tools listed, each with what its calls are taken to do; those offered are pinned by a digest of their definitions, so a tool that changes is not offered until reviewed again
   list    The MCP servers on this machine, with their reviewed tools
   review  Review a server's tools again: what changed, what is new and what is gone since its last review. With --accept, its tools are pinned as they are now (a tool keeps the larger of its old effect and what its annotations now say, unless --effect sets one)
-  remove  Remove a server
+  login   Log in to a server over HTTP that asks for authorization (OAuth): a browser opens where you authorize, and the tokens are kept, encrypted, for its sessions, which renew them while they can
+  logout  Forget a server's authorization (its tokens and registration), revoking its tokens first where its authorization server takes revocations
+  remove  Remove a server, and its authorization as `logout` does
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1410,26 +1412,56 @@ Servers are kept in `$SION_HOME/agents/mcp.json`, with a digest of each reviewed
 ```text
 Add an MCP server for agents' sessions, and review its tools. The server is started and its tools listed, each with what its calls are taken to do; those offered are pinned by a digest of their definitions, so a tool that changes is not offered until reviewed again
 
-Usage: sion agent mcp add [OPTIONS] <NAME> -- <COMMAND>...
+Usage: sion agent mcp add [OPTIONS] <NAME> [-- <COMMAND>...]
 
 Arguments:
   <NAME>        Its name (lowercase letters, digits and hyphens)
-  <COMMAND>...  The program and its arguments, after `--`
+  [COMMAND]...  The program and its arguments, after `--`
 
 Options:
-      --env <NAME>                 An environment variable it is given, by name; the value is the one where the agent runs. Repeat for more
-      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --dir <DIR>                  The directory it works in (in a sandbox, at /workspace)
-      --allow <TOOL>               Offer only this tool of its tools (default: all). Repeat for more
-      --effect <TOOL=EFFECT>       What a tool's calls are taken to do, whatever its annotations say: TOOL=read, write, external or spend. Repeat for more
-      --timeout <TIMEOUT>          Seconds a call may take [default: 120]
-      --sandbox <SANDBOX>          The sandbox it runs in: bwrap or docker:<image>@sha256:<digest>. Without one, it runs as you
-      --sandbox-network <NETWORK>  The network it reaches in its sandbox: none (the default), host (bubblewrap) or a Docker network you set up [default: none]
-      --sandbox-read <DIR>         A directory it may read in its sandbox. Repeat for more
-  -h, --help                       Print help
+      --node <NODE>
+          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --url <URL>
+          Reach it over HTTP at this endpoint (Streamable HTTP, or the deprecated HTTP+SSE), instead of starting a program
+      --header <HEADER>
+          A header sent to a server over HTTP, `Name: value`; `${VAR}` in the value is the environment variable's value where the agent runs, so the secret itself is not kept. Repeat for more
+      --client-id <CLIENT_ID>
+          A client id registered with its authorization server (default: registering one, or the client ID metadata document)
+      --client-secret-env <CLIENT_SECRET_ENV>
+          The environment variable holding that client's secret
+      --client-metadata-url <CLIENT_METADATA_URL>
+          The HTTPS URL of a client ID metadata document to use as the client id, where the authorization server takes one
+      --callback-port <CALLBACK_PORT>
+          The loopback port your browser comes back to (default: a free one)
+      --issuer <ISSUER>
+          The authorization server to use, when the server names several
+      --scope <SCOPE>
+          Scopes to ask for besides those the server asks for
+      --client-credentials
+          Authorize the client itself (the client credentials grant), with no person: for agents that run unattended. Needs --client-id and --client-secret-env
+      --no-browser
+          Do not open a browser: print the URL to open
+      --env <NAME>
+          An environment variable it is given, by name; the value is the one where the agent runs. Repeat for more
+      --dir <DIR>
+          The directory it works in (in a sandbox, at /workspace)
+      --allow <TOOL>
+          Offer only this tool of its tools (default: all). Repeat for more
+      --effect <TOOL=EFFECT>
+          What a tool's calls are taken to do, whatever its annotations say: TOOL=read, write, external or spend. Repeat for more
+      --timeout <TIMEOUT>
+          Seconds a call may take [default: 120]
+      --sandbox <SANDBOX>
+          The sandbox it runs in: bwrap or docker:<image>@sha256:<digest>. Without one, it runs as you
+      --sandbox-network <NETWORK>
+          The network it reaches in its sandbox: none (the default), host (bubblewrap) or a Docker network you set up [default: none]
+      --sandbox-read <DIR>
+          A directory it may read in its sandbox. Repeat for more
+  -h, --help
+          Print help
 ```
 
-The server is started, introduced to (protocol 2026-07-28, or the handshake of 2025-11-25 and before) and asked for its tools, then stopped. A tool that says nothing of itself is taken to reach the open world: its calls are external and what it returns taints the session. Without `--sandbox`, the server runs as you (`agent:mcp-unsandboxed`).
+The server is started (or, with `--url`, reached over HTTP), introduced to (protocol 2026-07-28, or the handshake of 2025-11-25 and before) and asked for its tools, then stopped. A tool that says nothing of itself is taken to reach the open world: its calls are external and what it returns taints the session. Without `--sandbox`, the server runs as you (`agent:mcp-unsandboxed`). A server over HTTP that answers `401` is logged in to first, as `sion agent mcp login` does; see [Servers over HTTP](../guides/agent-tools.md#servers-over-http).
 
 ## `sion agent mcp list`
 
@@ -1462,10 +1494,46 @@ Options:
 
 Without `--accept`, nothing changes. With it, a tool keeps the larger of its old effect and what its annotations now say, unless `--effect` sets one.
 
+## `sion agent mcp login`
+
+```text
+Log in to a server over HTTP that asks for authorization (OAuth): a browser opens where you authorize, and the tokens are kept, encrypted, for its sessions, which renew them while they can
+
+Usage: sion agent mcp login [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The server
+
+Options:
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --scope <SCOPE>  Scopes to ask for besides those the server asks for
+      --no-browser     Do not open a browser: print the URL to open
+  -h, --help           Print help
+```
+
+The server's protected resource metadata names where to authorize; the client registered beforehand, named by a client ID metadata document, or registered then, is kept for later logins; tokens are kept encrypted beside the secrets. A browser on another machine cannot come back to this one: paste the address it was sent to at the terminal. See [Logging in to a server](../guides/agent-tools.md#logging-in-to-a-server).
+
+## `sion agent mcp logout`
+
+```text
+Forget a server's authorization (its tokens and registration), revoking its tokens first where its authorization server takes revocations
+
+Usage: sion agent mcp logout [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The server
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+A session is not offered the server's tools again until the next login. Where the authorization server names no revocation endpoint, its tokens stay valid there until they expire (`agent:mcp-oauth`).
+
 ## `sion agent mcp remove`
 
 ```text
-Remove a server
+Remove a server, and its authorization as `logout` does
 
 Usage: sion agent mcp remove [OPTIONS] <NAME>
 

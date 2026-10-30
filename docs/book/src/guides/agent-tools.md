@@ -173,8 +173,9 @@ metadata:
 
 ## Tools from MCP servers
 
-An [MCP](https://modelcontextprotocol.io) server is a program that offers
-tools over its standard input and output. `sion agent mcp add` starts one,
+An [MCP](https://modelcontextprotocol.io) server offers tools: a program,
+over its standard input and output, or a server elsewhere, over HTTP
+([below](#servers-over-http)). `sion agent mcp add` starts or reaches one,
 lists its tools and shows, for each, what its calls are taken to do. Those
 it offers are **pinned**: the runtime keeps a digest of each tool's name,
 description, input schema and annotations as they were at the review.
@@ -285,6 +286,151 @@ Pinned as listed.
   spoke an earlier version at its review is introduced with the handshake
   straight away.
 
+### Servers over HTTP
+
+A server that runs elsewhere is given by its URL instead of a command.
+Here it is an MCP server built on the official Python SDK (2.3), whose
+OAuth authorization server stands in front of it
+(`crates/sion-cli/tests/fixtures/notes_http_server.py`); the browser of
+this recording is a script that follows the authorization URL, as a
+person who always consents would:
+
+```text
+$ sion agent mcp add notes --url http://127.0.0.1:8812/mcp --no-browser
+MCP server notes asks for authorization.
+Open this URL to authorize:
+  http://127.0.0.1:8812/authorize?response_type=code&client_id=59ac93d6-c3bf-4695-919f-e2873b3448f1&redirect_uri=http%3A%2F%2F127.0.0.1%3A44263%2Fcallback&code_challenge=lqyyLj3Xcglu_wqDNUXP671v7ycavmLyjElGB1HSz_A&code_challenge_method=S256&state=yJWbR-_1MCBtpiHo2GQBkZ46we_lSTBm&resource=http%3A%2F%2F127.0.0.1%3A8812%2Fmcp&scope=notes%3Aread
+A browser on another machine cannot come back to this one: paste here the address it was sent to.
+registered with http://127.0.0.1:8812 as client 59ac93d6-c3bf-4695-919f-e2873b3448f1
+authorized notes at http://127.0.0.1:8812 for notes:read, renewed without you while its refresh token lasts
+MCP server notes (notes 1.0.0, protocol 2026-07-28): reviewed tools
+  read_note (read): Read a note by its name.
+  write_note (write, repeats run again): Write a note under a name, replacing any of that name.
+Give it to a session with --mcp notes.
+$ sion agent mcp list
+notes: http://127.0.0.1:8812/mcp over HTTP, authorized at http://127.0.0.1:8812 for notes:read
+  read_note (read)
+  write_note (write)
+```
+
+Its tools are reviewed and pinned as a program's are, and a session uses
+them the same way:
+
+```text
+$ sion agent run coder b80717e1…0441 --task 'Add rice to my groceries note.' --model script:notes.json --mcp notes --autonomy L3
+session 98a0144a596a090c for agent b80717e1
+  → notes_read_note {"name":"groceries"}
+  ← oat milk, lentils, coffee
+  → notes_write_note {"name":"groceries","text":"oat milk, lentils, coffee, rice"}
+  ← wrote groceries
+agent: Your groceries note had oat milk, lentils and coffee; I added rice.
+session 98a0144a596a090c: done
+```
+
+- **The transports.** The client speaks Streamable HTTP as of 2026-07-28,
+  where every request is its own `POST`, its version, method and tool
+  mirrored in headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`,
+  and `Mcp-Param-*` for the arguments a tool's schema marks with
+  `x-mcp-header`; a tool whose marks break the rules is not listed);
+  Streamable HTTP of 2025-03-26 to 2025-11-25, where the `initialize`
+  handshake opens a session (`Mcp-Session-Id`), opened again when the
+  server forgets it and closed with `DELETE` at the end; and the
+  deprecated HTTP+SSE transport of 2024-11-05, a stream that names where
+  messages are posted, on the same origin. Answers come as JSON or as
+  events. Which one a server speaks is found as the specification says:
+  a modern request first, then the handshake, then the stream; what it
+  spoke at its review is tried first.
+- **Headers.** `--header 'Name: value'` adds a header to every request;
+  `${VAR}` in a value is the variable's value where the agent runs, so
+  that a key stays out of the configuration.
+- **What it is not given.** It runs elsewhere: no sandbox, directory or
+  environment of the runtime's applies to it, and it sees the arguments
+  of every call made to it (`agent:mcp-remote`).
+
+### Logging in to a server
+
+A server that answers `401` is logged in to as the MCP specification's
+authorization says, at `add` or with `sion agent mcp login NAME`:
+
+1. **Where to authorize.** The server's protected resource metadata (RFC
+   9728), from its challenge or the well-known URIs, must name the server
+   (its origin, and its path or one above) and an authorization server
+   (`--issuer` picks one of several). That server's metadata (RFC 8414,
+   else OpenID Connect discovery) must name itself as issuer and offer
+   PKCE with S256.
+2. **Which client.** One registered beforehand (`--client-id`, and
+   `--client-secret-env` for a confidential one); the HTTPS URL of a
+   client ID metadata document (`--client-metadata-url`), where the
+   authorization server takes one; otherwise the client registers itself
+   (RFC 7591) as a native application without a secret, and keeps the
+   registration for later logins (a logout forgets it).
+3. **The person's consent.** The browser opens on the authorization page
+   (`--no-browser` prints its URL) and comes back to a port on 127.0.0.1
+   (`--callback-port` fixes it). A browser on another machine cannot come
+   back to this one: paste the address it was sent to, at the terminal,
+   instead. The answer must carry the `state` sent and, where the server
+   adds it, its issuer (RFC 9207).
+4. **The tokens.** The code is exchanged with its PKCE verifier, and every
+   token request names the server as its `resource` (RFC 8707). Tokens are
+   kept encrypted beside the secrets (`agents/mcp-auth.bin`, under the
+   same key), and an access token is renewed with its refresh token,
+   without you, while it lasts (a rotated one is kept). A `403` asking for
+   more scopes says how to log in with them (`--scope`).
+5. **No person at all.** `--client-credentials`, with `--client-id` and
+   `--client-secret-env`, authorizes the client itself (the client
+   credentials grant): for agents that run unattended, the secret left in
+   its variable and every renewal done without anyone.
+
+Discovery, registration and tokens go over HTTPS at public addresses;
+plain HTTP only when the MCP server is on this machine, as here, and
+private addresses only when it is at one itself, on the same network
+(`agent:mcp-oauth`).
+
+The deprecated transport is logged in to the same way, from the challenge
+its stream's `GET` gets:
+
+```text
+$ sion agent mcp add old-notes --url http://127.0.0.1:8813/sse --no-browser
+MCP server old-notes asks for authorization.
+Open this URL to authorize:
+  http://127.0.0.1:8813/authorize?response_type=code&client_id=3f033236-1e77-4e9d-b4f4-7b8b9b9b700f&redirect_uri=http%3A%2F%2F127.0.0.1%3A46713%2Fcallback&code_challenge=86gQsizduzhxJOASR5owbB8sn25gka3_Gn9ZF2i1Qrk&code_challenge_method=S256&state=kLt_MtWNxN_wzsLCWrwllzAHphI1Vr4n&resource=http%3A%2F%2F127.0.0.1%3A8813%2Fsse&scope=notes%3Aread
+A browser on another machine cannot come back to this one: paste here the address it was sent to.
+registered with http://127.0.0.1:8813 as client 3f033236-1e77-4e9d-b4f4-7b8b9b9b700f
+authorized old-notes at http://127.0.0.1:8813 for notes:read, renewed without you while its refresh token lasts
+MCP server old-notes (notes 1.0.0, protocol 2025-11-25): reviewed tools
+  read_note (read): Read a note by its name.
+  write_note (write, repeats run again): Write a note under a name, replacing any of that name.
+Give it to a session with --mcp old-notes.
+$ sion agent mcp list
+notes: http://127.0.0.1:8812/mcp over HTTP, authorized at http://127.0.0.1:8812 for notes:read
+  read_note (read)
+  write_note (write)
+old-notes: http://127.0.0.1:8813/sse over HTTP+SSE, authorized at http://127.0.0.1:8813 for notes:read
+  read_note (read)
+  write_note (write)
+```
+
+`sion agent mcp logout` revokes the tokens where the authorization server
+takes revocations (RFC 7009), then forgets them; until the next login, a
+session is not offered the server's tools:
+
+```text
+$ sion agent mcp logout notes
+revoked its tokens at http://127.0.0.1:8812
+forgot the authorization of MCP server notes
+$ sion agent run coder b80717e1…0441 --task 'Read my groceries note.' --model script:again.json --mcp notes --autonomy L3
+session a191f8d720f81d10 for agent b80717e1
+MCP server notes is not offered: the MCP server notes needs authorization (HTTP 401): log in with `sion agent mcp login notes`
+agent: I have no notes tools in this session.
+session a191f8d720f81d10: done
+$ sion agent mcp login notes --no-browser
+Open this URL to authorize:
+  http://127.0.0.1:8812/authorize?response_type=code&client_id=132df1bd-a415-478d-9ba3-925540d8cf42&redirect_uri=http%3A%2F%2F127.0.0.1%3A44009%2Fcallback&code_challenge=WXDSqVjnoXYJ51fX2rgb6xhC3ErD4gplTdkdk1WCxk4&code_challenge_method=S256&state=4aV8JVanqEJc9xEQAEjRP7az1ZVQZW_g&resource=http%3A%2F%2F127.0.0.1%3A8812%2Fmcp&scope=notes%3Aread
+A browser on another machine cannot come back to this one: paste here the address it was sent to.
+registered with http://127.0.0.1:8812 as client 132df1bd-a415-478d-9ba3-925540d8cf42
+authorized notes at http://127.0.0.1:8812 for notes:read, renewed without you while its refresh token lasts
+```
+
 ## Spawning subagents together
 
 An agent that hands work to subagents (`--delegate`, see [Teams, schedules
@@ -313,9 +459,15 @@ session df7de21c12ac158b: done
 
 ## What this does not do yet
 
-- MCP servers are spoken to over standard input and output only, not over
-  HTTP. Their resources and prompts are not used, and a tool that asks the
-  client for more input (elicitation) is refused.
+- MCP servers' resources and prompts are not used, and a server that
+  asks the client for more input (elicitation) or for its model's
+  completion (sampling) is refused. A server over HTTP cannot be given a
+  client certificate (mutual TLS), and logging in takes a browser: the
+  device authorization grant is not used.
+- On the deprecated HTTP+SSE transport, a stream let go is closed at the
+  next line its server sends (servers send one every few seconds to keep
+  a stream open); one that sends nothing more keeps its connection until
+  it closes it, or a week has passed.
 - Bubblewrap does not bound how many processes a command starts, only how
   long it runs; Docker does.
 - A Docker container outlives a runtime that is killed, until its command

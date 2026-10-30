@@ -1,15 +1,23 @@
-//! MCP servers as agents' tools: `sion agent mcp add|list|review|remove`.
+//! MCP servers as agents' tools: `sion agent mcp
+//! add|list|review|login|logout|remove`.
 //!
 //! Servers are kept in `$SION_HOME/agents/mcp.json` with their reviewed
 //! tools, and a session mounts them with `--mcp <name>`: the runtime starts
-//! each server for the run and offers only the tools whose definitions
-//! still match their review (see `sion_agent::mcp`).
+//! each server (or reaches it, over HTTP) for the run and offers only the
+//! tools whose definitions still match their review (see
+//! `sion_agent::mcp`). A server over HTTP that asks for authorization is
+//! logged in to with OAuth ([`crate::mcp_auth`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use sion_agent::mcp::{self, Connection, Listed, Server};
+use sion_agent::oauth::Authorizer;
 use sion_agent::Effect;
+
+use crate::mcp_auth::{AuthStore, OAuthConfig};
 
 use crate::error::CliError;
 use crate::session::wallet_dir;
@@ -27,6 +35,17 @@ pub enum McpCommand {
     Add {
         /// Its name (lowercase letters, digits and hyphens).
         name: String,
+        /// Reach it over HTTP at this endpoint (Streamable HTTP, or the
+        /// deprecated HTTP+SSE), instead of starting a program.
+        #[arg(long, conflicts_with_all = ["env", "dir", "sandbox", "sandbox_read"])]
+        url: Option<String>,
+        /// A header sent to a server over HTTP, `Name: value`; `${VAR}` in
+        /// the value is the environment variable's value where the agent
+        /// runs, so the secret itself is not kept. Repeat for more.
+        #[arg(long = "header", value_name = "HEADER", requires = "url")]
+        headers: Vec<String>,
+        #[command(flatten)]
+        oauth: OAuthArgs,
         /// An environment variable it is given, by name; the value is the
         /// one where the agent runs. Repeat for more.
         #[arg(long = "env", value_name = "NAME")]
@@ -56,7 +75,7 @@ pub enum McpCommand {
         #[arg(long = "sandbox-read", value_name = "DIR")]
         sandbox_read: Vec<PathBuf>,
         /// The program and its arguments, after `--`.
-        #[arg(last = true, required = true)]
+        #[arg(last = true, required_unless_present = "url")]
         command: Vec<String>,
     },
     /// The MCP servers on this machine, with their reviewed tools.
@@ -76,11 +95,134 @@ pub enum McpCommand {
         #[arg(long = "effect", value_name = "TOOL=EFFECT")]
         effects: Vec<String>,
     },
-    /// Remove a server.
+    /// Log in to a server over HTTP that asks for authorization (OAuth):
+    /// a browser opens where you authorize, and the tokens are kept,
+    /// encrypted, for its sessions, which renew them while they can.
+    Login {
+        /// The server.
+        name: String,
+        /// Scopes to ask for besides those the server asks for.
+        #[arg(long)]
+        scope: Option<String>,
+        /// Do not open a browser: print the URL to open.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Forget a server's authorization (its tokens and registration),
+    /// revoking its tokens first where its authorization server takes
+    /// revocations.
+    Logout {
+        /// The server.
+        name: String,
+    },
+    /// Remove a server, and its authorization as `logout` does.
     Remove {
         /// The server.
         name: String,
     },
+}
+
+/// How a server over HTTP is authorized with OAuth.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct OAuthArgs {
+    /// A client id registered with its authorization server (default:
+    /// registering one, or the client ID metadata document).
+    #[arg(long, requires = "url")]
+    client_id: Option<String>,
+    /// The environment variable holding that client's secret.
+    #[arg(long, requires = "client_id")]
+    client_secret_env: Option<String>,
+    /// The HTTPS URL of a client ID metadata document to use as the client
+    /// id, where the authorization server takes one.
+    #[arg(long, requires = "url")]
+    client_metadata_url: Option<String>,
+    /// The loopback port your browser comes back to (default: a free one).
+    #[arg(long, requires = "url")]
+    callback_port: Option<u16>,
+    /// The authorization server to use, when the server names several.
+    #[arg(long, requires = "url")]
+    issuer: Option<String>,
+    /// Scopes to ask for besides those the server asks for.
+    #[arg(long, requires = "url")]
+    scope: Option<String>,
+    /// Authorize the client itself (the client credentials grant), with no
+    /// person: for agents that run unattended. Needs --client-id and
+    /// --client-secret-env.
+    #[arg(long, requires_all = ["client_id", "client_secret_env"])]
+    client_credentials: bool,
+    /// Do not open a browser: print the URL to open.
+    #[arg(long, requires = "url")]
+    no_browser: bool,
+}
+
+impl OAuthArgs {
+    fn config(&self) -> Option<OAuthConfig> {
+        let config = OAuthConfig {
+            client_id: self.client_id.clone(),
+            client_secret_env: self.client_secret_env.clone(),
+            client_metadata_url: self.client_metadata_url.clone(),
+            callback_port: self.callback_port,
+            issuer: self.issuer.clone(),
+            scope: self.scope.clone(),
+            client_credentials: self.client_credentials,
+        };
+        (config != OAuthConfig::default()).then_some(config)
+    }
+}
+
+/// The authorization a session sends `server`, if it is over HTTP and has
+/// been logged in to (or is configured for OAuth).
+pub fn authorizer(server: &Server) -> Result<Option<Arc<dyn Authorizer>>, CliError> {
+    if server.url.is_none() {
+        return Ok(None);
+    }
+    let store = AuthStore::here();
+    if server.oauth.is_none() && store.get(&server.name)?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(crate::mcp_auth::Stored::new(
+        server,
+        server.oauth.clone().unwrap_or_default(),
+        store,
+    ))))
+}
+
+/// Logs in to `server`, showing or opening the URL to authorize at. A
+/// browser on another machine cannot come back to this one: the address it
+/// was sent to can be pasted instead.
+fn login(server: &Server, scope: Option<&str>, no_browser: bool) -> Result<(), CliError> {
+    let config = server.oauth.clone().unwrap_or_default();
+    let show = |url: &str| {
+        if !no_browser && crate::mcp_auth::open_browser(url) {
+            println!("Authorize in the browser that opened, or open:\n  {url}");
+        } else {
+            println!(
+                "Open this URL to authorize:\n  {url}\n\
+                 A browser on another machine cannot come back to this one: paste here the address it was sent to."
+            );
+        }
+    };
+    let (paste, pasted) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines() {
+            let Ok(line) = line else { break };
+            if paste.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let lines = crate::mcp_auth::login_with(
+        server,
+        &config,
+        &AuthStore::here(),
+        scope,
+        &show,
+        Some(&pasted),
+    )?;
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// The file servers are kept in: `$SION_HOME/agents/mcp.json`.
@@ -166,11 +308,21 @@ fn line(tool: &Listed, pin: &mcp::Pin) -> String {
     )
 }
 
-/// What the server said about itself, the protocol it speaks, and its tools.
-fn listed(server: &Server) -> Result<(serde_json::Value, String, Vec<Listed>), CliError> {
-    let mut connection = Connection::start(server).map_err(CliError::Usage)?;
+/// What the server said about itself, the protocol it speaks (with
+/// whether over the deprecated HTTP+SSE), and its tools.
+fn listed(server: &Server) -> Result<(serde_json::Value, String, bool, Vec<Listed>), CliError> {
+    let mut connection =
+        Connection::start_with(server, authorizer(server)?).map_err(CliError::Usage)?;
     let tools = connection.tools().map_err(CliError::Usage)?;
-    Ok((connection.info.clone(), connection.protocol(), tools))
+    for why in &connection.rejected {
+        println!("not offered: {why}");
+    }
+    Ok((
+        connection.info.clone(),
+        connection.protocol(),
+        connection.transport() == "http+sse",
+        tools,
+    ))
 }
 
 /// Starts `server`, lists its tools and pins them as they are now: those
@@ -182,8 +334,9 @@ pub fn review(
     allow: &[String],
     overrides: &BTreeMap<String, Effect>,
 ) -> Result<(serde_json::Value, Vec<Listed>, Server), CliError> {
-    let (info, protocol, tools) = listed(&server)?;
+    let (info, protocol, sse, tools) = listed(&server)?;
     server.protocol = Some(protocol);
+    server.legacy_sse = sse;
     for wanted in allow.iter().chain(overrides.keys()) {
         if !tools.iter().any(|t| &t.name == wanted) {
             return Err(CliError::Usage(format!(
@@ -230,6 +383,9 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
     match command {
         McpCommand::Add {
             name,
+            url,
+            headers,
+            oauth,
             env,
             dir,
             allow,
@@ -280,9 +436,32 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
                 })?;
             }
             let overrides = effects(&pairs)?;
+            if let Some(url) = &url {
+                if !command.is_empty() {
+                    return Err(CliError::Usage(
+                        "give either --url or a command after --, not both".into(),
+                    ));
+                }
+                if !url.starts_with("https://") && !url.starts_with("http://") {
+                    return Err(CliError::Usage(format!(
+                        "{url} is not an http or https URL"
+                    )));
+                }
+                if url.starts_with("http://") && !sion_agent::oauth::is_loopback(url) {
+                    println!(
+                        "{url} is plain HTTP: what passes, tokens included, can be read on the way."
+                    );
+                }
+                sion_agent::mcp_http::configured_headers(&name, &headers)
+                    .map_err(CliError::Usage)?;
+            }
             let server = Server {
                 name: name.clone(),
                 command,
+                url: url.clone(),
+                headers,
+                oauth: oauth.config(),
+                legacy_sse: false,
                 env,
                 sandbox,
                 dir,
@@ -290,6 +469,20 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
                 timeout_secs: timeout.max(1),
                 protocol: None,
             };
+            // A server over HTTP that asks for authorization is logged in
+            // to first, if it has not been.
+            if let Some(url) = &url {
+                let headers = sion_agent::mcp_http::configured_headers(&name, &server.headers)
+                    .map_err(CliError::Usage)?;
+                if AuthStore::here().get(&name)?.is_none()
+                    && crate::mcp_auth::first_challenge(url, &headers)
+                        .map_err(CliError::Usage)?
+                        .is_some()
+                {
+                    println!("MCP server {name} asks for authorization.");
+                    login(&server, None, oauth.no_browser)?;
+                }
+            }
             let (info, tools, server) = review(server, &allow, &overrides)?;
             println!(
                 "MCP server {name}{}: reviewed tools",
@@ -300,7 +493,7 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
                     println!("{}", line(tool, pin));
                 }
             }
-            if server.sandbox.is_none() {
+            if server.sandbox.is_none() && server.url.is_none() {
                 println!(
                     "It runs as you, outside any sandbox: add --sandbox bwrap (or a Docker image) to contain it."
                 );
@@ -313,21 +506,49 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
             if servers.is_empty() {
                 println!("no MCP servers in {}", path().display());
             }
+            let store = AuthStore::here();
             for server in servers.values() {
-                println!(
-                    "{}: {}{}{}",
-                    server.name,
-                    server.command.join(" "),
-                    match &server.sandbox {
-                        Some(sandbox) => format!(", in {}", sandbox.describe()),
-                        None => ", unsandboxed".to_string(),
-                    },
-                    if server.env.is_empty() {
-                        String::new()
-                    } else {
-                        format!(", given {}", server.env.join(", "))
+                match &server.url {
+                    Some(url) => {
+                        let names: Vec<&str> = server
+                            .headers
+                            .iter()
+                            .filter_map(|h| h.split_once(':').map(|(n, _)| n.trim()))
+                            .collect();
+                        let auth = match store.get(&server.name)? {
+                            Some(auth) => format!(", {}", crate::mcp_auth::describe(&auth)),
+                            None => String::new(),
+                        };
+                        println!(
+                            "{}: {url} over {}{}{auth}",
+                            server.name,
+                            if server.legacy_sse {
+                                "HTTP+SSE"
+                            } else {
+                                "HTTP"
+                            },
+                            if names.is_empty() {
+                                String::new()
+                            } else {
+                                format!(", with headers {}", names.join(", "))
+                            }
+                        );
                     }
-                );
+                    None => println!(
+                        "{}: {}{}{}",
+                        server.name,
+                        server.command.join(" "),
+                        match &server.sandbox {
+                            Some(sandbox) => format!(", in {}", sandbox.describe()),
+                            None => ", unsandboxed".to_string(),
+                        },
+                        if server.env.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", given {}", server.env.join(", "))
+                        }
+                    ),
+                }
                 for (tool, pin) in &server.tools {
                     println!("  {tool} ({})", effect_name(pin.effect));
                 }
@@ -343,7 +564,7 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
                 .get_mut(&name)
                 .ok_or_else(|| CliError::Usage(format!("no MCP server {name}")))?;
             let overrides = effects(&pairs)?;
-            let (info, protocol, tools) = listed(server)?;
+            let (info, protocol, sse, tools) = listed(server)?;
             println!("MCP server {name}{}:", about(&info, Some(&protocol)));
             let mut pins = BTreeMap::new();
             for tool in &tools {
@@ -368,18 +589,48 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
             if accept {
                 server.tools = pins;
                 server.protocol = Some(protocol);
+                server.legacy_sse = sse;
                 save_all(&servers)?;
                 println!("Pinned as listed.");
             } else {
                 println!("Nothing changed: add --accept to pin the tools as listed.");
             }
         }
+        McpCommand::Login {
+            name,
+            scope,
+            no_browser,
+        } => {
+            let server = get(&name)?;
+            login(&server, scope.as_deref(), no_browser)?;
+        }
+        McpCommand::Logout { name } => {
+            let server = get(&name)?;
+            let config = server.oauth.clone().unwrap_or_default();
+            match crate::mcp_auth::logout(&server, &config, &AuthStore::here())? {
+                Some(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                }
+                None => println!("MCP server {name} had no authorization to forget"),
+            }
+        }
         McpCommand::Remove { name } => {
             let mut servers = all()?;
-            if servers.remove(&name).is_none() {
+            let removed = servers.remove(&name);
+            if removed.is_none() {
                 return Err(CliError::Usage(format!("no MCP server {name}")));
             }
             save_all(&servers)?;
+            if let Some(server) = removed.as_ref() {
+                let config = server.oauth.clone().unwrap_or_default();
+                for line in crate::mcp_auth::logout(server, &config, &AuthStore::here())?
+                    .unwrap_or_default()
+                {
+                    println!("{line}");
+                }
+            }
             println!("removed MCP server {name}");
         }
     }
