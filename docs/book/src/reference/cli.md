@@ -1836,7 +1836,7 @@ Options:
       --every <EVERY>      Every interval: 90s, 15m, 2h, 1d
       --at <AT>            Once, at a time like 2026-11-02T09:00:00Z
       --cron <CRON>        On a cron expression: minute hour day month weekday, in UTC
-      --deliver <DELIVER>  Where what it said goes: file:<path>, webhook:<url> or telegram:<chat id> (TELEGRAM_BOT_TOKEN)
+      --deliver <DELIVER>  Where what it said goes: file:<path>, webhook:<url>, telegram:<chat id> (TELEGRAM_BOT_TOKEN), or <messenger>:<chat> with the bridge's credentials: slack, discord, matrix, signal, mattermost, whatsapp, line, sms, email, imessage, feishu, lark, nextcloud-talk or google-chat (with a service account)
   -h, --help               Print help
 ```
 

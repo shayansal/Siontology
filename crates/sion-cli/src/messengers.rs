@@ -51,7 +51,7 @@ use crate::profiles::Profile;
 use crate::runtime::SharedLedger;
 
 /// A message from a chat.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Incoming {
     /// The chat it came from (a chat, channel or room id, or a number).
     pub chat: String,
@@ -70,7 +70,7 @@ pub struct Incoming {
 }
 
 /// A voice note a messenger received: its handle for it, and what it is.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// The messenger's handle (a file id, an address).
     pub id: String,
@@ -1349,15 +1349,45 @@ pub fn bridge_with(
     // Chats said to be ignored, each once.
     let mut ignored = BTreeSet::new();
     let mut me: Option<Vec<String>> = None;
+    // What was taken and not answered when the bridge last stopped, which
+    // is answered first.
+    let pending_key = format!("{cursor_key}:pending");
+    let mut carried: Vec<Incoming> = crate::channels::state(&pending_key)?
+        .and_then(|kept| serde_json::from_str(&kept).ok())
+        .unwrap_or_default();
+    if !carried.is_empty() {
+        println!(
+            "{}: {} message(s) taken before the bridge stopped, answered now",
+            messenger.name(),
+            carried.len()
+        );
+    }
+    let keep_pending = |left: &std::collections::VecDeque<Incoming>| -> Result<(), CliError> {
+        let kept = (!left.is_empty()).then(|| serde_json::to_string(left).unwrap_or_default());
+        crate::channels::set_state(&pending_key, kept.as_deref())
+    };
     loop {
-        let cursor = crate::channels::state(&cursor_key)?.unwrap_or_default();
-        let wait = if once { messenger.once_wait() } else { 50 };
-        let (messages, next) = messenger
-            .receive(&cursor, wait)
-            .map_err(CliError::Connection)?;
-        crate::channels::set_state(&cursor_key, Some(&next))?;
+        let messages = if carried.is_empty() {
+            let cursor = crate::channels::state(&cursor_key)?.unwrap_or_default();
+            let wait = if once { messenger.once_wait() } else { 50 };
+            let (messages, next) = messenger
+                .receive(&cursor, wait)
+                .map_err(CliError::Connection)?;
+            // Kept before the cursor moves past them: each message taken is
+            // answered, after a restart if the bridge stops first.
+            keep_pending(&messages.iter().cloned().collect())?;
+            crate::channels::set_state(&cursor_key, Some(&next))?;
+            messages
+        } else {
+            std::mem::take(&mut carried)
+        };
         let quiet = messages.is_empty();
-        for message in messages {
+        let mut left: std::collections::VecDeque<Incoming> = messages.into();
+        while let Some(message) = left.pop_front() {
+            // This one stays kept until the next is taken up.
+            let mut kept = left.clone();
+            kept.push_front(message.clone());
+            keep_pending(&kept)?;
             if !allow.contains(&message.chat) {
                 // Pairing lets in a person, in a chat of their own with the
                 // bot: a group the bridge does not answer stays ignored.
@@ -1489,6 +1519,9 @@ pub fn bridge_with(
                     .send(&message.chat, &reply)
                     .map_err(CliError::Connection)?;
             }
+        }
+        if !quiet {
+            keep_pending(&std::collections::VecDeque::new())?;
         }
         if once {
             return Ok(());

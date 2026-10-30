@@ -135,7 +135,12 @@ profile lead: agent 7e37dd93 as lead, script:check.json at L3
 A job is a task a profile works on once (`--at 2026-11-02T09:00:00Z`),
 every interval (`--every 15m`), or on a cron expression (`--cron`, five
 fields, in UTC). What the agent said goes to a channel: a file (one JSON
-line per run), a webhook (a POST of the same JSON), or a Telegram chat:
+line per run), a webhook (a POST of the same JSON), a Telegram chat, or a
+chat on another messenger the bridge reaches, with the bridge's
+credentials (`--deliver email:alice@example.org`, `slack:C042`,
+`nextcloud-talk:n3xtc10ud`; `sion agent schedule add --help` lists them).
+Teams and DingTalk answer only where they are written to, and Google Chat
+sends a message of its own only with a service account's key:
 
 ```text
 $ sion agent schedule add budget-check lead --task 'How much budget is left?' --every 1m --deliver file:reports.jsonl
@@ -175,6 +180,10 @@ Each conversation on a channel is a session, continued message by
 message. Four commands work on every channel: `/approve` and
 `/decline <why>` answer a call that waits for approval, `/new` starts
 over, and `/status` says where the session stands.
+
+A bridge keeps each message it has taken until it has answered it, so a
+message taken when the bridge stopped is answered when it starts again;
+one it was answering then may be answered twice.
 
 ### HTTP
 

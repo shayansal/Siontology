@@ -10,6 +10,19 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Bridges keep what they took; jobs reach every messenger
+
+- **Nothing taken is lost.** A bridge keeps the messages it has taken
+  from a messenger until each is answered, so those taken when it
+  stopped are answered when it starts again (one being answered then may
+  be answered twice).
+- **Jobs' answers on any messenger.** `sion agent schedule add --deliver
+  <messenger>:<chat>` sends a job's answer through Slack, Discord,
+  Matrix, Signal, Mattermost, WhatsApp, LINE, SMS, email, iMessage,
+  Feishu, Lark, Nextcloud Talk or Google Chat (with a service account),
+  with the bridge's credentials; an email of the agent's own is titled
+  as such.
+
 ### DingTalk, Feishu and Lark, Nextcloud Talk
 
 - **DingTalk.** `sion agent bridge --via dingtalk` connects in Stream

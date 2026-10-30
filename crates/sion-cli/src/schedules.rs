@@ -45,8 +45,8 @@ pub struct Job {
     pub task: String,
     /// When it runs.
     pub when: When,
-    /// Where what it said goes: `file:<path>`, `webhook:<url>` or
-    /// `telegram:<chat id>`.
+    /// Where what it said goes: `file:<path>`, `webhook:<url>`,
+    /// `telegram:<chat id>`, or `<messenger>:<chat>` ([`MESSENGERS`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliver: Option<String>,
     /// When it runs next; None once it is over.
@@ -96,11 +96,33 @@ pub fn check_channel(channel: &str) -> Result<(), CliError> {
             Ok(())
         }
         Some(("telegram", chat)) if chat.parse::<i64>().is_ok() => Ok(()),
+        Some((messenger, chat)) if MESSENGERS.contains(&messenger) && !chat.is_empty() => Ok(()),
         _ => Err(CliError::Usage(format!(
-            "a channel is file:<path>, webhook:<url> or telegram:<chat id>, not {channel:?}"
+            "a channel is file:<path>, webhook:<url>, telegram:<chat id>, or <messenger>:<chat> ({}), not {channel:?}",
+            MESSENGERS.join(", ")
         ))),
     }
 }
+
+/// The messengers a job's answer can be sent through, to a chat of theirs,
+/// with the bridge's credentials: those that can write to a chat the
+/// bridge has not just been written from.
+pub const MESSENGERS: [&str; 14] = [
+    "slack",
+    "discord",
+    "matrix",
+    "signal",
+    "mattermost",
+    "whatsapp",
+    "line",
+    "sms",
+    "email",
+    "imessage",
+    "feishu",
+    "lark",
+    "nextcloud-talk",
+    "google-chat",
+];
 
 /// Adds a job; returns it.
 pub fn add(
@@ -195,7 +217,23 @@ pub fn deliver(channel: &str, message: &Value) -> Result<(), String> {
             crate::channels::Telegram::from_env()?
                 .send(chat, message["said"].as_str().unwrap_or_default())
         }
-        other => Err(format!("unknown channel {other}")),
+        // Any other messenger, to a chat of its: with the bridge's
+        // credentials, and for those that take webhooks, a listener of no
+        // use on a port of its own.
+        "google-chat" if std::env::var_os("GOOGLE_CHAT_CREDENTIALS").is_none() => Err(
+            "google-chat sends a message of its own only with a service account's key (GOOGLE_CHAT_CREDENTIALS)".into(),
+        ),
+        other => {
+            let messenger = crate::messengers::for_bridge(
+                other,
+                &crate::messengers::Options {
+                    allow: vec![target.to_string()],
+                    listen: "127.0.0.1:0".into(),
+                    ..crate::messengers::Options::default()
+                },
+            )?;
+            messenger.send(target, message["said"].as_str().unwrap_or_default())
+        }
     }
 }
 
@@ -295,8 +333,11 @@ pub enum ScheduleCommand {
         /// On a cron expression: minute hour day month weekday, in UTC.
         #[arg(long)]
         cron: Option<String>,
-        /// Where what it said goes: file:<path>, webhook:<url> or
-        /// telegram:<chat id> (TELEGRAM_BOT_TOKEN).
+        /// Where what it said goes: file:<path>, webhook:<url>,
+        /// telegram:<chat id> (TELEGRAM_BOT_TOKEN), or <messenger>:<chat>
+        /// with the bridge's credentials: slack, discord, matrix, signal,
+        /// mattermost, whatsapp, line, sms, email, imessage, feishu, lark,
+        /// nextcloud-talk or google-chat (with a service account).
         #[arg(long)]
         deliver: Option<String>,
     },

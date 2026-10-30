@@ -1999,3 +1999,105 @@ fn dingtalk_feishu_and_nextcloud_talk_answer_their_chats() {
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// A messenger that receives nothing and keeps what it is told to send.
+#[derive(Debug, Default)]
+struct Quiet {
+    sent: Mutex<Vec<(String, String)>>,
+}
+
+impl sion_cli::messengers::Messenger for Quiet {
+    fn name(&self) -> &'static str {
+        "quiet"
+    }
+
+    fn receive(
+        &self,
+        cursor: &str,
+        _wait: u64,
+    ) -> Result<(Vec<sion_cli::messengers::Incoming>, String), String> {
+        Ok((Vec::new(), cursor.to_string()))
+    }
+
+    fn send(&self, chat: &str, text: &str) -> Result<(), String> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push((chat.to_string(), text.to_string()));
+        Ok(())
+    }
+
+    fn long_polls(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn what_a_bridge_took_before_it_stopped_is_answered_and_jobs_reach_messengers() {
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-pending-deliver");
+    let reply = "85 USD left in the budget.";
+    // A message taken, and not answered when the bridge stopped.
+    let taken = sion_cli::messengers::Incoming {
+        chat: "c1".into(),
+        from: "ann".into(),
+        text: "How much budget is left?".into(),
+        voice: None,
+        direct: true,
+        mentions: Vec::new(),
+    };
+    let pending = "quiet-cursor:lead:pending";
+    sion_cli::channels::set_state(pending, Some(&serde_json::to_string(&[taken]).unwrap()))
+        .unwrap();
+    let quiet = Quiet::default();
+    let options = sion_cli::messengers::Options {
+        allow: vec!["c1".into()],
+        once: true,
+        ..Default::default()
+    };
+    sion_cli::messengers::bridge_with(ledger, &profile, &quiet, &options).unwrap();
+    assert_eq!(
+        *quiet.sent.lock().unwrap(),
+        [("c1".to_string(), reply.to_string())]
+    );
+    assert_eq!(
+        sion_cli::channels::state(pending).unwrap(),
+        None,
+        "answered, and let go"
+    );
+
+    // A job's answer, sent through a messenger with the bridge's
+    // credentials: Nextcloud Talk's, signed.
+    let (cloud, cloud_seen) = common::http_stand_in(|_| (201, b"{\"ocs\": {}}".to_vec()));
+    std::env::set_var("NEXTCLOUD_URL", &cloud);
+    std::env::set_var("NEXTCLOUD_TALK_SECRET", "talk-secret");
+    sion_cli::schedules::check_channel("nextcloud-talk:n3xtc10ud").unwrap();
+    assert!(
+        sion_cli::schedules::check_channel("teams:a:1chat").is_err(),
+        "answers only where written to"
+    );
+    sion_cli::schedules::deliver("nextcloud-talk:n3xtc10ud", &json!({"said": reply})).unwrap();
+    let sent = common::sent_to(
+        &cloud_seen,
+        "POST",
+        "/ocs/v2.php/apps/spreed/api/v1/bot/n3xtc10ud/message",
+    )
+    .remove(0);
+    assert_eq!(sent.json()["message"], reply);
+    let random = sent.header("x-nextcloud-talk-bot-random").unwrap();
+    assert_eq!(
+        sent.header("x-nextcloud-talk-bot-signature")
+            .map(str::to_string),
+        Some(sion_cli::nextcloud::talk_signature(
+            "talk-secret",
+            random,
+            reply.as_bytes()
+        ))
+    );
+    std::env::remove_var("GOOGLE_CHAT_CREDENTIALS");
+    assert!(
+        sion_cli::schedules::deliver("google-chat:spaces/AAA", &json!({"said": reply})).is_err()
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}

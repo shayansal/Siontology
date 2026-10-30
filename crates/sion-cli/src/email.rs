@@ -2742,12 +2742,12 @@ fn compose(
         },
     );
     line("To", &format!("<{to}>"));
-    line(
-        "Subject",
-        &encode_header(&reply_subject(
-            thread.map(|t| t.subject.as_str()).unwrap_or_default(),
-        )),
-    );
+    let subject = match thread {
+        Some(thread) => reply_subject(&thread.subject),
+        // Not a reply: a message of the agent's own (a job's answer).
+        None => format!("A message from {}", name.unwrap_or(address)),
+    };
+    line("Subject", &encode_header(&subject));
     line("Date", &date(t));
     line("Message-ID", &format!("<{id}@{}>", domain_of(address)));
     if let Some(thread) = thread {
@@ -3078,7 +3078,7 @@ mod tests {
         );
         let read = parse(&raw);
         assert_eq!(read.body, "Said aloud.");
-        assert_eq!(read.subject, "Re: your message");
+        assert_eq!(read.subject, "A message from lead@example.net");
         assert_eq!(
             read.audio,
             [(

@@ -225,10 +225,12 @@ of their own, two levels deep at most), and posts, follows and delivers
 Task Charters; profiles keep how to run an agent under a name;
 `sion agent schedule` and `sion agent scheduler` run a profile's task
 once, every interval or on cron (UTC), and deliver its answer to a file,
-a webhook or Telegram; `sion agent serve` (HTTP with the machine's token
-or a profile's own) and `sion agent bridge` (Slack, Discord, Matrix,
-Signal and Telegram, chats allowed by id) carry conversations, each a
-session, with approvals answered in the channel, by named approvers if
+a webhook, Telegram, or a chat on any messenger that can write to one
+unasked; `sion agent serve` (HTTP with the machine's token or a
+profile's own) and `sion agent bridge` (every messenger below, chats
+allowed by id; what a bridge has taken kept until answered, across a
+restart) carry conversations, each a session, with approvals answered in
+the channel, by named approvers if
 given; with `--pairing`, someone who writes to a bridge directly and
 whom it does not know is given a code that the operator approves
 (`sion agent pairing`); with `--require-mention`, a group is answered
