@@ -17,6 +17,12 @@
 //! Every transaction the device signs comes back with its receipt proven
 //! against its Pulse's certified header, as `sion receipt` proves one.
 //!
+//! The device watches agents ([`AppCore::agents`]): those it backs, found
+//! among the registrations the node still has, and any added by hand. Each
+//! one's standing is checked as a light client checks it, its charter and
+//! the overlays of its whole lineage proven against a certified header, and
+//! the device can suspend, resume or revoke one it oversees.
+//!
 //! [`AppCore`] is `Send + Sync` and every method takes `&self`, so a shell
 //! can call it from several threads: a verification in progress does not
 //! hold up a balance or a payment. The device's own transactions are
@@ -91,6 +97,9 @@ pub struct Settings {
     /// that a reset never pins a new identity silently.
     #[serde(default = "yes")]
     pub pin_on_first_use: bool,
+    /// The agents the device watches (their ids, hex).
+    #[serde(default)]
+    pub agents: Vec<String>,
 }
 
 fn default_storage_mib() -> u64 {
@@ -111,6 +120,7 @@ impl Default for Settings {
             storage_max_mib: default_storage_mib(),
             storage_local: false,
             pin_on_first_use: true,
+            agents: Vec::new(),
         }
     }
 }
@@ -629,6 +639,169 @@ impl AppCore {
     /// The latest Pulse the node reports.
     pub fn latest_pulse(&self) -> Result<Pulse, AppError> {
         Ok(self.ledger().pulse()?)
+    }
+
+    /// The agents the device watches, each one's standing checked as a
+    /// light client against the pinned chain: status, depth, budget, who
+    /// backs it, whether the device oversees it, and the verifications. An
+    /// agent whose check fails is listed with the reason.
+    pub fn agents(&self) -> Result<Value, AppError> {
+        let (settings, ledger) = self.snapshot();
+        let pinned = settings
+            .chain
+            .as_deref()
+            .map(Hash32::from_hex)
+            .transpose()
+            .map_err(|_| {
+                AppError::Input("the pinned chain identity is not 64 hex digits".into())
+            })?;
+        let session = self.session(&ledger)?;
+        let names = session.names();
+        let mut out = Vec::new();
+        for id in &settings.agents {
+            let agent = match Hash32::from_hex(id) {
+                Ok(hash) => sion_core::ids::ObjectId::from_hash(hash),
+                Err(_) => continue,
+            };
+            match sion_cli::verify::agent_standing(&ledger, pinned, agent, None) {
+                Ok(standing) => {
+                    let charter = &standing.charter;
+                    // Whether the device may stop it: as its backer, its
+                    // principal or the agent of a charter above it (spec
+                    // §5.13 oversight). Only to decide which buttons to
+                    // show: the ledger decides whether a suspension goes
+                    // through.
+                    let ancestry = charter.lineage.ancestry();
+                    let oversees = charter.backer == self.wallet.id
+                        || charter.principal == self.wallet.id
+                        || ancestry[..ancestry.len().saturating_sub(1)].iter().any(|above| {
+                            matches!(
+                                ledger.object(*above).ok().flatten().map(|o| o.data),
+                                Some(sion_exec::object::ObjectData::Charter(c)) if c.agent == self.wallet.id
+                            )
+                        });
+                    out.push(json!({
+                        "agent": agent,
+                        "short": agent.short(),
+                        "status": standing.status,
+                        "good_standing": standing.in_good_standing(),
+                        "pulse": standing.pulse,
+                        "depth": charter.lineage.depth(),
+                        "account": charter.agent,
+                        "backer": names.account(&charter.backer),
+                        "mine": charter.backer == self.wallet.id,
+                        "is_me": charter.agent == self.wallet.id,
+                        "oversees": oversees,
+                        "max_per_payment": charter.caveats.max_per_payment.to_string(),
+                        "expires_at": charter.caveats.expires_at,
+                        // A stopped agent's bucket may be full, but the
+                        // ledger refuses its payments.
+                        "budget": standing.budget.map(|(left, now)| json!({
+                            "remaining": left.to_string(),
+                            "can_spend_next_pulse": if standing.in_good_standing() {
+                                now.to_string()
+                            } else {
+                                "0".to_string()
+                            },
+                        })),
+                        "verified": standing.lines,
+                        "pinned": pinned.is_some(),
+                    }));
+                }
+                Err(error) => out.push(json!({
+                    "agent": agent,
+                    "short": agent.short(),
+                    "error": error.to_string(),
+                })),
+            }
+        }
+        Ok(json!({ "agents": out }))
+    }
+
+    /// Watches the agent `agent` (its id, 64 hex digits).
+    pub fn watch_agent(&self, agent: &str) -> Result<Value, AppError> {
+        let id = Hash32::from_hex(agent.trim())
+            .map_err(|_| AppError::Input("an agent's id is 64 hex digits".into()))?
+            .to_hex();
+        let mut settings = write(&self.settings);
+        if !settings.agents.contains(&id) {
+            settings.agents.push(id);
+        }
+        self.save(&settings)?;
+        Ok(json!({ "agents": settings.agents }))
+    }
+
+    /// Stops watching `agent`.
+    pub fn unwatch_agent(&self, agent: &str) -> Result<Value, AppError> {
+        let mut settings = write(&self.settings);
+        settings.agents.retain(|a| a != agent.trim());
+        self.save(&settings)?;
+        Ok(json!({ "agents": settings.agents }))
+    }
+
+    /// Finds the agents the device backs, answers for (as principal) or
+    /// is, among the registrations and spawns the node still has in its
+    /// history, and watches them. Returns those it added.
+    pub fn find_agents(&self) -> Result<Value, AppError> {
+        let ledger = self.ledger();
+        let me = self.wallet.id;
+        let mut found = Vec::new();
+        let mut from = Pulse(0);
+        loop {
+            let events = ledger.events(from, 500)?;
+            for view in &events {
+                let agent = match &view.event {
+                    sion_exec::execute::Event::AgentRegistered { agent, .. }
+                    | sion_exec::execute::Event::AgentSpawned { agent, .. } => *agent,
+                    _ => continue,
+                };
+                if let Some(sion_exec::object::ObjectData::Charter(charter)) =
+                    ledger.object(agent)?.map(|o| o.data)
+                {
+                    let ours =
+                        charter.backer == me || charter.principal == me || charter.agent == me;
+                    if ours && !found.contains(&agent) {
+                        found.push(agent);
+                    }
+                }
+            }
+            match events.last() {
+                // The node answers whole Pulses, so a full page may hold
+                // more than asked: the next one starts after its last Pulse.
+                Some(last) if events.len() >= 500 => from = last.pulse.next(),
+                _ => break,
+            }
+        }
+        let mut added = Vec::new();
+        let mut settings = write(&self.settings);
+        for agent in found {
+            let id = agent.0.to_hex();
+            if !settings.agents.contains(&id) {
+                settings.agents.push(id.clone());
+                added.push(id);
+            }
+        }
+        self.save(&settings)?;
+        Ok(json!({ "added": added, "agents": settings.agents }))
+    }
+
+    /// The kill switch: `suspend`, `resume` or `revoke` an agent the device
+    /// oversees (its backer, or the agent of a charter above it). The
+    /// ledger decides whether the device may; the receipt is proven.
+    pub fn agent_action(&self, action: &str, agent: &str) -> Result<Value, AppError> {
+        let charter = Hash32::from_hex(agent.trim())
+            .map(sion_core::ids::ObjectId::from_hash)
+            .map_err(|_| AppError::Input("an agent's id is 64 hex digits".into()))?;
+        let kind = match action {
+            "suspend" => TxKind::SuspendAgent { charter },
+            "resume" => TxKind::ResumeAgent { charter },
+            "revoke" => TxKind::RevokeCharter { charter },
+            other => return Err(AppError::Input(format!("unknown action {other:?}"))),
+        };
+        let _turn = lock(&self.submitting);
+        let ledger = self.ledger();
+        let mut session = self.session(&ledger)?;
+        self.submit(&mut session, kind, Vec::new())
     }
 }
 

@@ -142,6 +142,21 @@ pub enum AgentCommand {
         /// Agent id.
         agent: String,
     },
+    /// An agent's standing, checked as a light client: its charter and the
+    /// overlays of its lineage proven against a certified header, its
+    /// status worked out from them, its budget proven too.
+    Status {
+        /// Agent id.
+        agent: String,
+        /// The chain identity the proofs must verify against. Without it
+        /// the node vouches for itself.
+        #[arg(long, env = "SION_CHAIN")]
+        chain: Option<String>,
+        /// A certified Pulse you know of from elsewhere: a proof from more
+        /// than 16 Pulses before it is refused as stale.
+        #[arg(long)]
+        min_pulse: Option<u64>,
+    },
     /// Replace an agent's card with a file's commitment.
     Card {
         /// The agent's wallet.
@@ -1141,6 +1156,42 @@ pub fn run(
             );
             Ok(())
         }
+        AgentCommand::Status {
+            agent,
+            chain,
+            min_pulse,
+        } => {
+            let id = parse_id(&agent, "agent")?;
+            let pinned = chain
+                .as_deref()
+                .map(|c| Hash32::from_hex(c.trim()))
+                .transpose()
+                .map_err(|_| CliError::Usage("--chain is 64 hex digits".into()))?;
+            let standing = crate::verify::agent_standing(ledger, pinned, id, min_pulse.map(Pulse))?;
+            let names = session.names();
+            println!(
+                "agent {}: {} after Pulse {} (depth {}, backed by {})",
+                id.short(),
+                standing.status,
+                standing.pulse.0,
+                standing.charter.lineage.depth(),
+                names.account(&standing.charter.backer)
+            );
+            match standing.budget {
+                Some((remaining, can_spend)) if standing.in_good_standing() => println!(
+                    "budget: {remaining} USD left, {can_spend} USD can be spent in the next Pulse"
+                ),
+                Some((remaining, _)) => println!(
+                    "budget: {remaining} USD left; nothing can be spent while it is {}",
+                    standing.status
+                ),
+                None => {}
+            }
+            for line in &standing.lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
         AgentCommand::Card {
             wallet,
             agent,
@@ -1450,8 +1501,9 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
     // (spec §4.3).
     let mut lineage = Vec::new();
     let mut signer = None;
-    let mut stopped = false;
-    let mut narrowed = own.as_ref().is_some_and(|o| o.narrowing.is_some());
+    // The overlays found, the agent's own first, for its status.
+    let mut found: Vec<(ObjectId, sion_exec::charter::AgentOverlay)> =
+        own.iter().map(|o| (id, o.clone())).collect();
     for ancestor in charter.lineage.ancestry().iter().rev().skip(1) {
         if lineage.len() == MAX_LINEAGE_DEPTH {
             break;
@@ -1461,10 +1513,9 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
             signer = Some(above.agent);
         }
         let o = overlay(ledger, ancestor)?;
-        stopped |= o
-            .as_ref()
-            .is_some_and(|o| o.revoked_at.is_some() || o.suspended_by.is_some());
-        narrowed |= o.as_ref().is_some_and(|o| o.narrowing.is_some());
+        if let Some(o) = &o {
+            found.push((*ancestor, o.clone()));
+        }
         lineage.push(json!({
             "agent": ancestor,
             "account": above.agent,
@@ -1486,32 +1537,28 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
             }
         }
     }
-    let narrowings_end = lineage
-        .iter()
-        .filter_map(|entry| entry["narrowing"]["expires_at"].as_u64())
-        .chain(
+    use sion_exec::charter::AgentStatus;
+    let status = match sion_exec::charter::agent_status(
+        &id,
+        &charter,
+        found.iter().map(|(agent, overlay)| (agent, overlay)),
+        next,
+    ) {
+        AgentStatus::Revoked => format!(
+            "revoked at Pulse {}",
             own.as_ref()
-                .and_then(|o| o.narrowing.as_ref())
-                .map(|n| n.expires_at.0),
-        )
-        .min();
-    let expired =
-        next > charter.caveats.expires_at || narrowings_end.is_some_and(|end| next.0 > end);
-    let status = match &own {
-        Some(o) if o.revoked_at.is_some() => {
-            format!(
-                "revoked at Pulse {}",
-                o.revoked_at.map(|p| p.0).unwrap_or(0)
-            )
-        }
-        Some(o) if o.suspended_by.is_some() => format!(
-            "suspended by {}",
-            o.suspended_by.map(|a| a.to_string()).unwrap_or_default()
+                .and_then(|o| o.revoked_at)
+                .map(|p| p.0)
+                .unwrap_or(0)
         ),
-        _ if stopped => "stopped by an ancestor".into(),
-        _ if expired => "expired".into(),
-        _ if narrowed => "active, narrowed".into(),
-        _ => "active".into(),
+        AgentStatus::Suspended => format!(
+            "suspended by {}",
+            own.as_ref()
+                .and_then(|o| o.suspended_by)
+                .map(|a| a.to_string())
+                .unwrap_or_default()
+        ),
+        other => other.label().to_string(),
     };
     Ok(json!({
         "agent": id,

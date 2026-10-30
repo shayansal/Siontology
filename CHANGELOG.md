@@ -10,6 +10,24 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### An agent's standing, checked as a light client
+
+- **`sion agent status <agent>`** checks an agent's standing as a light
+  client: its charter and the overlays of every charter of its lineage
+  are proven against one certified header (`--chain` names the chain to
+  verify against, `--min-pulse` refuses stale proofs), and its
+  allotments are proven too, for its budget; a stopped agent's says
+  nothing can be spent. A node that leaves out an ancestor's overlay,
+  which could hide that ancestor's suspension, is caught. The status is
+  worked out from the proven objects by one rule,
+  `sion_exec::charter::agent_status`, which the node's agent query and
+  `sion agent show` now use as well.
+- **The app's Agents tab** lists the agents the device watches: those it
+  backs, answers for or is, found among the Pulses the node keeps, and
+  any added by id. Each one's standing is checked that way against the
+  pinned chain, with its budget, and the device suspends, resumes or
+  revokes (asked twice) the agents it oversees.
+
 ### Evolution beyond a skill's instructions
 
 - **A skill's other files.** In `sion skill evolve`, a variant may add,

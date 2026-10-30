@@ -1240,6 +1240,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "sion-assurance",
  "sion-cli",
  "sion-core",
  "sion-crypto",

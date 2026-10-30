@@ -516,10 +516,18 @@ background from the internet only (not from the device or its network,
 unless told), keeps the data and proves every round, and that keeps
 proving deals it holds when turned off. Settings are written atomically;
 unreadable ones are kept aside and nothing is pinned on first use without
-the person's say. Tested against a devnet over HTTP
+the person's say. It watches agents: those it backs, answers for or is,
+found among the registrations and spawns the node keeps, and any added
+by id, each one's charter and the overlays of its whole lineage proven
+against one certified header and its status worked out from them by the
+rule the node uses; it suspends, resumes or revokes those it oversees,
+with proven receipts. Tested against a devnet over HTTP
 (`crates/sion-app-core/tests/devnet.rs`). The Tauri 2 shell in
 `apps/sion-app` (its own Cargo workspace) builds and runs on Linux; it was
-run under a virtual display against a devnet and its tabs captured.
+run under a virtual display against a devnet and its tabs captured. The
+Agents tab came later: the shell with it was type-checked
+(`cargo check`), and the core it calls is tested against a devnet, but
+it has not been run in a window.
 **Not built:** the Android and iOS builds (configured, not attempted: no
 SDK here), a key in the platform's keystore (`app:plain-key`), proofs of
 the balances it shows (`app:unproven-balances`), bandwidth served by
@@ -742,6 +750,7 @@ the architecture's own:
 | `storage:no-replication` | A storage proof shows that the provider could produce the challenged leaves during the round, not that it keeps a copy of its own: it could fetch them from another copy (or from the client) when challenged. Two deals with two providers are not proof of two copies. |
 | `storage:raw-proofs` | Every storage proof carries its challenged leaves and paths on the ledger, about 17 to 22 KiB a deal a round with 4 challenges. Proofs are not aggregated across deals or rounds, so ledger bandwidth bounds how many deals a network can keep. |
 | `storage:no-retrieval` | Getting data back is not part of the protocol: a provider proves custody, and returning the data to its client is up to them. |
+| `app:agent-search` | The agents the app finds for the device come from the node's history of events, unproven, and only the Pulses the node still keeps: a node can leave out an agent the device backs, and the Agents tab would not show it. The standing and budget of every agent it shows are proven. |
 | `app:first-use-pin` | The app pins the chain identity of the first node it verifies (trust on first use) unless its user pins one first. A first use against a lying node pins the liar's chain. |
 | `app:plain-key` | The app keeps the device's key unencrypted in its directory (mode 0600 on Unix), not in the platform's keystore. Anything that can read the directory can spend. |
 | `app:unproven-balances` | The balances the app shows come from the node unproven; its own receipts and the Pulses it verifies are proven. |

@@ -3336,6 +3336,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
+name = "sion-agent"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sion-core",
+ "sion-http",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sion-app"
 version = "0.1.0"
 dependencies = [
@@ -3391,11 +3402,13 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "borsh",
+ "chacha20poly1305",
  "clap",
  "hex",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sion-agent",
  "sion-assurance",
  "sion-clearing",
  "sion-consensus",
@@ -3412,6 +3425,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tiny_http",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]

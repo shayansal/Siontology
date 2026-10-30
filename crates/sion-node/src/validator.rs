@@ -2211,21 +2211,12 @@ impl Validator {
                 };
                 let ids = charter.lineage.ancestry();
                 let mut overlays = Vec::with_capacity(ids.len());
-                let (mut revoked, mut suspended, mut stopped, mut narrowed) =
-                    (false, false, false, false);
-                let mut expired = next > charter.caveats.expires_at;
+                let mut found = Vec::new();
                 for agent in ids.iter().rev() {
                     let overlay_id = sion_exec::charter::overlay_id(agent);
                     let object = self.state.objects.get(&overlay_id).cloned();
                     if let Some(ObjectData::AgentOverlay(o)) = object.as_ref().map(|o| &o.data) {
-                        let own = agent == &id;
-                        revoked |= own && o.revoked_at.is_some();
-                        suspended |= own && o.suspended_by.is_some();
-                        stopped |= !own && (o.revoked_at.is_some() || o.suspended_by.is_some());
-                        if let Some(n) = &o.narrowing {
-                            narrowed = true;
-                            expired |= next > n.expires_at;
-                        }
+                        found.push((*agent, o.clone()));
                     }
                     let proof = self.snapshot().prove(&overlay_id.0);
                     overlays.push(json!({
@@ -2248,19 +2239,13 @@ impl Validator {
                         });
                     }
                 }
-                let status = if revoked {
-                    "revoked"
-                } else if suspended {
-                    "suspended"
-                } else if stopped {
-                    "stopped by an ancestor"
-                } else if expired {
-                    "expired"
-                } else if narrowed {
-                    "active, narrowed"
-                } else {
-                    "active"
-                };
+                let status = sion_exec::charter::agent_status(
+                    &id,
+                    &charter,
+                    found.iter().map(|(agent, overlay)| (agent, overlay)),
+                    next,
+                )
+                .label();
                 let object = self.state.objects.get(&id).cloned();
                 let proof = self.snapshot().prove(&id.0);
                 Ok(json!({

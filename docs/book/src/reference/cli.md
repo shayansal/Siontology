@@ -681,6 +681,7 @@ Commands:
   spawn          Launch subagents, each with its own identity, account, caveats and budget carved from the parent's allotment
   pay-batch      Pay from several agents in one batch (spec v1.13): one payment from each agent's own budget, all authorized by one signature of `signer`, the agents' own wallet or, for keyless agents, the wallet of their nearest keyed ancestor
   show           Show an agent: account, principal, lineage, card, status, budget
+  status         An agent's standing, checked as a light client: its charter and the overlays of its lineage proven against a certified header, its status worked out from them, its budget proven too
   card           Replace an agent's card with a file's commitment
   card-template  Print an agent card template (A2A-style JSON with a `sion` section)
   suspend        Suspend an agent and everything below it (an overseer in good standing: the backer, or the agent of a charter above it that is neither revoked nor suspended). The highest suspender is recorded
@@ -806,6 +807,23 @@ Options:
 ```
 
 Reads the agent's charter and the overlays of its lineage; the node's `GET /v1/agents/{id}` returns the same with state proofs ([HTTP API](http-api.md#get-v1agentsid)).
+
+## `sion agent status`
+
+```text
+An agent's standing, checked as a light client: its charter and the overlays of its lineage proven against a certified header, its status worked out from them, its budget proven too
+
+Usage: sion agent status [OPTIONS] <AGENT>
+
+Arguments:
+  <AGENT>  Agent id
+
+Options:
+      --chain <CHAIN>          The chain identity the proofs must verify against. Without it the node vouches for itself [env: SION_CHAIN=]
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --min-pulse <MIN_PULSE>  A certified Pulse you know of from elsewhere: a proof from more than 16 Pulses before it is refused as stale
+  -h, --help                   Print help
+```
 
 ## `sion agent card`
 

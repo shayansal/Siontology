@@ -291,3 +291,118 @@ fn a_device_provides_storage_and_proves_its_rounds() {
     api.stop();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn an_install_watches_the_agents_it_backs_and_stops_them() {
+    let _turn = one_at_a_time();
+    let devnet = Arc::new(
+        Devnet::start(DevnetConfig {
+            rounds_per_pulse: 2,
+            prove_chunk: None,
+            ..DevnetConfig::default()
+        })
+        .unwrap(),
+    );
+    let api = sion_node::api::serve(devnet.clone(), "127.0.0.1:0").unwrap();
+    let dir = std::env::temp_dir().join(format!("sion-app-agents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let app = AppCore::open(&dir).unwrap();
+    let node = format!("http://{}", api.address);
+    app.set_node(&node).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while app.verify_latest().unwrap()["ok"] != true {
+        assert!(Instant::now() < deadline, "no Pulse verified");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    app.faucet("1000").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while app.balance().unwrap()["usd"] == "0" {
+        assert!(Instant::now() < deadline, "the faucet never paid");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // The device's key registers an agent, as the command line would.
+    let seed = hex::decode(
+        std::fs::read_to_string(dir.join("key.seed"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    let device = sion_exec::wallet::Wallet::from_seed(&seed.try_into().unwrap());
+    let ledger = sion_cli::ledger::HttpLedger::new(&node);
+    let mut session = sion_cli::session::Session::open(&ledger).unwrap();
+    session.add_wallet("device", device);
+    let pulse = sion_cli::ledger::LedgerExt::pulse(&ledger).unwrap();
+    let view = session
+        .must(
+            "device",
+            sion_exec::TxKind::RegisterAgent {
+                agent: sion_exec::wallet::Wallet::named("helper").id,
+                card: sion_core::hash::Hash32::ZERO,
+                caveats: sion_exec::charter::Caveats {
+                    payees: None,
+                    max_per_payment: sion_core::Amount::units(10),
+                    burst: sion_core::Amount::units(50),
+                    rate: sion_core::Amount(50_000),
+                    expires_at: sion_core::ids::Pulse(pulse.0 + 100_000),
+                    evidence_above: None,
+                    evidence_policy: sion_assurance::Policy::standard(),
+                    receipts: true,
+                    may_delegate: false,
+                },
+                funding: sion_core::Amount::units(100),
+                agent_bond: sion_core::Amount::ZERO,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let agent = view
+        .effects
+        .events
+        .iter()
+        .find_map(|e| match e {
+            sion_exec::execute::Event::AgentRegistered { agent, .. } => Some(*agent),
+            _ => None,
+        })
+        .unwrap();
+    let hex = agent.0.to_hex();
+
+    // The device finds it among the registrations, and checks its standing.
+    let found = app.find_agents().unwrap();
+    assert_eq!(found["added"], serde_json::json!([hex]), "{found}");
+    let standing = |app: &AppCore| app.agents().unwrap()["agents"][0].clone();
+    let first = standing(&app);
+    assert_eq!(first["status"], "active", "{first}");
+    assert_eq!(first["mine"], true, "{first}");
+    assert_eq!(first["oversees"], true, "the device backs it: {first}");
+    assert_eq!(first["budget"]["remaining"], "100", "{first}");
+    let lines = first["verified"].to_string();
+    assert!(lines.contains("proven against Pulse"), "{first}");
+    assert_eq!(first["pinned"], true, "{first}");
+    // Found again, nothing is added twice.
+    assert_eq!(app.find_agents().unwrap()["added"], serde_json::json!([]));
+
+    // The kill switch, from the device: suspend, resume, revoke.
+    for (action, status) in [
+        ("suspend", "suspended"),
+        ("resume", "active"),
+        ("revoke", "revoked"),
+    ] {
+        let answer = app.agent_action(action, &hex).unwrap();
+        assert_eq!(answer["status"], "Success", "{action}: {answer}");
+        assert_eq!(answer["proof"]["ok"], true, "{action}: {answer}");
+        let now = standing(&app);
+        assert_eq!(now["status"], status, "{action}: {now}");
+        assert_eq!(now["good_standing"], status == "active", "{now}");
+        if status != "active" {
+            assert_eq!(
+                now["budget"]["can_spend_next_pulse"], "0",
+                "a stopped agent spends nothing: {now}"
+            );
+        }
+    }
+    assert!(app.agent_action("pause", &hex).is_err());
+    app.unwatch_agent(&hex).unwrap();
+    assert_eq!(app.agents().unwrap()["agents"], serde_json::json!([]));
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -706,3 +706,162 @@ mod tests {
         assert_eq!(seen_pulse(&a), Some(Pulse(41)));
     }
 }
+
+/// An agent's standing, checked as a light client would: its charter and
+/// the overlays of every charter of its lineage proven against one
+/// certified header, its status worked out here from them (as the ledger
+/// works it out for a payment in the next Pulse), and its allotment proven
+/// against another.
+#[derive(Clone, Debug)]
+pub struct Standing {
+    /// The agent.
+    pub agent: sion_core::ids::ObjectId,
+    /// `active`, `active, narrowed`, `suspended`, `revoked`, `stopped by an
+    /// ancestor` or `expired`.
+    pub status: &'static str,
+    /// Its charter, as proven.
+    pub charter: sion_exec::charter::Charter,
+    /// What its allotments have left, and what they can spend in the next
+    /// Pulse (their buckets' levels), as proven; `None` without one.
+    pub budget: Option<(sion_core::Amount, sion_core::Amount)>,
+    /// The verifications: the charter and overlays', then the allotment's.
+    pub lines: Vec<String>,
+    /// The Pulse the status holds after.
+    pub pulse: Pulse,
+}
+
+impl Standing {
+    /// Whether the agent can act: active, narrowed or not.
+    pub fn in_good_standing(&self) -> bool {
+        self.status.starts_with("active")
+    }
+}
+
+/// `agent`'s status after `pulse` (for a transaction in the next Pulse)
+/// from its proven `charter` and the proven overlays of its lineage
+/// (`None` where none exists), by the rule the node's agent query uses
+/// ([`sion_exec::charter::agent_status`]).
+pub fn status_of(
+    agent: &sion_core::ids::ObjectId,
+    charter: &sion_exec::charter::Charter,
+    overlays: &[(
+        sion_core::ids::ObjectId,
+        Option<sion_exec::charter::AgentOverlay>,
+    )],
+    pulse: Pulse,
+) -> &'static str {
+    sion_exec::charter::agent_status(
+        agent,
+        charter,
+        overlays
+            .iter()
+            .filter_map(|(id, overlay)| overlay.as_ref().map(|o| (id, o))),
+        pulse.next(),
+    )
+    .label()
+}
+
+/// `agent`'s standing, checked against certified headers of the chain
+/// `pinned` (or the one the node serves), refusing proofs older than
+/// `min_pulse` allows ([`verify_state`]).
+pub fn agent_standing(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    agent: sion_core::ids::ObjectId,
+    min_pulse: Option<Pulse>,
+) -> Result<Standing, CliError> {
+    use sion_exec::object::ObjectData;
+    let value = ledger.query(Query::Agent(agent))?;
+    let pulse: Pulse = parse(value["pulse"].clone())?;
+    let charter_proof: ObjectProof = parse(value["charter"].clone())?;
+    if charter_proof.id != agent {
+        return Err(CliError::Verification(
+            "the node proved another charter".into(),
+        ));
+    }
+    let mut proofs = vec![charter_proof];
+    for entry in value["overlays"].as_array().into_iter().flatten() {
+        proofs.push(parse(entry["overlay"].clone())?);
+    }
+    let verified = verify_state(ledger, pinned, pulse, &proofs, min_pulse)?;
+    let charter = match &verified.objects[0].1 {
+        Some(object) => match &object.data {
+            ObjectData::Charter(charter) => charter.clone(),
+            _ => {
+                return Err(CliError::Verification(format!(
+                    "{} is not an agent's charter",
+                    agent.short()
+                )))
+            }
+        },
+        None => {
+            return Err(CliError::Verification(format!(
+                "the state holds no agent {}",
+                agent.short()
+            )))
+        }
+    };
+    // The overlays proven must be those of the lineage, every one of them:
+    // a node that leaves out an ancestor's could hide its suspension.
+    let ancestry = charter.lineage.ancestry();
+    if ancestry.last() != Some(&agent) {
+        return Err(CliError::Verification(
+            "the charter's lineage does not lead to the agent".into(),
+        ));
+    }
+    let wanted: std::collections::BTreeSet<sion_core::ids::ObjectId> = ancestry
+        .iter()
+        .map(sion_exec::charter::overlay_id)
+        .collect();
+    let proven: std::collections::BTreeSet<sion_core::ids::ObjectId> =
+        verified.objects[1..].iter().map(|(id, _)| *id).collect();
+    if wanted != proven {
+        return Err(CliError::Verification(
+            "the node did not prove the overlay of every charter of the agent's lineage".into(),
+        ));
+    }
+    let mut overlays = Vec::new();
+    for id in &ancestry {
+        let overlay_id = sion_exec::charter::overlay_id(id);
+        let overlay = verified
+            .objects
+            .iter()
+            .find(|(proven_id, _)| *proven_id == overlay_id)
+            .and_then(|(_, object)| match object.as_ref().map(|o| &o.data) {
+                Some(ObjectData::AgentOverlay(o)) => Some(o.clone()),
+                _ => None,
+            });
+        overlays.push((*id, overlay));
+    }
+    let status = status_of(&agent, &charter, &overlays, verified.pulse);
+    let mut lines = vec![verified.line()];
+    // Its budget: every allotment of the charter, each proven.
+    let mut budget: Option<(sion_core::Amount, sion_core::Amount)> = None;
+    for allotment in &charter.allotments {
+        let proven = verify_object_now(ledger, pinned, *allotment, Some(verified.pulse))?;
+        if let Some(Some(sion_exec::object::Object {
+            data: ObjectData::Allotment(a),
+            ..
+        })) = proven.objects.first().map(|(_, o)| o.clone())
+        {
+            let next = proven.pulse.next();
+            let (left, now) = budget.unwrap_or((sion_core::Amount(0), sion_core::Amount(0)));
+            budget = Some((
+                sion_core::Amount(left.0.saturating_add(a.remaining.0)),
+                sion_core::Amount(
+                    now.0
+                        .saturating_add(a.bucket.level(next).min(a.remaining).0),
+                ),
+            ));
+        }
+        lines.push(format!("budget: {}", proven.line()));
+    }
+    Ok(Standing {
+        agent,
+        status,
+        charter,
+        budget,
+        lines,
+        pulse: verified.pulse,
+    })
+}

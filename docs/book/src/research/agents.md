@@ -170,8 +170,13 @@ they are.
 
 ### 4. In the app
 
-**Status: later.** An Agents tab: the device's agents, their budgets,
-skills and memory, and a switch that suspends them all.
+**Status: partly built.** The app's Agents tab lists the agents the
+device watches, each one's standing and budget proven as a light client
+proves them (its charter and the overlays of its whole lineage, against
+one certified header), and suspends, resumes or revokes those the device
+oversees ([The app](../getting-started/app.md)). Suspending an agent
+stops everything below it. Not built: its skills and memory in the tab,
+and one switch for all of the device's agents at once.
 
 ## What this does not claim
 

@@ -101,6 +101,23 @@
       <ol class="checks" id="st-log"></ol>
     </section>
 
+    <!-- Agents -->
+    <section class="view" id="view-agents" hidden aria-labelledby="agents-title">
+      <p class="kicker">Kill switch</p>
+      <h1 id="agents-title">Your agents</h1>
+      <p class="lede">The AI agents this device watches. Each one's standing is checked here as a light client checks it: its charter and those of every agent above it are proven against a certified header of the pinned chain, so a node cannot show a suspended agent as active. An agent this device backs can be suspended at once, with everything below it, and resumed or revoked later; the ledger refuses its payments while it is stopped.</p>
+      <div class="actions">
+        <button class="button" id="find-agents">Find the agents I back</button>
+      </div>
+      <p class="note">Finds the agents registered or spawned with this device as their backer, among the Pulses the node still keeps. Others can be added by id.</p>
+      <div id="agents" class="rows"><p class="empty">None yet.</p></div>
+      <form class="form" id="watch-form" autocomplete="off">
+        <h2>Watch an agent</h2>
+        <label>Agent <input id="watch-agent" placeholder="agent id: 64 hex digits" spellcheck="false" required></label>
+        <button class="button" type="submit">Watch</button>
+      </form>
+    </section>
+
     <!-- Settings -->
     <section class="view" id="view-settings" hidden aria-labelledby="settings-title">
       <p class="kicker">Settings</p>
@@ -130,6 +147,7 @@
     <button class="tab" data-view="wallet">Wallet</button>
     <button class="tab" data-view="stake">Stake</button>
     <button class="tab" data-view="storage">Storage</button>
+    <button class="tab" data-view="agents">Agents</button>
     <button class="tab" data-view="settings">Settings</button>
   </nav>
 
