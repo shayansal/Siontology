@@ -54,6 +54,13 @@ pub enum TaskCommand {
         /// accounts).
         #[arg(long, value_delimiter = ',')]
         verifiers: Vec<String>,
+        /// Verifiers who must each attest every result, among --verifiers
+        /// (comma-separated; spec v1.15).
+        #[arg(long, value_delimiter = ',')]
+        must_attest: Vec<String>,
+        /// How many attestations a result needs at least (spec v1.15).
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        min_attestations: u8,
         /// The adjudicator atom results must name (hex).
         #[arg(long)]
         adjudicator: Option<String>,
@@ -144,6 +151,8 @@ pub fn run(
             spec,
             requires,
             verifiers,
+            must_attest,
+            min_attestations,
             adjudicator,
             detection,
             reliance,
@@ -163,6 +172,8 @@ pub fn run(
                     .map(|c| parse_hash(c, "claim").map(ClaimId::from_hash))
                     .collect::<Result<BTreeSet<_>, _>>()?,
                 verifiers: verifiers.iter().map(|v| session.id(v)).collect(),
+                must_attest: must_attest.iter().map(|v| session.id(v)).collect(),
+                min_attestations,
                 adjudicator: adjudicator
                     .as_deref()
                     .map(|a| parse_hash(a, "adjudicator atom").map(AtomId::from_hash))
@@ -285,6 +296,8 @@ pub fn describe(ledger: &dyn Ledger, id: ObjectId) -> Result<Value, CliError> {
         "acceptance": {
             "requires": task.acceptance.requires,
             "verifiers": task.acceptance.verifiers,
+            "must_attest": task.acceptance.must_attest,
+            "min_attestations": task.acceptance.min_attestations,
             "adjudicator": task.acceptance.adjudicator,
             "detection_permille": task.acceptance.detection_permille,
             "reliance_pulses": task.acceptance.reliance,

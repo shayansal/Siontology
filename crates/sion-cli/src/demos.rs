@@ -2278,6 +2278,8 @@ pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
         policy: Policy::standard(),
         requires: [env_claim].into_iter().collect(),
         verifiers: verifiers.iter().copied().collect(),
+        must_attest: Default::default(),
+        min_attestations: 0,
         adjudicator: Some(arbiter_atom.id),
         detection_permille: 900,
         reliance: 2_000,
@@ -2313,9 +2315,14 @@ pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
         t1.short()
     ));
     out.say("           sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2");
-    let (t2, pulse) = post(session, acceptance(&[r2]), None, usd(40))?;
+    // The bounty must be attested by reviewer-2 (spec v1.15): no bond,
+    // however large, stands in for its check.
+    let mut bounty_terms = acceptance(&[r2]);
+    bounty_terms.must_attest = [r2].into_iter().collect();
+    bounty_terms.min_attestations = 1;
+    let (t2, pulse) = post(session, bounty_terms, None, usd(40))?;
     out.say(format!(
-        "Pulse {pulse:>3}  …and task {}: a 40 USD bounty open to anyone, on the same terms",
+        "Pulse {pulse:>3}  …and task {}: a 40 USD bounty open to anyone, on the same terms, except that reviewer-2 must attest a result",
         t2.short()
     ));
 
@@ -2378,6 +2385,12 @@ pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
         result_formula(&hunter, &[a3_id], &requires),
         900,
     );
+    let unattested = claim(
+        RESULT_SCHEMA,
+        payload(t2, b"patch-88"),
+        result_formula(&hunter, &[], &requires),
+        900,
+    );
     for (who, body) in [
         ("reviewer-1", a1.clone()),
         ("reviewer-2", a2.clone()),
@@ -2390,6 +2403,7 @@ pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     for (who, body) in [
         ("coder", attested.clone()),
         ("bounty-hunter", bounty.clone()),
+        ("bounty-hunter", unattested.clone()),
     ] {
         session.must(who, TxKind::IssueClaim { claim: body }, Vec::new())?;
     }
@@ -2440,6 +2454,12 @@ pub fn tasks(session: &mut Session<'_>, out: &mut Narrator) -> Result<(), CliErr
     )?;
     out.say(format!(
         "Pulse {:>3}  coder settles again → {}: a task is paid once",
+        view.pulse,
+        refusal(&view)
+    ));
+    let view = settle(session, "bounty-hunter", t2, &unattested, Vec::new())?;
+    out.say(format!(
+        "Pulse {:>3}  bounty-hunter tries the bounty without reviewer-2's attestation → {}",
         view.pulse,
         refusal(&view)
     ));

@@ -202,6 +202,51 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
     assert_eq!(release.audits, vec![audit]);
     assert_eq!(release.previous, Some(first));
 
+    // The publisher's index names its latest release (spec v1.15), read
+    // with a state proof checked against a certified header; it moves only
+    // forward.
+    let publisher = session.id("publisher");
+    let absent = sion_cli::skills::latest(ledger.as_ref(), None, None, publisher, "pay-invoices");
+    assert!(absent
+        .unwrap_err()
+        .to_string()
+        .contains("has indexed no release of pay-invoices"));
+    for release in [first, second] {
+        let view =
+            sion_cli::skills::index_release(&mut session, "publisher", "pay-invoices", release)
+                .unwrap();
+        assert_eq!(view.status, sion_exec::ExecStatus::Success);
+    }
+    let (latest, entry, proven) =
+        sion_cli::skills::latest(ledger.as_ref(), None, None, publisher, "pay-invoices").unwrap();
+    assert_eq!(
+        (latest.claim, latest.version.as_str(), entry.count),
+        (second, "1.0.1", 2)
+    );
+    assert_eq!(entry.previous, Some(first));
+    assert!(
+        proven.line().contains("proven against Pulse"),
+        "{}",
+        proven.line()
+    );
+    // A proof from far behind a certified Pulse the client knows of is
+    // refused as stale.
+    let ahead = sion_core::ids::Pulse(proven.pulse.0 + 100);
+    let stale = sion_cli::skills::latest(
+        ledger.as_ref(),
+        None,
+        Some(ahead),
+        publisher,
+        "pay-invoices",
+    );
+    assert!(stale
+        .unwrap_err()
+        .to_string()
+        .contains("it is behind, or it is hiding a newer state"));
+    let back =
+        sion_cli::skills::index_release(&mut session, "publisher", "pay-invoices", first).unwrap();
+    assert!(matches!(back.status, sion_exec::ExecStatus::Failed(_)));
+
     // A bundle that is not the release's is refused before anything else.
     let tampered = home.join("tampered.skill");
     let mut bytes =
@@ -224,12 +269,25 @@ fn an_agent_installs_a_skill_only_when_its_backing_covers_its_budget() {
     );
     assert!(bad.unwrap_err().to_string().contains("does not hash"));
 
+    // Installing by name finds 1.0.1 through the index.
+    let (by_name, how) = sion_cli::skills::resolve(
+        &mut session,
+        ledger.as_ref(),
+        "publisher/pay-invoices",
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(by_name, second.to_string());
+    assert!(how
+        .unwrap()
+        .contains("pay-invoices 1.0.1 is publisher's latest release"));
     let lines = sion_cli::skills::install(
         &mut session,
         ledger.as_ref(),
         "agent-9",
         agent,
-        &second.to_string(),
+        &by_name,
         None,
         None,
         2.0,

@@ -265,6 +265,7 @@ pub fn verify_pulse_cached(
             ));
         }
     }
+    record_seen(&chain_id, header.pulse);
 
     // Forced inclusion, as the certified header states it.
     report.push(if header.forced.overdue > 0 {
@@ -426,6 +427,173 @@ pub struct VerifiedReceipt {
     pub chain: (Hash32, bool),
 }
 
+/// Objects as a light client established them: state proofs checked
+/// against a certified header.
+#[derive(Clone, Debug)]
+pub struct VerifiedState {
+    /// The Pulse whose header the proofs were checked against: the state
+    /// after it.
+    pub pulse: Pulse,
+    /// The objects proven, in the order given; `None` where the proof shows
+    /// that no object has that id.
+    pub objects: Vec<(sion_core::ids::ObjectId, Option<sion_exec::object::Object>)>,
+    /// Stake that signed the Pulse header, and the quorum it needed
+    /// (`None` if the devnet runs insecure simulation signatures).
+    pub signed: Option<(u64, u64)>,
+    /// The chain identity checked, and whether it was pinned.
+    pub chain: (Hash32, bool),
+}
+
+impl VerifiedState {
+    /// One line on how the state was proven.
+    pub fn line(&self) -> String {
+        let certificate = match self.signed {
+            Some((stake, quorum)) => {
+                format!("certified by {stake} of the committee's stake (quorum {quorum})")
+            }
+            None => "its certificate not checked: the devnet runs insecure simulation signatures"
+                .to_string(),
+        };
+        format!(
+            "{} proven against Pulse {}'s header, {certificate}, chain {}{}",
+            if self.objects.len() == 1 {
+                "state".to_string()
+            } else {
+                format!("{} objects", self.objects.len())
+            },
+            self.pulse,
+            self.chain.0.short(),
+            if self.chain.1 {
+                ""
+            } else {
+                " (not pinned: the node vouched for it)"
+            }
+        )
+    }
+}
+
+/// How many Pulses older than the latest certified Pulse a client knows of
+/// a state proof may be. Older answers are refused: the node is behind, or
+/// it is answering from an old state to hide a newer one.
+pub const STALE_TOLERANCE: u64 = 16;
+
+/// The latest certified Pulse of each chain this process has verified.
+static SEEN: std::sync::Mutex<std::collections::BTreeMap<Hash32, Pulse>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The latest certified Pulse of `chain` this process has verified, if any.
+pub fn seen_pulse(chain: &Hash32) -> Option<Pulse> {
+    SEEN.lock().ok()?.get(chain).copied()
+}
+
+/// Remembers that this process verified a certified header of `chain` at
+/// `pulse`. A long-running client (the app, a gateway, an agent's runtime)
+/// thereby refuses a node that later answers from an older state. It is
+/// kept in memory only: a devnet restarted from the same genesis has the
+/// same chain identity and starts again from Pulse 0.
+pub fn record_seen(chain: &Hash32, pulse: Pulse) {
+    if let Ok(mut seen) = SEEN.lock() {
+        let entry = seen.entry(*chain).or_insert(pulse);
+        if *entry < pulse {
+            *entry = pulse;
+        }
+    }
+}
+
+/// How long to wait for the certificate of the Pulse a state proof is from.
+const STATE_CERTIFICATE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Checks `proofs`, all of the state after Pulse `pulse`, against that
+/// Pulse's certified header the way a light client would: the chain
+/// identity (against `pinned`, if given), the committee certificate, then
+/// each proof against the header's state root. Waits up to 20 seconds for
+/// the Pulse to be certified. The proofs must be fresh: from no more than
+/// [`STALE_TOLERANCE`] Pulses before the latest certified Pulse the client
+/// knows of, whether this process verified it, the node says it has
+/// certified it, or the caller knows it from elsewhere (`min_pulse`).
+pub fn verify_state(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    pulse: Pulse,
+    proofs: &[ObjectProof],
+    min_pulse: Option<Pulse>,
+) -> Result<VerifiedState, CliError> {
+    let validators = ledger.query(Query::Validators)?;
+    let chain: ChainSpec = parse(validators["chain"].clone())?;
+    let chain_id = chain
+        .verify(pinned.as_ref())
+        .map_err(|e| CliError::Verification(e.to_string()))?;
+    let deadline = std::time::Instant::now() + STATE_CERTIFICATE_WAIT;
+    let certificate = loop {
+        let view = ledger.pulse_view(Some(pulse))?;
+        match view.certificate {
+            Some(certificate) => break certificate,
+            None if std::time::Instant::now() >= deadline => {
+                return Err(CliError::Verification(format!(
+                    "Pulse {pulse} is not certified yet"
+                )))
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    };
+    let header = &certificate.header;
+    if header.chain != chain_id || header.pulse != pulse {
+        return Err(CliError::Verification(
+            "the certificate is for another chain or Pulse".into(),
+        ));
+    }
+    let signed = verify_header_certificate(ledger, &chain, &certificate)?;
+    // Fresh enough: not far behind a later certified Pulse this process
+    // verified, nor behind the node's own account of its certified Pulse
+    // (a mirror that serves an old state while it follows the chain).
+    let claimed: Option<Pulse> = ledger
+        .status()
+        .ok()
+        .and_then(|status| serde_json::from_value(status["certified_pulse"].clone()).ok());
+    let known = [seen_pulse(&chain_id), claimed, min_pulse]
+        .into_iter()
+        .flatten()
+        .max();
+    if let Some(known) = known {
+        if pulse.0.saturating_add(STALE_TOLERANCE) < known.0 {
+            return Err(CliError::Verification(format!(
+                "the node answered from Pulse {pulse}, more than {STALE_TOLERANCE} Pulses before Pulse {known}, which is certified: it is behind, or it is hiding a newer state"
+            )));
+        }
+    }
+    record_seen(&chain_id, pulse);
+    let mut objects = Vec::with_capacity(proofs.len());
+    for proof in proofs {
+        verify_object(header, proof).map_err(|e| CliError::Verification(e.to_string()))?;
+        objects.push((proof.id, proof.object.clone()));
+    }
+    Ok(VerifiedState {
+        pulse,
+        objects,
+        signed,
+        chain: (chain_id, pinned.is_some()),
+    })
+}
+
+/// Fetches object `id` with its state proof and checks it as
+/// [`verify_state`] does.
+pub fn verify_object_now(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    id: sion_core::ids::ObjectId,
+    min_pulse: Option<Pulse>,
+) -> Result<VerifiedState, CliError> {
+    let value = ledger.query(Query::Object(id))?;
+    let pulse: Pulse = parse(value["pulse"].clone())?;
+    let proof: ObjectProof = parse(value["proof"].clone())?;
+    if proof.id != id {
+        return Err(CliError::Verification(
+            "the node proved another object".into(),
+        ));
+    }
+    verify_state(ledger, pinned, pulse, &[proof], min_pulse)
+}
+
 /// The chain identity the ledger serves, unpinned: the node vouches for
 /// itself.
 pub fn served_chain(ledger: &dyn Ledger) -> Result<Hash32, CliError> {
@@ -478,6 +646,7 @@ pub fn verify_receipt_of(
         ));
     }
     let signed = verify_header_certificate(ledger, &chain, &certificate)?;
+    record_seen(&chain_id, header.pulse);
     if sion_exec::pulse::order_digest(header.pulse, &header.beacon, &view.transactions)
         != header.order_digest
     {
@@ -518,4 +687,22 @@ fn check_receipt_position(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_seen_pulse_only_moves_forward_per_chain() {
+        let (a, b) = (Hash32([1; 32]), Hash32([2; 32]));
+        assert_eq!(seen_pulse(&a), None);
+        record_seen(&a, Pulse(40));
+        record_seen(&a, Pulse(30));
+        record_seen(&b, Pulse(5));
+        assert_eq!(seen_pulse(&a), Some(Pulse(40)));
+        assert_eq!(seen_pulse(&b), Some(Pulse(5)));
+        record_seen(&a, Pulse(41));
+        assert_eq!(seen_pulse(&a), Some(Pulse(41)));
+    }
 }

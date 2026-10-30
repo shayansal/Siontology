@@ -370,19 +370,20 @@ CODE.update({
     'demo-tasks': ('sion demo tasks --local: real output',
         '== Task Charters: paying for work only when the result passes a rule fixed in advance ==\n'
         '           bonds: sandbox-vendor 5,000 USD behind its environment, arbiter 3,000, reviewers 1,000 each, coder 100\n'
-        'Pulse  22  sandbox-vendor claims "swe-sandbox-7 has no known exploit that passes grader g-3"  [backed by its 5,000 USD bond]\n'
-        'Pulse  24  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task\n'
-        'Pulse  27  the orchestrator posts task 250bc44f: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on\n'
+        'Pulse  20  sandbox-vendor claims "swe-sandbox-7 has no known exploit that passes grader g-3"  [backed by its 5,000 USD bond]\n'
+        'Pulse  22  lab registers its eval orchestrator with a 1,000 USD budget, at most 500 USD per task\n'
+        'Pulse  25  the orchestrator posts task 9db4d57b: 150 USD escrowed for coder, from its budget. Fixed now: a result must rest on\n'
         "           sandbox-vendor's claim, may be attested by reviewer-1 or reviewer-2, and must pass the lab's policy at κ = 2\n"
-        'Pulse  29  …and task 24c91a63: a 40 USD bounty open to anyone, on the same terms\n'
+        'Pulse  27  …and task 7c243653: a 40 USD bounty open to anyone, on the same terms, except that reviewer-2 must attest a result\n'
         '           coder submits patch-4711; reviewer-1 and reviewer-2 each attest that it passes, on their own bonds\n'
-        'Pulse  46  coder claims the 150 USD on its own 100 USD bond → refused by the ledger: invalid transaction: result not accepted: cost of corruption 90 (after detection discount 900/1000) is below κ·V = 300; only 100 of backing is unreserved; κ·V = 300 is needed\n'
-        'Pulse  48  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid 150 USD; 300 USD of that backing reserved for the lab\n'
-        'Pulse  51  coder settles again → refused by the ledger: invalid transaction: the task is not open: a task is paid once\n'
-        "Pulse  54  bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD\n"
-        'Pulse  58  the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab\n'
-        "Pulse  60  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim\n"
-        "Pulse  63  arbiter upholds it: the vendor's bond is slashed, and 4 claims fall: the environment's, and the 3 results resting on it, paid or not\n"
+        'Pulse  47  coder claims the 150 USD on its own 100 USD bond → refused by the ledger: invalid transaction: result not accepted: cost of corruption 90 (after detection discount 900/1000) is below κ·V = 300; only 100 of backing is unreserved; κ·V = 300 is needed\n'
+        'Pulse  50  coder settles with both attestations: cost of corruption 2,100 USD (100 + 1,000 + 1,000) covers κ·V = 300 → paid 150 USD; 300 USD of that backing reserved for the lab\n'
+        'Pulse  53  coder settles again → refused by the ledger: invalid transaction: the task is not open: a task is paid once\n'
+        "Pulse  55  bounty-hunter tries the bounty without reviewer-2's attestation → refused by the ledger: invalid transaction: every verifier the task says must attest has to attest the result\n"
+        "Pulse  58  bounty-hunter settles the open bounty with reviewer-2's attestation → paid 40 USD\n"
+        'Pulse  63  the orchestrator withdraws an unclaimed bounty: 30 USD back to the lab\n'
+        "Pulse  65  red-team shows that grader g-3 accepts any patch that deletes the failing test, and challenges the vendor's claim\n"
+        "Pulse  68  arbiter upholds it: the vendor's bond is slashed, and 5 claims fall: the environment's, and the 4 results resting on it, paid or not\n"
         "           the lab is compensated 190 USD from the vendor's bond for the two results it paid for (lab +190 USD)\n"
         '           red-team gets its deposit back and a share of the slashed bond: +2,505 USD, a bounty for the reward hack paid by the vendor'),
     'demo-robots': ('sion demo robots --local: real output',

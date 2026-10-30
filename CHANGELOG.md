@@ -10,6 +10,34 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Attested tasks and an index of claims (specification v1.15)
+
+- **Required attestations.** A task's acceptance rule can name verifiers
+  who must each attest every result (`must_attest`) and how many
+  attestations a result needs (`min_attestations`). Until v1.14 a worker
+  could settle on its own bond alone if the bond was large enough, and a
+  bounty could not ask for a particular verifier, such as an overseer.
+- **Nobody attests their own result.** The ledger refuses an attestation
+  by the result's author, and a task whose named worker is one of its
+  verifiers. Until v1.14 only the commands checked this: in an open bounty,
+  a named verifier could submit a result of its own with its own
+  attestation.
+- **An index of claims.** `IndexClaim` names an owner's latest claim under
+  a key, such as a publisher's latest release of a skill, at an id anyone
+  can compute, and moves only to later claims of the owner's own. A reader
+  checks the entry with a state proof against a certified header, so no
+  server can make one up; the `sion` commands refuse a proof from more
+  than 16 Pulses before the latest certified Pulse they know of (one they
+  verified earlier, the node's own report, or `--min-pulse`) as stale.
+- `sion task post` takes `--must-attest` and `--min-attestations`, and
+  `sion skill bounty` too (one attestation by default: a better version is
+  verified by others); `sion skill publish` indexes the release under
+  `skill:<name>`; `sion skill latest publisher/name` reads the index with
+  its proof, and `sion skill install` takes `publisher/name`. The `tasks`
+  demo's bounty requires reviewer-2's attestation.
+- Both proof stacks implement v1.15, and the differential tests cover the
+  new rules and every way they fail.
+
 ### Lineage ids, token buckets, overlays and cohorts (specification v1.14)
 
 - **Lineage ids.** A spawned agent's id is `lineage_id(parent, index)`,

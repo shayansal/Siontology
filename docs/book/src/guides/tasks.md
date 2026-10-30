@@ -108,6 +108,82 @@ Pulse 54: Done: task e14ba3b6 cancelled: 30 USD refunded to alice; fee 0.0011 US
 A task with a named worker cannot be withdrawn before its deadline: only
 the worker may release it, so a worker can count on the work it took.
 
+## 7. Require an attestation
+
+A worker's own bond can be enough for the decision rule. A poster who
+wants someone else to check the work says so when posting (specification
+v1.15): `--must-attest` names verifiers who must each attest every result,
+and `--min-attestations` how many attestations a result needs. In a
+separate run, with coder's task bond at 1,000 USD, enough on its own to
+cover κ times 150 USD, alice posts a task that reviewer-1 must attest:
+
+```text
+$ sion task post alice 150 --worker coder --spec task.md --requires 90284b8c…de9b --verifiers reviewer-1,reviewer-2 --must-attest reviewer-1 --adjudicator e1d8032b…a12f --deadline 500
+alice signs: Escrow 150 USD for a task for coder, paid to them for a result resting on 1 required claim, attested by reviewer-1 and accepted under your policy, settled by Pulse 527. Fee 0.0011 USD; valid until Pulse 47.
+Pulse 29: Done: task d58c15cb posted with 150 USD in escrow, for coder, until Pulse 527; fee 0.0011 USD.
+task d58c15cb87f89830361a5685872c07435603a5120fb840dd3f3d13e362b798a7
+```
+
+On its bond alone, coder's result is refused, however large the bond:
+
+```text
+$ sion task submit coder d58c15cb…98a7 patch.diff
+coder signs: Publish the claim "result for task d58c15cb" (task.result/v1), valid for 1498 Pulses, resting on 3 assumptions and 1 other claims. Fee 0.0011 USD; valid until Pulse 49.
+Pulse 31: Done: claim 5bb64d8b submitted; fee 0.0011 USD.
+claim 5bb64d8bc995588bade3476384f7902edb64f84a0199ee5e13f2d987480d94e8
+$ sion task settle coder d58c15cb…98a7 5bb64d8b…94e8
+coder signs: Settle task d58c15cb with your result. Fee 0.0011 USD; valid until Pulse 53.
+Pulse 35: Failed (invalid transaction: every verifier the task says must attest has to attest the result); nothing happened except the fee of 0.0011 USD.
+```
+
+With reviewer-1's attestation it is paid:
+
+```text
+$ sion task attest reviewer-1 d58c15cb…98a7 patch.diff
+reviewer-1 signs: Publish the claim "the output for task d58c15cb passes" (task.attestation/v1), valid for 1492 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 55.
+Pulse 37: Done: claim 0d7c8d0f submitted; fee 0.0011 USD.
+claim 0d7c8d0f00288b2edca265b8ed61ed52eea93a3808615c0641a4c91c5f23dd45
+$ sion task submit coder d58c15cb…98a7 patch.diff --attestations 0d7c8d0f…dd45
+coder signs: Publish the claim "result for task d58c15cb" (task.result/v1), valid for 1487 Pulses, resting on 3 assumptions and 2 other claims. Fee 0.0011 USD; valid until Pulse 60.
+Pulse 43: Done: claim 636e495d submitted; fee 0.0011 USD.
+claim 636e495d47925b2587ee3490572d60295e1d2cd6a5b49fbbf86c55b88624d3e6
+$ sion task settle coder d58c15cb…98a7 636e495d…d3e6 --attestations 0d7c8d0f…dd45
+coder signs: Settle task d58c15cb with your result and 1 attestation. Fee 0.0011 USD; valid until Pulse 65.
+Pulse 47: Done: task d58c15cb settled: 150 USD paid to coder for result 636e495d, its backing reserved; fee 0.0011 USD.
+```
+
+## 8. Nobody attests their own result
+
+In an open bounty a verifier may take the work like anyone else, but its
+own attestation never counts: the ledger refuses a result that its author
+attested.
+
+```text
+$ sion task post alice 30 --requires 90284b8c…de9b --verifiers reviewer-1,reviewer-2 --min-attestations 1 --adjudicator e1d8032b…a12f --deadline 500
+alice signs: Escrow 30 USD for a task open to anyone, paid to the first worker for a result resting on 1 required claim, with at least 1 attestation and accepted under your policy, settled by Pulse 547. Fee 0.0011 USD; valid until Pulse 67.
+Pulse 49: Done: task 2109898a posted with 30 USD in escrow, open to anyone, until Pulse 547; fee 0.0011 USD.
+task 2109898acfa7542c1f6f9ea8516c91421014ab221fef6c64698e75dad48e7605
+$ sion task attest reviewer-2 2109898a…7605 patch.diff
+reviewer-2 signs: Publish the claim "the output for task 2109898a passes" (task.attestation/v1), valid for 1498 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 69.
+Pulse 52: Done: claim 611da3a1 submitted; fee 0.0011 USD.
+claim 611da3a1a3a262cf65f668b51dee90e0545ce07ff6a77261036efe78109deb23
+$ sion task submit reviewer-2 2109898a…7605 patch.diff --attestations 611da3a1…eb23
+reviewer-2 signs: Publish the claim "result for task 2109898a" (task.result/v1), valid for 1493 Pulses, resting on 3 assumptions and 2 other claims. Fee 0.0011 USD; valid until Pulse 74.
+Pulse 56: Done: claim 62d7864c submitted; fee 0.0011 USD.
+claim 62d7864cf42b848927eb5f90b772f525aaaa9d56f05181258d5c818f32158e47
+$ sion task settle reviewer-2 2109898a…7605 62d7864c…8e47 --attestations 611da3a1…eb23
+reviewer-2 signs: Settle task 2109898a with your result and 1 attestation. Fee 0.0011 USD; valid until Pulse 78.
+Pulse 60: Failed (invalid transaction: a result is never attested by its author); nothing happened except the fee of 0.0011 USD.
+```
+
+Nor can a task name its worker among its verifiers:
+
+```text
+$ sion task post alice 30 --worker reviewer-1 --requires 90284b8c…de9b --verifiers reviewer-1,reviewer-2 --adjudicator e1d8032b…a12f --deadline 500
+alice signs: Escrow 30 USD for a task for reviewer-1, paid to them for a result resting on 1 required claim and accepted under your policy, settled by Pulse 560. Fee 0.0011 USD; valid until Pulse 80.
+Pulse 62: Failed (invalid transaction: the task's worker cannot be one of its verifiers: nobody attests its own result); nothing happened except the fee of 0.0011 USD.
+```
+
 ## If the environment turns out to be exploitable
 
 Anyone who finds an exploit challenges the vendor's claim

@@ -1439,6 +1439,8 @@ Options:
       --spec <SPEC>                A file describing the task (its exact bytes are committed)
       --requires <REQUIRES>        Claims every result must rest on (comma-separated ids)
       --verifiers <VERIFIERS>      Verifiers whose attestations count (comma-separated wallets or accounts)
+      --must-attest <MUST_ATTEST>  Verifiers who must each attest every result, among --verifiers (comma-separated; spec v1.15)
+      --min-attestations <N>       How many attestations a result needs at least (spec v1.15) [default: 0]
       --adjudicator <ADJUDICATOR>  The adjudicator atom results must name (hex)
       --detection <DETECTION>      The largest detection factor results may declare, in permille [default: 900]
       --reliance <RELIANCE>        Pulses of reliance on a paid result (its backing stays reserved) [default: 1000]
@@ -1794,6 +1796,7 @@ Commands:
   pack     Print a skill directory's bundle root, the commitment releases and audits name, and write its bundle file
   audit    Audit a bundle: claim, on your bond, that it does what its description says and nothing else
   publish  Publish a release of a skill: a claim naming it, its version and its bundle root, on your bond or the audits of that root, or both
+  latest   A publisher's latest release of a skill, from its index on the ledger (spec v1.15), proven against a certified header
   show     A release: what it names, the backing behind it, and the decision rule for a value at risk
   install  Install a release for an agent: fetch and check its bundle, accept the release with the agent's remaining budget at risk, and only then put the skill in the agent's skills
   eval     Run an evaluation set on a skill: each case with stand-in tools, then its checks. Needs no node
@@ -1869,7 +1872,25 @@ Options:
       --previous <PREVIOUS>        The release this one follows (its claim id)
       --locator <LOCATOR>          Where installers can fetch the bundle (an https URL)
       --valid-for <VALID_FOR>      Validity in Pulses [default: 100000]
+      --no-index                   Do not name the release as your latest in your index (spec v1.15)
   -h, --help                       Print help
+```
+
+## `sion skill latest`
+
+```text
+A publisher's latest release of a skill, from its index on the ledger (spec v1.15), proven against a certified header
+
+Usage: sion skill latest [OPTIONS] <SKILL>
+
+Arguments:
+  <SKILL>  The publisher (wallet name or account) and the skill, as `publisher/name`
+
+Options:
+      --chain <CHAIN>          The chain identity the proof must verify against. Without it the node vouches for itself [env: SION_CHAIN=]
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --min-pulse <MIN_PULSE>  A certified Pulse you know of from elsewhere: a proof from more than 16 Pulses before it is refused as stale
+  -h, --help                   Print help
 ```
 
 ## `sion skill show`
@@ -1898,16 +1919,18 @@ Usage: sion skill install [OPTIONS] <WALLET> <AGENT> <RELEASE>
 Arguments:
   <WALLET>   The agent's wallet
   <AGENT>    The agent (its id)
-  <RELEASE>  The release (its claim id)
+  <RELEASE>  The release: its claim id, or `publisher/name` for the latest release in the publisher's index, proven against a certified header
 
 Options:
-      --bundle <BUNDLE>  The bundle file (default: the local bundle store, then the release's locator)
-      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --value <VALUE>    The value at risk (USD; default: the agent's remaining budget)
-      --kappa <KAPPA>    κ, the margin the backing must have over the value at risk [default: 2]
-      --pulses <PULSES>  How long the agent relies on it, in Pulses [default: 10000]
-      --skills <SKILLS>  The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
-  -h, --help             Print help
+      --chain <CHAIN>          With `publisher/name`: the chain identity the index's proof must verify against. Without it the node vouches for itself [env: SION_CHAIN=]
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --min-pulse <MIN_PULSE>  With `publisher/name`: a certified Pulse you know of from elsewhere; an index proof from more than 16 Pulses before it is refused as stale
+      --bundle <BUNDLE>        The bundle file (default: the local bundle store, then the release's locator)
+      --value <VALUE>          The value at risk (USD; default: the agent's remaining budget)
+      --kappa <KAPPA>          κ, the margin the backing must have over the value at risk [default: 2]
+      --pulses <PULSES>        How long the agent relies on it, in Pulses [default: 10000]
+      --skills <SKILLS>        The directory of the agent's skills (default: $SION_HOME/agents/skills/<agent>)
+  -h, --help                   Print help
 ```
 
 Asks for the decision before signing: a release whose backing does not cover the value at risk is refused without a fee.
@@ -1989,6 +2012,8 @@ Options:
       --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --amount <AMOUNT>            Escrow (USD), paid for an accepted version
       --verifiers <VERIFIERS>      Verifiers whose attestations count (comma-separated wallets or accounts)
+      --must-attest <MUST_ATTEST>  Verifiers who must each attest a version, among --verifiers (comma-separated)
+      --min-attestations <N>       How many attestations a version needs at least [default: 1]
       --adjudicator <ADJUDICATOR>  The adjudicator atom results must name
       --requires <REQUIRES>        Claims every result must rest on, such as the set's vouching (comma-separated ids)
       --worker <WORKER>            The worker (default: anyone may take it)

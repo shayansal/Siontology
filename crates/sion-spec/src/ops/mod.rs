@@ -9,6 +9,7 @@ mod bounded;
 mod charter;
 mod coins;
 pub(crate) mod delegation;
+mod index;
 mod knowledge;
 mod market;
 mod memory;
@@ -238,6 +239,7 @@ pub(crate) fn apply(run: &mut TxRun<'_>) -> Step {
             attestations,
         } => task::settle(run, *task, result, attestations),
         TxKind::CancelTask { task } => task::cancel(run, *task),
+        TxKind::IndexClaim { key, claim } => index::index_claim(run, key, *claim),
         TxKind::DelegateStake { validator, amount } => {
             delegation::delegate_stake(run, validator, *amount)
         }

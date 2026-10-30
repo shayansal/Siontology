@@ -1,4 +1,4 @@
-# The Siontology state transition — specification v1.14
+# The Siontology state transition — specification v1.15
 
 Status: normative for this reference implementation. Two implementations
 exist: the reference executor (`crates/sion-exec`, proof stack A) and an
@@ -1116,7 +1116,10 @@ rule fixed now, when the task is posted. Owned-linear, or bounded with
    (saturating); `|acceptance.requires| ≤ MAX_REQUIRED`;
    `|acceptance.verifiers| ≤ MAX_VERIFIERS`;
    `acceptance.detection_permille ≤ 1000`; `1 ≤ acceptance.reliance ≤
-   MAX_PERIOD`.
+   MAX_PERIOD`; `acceptance.must_attest ⊆ acceptance.verifiers`;
+   `acceptance.min_attestations ≤ |acceptance.verifiers|`; if `worker =
+   Some(w)`, `w ∉ acceptance.verifiers` (v1.15: nobody attests its own
+   result).
 2. Funding:
    - `charter = None`: `draw(USD, amount)`; `funder = None`; `refund_to =
      sender`.
@@ -1153,10 +1156,13 @@ result claim; `attestations` lists `(verifier, body)` pairs.
 3. `result.schema = RESULT_SCHEMA`; `result.payload = Public(bytes)` with
    `decode::<TaskResult>(bytes) = TaskResult { task, output }` for this
    `task` and some `output`.
-4. `|attestations| ≤ MAX_VERIFIERS`; their verifiers are distinct. For
-   each `(v, body)`: `v ∈ t.acceptance.verifiers`; `a = claim_id(v,
-   body)` is Active in the registry; `body.schema = ATTESTATION_SCHEMA`;
-   `body.payload = result.payload`.
+4. `|attestations| ≤ MAX_VERIFIERS`; their verifiers are distinct, and
+   none is the sender (v1.15: a result is never attested by its author).
+   For each `(v, body)`, in order: `v ∈ t.acceptance.verifiers`; `a =
+   claim_id(v, body)` is Active in the registry; `body.schema =
+   ATTESTATION_SCHEMA`; `body.payload = result.payload`. Then (v1.15):
+   every verifier in `t.acceptance.must_attest` is among them, and
+   `|attestations| ≥ t.acceptance.min_attestations`.
 5. The result's formula MUST be exactly
    `Formula::and([dual_signature(), Formula::or(alternatives),
    Formula::claim(q₁), …, Formula::claim(qⱼ)])`, where `alternatives` is
@@ -1179,7 +1185,10 @@ result claim; `attestations` lists `(verifier, body)` pairs.
 
 Step 5 fixes what a result rests on: the worker's own task bond, or any
 named verifier's attestation of the same output, and every required
-claim. A worker therefore needs a task bond, however small, to issue a
+claim. The attestations step 4 requires sit in the same *or* as the
+worker's bond, so their backings add up as before; requiring them makes
+the presence of an independent check a condition of payment, which no
+bond, however large, can stand in for. A worker therefore needs a task bond, however small, to issue a
 result at all (a claim's atoms must be registered, §5.4). A worker cannot make a result look harder to fake by citing
 unrelated claims, and cannot leave out the environment's. Because the
 reservation is made for `t.refund_to`, if a required claim is later
@@ -1620,6 +1629,37 @@ against them (§5.13 **spend**), and nothing in it spawns unless
 A narrowing binds the subtree as soon as it executes; payments certified
 before then but executed after are checked against it.
 
+### 5.58 IndexClaim { key, claim }
+
+An **index entry** names the latest claim its owner made under a key, such
+as a publisher's latest release of a skill (v1.15). It moves only to a
+later claim of the owner's own, so a reader who checks the entry with a
+state proof against a certified header knows the owner's latest claim
+under the key as of that header. A server can still answer from an older
+header: how recent a header must be is for the reader to require.
+Contended, in the assurance domain. Constant of `sion_exec::index`:
+`MAX_INDEX_KEY` (64). `index_id(owner, key) = ObjectId(H("sion/id/index",
+borsh((owner, key))))`.
+
+1. `1 ≤ |key| ≤ MAX_INDEX_KEY` bytes, each from `0x21` to `0x7e`.
+2. Load the assurance object; its registry MUST hold `claim` with status
+   Active and issuer the sender (its record `c`).
+3. `id = index_id(sender, key)`. If `try_load(id)` gives an object (MUST be
+   an index entry `e`): the registry's record of `e.claim` MUST have a
+   `sequence` below `c.sequence` ("an index entry moves only to a later
+   claim"); `e.previous = Some(e.claim)`; `e.claim = claim`; `e.count =
+   e.count + 1` (saturating); `e.updated_at = ctx.pulse`; store `e`.
+   Otherwise `create_at(id, Shared(object_domain("index", id)), IndexEntry
+   { owner: sender, key, claim, previous: None, count: 1, updated_at:
+   ctx.pulse })`.
+4. Event `ClaimIndexed { entry: id, owner: sender, key, claim, count }`
+   (the entry's count after this transaction).
+
+An entry is never removed. The claim it names may later expire or be
+proven false: a reader checks the claim's status as it would any claim's.
+A claim registers at the end of the Pulse it is issued in (§5.4), so it can
+be indexed from the next Pulse on.
+
 ## 6. The Pulse
 
 ### 6.1 Order
@@ -1988,6 +2028,23 @@ committees of the validator set in force when the Pulse began: the proof
 carries the validator set with a state proof against `before.state_root`.
 
 ## Changes
+
+- **v1.15.** Attested tasks and an index of claims. A task's acceptance
+  rule can require attestations: `Acceptance` gains `must_attest` (the
+  verifiers who must each attest every result) and `min_attestations` (how
+  many attestations a result needs), and a result is never attested by
+  its author (§5.43 step 4), nor is a named worker one of its task's
+  verifiers (§5.42 step 1). Until v1.14 a worker could settle on its own
+  bond alone if the bond was large enough, and only the commands kept a
+  worker from attesting its own result: in an open bounty, a named
+  verifier could submit a result of its own with its own attestation. New
+  operation `IndexClaim` (§5.58): an owner's index entry at
+  `index_id(owner, key)` names its latest claim under the key and moves
+  only to later claims of its own. New module `sion_exec::index` (type
+  `IndexEntry`, constant `MAX_INDEX_KEY`, `index_id`), object
+  `ObjectData::IndexEntry`, transaction kind `IndexClaim` and event
+  `ClaimIndexed`; the encodings of `Acceptance`, and so of `PostTask` and
+  of tasks, change.
 
 - **v1.14.** Lineage ids, token buckets, overlays and cohorts (§5.13).
   A spawned charter's id is `lineage_id(parent, index)`, with the index

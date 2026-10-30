@@ -96,6 +96,55 @@ fn object(id: &ObjectId) -> String {
     id.short()
 }
 
+/// What a task's rule asks of attestations (spec v1.15), as a clause after
+/// the required claims: empty when it asks nothing.
+fn attestation_terms(names: &Names, acceptance: &sion_exec::task::Acceptance) -> String {
+    let must: Vec<String> = acceptance
+        .must_attest
+        .iter()
+        .map(|v| names.account(v))
+        .collect();
+    let at_least = usize::from(acceptance.min_attestations);
+    let count = |n: usize| {
+        if n == 1 {
+            "1 attestation".to_string()
+        } else {
+            format!("{n} attestations")
+        }
+    };
+    match (must.is_empty(), at_least > must.len()) {
+        (true, false) => String::new(),
+        (true, true) => format!(", with at least {}", count(at_least)),
+        (false, false) => format!(", attested by {}", join_and(&must)),
+        (false, true) => format!(
+            ", attested by {}, with at least {}",
+            join_and(&must),
+            count(at_least)
+        ),
+    }
+}
+
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// `text` with anything but printable ASCII shown as `?`.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
 fn claim(id: &ClaimId) -> String {
     format!("claim {}", id.short())
 }
@@ -586,7 +635,7 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             charter,
             ..
         } => format!(
-            "Escrow {} for a task {}, paid {} for a result resting on {} required {} and accepted under your policy, settled by Pulse {deadline}{}",
+            "Escrow {} for a task {}, paid {} for a result resting on {} required {}{} and accepted under your policy, settled by Pulse {deadline}{}",
             names.usd(*amount),
             match worker {
                 Some(worker) => format!("for {}", names.account(worker)),
@@ -595,6 +644,7 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
             if worker.is_some() { "to them" } else { "to the first worker" },
             acceptance.requires.len(),
             if acceptance.requires.len() == 1 { "claim" } else { "claims" },
+            attestation_terms(names, acceptance),
             match charter {
                 Some(charter) => format!(", from agent {}'s budget", object(charter)),
                 None => String::new(),
@@ -614,6 +664,11 @@ pub fn sentence(names: &Names, tx: &Transaction) -> String {
         TxKind::CancelTask { task } => format!(
             "Cancel task {} and refund its escrow",
             object(task)
+        ),
+        TxKind::IndexClaim { key, claim: c } => format!(
+            "Name {} as your latest claim under \"{}\" (your index entry moves only to a later claim of yours)",
+            claim(c),
+            printable(key)
         ),
         TxKind::DelegateStake { validator, amount } => format!(
             "Delegate {} to validator {}'s pool; you keep the delegation, which earns from the epoch's end",
@@ -839,6 +894,19 @@ pub fn event(names: &Names, event: &Event) -> String {
             "the narrowing of agent {} lifted by {}",
             object(agent),
             names.account(by)
+        ),
+        Event::ClaimIndexed {
+            owner,
+            key,
+            claim: c,
+            count,
+            ..
+        } => format!(
+            "{}'s latest claim under \"{}\" is {} ({} named so far)",
+            names.account(owner),
+            printable(key),
+            claim(c),
+            count
         ),
         Event::CharterReclaimed { charter, amount } => format!(
             "{} returned from charter {}",

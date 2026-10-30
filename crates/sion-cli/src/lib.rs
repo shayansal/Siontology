@@ -14,6 +14,10 @@
 //! - [`tasks`]: Task Charters: escrowed work with acceptance fixed in advance.
 //! - [`x402`]: HTTP 402 payments settled on Siontology, for servers and agents.
 
+// The MCP server's tool list is one json! literal, deeper than the default
+// macro recursion limit allows.
+#![recursion_limit = "256"]
+
 pub mod agent_mcp;
 pub mod agent_memory;
 pub mod agent_storage;

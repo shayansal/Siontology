@@ -537,8 +537,9 @@ impl Tool for TaskPostTool {
             description: "Hire another agent: escrow money from your budget for a piece of work, \
                           paid only for a result that passes the rule fixed now. Give the amount \
                           in USD, the work's description in full, and optionally the worker (a \
-                          wallet name or account), verifiers whose attestations count, and the \
-                          deadline in Pulses (default 1000)."
+                          wallet name or account), verifiers whose attestations count, those of \
+                          them who must attest every result, how many attestations a result \
+                          needs at least, and the deadline in Pulses (default 1000)."
                 .into(),
             input_schema: schema(
                 json!({
@@ -546,6 +547,8 @@ impl Tool for TaskPostTool {
                     "description": {"type": "string"},
                     "worker": {"type": "string"},
                     "verifiers": {"type": "array", "items": {"type": "string"}},
+                    "must_attest": {"type": "array", "items": {"type": "string"}},
+                    "min_attestations": {"type": "integer"},
                     "deadline": {"type": "integer"}
                 }),
                 &["amount", "description"],
@@ -590,6 +593,19 @@ fn post(delegation: &Delegation, input: &Value) -> Result<String, String> {
                 .collect()
         })
         .unwrap_or_default();
+    let must_attest = input["must_attest"]
+        .as_array()
+        .map(|v| {
+            v.iter()
+                .filter_map(|x| x.as_str())
+                .map(|x| session.id(x))
+                .collect()
+        })
+        .unwrap_or_default();
+    let min_attestations = input["min_attestations"]
+        .as_u64()
+        .unwrap_or(0)
+        .min(u64::from(u8::MAX)) as u8;
     let deadline = input["deadline"].as_u64().unwrap_or(1_000).max(1);
     let now = ledger.pulse().map_err(|e| e.to_string())?;
     let reference = session.reference(&allotment).map_err(|e| e.to_string())?;
@@ -602,6 +618,8 @@ fn post(delegation: &Delegation, input: &Value) -> Result<String, String> {
                     policy: Assurance::standard(),
                     requires: Default::default(),
                     verifiers,
+                    must_attest,
+                    min_attestations,
                     adjudicator: delegation.adjudicator,
                     detection_permille: 900,
                     reliance: 1_000,

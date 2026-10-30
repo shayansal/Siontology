@@ -149,11 +149,13 @@ transition: it uses claims, bonds and Task Charters as they are.
    before the variant existed. The release then rests on their attestations
    and points to its parent, so anyone can follow a skill's lineage and the
    evidence for each step. An overseer's approval can be one of the
-   required claims, as a human review is in Hermes. *Built, except the
-   overseer: a bounty's spec names the release, the set's digest and the
-   cases to pass; its verifiers run the set themselves; the release rests
-   on the settled result and records it. An overseer can be a verifier,
-   but a bounty cannot yet require one particular verifier.*
+   required claims, as a human review is in Hermes. *Built: a bounty's
+   spec names the release, the set's digest and the cases to pass; its
+   verifiers run the set themselves; the release rests on the settled
+   result and records it. Since specification v1.15 a bounty can require
+   a particular verifier's attestation, an overseer's say
+   (`--must-attest`), and the ledger refuses an attestation by the
+   version's own author.*
 5. **Training data.** Trajectories export as JSON Lines in the chat format
    with tool calls, labelled with their verified outcomes, for fine-tuning
    or reinforcement learning; evaluations and rollouts can be bought from
