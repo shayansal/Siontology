@@ -396,7 +396,7 @@ fn serve(
     };
     let place = format!("{}:{}", target.host, target.port);
     if !allows(allowed, &target.host, target.port) {
-        let why = format!("{place} is not among the hosts the skill declares");
+        let why = format!("{place} is not among the hosts allowed");
         note(log, format!("{place} refused: not a declared host"));
         return refuse(&mut stream, &why);
     }
@@ -433,7 +433,24 @@ fn serve(
     } else {
         // Plain HTTP: the request goes on in origin form when connecting
         // directly, and as it is through an upstream proxy.
-        let mut head = lines.clone();
+        // One request per connection: each is checked, so the server is
+        // told to close after it, and a client's next request on this
+        // connection (for another site, say) is never acted on.
+        let mut head: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, line)| {
+                *i == 0
+                    || !line.split_once(':').is_some_and(|(name, _)| {
+                        let name = name.trim();
+                        name.eq_ignore_ascii_case("connection")
+                            || name.eq_ignore_ascii_case("proxy-connection")
+                            || name.eq_ignore_ascii_case("keep-alive")
+                    })
+            })
+            .map(|(_, line)| line.clone())
+            .collect();
+        head.push("Connection: close".into());
         if options.upstream.is_none() {
             let mut parts = head[0].splitn(3, ' ');
             let method = parts.next().unwrap_or_default().to_string();
@@ -497,24 +514,7 @@ pub fn bridge(listen: &str, socket: &Path, argv: &[String]) -> i32 {
     std::thread::spawn(move || {
         for client in listener.incoming().flatten() {
             let socket = socket.clone();
-            std::thread::spawn(move || {
-                let Ok(proxy) = UnixStream::connect(&socket) else {
-                    return;
-                };
-                let (Ok(mut client_read), Ok(mut proxy_write)) =
-                    (client.try_clone(), proxy.try_clone())
-                else {
-                    return;
-                };
-                let up = std::thread::spawn(move || {
-                    let _ = std::io::copy(&mut client_read, &mut proxy_write);
-                    let _ = proxy_write.shutdown(std::net::Shutdown::Write);
-                });
-                let (mut proxy_read, mut client_write) = (proxy, client);
-                let _ = std::io::copy(&mut proxy_read, &mut client_write);
-                let _ = client_write.shutdown(std::net::Shutdown::Write);
-                let _ = up.join();
-            });
+            std::thread::spawn(move || forward_to(client, &socket));
         }
     });
     match std::process::Command::new(program).args(args).status() {
@@ -532,6 +532,82 @@ pub fn bridge(listen: &str, socket: &Path, argv: &[String]) -> i32 {
         Err(e) => {
             eprintln!("sion sandbox bridge: cannot run {program}: {e}");
             127
+        }
+    }
+}
+
+/// Pipes `client` to the Unix socket `socket`, both ways, until both ends
+/// are done.
+fn forward_to(client: TcpStream, socket: &Path) {
+    let Ok(proxy) = UnixStream::connect(socket) else {
+        return;
+    };
+    let (Ok(mut client_read), Ok(mut proxy_write)) = (client.try_clone(), proxy.try_clone()) else {
+        return;
+    };
+    let up = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut client_read, &mut proxy_write);
+        let _ = proxy_write.shutdown(std::net::Shutdown::Write);
+    });
+    let (mut proxy_read, mut client_write) = (proxy, client);
+    let _ = std::io::copy(&mut proxy_read, &mut client_write);
+    let _ = client_write.shutdown(std::net::Shutdown::Write);
+    let _ = up.join();
+}
+
+/// A port on this machine's loopback forwarded to an egress proxy's
+/// socket, for a program outside any sandbox that takes its proxy as an
+/// address (a browser without bubblewrap). Other programs on this machine
+/// can connect to it while it runs, and reach what the proxy lets through.
+/// Stopped when dropped.
+#[derive(Debug)]
+pub struct Forward {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Forward {
+    /// Forwards a free loopback port to the proxy's `socket`.
+    pub fn start(socket: &Path) -> Result<Forward, String> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("no port to reach the egress proxy from: {e}"))?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let socket = socket.to_path_buf();
+        let thread = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                for client in listener.incoming() {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Ok(client) = client else { continue };
+                    let socket = socket.clone();
+                    std::thread::spawn(move || forward_to(client, &socket));
+                }
+            })
+        };
+        Ok(Forward {
+            port,
+            stop,
+            thread: Some(thread),
+        })
+    }
+
+    /// The forwarded port.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for Forward {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wake the accept loop so that it sees the flag.
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -612,6 +688,59 @@ mod tests {
             }
         });
         port
+    }
+
+    #[test]
+    fn a_plain_request_goes_on_alone_its_connection_closed_after_it() {
+        // A server that answers with the head of the request it got.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{head}",
+                    head.len()
+                );
+            }
+        });
+        let egress = Egress::start(rules(&[&format!("127.0.0.1:{port}")]), local()).unwrap();
+        let mut s = UnixStream::connect(egress.dir().join(SOCKET_NAME)).unwrap();
+        write!(
+            s,
+            "GET http://127.0.0.1:{port}/a HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nProxy-Connection: keep-alive\r\nConnection: keep-alive\r\n\r\n"
+        )
+        .unwrap();
+        let answer = read_all(s);
+        let seen = answer.split("\r\n\r\n").nth(1).unwrap_or_default();
+        assert!(seen.starts_with("GET /a HTTP/1.1\r\n"), "{seen}");
+        assert!(seen.contains("\r\nConnection: close"), "{seen}");
+        assert!(!seen.contains("keep-alive"), "{seen}");
+    }
+
+    #[test]
+    fn a_forward_reaches_the_proxy_from_a_loopback_port() {
+        let port = hello_server();
+        let egress = Egress::start(rules(&[&format!("127.0.0.1:{port}")]), local()).unwrap();
+        let forward = Forward::start(&egress.dir().join(SOCKET_NAME)).unwrap();
+        let ask = |line: &str| {
+            let mut s = TcpStream::connect(("127.0.0.1", forward.port())).unwrap();
+            write!(s, "{line}\r\n\r\n").unwrap();
+            read_all(s)
+        };
+        let through = ask(&format!(
+            "GET http://127.0.0.1:{port}/ HTTP/1.1\r\nHost: 127.0.0.1:{port}"
+        ));
+        assert!(through.ends_with("hello"), "{through}");
+        let refused = ask("CONNECT other.test:443 HTTP/1.1");
+        assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+        let at = forward.port();
+        drop(forward);
+        // The port is let go with it.
+        assert!(std::net::TcpListener::bind(("127.0.0.1", at)).is_ok());
     }
 
     #[test]

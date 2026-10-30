@@ -7,6 +7,11 @@
 //! the same call. That lets a script stand in for a model that follows the
 //! instructions it reads, such as a skill's: it does only what its script
 //! says, under the conditions its script names.
+//!
+//! A string in a call's input that starts with [`REF_OF`] stands for the
+//! reference of an element of the latest page a browser tool returned:
+//! `ref of: link "Sign in"` is the reference (`e12`) of its first line that
+//! contains `link "Sign in"`, as a model reading the page picks one.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -101,6 +106,50 @@ fn empty_object() -> Value {
     Value::Object(Default::default())
 }
 
+/// What starts a string in a call's input that stands for an element's
+/// reference on the latest page.
+pub const REF_OF: &str = "ref of: ";
+
+/// `input`, its strings that start with [`REF_OF`] replaced by the
+/// references they describe (left as they are if no page has them).
+fn resolved(input: &Value, request: &Request) -> Value {
+    match input {
+        Value::String(text) => match text.strip_prefix(REF_OF) {
+            Some(needle) => reference_in(request, needle)
+                .map(Value::String)
+                .unwrap_or_else(|| input.clone()),
+            None => input.clone(),
+        },
+        Value::Array(items) => Value::Array(items.iter().map(|v| resolved(v, request)).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), resolved(v, request)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The reference on the first line of the latest page (a tool result with
+/// references) that contains `needle`, ignoring case.
+fn reference_in(request: &Request, needle: &str) -> Option<String> {
+    let needle = needle.to_lowercase();
+    let page = request
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|m| m.content.iter().rev())
+        .find_map(|b| match b {
+            Block::ToolResult { content, .. } if content.contains("[ref=") => Some(content),
+            _ => None,
+        })?;
+    let line = page
+        .lines()
+        .find(|l| l.contains("[ref=") && l.to_lowercase().contains(&needle))?;
+    let at = line.find("[ref=")? + "[ref=".len();
+    Some(line[at..].split(']').next()?.to_string())
+}
+
 /// The text a step's condition is matched against: the system prompt and
 /// every message, tool calls and results included, in lower case.
 fn conversation_text(request: &Request) -> String {
@@ -188,7 +237,7 @@ impl Scripted {
                 .map(|(i, (name, input))| Block::ToolUse {
                     id: format!("call-{turn}-{i}"),
                     name: name.clone(),
-                    input: input.clone(),
+                    input: resolved(input, request),
                 })
                 .collect();
             Ok(reply(content, Stop::ToolUse))
@@ -297,7 +346,34 @@ mod tests {
             messages: vec![Message::user("hi")],
             tools: Vec::new(),
             max_tokens: 100,
+            images: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_reference_is_picked_from_the_latest_page_by_what_it_says() {
+        let model = Scripted::from_json(
+            "s",
+            r#"[{"call": "browser_click", "input": {"ref": "ref of: link \"sign in\""}},
+                {"call": "browser_click", "input": {"ref": "ref of: button \"Gone\""}}]"#,
+        )
+        .unwrap();
+        let mut request = request();
+        request.messages.push(Message {
+            role: crate::model::Role::User,
+            content: vec![Block::ToolResult {
+                id: "c".into(),
+                content: "page https://shop.example/\n- heading \"Shop\" [ref=e1]\n- link \"Sign in\" [ref=e7]".into(),
+                is_error: false,
+                images: Vec::new(),
+            }],
+        });
+        let first = model.complete(&request).unwrap();
+        assert!(matches!(&first.content[0], Block::ToolUse { input, .. } if input["ref"] == "e7"));
+        // What no page has is left as it is: the tool says so.
+        let second = model.complete(&request).unwrap();
+        assert!(matches!(&second.content[0], Block::ToolUse { input, .. }
+            if input["ref"] == "ref of: button \"Gone\""));
     }
 
     #[test]

@@ -97,6 +97,11 @@ pub struct Policy {
     /// `allowed-tools` (see [`crate::permissions`]).
     #[serde(default = "yes")]
     pub skill_approvals: bool,
+    /// Tools whose external calls reach only where the operator named (a
+    /// browser held to its hosts): content from outside does not hold
+    /// them for approval. Spending is held whatever the tool.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub contained: BTreeSet<String>,
 }
 
 fn yes() -> bool {
@@ -111,6 +116,7 @@ impl Default for Policy {
             approval_ttl: 15 * 60,
             taint_ttl: 24 * 3600,
             skill_approvals: true,
+            contained: BTreeSet::new(),
         }
     }
 }
@@ -176,7 +182,12 @@ impl Policy {
             return Decision::Deny(format!("{tool} is not granted to this agent"));
         }
         let mut decision = self.autonomy.decide(effect);
-        if decision == Decision::Run && effect >= Effect::External && standing.tainted(now) {
+        let contained = effect == Effect::External && self.contained.contains(tool);
+        if decision == Decision::Run
+            && effect >= Effect::External
+            && !contained
+            && standing.tainted(now)
+        {
             decision = Decision::Ask(
                 "the session has read content from outside; external calls and spending need \
                  approval until the taint expires"
@@ -246,6 +257,38 @@ mod tests {
             policy.decide(&standing, "pay", Effect::Spend, "k", later),
             Decision::Run
         );
+    }
+
+    #[test]
+    fn a_contained_tool_acts_after_a_taint_and_spending_still_asks() {
+        let policy = Policy {
+            autonomy: Autonomy::L5,
+            contained: ["browser_click".to_string()].into(),
+            ..Policy::default()
+        };
+        let mut standing = Standing::default();
+        standing.taint(&policy, 100);
+        assert_eq!(
+            policy.decide(&standing, "browser_click", Effect::External, "c", 101),
+            Decision::Run
+        );
+        assert!(matches!(
+            policy.decide(&standing, "fetch_url", Effect::External, "f", 101),
+            Decision::Ask(_)
+        ));
+        assert!(matches!(
+            policy.decide(&standing, "browser_click", Effect::Spend, "s", 101),
+            Decision::Ask(_)
+        ));
+        // What the level refuses, it still refuses.
+        let lower = Policy {
+            autonomy: Autonomy::L3,
+            ..policy
+        };
+        assert!(matches!(
+            lower.decide(&standing, "browser_click", Effect::External, "c", 101),
+            Decision::Deny(_)
+        ));
     }
 
     #[test]

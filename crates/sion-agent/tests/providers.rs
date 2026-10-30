@@ -76,6 +76,7 @@ fn conversation() -> Request {
                     id: "toolu_1".into(),
                     content: "12.5 USD".into(),
                     is_error: false,
+                    images: Vec::new(),
                 }],
             },
         ],
@@ -85,7 +86,106 @@ fn conversation() -> Request {
             input_schema: json!({"type": "object", "properties": {"asset": {"type": "string"}}}),
         }],
         max_tokens: 512,
+        images: Default::default(),
     }
+}
+
+/// A conversation of four screenshots, the bytes of all of them kept.
+fn screenshots() -> Request {
+    let mut request = conversation();
+    request.messages.truncate(1);
+    for i in 0..4 {
+        let data = format!("cGljdHVyZS{i}=");
+        let digest = sion_agent::model::image_digest("image/png", &data);
+        request.images.insert(digest.clone(), data);
+        request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: format!("toolu_{i}"),
+                name: "screenshot".into(),
+                input: json!({}),
+            }],
+        });
+        request.messages.push(Message {
+            role: Role::User,
+            content: vec![Block::ToolResult {
+                id: format!("toolu_{i}"),
+                content: format!("screen {i}"),
+                is_error: false,
+                images: vec![sion_agent::model::Image {
+                    media_type: "image/png".into(),
+                    digest,
+                }],
+            }],
+        });
+    }
+    request
+}
+
+#[test]
+fn pictures_go_to_both_providers_the_last_three_shown() {
+    let request = screenshots();
+    let anthropic = Anthropic::new(client(), "claude-opus-5-5", "k").body(&request);
+    let results: Vec<&Value> = anthropic["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["content"][0]["type"] == "tool_result")
+        .map(|m| &m["content"][0])
+        .collect();
+    assert_eq!(results.len(), 4);
+    // The first picture is a line; the last three are pictures.
+    assert_eq!(results[0]["content"][0]["text"], "screen 0");
+    assert_eq!(results[0]["content"][1]["type"], "text");
+    assert_eq!(
+        results[0]["content"][1]["text"],
+        sion_agent::providers::IMAGE_NOT_SHOWN
+    );
+    for (i, result) in results.iter().enumerate().skip(1) {
+        let picture = &result["content"][1];
+        assert_eq!(picture["type"], "image");
+        assert_eq!(picture["source"]["media_type"], "image/png");
+        assert_eq!(picture["source"]["data"], format!("cGljdHVyZS{i}="));
+    }
+
+    let openai = OpenAiCompatible::new(client(), "http://127.0.0.1:1/v1", "m", None).body(&request);
+    let messages = openai["messages"].as_array().unwrap();
+    let tools: Vec<&Value> = messages.iter().filter(|m| m["role"] == "tool").collect();
+    assert!(tools[0]["content"]
+        .as_str()
+        .unwrap()
+        .ends_with(sion_agent::providers::IMAGE_NOT_SHOWN));
+    // A tool message holds text: each shown picture follows its result in a
+    // user message.
+    let pictures: Vec<&Value> = messages
+        .iter()
+        .filter(|m| m["role"] == "user" && m["content"].is_array())
+        .collect();
+    assert_eq!(pictures.len(), 3);
+    assert_eq!(
+        pictures[2]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,cGljdHVyZS3="
+    );
+
+    // A picture whose bytes are let go is a line too, and the last three of
+    // those kept are shown.
+    let mut fewer = screenshots();
+    let last = sion_agent::model::image_digest("image/png", "cGljdHVyZS3=");
+    fewer.images.remove(&last);
+    let body = Anthropic::new(client(), "claude-opus-5-5", "k").body(&fewer);
+    let kinds: Vec<String> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["content"][0]["type"] == "tool_result")
+        .map(|m| {
+            m["content"][0]["content"][1]["type"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(kinds, ["image", "image", "image", "text"]);
 }
 
 #[test]

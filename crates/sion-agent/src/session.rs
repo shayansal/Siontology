@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::journal::{key, Entry, Journal, Prior};
-use crate::model::{Block, Message, Model, ModelError, Request, Response, Role, Stop, Usage};
+use crate::model::{
+    image_digest, images_of, Block, Image, Message, Model, ModelError, Request, Response, Role,
+    Stop, Usage,
+};
 use crate::policy::{Decision, Policy, Standing};
 use crate::tools::{Outcome, Toolbox, TOOLS_CALL, TOOLS_SEARCH};
 
@@ -124,7 +127,15 @@ pub struct State {
     pub pending: Option<Pending>,
     /// How many times the conversation was compacted.
     pub compactions: u32,
+    /// The bytes (base64) of the last pictures tools returned, by their
+    /// digests: at most [`MAX_IMAGES_KEPT`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub images: BTreeMap<String, String>,
 }
+
+/// The most pictures a session keeps the bytes of: the last ones. The
+/// conversation keeps every picture's digest.
+pub const MAX_IMAGES_KEPT: usize = 6;
 
 impl State {
     /// A new session `id` that starts with the person's `task`.
@@ -352,7 +363,7 @@ impl Runtime<'_> {
                         let outcome = marked(ready, outcome);
                         self.finish(state, ready, &outcome);
                         progress |= !outcome.is_error;
-                        results.push(result_block(&calls[*at].0, &outcome));
+                        results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
                     }
                     index = next;
                     continue;
@@ -362,7 +373,7 @@ impl Runtime<'_> {
             match self.call(state, name, input) {
                 Called::Ran(outcome) => {
                     progress |= !outcome.is_error;
-                    results.push(result_block(use_id, &outcome));
+                    results.push(result_block(use_id, &outcome, &mut state.images));
                 }
                 Called::Wait {
                     key,
@@ -370,17 +381,23 @@ impl Runtime<'_> {
                     input: inner,
                     reason,
                 } => {
-                    results.push(result_block(use_id, &Outcome::ok(WAITING)));
+                    results.push(result_block(
+                        use_id,
+                        &Outcome::ok(WAITING),
+                        &mut state.images,
+                    ));
                     for (later, _, _) in &calls[index..] {
                         results.push(result_block(
                             later,
                             &Outcome::error("not run: an earlier call in this turn waited for approval; call it again if it is still needed"),
+                            &mut state.images,
                         ));
                     }
                     state.messages.push(Message {
                         role: Role::User,
                         content: results,
                     });
+                    keep_last_images(state);
                     state.pending = Some(Pending {
                         use_id: use_id.clone(),
                         key: key.clone(),
@@ -404,6 +421,7 @@ impl Runtime<'_> {
             role: Role::User,
             content: results,
         });
+        keep_last_images(state);
         None
     }
 
@@ -442,6 +460,7 @@ impl Runtime<'_> {
             messages: state.messages.clone(),
             tools: self.tools.shown(),
             max_tokens: self.limits.max_tokens,
+            images: state.images.clone(),
         };
         let now = (self.now)();
         let mut last = ModelError::Refused("no model is configured".into());
@@ -653,6 +672,7 @@ impl Runtime<'_> {
         messages.extend_from_slice(&state.messages[tail..]);
         state.messages = messages;
         state.compactions += 1;
+        keep_last_images(state);
     }
 }
 
@@ -663,22 +683,60 @@ fn is_results(message: &Message) -> bool {
         .any(|b| matches!(b, Block::ToolResult { .. }))
 }
 
-fn result_block(use_id: &str, outcome: &Outcome) -> Block {
+/// The block that gives the model `outcome`: its pictures by their
+/// digests, their bytes kept in `images`.
+fn result_block(use_id: &str, outcome: &Outcome, images: &mut BTreeMap<String, String>) -> Block {
+    let refs = outcome
+        .pictures
+        .iter()
+        .map(|picture| {
+            let digest = image_digest(&picture.media_type, &picture.base64);
+            images.insert(digest.clone(), picture.base64.clone());
+            Image {
+                media_type: picture.media_type.clone(),
+                digest,
+            }
+        })
+        .collect();
     Block::ToolResult {
         id: use_id.to_string(),
         content: outcome.content.clone(),
         is_error: outcome.is_error,
+        images: refs,
     }
 }
 
-fn replace_result(state: &mut State, use_id: &str, outcome: &Outcome) {
-    for message in state.messages.iter_mut().rev() {
-        for block in message.content.iter_mut() {
-            if matches!(block, Block::ToolResult { id, .. } if id == use_id) {
-                *block = result_block(use_id, outcome);
-                return;
-            }
+/// Lets go of the bytes of all but the last [`MAX_IMAGES_KEPT`] pictures
+/// the conversation names (and of any it no longer names).
+fn keep_last_images(state: &mut State) {
+    let mut kept: Vec<String> = Vec::new();
+    for image in images_of(&state.messages).into_iter().rev() {
+        if kept.len() == MAX_IMAGES_KEPT {
+            break;
         }
+        if !kept.contains(&image.digest) {
+            kept.push(image.digest.clone());
+        }
+    }
+    state.images.retain(|digest, _| kept.contains(digest));
+}
+
+fn replace_result(state: &mut State, use_id: &str, outcome: &Outcome) {
+    let mut found = None;
+    for (m, message) in state.messages.iter().enumerate().rev() {
+        if let Some(b) = message
+            .content
+            .iter()
+            .position(|block| matches!(block, Block::ToolResult { id, .. } if id == use_id))
+        {
+            found = Some((m, b));
+            break;
+        }
+    }
+    if let Some((m, b)) = found {
+        let block = result_block(use_id, outcome, &mut state.images);
+        state.messages[m].content[b] = block;
+        keep_last_images(state);
     }
 }
 

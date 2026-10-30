@@ -1,5 +1,7 @@
 //! What the runtime asks of a language model, independent of any provider.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -39,7 +41,62 @@ pub enum Block {
         content: String,
         /// Whether the call failed.
         is_error: bool,
+        /// The pictures it returned (a screenshot), by their digests.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
     },
+}
+
+/// A picture in a conversation. The conversation names it by the digest of
+/// its bytes, which are kept beside it ([`Request::images`]) while it is
+/// among the last few: so that a picture let go changes nothing the
+/// conversation's digest covers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    /// Its media type (`image/png`).
+    pub media_type: String,
+    /// The digest of its media type and bytes ([`image_digest`]), in hex.
+    pub digest: String,
+}
+
+/// The most pictures a model is shown at once: the last ones of the
+/// conversation. Earlier ones are a line that says so.
+pub const MAX_IMAGES_SHOWN: usize = 3;
+
+/// The digest a picture is named by: of its media type and its bytes in
+/// base64.
+pub fn image_digest(media_type: &str, base64: &str) -> String {
+    sion_core::hash::hash_parts(
+        "sion-agent/image/v1",
+        &[media_type.as_bytes(), base64.as_bytes()],
+    )
+    .to_hex()
+}
+
+/// The pictures of `messages`, in order.
+pub fn images_of(messages: &[Message]) -> Vec<&Image> {
+    messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .flat_map(|b| match b {
+            Block::ToolResult { images, .. } => images.as_slice(),
+            _ => &[],
+        })
+        .collect()
+}
+
+/// Which pictures of `messages`, by their place in [`images_of`], a model
+/// is shown: the last [`MAX_IMAGES_SHOWN`] of those whose bytes `kept`
+/// has.
+pub fn images_shown(messages: &[Message], kept: &BTreeMap<String, String>) -> BTreeSet<usize> {
+    images_of(messages)
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, image)| kept.contains_key(&image.digest))
+        .take(MAX_IMAGES_SHOWN)
+        .map(|(at, _)| at)
+        .collect()
 }
 
 impl Block {
@@ -122,6 +179,10 @@ pub struct Request {
     pub tools: Vec<ToolSpec>,
     /// The most tokens it may write.
     pub max_tokens: u32,
+    /// The bytes (base64) of the conversation's pictures that are kept, by
+    /// their digests.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub images: BTreeMap<String, String>,
 }
 
 /// Why a model stopped.

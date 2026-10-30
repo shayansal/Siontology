@@ -1074,6 +1074,7 @@ mod tests {
                 id: id.into(),
                 content: String::new(),
                 is_error,
+                images: Vec::new(),
             }],
         };
         let mut messages = vec![Message::user("Pay the invoices.")];

@@ -430,6 +430,7 @@ mod tests {
                         id: "c1".into(),
                         content: "treasury holds 1,234.5 USD".into(),
                         is_error: false,
+                        images: Vec::new(),
                     }],
                 },
             ],
@@ -484,6 +485,7 @@ mod tests {
                     id: "c".into(),
                     content: answer,
                     is_error: false,
+                    images: Vec::new(),
                 }],
             }],
         );

@@ -699,6 +699,7 @@ Commands:
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
   secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
+  login          Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
@@ -1044,13 +1045,27 @@ Options:
           Give it the reviewed tools of this MCP server (see `sion agent mcp add`). Repeat for more
       --storage
           Give it the storage-deal tools: keep a file of its workspace with storage providers (the escrow comes from its account's balance, not its budget), follow its deals and close them
+      --browser
+          Give it a browser (Chromium or Chrome, found on this machine or at SION_BROWSER): it opens pages, reads them as their accessibility tree, clicks, types and takes screenshots. It runs in bubblewrap where that works, and reaches public addresses only
+      --browser-host <HOST>
+          A host its browser, and its desktop's programs, may reach (default: any public host); `*` names any public host. Where you name them, it acts on their pages on its own, as its autonomy allows, even after reading them (`agent:browser-hosts`). Repeat for more
+      --login <NAME>
+          One of your logins its browser may fill (`sion agent login add`): only into a field of the login's origin, and never shown to it. Repeat for more
+      --computer [<SANDBOX>]
+          Give it a desktop of its own, seen in screenshots and used with a pointer and a keyboard (Xvfb, xdotool and ImageMagick): in bubblewrap (`bwrap`, the default) or `docker:<image>@sha256:<digest>`, an image with those programs. Needs --workspace
+      --computer-program <COMMAND>
+          A program it may start on its desktop, as a command line (`firefox --new-instance`). Repeat for more
+      --computer-size <SIZE>
+          Its desktop's size, WIDTHxHEIGHT [default: 1280x800]
+      --computer-network <NETWORK>
+          With a Docker desktop, the Docker network its programs reach: one you set up (default: none) [default: none]
       --no-skill-approvals
           Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
   -h, --help
           Print help
 ```
 
-See [Agents at work](../guides/agent-runtime.md), and [Commands, scripts and MCP servers](../guides/agent-tools.md) for `--shell`, `--mcp` and `--storage`.
+See [Agents at work](../guides/agent-runtime.md), [Commands, scripts and MCP servers](../guides/agent-tools.md) for `--shell`, `--mcp` and `--storage`, and [A browser and a desktop](../guides/agent-browser.md) for `--browser`, `--login` and `--computer`.
 
 ## `sion agent continue`
 
@@ -1222,6 +1237,20 @@ Options:
           Give it the reviewed tools of this MCP server. Repeat for more
       --storage
           Give it the storage-deal tools
+      --browser
+          Give it a browser (Chromium or Chrome, found on this machine or at SION_BROWSER): it opens pages, reads them as their accessibility tree, clicks, types and takes screenshots. It runs in bubblewrap where that works, and reaches public addresses only
+      --browser-host <HOST>
+          A host its browser, and its desktop's programs, may reach (default: any public host); `*` names any public host. Where you name them, it acts on their pages on its own, as its autonomy allows, even after reading them (`agent:browser-hosts`). Repeat for more
+      --login <NAME>
+          One of your logins its browser may fill (`sion agent login add`): only into a field of the login's origin, and never shown to it. Repeat for more
+      --computer [<SANDBOX>]
+          Give it a desktop of its own, seen in screenshots and used with a pointer and a keyboard (Xvfb, xdotool and ImageMagick): in bubblewrap (`bwrap`, the default) or `docker:<image>@sha256:<digest>`, an image with those programs. Needs --workspace
+      --computer-program <COMMAND>
+          A program it may start on its desktop, as a command line (`firefox --new-instance`). Repeat for more
+      --computer-size <SIZE>
+          Its desktop's size, WIDTHxHEIGHT [default: 1280x800]
+      --computer-network <NETWORK>
+          With a Docker desktop, the Docker network its programs reach: one you set up (default: none) [default: none]
       --instructions <INSTRUCTIONS>
           What to tell it beyond the fixed system prompt
       --no-skill-approvals
@@ -1375,6 +1404,73 @@ Options:
 Remove a secret
 
 Usage: sion agent secret remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent login`
+
+```text
+Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
+
+Usage: sion agent login [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add a login, or replace one: its password is read from standard input (not shown when typed), or taken from an environment variable
+  list    The logins' names, origins and user names (never their passwords)
+  remove  Remove a login
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [A browser and a desktop](../guides/agent-browser.md#logins).
+
+## `sion agent login add`
+
+```text
+Add a login, or replace one: its password is read from standard input (not shown when typed), or taken from an environment variable
+
+Usage: sion agent login add [OPTIONS] --origin <ORIGIN> --username <USERNAME> <NAME>
+
+Arguments:
+  <NAME>  Its name (lowercase letters, digits and hyphens), by which an agent asks for it
+
+Options:
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --origin <ORIGIN>          The origin it is for: https://accounts.example.com. It is filled only into pages of that origin
+      --username <USERNAME>      The user name
+      --password-env <VARIABLE>  Take the password from this environment variable instead
+  -h, --help                     Print help
+```
+
+The login is kept in `$SION_HOME/agents/logins.bin`, encrypted with ChaCha20-Poly1305 under the secrets' key (`agent:secret-store`), bound to the origin of the URL given.
+
+## `sion agent login list`
+
+```text
+The logins' names, origins and user names (never their passwords)
+
+Usage: sion agent login list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent login remove`
+
+```text
+Remove a login
+
+Usage: sion agent login remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>  Its name

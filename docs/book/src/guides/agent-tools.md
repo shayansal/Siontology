@@ -3,7 +3,8 @@
 An agent at work ([Agents at work](agent-runtime.md)) has the ledger as its
 tools, and files in a workspace. This page adds the rest of what agents
 use: a shell to run commands, the scripts that come with skills, and tools
-from MCP servers. Each runs under the same rules as any other tool: it
+from MCP servers (a browser and a desktop have [a page of their
+own](agent-browser.md)). Each runs under the same rules as any other tool: it
 declares the most a call can do, the [autonomy level](agent-runtime.md#autonomy)
 decides what runs and what waits for a person, and what comes from outside
 taints the session.

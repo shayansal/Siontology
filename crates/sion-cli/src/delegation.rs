@@ -497,6 +497,7 @@ fn work(
                     id,
                     content,
                     is_error,
+                    ..
                 } => {
                     let name = names.get(id).cloned().unwrap_or_default();
                     calls.push(if *is_error {

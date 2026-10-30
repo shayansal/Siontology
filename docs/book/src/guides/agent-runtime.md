@@ -104,6 +104,10 @@ what the agent tries, the ledger what it can do.
 Content from outside, such as a fetched page, **taints** the session for
 24 hours: until then, external calls and spending wait for approval even
 at L6, so instructions hidden in a page cannot move money on their own.
+A browser or a desktop held to the hosts the operator names is the one
+exception: it acts on their pages as the level allows, while the
+session's other external calls, and all spending, still wait ([A browser
+and a desktop](agent-browser.md#where-it-acts-on-its-own)).
 
 ## Approvals
 

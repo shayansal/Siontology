@@ -25,7 +25,7 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, storage deals) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop, storage deals) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -298,6 +298,28 @@ and `agent:mcp-oauth`. Not built: MCP resources, prompts, sampling and
 elicitation; client certificates (mutual TLS) for servers over HTTP; the
 device authorization grant
 ([Reliable, self-improving agents](book/src/research/agents.md)).
+A browser and a desktop
+([A browser and a desktop](book/src/guides/agent-browser.md)):
+`--browser` drives Chromium or Chrome over the DevTools protocol on a
+pipe, a page shown to the model as its accessibility tree with references
+(frames of the page's own site inside it), in bubblewrap on Linux with the
+machine's managed browser policies, reaching public addresses only, or the
+hosts `--browser-host` names, through the egress proxy; held to named
+hosts, it acts on their pages as the autonomy level allows
+(`Policy::contained`), and otherwise its actions after a page wait for a
+person; the operator's logins (`sion agent login`) are filled only into a
+field whose own frame is of the login's origin, and cut out of all it
+returns. `--computer` gives an X server of the session's own (Xvfb,
+xdotool, ImageMagick) in bubblewrap or a Docker image, with the programs
+the operator allows, as the `computer` tool. Pictures reach Anthropic's
+models in the tool result and OpenAI-compatible ones after it, the last
+three shown, the last six kept, every one named by its digest in the
+conversation. The browser and the desktop run for real in the tests
+(Chromium in bubblewrap against two sites on this machine; Xvfb in
+bubblewrap), and the guide's transcripts are of docs.rs. Trust atoms
+`agent:browser`, `agent:browser-hosts`, `agent:browser-logins`,
+`agent:desktop`. Not built: more than one page at a time, downloads and
+uploads; a desktop that outlives its process.
 
 ### Data availability
 
@@ -810,6 +832,10 @@ the architecture's own:
 | `agent:secret-store` | Skills' secrets are kept encrypted under a key in a file beside them, readable only by the operator's user: whoever can read that file can read them. A script that receives a secret can send it wherever its skill may connect, and can change it so that it is not cut out of what the model sees: the runtime removes the value as it is, not every encoding of it. |
 | `agent:mcp-remote` | An MCP server over HTTP runs elsewhere, under whoever runs it: it sees the arguments of every call made to it and answers what it likes. Over HTTPS its certificate shows only that it holds the name in its URL; plain HTTP, which the client allows to any address the operator gives, is as private as the networks it crosses. A header whose value names an environment variable (`${VAR}`) sends that value with every request. |
 | `agent:mcp-oauth` | OAuth tokens for MCP servers are kept encrypted under the secrets' key (`agent:secret-store`): whoever can read that key can act at that server as the person who consented, with the scopes granted, until the tokens expire or are revoked, and a refresh token renews them without the person. The login trusts the authorization server the server's metadata names: it checks that the metadata names the server, that the authorization server's own names it as issuer and that its answer comes back with the state and the issuer sent, and holds discovery and tokens to HTTPS at public addresses (plain HTTP when the MCP server is on this machine, private addresses when it is at one), but an authorization server of an attacker's that a server names is caught only by the person reading the page they consent on. `logout` revokes tokens only where the authorization server takes revocations; elsewhere they stay valid until they expire. |
+| `agent:browser` | The browser is Chromium (or Chrome), contained by bubblewrap's namespaces where it runs in them (its own sandbox is off there, as it cannot nest inside), with the machine's managed browser policies; elsewhere by its own sandbox, as the operator's user, and never as root. Without bubblewrap it reaches the egress proxy through a port on this machine's loopback, which any program of the machine can use while it runs, the runtime's upstream proxy and its credentials included. |
+| `agent:browser-hosts` | A browser held to the hosts the operator names acts on their pages after reading them, as the autonomy level allows: a page there can lead the model to carry what it knows to that site, in an address, a form or a post, and a named host that forwards what it is sent, or serves what others put there, takes it further. Without named hosts, its actions after a page wait for a person. |
+| `agent:browser-logins` | A login is filled only into a field whose frame is of the login's origin, as the browser knows it: a page of that origin can still send what is typed in it elsewhere, so a login is as safe as its site's pages. The password is cut out of what the browser returns as it is, not in every form a page could show it in. |
+| `agent:desktop` | A desktop's programs are contained as its sandbox contains them, their address space unbounded under bubblewrap; the X server they share lets each read the others' windows and send them input. A Docker desktop reaches what its Docker network reaches. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 

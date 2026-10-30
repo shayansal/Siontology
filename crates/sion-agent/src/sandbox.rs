@@ -122,7 +122,8 @@ pub struct Limits {
     /// Bytes of each of standard output and standard error kept.
     pub output_bytes: usize,
     /// Memory, in MiB: each process's address space with bubblewrap, the
-    /// container's memory with Docker.
+    /// container's memory with Docker. 0 sets none: for a browser, which
+    /// reserves far more address space than it uses.
     pub memory_mib: u64,
     /// The largest file a command may write, in MiB.
     pub file_mib: u64,
@@ -270,13 +271,14 @@ const SYSTEM_DIRS: [&str; 7] = [
 
 /// Files of `/etc` a command may need: certificates, the dynamic linker's
 /// cache, the alternatives programs link through, the time zone.
-const ETC_FILES: [&str; 6] = [
+const ETC_FILES: [&str; 7] = [
     "/etc/ssl",
     "/etc/ca-certificates",
     "/etc/ld.so.cache",
     "/etc/alternatives",
     "/etc/localtime",
     "/etc/mime.types",
+    "/etc/fonts",
 ];
 
 /// Files of `/etc` a command needs to resolve names, with network.
@@ -308,13 +310,13 @@ fn user_database() -> Option<(PathBuf, PathBuf)> {
 
 /// The owner of `dir` (its user and group), for a container to run as.
 #[cfg(unix)]
-fn owner(dir: &Path) -> Option<(u32, u32)> {
+pub(crate) fn owner(dir: &Path) -> Option<(u32, u32)> {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata(dir).ok().map(|m| (m.uid(), m.gid()))
 }
 
 #[cfg(not(unix))]
-fn owner(_dir: &Path) -> Option<(u32, u32)> {
+pub(crate) fn owner(_dir: &Path) -> Option<(u32, u32)> {
     None
 }
 
@@ -416,8 +418,10 @@ impl Sandbox {
         let memory = match self.backend {
             // Docker bounds the container's memory; bubblewrap, each
             // process's address space.
-            Backend::Bubblewrap => format!("ulimit -v {}; ", self.limits.memory_mib * 1024),
-            Backend::Docker { .. } => String::new(),
+            Backend::Bubblewrap if self.limits.memory_mib > 0 => {
+                format!("ulimit -v {}; ", self.limits.memory_mib * 1024)
+            }
+            _ => String::new(),
         };
         let cpu = if serves {
             String::new()
@@ -558,10 +562,12 @@ impl Sandbox {
         ]);
         cmd.arg("--pids-limit")
             .arg(self.limits.processes.to_string());
-        cmd.arg("--memory")
-            .arg(format!("{}m", self.limits.memory_mib));
-        cmd.arg("--memory-swap")
-            .arg(format!("{}m", self.limits.memory_mib));
+        if self.limits.memory_mib > 0 {
+            cmd.arg("--memory")
+                .arg(format!("{}m", self.limits.memory_mib));
+            cmd.arg("--memory-swap")
+                .arg(format!("{}m", self.limits.memory_mib));
+        }
         cmd.arg("--cpus").arg(self.limits.cpus.to_string());
         // The workspace's owner, so that the files it writes are theirs and
         // it can write the files they own.
@@ -628,16 +634,39 @@ impl Sandbox {
         argv: &[String],
         env: &[(String, String)],
     ) -> Result<(Child, String), String> {
+        self.spawn_with(mounts, workdir, argv, env, None)
+    }
+
+    /// Starts `argv` as [`Sandbox::spawn`] does, with, given `filtered`, a
+    /// network only through the egress proxy (as [`Sandbox::run_with`]).
+    pub fn spawn_with(
+        &self,
+        mounts: &[Mount],
+        workdir: &str,
+        argv: &[String],
+        env: &[(String, String)],
+        filtered: Option<&Filtered>,
+    ) -> Result<(Child, String), String> {
         if argv.is_empty() {
             return Err("no command to start".into());
         }
-        let (mounts, name) = self.ready(mounts)?;
-        let mounts = mounts.as_slice();
-        let script = format!(
+        let mut env = env.to_vec();
+        let mut files = Vec::new();
+        let mut mounts = mounts.to_vec();
+        let mut script = format!(
             "exec {}",
             argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
         );
-        let mut command = self.build(mounts, workdir, &script, &name, true, &[]);
+        let this = match filtered {
+            Some(filtered) => {
+                self.filter(filtered, &mut mounts, &mut files, &mut script, &mut env)?
+            }
+            None => self.clone(),
+        };
+        let env = env.as_slice();
+        let (mounts, name) = this.ready(&mounts)?;
+        let mounts = mounts.as_slice();
+        let mut command = this.build(mounts, workdir, &script, &name, true, &files);
         if let Backend::Docker { .. } = self.backend {
             // `--env NAME` takes the value from the client's environment.
             let mut args: Vec<std::ffi::OsString> = command.get_args().map(Into::into).collect();
@@ -700,46 +729,12 @@ impl Sandbox {
         let mut files = Vec::new();
         let mut mounts = mounts.to_vec();
         let mut script = script.to_string();
-        let mut this = self.clone();
-        if let Some(filtered) = filtered {
-            if !matches!(self.backend, Backend::Bubblewrap) {
-                return Err(
-                    "a network filtered by host needs the bubblewrap backend; with Docker, the operator's network decides"
-                        .into(),
-                );
+        let this = match filtered {
+            Some(filtered) => {
+                self.filter(filtered, &mut mounts, &mut files, &mut script, &mut env)?
             }
-            let Some((program, before)) = filtered.bridge.split_first() else {
-                return Err("no bridge program for the filtered network".into());
-            };
-            this.network = Network::None;
-            mounts.push(Mount {
-                host: filtered.socket_dir.clone(),
-                inside: crate::egress::SOCKET_DIR_INSIDE.into(),
-                writable: true,
-            });
-            files.push((
-                PathBuf::from(program),
-                crate::egress::BRIDGE_INSIDE.to_string(),
-            ));
-            let bridge = std::iter::once(crate::egress::BRIDGE_INSIDE.to_string())
-                .chain(before.iter().cloned())
-                .chain([
-                    crate::egress::LISTEN.to_string(),
-                    format!(
-                        "{}/{}",
-                        crate::egress::SOCKET_DIR_INSIDE,
-                        crate::egress::SOCKET_NAME
-                    ),
-                    "/bin/sh".into(),
-                    "-c".into(),
-                    script.clone(),
-                ])
-                .map(|a| quote(&a))
-                .collect::<Vec<_>>()
-                .join(" ");
-            script = format!("exec {bridge}");
-            env.extend(crate::egress::proxy_env());
-        }
+            None => self.clone(),
+        };
         let (mounts, name) = this.ready(&mounts)?;
         let mounts = mounts.as_slice();
         let mut command = this.build(mounts, workdir, &script, &name, false, &files);
@@ -779,6 +774,59 @@ impl Sandbox {
             timed_out,
             truncated: cut_out || cut_err,
         })
+    }
+
+    /// What a command with a `filtered` network needs: no network of the
+    /// sandbox's own, the proxy's socket and the bridge program bound in,
+    /// `script` started by the bridge, and the proxy's variables in `env`.
+    /// Returns the sandbox to run it in.
+    fn filter(
+        &self,
+        filtered: &Filtered,
+        mounts: &mut Vec<Mount>,
+        files: &mut Vec<(PathBuf, String)>,
+        script: &mut String,
+        env: &mut Vec<(String, String)>,
+    ) -> Result<Sandbox, String> {
+        if !matches!(self.backend, Backend::Bubblewrap) {
+            return Err(
+                "a network filtered by host needs the bubblewrap backend; with Docker, the operator's network decides"
+                    .into(),
+            );
+        }
+        let Some((program, before)) = filtered.bridge.split_first() else {
+            return Err("no bridge program for the filtered network".into());
+        };
+        let mut this = self.clone();
+        this.network = Network::None;
+        mounts.push(Mount {
+            host: filtered.socket_dir.clone(),
+            inside: crate::egress::SOCKET_DIR_INSIDE.into(),
+            writable: true,
+        });
+        files.push((
+            PathBuf::from(program),
+            crate::egress::BRIDGE_INSIDE.to_string(),
+        ));
+        let bridge = std::iter::once(crate::egress::BRIDGE_INSIDE.to_string())
+            .chain(before.iter().cloned())
+            .chain([
+                crate::egress::LISTEN.to_string(),
+                format!(
+                    "{}/{}",
+                    crate::egress::SOCKET_DIR_INSIDE,
+                    crate::egress::SOCKET_NAME
+                ),
+                "/bin/sh".into(),
+                "-c".into(),
+                script.clone(),
+            ])
+            .map(|a| quote(&a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        *script = format!("exec {bridge}");
+        env.extend(crate::egress::proxy_env());
+        Ok(this)
     }
 
     /// Waits for `child` within the time limit; stops it, and its

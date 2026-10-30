@@ -362,6 +362,8 @@ pub enum AgentCommand {
         /// not its budget), follow its deals and close them.
         #[arg(long)]
         storage: bool,
+        #[command(flatten)]
+        screen: crate::screens::ScreenArgs,
         /// Ask before every call its autonomy does not cover, even those a
         /// skill it read pre-approves with `allowed-tools`.
         #[arg(long)]
@@ -430,6 +432,11 @@ pub enum AgentCommand {
     /// script as environment variables, and cut out of what it prints.
     #[command(subcommand)]
     Secret(crate::secrets::SecretCommand),
+    /// Your logins agents' browsers may fill (`--login`): each bound to an
+    /// origin, kept encrypted on this machine, filled only into fields of
+    /// that origin, and never shown to the agent.
+    #[command(subcommand)]
+    Login(crate::logins::LoginCommand),
     /// MCP servers whose tools agents may use: add one (its tools are
     /// reviewed and pinned), list them, review one again, remove one.
     #[command(subcommand)]
@@ -577,10 +584,12 @@ pub fn run(
             shell,
             mcp,
             storage,
+            screen,
             no_skill_approvals,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shell = shell.sandbox()?;
+            let screen = screen.screen()?;
             let adjudicator = adjudicator
                 .map(|a| parse_id(&a, "adjudicator").map(|id| sion_core::ids::AtomId(id.0)))
                 .transpose()?;
@@ -629,6 +638,7 @@ pub fn run(
                     shell,
                     mcp,
                     storage,
+                    screen,
                 },
             )?;
             println!("session {} for agent {}", saved.state.id, agent.short());
@@ -817,10 +827,17 @@ pub fn run(
         }
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
+        AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
-        AgentCommand::Scheduler { once, poll } => crate::schedules::scheduler(shared, once, poll),
+        AgentCommand::Scheduler { once, poll } => {
+            crate::screens::keep_between_runs();
+            crate::schedules::scheduler(shared, once, poll)
+        }
         AgentCommand::Serve { listen, token_env } => {
+            // A server hears its sessions' approvals itself: what they
+            // browse stays open while they wait.
+            crate::screens::keep_between_runs();
             let token = std::env::var(&token_env).ok().filter(|t| !t.is_empty());
             if token.is_none() && crate::channels::tokens()?.is_empty() {
                 return Err(CliError::Usage(format!(
@@ -835,6 +852,7 @@ pub fn run(
             approvers,
             once,
         } => {
+            crate::screens::keep_between_runs();
             let profile = crate::profiles::get(&profile)?;
             crate::channels::telegram_with(shared, &profile, &allow, &approvers, once)
         }
@@ -845,6 +863,7 @@ pub fn run(
             approvers,
             once,
         } => {
+            crate::screens::keep_between_runs();
             let profile = crate::profiles::get(&profile)?;
             let messenger = crate::messengers::from_env(&via, &allow).map_err(CliError::Usage)?;
             crate::messengers::bridge(
@@ -867,6 +886,7 @@ pub fn run(
                     "{token_env} has at least 16 characters"
                 )));
             }
+            crate::screens::keep_between_runs();
             crate::gateway::serve(crate::gateway::Gateway::new(&name, shared, admin), &listen)
         }
         AgentCommand::Host {
@@ -874,6 +894,7 @@ pub fn run(
             profiles,
             messages,
         } => {
+            crate::screens::keep_between_runs();
             let profiles = profiles
                 .iter()
                 .map(|name| crate::profiles::get(name))

@@ -4,7 +4,43 @@
 
 use serde_json::{json, Value};
 
-use crate::model::{Block, Message, Model, ModelError, Request, Response, Role, Stop, Usage};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::model::{
+    images_shown, Block, Image, Message, Model, ModelError, Request, Response, Role, Stop, Usage,
+};
+
+/// What stands in a conversation for a picture a model is no longer shown.
+pub const IMAGE_NOT_SHOWN: &str = "[a picture, no longer shown: take a new one to see]";
+
+/// The pictures of a request, as the providers walk them: which are shown,
+/// and the place of the next one.
+struct Pictures<'a> {
+    kept: &'a BTreeMap<String, String>,
+    shown: BTreeSet<usize>,
+    next: usize,
+}
+
+impl<'a> Pictures<'a> {
+    fn of(messages: &[Message], kept: &'a BTreeMap<String, String>) -> Pictures<'a> {
+        Pictures {
+            kept,
+            shown: images_shown(messages, kept),
+            next: 0,
+        }
+    }
+
+    /// The bytes of the next picture, `image`, if it is shown.
+    fn next(&mut self, image: &Image) -> Option<&'a str> {
+        let at = self.next;
+        self.next += 1;
+        if self.shown.contains(&at) {
+            self.kept.get(&image.digest).map(String::as_str)
+        } else {
+            None
+        }
+    }
+}
 
 /// The most bytes of a model's answer read.
 const MAX_ANSWER: u64 = 8 << 20;
@@ -61,7 +97,12 @@ impl Anthropic {
 
     /// The request body for `request`.
     pub fn body(&self, request: &Request) -> Value {
-        let messages: Vec<Value> = request.messages.iter().map(anthropic_message).collect();
+        let mut pictures = Pictures::of(&request.messages, &request.images);
+        let messages: Vec<Value> = request
+            .messages
+            .iter()
+            .map(|m| anthropic_message(m, &mut pictures))
+            .collect();
         let tools: Vec<Value> = request
             .tools
             .iter()
@@ -83,7 +124,7 @@ impl Anthropic {
     }
 }
 
-fn anthropic_message(message: &Message) -> Value {
+fn anthropic_message(message: &Message, pictures: &mut Pictures<'_>) -> Value {
     let content: Vec<Value> = message
         .content
         .iter()
@@ -96,7 +137,31 @@ fn anthropic_message(message: &Message) -> Value {
                 id,
                 content,
                 is_error,
-            } => json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": is_error}),
+                images,
+            } if images.is_empty() => {
+                json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": is_error})
+            }
+            // A result with pictures is a list of blocks: its text, then
+            // each picture, or a line for one no longer shown.
+            Block::ToolResult {
+                id,
+                content,
+                is_error,
+                images,
+            } => {
+                let mut parts = Vec::new();
+                if !content.is_empty() {
+                    parts.push(json!({"type": "text", "text": content}));
+                }
+                for image in images {
+                    parts.push(match pictures.next(image) {
+                        Some(data) => json!({"type": "image", "source": {
+                            "type": "base64", "media_type": image.media_type, "data": data}}),
+                        None => json!({"type": "text", "text": IMAGE_NOT_SHOWN}),
+                    });
+                }
+                json!({"type": "tool_result", "tool_use_id": id, "content": parts, "is_error": is_error})
+            }
         })
         .collect();
     json!({"role": match message.role { Role::User => "user", Role::Assistant => "assistant" }, "content": content})
@@ -197,7 +262,7 @@ impl OpenAiCompatible {
 
     /// The request body for `request`.
     pub fn body(&self, request: &Request) -> Value {
-        let messages = openai_messages(&request.system, &request.messages);
+        let messages = openai_messages(&request.system, &request.messages, &request.images);
         let tools: Vec<Value> = request
             .tools
             .iter()
@@ -214,8 +279,15 @@ impl OpenAiCompatible {
 
 /// A conversation in OpenAI's chat format: the system prompt, then each
 /// message, with tool calls on assistant messages and one `tool` message per
-/// result.
-pub fn openai_messages(system: &str, conversation: &[Message]) -> Vec<Value> {
+/// result. A `tool` message holds text only: the pictures results returned
+/// follow them in a user message, those `images` still keeps and among the
+/// last shown.
+pub fn openai_messages(
+    system: &str,
+    conversation: &[Message],
+    images: &BTreeMap<String, String>,
+) -> Vec<Value> {
+    let mut pictures = Pictures::of(conversation, images);
     let mut messages = vec![json!({"role": "system", "content": system})];
     for message in conversation {
         match message.role {
@@ -233,21 +305,42 @@ pub fn openai_messages(system: &str, conversation: &[Message]) -> Vec<Value> {
                 messages.push(m);
             }
             Role::User => {
+                let mut shown: Vec<Value> = Vec::new();
                 for block in &message.content {
                     if let Block::ToolResult {
                         id,
                         content,
                         is_error,
+                        images,
                     } = block
                     {
-                        let content = if *is_error {
+                        let mut content = if *is_error {
                             format!("error: {content}")
                         } else {
                             content.clone()
                         };
+                        for image in images {
+                            match pictures.next(image) {
+                                Some(data) => {
+                                    content.push_str("\n[the picture it returned follows]");
+                                    shown.push(json!({"type": "image_url", "image_url": {
+                                        "url": format!("data:{};base64,{data}", image.media_type)}}));
+                                }
+                                None => {
+                                    content.push('\n');
+                                    content.push_str(IMAGE_NOT_SHOWN);
+                                }
+                            }
+                        }
                         messages
                             .push(json!({"role": "tool", "tool_call_id": id, "content": content}));
                     }
+                }
+                if !shown.is_empty() {
+                    let mut parts = vec![json!({"type": "text",
+                        "text": "The pictures the tool calls above returned:"})];
+                    parts.extend(shown);
+                    messages.push(json!({"role": "user", "content": parts}));
                 }
                 let text = message.text();
                 if !text.is_empty() {

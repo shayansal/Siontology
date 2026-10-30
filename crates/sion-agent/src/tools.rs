@@ -39,6 +39,19 @@ pub struct Outcome {
     /// name and its `allowed-tools` rules (see [`crate::permissions`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_approval: Option<(String, Vec<crate::permissions::ToolRule>)>,
+    /// Pictures the model is shown with the content (a screenshot). They
+    /// are not journaled: the session keeps the last few.
+    #[serde(skip)]
+    pub pictures: Vec<Picture>,
+}
+
+/// A picture a tool returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Picture {
+    /// Its media type (`image/png`).
+    pub media_type: String,
+    /// Its bytes, in base64.
+    pub base64: String,
 }
 
 impl Outcome {
@@ -50,6 +63,7 @@ impl Outcome {
             certain: true,
             untrusted: false,
             pre_approval: None,
+            pictures: Vec::new(),
         }
     }
 
@@ -61,6 +75,7 @@ impl Outcome {
             certain: true,
             untrusted: false,
             pre_approval: None,
+            pictures: Vec::new(),
         }
     }
 
@@ -72,7 +87,18 @@ impl Outcome {
             certain: false,
             untrusted: false,
             pre_approval: None,
+            pictures: Vec::new(),
         }
+    }
+
+    /// Adds a picture (`media_type`, its bytes in base64) the model is
+    /// shown with the content.
+    pub fn with_picture(mut self, media_type: &str, base64: String) -> Outcome {
+        self.pictures.push(Picture {
+            media_type: media_type.to_string(),
+            base64,
+        });
+        self
     }
 
     /// Marks the content as untrusted.

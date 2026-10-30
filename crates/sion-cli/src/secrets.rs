@@ -375,7 +375,7 @@ pub enum SecretCommand {
 
 /// Reads a secret's value from standard input: a line typed at a terminal,
 /// with echo off, or everything piped in, less one final line break.
-fn read_value() -> Result<Zeroizing<String>, CliError> {
+pub fn read_value(label: &str) -> Result<Zeroizing<String>, CliError> {
     use std::io::{IsTerminal, Read};
     let stdin = std::io::stdin();
     let mut value = Zeroizing::new(String::new());
@@ -387,7 +387,7 @@ fn read_value() -> Result<Zeroizing<String>, CliError> {
                 .status()
                 .is_ok_and(|s| s.success())
         };
-        eprint!("value (not shown): ");
+        eprint!("{label} (not shown): ");
         if !stty("-echo") {
             eprintln!();
             return Err(CliError::Usage(
@@ -423,7 +423,7 @@ pub fn run(command: SecretCommand) -> Result<(), CliError> {
                 Some(variable) => Zeroizing::new(std::env::var(&variable).map_err(|_| {
                     CliError::Usage(format!("{variable} is not set (or is not UTF-8)"))
                 })?),
-                None => read_value()?,
+                None => read_value("value")?,
             };
             let vault = Vault::here();
             let replaced = vault.add(&name, &value)?;

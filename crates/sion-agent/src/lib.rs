@@ -49,8 +49,11 @@
 //! messages), and what it did can be consolidated into notes worth keeping
 //! ([`consolidate`]: a model proposes, gates decide).
 
+pub mod browser;
 pub mod builtin;
+pub mod cdp;
 pub mod consolidate;
+pub mod desktop;
 pub mod egress;
 pub mod encoding;
 pub mod evals;

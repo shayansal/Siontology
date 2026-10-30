@@ -67,6 +67,9 @@ pub struct Profile {
     /// denial or its charter).
     #[serde(default = "yes")]
     pub skill_approvals: bool,
+    /// Its browser and desktop.
+    #[serde(default, skip_serializing_if = "crate::screens::Screen::is_empty")]
+    pub screen: crate::screens::Screen,
 }
 
 fn yes() -> bool {
@@ -91,6 +94,7 @@ impl Profile {
             mcp: self.mcp.clone(),
             storage: self.storage,
             instructions: self.instructions.clone(),
+            screen: self.screen.clone(),
         }
     }
 
@@ -224,6 +228,8 @@ pub enum ProfileCommand {
         /// Give it the storage-deal tools.
         #[arg(long)]
         storage: bool,
+        #[command(flatten)]
+        screen: crate::screens::ScreenArgs,
         /// What to tell it beyond the fixed system prompt.
         #[arg(long)]
         instructions: Option<String>,
@@ -300,10 +306,13 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             shell,
             mcp,
             storage,
+            screen,
             instructions,
             no_skill_approvals,
         } => {
             let shell = shell.sandbox()?;
+            let screen = screen.screen()?;
+            screen.check(workspace.as_deref())?;
             for server in &mcp {
                 crate::agent_mcp::get(server)?;
             }
@@ -348,6 +357,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 storage,
                 instructions: instructions.filter(|i| !i.trim().is_empty()),
                 skill_approvals: !no_skill_approvals,
+                screen,
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()

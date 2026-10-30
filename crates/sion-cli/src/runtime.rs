@@ -420,6 +420,12 @@ pub struct Saved {
     /// Whether it has the storage-deal tools.
     #[serde(default)]
     pub storage: bool,
+    /// Its browser and desktop.
+    #[serde(default, skip_serializing_if = "crate::screens::Screen::is_empty")]
+    pub screen: crate::screens::Screen,
+    /// Where its browser was when its last run ended, to go back to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_at: Option<sion_agent::browser::Restore>,
 }
 
 /// What a person answers a session with.
@@ -655,6 +661,16 @@ impl Saved {
                 tools.add_boxed(tool);
             }
         }
+        if !self.screen.is_empty() {
+            for tool in crate::screens::tools(
+                &self.screen,
+                &self.state.id,
+                self.workspace.as_deref(),
+                self.browser_at.clone(),
+            )? {
+                tools.add_boxed(tool);
+            }
+        }
         let memory = self.memory.map(|log| crate::agent_memory::Memory {
             acting: acting.clone(),
             log,
@@ -693,10 +709,18 @@ impl Saved {
                 model(spec, skip)
             })
             .collect::<Result<_, _>>()?;
+        // A browser and a desktop held to the hosts the operator named act
+        // on what they read, as the autonomy level allows.
+        let mut policy = self.policy.clone();
+        if self.screen.contained() {
+            policy
+                .contained
+                .extend(crate::screens::ACTING.iter().map(|t| t.to_string()));
+        }
         let runtime = Runtime {
             models: models.iter().map(|m| m.as_ref()).collect(),
             tools: &tools,
-            policy: self.policy.clone(),
+            policy,
             limits: self.limits.clone(),
             system,
             now: &now,
@@ -742,6 +766,10 @@ impl Saved {
             };
             reflecting.run(&mut self.state);
             reflection = transcript(&self.state.messages[start + 1..]);
+        }
+        if !self.screen.is_empty() {
+            let waits = matches!(ended, Ended::NeedsApproval { .. });
+            self.browser_at = crate::screens::after_run(&self.state.id, waits);
         }
         self.positions = models.iter().map(|m| m.position()).collect();
         self.save()?;
@@ -874,7 +902,10 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
                 Block::Text { text } => lines.push(format!("you: {}", text.trim())),
                 Block::ToolUse { name, input, .. } => lines.push(format!("  → {name} {input}")),
                 Block::ToolResult {
-                    content, is_error, ..
+                    content,
+                    is_error,
+                    images,
+                    ..
                 } => {
                     // A result of several lines (a command's output) keeps
                     // them, indented under the first, up to a screenful.
@@ -890,6 +921,11 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
                     }
                     if shown.next().is_some() {
                         lines.push("    …".to_string());
+                    }
+                    match images.len() {
+                        0 => {}
+                        1 => lines.push("    [a picture]".to_string()),
+                        n => lines.push(format!("    [{n} pictures]")),
                     }
                 }
             }
@@ -1165,6 +1201,8 @@ pub struct Equipment {
     /// Whether it has the storage-deal tools: keep a workspace file, follow
     /// and close its deals.
     pub storage: bool,
+    /// Its browser and desktop.
+    pub screen: crate::screens::Screen,
 }
 
 /// The default directory of an agent's skills.
@@ -1197,6 +1235,7 @@ pub fn start(
         shell,
         mcp,
         storage,
+        screen,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -1211,6 +1250,7 @@ pub fn start(
             check_apart(dir, Some(&skills))?;
         }
     }
+    screen.check(workspace.as_deref())?;
     if let Some(sandbox) = &shell {
         let root = workspace.as_ref().ok_or_else(|| {
             CliError::Usage("a shell needs a workspace to work in: give --workspace".into())
@@ -1270,6 +1310,8 @@ pub fn start(
         shell,
         mcp,
         storage,
+        screen,
+        browser_at: None,
     };
     let lines = saved.run(ledger)?;
     Ok((saved, lines))

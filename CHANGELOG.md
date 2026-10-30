@@ -10,6 +10,49 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A browser and a desktop of the agent's own
+
+- **A browser.** `sion agent run --browser` (and profiles) gives a session
+  Chromium or Chrome, with a profile made for the session, driven over
+  the DevTools protocol on a pipe: `browser_open`, `browser_snapshot`,
+  `browser_click`, `browser_type`, `browser_press`, `browser_scroll`,
+  `browser_back` and `browser_screenshot`. A page is its accessibility
+  tree, each element it can act on with a reference; frames of the page's
+  own site are shown in it. On Linux it runs in bubblewrap, with the
+  machine's managed browser policies; it reaches the network only through
+  the egress proxy, to public addresses, or to the hosts `--browser-host`
+  names. One page: what would open a window opens in it; a JavaScript
+  dialog is dismissed and reported.
+- **Where it acts on its own.** Pages taint the session, so by default its
+  actions after a page wait for a person, as fetching does. Named hosts
+  (`--browser-host docs.rs`, or `*`) hold it to those sites and let it act
+  on their pages as the autonomy level allows (the new
+  `Policy::contained`); everything else still waits.
+- **Logins.** `sion agent login add|list|remove` keeps logins encrypted
+  beside the secrets, each bound to an origin. `--login NAME` gives a
+  session one, filled by `browser_fill_login` only into a field whose own
+  frame is of that origin, and cut out of all the browser returns.
+- **A desktop.** `--computer` gives a session an X server of its own
+  (Xvfb, xdotool, ImageMagick) in bubblewrap or a Docker image, the
+  programs `--computer-program` allows, and the `computer` tool with the
+  actions computer-use models are trained on, each answered with a
+  screenshot.
+- **Pictures.** Tool results carry pictures: shown to Anthropic's models
+  in the result and to OpenAI-compatible ones in a message after it, the
+  last three at a time. A session keeps the bytes of the last six, and
+  the conversation every picture's digest, so that letting one go changes
+  nothing its trajectory digest covers.
+- **Between runs.** A server keeps a waiting session's browser and
+  desktop open; a session continued by a process of its own gets a
+  browser that goes back to its page, keeping only the references that
+  still name the same elements.
+- **The egress proxy** sends each plain HTTP request on a connection of
+  its own (`Connection: close`), so that a client's next request on the
+  same connection is never acted on unchecked; its refusal names the
+  hosts allowed, not a skill's.
+- Trust atoms `agent:browser`, `agent:browser-hosts`, `agent:browser-logins`
+  and `agent:desktop`.
+
 ### MCP servers over HTTP, with OAuth
 
 - **Every transport.** `sion agent mcp add NAME --url https://…` reaches

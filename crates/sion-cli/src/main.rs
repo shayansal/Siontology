@@ -243,7 +243,7 @@ enum Command {
     /// Agent identities: register agents, launch subagents with their own
     /// identities, suspend, resume and revoke whole subtrees.
     #[command(subcommand)]
-    Agent(sion_cli::agents::AgentCommand),
+    Agent(Box<sion_cli::agents::AgentCommand>),
     /// Task Charters: escrow work whose acceptance rule is fixed when it is
     /// posted; attest, submit and settle results; cancel.
     #[command(subcommand)]
@@ -1256,7 +1256,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             &mut session,
             ledger,
             std::sync::Arc::new(http.clone()),
-            command,
+            *command,
         )?,
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,

@@ -85,6 +85,7 @@ fn profile(
         storage: false,
         instructions: None,
         skill_approvals: true,
+        screen: Default::default(),
     }
 }
 
