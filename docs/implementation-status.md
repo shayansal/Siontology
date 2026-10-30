@@ -609,6 +609,23 @@ SDK here), a key in the platform's keystore (`app:plain-key`), proofs of
 the balances it shows (`app:unproven-balances`), bandwidth served by
 devices, and installers or code signing.
 
+### Installing and running
+
+**Built.** `scripts/install.sh` installs `sion` from a checkout, from the
+repository with cargo, or from a release archive checked against its
+`SHA256SUMS` and, given an allowed-signers file, their SSH signature (run
+here against a release made for the purpose: a signed release installed,
+a wrong signer and a changed archive refused). `sion agent service` keeps
+a long-running command as a systemd user unit or a launchd agent, its
+tokens in a file only the user reads (`agent:service-tokens`; the files
+are tested, systemd and launchd were not run here). `sion doctor` reports
+what the machine has. The agent commands that keep only local state run
+without a node. **Not built:** released binaries, their signing key and
+process, and code signing. The `Dockerfile`, the Homebrew formula
+(`packaging/homebrew/sion.rb`, building the head) and the Nix flake are
+checked only for their syntax: this environment has no Docker daemon,
+and building them would rebuild the workspace.
+
 ### Payments
 
 **Payment streams: built (specification v1.6 and v1.7).** Not in the
@@ -841,6 +858,7 @@ the architecture's own:
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included unless `--approvers` names who may decide. |
 | `agent:pairing` | An approved pairing code lets in the chat it was sent to, on that channel and profile, until revoked: the operator trusts that whoever gave them the code is the person they mean to let in, and the messenger for who writes in that chat afterwards (`agent:messenger-identity`). Codes are kept in a file only the operator's user can read. |
 | `agent:irc-nicks` | On IRC, who wrote a message is the nick the server gives: on a network that does not hold nicks to accounts, anyone can take a nick that is free, approvals included where `--approvers` names nicks. |
+| `agent:service-tokens` | A service's tokens (`sion agent service install --env`) are kept in plain text in a file only the user reads (systemd's environment file, or the launchd agent): whoever can read the user's files can read them. |
 | `agent:webhooks` | A webhook (WhatsApp, LINE, SMS through Twilio) is taken as its service's when it carries the service's signature with the secret the operator gave. The signatures name no time, so a webhook copied on its way could be sent again later and is answered again once its id has left the last thousand remembered; the bridge listens on plain HTTP, and TLS is the operator's proxy's. |
 | `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |

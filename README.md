@@ -111,7 +111,10 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
 
 ## Quickstart
 
-Requires Rust 1.80 or later.
+Requires Rust 1.80 or later and a C compiler. `sh scripts/install.sh`
+puts `sion` in `~/.local/bin` (see [Install from
+source](docs/book/src/getting-started/install.md) for the image, Homebrew
+and Nix), and `sion doctor` says what else the machine has.
 
 ```bash
 cargo build --release

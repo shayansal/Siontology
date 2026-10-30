@@ -441,6 +441,11 @@ pub enum AgentCommand {
     /// codes waiting, approving one, letting a chat out again.
     #[command(subcommand)]
     Pairing(crate::pairing::PairingCommand),
+    /// Long-running commands (a bridge, the server, the scheduler) as
+    /// services of your own: systemd user units on Linux, launchd agents
+    /// on macOS.
+    #[command(subcommand)]
+    Service(crate::service::ServiceCommand),
     /// MCP servers whose tools agents may use: add one (its tools are
     /// reviewed and pinned), list them, review one again, remove one.
     #[command(subcommand)]
@@ -581,6 +586,20 @@ pub enum SessionsCommand {
 
 /// Runs an agent command. `shared` is the same ledger, for the runtime's
 /// tools, which keep it between calls.
+/// Runs `command` if it needs no node (pairing, secrets, logins, MCP
+/// servers' settings, schedules, services); gives it back otherwise.
+pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<AgentCommand>> {
+    Ok(match *command {
+        AgentCommand::Secret(command) => crate::secrets::run(command),
+        AgentCommand::Login(command) => crate::logins::run(command),
+        AgentCommand::Pairing(command) => crate::pairing::run(command),
+        AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
+        AgentCommand::Schedule(command) => crate::schedules::run(command),
+        AgentCommand::Service(command) => crate::service::run(command),
+        other => return Err(Box::new(other)),
+    })
+}
+
 pub fn run(
     session: &mut Session<'_>,
     ledger: &dyn Ledger,
@@ -851,6 +870,7 @@ pub fn run(
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
+        AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Scheduler { once, poll } => {

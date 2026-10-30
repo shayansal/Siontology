@@ -70,6 +70,7 @@ Commands:
   node       Run one validator of a network, in this process
   gateway    Run a gateway of a network, in this process
   status     Chain status
+  doctor     What this machine has for Siontology and its agents, and what is missing: the home, the node, sandboxes, the browser and desktop, models', speech services' and messengers' credentials (by name)
   keys       Wallet keys
   balance    An account's balances and coins
   faucet     Devnet faucet
@@ -254,6 +255,22 @@ Options:
 ```
 
 Prints `GET /v1/status` as JSON; see [HTTP API](http-api.md#get-v1status).
+
+
+## `sion doctor`
+
+```text
+What this machine has for Siontology and its agents, and what is missing: the home, the node, sandboxes, the browser and desktop, models', speech services' and messengers' credentials (by name)
+
+Usage: sion doctor [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+It reads and changes nothing; variables are named, never shown. See
+[What is here](../getting-started/install.md#what-is-here).
 
 ## `sion keys`
 
@@ -701,6 +718,7 @@ Commands:
   secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
   login          Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
   pairing        People a channel did not know who asked to talk to a profile: the codes waiting, approving one, letting a chat out again
+  service        Long-running commands (a bridge, the server, the scheduler) as services of your own: systemd user units on Linux, launchd agents on macOS
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
@@ -1545,6 +1563,75 @@ Usage: sion agent pairing revoke [OPTIONS] <CHANNEL> <CHAT>
 Arguments:
   <CHANNEL>  The channel and profile, as `list` shows it (`telegram:support`)
   <CHAT>     The chat
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+
+## `sion agent service`
+
+```text
+Long-running commands (a bridge, the server, the scheduler) as services of your own: systemd user units on Linux, launchd agents on macOS
+
+Usage: sion agent service [OPTIONS] <COMMAND>
+
+Commands:
+  install  Install a service that runs `sion` with the arguments after `--` (e.g. `sion agent service install support -- agent telegram support --pairing`)
+  list     The services installed
+  remove   Stop a service and take its files away
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Services](../getting-started/install.md#services).
+
+## `sion agent service install`
+
+```text
+Install a service that runs `sion` with the arguments after `--` (e.g. `sion agent service install support -- agent telegram support --pairing`)
+
+Usage: sion agent service install [OPTIONS] <NAME> -- <ARGS>...
+
+Arguments:
+  <NAME>     Its name: letters, digits, `-` and `_`
+  <ARGS>...  What it runs: `sion` and these arguments
+
+Options:
+      --env <NAME>   A variable it is given, by name, from this environment (a token): kept in a file only your user reads. May be repeated
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --start        Start it now, and at each login
+  -h, --help         Print help
+```
+
+The tokens `--env` names are kept in plain text in a file only your user
+reads (`agent:service-tokens`).
+
+## `sion agent service list`
+
+```text
+The services installed
+
+Usage: sion agent service list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent service remove`
+
+```text
+Stop a service and take its files away
+
+Usage: sion agent service remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]

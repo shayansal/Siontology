@@ -133,6 +133,10 @@ enum Command {
     Gateway(sion_cli::network::GatewayArgs),
     /// Chain status.
     Status,
+    /// What this machine has for Siontology and its agents, and what is
+    /// missing: the home, the node, sandboxes, the browser and desktop,
+    /// models', speech services' and messengers' credentials (by name).
+    Doctor,
     /// Wallet keys.
     #[command(subcommand)]
     Keys(KeysCommand),
@@ -786,8 +790,16 @@ fn run_devnet(args: &DevnetArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn run(cli: Cli) -> Result<(), CliError> {
+fn run(mut cli: Cli) -> Result<(), CliError> {
+    // Agent commands that need no node do not wait for one.
+    if let Command::Agent(command) = cli.command {
+        match sion_cli::agents::local(command) {
+            Ok(done) => return done,
+            Err(command) => cli.command = Command::Agent(command),
+        }
+    }
     match &cli.command {
+        Command::Doctor => return sion_cli::doctor::run(&cli.node),
         Command::Devnet(args) => return run_devnet(args),
         Command::Genesis(args) => return sion_cli::network::genesis(args).map(|_| ()),
         Command::Node(args) => return sion_cli::network::run_node(args),
@@ -890,6 +902,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         | Command::Gateway(_)
         | Command::Keys(_)
         | Command::Mcp
+        | Command::Doctor
         | Command::Bench { .. } => {
             unreachable!("handled above")
         }

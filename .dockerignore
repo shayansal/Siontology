@@ -1,0 +1,12 @@
+# What an image is built from is the source, not what was built or kept
+# here: no build output, no history, and nothing private (.claude holds
+# worktrees of branches that are not published).
+.git
+.claude
+target
+target-*
+devnet-data
+docs/book/book
+apps/sion-app/node_modules
+apps/sion-app/src-tauri/target
+**/__pycache__

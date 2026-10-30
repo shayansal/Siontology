@@ -10,6 +10,27 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Installing and running: the installer, an image, Homebrew, Nix, services, doctor
+
+- **The installer.** `scripts/install.sh` installs `sion` from a
+  checkout, from the repository (`--git`), or from a release archive
+  checked against its `SHA256SUMS` and, with `--allowed-signers`, their
+  SSH signature; `--dry-run` says what it would do. It never uses root.
+- **Packages.** A `Dockerfile` (a small Debian image, a user of its own,
+  the home a volume, the browser and desktop as a build argument), a
+  Homebrew formula building the head (`packaging/homebrew/sion.rb`), and
+  a Nix flake (`nix build`, `nix develop`).
+- **Services.** `sion agent service install <name> -- <arguments>` keeps
+  a bridge, the HTTP channel, the scheduler or a host running as a
+  systemd user unit or a launchd agent, its tokens (`--env`) in a file
+  only the user reads; `list`, `remove`, `--start`.
+- **`sion doctor`.** What the machine has, and what is missing: the home,
+  the node, bubblewrap and Docker, the browser and the desktop, and which
+  credentials are set (by name).
+- **No node needed** for the agent commands that keep only local state:
+  pairing, secrets, logins, MCP servers' settings, schedules and
+  services.
+
 ### Mattermost, IRC and Twitch
 
 - **Mattermost.** `--via mattermost` receives over the server's WebSocket

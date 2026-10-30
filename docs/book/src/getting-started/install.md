@@ -1,15 +1,17 @@
 # Install from source
 
-Siontology has no binary releases yet. You build it from source.
+Siontology has no binary releases yet. You build it from source, by hand,
+with the installer, in a container image, or with Homebrew or Nix.
 
 ## Requirements
 
 - **Rust 1.80 or later** (the workspace's `rust-version`). Install it with
   [rustup](https://rustup.rs).
 - Git.
-- No system libraries. The cryptography (ML-DSA, SLH-DSA, ML-KEM,
-  ChaCha20-Poly1305, SHA3) is pure Rust, and the HTTP client and server
-  need no TLS library.
+- A C compiler: aws-lc, the cryptography under the HTTP client's TLS, is
+  built from its C sources. No system library is linked: the ledger's
+  cryptography (ML-DSA, SLH-DSA, ML-KEM, ChaCha20-Poly1305, SHA3) is pure
+  Rust.
 
 The code builds and runs on Linux. Other platforms supported by Rust should
 work but have not been tested.
@@ -39,6 +41,109 @@ cargo install --locked --path crates/sion-cli
 ```
 
 The rest of this book calls the binary `sion`.
+
+## The installer
+
+`scripts/install.sh` installs `sion` into `~/.local/bin`, or into the
+`bin` of the directory `--prefix` names: from the checkout it is in, from
+the repository with `--git` (and `--rev` for a tag or commit), or, once
+releases exist, from a release with `--release` and its base URL. A
+release archive is checked against its `SHA256SUMS`, and with
+`--allowed-signers` and a file of allowed signers, `SHA256SUMS` against
+its SSH signature, before anything is installed; `--dry-run` says what it
+would do. It never uses root.
+
+```bash
+sh scripts/install.sh --dry-run
+```
+
+```text
+building sion from /home/claude/fold
++ cargo install --locked --path /home/claude/fold/crates/sion-cli --root /home/you/.local
+(a dry run: nothing was installed)
+```
+
+The release path was run here against a release made for the purpose
+and served on this machine: a signed release installed; one checked
+against another signer's key, and an archive changed by one byte, were
+refused, and nothing was installed.
+
+## A container image
+
+The `Dockerfile` builds `sion` and puts it in a small Debian image,
+running as a user of its own, with its home a volume:
+
+```bash
+docker build -t sion .
+docker run --rm -v sion-home:/home/sion/.sion sion doctor
+```
+
+`--build-arg EXTRAS="chromium xvfb xdotool imagemagick"` adds the browser
+and the desktop the agents can drive. Bubblewrap is in the image, but it
+makes sandboxes only where the container may create user namespaces. The
+image has not been built here: this environment has no Docker daemon.
+
+## Homebrew and Nix
+
+`brew install --HEAD ./packaging/homebrew/sion.rb` builds the
+repository's head (a release's `url` and `sha256` go in the formula once
+there is one). `nix build` and `nix run . -- doctor` use `flake.nix`;
+`nix develop` gives the toolchain and the agents' tools. Neither has been
+run here: the formula and the flake are checked only for their syntax.
+
+## Services
+
+A bridge, the HTTP channel, the scheduler or a host keeps running as a
+service of your own: a systemd user unit on Linux, a launchd agent on
+macOS. `--env` copies the variables it needs (a bot's token) into a file
+only your user reads (`agent:service-tokens`):
+
+```text
+$ TELEGRAM_BOT_TOKEN=… sion agent service install support --env TELEGRAM_BOT_TOKEN -- agent telegram support --pairing
+wrote /home/you/.config/systemd/user/sion-support.service
+wrote /home/you/.config/sion/services/support.env
+start it with: systemctl --user enable --now sion-support.service
+$ sion agent service list
+support: sion agent telegram support --pairing
+```
+
+The unit runs this `sion` with those arguments and this `SION_HOME`,
+starts again five seconds after a failure, and holds no token:
+
+```text
+[Service]
+ExecStart="/home/you/.local/bin/sion" "agent" "telegram" "support" "--pairing"
+EnvironmentFile="/home/you/.config/sion/services/support.env"
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+```
+
+`--start` starts it at once and at each login; `sion agent service remove
+support` stops it and takes its files away. Commands that need no node
+(pairing, secrets, logins, schedules, services) run without one.
+
+## What is here
+
+`sion doctor` says what this machine has for Siontology and its agents,
+and what is missing, naming the variables that are set without showing
+them. Here, in the environment this book was made in:
+
+```text
+$ sion doctor
+ok sion        0.1.0 on linux x86_64
+ok home        /home/you/.sion (SION_HOME)
+-- node        http://127.0.0.1:8730 does not answer: start one (`sion devnet`) or name another (--node, SION_NODE); only the ledger's commands need it
+ok bubblewrap  runs commands in a sandbox of their own
+-- docker      installed, but its daemon does not answer: Docker sandboxes need it
+ok browser     /opt/pw-browsers/chromium-1243/chrome-linux64/chrome (--browser)
+ok desktop     Xvfb, xdotool and ImageMagick are here (--computer)
+-- models      no ANTHROPIC_API_KEY or OPENAI_API_KEY: agents run only scripted models
+ok voice       no speech service's key set (--hear and --speak can also run a command)
+ok messengers  none has its credentials set (see `sion agent bridge --help`)
+ok profiles    none yet (`sion agent profile add`)
+ok proxy       HTTPS_PROXY, https_proxy set: requests go through it, its roots from SSL_CERT_FILE
+```
 
 ## Where things live
 
