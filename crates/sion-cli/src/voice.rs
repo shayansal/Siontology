@@ -127,15 +127,33 @@ impl Form {
     }
 
     /// The form with a field `name` holding `audio` as a file.
-    pub fn file(mut self, name: &str, audio: &Audio) -> Form {
+    pub fn file(self, name: &str, audio: &Audio) -> Form {
+        self.bytes(name, &audio.name, &audio.media_type, &audio.bytes)
+    }
+
+    /// The form with a field `name` holding `bytes` as the file
+    /// `file_name`, of `media_type`. The name keeps to characters that
+    /// cannot break the part's header.
+    pub fn bytes(mut self, name: &str, file_name: &str, media_type: &str, bytes: &[u8]) -> Form {
+        let file_name: String = file_name
+            .chars()
+            .map(|c| {
+                if c == '"' || c == '\\' || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let media_type: String = media_type.chars().filter(|c| !c.is_control()).collect();
         self.body.extend_from_slice(
             format!(
-                "--{}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
-                self.boundary, audio.name, audio.media_type
+                "--{}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{file_name}\"\r\nContent-Type: {media_type}\r\n\r\n",
+                self.boundary
             )
             .as_bytes(),
         );
-        self.body.extend_from_slice(&audio.bytes);
+        self.body.extend_from_slice(bytes);
         self.body.extend_from_slice(b"\r\n");
         self
     }

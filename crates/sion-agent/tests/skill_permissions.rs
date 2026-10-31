@@ -73,6 +73,8 @@ fn runtime<'a>(model: &'a Scripted, tools: &'a Toolbox, autonomy: Autonomy) -> R
         system: "You are a test agent.".into(),
         now: &now,
         stopped: &never,
+        watch: None,
+        steer: None,
     }
 }
 

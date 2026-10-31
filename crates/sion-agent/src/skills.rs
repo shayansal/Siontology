@@ -1066,6 +1066,7 @@ mod tests {
                 id: id.into(),
                 name: name.into(),
                 input: json!({}),
+                signature: None,
             }],
         };
         let result = |id: &str, is_error: bool| Message {

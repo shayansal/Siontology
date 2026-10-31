@@ -12,7 +12,8 @@ use sion_http::ws::WebSocket;
 use sion_http::HttpError;
 
 use crate::live::{again, keep, text_of, Fault, Link, Live, Next, MAX_EVENT};
-use crate::messengers::{Incoming, Messenger, Note, LIVE_ONCE_WAIT};
+use crate::messengers::{Ack, Incoming, Messenger, Note, LIVE_ONCE_WAIT};
+use crate::showing::{with_status, Draft, Drafting, Typist};
 use crate::voice::{Audio, Form, MAX_HEARD};
 
 /// A Mattermost bot.
@@ -71,8 +72,13 @@ fn call(
 
 /// A message from a `posted` event, unless it is the bot's own, a
 /// system message, or says nothing; `voice` is the audio file it carries,
-/// if one does.
-pub fn mattermost_message(data: &Value, me: Option<&str>, voice: Option<Note>) -> Option<Incoming> {
+/// if one does, and `files` the others.
+pub fn mattermost_message(
+    data: &Value,
+    me: Option<&str>,
+    voice: Option<Note>,
+    files: Vec<Note>,
+) -> Option<Incoming> {
     let post: Value = serde_json::from_str(data["post"].as_str()?).ok()?;
     let from = post["user_id"].as_str()?;
     if Some(from) == me || post["type"].as_str().is_some_and(|t| !t.is_empty()) {
@@ -82,7 +88,7 @@ pub fn mattermost_message(data: &Value, me: Option<&str>, voice: Option<Note>) -
     if let Some(name) = data["me_name"].as_str() {
         text = text.replace(&format!("@{name}"), "").trim().to_string();
     }
-    if text.is_empty() && voice.is_none() {
+    if text.is_empty() && voice.is_none() && files.is_empty() {
         return None;
     }
     let mentions: Vec<String> = data["mentions"]
@@ -90,13 +96,103 @@ pub fn mattermost_message(data: &Value, me: Option<&str>, voice: Option<Note>) -
         .and_then(|m| serde_json::from_str::<Vec<String>>(m).ok())
         .unwrap_or_default();
     Some(Incoming {
+        id: post["id"].as_str().unwrap_or_default().to_string(),
+        thread: post["root_id"].as_str().unwrap_or_default().to_string(),
         chat: post["channel_id"].as_str()?.to_string(),
         from: from.to_string(),
         text,
         voice,
         direct: data["channel_type"] == "D",
         mentions,
+        files,
     })
+}
+
+/// Mattermost's typing indicator (`POST /users/me/typing`), in the
+/// message's thread if it is in one.
+struct Typing {
+    client: sion_http::Client,
+    url: String,
+    token: String,
+    channel: String,
+    thread: String,
+}
+
+impl Typist for Typing {
+    fn show(&mut self) -> Result<Duration, String> {
+        let mut body = json!({"channel_id": self.channel});
+        if !self.thread.is_empty() {
+            body["parent_id"] = json!(self.thread);
+        }
+        call(
+            &self.client,
+            &self.url,
+            &self.token,
+            "POST",
+            "/users/me/typing",
+            Some(&body),
+        )?;
+        // Clients show it for a few seconds.
+        Ok(Duration::from_secs(5))
+    }
+}
+
+/// A Mattermost reply as a post patched as it grows.
+struct Edit {
+    client: sion_http::Client,
+    url: String,
+    token: String,
+    channel: String,
+    thread: String,
+    post: Option<String>,
+    shown: String,
+}
+
+impl Edit {
+    fn put(&mut self, text: &str) -> Result<(), String> {
+        if self.post.is_some() && self.shown == text {
+            return Ok(());
+        }
+        self.shown = text.to_string();
+        let message: String = text.chars().take(16_000).collect();
+        match &self.post {
+            Some(id) => call(
+                &self.client,
+                &self.url,
+                &self.token,
+                "PUT",
+                &format!("/posts/{}/patch", crate::messengers::segment(id)),
+                Some(&json!({"message": message})),
+            )
+            .map(|_| ()),
+            None => {
+                let mut post = json!({"channel_id": self.channel, "message": message});
+                if !self.thread.is_empty() {
+                    post["root_id"] = json!(self.thread);
+                }
+                let made = call(
+                    &self.client,
+                    &self.url,
+                    &self.token,
+                    "POST",
+                    "/posts",
+                    Some(&post),
+                )?;
+                self.post = made["id"].as_str().map(str::to_string);
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Draft for Edit {
+    fn show(&mut self, text: &str, status: Option<&str>) -> Result<(), String> {
+        self.put(&with_status(text, status))
+    }
+
+    fn finish(&mut self, text: &str) -> Result<(), String> {
+        self.put(text)
+    }
 }
 
 impl Mattermost {
@@ -172,33 +268,51 @@ fn session(client: &sion_http::Client, url: &str, token: &str, link: &Link) -> R
         }
         let mut data = event["data"].clone();
         data["me_name"] = json!(name);
-        // An audio file attached is a voice message.
+        // The first audio file attached is a voice message; the others are
+        // files.
         let post: Value = data["post"]
             .as_str()
             .and_then(|p| serde_json::from_str(p).ok())
             .unwrap_or_default();
-        let voice = post["file_ids"]
+        let mut voice = None;
+        let mut files = Vec::new();
+        for file in post["file_ids"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|file| file.as_str())
-            .find_map(|file| {
-                let info = call(
-                    client,
-                    url,
-                    token,
-                    "GET",
-                    &format!("/files/{file}/info"),
-                    None,
-                )
-                .ok()?;
-                let media_type = info["mime_type"].as_str()?;
-                media_type.starts_with("audio/").then(|| Note {
+            .filter(|file| !file.is_empty() && file.bytes().all(|b| b.is_ascii_alphanumeric()))
+        {
+            let Ok(info) = call(
+                client,
+                url,
+                token,
+                "GET",
+                &format!("/files/{file}/info"),
+                None,
+            ) else {
+                continue;
+            };
+            let media_type = info["mime_type"].as_str().map(str::to_string);
+            if voice.is_none()
+                && media_type
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("audio/"))
+            {
+                voice = Some(Note {
                     id: file.to_string(),
-                    media_type: Some(media_type.to_string()),
-                })
-            });
-        if let Some(message) = mattermost_message(&data, Some(&id), voice) {
+                    media_type,
+                    name: None,
+                });
+            } else {
+                files.push(Note {
+                    id: file.to_string(),
+                    media_type,
+                    name: info["name"].as_str().map(str::to_string),
+                });
+            }
+        }
+        if let Some(message) = mattermost_message(&data, Some(&id), voice, files) {
             if !link.pass(message) {
                 socket.close(1000, "stopped");
                 return Ok(Next::Stop);
@@ -208,6 +322,34 @@ fn session(client: &sion_http::Client, url: &str, token: &str, link: &Link) -> R
 }
 
 impl Messenger for Mattermost {
+    fn acknowledge(&self, message: &Incoming, ack: Ack) -> Result<(), String> {
+        let me = self.me()?.into_iter().next().unwrap_or_default();
+        let react = |emoji: &str| {
+            self.call(
+                "POST",
+                "/reactions",
+                Some(&json!({"user_id": me, "post_id": message.id, "emoji_name": emoji})),
+            )
+            .map(|_| ())
+        };
+        let unreact = |emoji: &str| {
+            self.call(
+                "DELETE",
+                &format!("/users/{me}/posts/{}/reactions/{emoji}", message.id),
+                None,
+            )
+            .map(|_| ())
+        };
+        match ack {
+            Ack::Seen => react("eyes"),
+            Ack::Done => unreact("eyes"),
+            Ack::Failed => {
+                unreact("eyes")?;
+                react("warning")
+            }
+        }
+    }
+
     fn name(&self) -> &'static str {
         "mattermost"
     }
@@ -228,6 +370,50 @@ impl Messenger for Mattermost {
             Some(&json!({"channel_id": chat, "message": message})),
         )
         .map(|_| ())
+    }
+
+    fn reply(&self, message: &Incoming, text: &str) -> Result<(), String> {
+        let mut post = json!({"channel_id": message.chat, "message": text.chars().take(16_000).collect::<String>()});
+        if !message.thread.is_empty() {
+            post["root_id"] = json!(message.thread);
+        }
+        self.call("POST", "/posts", Some(&post)).map(|_| ())
+    }
+
+    fn room(&self) -> usize {
+        16_000
+    }
+
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn Typist>> {
+        Some(Box::new(Typing {
+            client: self.client.clone(),
+            url: self.url.clone(),
+            token: self.token.clone(),
+            channel: message.chat.clone(),
+            thread: message.thread.clone(),
+        }))
+    }
+
+    fn drafting(&self, message: &Incoming) -> Option<Drafting> {
+        let (client, url, token) = (self.client.clone(), self.url.clone(), self.token.clone());
+        let (channel, thread) = (message.chat.clone(), message.thread.clone());
+        Some(Drafting {
+            open: Box::new(move || {
+                Box::new(Edit {
+                    client: client.clone(),
+                    url: url.clone(),
+                    token: token.clone(),
+                    channel: channel.clone(),
+                    thread: thread.clone(),
+                    post: None,
+                    shown: String::new(),
+                })
+            }),
+            every: Duration::from_secs(1),
+            most: None,
+            keep: None,
+            first: crate::drafts::FIRST,
+        })
     }
 
     fn long_polls(&self) -> bool {
@@ -273,9 +459,50 @@ impl Messenger for Mattermost {
     }
 
     fn send_voice(&self, chat: &str, audio: &Audio, caption: &str) -> Result<bool, String> {
+        self.attach(
+            chat,
+            "",
+            caption,
+            &audio.name,
+            &audio.media_type,
+            &audio.bytes,
+        )
+        .map(|()| true)
+    }
+
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        self.attach(
+            &message.chat,
+            &message.thread,
+            caption,
+            &file.name,
+            &file.media_type,
+            &file.bytes,
+        )
+        .map(|()| true)
+    }
+}
+
+impl Mattermost {
+    /// Posts `caption` to `chat` (in `thread`, if not empty) with a file
+    /// attached: the file uploaded first, then the post that has it.
+    fn attach(
+        &self,
+        chat: &str,
+        thread: &str,
+        caption: &str,
+        name: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
         let (content_type, body) = Form::new()
             .text("channel_id", chat)
-            .file("files", audio)
+            .bytes("files", name, media_type, bytes)
             .finish();
         let auth = format!("Bearer {}", self.token);
         let uploaded = self
@@ -294,12 +521,11 @@ impl Messenger for Mattermost {
             .as_str()
             .ok_or("Mattermost gave no file id")?;
         let message: String = caption.chars().take(16_000).collect();
-        self.call(
-            "POST",
-            "/posts",
-            Some(&json!({"channel_id": chat, "message": message, "file_ids": [id]})),
-        )?;
-        Ok(true)
+        let mut post = json!({"channel_id": chat, "message": message, "file_ids": [id]});
+        if !thread.is_empty() {
+            post["root_id"] = json!(thread);
+        }
+        self.call("POST", "/posts", Some(&post)).map(|_| ())
     }
 }
 
@@ -312,19 +538,19 @@ mod tests {
         let post = json!({"id": "p1", "user_id": "u9", "channel_id": "c1", "message": "@lead how much is left?", "type": ""});
         let data = json!({"post": post.to_string(), "channel_type": "O",
             "mentions": "[\"b7\"]", "me_name": "lead"});
-        let message = mattermost_message(&data, Some("b7"), None).unwrap();
+        let message = mattermost_message(&data, Some("b7"), None, Vec::new()).unwrap();
         assert_eq!(
             (message.chat.as_str(), message.text.as_str(), message.direct),
             ("c1", "how much is left?", false)
         );
         assert_eq!(message.mentions, ["b7"]);
         let own = json!({"post": json!({"user_id": "b7", "channel_id": "c1", "message": "mine"}).to_string()});
-        assert!(mattermost_message(&own, Some("b7"), None).is_none());
+        assert!(mattermost_message(&own, Some("b7"), None, Vec::new()).is_none());
         let system = json!({"post": json!({"user_id": "u9", "channel_id": "c1", "message": "joined", "type": "system_join_channel"}).to_string()});
-        assert!(mattermost_message(&system, Some("b7"), None).is_none());
+        assert!(mattermost_message(&system, Some("b7"), None, Vec::new()).is_none());
         let direct = json!({"post": json!({"user_id": "u9", "channel_id": "d1", "message": "hi"}).to_string(), "channel_type": "D"});
         assert!(
-            mattermost_message(&direct, Some("b7"), None)
+            mattermost_message(&direct, Some("b7"), None, Vec::new())
                 .unwrap()
                 .direct
         );

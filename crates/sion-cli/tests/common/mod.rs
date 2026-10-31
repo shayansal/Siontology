@@ -126,7 +126,17 @@ pub fn http_stand_in(answer: impl Fn(&Sent) -> (u16, Vec<u8>) + Send + 'static) 
             };
             let (status, reply) = answer(&sent);
             keep.lock().unwrap().push(sent);
-            let _ = request.respond(tiny_http::Response::from_data(reply).with_status_code(status));
+            // An answer of Server-Sent Events says so.
+            let events = reply.starts_with(b"event:") || reply.starts_with(b"data:");
+            let mut response = tiny_http::Response::from_data(reply).with_status_code(status);
+            if events {
+                response = response.with_header(
+                    "Content-Type: text/event-stream"
+                        .parse::<tiny_http::Header>()
+                        .unwrap(),
+                );
+            }
+            let _ = request.respond(response);
         }
     });
     (base, kept)

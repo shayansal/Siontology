@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 use crate::jwt::{Bearer, KeySet};
 use crate::live::Live;
 use crate::messengers::{segment, Incoming, Messenger, LIVE_ONCE_WAIT};
+use crate::showing::{Draft, Drafting, Typist};
 use crate::webhooks::{client, cut, encode_form, env, inbox, json_of, needed, Answer, Hook, Seen};
 
 /// Who issues the Bot Connector's tokens.
@@ -196,12 +197,15 @@ pub fn teams_hook(
     (
         Answer::ok(),
         vec![Incoming {
+            id: id.to_string(),
+            thread: String::new(),
             chat: conversation.to_string(),
             from: from.to_string(),
             text,
             voice: None,
             direct: activity["conversation"]["conversationType"] == "personal",
             mentions,
+            files: Vec::new(),
         }],
     )
 }
@@ -278,6 +282,150 @@ impl Teams {
     }
 }
 
+impl Teams {
+    /// The conversation `chat` was written in.
+    fn conversation(&self, chat: &str) -> Result<Conversation, String> {
+        self.conversations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat)
+            .cloned()
+            .ok_or_else(|| {
+                format!("{chat}: nothing came from that conversation yet, and Teams is answered where the bot was written to")
+            })
+    }
+
+    /// A token for the Connector API, kept while it lasts.
+    fn bearer(&self) -> Result<String, String> {
+        self.token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(|| self.new_token())
+    }
+}
+
+/// Posts `activity` in `conversation`, as a reply to the activity it
+/// answers: what the Connector answers (an activity's `id`).
+fn post(
+    client: &sion_http::Client,
+    conversation: &Conversation,
+    token: &str,
+    activity: &Value,
+) -> Result<Value, String> {
+    let url = format!(
+        "{}/v3/conversations/{}/activities/{}",
+        conversation.service_url.trim_end_matches('/'),
+        segment(&conversation.id),
+        segment(&conversation.reply_to)
+    );
+    let mut activity = activity.clone();
+    activity["replyToId"] = json!(conversation.reply_to);
+    let auth = format!("Bearer {token}");
+    let fetched = client
+        .request(
+            "POST",
+            &url,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(activity.to_string().as_bytes()),
+            1 << 20,
+        )
+        .map_err(|e| e.to_string().replace(token, "<token>"))?;
+    if fetched.body.is_empty() {
+        return Ok(Value::Null);
+    }
+    json_of(&fetched.body, "the Bot Connector")
+}
+
+struct Typing {
+    client: sion_http::Client,
+    conversation: Conversation,
+    token: String,
+}
+
+impl Typist for Typing {
+    fn show(&mut self) -> Result<std::time::Duration, String> {
+        post(
+            &self.client,
+            &self.conversation,
+            &self.token,
+            &json!({"type": "typing"}),
+        )?;
+        Ok(std::time::Duration::from_secs(4))
+    }
+
+    /// A stream is made of typing activities: none of its own beside one.
+    fn beside_drafts(&self) -> bool {
+        false
+    }
+}
+
+/// A reply streamed in Teams: `typing` activities that carry a stream's
+/// `streaminfo` (the first informative or streaming, each later one the
+/// whole text so far), then the `message` that ends it.
+struct Stream {
+    client: sion_http::Client,
+    conversation: Conversation,
+    token: String,
+    /// The stream, once Teams named it.
+    id: Option<String>,
+    sequence: u32,
+    /// The text streamed so far, which each update must go on from.
+    sent: String,
+    /// Whether the text changed rather than grew: the end puts it right.
+    off: bool,
+}
+
+impl Draft for Stream {
+    fn show(&mut self, text: &str, status: Option<&str>) -> Result<(), String> {
+        let (kind, shown) = if text.trim().is_empty() {
+            match status {
+                // What the agent does, until it writes.
+                Some(status) if self.sent.is_empty() => {
+                    ("informative", cut(&format!("… {status}"), 1_000))
+                }
+                _ => return Ok(()),
+            }
+        } else if !self.off && text.starts_with(self.sent.as_str()) {
+            ("streaming", cut(text, 25_000))
+        } else {
+            self.off = true;
+            return Ok(());
+        };
+        self.sequence += 1;
+        let mut info =
+            json!({"type": "streaminfo", "streamType": kind, "streamSequence": self.sequence});
+        if let Some(id) = &self.id {
+            info["streamId"] = json!(id);
+        }
+        let posted = post(
+            &self.client,
+            &self.conversation,
+            &self.token,
+            &json!({"type": "typing", "text": shown, "entities": [info]}),
+        )?;
+        if self.id.is_none() {
+            self.id = posted["id"].as_str().map(str::to_string);
+        }
+        if kind == "streaming" {
+            self.sent = text.to_string();
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, text: &str) -> Result<(), String> {
+        let mut message =
+            json!({"type": "message", "text": cut(text, 25_000), "textFormat": "markdown"});
+        if let Some(id) = &self.id {
+            message["entities"] =
+                json!([{"type": "streaminfo", "streamId": id, "streamType": "final"}]);
+        }
+        post(&self.client, &self.conversation, &self.token, &message).map(|_| ())
+    }
+}
+
 impl Messenger for Teams {
     fn name(&self) -> &'static str {
         "teams"
@@ -292,47 +440,60 @@ impl Messenger for Teams {
     }
 
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
-        let conversation = self
-            .conversations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(chat)
-            .cloned()
-            .ok_or_else(|| {
-                format!("{chat}: nothing came from that conversation yet, and Teams is answered where the bot was written to")
-            })?;
-        let token = self
-            .token
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(|| self.new_token())?;
-        let url = format!(
-            "{}/v3/conversations/{}/activities/{}",
-            conversation.service_url.trim_end_matches('/'),
-            segment(&conversation.id),
-            segment(&conversation.reply_to)
+        let conversation = self.conversation(chat)?;
+        let token = self.bearer()?;
+        post(
+            &self.client,
+            &conversation,
+            &token,
+            &json!({"type": "message", "text": cut(text, 25_000), "textFormat": "markdown"}),
+        )
+        .map(|_| ())
+    }
+
+    fn room(&self) -> usize {
+        25_000
+    }
+
+    /// Teams' typing indicator, a `typing` activity every three seconds,
+    /// until a stream shows the reply.
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn Typist>> {
+        Some(Box::new(Typing {
+            client: self.client.clone(),
+            conversation: self.conversation(&message.chat).ok()?,
+            token: self.bearer().ok()?,
+        }))
+    }
+
+    /// In a chat with one person, Teams' streaming: what the agent does as
+    /// an informative update, then the text as it grows, each update the
+    /// whole text so far, at most one a second and a half.
+    fn drafting(&self, message: &Incoming) -> Option<Drafting> {
+        if !message.direct {
+            return None;
+        }
+        let (client, conversation, token) = (
+            self.client.clone(),
+            self.conversation(&message.chat).ok()?,
+            self.bearer().ok()?,
         );
-        let body = json!({
-            "type": "message",
-            "text": cut(text, 25_000),
-            "textFormat": "markdown",
-            "replyToId": conversation.reply_to,
+        Some(Drafting {
+            open: Box::new(move || {
+                Box::new(Stream {
+                    client: client.clone(),
+                    conversation: conversation.clone(),
+                    token: token.clone(),
+                    id: None,
+                    sequence: 0,
+                    sent: String::new(),
+                    off: false,
+                })
+            }),
+            every: std::time::Duration::from_millis(1_500),
+            most: None,
+            keep: None,
+            first: 0,
         })
-        .to_string();
-        let auth = format!("Bearer {token}");
-        self.client
-            .request(
-                "POST",
-                &url,
-                &[
-                    ("Authorization", &auth),
-                    ("Content-Type", "application/json"),
-                ],
-                Some(body.as_bytes()),
-                1 << 20,
-            )
-            .map_err(|e| e.to_string().replace(&token, "<token>"))?;
-        Ok(())
     }
 
     fn long_polls(&self) -> bool {

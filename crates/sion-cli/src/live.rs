@@ -33,7 +33,7 @@ const REMEMBERED: usize = 256;
 
 /// What a connection's thread hands on.
 enum Event {
-    Message(Incoming),
+    Message(Box<Incoming>),
     Failed(String),
 }
 
@@ -98,7 +98,7 @@ impl Live {
         let started = Instant::now();
         while let Some(event) = next {
             match event {
-                Event::Message(message) => out.push(message),
+                Event::Message(message) => out.push(*message),
                 Event::Failed(why) if out.is_empty() => return Err(why),
                 Event::Failed(why) => {
                     *self.failed.lock().map_err(|_| "poisoned")? = Some(why);
@@ -164,7 +164,7 @@ impl Link {
 
     /// Hands on `message`: false once nobody listens.
     pub(crate) fn pass(&self, message: Incoming) -> bool {
-        self.sender.send(Event::Message(message)).is_ok()
+        self.sender.send(Event::Message(Box::new(message))).is_ok()
     }
 
     pub(crate) fn fail(&self, why: String) {
@@ -351,9 +351,28 @@ pub fn discord_message(d: &Value, me: Option<&str>) -> Option<Incoming> {
             Some(Note {
                 id: a["url"].as_str()?.to_string(),
                 media_type: a["content_type"].as_str().map(str::to_string),
+                name: None,
             })
         });
-    if text.is_empty() && voice.is_none() {
+    // Every other attachment is a file: pictures, documents.
+    let files: Vec<Note> = d["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| {
+            !a["content_type"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("audio/"))
+        })
+        .filter_map(|a| {
+            Some(Note {
+                id: a["url"].as_str()?.to_string(),
+                media_type: a["content_type"].as_str().map(str::to_string),
+                name: a["filename"].as_str().map(str::to_string),
+            })
+        })
+        .collect();
+    if text.is_empty() && voice.is_none() && files.is_empty() {
         return None;
     }
     let mut mentions: Vec<String> = d["mentions"]
@@ -366,12 +385,15 @@ pub fn discord_message(d: &Value, me: Option<&str>) -> Option<Incoming> {
         mentions.push(replied.to_string());
     }
     Some(Incoming {
+        id: d["id"].as_str().unwrap_or_default().to_string(),
+        thread: String::new(),
         chat: d["channel_id"].as_str()?.to_string(),
         from: from.to_string(),
         text,
         voice,
         direct: d["guild_id"].is_null(),
         mentions,
+        files,
     })
 }
 
@@ -514,16 +536,52 @@ pub fn slack_voice(message: &Value) -> Option<Note> {
             .or(file["url_private"].as_str())?
             .to_string(),
         media_type: file["mimetype"].as_str().map(str::to_string),
+        name: None,
     })
 }
 
+/// The other files a Slack message shares (pictures, documents): their
+/// private addresses (fetched with the bot's token), media types and names.
+pub fn slack_files(message: &Value) -> Vec<Note> {
+    message["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|file| {
+            file["subtype"] != "slack_audio"
+                && !file["mimetype"]
+                    .as_str()
+                    .is_some_and(|m| m.starts_with("audio/"))
+        })
+        .filter_map(|file| {
+            Some(Note {
+                id: file["url_private_download"]
+                    .as_str()
+                    .or(file["url_private"].as_str())?
+                    .to_string(),
+                media_type: file["mimetype"].as_str().map(str::to_string),
+                name: file["name"].as_str().map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+/// The thread a Slack message is a reply in, if it is one: its parent's
+/// time (`thread_ts`), which a reply in the thread names.
+pub fn slack_thread(message: &Value) -> String {
+    match (message["thread_ts"].as_str(), message["ts"].as_str()) {
+        (Some(thread), Some(ts)) if thread != ts => thread.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Whether a Slack message is what someone said to the bot: not an edit,
-/// a join or a bot's, though a shared audio clip is.
+/// a join or a bot's, though a shared audio clip or file is.
 pub fn slack_said(message: &Value, voice: &Option<Note>) -> bool {
     message["bot_id"].is_null()
         && match message["subtype"].as_str() {
             None => true,
-            Some("file_share") => voice.is_some(),
+            Some("file_share") => voice.is_some() || !slack_files(message).is_empty(),
             Some(_) => false,
         }
 }
@@ -558,18 +616,22 @@ pub fn slack_message(event: &Value, me: Option<&str>) -> Option<(String, Incomin
         }
         text = text.replace(&format!("<@{me}>"), "").trim().to_string();
     }
-    if text.is_empty() && voice.is_none() {
+    let files = slack_files(event);
+    if text.is_empty() && voice.is_none() && files.is_empty() {
         return None;
     }
     Some((
         format!("{chat}:{ts}"),
         Incoming {
+            id: ts.to_string(),
+            thread: slack_thread(event),
             chat: chat.to_string(),
             from: from.to_string(),
             text,
             voice,
             direct: event["channel_type"] == "im",
             mentions,
+            files,
         },
     ))
 }
@@ -766,12 +828,15 @@ mod tests {
         let live = Live::start("test", |link| {
             for text in ["one", "two"] {
                 link.pass(Incoming {
+                    id: String::new(),
+                    thread: String::new(),
                     chat: "c".into(),
                     from: "f".into(),
                     text: text.into(),
                     voice: None,
                     direct: true,
                     mentions: Vec::new(),
+                    files: Vec::new(),
                 });
             }
             let _ = link.me.set(vec!["B7".into()]);

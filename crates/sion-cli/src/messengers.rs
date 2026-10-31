@@ -40,7 +40,7 @@
 //! by the ids the messenger gives people: without them, anyone who can
 //! write in an allowed chat decides, as the messenger identifies them.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -53,6 +53,15 @@ use crate::runtime::SharedLedger;
 /// A message from a chat.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Incoming {
+    /// The messenger's id of the message, where it gives one and the bridge
+    /// needs it: to mark it read, or show on it that the agent is at work.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// The thread it is in, where the messenger keeps threads apart and it
+    /// is in one (a Slack thread, a Telegram topic, a Mattermost root
+    /// post): the reply goes there ([`Messenger::reply`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thread: String,
     /// The chat it came from (a chat, channel or room id, or a number).
     pub chat: String,
     /// Who wrote it, as the messenger names them.
@@ -67,19 +76,26 @@ pub struct Incoming {
     /// Whom it names, as the messenger names people (ids, `@usernames`),
     /// the writer of a message it answers included.
     pub mentions: Vec<String>,
+    /// The files it carries besides a voice note: pictures, documents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<Note>,
 }
 
-/// A voice note a messenger received: its handle for it, and what it is.
+/// A file a messenger received (a voice note, a picture, a document): its
+/// handle for it, and what it is.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// The messenger's handle (a file id, an address).
     pub id: String,
     /// Its media type, where the messenger says.
     pub media_type: Option<String>,
+    /// Its name, where the messenger gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// A chat service a profile answers.
-pub trait Messenger: std::fmt::Debug {
+pub trait Messenger: std::fmt::Debug + Sync {
     /// Its name: `telegram`, `slack`, `discord`, `matrix` or `signal`.
     fn name(&self) -> &'static str;
     /// What its chats are called in what the bridge prints: `chat`,
@@ -128,6 +144,65 @@ pub trait Messenger: std::fmt::Debug {
         _caption: &str,
     ) -> Result<bool, String> {
         Ok(false)
+    }
+    /// The bytes of a file it received (a picture, a document): fetched as
+    /// a voice note is, where the messenger fetches those.
+    fn fetch_file(&self, note: &Note) -> Result<crate::files::File, String> {
+        let mut file: crate::files::File = self.fetch_voice(note)?.into();
+        // What the messenger said it is; else what its bytes or its name
+        // show; else what the fetch found.
+        let told = note
+            .media_type
+            .as_deref()
+            .filter(|t| !t.is_empty() && *t != "application/octet-stream");
+        let named = note
+            .name
+            .as_deref()
+            .map(crate::files::media_type_of)
+            .filter(|t| *t != "application/octet-stream");
+        if let Some(media_type) = told.or(crate::files::sniff_picture(&file.bytes)).or(named) {
+            file.media_type = media_type.to_string();
+        }
+        file.name = match &note.name {
+            Some(name) => name.clone(),
+            None => crate::files::safe_name(None, &note.id, &file.media_type),
+        };
+        Ok(file)
+    }
+    /// Sends `file` in answer to `message`, with `caption` where it takes
+    /// one: `Ok(false)` if it sends no files.
+    fn send_file(
+        &self,
+        _message: &Incoming,
+        _file: &crate::files::File,
+        _caption: &str,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Sends `text` to the chat of `message`, in its thread if it is in
+    /// one.
+    fn reply(&self, message: &Incoming, text: &str) -> Result<(), String> {
+        self.send(&message.chat, text)
+    }
+    /// The most characters one message holds: a longer reply goes in
+    /// parts, split where it reads best ([`crate::showing::pieces`]).
+    fn room(&self) -> usize {
+        4_000
+    }
+    /// What shows the chat of `message` that the agent is at work on it,
+    /// where the messenger can (`aloud`: the reply will be a voice note).
+    fn typist(&self, _message: &Incoming, _aloud: bool) -> Option<Box<dyn crate::showing::Typist>> {
+        None
+    }
+    /// What shows the reply to `message` as it is written, where the
+    /// messenger can.
+    fn drafting(&self, _message: &Incoming) -> Option<crate::showing::Drafting> {
+        None
+    }
+    /// Marks `message` as `ack` says, where the messenger can: with a
+    /// reaction, or a read receipt ([`Ack`]).
+    fn acknowledge(&self, _message: &Incoming, _ack: Ack) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -203,13 +278,15 @@ fn write_positions(positions: &BTreeMap<String, String>) -> String {
 /// is subscribed to (direct messages included); without one, it polls
 /// `conversations.history` of each channel it answers.
 pub struct Slack {
-    client: sion_http::Client,
-    base: String,
-    token: String,
+    pub(crate) client: sion_http::Client,
+    pub(crate) base: String,
+    pub(crate) token: String,
     channels: Vec<String>,
     app_token: Option<String>,
     live: OnceLock<crate::live::Live>,
     me: OnceLock<Vec<String>>,
+    /// The bot's workspace (`auth.test`), which Slack's streams name.
+    team: OnceLock<String>,
 }
 
 impl std::fmt::Debug for Slack {
@@ -234,7 +311,16 @@ impl Slack {
             app_token: env("SLACK_APP_TOKEN"),
             live: OnceLock::new(),
             me: OnceLock::new(),
+            team: OnceLock::new(),
         })
+    }
+
+    /// The bot's workspace, asked once.
+    pub(crate) fn team(&self) -> Option<String> {
+        if self.team.get().is_none() {
+            let _ = self.me();
+        }
+        self.team.get().cloned()
     }
 
     /// The Socket Mode connection, started the first time it is needed.
@@ -288,6 +374,49 @@ impl Slack {
         Ok(value)
     }
 
+    /// Shares a file in `chat` (in `thread`, if not empty), with `caption`:
+    /// Slack's upload, an address for the file, the bytes to it (it takes no
+    /// token), then the file shared.
+    fn upload(
+        &self,
+        chat: &str,
+        thread: &str,
+        name: &str,
+        media_type: &str,
+        bytes: &[u8],
+        caption: &str,
+    ) -> Result<(), String> {
+        let length = bytes.len().to_string();
+        let to = self.call_form(
+            "files.getUploadURLExternal",
+            &[("filename", name), ("length", &length)],
+        )?;
+        let url = to["upload_url"]
+            .as_str()
+            .ok_or("Slack gave no address to upload to")?;
+        let id = to["file_id"].as_str().ok_or("Slack gave no file id")?;
+        self.client
+            .request(
+                "POST",
+                url,
+                &[("Content-Type", media_type)],
+                Some(bytes),
+                1 << 20,
+            )
+            .map_err(|e| format!("the upload to Slack: {e}"))?;
+        let files = json!([{"id": id, "title": name}]).to_string();
+        let caption: String = caption.chars().take(3_000).collect();
+        let mut fields = vec![("files", files.as_str()), ("channel_id", chat)];
+        if !caption.is_empty() {
+            fields.push(("initial_comment", caption.as_str()));
+        }
+        if !thread.is_empty() {
+            fields.push(("thread_ts", thread));
+        }
+        self.call_form("files.completeUploadExternal", &fields)?;
+        Ok(())
+    }
+
     /// Whether `url` is Slack's own (its files', or the API's server), the
     /// only addresses the bot's token goes to.
     fn is_own(&self, url: &str) -> bool {
@@ -304,6 +433,29 @@ fn origin(url: &str) -> Option<String> {
 }
 
 impl Messenger for Slack {
+    fn acknowledge(&self, message: &Incoming, ack: Ack) -> Result<(), String> {
+        let react = |method: &str, name: &str| -> Result<(), String> {
+            match self.call(
+                method,
+                &json!({"channel": message.chat, "timestamp": message.id, "name": name}),
+            ) {
+                // Already so: nothing to do.
+                Err(why) if why.contains("already_reacted") || why.contains("no_reaction") => {
+                    Ok(())
+                }
+                other => other.map(|_| ()),
+            }
+        };
+        match ack {
+            Ack::Seen => react("reactions.add", "eyes"),
+            Ack::Done => react("reactions.remove", "eyes"),
+            Ack::Failed => {
+                react("reactions.remove", "eyes")?;
+                react("reactions.add", "warning")
+            }
+        }
+    }
+
     fn name(&self) -> &'static str {
         "slack"
     }
@@ -356,12 +508,15 @@ impl Messenger for Slack {
                     continue;
                 }
                 let text = message["text"].as_str().unwrap_or_default();
-                if !text.is_empty() || voice.is_some() {
+                let files = crate::live::slack_files(message);
+                if !text.is_empty() || voice.is_some() || !files.is_empty() {
                     let mut mentions = crate::live::slack_mentions(text);
                     if let Some(parent) = message["parent_user_id"].as_str() {
                         mentions.push(parent.to_string());
                     }
                     out.push(Incoming {
+                        id: ts.to_string(),
+                        thread: crate::live::slack_thread(message),
                         chat: channel.clone(),
                         from: message["user"].as_str().unwrap_or_default().to_string(),
                         text: text.to_string(),
@@ -369,6 +524,7 @@ impl Messenger for Slack {
                         // Direct messages' channels begin with D.
                         direct: channel.starts_with('D'),
                         mentions,
+                        files,
                     });
                 }
             }
@@ -383,6 +539,22 @@ impl Messenger for Slack {
             &json!({"channel": chat, "text": cut(text, 3_000)}),
         )
         .map(|_| ())
+    }
+
+    fn reply(&self, message: &Incoming, text: &str) -> Result<(), String> {
+        crate::drafts::slack_reply(self, message, text)
+    }
+
+    fn room(&self) -> usize {
+        3_000
+    }
+
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn crate::showing::Typist>> {
+        crate::drafts::slack_typist(self, message)
+    }
+
+    fn drafting(&self, message: &Incoming) -> Option<crate::showing::Drafting> {
+        crate::drafts::slack_drafting(self, message)
     }
 
     fn fetch_voice(&self, note: &Note) -> Result<crate::voice::Audio, String> {
@@ -413,36 +585,32 @@ impl Messenger for Slack {
         audio: &crate::voice::Audio,
         caption: &str,
     ) -> Result<bool, String> {
-        // Slack's upload: an address for the file, the bytes to it (it
-        // takes no token), then the file shared in the chat with the reply.
-        let length = audio.bytes.len().to_string();
-        let to = self.call_form(
-            "files.getUploadURLExternal",
-            &[("filename", &audio.name), ("length", &length)],
-        )?;
-        let url = to["upload_url"]
-            .as_str()
-            .ok_or("Slack gave no address to upload to")?;
-        let id = to["file_id"].as_str().ok_or("Slack gave no file id")?;
-        self.client
-            .request(
-                "POST",
-                url,
-                &[("Content-Type", &audio.media_type)],
-                Some(&audio.bytes),
-                1 << 20,
-            )
-            .map_err(|e| format!("the upload to Slack: {e}"))?;
-        let files = json!([{"id": id, "title": audio.name}]).to_string();
-        self.call_form(
-            "files.completeUploadExternal",
-            &[
-                ("files", &files),
-                ("channel_id", chat),
-                ("initial_comment", &cut(caption, 3_000)),
-            ],
-        )?;
-        Ok(true)
+        self.upload(
+            chat,
+            "",
+            &audio.name,
+            &audio.media_type,
+            &audio.bytes,
+            caption,
+        )
+        .map(|()| true)
+    }
+
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        self.upload(
+            &message.chat,
+            &message.thread,
+            &file.name,
+            &file.media_type,
+            &file.bytes,
+            caption,
+        )
+        .map(|()| true)
     }
 
     fn long_polls(&self) -> bool {
@@ -466,6 +634,9 @@ impl Messenger for Slack {
             return Ok(me.clone());
         }
         let who = self.call("auth.test", &json!({}))?;
+        if let Some(team) = who["team_id"].as_str() {
+            let _ = self.team.set(team.to_string());
+        }
         let me = vec![who["user_id"]
             .as_str()
             .ok_or("Slack did not say who the bot is")?
@@ -482,9 +653,9 @@ pub const LIVE_ONCE_WAIT: u64 = 30;
 /// messages ([`crate::live`]), and its HTTP API to post them. The bot
 /// needs the message-content intent to read what people write.
 pub struct Discord {
-    client: sion_http::Client,
-    base: String,
-    token: String,
+    pub(crate) client: sion_http::Client,
+    pub(crate) base: String,
+    pub(crate) token: String,
     live: OnceLock<crate::live::Live>,
 }
 
@@ -536,11 +707,34 @@ impl Discord {
                 4 << 20,
             )
             .map_err(|e| hide(e.to_string(), &self.token))?;
+        // A reaction's answer, say, has no body.
+        if fetched.body.is_empty() {
+            return Ok(Value::Null);
+        }
         json_of(&fetched.body, "Discord")
     }
 }
 
 impl Messenger for Discord {
+    fn acknowledge(&self, message: &Incoming, ack: Ack) -> Result<(), String> {
+        let path = |emoji: &str| {
+            format!(
+                "/channels/{}/messages/{}/reactions/{}/@me",
+                segment(&message.chat),
+                segment(&message.id),
+                segment(emoji)
+            )
+        };
+        match ack {
+            Ack::Seen => self.call("PUT", &path(SEEN), None).map(|_| ()),
+            Ack::Done => self.call("DELETE", &path(SEEN), None).map(|_| ()),
+            Ack::Failed => {
+                self.call("DELETE", &path(SEEN), None)?;
+                self.call("PUT", &path(FAILED), None).map(|_| ())
+            }
+        }
+    }
+
     fn name(&self) -> &'static str {
         "discord"
     }
@@ -560,6 +754,18 @@ impl Messenger for Discord {
             Some(&json!({"content": cut(text, 2_000)})),
         )
         .map(|_| ())
+    }
+
+    fn room(&self) -> usize {
+        2_000
+    }
+
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn crate::showing::Typist>> {
+        crate::drafts::discord_typist(self, message)
+    }
+
+    fn drafting(&self, message: &Incoming) -> Option<crate::showing::Drafting> {
+        crate::drafts::discord_drafting(self, message)
     }
 
     fn long_polls(&self) -> bool {
@@ -596,10 +802,46 @@ impl Messenger for Discord {
     ) -> Result<bool, String> {
         // The audio as an attachment, which Discord plays where it shows
         // the message; the reply as the message's text.
-        let payload = json!({"content": cut(caption, 2_000)});
+        self.attach(chat, caption, &audio.name, &audio.media_type, &audio.bytes)
+            .map(|()| true)
+    }
+
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        self.attach(
+            &message.chat,
+            caption,
+            &file.name,
+            &file.media_type,
+            &file.bytes,
+        )
+        .map(|()| true)
+    }
+}
+
+impl Discord {
+    /// Posts a message to `chat` with a file attached, `caption` its text.
+    fn attach(
+        &self,
+        chat: &str,
+        caption: &str,
+        name: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        // A file alone has no text.
+        let payload = if caption.is_empty() {
+            json!({})
+        } else {
+            json!({"content": cut(caption, 2_000)})
+        };
         let (content_type, body) = crate::voice::Form::new()
             .text("payload_json", &payload.to_string())
-            .file("files[0]", audio)
+            .bytes("files[0]", name, media_type, bytes)
             .finish();
         let auth = format!("Bot {}", self.token);
         self.client
@@ -610,8 +852,8 @@ impl Messenger for Discord {
                 Some(&body),
                 4 << 20,
             )
-            .map_err(|e| hide(e.to_string(), &self.token))?;
-        Ok(true)
+            .map(|_| ())
+            .map_err(|e| hide(e.to_string(), &self.token))
     }
 }
 
@@ -619,10 +861,10 @@ impl Messenger for Discord {
 /// `m.text` messages to rooms. With pairing, it joins the rooms it is
 /// invited to (someone who writes to it first invites it to a room).
 pub struct Matrix {
-    client: sion_http::Client,
-    base: String,
-    token: String,
-    me: String,
+    pub(crate) client: sion_http::Client,
+    pub(crate) base: String,
+    pub(crate) token: String,
+    pub(crate) me: String,
     join_invites: bool,
     /// Whether each room seen is a direct one (the account and one other).
     rooms: Mutex<BTreeMap<String, bool>>,
@@ -707,6 +949,36 @@ impl Matrix {
 }
 
 impl Messenger for Matrix {
+    /// Read receipts, as a person's client sends them; a reaction on what
+    /// failed.
+    fn acknowledge(&self, message: &Incoming, ack: Ack) -> Result<(), String> {
+        let room = segment(&message.chat);
+        match ack {
+            Ack::Seen => self
+                .call(
+                    "POST",
+                    &format!(
+                        "/_matrix/client/v3/rooms/{room}/receipt/m.read/{}",
+                        segment(&message.id)
+                    ),
+                    Some(&json!({})),
+                )
+                .map(|_| ()),
+            Ack::Done => Ok(()),
+            Ack::Failed => self
+                .call(
+                    "PUT",
+                    &format!(
+                        "/_matrix/client/v3/rooms/{room}/send/m.reaction/{}",
+                        crate::drafts::txn()
+                    ),
+                    Some(&json!({"m.relates_to": {"rel_type": "m.annotation",
+                        "event_id": message.id, "key": FAILED}})),
+                )
+                .map(|_| ()),
+        }
+    }
+
     fn name(&self) -> &'static str {
         "matrix"
     }
@@ -774,9 +1046,26 @@ impl Messenger for Matrix {
                         .map(|url| Note {
                             id: url.to_string(),
                             media_type: content["info"]["mimetype"].as_str().map(str::to_string),
+                            name: None,
                         });
+                    // A picture, a video or a file; in an encrypted room it
+                    // has no plain address, and is not taken.
+                    let file = matches!(
+                        content["msgtype"].as_str(),
+                        Some("m.image" | "m.file" | "m.video")
+                    )
+                    .then(|| content["url"].as_str())
+                    .flatten()
+                    .map(|url| Note {
+                        id: url.to_string(),
+                        media_type: content["info"]["mimetype"].as_str().map(str::to_string),
+                        name: content["filename"]
+                            .as_str()
+                            .or(content["body"].as_str())
+                            .map(str::to_string),
+                    });
                     if event["type"] != "m.room.message"
-                        || (content["msgtype"] != "m.text" && voice.is_none())
+                        || (content["msgtype"] != "m.text" && voice.is_none() && file.is_none())
                         || sender == self.me
                     {
                         continue;
@@ -784,10 +1073,10 @@ impl Messenger for Matrix {
                     let body = content["body"].as_str();
                     let captioned =
                         content["filename"].is_string() && content["filename"] != content["body"];
-                    let said = match &voice {
-                        Some(_) if captioned => body,
-                        Some(_) => Some(""),
-                        None => body,
+                    let said = match (&voice, &file) {
+                        (None, None) => body,
+                        _ if captioned => body,
+                        _ => Some(""),
                     };
                     if let Some(text) = said {
                         // Mentions as the spec has them, and the account
@@ -802,12 +1091,15 @@ impl Messenger for Matrix {
                             mentions.push(self.me.clone());
                         }
                         out.push(Incoming {
+                            id: event["event_id"].as_str().unwrap_or_default().to_string(),
+                            thread: String::new(),
                             chat: room.clone(),
                             from: sender.to_string(),
                             text: text.to_string(),
                             voice: voice.clone(),
                             direct: self.direct(room),
                             mentions,
+                            files: file.into_iter().collect(),
                         });
                     }
                 }
@@ -825,6 +1117,18 @@ impl Messenger for Matrix {
             chat,
             &json!({"msgtype": "m.text", "body": cut(text, 16_000)}),
         )
+    }
+
+    fn room(&self) -> usize {
+        16_000
+    }
+
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn crate::showing::Typist>> {
+        crate::drafts::matrix_typist(self, message)
+    }
+
+    fn drafting(&self, message: &Incoming) -> Option<crate::showing::Drafting> {
+        crate::drafts::matrix_drafting(self, message)
     }
 
     fn long_polls(&self) -> bool {
@@ -880,28 +1184,7 @@ impl Messenger for Matrix {
         audio: &crate::voice::Audio,
         caption: &str,
     ) -> Result<bool, String> {
-        let auth = format!("Bearer {}", self.token);
-        let uploaded = self
-            .client
-            .request(
-                "POST",
-                &format!(
-                    "{}/_matrix/media/v3/upload?filename={}",
-                    self.base,
-                    segment(&audio.name)
-                ),
-                &[
-                    ("Authorization", &auth),
-                    ("Content-Type", &audio.media_type),
-                ],
-                Some(&audio.bytes),
-                1 << 20,
-            )
-            .map_err(|e| hide(e.to_string(), &self.token))?;
-        let uri = json_of(&uploaded.body, "the homeserver")?["content_uri"]
-            .as_str()
-            .ok_or("the homeserver gave no address for the upload")?
-            .to_string();
+        let uri = self.upload(&audio.name, &audio.media_type, &audio.bytes)?;
         // A voice message (MSC3245), the reply as its caption.
         self.send_content(
             chat,
@@ -917,9 +1200,64 @@ impl Messenger for Matrix {
         )?;
         Ok(true)
     }
+
+    /// A picture as an `m.image`, anything else as an `m.file`; `caption`,
+    /// if any, its body, the file's name apart.
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        let uri = self.upload(&file.name, &file.media_type, &file.bytes)?;
+        let kind = if file.is_picture() {
+            "m.image"
+        } else {
+            "m.file"
+        };
+        let body = if caption.is_empty() {
+            file.name.clone()
+        } else {
+            cut(caption, 16_000)
+        };
+        self.send_content(
+            &message.chat,
+            &json!({
+                "msgtype": kind,
+                "body": body,
+                "filename": file.name,
+                "url": uri,
+                "info": {"mimetype": file.media_type, "size": file.bytes.len()},
+            }),
+        )?;
+        Ok(true)
+    }
 }
 
 impl Matrix {
+    /// Uploads a file to the homeserver: its `mxc://` address.
+    fn upload(&self, name: &str, media_type: &str, bytes: &[u8]) -> Result<String, String> {
+        let auth = format!("Bearer {}", self.token);
+        let uploaded = self
+            .client
+            .request(
+                "POST",
+                &format!(
+                    "{}/_matrix/media/v3/upload?filename={}",
+                    self.base,
+                    segment(name)
+                ),
+                &[("Authorization", &auth), ("Content-Type", media_type)],
+                Some(bytes),
+                1 << 20,
+            )
+            .map_err(|e| hide(e.to_string(), &self.token))?;
+        Ok(json_of(&uploaded.body, "the homeserver")?["content_uri"]
+            .as_str()
+            .ok_or("the homeserver gave no address for the upload")?
+            .to_string())
+    }
+
     fn send_content(&self, chat: &str, content: &Value) -> Result<(), String> {
         let txn = format!(
             "sion-{}",
@@ -944,9 +1282,9 @@ impl Matrix {
 /// number's keys): polls `receive` for direct messages, and sends with
 /// `/v2/send`.
 pub struct Signal {
-    client: sion_http::Client,
-    base: String,
-    number: String,
+    pub(crate) client: sion_http::Client,
+    pub(crate) base: String,
+    pub(crate) number: String,
 }
 
 impl std::fmt::Debug for Signal {
@@ -971,6 +1309,35 @@ impl Signal {
 }
 
 impl Messenger for Signal {
+    /// Read receipts; a reaction on what failed.
+    fn acknowledge(&self, message: &Incoming, ack: Ack) -> Result<(), String> {
+        let timestamp: u64 = message
+            .id
+            .parse()
+            .map_err(|_| format!("{} is not a Signal message's timestamp", message.id))?;
+        let (path, body) = match ack {
+            Ack::Seen => (
+                "receipts",
+                json!({"receipt_type": "read", "recipient": message.chat, "timestamp": timestamp}),
+            ),
+            Ack::Done => return Ok(()),
+            Ack::Failed => (
+                "reactions",
+                json!({"reaction": FAILED, "recipient": message.chat,
+                    "target_author": message.from, "timestamp": timestamp}),
+            ),
+        };
+        self.client
+            .post_json(
+                &format!("{}/v1/{path}/{}", self.base, segment(&self.number)),
+                &[],
+                body.to_string().as_bytes(),
+                1 << 16,
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     fn name(&self) -> &'static str {
         "signal"
     }
@@ -1014,17 +1381,44 @@ impl Messenger for Signal {
                     Some(Note {
                         id: a["id"].as_str()?.to_string(),
                         media_type: a["contentType"].as_str().map(str::to_string),
+                        name: None,
                     })
                 });
+            // Every other attachment is a file.
+            let files: Vec<Note> = message["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|a| {
+                    !a["contentType"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("audio/"))
+                })
+                .filter_map(|a| {
+                    Some(Note {
+                        id: a["id"].as_str()?.to_string(),
+                        media_type: a["contentType"].as_str().map(str::to_string),
+                        name: a["filename"].as_str().map(str::to_string),
+                    })
+                })
+                .collect();
             let text = message["message"].as_str().unwrap_or_default();
-            if !from.is_empty() && (!text.is_empty() || voice.is_some()) {
+            if !from.is_empty() && (!text.is_empty() || voice.is_some() || !files.is_empty()) {
                 out.push(Incoming {
+                    // Signal names a message by when it was sent.
+                    id: message["timestamp"]
+                        .as_u64()
+                        .or(envelope["timestamp"].as_u64())
+                        .map(|at| at.to_string())
+                        .unwrap_or_default(),
+                    thread: String::new(),
                     chat: from.to_string(),
                     from: from.to_string(),
                     text: text.to_string(),
                     voice,
                     direct: true,
                     mentions: Vec::new(),
+                    files,
                 });
             }
         }
@@ -1036,6 +1430,10 @@ impl Messenger for Signal {
         self.post(
             &json!({"message": cut(text, 4_000), "number": self.number, "recipients": [chat]}),
         )
+    }
+
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn crate::showing::Typist>> {
+        crate::drafts::signal_typist(self, message)
     }
 
     fn long_polls(&self) -> bool {
@@ -1066,17 +1464,56 @@ impl Messenger for Signal {
         audio: &crate::voice::Audio,
         caption: &str,
     ) -> Result<bool, String> {
+        self.attach(chat, caption, &audio.name, &audio.media_type, &audio.bytes)
+            .map(|()| true)
+    }
+
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        self.attach(
+            &message.chat,
+            caption,
+            &file.name,
+            &file.media_type,
+            &file.bytes,
+        )
+        .map(|()| true)
+    }
+}
+
+impl Signal {
+    /// Sends `chat` a message with a file attached, `caption` its text.
+    fn attach(
+        &self,
+        chat: &str,
+        caption: &str,
+        name: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        // The data URL's own separators may not be in the name.
+        let name: String = name
+            .chars()
+            .map(|c| {
+                if matches!(c, ';' | ',') || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
         let attachment = format!(
-            "data:{};filename={};base64,{}",
-            audio.media_type,
-            audio.name,
-            sion_http::base64(&audio.bytes)
+            "data:{media_type};filename={name};base64,{}",
+            sion_http::base64(bytes)
         );
-        self.post(
-            &json!({"message": cut(caption, 4_000), "number": self.number,
-            "recipients": [chat], "base64_attachments": [attachment]}),
-        )?;
-        Ok(true)
+        // A file alone has no text.
+        let message: String = caption.chars().take(4_000).collect();
+        self.post(&json!({"message": message, "number": self.number,
+            "recipients": [chat], "base64_attachments": [attachment]}))
     }
 }
 
@@ -1097,6 +1534,26 @@ impl Signal {
 /// Telegram, through the Bot API ([`crate::channels::Telegram`]): long
 /// polls `getUpdates`, keeping the offset as its cursor.
 impl Messenger for crate::channels::Telegram {
+    /// A bot's reaction on the message, which each mark replaces.
+    fn acknowledge(&self, message: &Incoming, ack: Ack) -> Result<(), String> {
+        let (chat, _) = crate::drafts::telegram_place(message)?;
+        let id: i64 = message
+            .id
+            .parse()
+            .map_err(|_| format!("{} is not a Telegram message id", message.id))?;
+        let reaction = match ack {
+            Ack::Seen => json!([{"type": "emoji", "emoji": SEEN}]),
+            Ack::Done => json!([]),
+            // Telegram offers bots no warning sign.
+            Ack::Failed => json!([{"type": "emoji", "emoji": "😢"}]),
+        };
+        self.call(
+            "setMessageReaction",
+            &json!({"chat_id": chat, "message_id": id, "reaction": reaction}),
+        )
+        .map(|_| ())
+    }
+
     fn name(&self) -> &'static str {
         "telegram"
     }
@@ -1113,15 +1570,19 @@ impl Messenger for crate::channels::Telegram {
         let messages = updates
             .into_iter()
             .map(|u| Incoming {
+                id: u.message.to_string(),
+                thread: u.topic.map(|t| t.to_string()).unwrap_or_default(),
                 chat: u.chat.to_string(),
                 from: u.from.map(|f| f.to_string()).unwrap_or_default(),
                 text: u.text,
                 voice: u.voice.map(|(id, media_type)| Note {
                     id,
                     media_type: Some(media_type),
+                    name: None,
                 }),
                 direct: u.direct,
                 mentions: u.mentions,
+                files: u.files,
             })
             .collect();
         Ok((messages, next.to_string()))
@@ -1136,6 +1597,23 @@ impl Messenger for crate::channels::Telegram {
             .parse()
             .map_err(|_| format!("{chat} is not a Telegram chat id"))?;
         crate::channels::Telegram::send(self, chat, text)
+    }
+
+    fn reply(&self, message: &Incoming, text: &str) -> Result<(), String> {
+        let (chat, topic) = crate::drafts::telegram_place(message)?;
+        self.send_in(chat, topic, text).map(|_| ())
+    }
+
+    fn room(&self) -> usize {
+        crate::drafts::TELEGRAM_ROOM
+    }
+
+    fn typist(&self, message: &Incoming, aloud: bool) -> Option<Box<dyn crate::showing::Typist>> {
+        crate::drafts::telegram_typist(self, message, aloud)
+    }
+
+    fn drafting(&self, message: &Incoming) -> Option<crate::showing::Drafting> {
+        crate::drafts::telegram_drafting(self, message)
     }
 
     fn long_polls(&self) -> bool {
@@ -1156,6 +1634,18 @@ impl Messenger for crate::channels::Telegram {
             .parse()
             .map_err(|_| format!("{chat} is not a Telegram chat id"))?;
         self.send_voice(chat, audio, caption).map(|()| true)
+    }
+
+    /// A picture as a photo, anything else as a document, in the
+    /// message's topic.
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        let (chat, topic) = crate::drafts::telegram_place(message)?;
+        self.send_file_in(chat, topic, file, caption).map(|()| true)
     }
 }
 
@@ -1235,6 +1725,83 @@ pub struct ChannelArgs {
     /// text, it writes Ogg Opus or MP3).
     #[arg(long, value_name = "PROVIDER", requires = "hear")]
     pub speak: Option<String>,
+    /// How a reply shows while the agent writes it, where the messenger
+    /// can show it: `progress`, the text as the model writes it and the
+    /// tool the agent runs; `partial`, the text only; `off`, the reply once
+    /// it is done.
+    #[arg(long, value_enum, default_value_t = Streaming::Progress)]
+    pub stream: Streaming,
+    /// Show no typing indicator while the agent works.
+    #[arg(long)]
+    pub no_typing: bool,
+    /// What a message does that comes while the agent works on its chat:
+    /// `steer`, it is told to the agent as it works; `queue`, answered
+    /// after, one at a time; `collect`, answered after, together;
+    /// `interrupt`, it stops the agent, which takes it up. `/stop` always
+    /// stops it.
+    #[arg(long, value_enum, default_value_t = Busy::Steer)]
+    pub busy: Busy,
+    /// Milliseconds a chat's messages are gathered before the agent takes
+    /// them up, so that a burst of them is one turn.
+    #[arg(long, value_name = "MS", default_value_t = 500)]
+    pub debounce: u64,
+    /// How many chats are answered at once.
+    #[arg(long, value_name = "N", default_value_t = 4)]
+    pub parallel: usize,
+    /// Mark no message received, answered or failed (with a reaction, or a
+    /// read receipt).
+    #[arg(long)]
+    pub no_reactions: bool,
+    /// A chat that another profile answers: `<chat>=<profile>`, as often as
+    /// needed (comma-separated too). The chat is answered as --allow's.
+    #[arg(long, value_name = "CHAT=PROFILE", value_delimiter = ',')]
+    pub route: Vec<String>,
+}
+
+/// What a bridge marks a message it took with ([`Messenger::acknowledge`]):
+/// a reaction (👀 while the agent is at it, gone once it answered, ⚠️ if
+/// that failed), or a read receipt where the messenger has them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ack {
+    /// Taken: the agent will answer it, or is at it.
+    Seen,
+    /// Answered.
+    Done,
+    /// Not answered: something failed.
+    Failed,
+}
+
+/// The reaction on a message the agent will answer, or is at ([`Ack::Seen`]).
+pub const SEEN: &str = "👀";
+
+/// The reaction on a message that could not be answered ([`Ack::Failed`]).
+pub const FAILED: &str = "⚠️";
+
+/// What a message does that comes while the agent works on its chat
+/// (`--busy`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Busy {
+    /// Told to the agent as it works: it takes it in before its next step.
+    Steer,
+    /// Answered once the agent is done, one at a time.
+    #[default]
+    Queue,
+    /// Answered once the agent is done, all of them together.
+    Collect,
+    /// Stops the agent, which then takes it up.
+    Interrupt,
+}
+
+/// How a reply shows while the agent writes it (`--stream`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Streaming {
+    /// The text as the model writes it, and the tool the agent runs.
+    #[default]
+    Progress,
+    /// The text as the model writes it.
+    Partial,
+    /// The reply once it is done.
+    Off,
 }
 
 impl ChannelArgs {
@@ -1264,6 +1831,25 @@ impl ChannelArgs {
                 .map(crate::voice::Speaking::parse)
                 .transpose()
                 .map_err(CliError::Usage)?,
+            stream: self.stream,
+            no_typing: self.no_typing,
+            busy: self.busy,
+            debounce_ms: self.debounce,
+            parallel: self.parallel,
+            acknowledge: !self.no_reactions,
+            routes: self
+                .route
+                .iter()
+                .map(|route| {
+                    let (chat, profile) = route.split_once('=').ok_or_else(|| {
+                        CliError::Usage(format!("a route is <chat>=<profile>, not {route}"))
+                    })?;
+                    Ok((
+                        chat.trim().to_string(),
+                        crate::profiles::get(profile.trim())?,
+                    ))
+                })
+                .collect::<Result<_, CliError>>()?,
         })
     }
 }
@@ -1291,6 +1877,23 @@ pub struct Options {
     pub hearing: Option<crate::voice::Hearing>,
     /// What speaks the replies to voice notes, if they are spoken.
     pub speaking: Option<crate::voice::Speaking>,
+    /// How a reply shows while the agent writes it.
+    pub stream: Streaming,
+    /// Show no typing indicator.
+    pub no_typing: bool,
+    /// What a message does that comes while the agent works on its chat.
+    pub busy: Busy,
+    /// Milliseconds a chat's messages are gathered before the agent takes
+    /// them up (none: each is taken up as it comes).
+    pub debounce_ms: u64,
+    /// How many chats are answered at once (0 is one).
+    pub parallel: usize,
+    /// Mark each message received, and answered or failed, where the
+    /// messenger can ([`Messenger::acknowledge`]).
+    pub acknowledge: bool,
+    /// The chats another profile answers than the bridge's, by chat: one
+    /// messenger account, many profiles. They are answered as `allow`'s.
+    pub routes: BTreeMap<String, Profile>,
 }
 
 /// Answers the chats in `allow` with `profile` through `messenger`, until
@@ -1319,217 +1922,16 @@ pub fn bridge(
 }
 
 /// [`bridge`], as `options` say: with pairing for chats it does not know,
-/// and voice notes heard and answered aloud.
+/// voice notes heard and answered aloud, chats answered side by side, and
+/// what is said while the agent works told to it, queued or collected
+/// ([`crate::bridge`]).
 pub fn bridge_with(
     ledger: SharedLedger,
     profile: &Profile,
     messenger: &dyn Messenger,
     options: &Options,
 ) -> Result<(), CliError> {
-    let (allow, approvers, once) = (&options.allow, &options.approvers, options.once);
-    if allow.is_empty() && !options.pairing {
-        return Err(CliError::Usage(
-            "name the chats the profile answers (--allow <chat>,…), or let people pair (--pairing)"
-                .into(),
-        ));
-    }
-    if options.pairing && !messenger.sees_strangers() {
-        return Err(CliError::Usage(if messenger.name() == "slack" {
-            "slack is polled here channel by channel, so no message from a chat it does not answer reaches the bridge: give Slack an app-level token (SLACK_APP_TOKEN) for Socket Mode".to_string()
-        } else {
-            format!(
-                "{} cannot pair: nothing it passes on is known to be a direct chat with someone it does not answer yet; name the chats (--allow)",
-                messenger.name()
-            )
-        }));
-    }
-    let cursor_key = messenger.cursor_key(&profile.name);
-    let word = messenger.chat_word();
-    let channel = format!("{}:{}", messenger.name(), profile.name);
-    // Chats said to be ignored, each once.
-    let mut ignored = BTreeSet::new();
-    let mut me: Option<Vec<String>> = None;
-    // What was taken and not answered when the bridge last stopped, which
-    // is answered first.
-    let pending_key = format!("{cursor_key}:pending");
-    let mut carried: Vec<Incoming> = crate::channels::state(&pending_key)?
-        .and_then(|kept| serde_json::from_str(&kept).ok())
-        .unwrap_or_default();
-    if !carried.is_empty() {
-        println!(
-            "{}: {} message(s) taken before the bridge stopped, answered now",
-            messenger.name(),
-            carried.len()
-        );
-    }
-    let keep_pending = |left: &std::collections::VecDeque<Incoming>| -> Result<(), CliError> {
-        let kept = (!left.is_empty()).then(|| serde_json::to_string(left).unwrap_or_default());
-        crate::channels::set_state(&pending_key, kept.as_deref())
-    };
-    loop {
-        let messages = if carried.is_empty() {
-            let cursor = crate::channels::state(&cursor_key)?.unwrap_or_default();
-            let wait = if once { messenger.once_wait() } else { 50 };
-            let (messages, next) = messenger
-                .receive(&cursor, wait)
-                .map_err(CliError::Connection)?;
-            // Kept before the cursor moves past them: each message taken is
-            // answered, after a restart if the bridge stops first.
-            keep_pending(&messages.iter().cloned().collect())?;
-            crate::channels::set_state(&cursor_key, Some(&next))?;
-            messages
-        } else {
-            std::mem::take(&mut carried)
-        };
-        let quiet = messages.is_empty();
-        let mut left: std::collections::VecDeque<Incoming> = messages.into();
-        while let Some(message) = left.pop_front() {
-            // This one stays kept until the next is taken up.
-            let mut kept = left.clone();
-            kept.push_front(message.clone());
-            keep_pending(&kept)?;
-            if !allow.contains(&message.chat) {
-                // Pairing lets in a person, in a chat of their own with the
-                // bot: a group the bridge does not answer stays ignored.
-                let pairs = options.pairing && message.direct;
-                let known = pairs && crate::pairing::load()?.allows(&channel, &message.chat);
-                if !known {
-                    if !pairs {
-                        if ignored.insert(message.chat.clone()) {
-                            println!("{word} {}: not allowed, ignored", message.chat);
-                        }
-                        continue;
-                    }
-                    match crate::pairing::stranger(
-                        &channel,
-                        &message.chat,
-                        &message.from,
-                        &message.text,
-                    )? {
-                        crate::pairing::Stranger::Allowed => {}
-                        crate::pairing::Stranger::Code(code) => {
-                            // The code goes to the sender only: the bridge
-                            // does not print it.
-                            println!(
-                                "{word} {}: not known yet; sent a pairing code (sion agent pairing list)",
-                                message.chat
-                            );
-                            messenger
-                                .send(
-                                    &message.chat,
-                                    &format!(
-                                        "I do not know you yet. To talk with me, ask the person who runs me to let you in with: sion agent pairing approve {}",
-                                        crate::pairing::shown(&code)
-                                    ),
-                                )
-                                .map_err(CliError::Connection)?;
-                            continue;
-                        }
-                        crate::pairing::Stranger::Quiet => {
-                            println!("{word} {}: not known yet, ignored", message.chat);
-                            continue;
-                        }
-                    }
-                }
-            } else if options.require_mention && !message.direct {
-                // In a group, only what is said to the bot.
-                if me.is_none() {
-                    me = Some(messenger.me().map_err(CliError::Connection)?);
-                }
-                let names = me.as_deref().unwrap_or_default();
-                let named = message
-                    .mentions
-                    .iter()
-                    .any(|m| names.iter().any(|n| n.eq_ignore_ascii_case(m)));
-                if !named {
-                    continue;
-                }
-            }
-            // A voice note is heard, and goes to the agent as what its
-            // sender said, marked as heard.
-            let mut text = message.text.clone();
-            if let Some(note) = &message.voice {
-                let heard = match &options.hearing {
-                    None => Err("voice notes are not heard here: write instead".to_string()),
-                    Some(hearing) => messenger
-                        .fetch_voice(note)
-                        .and_then(|audio| hearing.transcribe(&audio)),
-                };
-                match heard {
-                    Ok(heard) => {
-                        println!("{word} {}: (voice note) {heard}", message.chat);
-                        text = if text.is_empty() {
-                            format!("(voice note) {heard}")
-                        } else {
-                            format!("{text}\n(voice note) {heard}")
-                        };
-                    }
-                    Err(why) => {
-                        println!("{word} {}: a voice note not heard: {why}", message.chat);
-                        messenger
-                            .send(&message.chat, &format!("I could not hear that: {why}"))
-                            .map_err(CliError::Connection)?;
-                        continue;
-                    }
-                }
-            } else if message.from.is_empty() || message.from == message.chat {
-                println!("{word} {}: {}", message.chat, message.text);
-            } else {
-                println!(
-                    "{word} {} ({}): {}",
-                    message.chat, message.from, message.text
-                );
-            }
-            let message = Incoming { text, ..message };
-            let key = format!("{}:{}:{}", messenger.name(), profile.name, message.chat);
-            let deciding = crate::channels::is_decision(&message.text);
-            let reply = if deciding && !approvers.is_empty() && !approvers.contains(&message.from) {
-                format!("Only {} may approve or decline here.", approvers.join(", "))
-            } else {
-                match crate::channels::converse(ledger.clone(), profile, &key, &message.text) {
-                    Ok(answer) => {
-                        for line in &answer.lines {
-                            println!("  {line}");
-                        }
-                        answer.reply
-                    }
-                    Err(e) => format!("That did not work: {e}"),
-                }
-            };
-            // A voice note is answered aloud where the messenger sends
-            // voice notes, and in text otherwise.
-            let spoken = match (&message.voice, &options.speaking) {
-                (Some(_), Some(speaking)) => match speaking
-                    .speak(&reply)
-                    .and_then(|audio| messenger.send_voice(&message.chat, &audio, &reply))
-                {
-                    Ok(sent) => sent,
-                    Err(why) => {
-                        println!("  (not spoken: {why})");
-                        false
-                    }
-                },
-                _ => false,
-            };
-            if spoken {
-                println!("to {word} {} (voice note): {reply}", message.chat);
-            } else {
-                println!("to {word} {}: {reply}", message.chat);
-                messenger
-                    .send(&message.chat, &reply)
-                    .map_err(CliError::Connection)?;
-            }
-        }
-        if !quiet {
-            keep_pending(&std::collections::VecDeque::new())?;
-        }
-        if once {
-            return Ok(());
-        }
-        if quiet && !messenger.long_polls() {
-            std::thread::sleep(Duration::from_secs(POLL_PAUSE));
-        }
-    }
+    crate::bridge::run(ledger, profile, messenger, options)
 }
 
 #[cfg(test)]

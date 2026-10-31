@@ -16,7 +16,9 @@ use serde_json::{json, Value};
 use sion_agent::model::Model;
 use sion_agent::scripted::Scripted;
 use sion_agent::tools::{Effect, Outcome, Tool};
-use sion_agent::{Autonomy, Block, Ended, Limits, Policy, Role, Runtime, State, ToolSpec, Toolbox};
+use sion_agent::{
+    Autonomy, Block, Ended, Limits, Policy, Role, Runtime, Seen, State, ToolSpec, Toolbox,
+};
 use sion_core::hash::Hash32;
 use sion_core::ids::{AssetId, ObjectId, TxDigest};
 use sion_exec::object::ObjectData;
@@ -306,13 +308,19 @@ pub fn ledger_tools(acting: &Acting) -> Vec<Box<dyn Tool>> {
 
 /// A model from its description: `anthropic:<model>` (key in
 /// `ANTHROPIC_API_KEY`), `openai:<model>` (base URL in `OPENAI_BASE_URL`,
-/// by default OpenAI's, key in `OPENAI_API_KEY` if set), or
-/// `script:<file>` (a scripted model, for demos and tests), whose first
-/// `skip` steps are dropped.
+/// by default OpenAI's, key in `OPENAI_API_KEY` if set), `gemini:<model>`
+/// (key in `GEMINI_API_KEY`, or `GOOGLE_API_KEY`; base URL in
+/// `GEMINI_BASE_URL`), `openai-responses:<model>` (OpenAI's Responses API,
+/// key in `OPENAI_API_KEY`), `chatgpt:<model>` (the Responses API on the
+/// ChatGPT plan of whoever signed in, [`crate::chatgpt`]), or
+/// `script:<file>` (a scripted model, for demos and
+/// tests), whose first `skip` steps are dropped. A key variable may hold
+/// several keys, comma-separated, used in turn
+/// ([`sion_agent::providers::Keys`]).
 pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
     let (kind, rest) = spec.split_once(':').ok_or_else(|| {
         CliError::Usage(format!(
-            "a model is anthropic:<model>, openai:<model> or script:<file>, not {spec}"
+            "a model is anthropic:<model>, openai:<model>, openai-responses:<model>, chatgpt:<model>, gemini:<model> or script:<file>, not {spec}"
         ))
     })?;
     let http = || {
@@ -343,6 +351,44 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
                 key.as_deref(),
             )))
         }
+        "openai-responses" => {
+            let key = env("OPENAI_API_KEY")
+                .ok_or_else(|| CliError::Usage("set OPENAI_API_KEY".into()))?;
+            let mut provider = sion_agent::providers::OpenAiResponses::new(
+                http()?,
+                rest,
+                sion_agent::providers::Bearer::Keys(sion_agent::providers::Keys::parse(&key)),
+            );
+            if let Some(base) = env("OPENAI_BASE_URL") {
+                provider.base = base;
+            }
+            Ok(Box::new(provider))
+        }
+        "chatgpt" => {
+            // The plan of whoever signed in here, renewed as it lapses.
+            let mut provider = sion_agent::providers::OpenAiResponses::new(
+                sion_http::Client::new(sion_http::Options {
+                    timeout: std::time::Duration::from_secs(300),
+                    allow_private: sion_agent::oauth::is_loopback(&crate::chatgpt::api()),
+                    ..sion_http::Options::default()
+                })
+                .map_err(|e| CliError::Usage(e.to_string()))?,
+                rest,
+                sion_agent::providers::Bearer::Token(Box::new(crate::chatgpt::token)),
+            );
+            provider.base = crate::chatgpt::api();
+            Ok(Box::new(provider))
+        }
+        "gemini" => {
+            let key = env("GEMINI_API_KEY")
+                .or_else(|| env("GOOGLE_API_KEY"))
+                .ok_or_else(|| CliError::Usage("set GEMINI_API_KEY".into()))?;
+            let mut provider = sion_agent::providers::Gemini::new(http()?, rest, &key);
+            if let Some(base) = env("GEMINI_BASE_URL") {
+                provider.base = base;
+            }
+            Ok(Box::new(provider))
+        }
         "script" => {
             let text = std::fs::read_to_string(rest)
                 .map_err(|e| CliError::Usage(format!("{rest}: {e}")))?;
@@ -350,7 +396,7 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             Ok(Box::new(scripted.skip(skip)))
         }
         other => Err(CliError::Usage(format!(
-            "unknown model provider {other}: use anthropic, openai or script"
+            "unknown model provider {other}: use anthropic, openai, openai-responses, chatgpt, gemini or script"
         ))),
     }
 }
@@ -426,6 +472,150 @@ pub struct Saved {
     /// Where its browser was when its last run ended, to go back to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_at: Option<sion_agent::browser::Restore>,
+    /// What the agent said in its last run, every answer of it ([`words`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub said: String,
+    /// The session's name, if a person gave it one (`/title`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// What the chat it is answered in asks of it, after its operator's
+    /// instructions (`/system`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_instructions: Option<String>,
+    /// The only tools it may use, if it was told so (`/tools`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_tools: Option<std::collections::BTreeSet<String>>,
+    /// The files of its workspace it shared in its last run
+    /// (`share_file`), to go with its reply: their paths in the workspace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared: Vec<String>,
+    /// What makes pictures for it (`image_generate`): `openai:<model>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_model: Option<String>,
+}
+
+/// Who watches a run as it goes ([`Hooks::watch`]).
+pub type Watch<'a> = &'a (dyn Fn(&Seen) + Sync);
+
+/// What a run is given besides its session, from whoever runs it: who
+/// watches it, what stops it, and what the person said while it went on.
+#[derive(Clone, Copy, Default)]
+pub struct Hooks<'a> {
+    /// Told what the run does as it goes, and the text as it is written.
+    pub watch: Option<Watch<'a>>,
+    /// Asked before each model or tool call: whether to stop the run there
+    /// (`/stop`, or a message that interrupts it), as the kill switch does.
+    pub stop: Option<&'a (dyn Fn() -> bool + Sync)>,
+    /// Asked before each model call: what the person said meanwhile, which
+    /// the run takes in.
+    pub steer: Option<&'a (dyn Fn() -> Vec<String> + Sync)>,
+}
+
+impl std::fmt::Debug for Hooks<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hooks")
+            .field("watch", &self.watch.is_some())
+            .field("stop", &self.stop.is_some())
+            .field("steer", &self.steer.is_some())
+            .finish()
+    }
+}
+
+impl<'a> Hooks<'a> {
+    /// Only watched by `watch`.
+    pub fn watched(watch: Watch<'a>) -> Hooks<'a> {
+        Hooks {
+            watch: Some(watch),
+            ..Hooks::default()
+        }
+    }
+}
+
+/// What the model said in `messages`, a run's: the text of each of its
+/// answers in order, a paragraph each, and an answer cut off at its token
+/// limit continued by the next. What a watcher of the run is shown as the
+/// model writes it comes to the same ([`Spoken`]).
+pub fn words(messages: &[sion_agent::Message]) -> String {
+    let mut spoken = Spoken::default();
+    for message in messages {
+        match message.role {
+            Role::User => spoken.continues = message.text() == sion_agent::session::CONTINUE,
+            Role::Assistant => {
+                spoken.add(&message.text());
+                spoken.end(false);
+            }
+        }
+    }
+    spoken.text()
+}
+
+/// What a run has said so far, built as the model writes it: the answers
+/// taken, and the one being written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Spoken {
+    /// The answers taken, each as it reads, and whether it continues the
+    /// one before it.
+    answers: Vec<(String, bool)>,
+    /// The answer being written.
+    current: String,
+    /// Whether the next answer continues the last, cut off.
+    continues: bool,
+}
+
+impl Spoken {
+    /// More of the answer being written.
+    pub fn add(&mut self, text: &str) {
+        self.current.push_str(text);
+    }
+
+    /// The answer being written is taken; `cut`: it was cut off at the
+    /// model's token limit, and the next continues it.
+    pub fn end(&mut self, cut: bool) {
+        let text = std::mem::take(&mut self.current);
+        if !text.trim().is_empty() {
+            self.answers.push((text, self.continues));
+        }
+        self.continues = cut;
+    }
+
+    /// The answer being written is dropped (its model failed partway).
+    pub fn drop_current(&mut self) {
+        self.current.clear();
+    }
+
+    /// Whether anything was said.
+    pub fn is_empty(&self) -> bool {
+        self.answers.is_empty() && self.current.trim().is_empty()
+    }
+
+    /// All of it so far, as it reads: the answers a paragraph each, one cut
+    /// off joined to the one that continues it.
+    pub fn text(&self) -> String {
+        let current =
+            (!self.current.trim().is_empty()).then_some((self.current.as_str(), self.continues));
+        let pieces: Vec<(&str, bool)> = self
+            .answers
+            .iter()
+            .map(|(answer, continues)| (answer.as_str(), *continues))
+            .chain(current)
+            .collect();
+        let mut text = String::new();
+        for (at, (answer, continues)) in pieces.iter().enumerate() {
+            let continued = pieces.get(at + 1).is_some_and(|(_, next)| *next);
+            let mut piece = *answer;
+            if !continues {
+                piece = piece.trim_start();
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+            }
+            if !continued {
+                piece = piece.trim_end();
+            }
+            text.push_str(piece);
+        }
+        text
+    }
 }
 
 /// What a person answers a session with.
@@ -437,6 +627,8 @@ pub enum Reply {
     Decline(String),
     /// Tell it more, and let it go on.
     Say(String),
+    /// Tell it more, with pictures the person sent, and let it go on.
+    Show(String, Vec<sion_agent::Picture>),
 }
 
 /// Continues the session `id` (or a unique prefix of it), with a reply or
@@ -445,6 +637,16 @@ pub fn resume(
     ledger: SharedLedger,
     id: &str,
     reply: Option<Reply>,
+) -> Result<(Saved, Vec<String>), CliError> {
+    resume_watched(ledger, id, reply, Hooks::default())
+}
+
+/// [`resume`], the run given `hooks`: watched, stopped and steered.
+pub fn resume_watched(
+    ledger: SharedLedger,
+    id: &str,
+    reply: Option<Reply>,
+    hooks: Hooks<'_>,
 ) -> Result<(Saved, Vec<String>), CliError> {
     let mut saved = Saved::load(id)?;
     match reply {
@@ -458,25 +660,42 @@ pub fn resume(
             }
             saved.state.tell(&more, &saved.limits);
         }
+        Some(Reply::Show(more, pictures)) => {
+            if saved.state.pending.is_some() {
+                return Err(CliError::Usage(
+                    "the session waits for a decision: approve or decline it first".into(),
+                ));
+            }
+            saved.state.tell_with(&more, &pictures, &saved.limits);
+        }
         None => {}
     }
-    let lines = saved.run(ledger)?;
+    let lines = saved.run_watched(ledger, hooks)?;
     Ok((saved, lines))
 }
 
-/// What a session last said to the person, in a line: its answer, or what
-/// it waits for.
+/// What a session last said to the person: what the agent said in its last
+/// run, every answer of it, and then, if it did not finish, what it waits
+/// for or why it stopped.
 pub fn last_words(saved: &Saved) -> String {
-    match &saved.ended {
-        Some(Ended::Done { text }) => text.clone(),
+    let ending = match &saved.ended {
+        Some(Ended::Done { text }) if saved.said.is_empty() => return text.clone(),
+        Some(Ended::Done { .. }) => return saved.said.clone(),
         Some(Ended::NeedsApproval {
             tool,
             input,
             reason,
             ..
         }) => format!("waiting for your approval: {tool} {input} ({reason})"),
+        // Stopped by a person (`/stop`), not by the kill switch.
+        Some(Ended::Stopped) if !kill_switch().exists() => "Stopped.".to_string(),
         Some(other) => ending(other, &saved.state.id),
-        None => "not run yet".into(),
+        None => return "not run yet".into(),
+    };
+    if saved.said.is_empty() {
+        ending
+    } else {
+        format!("{}\n\n{ending}", saved.said)
     }
 }
 
@@ -572,6 +791,16 @@ impl Saved {
     /// Runs the session until it ends or waits, with `ledger`, and saves it.
     /// Returns the lines to show: what happened since `from`.
     pub fn run(&mut self, ledger: SharedLedger) -> Result<Vec<String>, CliError> {
+        self.run_watched(ledger, Hooks::default())
+    }
+
+    /// [`Saved::run`], watched as it goes by `watch`, if given: told what
+    /// the agent does, and the text its models write as they write it.
+    pub fn run_watched(
+        &mut self,
+        ledger: SharedLedger,
+        hooks: Hooks<'_>,
+    ) -> Result<Vec<String>, CliError> {
         let acting = Acting {
             ledger,
             wallet: self.wallet.clone(),
@@ -587,6 +816,17 @@ impl Saved {
             std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
             for tool in sion_agent::builtin::workspace(root) {
                 tools.add_boxed(tool);
+            }
+        }
+        // What it shares goes with its reply.
+        let shared: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
+        if let Some(root) = &self.workspace {
+            tools.add(crate::files::ShareFile {
+                root: root.clone(),
+                shared: shared.clone(),
+            });
+            if let Some(spec) = &self.image_model {
+                tools.add(crate::files::ImageMaker::new(spec, root)?);
             }
         }
         if self.web {
@@ -697,6 +937,9 @@ impl Saved {
                 tools.add_boxed(tool);
             }
         }
+        if let Some(only) = &self.only_tools {
+            tools.retain(|name| only.contains(name));
+        }
         let system = self.system_prompt();
         self.prompt = system.clone();
         let turns = self.state.turns_taken as usize;
@@ -717,6 +960,9 @@ impl Saved {
                 .contained
                 .extend(crate::screens::ACTING.iter().map(|t| t.to_string()));
         }
+        // The kill switch, or this run's own stop.
+        let stop = hooks.stop;
+        let halted = move || stopped() || stop.is_some_and(|stop| stop());
         let runtime = Runtime {
             models: models.iter().map(|m| m.as_ref()).collect(),
             tools: &tools,
@@ -724,13 +970,17 @@ impl Saved {
             limits: self.limits.clone(),
             system,
             now: &now,
-            stopped: &stopped,
+            stopped: &halted,
+            watch: hooks.watch,
+            steer: hooks.steer,
         };
         let from = self.state.messages.len();
         let waiting = self.decided.take().or_else(|| self.state.pending.clone());
         let ended = runtime.run(&mut self.state);
         self.ended = Some(ended.clone());
         let task_end = self.state.messages.len();
+        self.said = words(&self.state.messages[from.min(task_end)..task_end]);
+        self.shared = shared.lock().map(|s| s.clone()).unwrap_or_default();
         // A long task done without writing a skill: the agent is asked
         // whether to write down how it did it, with its skill tools only.
         let mut reflection = Vec::new();
@@ -754,6 +1004,7 @@ impl Saved {
                 .messages
                 .push(sion_agent::Message::user(sion_agent::skills::REFLECT));
             self.state.turns_left = room;
+            // Asked of the agent, not of the person: not shown.
             let reflecting = Runtime {
                 policy: Policy {
                     grants: ["skill_read", "skill_file", "skill_write"]
@@ -762,6 +1013,8 @@ impl Saved {
                         .collect(),
                     ..self.policy.clone()
                 },
+                watch: None,
+                steer: None,
                 ..runtime
             };
             reflecting.run(&mut self.state);
@@ -797,6 +1050,8 @@ impl Saved {
         lines.extend(transcript(
             &self.state.messages[from.min(task_end)..task_end],
         ));
+        // What it shared: sent with the reply on a channel, named here.
+        lines.extend(self.shared.iter().map(|path| format!("shared: {path}")));
         lines.push(ending(&ended, &self.state.id));
         if !reflection.is_empty() {
             lines.push("asked whether to write down how it did the task, as a skill:".to_string());
@@ -841,6 +1096,11 @@ impl Saved {
     /// agent knows of itself: its core memory and the skills it has.
     pub fn system_prompt(&self) -> String {
         let mut system = self.system.clone();
+        if let Some(asked) = self.chat_instructions.as_deref().map(str::trim) {
+            if !asked.is_empty() {
+                system = format!("{system}\n\nWhat the chat you answer in asks of you:\n{asked}");
+            }
+        }
         if let Some(log) = &self.memory {
             let core = crate::agent_memory::core(log);
             if !core.is_empty() {
@@ -856,6 +1116,54 @@ impl Saved {
         system
     }
 
+    /// Where the person last spoke: the last message that is theirs, not
+    /// tool results, nor the runtime asking a cut-off answer to go on.
+    fn last_said(&self) -> Option<usize> {
+        self.state.messages.iter().rposition(|message| {
+            message.role == Role::User
+                && matches!(
+                    message.content.first(),
+                    Some(sion_agent::Block::Text { .. })
+                )
+                && message.text() != sion_agent::session::CONTINUE
+        })
+    }
+
+    /// Forgets what came after the person last spoke: the session will
+    /// answer it again when it runs (`/retry`). False if they never spoke.
+    /// What the dropped calls did is not undone, only forgotten.
+    pub fn rewind(&mut self) -> bool {
+        let Some(at) = self.last_said() else {
+            return false;
+        };
+        self.state.messages.truncate(at + 1);
+        self.forget_ending();
+        true
+    }
+
+    /// Forgets the person's last message and everything after it (`/undo`):
+    /// the messages left, or `None` if they never spoke. What the dropped
+    /// calls did is not undone, only forgotten.
+    pub fn undo(&mut self) -> Option<usize> {
+        let at = self.last_said()?;
+        self.state.messages.truncate(at);
+        self.forget_ending();
+        Some(self.state.messages.len())
+    }
+
+    /// Clears how the last run ended, for a session whose end was cut off.
+    fn forget_ending(&mut self) {
+        self.state.pending = None;
+        self.decided = None;
+        self.ended = None;
+        self.said.clear();
+        self.state.turns_left = self.state.turns_left.max(
+            self.limits
+                .turns
+                .min(self.limits.max_turns.saturating_sub(self.state.turns_taken)),
+        );
+    }
+
     /// Approves or declines the call waiting for a person.
     pub fn decide(&mut self, approve: bool, why: &str) -> Result<(), CliError> {
         let tools = Toolbox::new();
@@ -867,6 +1175,8 @@ impl Saved {
             system: String::new(),
             now: &now,
             stopped: &stopped,
+            watch: None,
+            steer: None,
         };
         let pending = self.state.pending.clone();
         let done = if approve {
@@ -900,6 +1210,9 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
                     lines.push(format!("agent: {}", text.trim()))
                 }
                 Block::Text { text } => lines.push(format!("you: {}", text.trim())),
+                Block::Image { image } => {
+                    lines.push(format!("you: (a picture, {})", image.media_type))
+                }
                 Block::ToolUse { name, input, .. } => lines.push(format!("  → {name} {input}")),
                 Block::ToolResult {
                     content,
@@ -1203,6 +1516,12 @@ pub struct Equipment {
     pub storage: bool,
     /// Its browser and desktop.
     pub screen: crate::screens::Screen,
+    /// What the chat it is answered in asks of it ([`Saved::chat_instructions`]).
+    pub chat_instructions: Option<String>,
+    /// The only tools it may use ([`Saved::only_tools`]).
+    pub only_tools: Option<std::collections::BTreeSet<String>>,
+    /// What makes pictures for it ([`Saved::image_model`]).
+    pub image_model: Option<String>,
 }
 
 /// The default directory of an agent's skills.
@@ -1220,6 +1539,32 @@ pub fn start(
     policy: Policy,
     equipment: Equipment,
 ) -> Result<(Saved, Vec<String>), CliError> {
+    start_watched(
+        ledger,
+        wallet,
+        agent,
+        task,
+        &[],
+        models,
+        policy,
+        equipment,
+        Hooks::default(),
+    )
+}
+
+/// [`start`], the run given `hooks`: watched, stopped and steered.
+#[allow(clippy::too_many_arguments)]
+pub fn start_watched(
+    ledger: SharedLedger,
+    wallet: &str,
+    agent: ObjectId,
+    task: &str,
+    pictures: &[sion_agent::Picture],
+    models: Vec<String>,
+    policy: Policy,
+    equipment: Equipment,
+    hooks: Hooks<'_>,
+) -> Result<(Saved, Vec<String>), CliError> {
     let Equipment {
         workspace,
         web,
@@ -1236,6 +1581,9 @@ pub fn start(
         mcp,
         storage,
         screen,
+        chat_instructions,
+        only_tools,
+        image_model,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -1298,7 +1646,7 @@ pub fn start(
         memory,
         skills: Some(skills),
         prompt: String::new(),
-        state: State::start(&new_id(), task, &limits),
+        state: State::start_with(&new_id(), task, pictures, &limits),
         ended: None,
         decided: None,
         positions: Vec::new(),
@@ -1312,7 +1660,77 @@ pub fn start(
         storage,
         screen,
         browser_at: None,
+        said: String::new(),
+        title: None,
+        chat_instructions,
+        only_tools,
+        shared: Vec::new(),
+        image_model,
     };
-    let lines = saved.run(ledger)?;
+    let lines = saved.run_watched(ledger, hooks)?;
     Ok((saved, lines))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sion_agent::Message;
+
+    fn said(role: Role, text: &str) -> Message {
+        Message {
+            role,
+            content: vec![Block::text(text)],
+        }
+    }
+
+    #[test]
+    fn a_runs_words_are_its_answers_a_paragraph_each() {
+        let call = Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "c1".into(),
+                name: "ledger_balance".into(),
+                input: json!({}),
+                signature: None,
+            }],
+        };
+        let result = Message {
+            role: Role::User,
+            content: vec![Block::ToolResult {
+                id: "c1".into(),
+                content: "100 USD".into(),
+                is_error: false,
+                images: Vec::new(),
+            }],
+        };
+        let run = vec![
+            said(Role::Assistant, "Let me check. "),
+            call,
+            result,
+            said(Role::Assistant, "\n100 USD left, and the "),
+            said(Role::User, sion_agent::session::CONTINUE),
+            said(Role::Assistant, "budget refills daily."),
+        ];
+        assert_eq!(
+            words(&run),
+            "Let me check.\n\n100 USD left, and the budget refills daily."
+        );
+        assert_eq!(words(&[]), "");
+
+        // Built as it is written, it reads the same.
+        let mut spoken = Spoken::default();
+        spoken.add("Let me ");
+        spoken.add("check. ");
+        assert_eq!(spoken.text(), "Let me check.");
+        spoken.end(false);
+        spoken.add("Half of a fai");
+        spoken.drop_current();
+        assert_eq!(spoken.text(), "Let me check.");
+        spoken.add("\n100 USD left, and the ");
+        spoken.end(true);
+        spoken.add("budget refills daily.");
+        spoken.end(false);
+        assert_eq!(spoken.text(), words(&run));
+        assert!(!spoken.is_empty() && Spoken::default().is_empty());
+    }
 }

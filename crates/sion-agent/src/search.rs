@@ -116,6 +116,7 @@ pub fn message_text(message: &Message) -> String {
             Block::ToolResult { content, .. } => {
                 parts.push(content.chars().take(MAX_RESULT_CHARS).collect())
             }
+            Block::Image { .. } => {}
         }
     }
     parts.join("\n")
@@ -422,6 +423,7 @@ mod tests {
                         id: "c1".into(),
                         name: "ledger_balance".into(),
                         input: json!({"account": "treasury"}),
+                        signature: None,
                     }],
                 },
                 Message {

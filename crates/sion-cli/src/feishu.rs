@@ -14,12 +14,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use crate::jwt::Bearer;
 use crate::live::Live;
 use crate::messengers::{Incoming, Messenger, Note, LIVE_ONCE_WAIT};
+use crate::showing::{with_status, Draft, Drafting, Typist};
 use crate::voice::{Audio, MAX_HEARD};
 use crate::webhooks::{client, cut, env, inbox, json_of, needed, Answer, Hook, Seen};
 
@@ -105,6 +107,7 @@ pub fn feishu_said(message: &Value) -> (String, Option<Note>) {
                 .map(|key| Note {
                     id: format!("{id}/{key}"),
                     media_type: None,
+                    name: None,
                 });
             (String::new(), note)
         }
@@ -182,6 +185,8 @@ pub fn feishu_hook(
     (
         Answer::json(200, &json!({})),
         vec![Incoming {
+            id: message_id.to_string(),
+            thread: String::new(),
             chat: chat.to_string(),
             from: event["sender"]["sender_id"]["open_id"]
                 .as_str()
@@ -191,6 +196,7 @@ pub fn feishu_hook(
             voice,
             direct: message["chat_type"] == "p2p",
             mentions,
+            files: Vec::new(),
         }],
     )
 }
@@ -233,6 +239,15 @@ impl Feishu {
         })
     }
 
+    /// The message of `chat` the bridge answers, the last taken.
+    fn answered(&self, chat: &str) -> Option<String> {
+        self.replies
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(chat)
+            .cloned()
+    }
+
     /// The app's tenant access token.
     fn bearer(&self) -> Result<String, String> {
         self.token
@@ -267,8 +282,31 @@ impl Feishu {
 
     /// Calls the API with the tenant token: `Ok` when it answers code 0.
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
-        let token = self.bearer()?;
-        let auth = format!("Bearer {token}");
+        self.api()?.call(method, path, body)
+    }
+
+    /// The API with the tenant token, for a thread of its own.
+    fn api(&self) -> Result<Api, String> {
+        Ok(Api {
+            client: self.client.clone(),
+            base: self.base.clone(),
+            token: self.bearer()?,
+        })
+    }
+}
+
+/// The Open Platform's API with a tenant token.
+#[derive(Clone)]
+struct Api {
+    client: sion_http::Client,
+    base: String,
+    token: String,
+}
+
+impl Api {
+    /// `method path` with `body`: `Ok` when it answers code 0.
+    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+        let auth = format!("Bearer {}", self.token);
         let bytes = body.map(|b| b.to_string().into_bytes());
         let mut headers = vec![("Authorization", auth.as_str())];
         if bytes.is_some() {
@@ -283,7 +321,7 @@ impl Feishu {
                 bytes.as_deref(),
                 1 << 20,
             )
-            .map_err(|e| e.to_string().replace(&token, "<token>"))?;
+            .map_err(|e| e.to_string().replace(&self.token, "<token>"))?;
         let value = json_of(&fetched.body, "Feishu")?;
         if value["code"].as_i64().unwrap_or(0) != 0 {
             return Err(format!(
@@ -292,6 +330,153 @@ impl Feishu {
             ));
         }
         Ok(value)
+    }
+
+    /// Sends a message of `kind` with `content` to `chat`: as a reply to
+    /// `answered`, if it is a message's id.
+    fn send(
+        &self,
+        chat: &str,
+        answered: Option<&str>,
+        kind: &str,
+        content: &str,
+    ) -> Result<Value, String> {
+        match answered {
+            Some(message) if plain_id(message) => self.call(
+                "POST",
+                &format!("/open-apis/im/v1/messages/{message}/reply"),
+                Some(&json!({"msg_type": kind, "content": content})),
+            ),
+            _ => self.call(
+                "POST",
+                "/open-apis/im/v1/messages?receive_id_type=chat_id",
+                Some(&json!({"receive_id": chat, "msg_type": kind, "content": content})),
+            ),
+        }
+    }
+}
+
+/// Feishu has no typing indicator for bots: the `Typing` reaction on the
+/// message the agent works on stands for one, taken off at the end.
+struct Typing {
+    api: Api,
+    message: String,
+    reaction: Option<String>,
+}
+
+impl Typist for Typing {
+    fn show(&mut self) -> Result<Duration, String> {
+        if self.reaction.is_none() {
+            let added = self.api.call(
+                "POST",
+                &format!("/open-apis/im/v1/messages/{}/reactions", self.message),
+                Some(&json!({"reaction_type": {"emoji_type": "Typing"}})),
+            )?;
+            self.reaction = added["data"]["reaction_id"].as_str().map(str::to_string);
+        }
+        Ok(Duration::from_secs(3_600))
+    }
+
+    fn stop(&mut self) {
+        if let Some(reaction) = self.reaction.take().filter(|r| plain_id(r)) {
+            let _ = self.api.call(
+                "DELETE",
+                &format!(
+                    "/open-apis/im/v1/messages/{}/reactions/{reaction}",
+                    self.message
+                ),
+                None,
+            );
+        }
+    }
+}
+
+/// The element of a streaming card its text is in.
+const ELEMENT: &str = "reply";
+
+/// A reply as a streaming card (CardKit): the card made with streaming on,
+/// sent, its text element given the whole text each time (Feishu types out
+/// what is new), then streaming turned off.
+struct Card {
+    api: Api,
+    chat: String,
+    answered: Option<String>,
+    card: Option<String>,
+    sequence: u64,
+}
+
+impl Card {
+    fn next(&mut self) -> u64 {
+        self.sequence += 1;
+        self.sequence
+    }
+
+    fn put(&mut self, text: &str) -> Result<(), String> {
+        let text = cut(text, 30_000);
+        let Some(card) = self.card.clone() else {
+            let body = json!({
+                "schema": "2.0",
+                "config": {"streaming_mode": true, "streaming_config": {
+                    "print_frequency_ms": {"default": 30}, "print_step": {"default": 2},
+                    "print_strategy": "fast"}},
+                "body": {"elements": [{"tag": "markdown", "content": text, "element_id": ELEMENT}]},
+            });
+            let made = self.api.call(
+                "POST",
+                "/open-apis/cardkit/v1/cards",
+                Some(&json!({"type": "card_json", "data": body.to_string()})),
+            )?;
+            let card = made["data"]["card_id"]
+                .as_str()
+                .filter(|id| plain_id(id))
+                .ok_or("Feishu made no card")?
+                .to_string();
+            let content = json!({"type": "card", "data": {"card_id": card}}).to_string();
+            self.api.send(
+                &self.chat,
+                self.answered.as_deref(),
+                "interactive",
+                &content,
+            )?;
+            self.card = Some(card);
+            return Ok(());
+        };
+        let sequence = self.next();
+        self.api
+            .call(
+                "PUT",
+                &format!("/open-apis/cardkit/v1/cards/{card}/elements/{ELEMENT}/content"),
+                Some(&json!({"content": text, "sequence": sequence})),
+            )
+            .map(|_| ())
+    }
+}
+
+impl Draft for Card {
+    fn show(&mut self, text: &str, status: Option<&str>) -> Result<(), String> {
+        self.put(&with_status(text, status))
+    }
+
+    fn finish(&mut self, text: &str) -> Result<(), String> {
+        if self.card.is_none() {
+            let content = json!({"text": cut(text, 30_000)}).to_string();
+            return self
+                .api
+                .send(&self.chat, self.answered.as_deref(), "text", &content)
+                .map(|_| ());
+        }
+        self.put(text)?;
+        let (card, sequence) = (self.card.clone().unwrap_or_default(), self.next());
+        self.api
+            .call(
+                "PATCH",
+                &format!("/open-apis/cardkit/v1/cards/{card}/settings"),
+                Some(
+                    &json!({"settings": json!({"config": {"streaming_mode": false}}).to_string(),
+                    "sequence": sequence}),
+                ),
+            )
+            .map(|_| ())
     }
 }
 
@@ -306,25 +491,46 @@ impl Messenger for Feishu {
 
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
         let content = json!({"text": cut(text, 30_000)}).to_string();
-        let answered = self
-            .replies
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(chat)
-            .cloned();
-        match answered {
-            Some(message) if plain_id(&message) => self.call(
-                "POST",
-                &format!("/open-apis/im/v1/messages/{message}/reply"),
-                Some(&json!({"msg_type": "text", "content": content})),
-            ),
-            _ => self.call(
-                "POST",
-                "/open-apis/im/v1/messages?receive_id_type=chat_id",
-                Some(&json!({"receive_id": chat, "msg_type": "text", "content": content})),
-            ),
-        }
-        .map(|_| ())
+        let answered = self.answered(chat);
+        self.api()?
+            .send(chat, answered.as_deref(), "text", &content)
+            .map(|_| ())
+    }
+
+    fn room(&self) -> usize {
+        30_000
+    }
+
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn Typist>> {
+        plain_id(&message.id).then(|| -> Option<Box<dyn Typist>> {
+            Some(Box::new(Typing {
+                api: self.api().ok()?,
+                message: message.id.clone(),
+                reaction: None,
+            }))
+        })?
+    }
+
+    /// A streaming card, updated at most three times a second (a card
+    /// takes ten).
+    fn drafting(&self, message: &Incoming) -> Option<Drafting> {
+        let api = self.api().ok()?;
+        let (chat, answered) = (message.chat.clone(), self.answered(&message.chat));
+        Some(Drafting {
+            open: Box::new(move || {
+                Box::new(Card {
+                    api: api.clone(),
+                    chat: chat.clone(),
+                    answered: answered.clone(),
+                    card: None,
+                    sequence: 0,
+                })
+            }),
+            every: Duration::from_millis(300),
+            most: None,
+            keep: None,
+            first: 0,
+        })
     }
 
     fn long_polls(&self) -> bool {

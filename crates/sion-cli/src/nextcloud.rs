@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 
 use crate::live::Live;
 use crate::messengers::{segment, Incoming, Messenger, LIVE_ONCE_WAIT};
+use crate::showing::Typist;
 use crate::webhooks::{client, cut, inbox, needed, Answer, Hook, Seen};
 
 /// The message each conversation's reply answers.
@@ -123,6 +124,8 @@ pub fn talk_hook(
     (
         Answer::ok(),
         vec![Incoming {
+            id: id.to_string(),
+            thread: String::new(),
             chat: chat.to_string(),
             from: activity["actor"]["id"]
                 .as_str()
@@ -132,8 +135,60 @@ pub fn talk_hook(
             voice: None,
             direct: false,
             mentions,
+            files: Vec::new(),
         }],
     )
+}
+
+/// The reaction that stands for typing.
+const WORKING: &str = "⏳";
+
+/// A reaction a bot puts on a message, and takes off: signed as Talk signs
+/// a bot's reactions, over the random and the reaction.
+struct Reacting {
+    client: sion_http::Client,
+    url: String,
+    secret: String,
+    on: bool,
+}
+
+impl Reacting {
+    fn react(&self, method: &str) -> Result<(), String> {
+        let random = random_hex()?;
+        let signature = talk_signature(&self.secret, &random, WORKING.as_bytes());
+        self.client
+            .request(
+                method,
+                &self.url,
+                &[
+                    ("Content-Type", "application/json"),
+                    ("Accept", "application/json"),
+                    ("OCS-APIRequest", "true"),
+                    ("X-Nextcloud-Talk-Bot-Random", &random),
+                    ("X-Nextcloud-Talk-Bot-Signature", &signature),
+                ],
+                Some(json!({"reaction": WORKING}).to_string().as_bytes()),
+                1 << 16,
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Typist for Reacting {
+    fn show(&mut self) -> Result<std::time::Duration, String> {
+        if !self.on {
+            self.react("POST")?;
+            self.on = true;
+        }
+        Ok(std::time::Duration::from_secs(3_600))
+    }
+
+    fn stop(&mut self) {
+        if self.on {
+            let _ = self.react("DELETE");
+        }
+    }
 }
 
 fn random_hex() -> Result<String, String> {
@@ -212,6 +267,30 @@ impl Messenger for NextcloudTalk {
             )
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn room(&self) -> usize {
+        32_000
+    }
+
+    /// A Talk bot shows no typing and edits nothing: an hourglass reaction
+    /// on the message it works on stands for typing, taken off at the end.
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn Typist>> {
+        (!message.id.is_empty() && message.id.bytes().all(|b| b.is_ascii_digit())).then(
+            || -> Box<dyn Typist> {
+                Box::new(Reacting {
+                    client: self.client.clone(),
+                    url: format!(
+                        "{}/ocs/v2.php/apps/spreed/api/v1/bot/{}/reaction/{}",
+                        self.server,
+                        segment(&message.chat),
+                        message.id
+                    ),
+                    secret: self.secret.clone(),
+                    on: false,
+                })
+            },
+        )
     }
 
     fn long_polls(&self) -> bool {

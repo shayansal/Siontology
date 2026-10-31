@@ -56,6 +56,8 @@ fn runtime<'a>(models: Vec<&'a dyn Model>, tools: &'a Toolbox, autonomy: Autonom
         system: "You are a test agent.".into(),
         now: &now,
         stopped: &never,
+        watch: None,
+        steer: None,
     }
 }
 
@@ -68,7 +70,7 @@ fn every_result_answers_a_call(state: &State) {
                 Block::ToolResult { id, .. } => {
                     assert!(open.contains(id), "a result without its call: {id}");
                 }
-                Block::Text { .. } => {}
+                Block::Text { .. } | Block::Image { .. } => {}
             }
         }
     }
@@ -369,6 +371,7 @@ fn turns_grow_with_progress_up_to_a_cap() {
                     id: format!("c{n}"),
                     name: "try".into(),
                     input: json!({"n": n}),
+                    signature: None,
                 }],
                 stop: sion_agent::Stop::ToolUse,
                 usage: Default::default(),
@@ -394,6 +397,7 @@ fn turns_grow_with_progress_up_to_a_cap() {
                     id: format!("w{n}"),
                     name: "work".into(),
                     input: json!({"n": n}),
+                    signature: None,
                 }],
                 stop: sion_agent::Stop::ToolUse,
                 usage: Default::default(),
@@ -689,4 +693,302 @@ fn a_batch_stops_at_a_call_that_needs_approval() {
     assert!(matches!(rt.run(&mut state), Ended::NeedsApproval { .. }));
     assert!(batches.lock().unwrap().is_empty());
     every_result_answers_a_call(&state);
+}
+
+#[test]
+fn a_watched_run_shows_what_it_does_and_the_text_as_it_is_written() {
+    use sion_agent::model::Stop;
+    use sion_agent::Seen;
+    let (balance, _) = counted("balance", Effect::Read, |_| Outcome::ok("12.5 USD"));
+    let (pay, _) = counted("pay", Effect::Write, |_| Outcome::ok("paid"));
+    let mut tools = Toolbox::new();
+    tools.add(balance);
+    tools.add(pay);
+    // A model that fails, then one that checks the balance, says so a
+    // word at a time, and pays, which waits for a person.
+    let failing = Scripted::new("failing").fails(ModelError::Busy("overloaded".into()));
+    let model = Scripted::new("scripted")
+        .calls("balance", json!({}))
+        .says("12.5 USD left.")
+        .paced(1);
+    let seen = std::sync::Mutex::new(Vec::new());
+    let watch = |s: &Seen| seen.lock().unwrap().push(s.clone());
+    let mut watched = runtime(vec![&failing, &model], &tools, Autonomy::L3);
+    watched.watch = Some(&watch);
+    let mut state = State::start("w1", "How much is left?", &watched.limits);
+    let ended = watched.run(&mut state);
+    assert_eq!(
+        ended,
+        Ended::Done {
+            text: "12.5 USD left.".into()
+        }
+    );
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            Seen::Began("w1".into()),
+            Seen::Asking,
+            Seen::Dropped,
+            Seen::Asking,
+            Seen::Calling("balance".into()),
+            Seen::Answered(Stop::ToolUse),
+            Seen::Running("balance".into()),
+            Seen::Asking,
+            Seen::Text("12.5 ".into()),
+            Seen::Text("USD ".into()),
+            Seen::Text("left.".into()),
+            Seen::Answered(Stop::EndTurn),
+        ]
+    );
+
+    // A call that waits for a person is shown waiting.
+    let model = Scripted::new("payer").calls("pay", json!({"to": "bob"}));
+    let seen = std::sync::Mutex::new(Vec::new());
+    let watch = |s: &Seen| seen.lock().unwrap().push(s.clone());
+    let mut watched = runtime(vec![&model], &tools, Autonomy::L2);
+    watched.watch = Some(&watch);
+    let mut state = State::start("w2", "Pay Bob.", &watched.limits);
+    assert!(matches!(
+        watched.run(&mut state),
+        Ended::NeedsApproval { .. }
+    ));
+    assert_eq!(
+        seen.into_inner().unwrap().last(),
+        Some(&Seen::Waiting("pay".into()))
+    );
+}
+
+#[test]
+fn what_the_person_says_while_a_run_goes_on_reaches_the_model_next() {
+    let (balance, _) = counted("balance", Effect::Read, |_| Outcome::ok("12.5 USD"));
+    let mut tools = Toolbox::new();
+    tools.add(balance);
+    let model = Scripted::new("m")
+        .calls("balance", json!({}))
+        .says("12.5 USD, in euros about 11.");
+    // Said once, while the first call runs: what the run is told before
+    // its second step; nothing before or after.
+    let asked = AtomicUsize::new(0);
+    let steer = || {
+        if asked.fetch_add(1, Ordering::SeqCst) == 1 {
+            vec!["In euros, please.".to_string()]
+        } else {
+            Vec::new()
+        }
+    };
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.steer = Some(&steer);
+    let mut state = State::start("st1", "How much is left?", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    let requests = model.requests();
+    // The first request was the task alone; the second carried the
+    // results and what was said meanwhile, in one message.
+    assert_eq!(requests[0].messages.len(), 1);
+    let second = requests[1].messages.last().unwrap();
+    assert_eq!(second.role, Role::User);
+    assert!(matches!(second.content[0], Block::ToolResult { .. }));
+    assert!(
+        second.text().contains("In euros, please."),
+        "{:?}",
+        second.content
+    );
+    // Roles still take turns.
+    for pair in requests[1].messages.windows(2) {
+        assert_ne!(pair[0].role, pair[1].role);
+    }
+
+    // Said after the model answered: a message of its own.
+    let mut state = State::start("st2", "Hi", &rt.limits);
+    state.messages.push(sion_agent::Message {
+        role: Role::Assistant,
+        content: vec![Block::text("Hello.")],
+    });
+    state.steer("One more thing.");
+    assert_eq!(state.messages.len(), 3);
+    assert!(state.messages[2].text().contains("One more thing."));
+}
+
+#[test]
+fn a_conversation_is_compacted_on_demand_only_once_it_has_a_middle() {
+    let limits = Limits::default();
+    let mut state = State::start("c1", "The task", &limits);
+    assert!(!sion_agent::session::compact_now(&mut state, 2));
+    state.messages.push(sion_agent::Message {
+        role: Role::Assistant,
+        content: vec![Block::text("An answer.")],
+    });
+    // The task and its answer: nothing between them to compact.
+    assert!(!sion_agent::session::compact_now(&mut state, 2));
+    assert!(!sion_agent::session::compact_now(&mut state, 0));
+    for i in 0..6 {
+        state.tell(&format!("Question {i}"), &limits);
+        state.messages.push(sion_agent::Message {
+            role: Role::Assistant,
+            content: vec![Block::text(format!("Answer {i}."))],
+        });
+    }
+    assert!(sion_agent::session::compact_now(&mut state, 2));
+    assert_eq!(state.compactions, 1);
+    // The task, the summary, a turn for the person, and the last two.
+    assert_eq!(state.messages[0].text(), "The task");
+    assert!(state.messages[1].text().contains("compacted"));
+    assert_eq!(state.messages.last().unwrap().text(), "Answer 5.");
+    for pair in state.messages.windows(2) {
+        assert_ne!(pair[0].role, pair[1].role);
+    }
+}
+
+#[test]
+fn a_run_stopped_while_the_model_writes_cuts_it_off_and_keeps_what_it_wrote() {
+    use sion_agent::Seen;
+    static WORDS: AtomicUsize = AtomicUsize::new(0);
+    fn stop() -> bool {
+        WORDS.load(Ordering::SeqCst) >= 2
+    }
+    let tools = Toolbox::new();
+    let model = Scripted::new("m")
+        .says("one two three four")
+        .paced(1)
+        .says("Going on.");
+    let watch = |seen: &Seen| {
+        if matches!(seen, Seen::Text(_)) {
+            WORDS.fetch_add(1, Ordering::SeqCst);
+        }
+    };
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.watch = Some(&watch);
+    rt.stopped = &stop;
+    let mut state = State::start("cut1", "Count.", &rt.limits);
+    assert_eq!(rt.run(&mut state), Ended::Stopped);
+    // What it wrote before the stop is its answer, and nothing after.
+    assert_eq!(state.messages.len(), 2);
+    assert_eq!(state.messages[1].role, Role::Assistant);
+    assert_eq!(state.messages[1].text(), "one two ");
+    assert_eq!(WORDS.load(Ordering::SeqCst), 2);
+
+    // Stopped before the model said anything, the person's next words join
+    // their last message: the conversation still takes turns.
+    let mut state = State::start("cut2", "Count.", &rt.limits);
+    assert_eq!(rt.run(&mut state), Ended::Stopped);
+    assert_eq!(state.messages.len(), 1);
+    state.tell("Slower, please.", &rt.limits);
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages[0].text(), "Count.\nSlower, please.");
+}
+
+#[test]
+fn a_person_s_pictures_reach_the_model_with_their_words() {
+    use sion_agent::Picture;
+    let tools = Toolbox::new();
+    let model = Scripted::new("m")
+        .says("A receipt for 12 USD.")
+        .says("Two pictures.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let receipt = Picture {
+        media_type: "image/png".into(),
+        base64: "iVBORw0KGgo=".into(),
+    };
+    let mut state = State::start_with(
+        "p1",
+        "What is this?",
+        std::slice::from_ref(&receipt),
+        &rt.limits,
+    );
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    let first = &model.requests()[0];
+    let image = receipt.image();
+    assert_eq!(
+        first.messages[0].content,
+        vec![
+            Block::text("What is this?"),
+            Block::Image {
+                image: image.clone()
+            }
+        ]
+    );
+    assert_eq!(first.images.get(&image.digest), Some(&receipt.base64));
+    // Told more, with another picture: one message of theirs, both kept.
+    let other = Picture {
+        media_type: "image/jpeg".into(),
+        base64: "/9j/4AAQ".into(),
+    };
+    state.tell_with("And this?", std::slice::from_ref(&other), &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    let second = &model.requests()[1];
+    assert_eq!(second.images.len(), 2);
+    assert!(matches!(
+        second.messages.last().unwrap().content.last(),
+        Some(Block::Image { image }) if image.media_type == "image/jpeg"
+    ));
+    // Each provider shows them.
+    let anthropic = sion_agent::providers::Anthropic::new(
+        sion_http::Client::new(sion_http::Options::default()).unwrap(),
+        "claude-opus-5-5",
+        "k",
+    )
+    .body(second);
+    assert_eq!(anthropic["messages"][0]["content"][1]["type"], "image");
+    assert_eq!(
+        anthropic["messages"][0]["content"][1]["source"]["data"],
+        "iVBORw0KGgo="
+    );
+    let openai = sion_agent::providers::openai_messages("", &second.messages, &second.images);
+    assert_eq!(openai[1]["content"][1]["type"], "image_url");
+    let gemini = sion_agent::providers::gemini_body(second);
+    assert_eq!(
+        gemini["contents"][0]["parts"][1]["inlineData"]["mimeType"],
+        "image/png"
+    );
+    let responses = sion_agent::providers::responses_body("m", second);
+    assert_eq!(responses["input"][0]["content"][1]["type"], "input_image");
+}
+
+#[test]
+fn a_person_s_album_stays_in_view_while_the_agent_takes_screenshots() {
+    use sion_agent::Picture;
+    let taken = Arc::new(AtomicUsize::new(0));
+    let (screenshot, _) = counted("screenshot", Effect::Read, move |_| {
+        let n = taken.fetch_add(1, Ordering::SeqCst);
+        let mut outcome = Outcome::ok(format!("screenshot {n}"));
+        outcome.pictures.push(Picture {
+            media_type: "image/png".into(),
+            base64: format!("c2hvdA{n}"),
+        });
+        outcome
+    });
+    let mut tools = Toolbox::new();
+    tools.add(screenshot);
+    let mut model = Scripted::new("m");
+    for _ in 0..7 {
+        model = model.calls("screenshot", json!({}));
+    }
+    let model = model.says("Eight photos of one kitchen.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let album: Vec<Picture> = (0..8)
+        .map(|n| Picture {
+            media_type: "image/jpeg".into(),
+            base64: format!("YWxidW0{n}"),
+        })
+        .collect();
+    let mut state = State::start_with("album", "What are these?", &album, &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    let last = model.requests().pop().unwrap();
+    // The bytes of the whole album are kept, with the last screenshots'.
+    for picture in &album {
+        assert!(last.images.contains_key(&picture.image().digest));
+    }
+    assert_eq!(last.images.len(), 8 + sion_agent::session::MAX_IMAGES_KEPT);
+    // The model sees the album whole, and the last screenshots.
+    let shown = sion_agent::model::images_shown(&last.messages, &last.images);
+    assert_eq!(shown.len(), 8 + sion_agent::model::MAX_IMAGES_SHOWN);
+    assert!((0..8).all(|at| shown.contains(&at)));
+    let body = sion_agent::providers::Anthropic::new(
+        sion_http::Client::new(sion_http::Options::default()).unwrap(),
+        "claude-opus-5-5",
+        "k",
+    )
+    .body(&last)
+    .to_string();
+    assert_eq!(body.matches(r#""type":"image""#).count(), 11);
 }

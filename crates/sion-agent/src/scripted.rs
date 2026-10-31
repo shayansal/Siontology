@@ -16,11 +16,14 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::model::{Block, Model, ModelError, Request, Response, Stop, Usage};
+use crate::model::{
+    cut_off, tell_whole, Block, Delta, Model, ModelError, Request, Response, Stop, Usage,
+};
 
 type Step = Box<dyn Fn(&Request) -> Result<Response, ModelError> + Send + Sync>;
 
@@ -29,6 +32,8 @@ struct Guarded {
     when: Option<String>,
     unless: Option<String>,
     step: Step,
+    /// The time between the words of its text, streamed.
+    pace: Option<Duration>,
 }
 
 impl Guarded {
@@ -85,10 +90,15 @@ pub enum ScriptStep {
     },
     /// One call.
     Call(ScriptCall),
-    /// The model says something and ends its turn: `{"say": "…"}`.
+    /// The model says something and ends its turn: `{"say": "…"}`. With
+    /// `pace_ms`, a stream of it ([`Model::stream`]) tells it a word at a
+    /// time, that many milliseconds apart, as a model writes.
     Say {
         /// What it says.
         say: String,
+        /// Milliseconds between words, streamed.
+        #[serde(default)]
+        pace_ms: Option<u64>,
     },
 }
 
@@ -165,10 +175,32 @@ fn conversation_text(request: &Request) -> String {
                     text.push_str(&input.to_string().to_lowercase());
                 }
                 Block::ToolResult { content, .. } => text.push_str(&content.to_lowercase()),
+                Block::Image { image } => text.push_str(&image.media_type),
             }
         }
     }
     text
+}
+
+/// `text` in words, each with the space that follows it: joined, they are
+/// `text` again.
+fn words_of(text: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = 0;
+    let mut spacing = false;
+    for (at, c) in text.char_indices() {
+        if c.is_whitespace() {
+            spacing = true;
+        } else if spacing {
+            words.push(&text[start..at]);
+            start = at;
+            spacing = false;
+        }
+    }
+    if start < text.len() {
+        words.push(&text[start..]);
+    }
+    words
 }
 
 fn reply(content: Vec<Block>, stop: Stop) -> Response {
@@ -199,7 +231,11 @@ impl Scripted {
         let mut model = Scripted::new(id);
         for entry in entries {
             model = match entry.step {
-                ScriptStep::Say { say } => model.says(&say),
+                ScriptStep::Say {
+                    say,
+                    pace_ms: Some(ms),
+                } => model.says(&say).paced(ms),
+                ScriptStep::Say { say, pace_ms: None } => model.says(&say),
                 ScriptStep::Call(call) => model.calls_all(vec![(call.call, call.input)]),
                 ScriptStep::Calls { calls } => {
                     model.calls_all(calls.into_iter().map(|c| (c.call, c.input)).collect())
@@ -238,6 +274,7 @@ impl Scripted {
                     id: format!("call-{turn}-{i}"),
                     name: name.clone(),
                     input: resolved(input, request),
+                    signature: None,
                 })
                 .collect();
             Ok(reply(content, Stop::ToolUse))
@@ -261,8 +298,41 @@ impl Scripted {
                 when: None,
                 unless: None,
                 step: Box::new(f),
+                pace: None,
             });
         self
+    }
+
+    /// The text of the last step added is streamed a word at a time, `ms`
+    /// milliseconds apart.
+    pub fn paced(self, ms: u64) -> Scripted {
+        if let Some(last) = self.steps.lock().expect("the script's lock").back_mut() {
+            last.pace = Some(Duration::from_millis(ms));
+        }
+        self
+    }
+
+    /// The next step whose condition holds, played: its answer, and the
+    /// pace its text is streamed at.
+    fn play(&self, request: &Request) -> Result<(Response, Option<Duration>), ModelError> {
+        self.seen
+            .lock()
+            .expect("the requests' lock")
+            .push(request.clone());
+        let text = conversation_text(request);
+        loop {
+            let next = self.steps.lock().expect("the script's lock").pop_front();
+            let Some(guarded) = next else {
+                return Ok((
+                    reply(vec![Block::text("(end of script)")], Stop::EndTurn),
+                    None,
+                ));
+            };
+            self.used.fetch_add(1, Ordering::SeqCst);
+            if guarded.applies(&text) {
+                return (guarded.step)(request).map(|answer| (answer, guarded.pace));
+            }
+        }
     }
 
     /// The last step added plays only if the conversation contains `text`.
@@ -312,21 +382,50 @@ impl Model for Scripted {
     }
 
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {
-        self.seen
-            .lock()
-            .expect("the requests' lock")
-            .push(request.clone());
-        let text = conversation_text(request);
-        loop {
-            let next = self.steps.lock().expect("the script's lock").pop_front();
-            let Some(guarded) = next else {
-                return Ok(reply(vec![Block::text("(end of script)")], Stop::EndTurn));
-            };
-            self.used.fetch_add(1, Ordering::SeqCst);
-            if guarded.applies(&text) {
-                return (guarded.step)(request);
+        self.play(request).map(|(answer, _)| answer)
+    }
+
+    /// A paced step's text is told a word at a time, as a model writes,
+    /// and may be cut off between two words; any other answer at once.
+    fn stream(
+        &self,
+        request: &Request,
+        seen: &mut dyn FnMut(Delta) -> bool,
+    ) -> Result<Response, ModelError> {
+        let (answer, pace) = self.play(request)?;
+        let Some(pace) = pace else {
+            tell_whole(&answer, seen);
+            return Ok(answer);
+        };
+        let mut written: Vec<String> = Vec::new();
+        for block in &answer.content {
+            match block {
+                Block::Text { text } => {
+                    if !written.is_empty() && !seen(Delta::Text("\n".into())) {
+                        return Ok(cut_off(written, answer.usage, answer.model));
+                    }
+                    written.push(String::new());
+                    for (at, word) in words_of(text).into_iter().enumerate() {
+                        if at > 0 {
+                            std::thread::sleep(pace);
+                        }
+                        if let Some(last) = written.last_mut() {
+                            last.push_str(word);
+                        }
+                        if !seen(Delta::Text(word.to_string())) {
+                            return Ok(cut_off(written, answer.usage, answer.model));
+                        }
+                    }
+                }
+                Block::ToolUse { name, .. } => {
+                    if !seen(Delta::Call(name.clone())) {
+                        return Ok(cut_off(written, answer.usage, answer.model));
+                    }
+                }
+                Block::ToolResult { .. } | Block::Image { .. } => {}
             }
         }
+        Ok(answer)
     }
 
     fn position(&self) -> Option<usize> {

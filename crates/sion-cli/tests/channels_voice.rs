@@ -83,6 +83,7 @@ fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile)
         instructions: None,
         skill_approvals: true,
         screen: Default::default(),
+        image_model: None,
     };
     (home, devnet, ledger, profile)
 }
@@ -211,6 +212,13 @@ fn a_voice_note_is_heard_and_answered_aloud_and_a_stranger_pairs() {
         hear: Some("openai:gpt-4o-mini-transcribe".into()),
         speak: Some("openai:gpt-4o-mini-tts:alloy".into()),
         require_mention: false,
+        stream: sion_cli::messengers::Streaming::Progress,
+        no_typing: false,
+        busy: sion_cli::messengers::Busy::Steer,
+        debounce: 0,
+        parallel: 4,
+        no_reactions: true,
+        route: Vec::new(),
     }
     .options(vec!["42".into()], Vec::new(), true)
     .unwrap();
@@ -587,9 +595,13 @@ fn voice_notes_are_heard_and_spoken_on_every_messenger() {
     assert_eq!(last_heard(), b"OggS-matrix-note");
     let upload = sent_to(&matrix_seen, "POST", "/_matrix/media/v3/upload").remove(0);
     assert_eq!(upload.body, spoken);
-    let message = sent_to(&matrix_seen, "PUT", "/_matrix/client/v3/rooms/")
-        .remove(0)
-        .json();
+    let message = sent_to(
+        &matrix_seen,
+        "PUT",
+        "/_matrix/client/v3/rooms/%21ops%3Aexample.org/send/",
+    )
+    .remove(0)
+    .json();
     assert_eq!(
         (&message["msgtype"], &message["url"], &message["body"]),
         (
@@ -713,7 +725,17 @@ fn webhook_messengers_answer_only_what_is_signed() {
     )
     .unwrap();
     drop(whatsapp);
-    let sent = sent_to(&meta_seen, "POST", "/106/messages").remove(0);
+    let posted = sent_to(&meta_seen, "POST", "/106/messages");
+    assert_eq!(
+        posted[0].json(),
+        json!({"messaging_product": "whatsapp", "status": "read", "message_id": "wamid.in",
+            "typing_indicator": {"type": "text"}}),
+        "read, and typing while the agent works"
+    );
+    let sent = posted
+        .into_iter()
+        .find(|p| p.json()["type"] == "text")
+        .expect("the reply");
     assert_eq!(sent.header("authorization"), Some("Bearer wa-token"));
     assert_eq!(
         sent.json(),
@@ -1434,16 +1456,27 @@ fn teams_and_google_chat_answer_only_what_their_services_signed() {
             ),
         ]
     );
-    let answered = sent_to(
+    let activities = sent_to(
         &microsoft_seen,
         "POST",
         "/amer/v3/conversations/a%3A1chat/activities/act-1",
-    )
-    .remove(0);
+    );
+    // Typing while the agent works, then the reply: in a chat with one
+    // person, the final message of Teams' own stream.
+    assert_eq!(
+        activities[0].json(),
+        json!({"type": "typing", "replyToId": "act-1"})
+    );
+    let answered = activities
+        .into_iter()
+        .rev()
+        .find(|a| a.json()["type"] == "message")
+        .expect("the reply");
     assert_eq!(answered.header("authorization"), Some("Bearer bf-token"));
     assert_eq!(
         answered.json(),
-        json!({"type": "message", "text": reply, "textFormat": "markdown", "replyToId": "act-1"})
+        json!({"type": "message", "text": reply, "textFormat": "markdown", "replyToId": "act-1",
+            "entities": [{"type": "streaminfo", "streamId": "r1", "streamType": "final"}]})
     );
 
     // Google Chat: Chat's keys and Google's, the token endpoint and the
@@ -2039,12 +2072,15 @@ fn what_a_bridge_took_before_it_stopped_is_answered_and_jobs_reach_messengers() 
     let reply = "85 USD left in the budget.";
     // A message taken, and not answered when the bridge stopped.
     let taken = sion_cli::messengers::Incoming {
+        id: String::new(),
+        thread: String::new(),
         chat: "c1".into(),
         from: "ann".into(),
         text: "How much budget is left?".into(),
         voice: None,
         direct: true,
         mentions: Vec::new(),
+        files: Vec::new(),
     };
     let pending = "quiet-cursor:lead:pending";
     sion_cli::channels::set_state(pending, Some(&serde_json::to_string(&[taken]).unwrap()))
@@ -2097,6 +2133,386 @@ fn what_a_bridge_took_before_it_stopped_is_answered_and_jobs_reach_messengers() 
     std::env::remove_var("GOOGLE_CHAT_CREDENTIALS");
     assert!(
         sion_cli::schedules::deliver("google-chat:spaces/AAA", &json!({"said": reply})).is_err()
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// The reply the paced script writes a word at a time.
+const STREAMED: &str = "100 USD left in the budget, and it refills by 10 USD a day.";
+
+/// A script that checks the balance, then writes [`STREAMED`] a word
+/// every `pace` milliseconds.
+fn paced_script(home: &std::path::Path, pace: u64) -> String {
+    let script = home.join(format!("paced-{pace}.json"));
+    std::fs::write(
+        &script,
+        json!([{"call": "ledger_balance"}, {"say": STREAMED, "pace_ms": pace}]).to_string(),
+    )
+    .unwrap();
+    format!("script:{}", script.display())
+}
+
+#[test]
+fn typing_shows_and_replies_come_as_they_are_written() {
+    let _environment = one_at_a_time();
+    let (home, devnet, ledger, profile) = setup("sion-typing-streaming");
+    let profile = Profile {
+        models: vec![paced_script(&home, 120)],
+        ..profile
+    };
+
+    // Telegram: a private chat gets typing and a draft, which the reply
+    // replaces; a group gets typing and a message edited as it grows.
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let (telegram, _) = stand_ins(
+        vec![
+            json!({"update_id": 1, "message": {"message_id": 5, "chat": {"id": 42, "type": "private"},
+                "from": {"id": 9}, "text": "How much budget is left?"}}),
+            json!({"update_id": 2, "message": {"message_id": 6, "chat": {"id": -100, "type": "supergroup"},
+                "from": {"id": 9}, "text": "How much budget is left?"}}),
+        ],
+        seen.clone(),
+    );
+    std::env::set_var("TELEGRAM_BOT_TOKEN", "bot-token");
+    std::env::set_var("TELEGRAM_API_BASE", &telegram);
+    let options = sion_cli::messengers::Options {
+        allow: vec!["42".into(), "-100".into()],
+        once: true,
+        ..Default::default()
+    };
+    sion_cli::channels::telegram_options(ledger.clone(), &profile, &options).unwrap();
+    let calls: Vec<(String, Value)> = std::mem::take(&mut seen.lock().unwrap().telegram)
+        .into_iter()
+        .filter(|(method, _)| method != "getUpdates")
+        .map(|(method, body)| (method, serde_json::from_slice(&body).unwrap_or(Value::Null)))
+        .collect();
+    let to = |chat: i64| -> Vec<(String, Value)> {
+        calls
+            .iter()
+            .filter(|(_, body)| body["chat_id"] == chat)
+            .cloned()
+            .collect()
+    };
+    let private = to(42);
+    assert_eq!(private[0].0, "sendChatAction", "{private:?}");
+    assert_eq!(private[0].1["action"], "typing");
+    let drafts: Vec<&Value> = private
+        .iter()
+        .filter(|(m, _)| m == "sendMessageDraft")
+        .map(|(_, body)| body)
+        .collect();
+    assert!(drafts.len() >= 2, "{private:?}");
+    assert!(
+        drafts
+            .iter()
+            .all(|d| d["draft_id"] == drafts[0]["draft_id"] && d["draft_id"] != 0),
+        "one draft, animated: {drafts:?}"
+    );
+    // The tool shows while it runs; then the text, a part of it first.
+    assert!(
+        drafts.iter().any(|d| d["text"] == "… ledger_balance"),
+        "{drafts:?}"
+    );
+    assert!(
+        drafts.iter().any(|d| {
+            let text = d["text"].as_str().unwrap_or_default();
+            !text.starts_with('…') && text.len() < STREAMED.len() && STREAMED.starts_with(text)
+        }),
+        "the reply is shown while it is written: {drafts:?}"
+    );
+    let (last, body) = private.last().unwrap();
+    assert_eq!(
+        (last.as_str(), body["text"].as_str()),
+        ("sendMessage", Some(STREAMED))
+    );
+    assert!(!private.iter().any(|(m, _)| m == "editMessageText"));
+
+    let group = to(-100);
+    assert_eq!(group[0].0, "sendChatAction", "{group:?}");
+    let sent: Vec<&(String, Value)> = group.iter().filter(|(m, _)| m == "sendMessage").collect();
+    assert_eq!(sent.len(), 1, "one message, edited: {group:?}");
+    let first = sent[0].1["text"].as_str().unwrap();
+    assert!(
+        first.chars().count() >= 40 && STREAMED.starts_with(first) && first != STREAMED,
+        "first sent with something worth reading, before the end: {first:?}"
+    );
+    let (last, body) = group.last().unwrap();
+    assert_eq!(
+        (last.as_str(), body["text"].as_str()),
+        ("editMessageText", Some(STREAMED))
+    );
+    assert!(!group.iter().any(|(m, _)| m == "sendMessageDraft"));
+
+    // Slack, polled: a reply in a thread gets Slack's status line and
+    // stream, the tool a task on its timeline; a message outside a thread
+    // an hourglass and a message edited.
+    let polls = Arc::new(Mutex::new(0));
+    let polled = polls.clone();
+    let (slack, slack_seen) = common::http_stand_in(move |sent| {
+        let method = sent.url.trim_start_matches('/').to_string();
+        let ok = |extra: Value| {
+            let mut value = json!({"ok": true});
+            for (k, v) in extra.as_object().unwrap() {
+                value[k] = v.clone();
+            }
+            (200, value.to_string().into_bytes())
+        };
+        match method.as_str() {
+            "conversations.history" => {
+                let mut polls = polled.lock().unwrap();
+                *polls += 1;
+                if *polls == 1 {
+                    ok(json!({"messages": [{"ts": "1.0", "user": "U1", "text": "earlier"}]}))
+                } else {
+                    ok(json!({"messages": [
+                        {"ts": "3.0", "user": "U1", "text": "And outside a thread?"},
+                        {"ts": "2.0", "thread_ts": "1.0", "user": "U1", "text": "How much budget is left?"}
+                    ]}))
+                }
+            }
+            "auth.test" => ok(json!({"user_id": "B1", "team_id": "T1"})),
+            "chat.startStream" => ok(json!({"ts": "9.1"})),
+            "chat.postMessage" => ok(json!({"ts": "9.2"})),
+            _ => ok(json!({})),
+        }
+    });
+    std::env::set_var("SLACK_BOT_TOKEN", "xoxb-test");
+    std::env::set_var("SLACK_API_BASE", &slack);
+    std::env::remove_var("SLACK_APP_TOKEN");
+    let options = sion_cli::messengers::Options {
+        allow: vec!["C1".into()],
+        once: true,
+        ..Default::default()
+    };
+    let messenger = sion_cli::messengers::for_bridge("slack", &options).unwrap();
+    for _ in 0..2 {
+        sion_cli::messengers::bridge_with(ledger.clone(), &profile, messenger.as_ref(), &options)
+            .unwrap();
+    }
+    let called = |method: &str| -> Vec<Value> {
+        slack_seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.url == format!("/{method}"))
+            .map(common::Sent::json)
+            .collect()
+    };
+    let status = called("assistant.threads.setStatus");
+    assert_eq!(status[0]["thread_ts"], "1.0", "{status:?}");
+    assert!(
+        status.iter().any(|s| s["status"] == ""),
+        "cleared at the end: {status:?}"
+    );
+    let started = called("chat.startStream");
+    assert_eq!(started.len(), 1, "{started:?}");
+    assert_eq!(
+        (
+            &started[0]["thread_ts"],
+            &started[0]["recipient_user_id"],
+            &started[0]["recipient_team_id"]
+        ),
+        (&json!("1.0"), &json!("U1"), &json!("T1"))
+    );
+    assert_eq!(
+        started[0]["chunks"][0]["type"], "task_update",
+        "{started:?}"
+    );
+    assert_eq!(started[0]["chunks"][0]["title"], "ledger_balance");
+    let mut streamed = String::new();
+    for call in called("chat.startStream")
+        .iter()
+        .chain(called("chat.appendStream").iter())
+        .chain(called("chat.stopStream").iter())
+    {
+        for chunk in call["chunks"].as_array().into_iter().flatten() {
+            if chunk["type"] == "markdown_text" {
+                streamed.push_str(chunk["text"].as_str().unwrap());
+            }
+        }
+    }
+    assert_eq!(streamed, STREAMED, "the thread's stream is the reply");
+    assert_eq!(called("chat.stopStream").len(), 1);
+    let completed = called("chat.appendStream")
+        .iter()
+        .chain(called("chat.stopStream").iter())
+        .flat_map(|call| call["chunks"].as_array().cloned().unwrap_or_default())
+        .any(|c| c["type"] == "task_update" && c["status"] == "complete");
+    assert!(
+        completed,
+        "the tool's task is complete once the text goes on"
+    );
+    assert!(called("chat.update").iter().all(|u| u["ts"] != "9.1"));
+    // Outside the thread: the hourglass on the message, and one message,
+    // first sent before the end, then set to the reply.
+    let reacted = called("reactions.add");
+    assert_eq!(
+        (&reacted[0]["timestamp"], &reacted[0]["name"]),
+        (&json!("3.0"), &json!("hourglass_flowing_sand"))
+    );
+    assert_eq!(called("reactions.remove").len(), 1);
+    let posted: Vec<Value> = called("chat.postMessage")
+        .into_iter()
+        .filter(|p| p["thread_ts"].is_null())
+        .collect();
+    assert_eq!(posted.len(), 1, "{posted:?}");
+    assert_ne!(posted[0]["text"], STREAMED);
+    assert_eq!(called("chat.update").last().unwrap()["text"], STREAMED);
+
+    // The HTTP channel: events as the agent works, then the answer; and
+    // OpenAI's chunks, a word or so each.
+    let listen = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        probe.local_addr().unwrap().to_string()
+    };
+    let token = "a-token-of-sixteen-characters";
+    {
+        let (ledger, listen) = (ledger.clone(), listen.clone());
+        std::thread::spawn(move || {
+            sion_cli::channels::serve_with(ledger, &listen, Some(token), Some(4))
+        });
+    }
+    let mut profiles = sion_cli::profiles::all().unwrap();
+    profiles.insert("lead".into(), profile.clone());
+    sion_cli::profiles::save_all(&profiles).unwrap();
+    let client = sion_http::Client::new(sion_http::Options {
+        allow_private: true,
+        proxy_from_env: false,
+        ..sion_http::Options::default()
+    })
+    .unwrap();
+    let post = |path: &str, body: Value| {
+        let auth = format!("Bearer {token}");
+        let mut tries = 0;
+        loop {
+            match client.send(
+                "POST",
+                &format!("http://{listen}{path}"),
+                &[
+                    ("Authorization", &auth),
+                    ("Content-Type", "application/json"),
+                ],
+                Some(body.to_string().as_bytes()),
+            ) {
+                Ok(response) => return response,
+                Err(_) if tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    };
+    // Events, each with when it came.
+    let read = |mut response: sion_http::Response| {
+        let mut events = sion_agent::mcp_http::Events::new(response.body(), 1 << 16);
+        let start = std::time::Instant::now();
+        let mut got = Vec::new();
+        while let Some(Ok(event)) = events.next_event() {
+            got.push((event.name, event.data, start.elapsed()));
+        }
+        got
+    };
+    let response = post(
+        "/v1/profiles/lead/messages",
+        json!({"text": "How much budget is left?", "conversation": "streamed", "stream": true}),
+    );
+    assert_eq!(response.media_type().as_deref(), Some("text/event-stream"));
+    let got = read(response);
+    let names: Vec<&str> = got.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(names[0], "session", "{names:?}");
+    assert_eq!(names.last(), Some(&"done"), "{names:?}");
+    assert!(names.contains(&"tool"), "{names:?}");
+    let deltas: Vec<&(String, String, std::time::Duration)> =
+        got.iter().filter(|(n, _, _)| n == "delta").collect();
+    assert!(deltas.len() >= 3, "{got:?}");
+    let text: String = deltas
+        .iter()
+        .map(|(_, data, _)| {
+            serde_json::from_str::<Value>(data).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(text, STREAMED);
+    assert!(
+        deltas.last().unwrap().2 - deltas[0].2 >= std::time::Duration::from_millis(500),
+        "the text came as it was written, not at once: {got:?}"
+    );
+    let done: Value = serde_json::from_str(&got.last().unwrap().1).unwrap();
+    assert_eq!(done["said"], STREAMED);
+    let session: Value = serde_json::from_str(&got[0].1).unwrap();
+    assert_eq!(session["session"], done["session"]);
+
+    let response = post(
+        "/v1/chat/completions",
+        json!({"model": "lead", "stream": true, "messages": [{"role": "user", "content": "How much budget is left?"}]}),
+    );
+    let chunks: Vec<(String, std::time::Duration)> = read(response)
+        .into_iter()
+        .map(|(_, data, at)| (data, at))
+        .collect();
+    assert_eq!(chunks.last().unwrap().0, "[DONE]");
+    let values: Vec<Value> = chunks[..chunks.len() - 1]
+        .iter()
+        .map(|(data, _)| serde_json::from_str(data).unwrap())
+        .collect();
+    let id = values[0]["id"].as_str().unwrap();
+    assert!(id.starts_with("chatcmpl-") && values.iter().all(|v| v["id"] == id));
+    let content: String = values
+        .iter()
+        .filter_map(|v| v["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert_eq!(content, STREAMED);
+    assert!(
+        values
+            .iter()
+            .filter(|v| v["choices"][0]["delta"]["content"]
+                .as_str()
+                .is_some_and(|c| !c.is_empty()))
+            .count()
+            >= 3
+    );
+    assert_eq!(
+        values.last().unwrap()["choices"][0]["finish_reason"],
+        "stop"
+    );
+
+    // `/stop`, through another request, while the agent writes: the
+    // stream ends there, what it wrote kept, and says it stopped.
+    let response = post(
+        "/v1/profiles/lead/messages",
+        json!({"text": "How much budget is left?", "conversation": "stopped", "stream": true}),
+    );
+    let mut response = response;
+    let mut events = sion_agent::mcp_http::Events::new(response.body(), 1 << 16);
+    let mut stopping = None;
+    let mut done = None;
+    while let Some(Ok(event)) = events.next_event() {
+        if event.name == "delta" && stopping.is_none() {
+            let mut answer = post(
+                "/v1/profiles/lead/messages",
+                json!({"text": "/stop", "conversation": "stopped"}),
+            );
+            let mut body = String::new();
+            std::io::Read::read_to_string(&mut answer.body(), &mut body).unwrap();
+            stopping = Some(serde_json::from_str::<Value>(&body).unwrap());
+        }
+        if event.name == "done" {
+            done = Some(serde_json::from_str::<Value>(&event.data).unwrap());
+        }
+    }
+    assert_eq!(stopping.unwrap()["said"], "Stopping.");
+    let said = done.unwrap()["said"].as_str().unwrap().to_string();
+    let (written, ending) = said
+        .rsplit_once("\n\n")
+        .expect("what it wrote, and that it stopped");
+    assert_eq!(ending, "Stopped.");
+    assert!(
+        STREAMED.starts_with(written.trim_end()) && written.len() < STREAMED.len(),
+        "{said:?}"
     );
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();

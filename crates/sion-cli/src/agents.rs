@@ -303,8 +303,11 @@ pub enum AgentCommand {
         #[arg(long)]
         task: String,
         /// The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model>
-        /// (OPENAI_BASE_URL, OPENAI_API_KEY) or script:<file>. Repeat for
-        /// fallbacks, in order.
+        /// (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>,
+        /// chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent
+        /// chatgpt login`), gemini:<model> (GEMINI_API_KEY) or
+        /// script:<file>; several keys, comma-separated, are used in turn.
+        /// Repeat for fallbacks, in order.
         #[arg(long = "model", required = true)]
         models: Vec<String>,
         /// How much it may do without asking: L0 (nothing) to L6 (spend
@@ -441,6 +444,11 @@ pub enum AgentCommand {
     /// codes waiting, approving one, letting a chat out again.
     #[command(subcommand)]
     Pairing(crate::pairing::PairingCommand),
+    /// Sign in with ChatGPT, so that agents may run on your plan
+    /// (`--model chatgpt:<model>`): OpenAI's sign-in for open-source apps,
+    /// in your browser; the tokens kept encrypted on this machine.
+    #[command(subcommand)]
+    Chatgpt(crate::chatgpt::ChatgptCommand),
     /// Long-running commands (a bridge, the server, the scheduler) as
     /// services of your own: systemd user units on Linux, launchd agents
     /// on macOS.
@@ -602,6 +610,7 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
+        AgentCommand::Chatgpt(command) => crate::chatgpt::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Service(command) => crate::service::run(command),
@@ -689,6 +698,7 @@ pub fn run(
                     mcp,
                     storage,
                     screen,
+                    ..crate::runtime::Equipment::default()
                 },
             )?;
             println!("session {} for agent {}", saved.state.id, agent.short());
@@ -879,6 +889,7 @@ pub fn run(
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
+        AgentCommand::Chatgpt(command) => crate::chatgpt::run(command),
         AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),

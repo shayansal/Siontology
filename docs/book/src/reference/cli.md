@@ -718,6 +718,7 @@ Commands:
   secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
   login          Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
   pairing        People a channel did not know who asked to talk to a profile: the codes waiting, approving one, letting a chat out again
+  chatgpt        Sign in with ChatGPT, so that agents may run on your plan (`--model chatgpt:<model>`): OpenAI's sign-in for open-source apps, in your browser; the tokens kept encrypted on this machine
   service        Long-running commands (a bridge, the server, the scheduler) as services of your own: systemd user units on Linux, launchd agents on macOS
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
@@ -1031,7 +1032,7 @@ Options:
       --task <TASK>
           The task, in words
       --model <MODELS>
-          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY) or script:<file>. Repeat for fallbacks, in order
+          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>, chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent chatgpt login`), gemini:<model> (GEMINI_API_KEY) or script:<file>; several keys, comma-separated, are used in turn. Repeat for fallbacks, in order
       --autonomy <AUTONOMY>
           How much it may do without asking: L0 (nothing) to L6 (spend within its charter). L3 reads and writes its workspace; L5 also fetches from the web and asks before paying [default: L5]
       --workspace <WORKSPACE>
@@ -1274,6 +1275,8 @@ Options:
           What to tell it beyond the fixed system prompt
       --no-skill-approvals
           Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
+      --image-model <PROVIDER:MODEL>
+          Let it make pictures in its workspace (`image_generate`): openai:<model>, such as openai:gpt-image-1 (OPENAI_API_KEY)
   -h, --help
           Print help
 ```
@@ -1569,6 +1572,78 @@ Options:
   -h, --help         Print help
 ```
 
+
+## `sion agent chatgpt`
+
+```text
+Sign in with ChatGPT, so that agents may run on your plan (`--model chatgpt:<model>`): OpenAI's sign-in for open-source apps, in your browser; the tokens kept encrypted on this machine
+
+Usage: sion agent chatgpt [OPTIONS] <COMMAND>
+
+Commands:
+  login   Sign in with your ChatGPT account, in your browser, so that agents may run on your plan (`--model chatgpt:<model>`)
+  status  Who is signed in, and whether the plan is shared
+  models  The models your plan offers
+  logout  Forget who signed in
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+The account is the one you sign in with in your browser, on OpenAI's page; the bridge, the server and schedules use it like any model (`--model chatgpt:<model>`). See [Signing in with ChatGPT](../guides/agent-runtime.md#signing-in-with-chatgpt).
+
+## `sion agent chatgpt login`
+
+```text
+Sign in with your ChatGPT account, in your browser, so that agents may run on your plan (`--model chatgpt:<model>`)
+
+Usage: sion agent chatgpt login [OPTIONS]
+
+Options:
+      --no-browser   Show the address only: do not open a browser
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Opens OpenAI's sign-in page, which comes back to `http://127.0.0.1:1455` (another port if that one is taken). The ID token is checked against OpenAI's published keys; the tokens are kept encrypted beside the secrets.
+
+## `sion agent chatgpt status`
+
+```text
+Who is signed in, and whether the plan is shared
+
+Usage: sion agent chatgpt status [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent chatgpt models`
+
+```text
+The models your plan offers
+
+Usage: sion agent chatgpt models [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent chatgpt logout`
+
+```text
+Forget who signed in
+
+Usage: sion agent chatgpt logout [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
 
 ## `sion agent service`
 
@@ -1907,18 +1982,79 @@ Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEG
 Usage: sion agent telegram [OPTIONS] <PROFILE>
 
 Arguments:
-  <PROFILE>  The agent profile
+  <PROFILE>
+          The agent profile
 
 Options:
-      --allow <ALLOW>          The chats it answers (comma-separated ids); others are ignored, or given a pairing code with --pairing
-      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --approvers <APPROVERS>  Who may approve or decline (comma-separated Telegram user ids); without it, anyone in an allowed chat
-      --once                   Answer one batch of messages, then stop
-      --pairing                Give someone who writes to it directly, and whom it does not know, a pairing code, and answer them once you approve it (`sion agent pairing approve`). Matrix joins the rooms it is invited to; Slack needs Socket Mode (SLACK_APP_TOKEN)
-      --require-mention        In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
-      --hear <PROVIDER>        Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
-      --speak <PROVIDER>       Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
-  -h, --help                   Print help
+      --allow <ALLOW>
+          The chats it answers (comma-separated ids); others are ignored, or given a pairing code with --pairing
+
+      --node <NODE>
+          The node's API
+
+          [env: SION_NODE=]
+          [default: http://127.0.0.1:8730]
+
+      --approvers <APPROVERS>
+          Who may approve or decline (comma-separated Telegram user ids); without it, anyone in an allowed chat
+
+      --once
+          Answer one batch of messages, then stop
+
+      --pairing
+          Give someone who writes to it directly, and whom it does not know, a pairing code, and answer them once you approve it (`sion agent pairing approve`). Matrix joins the rooms it is invited to; Slack needs Socket Mode (SLACK_APP_TOKEN)
+
+      --require-mention
+          In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
+
+      --hear <PROVIDER>
+          Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
+
+      --speak <PROVIDER>
+          Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
+
+      --stream <STREAM>
+          How a reply shows while the agent writes it, where the messenger can show it: `progress`, the text as the model writes it and the tool the agent runs; `partial`, the text only; `off`, the reply once it is done
+
+          Possible values:
+          - progress: The text as the model writes it, and the tool the agent runs
+          - partial:  The text as the model writes it
+          - off:      The reply once it is done
+
+          [default: progress]
+
+      --no-typing
+          Show no typing indicator while the agent works
+
+      --busy <BUSY>
+          What a message does that comes while the agent works on its chat: `steer`, it is told to the agent as it works; `queue`, answered after, one at a time; `collect`, answered after, together; `interrupt`, it stops the agent, which takes it up. `/stop` always stops it
+
+          Possible values:
+          - steer:     Told to the agent as it works: it takes it in before its next step
+          - queue:     Answered once the agent is done, one at a time
+          - collect:   Answered once the agent is done, all of them together
+          - interrupt: Stops the agent, which then takes it up
+
+          [default: steer]
+
+      --debounce <MS>
+          Milliseconds a chat's messages are gathered before the agent takes them up, so that a burst of them is one turn
+
+          [default: 500]
+
+      --parallel <N>
+          How many chats are answered at once
+
+          [default: 4]
+
+      --no-reactions
+          Mark no message received, answered or failed (with a reaction, or a read receipt)
+
+      --route <CHAT=PROFILE>
+          A chat that another profile answers: `<chat>=<profile>`, as often as needed (comma-separated too). The chat is answered as --allow's
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 In a group chat, every member speaks for you, approvals included (`agent:telegram-chats`). See [Teams, schedules and channels](../guides/agent-teams.md#telegram).
@@ -1931,20 +2067,87 @@ Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN, SLACK_APP_TOK
 Usage: sion agent bridge [OPTIONS] --via <VIA> <PROFILE>
 
 Arguments:
-  <PROFILE>  The agent profile
+  <PROFILE>
+          The agent profile
 
 Options:
-      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --via <VIA>              The messenger
-      --allow <ALLOW>          The chats it answers (comma-separated: channel ids, room ids or numbers); others are ignored, or given a pairing code with --pairing
-      --approvers <APPROVERS>  Who may approve or decline (comma-separated, as the messenger names people); without it, anyone in an allowed chat
-      --once                   Answer one batch of messages, then stop
-      --listen <LISTEN>        Where whatsapp, line, sms, teams, google-chat, feishu and nextcloud-talk send their webhooks (expose it to them behind TLS) [default: 127.0.0.1:8797]
-      --pairing                Give someone who writes to it directly, and whom it does not know, a pairing code, and answer them once you approve it (`sion agent pairing approve`). Matrix joins the rooms it is invited to; Slack needs Socket Mode (SLACK_APP_TOKEN)
-      --require-mention        In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
-      --hear <PROVIDER>        Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
-      --speak <PROVIDER>       Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
-  -h, --help                   Print help
+      --node <NODE>
+          The node's API
+
+          [env: SION_NODE=]
+          [default: http://127.0.0.1:8730]
+
+      --via <VIA>
+          The messenger
+
+      --allow <ALLOW>
+          The chats it answers (comma-separated: channel ids, room ids or numbers); others are ignored, or given a pairing code with --pairing
+
+      --approvers <APPROVERS>
+          Who may approve or decline (comma-separated, as the messenger names people); without it, anyone in an allowed chat
+
+      --once
+          Answer one batch of messages, then stop
+
+      --listen <LISTEN>
+          Where whatsapp, line, sms, teams, google-chat, feishu and nextcloud-talk send their webhooks (expose it to them behind TLS)
+
+          [default: 127.0.0.1:8797]
+
+      --pairing
+          Give someone who writes to it directly, and whom it does not know, a pairing code, and answer them once you approve it (`sion agent pairing approve`). Matrix joins the rooms it is invited to; Slack needs Socket Mode (SLACK_APP_TOKEN)
+
+      --require-mention
+          In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
+
+      --hear <PROVIDER>
+          Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
+
+      --speak <PROVIDER>
+          Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
+
+      --stream <STREAM>
+          How a reply shows while the agent writes it, where the messenger can show it: `progress`, the text as the model writes it and the tool the agent runs; `partial`, the text only; `off`, the reply once it is done
+
+          Possible values:
+          - progress: The text as the model writes it, and the tool the agent runs
+          - partial:  The text as the model writes it
+          - off:      The reply once it is done
+
+          [default: progress]
+
+      --no-typing
+          Show no typing indicator while the agent works
+
+      --busy <BUSY>
+          What a message does that comes while the agent works on its chat: `steer`, it is told to the agent as it works; `queue`, answered after, one at a time; `collect`, answered after, together; `interrupt`, it stops the agent, which takes it up. `/stop` always stops it
+
+          Possible values:
+          - steer:     Told to the agent as it works: it takes it in before its next step
+          - queue:     Answered once the agent is done, one at a time
+          - collect:   Answered once the agent is done, all of them together
+          - interrupt: Stops the agent, which then takes it up
+
+          [default: steer]
+
+      --debounce <MS>
+          Milliseconds a chat's messages are gathered before the agent takes them up, so that a burst of them is one turn
+
+          [default: 500]
+
+      --parallel <N>
+          How many chats are answered at once
+
+          [default: 4]
+
+      --no-reactions
+          Mark no message received, answered or failed (with a reaction, or a read receipt)
+
+      --route <CHAT=PROFILE>
+          A chat that another profile answers: `<chat>=<profile>`, as often as needed (comma-separated too). The chat is answered as --allow's
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## `sion agent gateway`
@@ -2380,7 +2583,7 @@ Arguments:
   <LOG>     The log (its id, or a unique prefix of it)
 
 Options:
-      --model <MODEL>  The model that proposes: anthropic:<model>, openai:<model> or script:<file>
+      --model <MODEL>  The model that proposes: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>
       --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help           Print help
 ```
@@ -2594,7 +2797,7 @@ Arguments:
 Options:
       --evals <EVALS>                The evaluation set (a JSON file)
       --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --model <MODELS>               The agent's model: anthropic:<model>, openai:<model> or script:<file>. Repeat for fallbacks, in order
+      --model <MODELS>               The agent's model: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>. Repeat for fallbacks, in order
       --trajectories <TRAJECTORIES>  Write each run as a trajectory (JSON Lines in chat format), labelled with its result
   -h, --help                         Print help
 ```

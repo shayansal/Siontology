@@ -265,6 +265,7 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         instructions: None,
         skill_approvals: true,
         screen: Default::default(),
+        image_model: None,
     };
     sion_cli::profiles::save_all(
         &[("lead".to_string(), profile.clone())]
@@ -349,37 +350,56 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
     serving.join().unwrap().unwrap();
 
     // Telegram, against a stand-in for its API: chat 42 is answered, chat
-    // 99 is not.
+    // 99 is not. Besides the reply, the bridge shows it is at work
+    // (sendChatAction) and marks the message (setMessageReaction).
     let stand_in = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let base = format!("http://{}", stand_in.server_addr());
     let (sent, received) = mpsc::channel::<Value>();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let serving = done.clone();
     let api = std::thread::spawn(move || {
-        for _ in 0..2 {
-            let mut request = stand_in.recv().unwrap();
+        let mut methods = Vec::new();
+        while !serving.load(std::sync::atomic::Ordering::SeqCst) {
+            let Ok(Some(mut request)) = stand_in.recv_timeout(std::time::Duration::from_millis(50))
+            else {
+                continue;
+            };
             let mut body = String::new();
             std::io::Read::read_to_string(request.as_reader(), &mut body).unwrap();
             let url = request.url().to_string();
-            let result = if url.ends_with("/getUpdates") {
-                json!([
-                    {"update_id": 7, "message": {"chat": {"id": 42}, "text": "How much budget is left?"}},
-                    {"update_id": 8, "message": {"chat": {"id": 99}, "text": "Pay me."}}
-                ])
-            } else {
-                sent.send(serde_json::from_str(&body).unwrap()).unwrap();
-                json!({})
-            };
             assert!(url.starts_with("/botbot-token/"), "{url}");
+            let method = url.rsplit('/').next().unwrap_or_default().to_string();
+            let result = match method.as_str() {
+                "getUpdates" => json!([
+                    {"update_id": 7, "message": {"message_id": 70, "chat": {"id": 42}, "text": "How much budget is left?"}},
+                    {"update_id": 8, "message": {"message_id": 80, "chat": {"id": 99}, "text": "Pay me."}}
+                ]),
+                "sendMessage" => {
+                    sent.send(serde_json::from_str(&body).unwrap()).unwrap();
+                    json!({"message_id": 71, "chat": {"id": 42}})
+                }
+                _ => json!(true),
+            };
+            methods.push(method);
             request
                 .respond(tiny_http::Response::from_string(
                     json!({"ok": true, "result": result}).to_string(),
                 ))
                 .unwrap();
         }
+        methods
     });
     std::env::set_var("TELEGRAM_BOT_TOKEN", "bot-token");
     std::env::set_var("TELEGRAM_API_BASE", &base);
     sion_cli::channels::telegram(ledger.clone(), &profile, &[42], true).unwrap();
-    api.join().unwrap();
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let methods = api.join().unwrap();
+    assert_eq!(methods[0], "getUpdates", "{methods:?}");
+    assert_eq!(
+        methods.iter().filter(|m| *m == "getUpdates").count(),
+        1,
+        "{methods:?}"
+    );
     let message = received.recv().unwrap();
     assert_eq!(message["chat_id"], 42);
     assert_eq!(message["text"], "85 USD left in the budget.");

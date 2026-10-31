@@ -45,14 +45,8 @@ pub struct Outcome {
     pub pictures: Vec<Picture>,
 }
 
-/// A picture a tool returned.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Picture {
-    /// Its media type (`image/png`).
-    pub media_type: String,
-    /// Its bytes, in base64.
-    pub base64: String,
-}
+/// A picture a tool returned: as a person sends one.
+pub use crate::model::Picture;
 
 impl Outcome {
     /// A success.
@@ -215,6 +209,16 @@ impl Toolbox {
         self.tools.get(name).map(|t| t.as_ref())
     }
 
+    /// The tools' names, sorted.
+    pub fn names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
+
+    /// Keeps only the tools whose names `keep` keeps.
+    pub fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        self.tools.retain(|name, _| keep(name));
+    }
+
     /// Every tool's spec, sorted by name.
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.values().map(|t| t.spec()).collect()
@@ -347,5 +351,17 @@ mod tests {
         let found = tools.search("Forecast city");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "weather");
+    }
+
+    #[test]
+    fn a_toolbox_names_its_tools_and_keeps_only_those_it_is_told_to() {
+        let mut tools = Toolbox::new();
+        for name in ["pay", "balance", "fetch"] {
+            tools.add(tool(name, "does a thing"));
+        }
+        assert_eq!(tools.names(), ["balance", "fetch", "pay"]);
+        tools.retain(|name| name != "pay");
+        assert_eq!(tools.names(), ["balance", "fetch"]);
+        assert!(tools.get("pay").is_none());
     }
 }

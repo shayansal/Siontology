@@ -21,8 +21,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::drafts::Poster;
 use crate::live::{Link, Live};
-use crate::messengers::{Incoming, Messenger, Note, LIVE_ONCE_WAIT};
+use crate::messengers::{Ack, Incoming, Messenger, Note, LIVE_ONCE_WAIT};
+use crate::showing::Typist;
 use crate::voice::{Audio, Form, MAX_HEARD};
 
 /// Where a bridge listens for webhooks unless told otherwise.
@@ -468,18 +470,42 @@ pub fn whatsapp_hook(
                 .map(|media| Note {
                     id: media.to_string(),
                     media_type: message["audio"]["mime_type"].as_str().map(str::to_string),
+                    name: None,
                 });
-            let text = message["text"]["body"].as_str().unwrap_or_default();
-            if text.is_empty() && voice.is_none() {
+            // A picture, a video, a document or a sticker, with its caption.
+            let kind = message["type"].as_str().unwrap_or_default();
+            let media = &message[kind];
+            let files: Vec<Note> = matches!(kind, "image" | "video" | "document" | "sticker")
+                .then(|| media["id"].as_str())
+                .flatten()
+                .map(|media_id| Note {
+                    id: media_id.to_string(),
+                    media_type: media["mime_type"].as_str().map(str::to_string),
+                    name: media["filename"].as_str().map(str::to_string),
+                })
+                .into_iter()
+                .collect();
+            let text = message["text"]["body"]
+                .as_str()
+                .or_else(|| {
+                    (!files.is_empty())
+                        .then(|| media["caption"].as_str())
+                        .flatten()
+                })
+                .unwrap_or_default();
+            if text.is_empty() && voice.is_none() && files.is_empty() {
                 continue;
             }
             out.push(Incoming {
+                id: id.to_string(),
+                thread: String::new(),
                 chat: from.to_string(),
                 from: from.to_string(),
                 text: text.to_string(),
                 voice,
                 direct: true,
                 mentions: Vec::new(),
+                files,
             });
         }
     }
@@ -556,6 +582,18 @@ impl WhatsApp {
 }
 
 impl Messenger for WhatsApp {
+    /// Read, as a person's app shows it; a reaction on what failed.
+    fn acknowledge(&self, message: &Incoming, ack: Ack) -> Result<(), String> {
+        match ack {
+            Ack::Seen => self.message(json!({"messaging_product": "whatsapp", "status": "read",
+                "message_id": message.id})),
+            Ack::Done => Ok(()),
+            Ack::Failed => self.message(json!({"messaging_product": "whatsapp",
+                "recipient_type": "individual", "to": message.chat, "type": "reaction",
+                "reaction": {"message_id": message.id, "emoji": crate::messengers::FAILED}})),
+        }
+    }
+
     fn name(&self) -> &'static str {
         "whatsapp"
     }
@@ -571,6 +609,26 @@ impl Messenger for WhatsApp {
     fn send(&self, chat: &str, text: &str) -> Result<(), String> {
         self.message(json!({"messaging_product": "whatsapp", "to": chat,
             "type": "text", "text": {"body": cut(text, 4_096)}}))
+    }
+
+    fn room(&self) -> usize {
+        4_096
+    }
+
+    /// The message marked read, with WhatsApp's typing indicator: 25
+    /// seconds at a time, or until the reply.
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn Typist>> {
+        (!message.id.is_empty()).then(|| -> Box<dyn Typist> {
+            Box::new(Poster {
+                client: self.client.clone(),
+                url: format!("{}/{}/messages", self.base, self.phone),
+                auth: format!("Bearer {}", self.token),
+                secret: self.token.clone(),
+                body: json!({"messaging_product": "whatsapp", "status": "read",
+                    "message_id": message.id, "typing_indicator": {"type": "text"}}),
+                lasts: Duration::from_secs(20),
+            })
+        })
     }
 
     fn long_polls(&self) -> bool {
@@ -609,18 +667,55 @@ impl Messenger for WhatsApp {
     }
 
     fn send_voice(&self, chat: &str, audio: &Audio, caption: &str) -> Result<bool, String> {
-        let (content_type, body) = Form::new()
-            .text("messaging_product", "whatsapp")
-            .text("type", &audio.media_type)
-            .file("file", audio)
-            .finish();
-        let uploaded = self.post(&format!("{}/media", self.phone), &content_type, &body)?;
-        let id = uploaded["id"].as_str().ok_or("WhatsApp gave no media id")?;
+        let id = self.upload(&audio.name, &audio.media_type, &audio.bytes)?;
         self.message(json!({"messaging_product": "whatsapp", "to": chat,
             "type": "audio", "audio": {"id": id}}))?;
         // An audio message has no caption: the reply follows in text.
         self.send(chat, caption)?;
         Ok(true)
+    }
+
+    /// A JPEG or PNG as a picture, anything else as a document.
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        let id = self.upload(&file.name, &file.media_type, &file.bytes)?;
+        let picture = matches!(
+            crate::files::sniff_picture(&file.bytes),
+            Some("image/jpeg" | "image/png")
+        );
+        let mut media = json!({"id": id});
+        if !caption.is_empty() {
+            media["caption"] = json!(cut(caption, 1_024));
+        }
+        let kind = if picture {
+            "image"
+        } else {
+            media["filename"] = json!(file.name);
+            "document"
+        };
+        self.message(json!({"messaging_product": "whatsapp", "to": message.chat,
+            "type": kind, kind: media}))?;
+        Ok(true)
+    }
+}
+
+impl WhatsApp {
+    /// Uploads a file to the business number's media: its id.
+    fn upload(&self, name: &str, media_type: &str, bytes: &[u8]) -> Result<String, String> {
+        let (content_type, body) = Form::new()
+            .text("messaging_product", "whatsapp")
+            .text("type", media_type)
+            .bytes("file", name, media_type, bytes)
+            .finish();
+        let uploaded = self.post(&format!("{}/media", self.phone), &content_type, &body)?;
+        Ok(uploaded["id"]
+            .as_str()
+            .ok_or("WhatsApp gave no media id")?
+            .to_string())
     }
 }
 
@@ -698,9 +793,22 @@ pub fn line_hook(
             .map(|id| Note {
                 id: id.to_string(),
                 media_type: Some("audio/m4a".into()),
+                name: None,
             });
+        // A picture, a video or a file, fetched by the message's id as a
+        // voice note is; what it is, its bytes say.
+        let files: Vec<Note> = matches!(message["type"].as_str(), Some("image" | "video" | "file"))
+            .then(|| message["id"].as_str())
+            .flatten()
+            .map(|id| Note {
+                id: id.to_string(),
+                media_type: None,
+                name: message["fileName"].as_str().map(str::to_string),
+            })
+            .into_iter()
+            .collect();
         let text = message["text"].as_str().unwrap_or_default();
-        if text.is_empty() && voice.is_none() {
+        if text.is_empty() && voice.is_none() && files.is_empty() {
             continue;
         }
         let mut mentions = Vec::new();
@@ -720,12 +828,15 @@ pub fn line_hook(
             replies.insert(chat.to_string(), (token.to_string(), Instant::now()));
         }
         out.push(Incoming {
+            id: message["id"].as_str().unwrap_or_default().to_string(),
+            thread: String::new(),
             chat: chat.to_string(),
             from: source["userId"].as_str().unwrap_or_default().to_string(),
             text: text.to_string(),
             voice,
             direct,
             mentions,
+            files,
         });
     }
     (Answer::ok(), out)
@@ -814,6 +925,25 @@ impl Messenger for Line {
         }
     }
 
+    fn room(&self) -> usize {
+        5_000
+    }
+
+    /// LINE's loading animation, in a chat with one person (it shows
+    /// nowhere else): 60 seconds at a time, or until the reply.
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn Typist>> {
+        message.direct.then(|| -> Box<dyn Typist> {
+            Box::new(Poster {
+                client: self.client.clone(),
+                url: format!("{}/v2/bot/chat/loading/start", self.base),
+                auth: format!("Bearer {}", self.token),
+                secret: self.token.clone(),
+                body: json!({"chatId": message.chat, "loadingSeconds": 60}),
+                lasts: Duration::from_secs(55),
+            })
+        })
+    }
+
     fn long_polls(&self) -> bool {
         true
     }
@@ -857,6 +987,9 @@ impl Messenger for Line {
 pub struct Sms {
     client: sion_http::Client,
     base: String,
+    /// Twilio's Messaging API (`TWILIO_MESSAGING_API_BASE`, by default
+    /// `https://messaging.twilio.com`), for typing indicators.
+    messaging: String,
     account: String,
     token: String,
     number: String,
@@ -919,21 +1052,37 @@ pub fn sms_hook(hook: &Hook, token: &str, url: &str, seen: &mut Seen) -> (Answer
                 .unwrap_or_default()
                 .to_string(),
             media_type: Some(media_type.to_string()),
+            name: None,
         })
     });
+    // The rest of what came with it (an MMS's pictures) are files.
+    let files: Vec<Note> = (0..count.min(10))
+        .filter_map(|i| {
+            let media_type = field(&format!("MediaContentType{i}"))?;
+            let url = field(&format!("MediaUrl{i}"))?;
+            (!media_type.starts_with("audio/")).then(|| Note {
+                id: url.to_string(),
+                media_type: Some(media_type.to_string()),
+                name: None,
+            })
+        })
+        .collect();
     let text = field("Body").unwrap_or_default();
-    if text.is_empty() && voice.is_none() {
+    if text.is_empty() && voice.is_none() && files.is_empty() {
         return (twiml, Vec::new());
     }
     (
         twiml,
         vec![Incoming {
+            id: id.to_string(),
+            thread: String::new(),
             chat: from.to_string(),
             from: from.to_string(),
             text: text.to_string(),
             voice,
             direct: true,
             mentions: Vec::new(),
+            files,
         }],
     )
 }
@@ -967,6 +1116,10 @@ impl Sms {
         Ok(Sms {
             client: client()?,
             base,
+            messaging: env("TWILIO_MESSAGING_API_BASE")
+                .unwrap_or_else(|| "https://messaging.twilio.com".into())
+                .trim_end_matches('/')
+                .to_string(),
             account,
             token,
             number,
@@ -1017,6 +1170,28 @@ impl Messenger for Sms {
             )
             .map(|_| ())
             .map_err(|e| e.to_string().replace(&self.token, "<token>"))
+    }
+
+    fn room(&self) -> usize {
+        1_600
+    }
+
+    /// For a WhatsApp sender on Twilio, Twilio's typing indicator (which
+    /// marks the message read): 25 seconds at a time, or until the reply.
+    /// An SMS shows none.
+    fn typist(&self, message: &Incoming, _aloud: bool) -> Option<Box<dyn Typist>> {
+        (message.chat.starts_with("whatsapp:") && !message.id.is_empty()).then(
+            || -> Box<dyn Typist> {
+                Box::new(Poster {
+                    client: self.client.clone(),
+                    url: format!("{}/v3/Indicators/Typing.json", self.messaging),
+                    auth: self.basic(),
+                    secret: self.token.clone(),
+                    body: json!({"channel": "whatsapp", "messageId": message.id}),
+                    lasts: Duration::from_secs(20),
+                })
+            },
+        )
     }
 
     fn long_polls(&self) -> bool {
@@ -1156,7 +1331,12 @@ mod tests {
              "source": {"type": "group", "groupId": "C9", "userId": "U2"},
              "message": {"id": "2", "type": "text", "text": "@bot hi",
                  "mention": {"mentionees": [{"isSelf": true, "userId": "Ubot"}]}}},
-            {"type": "follow", "webhookEventId": "e3", "source": {"type": "user", "userId": "U3"}}
+            {"type": "follow", "webhookEventId": "e3", "source": {"type": "user", "userId": "U3"}},
+            {"type": "message", "webhookEventId": "e4", "replyToken": "r4",
+             "source": {"type": "user", "userId": "U1"}, "message": {"id": "4", "type": "image"}},
+            {"type": "message", "webhookEventId": "e5", "replyToken": "r5",
+             "source": {"type": "user", "userId": "U1"},
+             "message": {"id": "5", "type": "file", "fileName": "report.pdf", "fileSize": 15}}
         ]})
         .to_string();
         let signature = base64::engine::general_purpose::STANDARD
@@ -1171,7 +1351,23 @@ mod tests {
         );
         let (answer, messages) = line_hook(&signed, "chan", &replies, &mut seen);
         assert_eq!(answer.status, 200);
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 4);
+        // A picture and a file, fetched by their messages' ids.
+        assert_eq!(
+            (messages[2].files.clone(), messages[3].files.clone()),
+            (
+                vec![Note {
+                    id: "4".into(),
+                    media_type: None,
+                    name: None
+                }],
+                vec![Note {
+                    id: "5".into(),
+                    media_type: None,
+                    name: Some("report.pdf".into())
+                }]
+            )
+        );
         assert!(messages[0].direct);
         assert_eq!(
             (messages[1].chat.as_str(), messages[1].direct),
@@ -1231,6 +1427,40 @@ mod tests {
         assert_eq!((answer.status, answer.content_type), (200, "text/xml"));
         assert_eq!(messages[0].text, "How much is left?");
         assert_eq!(sms_hook(&signed, "other", url, &mut seen).0.status, 401);
+        // An MMS: its audio a voice note, its picture a file.
+        let body = encode_form(&[
+            ("MessageSid", "MM1"),
+            ("From", "+15550001111"),
+            ("Body", ""),
+            ("NumMedia", "2"),
+            ("MediaContentType0", "image/jpeg"),
+            (
+                "MediaUrl0",
+                "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME0",
+            ),
+            ("MediaContentType1", "audio/amr"),
+            (
+                "MediaUrl1",
+                "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME1",
+            ),
+        ]);
+        let signature = twilio_signature("tok", url, &decode_form(body.as_bytes()));
+        let signed = hook(
+            "POST",
+            "/sms",
+            &[("x-twilio-signature", &signature)],
+            body.as_bytes(),
+        );
+        let (_, messages) = sms_hook(&signed, "tok", url, &mut seen);
+        assert!(messages[0].voice.as_ref().unwrap().id.ends_with("/ME1"));
+        assert_eq!(
+            messages[0].files,
+            [Note {
+                id: "https://api.twilio.com/2010-04-01/Accounts/AC1/Messages/MM1/Media/ME0".into(),
+                media_type: Some("image/jpeg".into()),
+                name: None
+            }]
+        );
     }
 
     #[test]

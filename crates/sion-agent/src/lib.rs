@@ -40,6 +40,11 @@
 //!   decides. A kill switch stops a run before its next call.
 //! - **Traces.** A session exports as a trajectory, for review, evaluation
 //!   and training ([`trace`]).
+//! - **Watched runs.** A run can be watched as it goes ([`Seen`]): a model
+//!   is asked, the text it writes as it writes it (providers stream it over
+//!   Server-Sent Events), the tools it calls and runs, a call that waits.
+//!   That is what shows a person that the agent is typing, and its reply as
+//!   it is written.
 //!
 //! Skills ([`skills`]) are how an agent gets better at its work: it writes
 //! down what worked, and a skill is measured against an evaluation set
@@ -76,8 +81,9 @@ pub mod tools;
 pub mod trace;
 
 pub use model::{
-    Block, Message, Model, ModelError, Request, Response, Role, Stop, ToolSpec, Usage,
+    Block, Delta, Message, Model, ModelError, Picture, Request, Response, Role, Stop, ToolSpec,
+    Usage,
 };
 pub use policy::{Autonomy, Decision, Policy, Standing};
-pub use session::{Ended, Limits, Runtime, State};
+pub use session::{Ended, Limits, Runtime, Seen, State};
 pub use tools::{Effect, Outcome, Tool, Toolbox};

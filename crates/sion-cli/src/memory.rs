@@ -129,8 +129,8 @@ pub enum MemoryCommand {
         wallet: String,
         /// The log (its id, or a unique prefix of it).
         log: String,
-        /// The model that proposes: anthropic:<model>, openai:<model> or
-        /// script:<file>.
+        /// The model that proposes: anthropic:<model>, openai:<model>,
+        /// gemini:<model> or script:<file>.
         #[arg(long)]
         model: String,
     },

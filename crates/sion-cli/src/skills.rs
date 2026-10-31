@@ -192,8 +192,8 @@ pub enum SkillCommand {
         /// The evaluation set (a JSON file).
         #[arg(long)]
         evals: PathBuf,
-        /// The agent's model: anthropic:<model>, openai:<model> or
-        /// script:<file>. Repeat for fallbacks, in order.
+        /// The agent's model: anthropic:<model>, openai:<model>,
+        /// gemini:<model> or script:<file>. Repeat for fallbacks, in order.
         #[arg(long = "model", required = true)]
         models: Vec<String>,
         /// Write each run as a trajectory (JSON Lines in chat format),

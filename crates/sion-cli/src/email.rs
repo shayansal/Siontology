@@ -124,6 +124,17 @@ struct Thread {
     references: Vec<String>,
 }
 
+/// The most voice notes and files the mailbox holds for the bridge to
+/// fetch.
+pub const HELD_MOST: usize = 64;
+
+/// The most bytes of them it holds.
+pub const HELD_BYTES: usize = 64 << 20;
+
+/// The most files of one message that are taken: the others are named to
+/// the agent only.
+pub const FILES_TAKEN: usize = 10;
+
 /// The agent's mailbox (see the module's documentation).
 pub struct Email {
     config: Config,
@@ -131,8 +142,10 @@ pub struct Email {
     /// Faults in a row, for the pause before connecting again.
     failures: Mutex<u32>,
     threads: Mutex<BTreeMap<String, Thread>>,
-    /// The audio of the last batch's voice notes, by note id.
-    voices: Mutex<BTreeMap<String, Audio>>,
+    /// The voice notes and files of the last messages, by note id, until
+    /// they are answered: the newest [`HELD_MOST`] of them, in
+    /// [`HELD_BYTES`] at most.
+    held: Mutex<VecDeque<(String, crate::files::File)>>,
     /// The Message-IDs answered lately: a message delivered twice is
     /// answered once.
     answered: Mutex<VecDeque<String>>,
@@ -202,7 +215,7 @@ impl Email {
             session: Mutex::new(None),
             failures: Mutex::new(0),
             threads: Mutex::new(BTreeMap::new()),
-            voices: Mutex::new(BTreeMap::new()),
+            held: Mutex::new(VecDeque::new()),
             answered: Mutex::new(VecDeque::new()),
         })
     }
@@ -299,22 +312,34 @@ impl Email {
             );
         let voice = mail.audio.first().map(|(media_type, name, bytes)| {
             let id = uid.to_string();
-            self.voices
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(
-                    id.clone(),
-                    Audio {
-                        media_type: media_type.clone(),
-                        name: name.clone(),
-                        bytes: bytes.clone(),
-                    },
-                );
+            self.hold(
+                &id,
+                crate::files::File {
+                    media_type: media_type.clone(),
+                    name: name.clone(),
+                    bytes: bytes.clone(),
+                },
+            );
             Note {
                 id,
                 media_type: Some(media_type.clone()),
+                name: None,
             }
         });
+        let files: Vec<Note> = mail
+            .files
+            .iter()
+            .enumerate()
+            .map(|(n, file)| {
+                let id = format!("{uid}#{n}");
+                self.hold(&id, file.clone());
+                Note {
+                    id,
+                    media_type: Some(file.media_type.clone()),
+                    name: Some(file.name.clone()),
+                }
+            })
+            .collect();
         let mut text = mail.said();
         if !whole {
             text = format!(
@@ -328,6 +353,8 @@ impl Email {
             .chain(&mail.cc)
             .any(|a| *a != self.config.address);
         Some(Incoming {
+            id: String::new(),
+            thread: String::new(),
             chat: mail.from.clone(),
             from: mail.from,
             text,
@@ -335,7 +362,33 @@ impl Email {
             direct: !others,
             // Being written to, not copied, is being spoken to.
             mentions: mail.to,
+            files,
         })
+    }
+
+    /// Holds `file` for the bridge to fetch as note `id`: the oldest let go
+    /// of past [`HELD_MOST`] or [`HELD_BYTES`].
+    fn hold(&self, id: &str, file: crate::files::File) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        held.retain(|(kept, _)| kept != id);
+        held.push_back((id.to_string(), file));
+        while held.len() > HELD_MOST
+            || (held.len() > 1
+                && held.iter().map(|(_, f)| f.bytes.len()).sum::<usize>() > HELD_BYTES)
+        {
+            held.pop_front();
+        }
+    }
+
+    /// The voice note or file held as note `id`.
+    fn held(&self, id: &str) -> Result<crate::files::File, String> {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(kept, _)| kept == id)
+            .map(|(_, file)| file.clone())
+            .ok_or_else(|| "that file is no longer held: it came too long ago".to_string())
     }
 
     /// Sends `message` to `to`, once more if the server could not be
@@ -352,9 +405,9 @@ impl Email {
         }
     }
 
-    /// A message to `to` saying `text`, with `audio` attached, in the
+    /// A message to `to` saying `text`, with `attached` attached, in the
     /// thread of what `to` wrote last.
-    fn compose(&self, to: &str, text: &str, audio: Option<&Audio>) -> Vec<u8> {
+    fn compose(&self, to: &str, text: &str, attached: Option<&crate::files::File>) -> Vec<u8> {
         let thread = self
             .threads
             .lock()
@@ -367,7 +420,7 @@ impl Email {
             to,
             thread.as_ref(),
             text,
-            audio,
+            attached,
             now(),
             &random_hex(16),
         )
@@ -399,10 +452,6 @@ impl Messenger for Email {
 
     fn receive(&self, cursor: &str, wait: u64) -> Result<(Vec<Incoming>, String), String> {
         let deadline = Instant::now() + Duration::from_secs(wait);
-        self.voices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
         let reused = session.is_some();
         let mut read = self.read(&mut session, cursor, deadline);
@@ -454,20 +503,43 @@ impl Messenger for Email {
     }
 
     fn fetch_voice(&self, note: &Note) -> Result<Audio, String> {
-        self.voices
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&note.id)
-            .cloned()
-            .ok_or_else(|| "that voice note is gone".to_string())
+        let file = self.held(&note.id)?;
+        Ok(Audio {
+            media_type: file.media_type,
+            name: file.name,
+            bytes: file.bytes,
+        })
+    }
+
+    fn fetch_file(&self, note: &Note) -> Result<crate::files::File, String> {
+        self.held(&note.id)
     }
 
     fn send_voice(&self, chat: &str, audio: &Audio, caption: &str) -> Result<bool, String> {
         if !valid_address(chat) {
             return Err(format!("{chat} is not an email address"));
         }
-        let message = self.compose(chat, caption, Some(audio));
+        let message = self.compose(chat, caption, Some(&audio.clone().into()));
         self.submit(chat, &message).map(|()| true)
+    }
+
+    /// A message of its own in the thread, the file attached.
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        if !valid_address(&message.chat) {
+            return Err(format!("{} is not an email address", message.chat));
+        }
+        let text = if caption.is_empty() {
+            format!("(Attached: {}.)", file.name)
+        } else {
+            caption.to_string()
+        };
+        let mail = self.compose(&message.chat, &text, Some(file));
+        self.submit(&message.chat, &mail).map(|()| true)
     }
 }
 
@@ -1420,8 +1492,11 @@ pub struct Mail {
     pub references: Vec<String>,
     /// What it says itself: the message it answers and the signature cut.
     pub body: String,
-    /// What is attached and not read.
+    /// What is attached and not taken, described.
     pub attachments: Vec<String>,
+    /// The files attached that are taken (the first [`FILES_TAKEN`] of
+    /// them, each of [`crate::files::MAX_RECEIVED`] at most).
+    pub files: Vec<crate::files::File>,
     /// Its audio: media type, file name, bytes.
     pub audio: Vec<(String, String, Vec<u8>)>,
     /// Why it was written by a machine, if it was.
@@ -1861,6 +1936,7 @@ struct Parts {
     plain: Vec<String>,
     html: Vec<String>,
     attachments: Vec<String>,
+    files: Vec<crate::files::File>,
     audio: Vec<(String, String, Vec<u8>)>,
 }
 
@@ -1869,8 +1945,52 @@ impl Parts {
         self.plain.extend(other.plain);
         self.html.extend(other.html);
         self.attachments.extend(other.attachments);
+        self.files.extend(other.files);
         self.audio.extend(other.audio);
     }
+}
+
+/// A file's name as it was attached, its control characters left out, or
+/// one its media type gives.
+fn attachment_name(media_type: &str, name: Option<&str>) -> String {
+    let name: String = name
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    match name.trim() {
+        "" => format!("attachment.{}", crate::files::extension_of(media_type)),
+        name => name.to_string(),
+    }
+}
+
+/// The `filename` parameter that names an attachment `name`: quoted where
+/// it is plain ASCII, written as RFC 2231 has it otherwise.
+fn filename_param(name: &str) -> String {
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || c == '"' || c == '\\' {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    if name.is_ascii() {
+        return format!("filename=\"{name}\"");
+    }
+    let encoded: String = name
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    format!("filename*=utf-8''{encoded}")
 }
 
 /// A file name for audio of `media_type`, unless it has a name of its own.
@@ -2002,11 +2122,19 @@ fn walk(fields: &[(String, String)], body: &[u8], depth: usize, parts: &mut Part
         return;
     }
     if attachment || name.is_some() {
-        parts.attachments.push(format!(
-            "{}, {media}, {} bytes",
-            name.unwrap_or_else(|| "a file".into()),
-            decoded.len()
-        ));
+        if parts.files.len() < FILES_TAKEN && decoded.len() as u64 <= crate::files::MAX_RECEIVED {
+            parts.files.push(crate::files::File {
+                name: attachment_name(&media, name.as_deref()),
+                media_type: media,
+                bytes: decoded,
+            });
+        } else {
+            parts.attachments.push(format!(
+                "{}, {media}, {} bytes",
+                name.unwrap_or_else(|| "a file".into()),
+                decoded.len()
+            ));
+        }
     }
 }
 
@@ -2425,6 +2553,7 @@ fn parse_at(raw: &[u8], depth: usize) -> Mail {
         references,
         body: own_words(&text),
         attachments: parts.attachments,
+        files: parts.files,
         audio: parts.audio,
         results: fields
             .iter()
@@ -2720,7 +2849,7 @@ fn reply_subject(subject: &str) -> String {
 }
 
 /// A message from `address` (as `name`) to `to`, in `thread`, saying
-/// `text`, with `audio` attached, sent at `t` as `<id@domain>`.
+/// `text`, with `attached` attached, sent at `t` as `<id@domain>`.
 #[allow(clippy::too_many_arguments)]
 fn compose(
     address: &str,
@@ -2728,7 +2857,7 @@ fn compose(
     to: &str,
     thread: Option<&Thread>,
     text: &str,
-    audio: Option<&Audio>,
+    attached: Option<&crate::files::File>,
     t: u64,
     id: &str,
 ) -> Vec<u8> {
@@ -2767,20 +2896,25 @@ fn compose(
         "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{}\r\n",
         quoted_printable_encoded(text)
     );
-    match audio {
+    match attached {
         None => head.push_str(&text_part),
-        Some(audio) => {
+        Some(file) => {
             let boundary = format!("sion-{id}");
-            let encoded = STANDARD.encode(audio.bytes.as_slice());
+            let encoded = STANDARD.encode(file.bytes.as_slice());
             let lines: Vec<&str> = encoded
                 .as_bytes()
                 .chunks(76)
                 .map(|c| std::str::from_utf8(c).unwrap_or_default())
                 .collect();
-            let file = audio_name(&audio.media_type, Some(&audio.name));
+            let name = if file.media_type.starts_with("audio/") {
+                audio_name(&file.media_type, Some(&file.name))
+            } else {
+                attachment_name(&file.media_type, Some(&file.name))
+            };
+            let param = filename_param(&name);
             head.push_str(&format!(
-                "Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n--{boundary}\r\n{text_part}--{boundary}\r\nContent-Type: {}\r\nContent-Disposition: attachment; filename=\"{file}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--{boundary}--\r\n",
-                audio.media_type.replace(['\r', '\n'], ""),
+                "Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n--{boundary}\r\n{text_part}--{boundary}\r\nContent-Type: {}\r\nContent-Disposition: attachment; {param}\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--{boundary}--\r\n",
+                file.media_type.replace(['\r', '\n', '"'], ""),
                 lines.join("\r\n")
             ));
         }
@@ -2882,9 +3016,14 @@ mod tests {
         ]);
         let mail = parse(&raw);
         assert_eq!(mail.body, "Café & “tea”\n\n- one\n- two\nafter");
+        assert!(mail.attachments.is_empty());
         assert_eq!(
-            mail.attachments,
-            ["€-invoice.pdf, application/pdf, 8 bytes"]
+            mail.files,
+            [crate::files::File {
+                media_type: "application/pdf".into(),
+                name: "€-invoice.pdf".into(),
+                bytes: b"%PDF-1.4".to_vec(),
+            }]
         );
         assert_eq!(
             mail.audio,
@@ -2896,7 +3035,7 @@ mod tests {
         );
         assert_eq!(
             mail.said(),
-            "Subject: Invoice\n\nCafé & “tea”\n\n- one\n- two\nafter\n(attached, not read: €-invoice.pdf, application/pdf, 8 bytes)"
+            "Subject: Invoice\n\nCafé & “tea”\n\n- one\n- two\nafter"
         );
     }
 
@@ -3072,7 +3211,7 @@ mod tests {
             "alice@example.org",
             None,
             "Said aloud.",
-            Some(&audio),
+            Some(&audio.clone().into()),
             0,
             "v1",
         );
@@ -3088,6 +3227,46 @@ mod tests {
             )]
         );
         assert_eq!(date(0), "Thu, 1 Jan 1970 00:00:00 +0000");
+        // A file is attached as itself, and read back so.
+        let report = crate::files::File {
+            media_type: "application/pdf".into(),
+            name: "Q3 report.pdf".into(),
+            bytes: b"%PDF-1.7 report".to_vec(),
+        };
+        let read = parse(&compose(
+            "lead@example.net",
+            None,
+            "alice@example.org",
+            None,
+            "(Attached: Q3 report.pdf.)",
+            Some(&report),
+            0,
+            "f1",
+        ));
+        assert_eq!(read.files, [report]);
+        // A name not in ASCII is written as RFC 2231 has it.
+        let euro = crate::files::File {
+            media_type: "application/pdf".into(),
+            name: "€-invoice.pdf".into(),
+            bytes: b"%PDF".to_vec(),
+        };
+        let raw = compose(
+            "lead@example.net",
+            None,
+            "alice@example.org",
+            None,
+            "x",
+            Some(&euro),
+            0,
+            "f2",
+        );
+        assert!(String::from_utf8_lossy(&raw).contains("filename*=utf-8''%E2%82%AC-invoice.pdf"));
+        assert_eq!(parse(&raw).files, [euro]);
+        assert_eq!(filename_param("a\"b\\c.csv"), "filename=\"a_b_c.csv\"");
+        assert_eq!(
+            attachment_name("image/png", Some(" \u{7}")),
+            "attachment.png"
+        );
     }
 
     #[test]

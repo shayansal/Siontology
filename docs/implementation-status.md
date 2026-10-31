@@ -320,8 +320,30 @@ Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, or a command) and answered aloud (OpenAI,
 ElevenLabs, or a command): a voice note on Telegram, a voice message on
 Matrix, audio attached to the reply on Discord, Slack and Signal; trust
-atoms `agent:pairing`, `agent:voice`. The messengers and the speech
-services are tested against stand-ins for their APIs. What a skill may do
+atoms `agent:pairing`, `agent:voice`. While the agent works, a chat sees
+it typing (each platform's own indicator, refreshed on its clock, or a
+reaction where a bot has none) and its reply as the model writes it: the
+providers stream over Server-Sent Events, a watched run tells what it
+does (`sion_agent::Seen`), and the reply shows on Telegram's drafts,
+Slack's and Teams' streams, Feishu's streaming cards and DingTalk's AI
+cards, or as a message edited where those are not; long replies are split
+where they read best. The HTTP channel and its OpenAI-compatible endpoint
+stream the same text as Server-Sent Events. A bridge answers chats side
+by side, one turn at a time in each, a burst of messages one turn; what
+a chat says meanwhile steers the agent, is queued, is collected or
+interrupts it, and `/stop` stops it at once, a model that is writing cut
+off and what it wrote kept. Messages are marked taken, answered or failed
+(reactions, or read receipts), and replies are tried again, held back
+while a messenger's breaker is open and kept in an outbox across
+restarts. The chat commands (`/retry`, `/undo`, `/compact`, `/usage`,
+`/sessions`, `/resume`, `/title`, `/model`, `/whoami`, `/help`) work on
+every channel. Pictures people send are shown to the model and every
+file is put in the workspace's `inbox/`, the agent told where; what it
+shares (`share_file`) is sent after the reply as each messenger takes
+files, and a profile with an image model makes pictures
+(`image_generate`). The messengers and the speech services are tested against
+stand-ins for their APIs, and the bridge against a messenger kept in
+memory. What a skill may do
 ([What a skill may do](book/src/guides/skill-permissions.md)) is
 declared in its front matter and enforced: `allowed-tools` pre-approves
 calls once a session has read the skill (never past a refusal, spending

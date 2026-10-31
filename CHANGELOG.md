@@ -10,6 +10,148 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Pictures and files, both ways
+
+- **What a person sends reaches the agent.** A picture (PNG, JPEG, GIF or
+  WebP, known by its bytes, 5 MB at most) is shown to the model with the
+  words it came with; with a workspace, every file sent is put in its
+  `inbox/` under a name not taken yet, and the agent told where (a file
+  of more than 25 MB is not taken). Telegram's photos and documents,
+  Slack's shared files, Discord's and Signal's attachments, Matrix's
+  `m.image`, `m.video` and `m.file`, Mattermost's files, WhatsApp's
+  pictures, videos, documents and stickers, LINE's pictures, videos and
+  files, an MMS's pictures, email attachments (ten a message) and
+  iMessage attachments, captions kept as the text.
+- **What the agent shares reaches the person.** `share_file` sends a file
+  of the workspace after the reply, as each messenger takes files: a
+  photo or a document on Telegram, an upload in the thread on Slack and
+  Mattermost, an attachment on Discord and Signal, an `m.image` or
+  `m.file` on Matrix, a picture or a document on WhatsApp, an email of
+  its own in the thread, a file through imsg. Where a messenger takes no
+  files, the person is told.
+- **Pictures made.** A profile made with `--image-model openai:<model>`
+  (and a workspace) gives its agent `image_generate`: a picture made
+  through OpenAI's Images API, shown to it and put in its workspace's
+  `images/`, named as it asks.
+- **An album seen whole.** The model is shown the pictures of the
+  person's last message that has any, ten at most, besides the last three
+  of the conversation, and a session keeps their bytes with the last
+  six's (`sion_agent::model::person_pictures`).
+- **Over HTTP.** A message to the HTTP channel takes `"files"` (base64,
+  32 MB at most with them) and its answer gives what the agent shared;
+  the OpenAI-compatible endpoint shows the model pictures sent inline
+  (`data:` URLs), taking requests of 32 MB.
+- An email's voice notes and files are held until they are answered,
+  rather than until the next batch is read, now that a bridge reads on
+  while it answers.
+
+### Models: Gemini natively, keys in turn, the Responses API, Sign in with ChatGPT
+
+- **Gemini.** `--model gemini:<model>` asks Google's Gemini API natively
+  (`streamGenerateContent`), tools as JSON Schema, the thought signature
+  of each call sent back with it.
+- **Keys in turn.** A provider's key variable may hold several keys,
+  separated by commas: each call starts with the next, and a key that is
+  limited rests a minute, one refused an hour.
+- **The Responses API.** `--model openai-responses:<model>`, streamed and
+  not stored.
+- **Sign in with ChatGPT.** `sion agent chatgpt login` signs in with
+  OpenAI's sign-in for open-source apps (PKCE, the app registered on the
+  machine's first sign-in, the ID token checked against OpenAI's keys and
+  for its nonce), and `--model chatgpt:<model>` runs on the plan, its
+  tokens kept encrypted and renewed; `status`, `models` and `logout`.
+  Claude.ai plans are not offered: Anthropic does not let other apps sign
+  in to them.
+
+### Each chat its own; many profiles behind one bridge; streams through a gateway
+
+- **Per chat.** `/system <text>` adds to what the agent is asked in this
+  chat, `/tools <names>` keeps it to some of its profile's tools, and
+  `/model` chooses among the profile's models: for the chat's sessions,
+  set by those who may decide there.
+- **Routes.** `--route <chat>=<profile>` has a chat answered by another
+  profile than the bridge's, in sessions of its own.
+- **Through a gateway, as it is written.** A message with `"stream":
+  true` through an agent gateway is answered with the same events as the
+  HTTP channel's, the host telling the gateway what the agent did every
+  quarter of a second (`POST /v1/hosts/progress`).
+
+### Bridges answer while the agent works, and keep their replies
+
+- **Chats side by side.** A bridge answers each chat on a thread of its
+  own, `--parallel` at once (four by default), one turn at a time in
+  each; messages sent within `--debounce` milliseconds of each other
+  (500) are one turn, a group's lines marked with who wrote them.
+- **What is said while the agent works** is told to it before its next
+  step (`--busy steer`, the default), answered after one at a time
+  (`queue`) or together (`collect`), or stops it to be taken up
+  (`interrupt`). `/stop` stops the agent at once on every channel: before
+  its next model or tool call, and a model that is writing is cut off
+  between two words, its connection closed and what it wrote kept
+  (`Stop::Cut`; a stream's watcher returns whether to go on).
+- **Chat commands.** `/retry`, `/undo`, `/compact`, `/usage`,
+  `/sessions` and `/resume <id>` (this conversation's own sessions only),
+  `/title`, `/model` (the profile's own models, for those who may decide),
+  `/whoami` and `/help`, besides `/new`, `/status`, `/approve` and
+  `/decline`. A second run in a conversation where one goes on is refused,
+  not run beside it; each Slack or Mattermost thread and Telegram topic is
+  a conversation of its own.
+- **Marks.** Each message is marked taken, then answered or failed:
+  reactions on Telegram, Slack, Discord and Mattermost, read receipts on
+  Matrix, Signal and WhatsApp (`--no-reactions` turns them off).
+- **Delivery.** A reply that fails in a way that may pass is tried three
+  times; one the service refuses is not tried again. After five failures
+  in a row a messenger's breaker opens for a minute, twice as long each
+  time it opens again (ten minutes at most). What is not sent waits in an
+  outbox kept with the bridge's state, and is sent when the messenger
+  takes it again, after a restart too. A receive that fails is tried
+  again with a growing pause; a chat whose answer a restart cut off is
+  told so before it is answered again.
+- JSON state files are written through a temporary file of their own, so
+  that two bridges never write into one.
+
+### Typing indicators, and replies as they are written
+
+- **Models stream.** Anthropic's Messages API and OpenAI-compatible chat
+  completions are asked for Server-Sent Events, and the text is told as
+  each event brings it, while the answer is built from the same events
+  into what a whole answer would have been. A stream that stops before
+  its end, or reports an error partway, is a failure as its status would
+  be (an overloaded provider is transient, and the next model is asked); a
+  server that answers whole, or refuses `stream_options`, is read whole
+  or asked again without it. A run can be watched as it goes
+  (`sion_agent::Seen`): a session's run begins, a model is asked, the text
+  it writes, the tools it calls and runs, a call that waits, an answer
+  taken or dropped.
+- **Typing, on every messenger that has it.** From the moment a bridge
+  takes a message until it answers: Telegram's chat action, Discord's
+  and Mattermost's typing, Matrix's (turned off at the end), Signal's,
+  Teams' `typing` activities, WhatsApp's typing indicator (which marks
+  the message read), LINE's loading animation, Twilio's for WhatsApp
+  senders, and Slack's status line in a thread; where a platform has no
+  typing for bots, a reaction stands for it and is taken off at the end
+  (Slack outside a thread, Feishu's `Typing`, Nextcloud Talk). Each is
+  shown again before it lapses, on the platform's own clock.
+- **Replies as they are written.** Telegram's drafts in a private chat
+  (`sendMessageDraft`, kept up past their 30 seconds), Slack's own stream
+  in a thread with each tool a task on its timeline, Teams' streaming in a
+  chat with one person, Feishu's streaming cards, DingTalk's AI cards
+  given a template; elsewhere a message edited as it grows (Telegram
+  groups, Slack, Discord, Matrix marked live, Mattermost, Google Chat),
+  first sent with something worth a notification, and updated no oftener
+  than each platform takes. `--stream progress|partial|off` and
+  `--no-typing` choose.
+- **Long replies are split, not cut,** where they read best, a code
+  block closed and opened again across parts; replies go in the
+  message's thread on Slack, Mattermost and Telegram's topics.
+- **A reply is everything the agent said in its run,** each answer a
+  paragraph, an answer cut off at its token limit joined to the next; on
+  every channel and in `/status`.
+- **The HTTP channel streams.** `POST /v1/profiles/<name>/messages` with
+  `"stream": true` answers with `session`, `delta`, `tool` and `done`
+  events; the OpenAI-compatible endpoint streams real deltas, its chunks'
+  id naming the session.
+
 ### Bridges keep what they took; jobs reach every messenger
 
 - **Nothing taken is lost.** A bridge keeps the messages it has taken

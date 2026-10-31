@@ -66,6 +66,8 @@ finish. The agent's tools:
 | `shell`, `skill_run` | write, or external with the network | With `--shell`: commands, and a skill's own scripts, in a sandbox that writes only the workspace ([Commands, scripts and MCP servers](agent-tools.md)) |
 | `<server>_<tool>` | as reviewed | With `--mcp <server>`: the reviewed tools of an MCP server |
 | `storage_keep`, `storage_deals`, `storage_close` | spend, read, write | With `--storage`: keep a workspace file with storage providers, follow and close the deals |
+| `share_file` | read | With a workspace: a file of it sent to the person the agent answers, after its reply, where the channel takes files ([Pictures and files](agent-teams.md#pictures-and-files)); a run in the terminal names it |
+| `image_generate` | write | With `--image-model openai:<model>` on the profile, and a workspace: a picture made through OpenAI's Images API (`OPENAI_API_KEY`, `OPENAI_BASE_URL`), put in the workspace's `images/` and shown to the agent |
 
 ## Models
 
@@ -78,10 +80,41 @@ request the provider refuses as malformed or unauthorized is not retried.
 |---|---|
 | `anthropic:claude-opus-5-5` | The Anthropic Messages API, API version 2026-10-21, with automatic prompt caching; the key in `ANTHROPIC_API_KEY` |
 | `openai:<model>` | Any OpenAI-compatible chat completions API, including local servers: `OPENAI_BASE_URL` (default `https://api.openai.com/v1`), `OPENAI_API_KEY` if it needs one |
+| `gemini:gemini-3-pro-preview` | Google's Gemini API, natively (`generateContent`, streamed): `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_BASE_URL` for another endpoint. Its thinking is not kept; the thought signature it gives with a call goes back with the call, as Gemini 3 requires, and a call another model made goes with the value Google gives for one it did not sign |
+| `openai-responses:<model>` | OpenAI's Responses API (`POST /v1/responses`), streamed and not stored: `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
+| `chatgpt:<model>` | The Responses API on the ChatGPT plan of whoever signed in on this machine (`sion agent chatgpt login`, below); `sion agent chatgpt models` lists the plan's models |
 | `script:<file>` | A scripted model, for tests and demos |
+
+A key variable may hold several keys, separated by commas: each call
+starts with the next key; a key the provider limits (HTTP 429) rests a
+minute and one it refuses (401, 402, 403) an hour, while the call goes on
+with the next key at once. With one key, a limited call is the model's
+failure, and the next model is asked.
 
 Requests go through the same guarded HTTPS client as storage providers,
 offering the hybrid post-quantum key exchange first.
+
+### Signing in with ChatGPT
+
+`sion agent chatgpt login` signs in with a ChatGPT account, so that agents
+run on its plan (`--model chatgpt:<model>`) rather than on an API key. It
+is OpenAI's sign-in for open-source apps: your browser opens OpenAI's page
+("Continue with ChatGPT"), which comes back to `http://127.0.0.1:1455`
+(another port if that one is taken); on the first sign-in on a machine,
+OpenAI registers Siontology there, with no client secret. The ID token is
+checked against OpenAI's published keys (its issuer, audience, expiry and
+nonce), and the plan is used only if you allowed it
+(`chatgpt.tokens.use.direct`). The tokens are kept encrypted beside the
+secrets, renewed before they lapse (the refresh token comes back new each
+time, and is kept with them), and renewed again if the API refuses one.
+`sion agent chatgpt status` says who is signed in, `models` lists the
+plan's models, `logout` forgets the account.
+
+Requests on a plan are streamed and not stored, as OpenAI asks of this
+sign-in; a plan's usage limit, reported partway, counts as the model being
+busy, and the next `--model` is asked. Other providers' subscriptions are
+not offered: Anthropic, for one, does not let other apps sign in to
+Claude.ai plans.
 
 ## Autonomy
 

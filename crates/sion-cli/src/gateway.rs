@@ -85,7 +85,19 @@ struct Pending {
     text: String,
     taken: bool,
     answer: Option<Result<Answer, String>>,
+    /// Whether whoever wrote it is told what the agent does as it works.
+    stream: bool,
+    /// What the host told of its work and was not passed on yet.
+    events: Vec<(String, Value)>,
 }
+
+/// The most events a host may tell of one message's work: past them, the
+/// rest come with its answer.
+pub const MAX_EVENTS: usize = 20_000;
+
+/// How often a host tells the gateway what the agent did since it last
+/// told it, while it works on a message whose writer waits for a stream.
+pub const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// A connected host.
 #[derive(Clone, Debug, Default)]
@@ -142,6 +154,9 @@ fn agent_of(body: &Value) -> Result<ObjectId, String> {
         .map(ObjectId::from_hash)
         .map_err(|_| "agent is an id: 64 hex digits".to_string())
 }
+
+/// Told of an event of the agent's work: its name and what it says.
+pub type Tell<'a> = &'a dyn Fn(&str, &Value);
 
 impl Gateway {
     /// A gateway called `name`, checking agents against `ledger`; `admin`
@@ -341,9 +356,8 @@ impl Gateway {
                 for id in ids {
                     if let Some(p) = state.pending.get_mut(&id) {
                         p.taken = true;
-                        out.push(
-                            json!({"id": id, "profile": p.profile, "key": p.key, "text": p.text}),
-                        );
+                        out.push(json!({"id": id, "profile": p.profile, "key": p.key,
+                            "text": p.text, "stream": p.stream}));
                     }
                 }
                 return json!({"messages": out});
@@ -381,14 +395,52 @@ impl Gateway {
                             .collect()
                     })
                     .unwrap_or_default(),
+                ..Answer::default()
             }),
         });
         ready.notify_all();
         Ok(())
     }
 
+    /// `/v1/hosts/progress`: what the agent did, as its host tells it,
+    /// working on one of the host's messages: `{"id": …, "events":
+    /// [{"event": …, "data": …}, …]}`.
+    pub fn progress(&self, host: Hash32, body: &Value) -> Result<(), String> {
+        let id = body["id"].as_u64().ok_or("id is a number")?;
+        let (lock, ready) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = state.pending.get_mut(&id).ok_or("no such message")?;
+        if pending.host != host {
+            return Err("not your message".into());
+        }
+        for told in body["events"].as_array().into_iter().flatten() {
+            if pending.events.len() >= MAX_EVENTS {
+                break;
+            }
+            if let Some(name) = told["event"].as_str() {
+                pending
+                    .events
+                    .push((name.to_string(), told["data"].clone()));
+            }
+        }
+        ready.notify_all();
+        Ok(())
+    }
+
     /// Passes a message for `profile` to its host and waits for the answer.
     pub fn ask(&self, profile: &str, key: &str, text: &str) -> Result<Answer, String> {
+        self.ask_watched(profile, key, text, None)
+    }
+
+    /// [`Gateway::ask`], what the host tells of the agent's work passed to
+    /// `tell` as it comes ([`crate::channels::converse_events`]).
+    pub fn ask_watched(
+        &self,
+        profile: &str,
+        key: &str,
+        text: &str,
+        tell: Option<Tell<'_>>,
+    ) -> Result<Answer, String> {
         let (host, agent) = self
             .lock()
             .routes
@@ -403,7 +455,7 @@ impl Gateway {
                     "Agent {} is {status} on the ledger: the gateway passes it no messages.",
                     agent.0.short()
                 ),
-                lines: Vec::new(),
+                ..Answer::default()
             });
         }
         let (lock, ready) = &*self.state;
@@ -422,12 +474,32 @@ impl Gateway {
                 text: text.to_string(),
                 taken: false,
                 answer: None,
+                stream: tell.is_some(),
+                events: Vec::new(),
             },
         );
         state.queue.entry(host).or_default().push_back(id);
         ready.notify_all();
-        let deadline = Instant::now() + ANSWER_TIMEOUT;
+        let mut deadline = Instant::now() + ANSWER_TIMEOUT;
         loop {
+            // What the host told is passed on outside the lock.
+            let told: Vec<(String, Value)> = state
+                .pending
+                .get_mut(&id)
+                .map(|p| std::mem::take(&mut p.events))
+                .unwrap_or_default();
+            if !told.is_empty() {
+                drop(state);
+                if let Some(tell) = tell {
+                    for (name, data) in &told {
+                        tell(name, data);
+                    }
+                }
+                // A host at work is waited for as long as it works.
+                deadline = Instant::now() + ANSWER_TIMEOUT;
+                state = lock.lock().unwrap_or_else(|e| e.into_inner());
+                continue;
+            }
             if let Some(answer) = state.pending.get(&id).and_then(|p| p.answer.clone()) {
                 state.pending.remove(&id);
                 return answer;
@@ -526,6 +598,14 @@ fn handle(gateway: &Gateway, mut request: tiny_http::Request) {
             }
             None => respond(request, 401, &json!({"error": "log in first"})),
         },
+        ("POST", "/v1/hosts/progress") => match gateway.host_of(token.as_deref()) {
+            Some(host) => match body_of(&mut request).map(|b| gateway.progress(host, &b)) {
+                Some(Ok(())) => respond(request, 200, &json!({"ok": true})),
+                Some(Err(e)) => respond(request, 400, &json!({"error": e})),
+                None => respond(request, 400, &json!({"error": "send JSON"})),
+            },
+            None => respond(request, 401, &json!({"error": "log in first"})),
+        },
         ("POST", "/v1/hosts/outbox") => match gateway.host_of(token.as_deref()) {
             Some(host) => match body_of(&mut request).map(|b| gateway.answer(host, &b)) {
                 Some(Ok(())) => respond(request, 200, &json!({"ok": true})),
@@ -549,7 +629,7 @@ fn handle(gateway: &Gateway, mut request: tiny_http::Request) {
                 );
             };
             let access = crate::channels::access(&name, token.as_deref(), gateway.admin.as_deref());
-            let deciding = crate::channels::is_decision(&text);
+            let refused = crate::channels::refused_for_talk(&text);
             if access == Access::None {
                 return respond(
                     request,
@@ -557,12 +637,8 @@ fn handle(gateway: &Gateway, mut request: tiny_http::Request) {
                     &json!({"error": crate::channels::refusal(token.as_deref())}),
                 );
             }
-            if deciding && access != Access::Approve {
-                return respond(
-                    request,
-                    403,
-                    &json!({"error": "this token may talk to the profile, not approve or decline"}),
-                );
+            if let Some(refused) = refused.filter(|_| access != Access::Approve) {
+                return respond(request, 403, &json!({ "error": refused }));
             }
             let conversation = body
                 .as_ref()
@@ -570,6 +646,27 @@ fn handle(gateway: &Gateway, mut request: tiny_http::Request) {
                 .map(str::to_string)
                 .unwrap_or_else(crate::runtime::new_id);
             let key = format!("gateway:{name}:{conversation}");
+            // A stream: what the host tells of the agent's work, as Server-
+            // Sent Events, then the answer.
+            if body.as_ref().is_some_and(|b| b["stream"] == true) {
+                let (tell, pieces) = std::sync::mpsc::channel::<Vec<u8>>();
+                let gateway = gateway.clone();
+                std::thread::spawn(move || {
+                    let told = |event: &str, data: &Value| {
+                        let _ = tell.send(crate::channels::event(Some(event), data));
+                    };
+                    let done = match gateway.ask_watched(&name, &key, &text, Some(&told)) {
+                        Ok(answer) => (
+                            "done",
+                            json!({"conversation": conversation, "session": answer.session,
+                                "said": answer.reply, "lines": answer.lines}),
+                        ),
+                        Err(e) => ("error", json!({ "error": e })),
+                    };
+                    told(done.0, &done.1);
+                });
+                return crate::channels::respond_streaming(request, pieces);
+            }
             match gateway.ask(&name, &key, &text) {
                 Ok(answer) => respond(
                     request,
@@ -714,10 +811,58 @@ pub fn host(
             let name = message["profile"].as_str().unwrap_or_default();
             let key = message["key"].as_str().unwrap_or_default();
             let text = message["text"].as_str().unwrap_or_default();
+            let streams = message["stream"] == true;
             let body = match profiles.iter().find(|p| p.name == name) {
                 Some(profile) => {
                     println!("{name} ({key}): {text}");
-                    match crate::channels::converse(ledger.clone(), profile, key, text) {
+                    let answered = if streams {
+                        // What the agent does is told to the gateway as it
+                        // goes, a batch every PROGRESS_EVERY.
+                        let told: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+                        let working = std::sync::atomic::AtomicBool::new(true);
+                        let tell = |event: &str, data: Value| {
+                            if let Ok(mut told) = told.lock() {
+                                told.push(json!({"event": event, "data": data}));
+                            }
+                        };
+                        let flush = || {
+                            let events: Vec<Value> = told
+                                .lock()
+                                .map(|mut t| std::mem::take(&mut *t))
+                                .unwrap_or_default();
+                            if !events.is_empty() {
+                                let _ = post(
+                                    "/v1/hosts/progress",
+                                    &[("Authorization", &auth)],
+                                    &json!({"id": id, "events": events}),
+                                );
+                            }
+                        };
+                        let answered = std::thread::scope(|scope| {
+                            scope.spawn(|| {
+                                while working.load(std::sync::atomic::Ordering::SeqCst) {
+                                    std::thread::sleep(PROGRESS_EVERY);
+                                    flush();
+                                }
+                            });
+                            let answered = crate::channels::converse_events(
+                                ledger.clone(),
+                                profile,
+                                key,
+                                text,
+                                &[],
+                                &tell,
+                            );
+                            working.store(false, std::sync::atomic::Ordering::SeqCst);
+                            answered
+                        });
+                        // The last of it, before the answer.
+                        flush();
+                        answered
+                    } else {
+                        crate::channels::converse(ledger.clone(), profile, key, text)
+                    };
+                    match answered {
                         Ok(answer) => {
                             for line in &answer.lines {
                                 println!("  {line}");

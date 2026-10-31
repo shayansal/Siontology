@@ -189,37 +189,119 @@ pub fn imessage_message(message: &Value) -> Option<Incoming> {
             Some(Note {
                 id: message["id"].as_u64()?.to_string(),
                 media_type: a["mime_type"].as_str().map(str::to_string),
+                name: None,
             })
         });
     // Messages marks where an attachment goes with U+FFFC.
-    let mut text = message["text"]
+    let text = message["text"]
         .as_str()
         .unwrap_or_default()
         .replace('\u{FFFC}', "")
         .trim()
         .to_string();
-    for attachment in attachments.into_iter().flatten().filter(|a| !audio(a)) {
-        let name = attachment["transfer_name"]
-            .as_str()
-            .or(attachment["filename"].as_str())
-            .unwrap_or("a file");
-        text.push_str(&format!("\n(attached, not read: {name})"));
-    }
-    let text = text.trim().to_string();
-    if text.is_empty() && voice.is_none() {
+    // Every other attachment is a file, named by its message and its place
+    // among the message's attachments.
+    let files: Vec<Note> = match message["id"].as_u64() {
+        Some(row) => attachments
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter(|(_, a)| !audio(a) && a["missing"] != true)
+            .map(|(at, a)| Note {
+                id: format!("{row}#{at}"),
+                media_type: a["mime_type"].as_str().map(str::to_string),
+                name: a["transfer_name"]
+                    .as_str()
+                    .or(a["filename"].as_str())
+                    .map(str::to_string),
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    if text.is_empty() && voice.is_none() && files.is_empty() {
         return None;
     }
     Some(Incoming {
+        id: String::new(),
+        thread: String::new(),
         chat: chat.to_string(),
         from: message["sender"].as_str().unwrap_or(chat).to_string(),
         text,
         voice,
         direct: message["is_group"] != true,
         mentions: Vec::new(),
+        files,
     })
 }
 
+/// Where Messages keeps an attachment, as imsg gives it (converted where
+/// imsg could convert it), and its media type: only a path in Messages'
+/// own attachments is read.
+fn attachment_path(attachment: &Value) -> Result<(String, Option<String>), String> {
+    let (path, media_type) = match attachment["converted_path"].as_str() {
+        Some(path) => (path, attachment["converted_mime_type"].as_str()),
+        None => (
+            attachment["original_path"].as_str().unwrap_or_default(),
+            attachment["mime_type"].as_str(),
+        ),
+    };
+    if !path.contains("/Library/Messages/Attachments/") || path.contains("..") {
+        return Err(format!("{path}: not one of Messages' attachments"));
+    }
+    Ok((path.to_string(), media_type.map(str::to_string)))
+}
+
 impl IMessage {
+    /// The attachments of message `row`, as imsg gives them now.
+    fn attachments_of(&self, row: u64) -> Result<Vec<Value>, String> {
+        let found = self.with_rpc(|rpc| {
+            rpc.call(
+                "messages.after",
+                json!({"since_rowid": row.saturating_sub(1), "limit": 1,
+                    "attachments": true, "convert_attachments": true}),
+            )
+        })?;
+        let message = found["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|m| m["id"].as_u64() == Some(row))
+            .ok_or("that message is gone")?;
+        Ok(message["attachments"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Writes `bytes` to a file of its own, named `name`, for Messages to
+    /// send: kept an hour for it.
+    fn outgoing(&self, bytes: &[u8], extension: &str) -> Result<std::path::PathBuf, String> {
+        let dir = crate::session::wallet_dir()
+            .parent()
+            .map(|home| home.join("agents").join("messages-out"))
+            .ok_or("no home for the file to send")?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let old = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > Duration::from_secs(3600)));
+                if old {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let extension: String = extension
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(8)
+            .collect();
+        let path = dir.join(format!("{}.{extension}", crate::runtime::new_id()));
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path)
+    }
+
     /// Messages through `IMSG_COMMAND` (`imsg rpc` by default).
     pub fn from_env() -> Result<IMessage, String> {
         let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
@@ -355,67 +437,88 @@ impl Messenger for IMessage {
 
     fn fetch_voice(&self, note: &Note) -> Result<Audio, String> {
         let id: u64 = note.id.parse().map_err(|_| "not a message's row id")?;
-        let found = self.with_rpc(|rpc| {
-            rpc.call(
-                "messages.after",
-                json!({"since_rowid": id.saturating_sub(1), "limit": 1,
-                    "attachments": true, "convert_attachments": true}),
-            )
-        })?;
-        let message = found["messages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|m| m["id"].as_u64() == Some(id))
-            .ok_or("that voice note is gone")?;
-        let attachment = message["attachments"]
-            .as_array()
-            .into_iter()
-            .flatten()
+        let attachments = self.attachments_of(id)?;
+        let attachment = attachments
+            .iter()
             .find(|a| audio(a))
             .ok_or("that message holds no audio")?;
         // Converted (from Core Audio) where imsg could.
-        let (path, media_type) = match attachment["converted_path"].as_str() {
-            Some(path) => (path, attachment["converted_mime_type"].as_str()),
-            None => (
-                attachment["original_path"].as_str().unwrap_or_default(),
-                attachment["mime_type"].as_str(),
-            ),
-        };
-        if !path.contains("/Library/Messages/Attachments/") || path.contains("..") {
-            return Err(format!("{path}: not one of Messages' attachments"));
-        }
-        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let (path, media_type) = attachment_path(attachment)?;
+        let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
         if bytes.len() > MAX_HEARD {
             return Err("the voice note is too long to hear".into());
         }
-        let media_type = media_type
-            .map(str::to_string)
-            .unwrap_or_else(|| Audio::sniff(&bytes).to_string());
+        let media_type = media_type.unwrap_or_else(|| Audio::sniff(&bytes).to_string());
         Ok(Audio::new(&media_type, bytes))
+    }
+
+    fn fetch_file(&self, note: &Note) -> Result<crate::files::File, String> {
+        let (row, at) = note
+            .id
+            .split_once('#')
+            .and_then(|(row, at)| Some((row.parse::<u64>().ok()?, at.parse::<usize>().ok()?)))
+            .ok_or("not an attachment of a message")?;
+        let attachments = self.attachments_of(row)?;
+        let attachment = attachments.get(at).ok_or("that attachment is gone")?;
+        let (path, media_type) = attachment_path(attachment)?;
+        let size = std::fs::metadata(&path)
+            .map_err(|e| format!("{path}: {e}"))?
+            .len();
+        if size > crate::files::MAX_RECEIVED {
+            return Err(format!(
+                "it is larger than {} MB",
+                crate::files::MAX_RECEIVED >> 20
+            ));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
+        let media_type = media_type
+            .filter(|t| !t.is_empty())
+            .or_else(|| crate::files::sniff_picture(&bytes).map(str::to_string))
+            .unwrap_or_else(|| crate::files::media_type_of(&path).to_string());
+        // A converted picture (HEIC to JPEG, say) is named as what it is.
+        let mut name = note
+            .name
+            .clone()
+            .unwrap_or_else(|| crate::files::safe_name(None, &note.id, &media_type));
+        if attachment["converted_path"].is_string() {
+            let stem = name
+                .rsplit_once('.')
+                .map_or(name.as_str(), |(stem, _)| stem);
+            name = format!("{stem}.{}", crate::files::extension_of(&media_type));
+        }
+        Ok(crate::files::File {
+            media_type,
+            name,
+            bytes,
+        })
+    }
+
+    fn send_file(
+        &self,
+        message: &Incoming,
+        file: &crate::files::File,
+        caption: &str,
+    ) -> Result<bool, String> {
+        let extension = file.name.rsplit_once('.').map_or("bin", |(_, e)| e);
+        let path = self.outgoing(&file.bytes, extension)?;
+        let attachment = self.to(&message.chat, json!({"file": path.to_string_lossy()}))?;
+        let text = (!caption.is_empty())
+            .then(|| self.to(&message.chat, json!({"text": caption})))
+            .transpose()?;
+        self.with_rpc(|rpc| {
+            rpc.call("send.attachment", attachment)?;
+            match text {
+                Some(text) => rpc.call("send", text).map(|_| ()),
+                None => Ok(()),
+            }
+        })?;
+        Ok(true)
     }
 
     fn send_voice(&self, chat: &str, audio: &Audio, caption: &str) -> Result<bool, String> {
         // A file of its own for Messages to send, kept a while for it.
-        let dir = crate::session::wallet_dir()
-            .parent()
-            .map(|home| home.join("agents").join("voice-out"))
-            .ok_or("no home for the voice note")?;
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let old = entry
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > Duration::from_secs(3600)));
-                if old {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
         let extension = audio.name.rsplit('.').next().unwrap_or("audio");
-        let path = dir.join(format!("{}.{extension}", crate::runtime::new_id()));
-        std::fs::write(&path, &audio.bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let path = self.outgoing(&audio.bytes, extension)?;
         let attachment = self.to(chat, json!({"file": path.to_string_lossy(), "audio": true}))?;
         let text = self.to(chat, json!({"text": caption}))?;
         self.with_rpc(|rpc| {
@@ -442,16 +545,22 @@ mod tests {
         });
         let incoming = imessage_message(&message).unwrap();
         assert_eq!(incoming.chat, "+15550001111");
+        assert_eq!(incoming.text, "How much is left?");
         assert_eq!(
-            incoming.text,
-            "How much is left?\n(attached, not read: IMG_1.HEIC)"
+            incoming.files,
+            [Note {
+                id: "42#0".into(),
+                media_type: Some("image/heic".into()),
+                name: Some("IMG_1.HEIC".into()),
+            }]
         );
         assert!(incoming.direct);
         assert_eq!(
             incoming.voice,
             Some(Note {
                 id: "42".into(),
-                media_type: Some("audio/x-caf".into())
+                media_type: Some("audio/x-caf".into()),
+                name: None,
             })
         );
         let mut own = message.clone();

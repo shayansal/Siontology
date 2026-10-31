@@ -135,6 +135,8 @@ pub fn message_of(line: &Line, me: &str) -> Option<Incoming> {
         return None;
     }
     Some(Incoming {
+        id: String::new(),
+        thread: String::new(),
         chat: if direct { from.clone() } else { target.clone() },
         from,
         text,
@@ -145,6 +147,7 @@ pub fn message_of(line: &Line, me: &str) -> Option<Incoming> {
         } else {
             Vec::new()
         },
+        files: Vec::new(),
     })
 }
 

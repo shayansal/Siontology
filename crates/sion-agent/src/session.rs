@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 
 use crate::journal::{key, Entry, Journal, Prior};
 use crate::model::{
-    image_digest, images_of, Block, Image, Message, Model, ModelError, Request, Response, Role,
-    Stop, Usage,
+    image_digest, images_of, Block, Delta, Image, Message, Model, ModelError, Picture, Request,
+    Response, Role, Stop, Usage,
 };
 use crate::policy::{Decision, Policy, Standing};
 use crate::tools::{Outcome, Toolbox, TOOLS_CALL, TOOLS_SEARCH};
@@ -140,17 +140,65 @@ pub const MAX_IMAGES_KEPT: usize = 6;
 impl State {
     /// A new session `id` that starts with the person's `task`.
     pub fn start(id: &str, task: &str, limits: &Limits) -> State {
-        State {
+        State::start_with(id, task, &[], limits)
+    }
+
+    /// [`State::start`], the task with the pictures the person sent.
+    pub fn start_with(id: &str, task: &str, pictures: &[Picture], limits: &Limits) -> State {
+        let mut state = State {
             id: id.to_string(),
             messages: vec![Message::user(task)],
             turns_left: limits.turns,
             ..State::default()
+        };
+        state.show(pictures);
+        state
+    }
+
+    /// Adds `pictures` to the person's last message, their bytes kept
+    /// with the last pictures'.
+    fn show(&mut self, pictures: &[Picture]) {
+        if pictures.is_empty() {
+            return;
         }
+        let Some(last) = self.messages.last_mut().filter(|m| m.role == Role::User) else {
+            return;
+        };
+        for picture in pictures {
+            let image = picture.image();
+            self.images
+                .insert(image.digest.clone(), picture.base64.clone());
+            last.content.push(Block::Image { image });
+        }
+        keep_last_images(self);
+    }
+
+    /// Adds what the person said while a run goes on: to the last message
+    /// if it is theirs (a task, or tool results, which the model answers
+    /// next), so that the conversation still takes turns.
+    pub fn steer(&mut self, text: &str) {
+        let said = format!("(The person said, while you worked:) {text}");
+        match self.messages.last_mut() {
+            Some(last) if last.role == Role::User => last.content.push(Block::text(said)),
+            _ => self.messages.push(Message::user(said)),
+        }
+    }
+
+    /// [`State::tell`], with the pictures the person sent.
+    pub fn tell_with(&mut self, text: &str, pictures: &[Picture], limits: &Limits) {
+        self.tell(text, limits);
+        self.show(pictures);
     }
 
     /// Adds a message from the person, to continue a session that ended.
     pub fn tell(&mut self, text: &str, limits: &Limits) {
-        self.messages.push(Message::user(text));
+        // After a run stopped before the model answered, the person speaks
+        // again: one message of theirs, so that the conversation still
+        // takes turns.
+        match self.messages.last_mut() {
+            Some(last) if last.role == Role::User => last.content.push(Block::text(text)),
+            _ => self.messages.push(Message::user(text)),
+        }
         self.turns_left = self.turns_left.max(
             limits
                 .turns
@@ -158,6 +206,35 @@ impl State {
         );
     }
 }
+
+/// What a run shows as it goes, to whoever watches it ([`Runtime::watch`]):
+/// what lets a messenger show that the agent is typing, and its reply as it
+/// is written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seen {
+    /// A run of the session begins: the session's id.
+    Began(String),
+    /// A model is asked for the next step.
+    Asking,
+    /// More of the text the model writes, as [`Delta::Text`].
+    Text(String),
+    /// The model began a call of this tool.
+    Calling(String),
+    /// The model's answer is taken; why it stopped.
+    Answered(Stop),
+    /// The answer being written is dropped: the model failed partway, and
+    /// the next model (if any) is asked instead.
+    Dropped,
+    /// A tool runs.
+    Running(String),
+    /// A call waits for a person's approval.
+    Waiting(String),
+}
+
+/// What the runtime tells a model whose answer was cut off at its token
+/// limit, so that it goes on: its next answer continues the last.
+pub const CONTINUE: &str =
+    "Your answer was cut off at the token limit. Continue from where it stopped.";
 
 /// What a session runs with, besides its state: models, tools, rules, a
 /// clock and a kill switch.
@@ -177,6 +254,13 @@ pub struct Runtime<'a> {
     /// The kill switch: when it returns true, the run stops before its next
     /// model call or tool call.
     pub stopped: &'a (dyn Fn() -> bool + Sync),
+    /// Who watches the run, if anyone: told what it does as it goes, and,
+    /// while a model writes, its text (the models are asked to stream).
+    pub watch: Option<&'a (dyn Fn(&Seen) + Sync)>,
+    /// What the person said while the run went on, if anything: asked
+    /// before each model call, and what it gives is added to the
+    /// conversation ([`State::steer`]), so that the run takes it in.
+    pub steer: Option<&'a (dyn Fn() -> Vec<String> + Sync)>,
 }
 
 impl std::fmt::Debug for Runtime<'_> {
@@ -251,8 +335,16 @@ pub const REPLAYED: &str = "(Not done again: an identical call earlier in this s
      did this. To do it again on purpose, change its input. It returned:)";
 
 impl Runtime<'_> {
+    /// Tells whoever watches the run, if anyone.
+    fn seen(&self, seen: &Seen) {
+        if let Some(watch) = self.watch {
+            watch(seen);
+        }
+    }
+
     /// Runs the session until it ends or must wait.
     pub fn run(&self, state: &mut State) -> Ended {
+        self.seen(&Seen::Began(state.id.clone()));
         loop {
             if (self.stopped)() {
                 return Ended::Stopped;
@@ -265,12 +357,13 @@ impl Runtime<'_> {
                         input,
                         reason,
                     } => {
+                        self.seen(&Seen::Waiting(tool.clone()));
                         return Ended::NeedsApproval {
                             key,
                             tool,
                             input,
                             reason,
-                        }
+                        };
                     }
                     Called::Ran(outcome) => {
                         state.pending = None;
@@ -280,6 +373,11 @@ impl Runtime<'_> {
             }
             if state.turns_left == 0 {
                 return Ended::OutOfTurns;
+            }
+            if let Some(steer) = self.steer {
+                for said in steer() {
+                    state.steer(&said);
+                }
             }
             self.compact(state);
             let response = match self.ask(state) {
@@ -294,6 +392,22 @@ impl Runtime<'_> {
             state.turns_taken += 1;
             state.usage.input += response.usage.input;
             state.usage.output += response.usage.output;
+            // Cut off by a stop while it wrote: what it wrote is kept, and
+            // the run stops there.
+            if response.stop == Stop::Cut {
+                let content: Vec<Block> = response
+                    .content
+                    .into_iter()
+                    .filter(|block| matches!(block, Block::Text { text } if !text.is_empty()))
+                    .collect();
+                if !content.is_empty() {
+                    state.messages.push(Message {
+                        role: Role::Assistant,
+                        content,
+                    });
+                }
+                return Ended::Stopped;
+            }
             let message = Message {
                 role: Role::Assistant,
                 content: response.content,
@@ -309,9 +423,7 @@ impl Runtime<'_> {
                     Stop::Refusal => return Ended::Refused,
                     Stop::PauseTurn => continue,
                     Stop::MaxTokens => {
-                        state.messages.push(Message::user(
-                            "Your answer was cut off at the token limit. Continue from where it stopped.",
-                        ));
+                        state.messages.push(Message::user(CONTINUE));
                         continue;
                     }
                     _ => return Ended::Done { text },
@@ -355,6 +467,7 @@ impl Runtime<'_> {
                         .iter()
                         .map(|(_, r)| (&r.input, r.key.as_str()))
                         .collect();
+                    self.seen(&Seen::Running(group[0].1.tool.clone()));
                     let mut outcomes = tool.call_batch(&inputs);
                     outcomes.resize_with(group.len(), || {
                         Outcome::uncertain("the tool gave no outcome for this call")
@@ -381,6 +494,7 @@ impl Runtime<'_> {
                     input: inner,
                     reason,
                 } => {
+                    self.seen(&Seen::Waiting(tool.clone()));
                     results.push(result_block(
                         use_id,
                         &Outcome::ok(WAITING),
@@ -470,7 +584,26 @@ impl Runtime<'_> {
                 continue;
             }
             asked = true;
-            match model.complete(&request) {
+            let answered = match self.watch {
+                Some(watch) => {
+                    watch(&Seen::Asking);
+                    // Stopped while it writes, the model is cut off there.
+                    let answered = model.stream(&request, &mut |delta| {
+                        watch(&match delta {
+                            Delta::Text(text) => Seen::Text(text),
+                            Delta::Call(tool) => Seen::Calling(tool),
+                        });
+                        !(self.stopped)()
+                    });
+                    watch(&match &answered {
+                        Ok(response) => Seen::Answered(response.stop.clone()),
+                        Err(_) => Seen::Dropped,
+                    });
+                    answered
+                }
+                None => model.complete(&request),
+            };
+            match answered {
                 Ok(response) => return Ok(response),
                 Err(error) if error.transient() => {
                     state
@@ -503,6 +636,7 @@ impl Runtime<'_> {
             },
             Checked::Ready(ready) => {
                 let tool = self.tools.get(&ready.tool).expect("checked");
+                self.seen(&Seen::Running(ready.tool.clone()));
                 let outcome = if state.standing.tainted((self.now)()) {
                     tool.call_tainted(&ready.input, &ready.key)
                 } else {
@@ -647,33 +781,40 @@ impl Runtime<'_> {
         {
             return;
         }
-        let keep = self
-            .limits
-            .keep_last
-            .min(state.messages.len().saturating_sub(2));
-        // Start the kept tail on a message that is not a tool result, so that
-        // no result is kept without the call it answers.
-        let mut tail = state.messages.len() - keep;
-        while tail > 1 && is_results(&state.messages[tail]) {
-            tail -= 1;
-        }
-        if tail <= 1 {
-            return;
-        }
-        let summary = summarize(&state.messages[1..tail]);
-        let mut messages = vec![state.messages[0].clone()];
-        messages.push(Message {
-            role: Role::Assistant,
-            content: vec![Block::text(summary)],
-        });
-        if state.messages[tail].role == Role::Assistant {
-            messages.push(Message::user("Continue."));
-        }
-        messages.extend_from_slice(&state.messages[tail..]);
-        state.messages = messages;
-        state.compactions += 1;
-        keep_last_images(state);
+        compact_now(state, self.limits.keep_last);
     }
+}
+
+/// Compacts `state`'s conversation now, whatever its size: everything but
+/// the task and the last `keep_last` messages becomes a summary. Whether
+/// anything was compacted.
+pub fn compact_now(state: &mut State, keep_last: usize) -> bool {
+    let len = state.messages.len();
+    let keep = keep_last.min(len.saturating_sub(2));
+    // Start the kept tail on a message that is not a tool result, so that
+    // no result is kept without the call it answers.
+    let mut tail = len - keep;
+    while tail > 1 && tail < len && is_results(&state.messages[tail]) {
+        tail -= 1;
+    }
+    // Nothing to compact: at most the task before the tail, or no tail.
+    if tail <= 1 || tail >= len {
+        return false;
+    }
+    let summary = summarize(&state.messages[1..tail]);
+    let mut messages = vec![state.messages[0].clone()];
+    messages.push(Message {
+        role: Role::Assistant,
+        content: vec![Block::text(summary)],
+    });
+    if state.messages[tail].role == Role::Assistant {
+        messages.push(Message::user("Continue."));
+    }
+    messages.extend_from_slice(&state.messages[tail..]);
+    state.messages = messages;
+    state.compactions += 1;
+    keep_last_images(state);
+    true
 }
 
 fn is_results(message: &Message) -> bool {
@@ -707,14 +848,21 @@ fn result_block(use_id: &str, outcome: &Outcome, images: &mut BTreeMap<String, S
 }
 
 /// Lets go of the bytes of all but the last [`MAX_IMAGES_KEPT`] pictures
-/// the conversation names (and of any it no longer names).
+/// the conversation names and the person's last
+/// ([`crate::model::person_pictures`]), and of any it no longer names.
 fn keep_last_images(state: &mut State) {
+    let images = images_of(&state.messages);
     let mut kept: Vec<String> = Vec::new();
-    for image in images_of(&state.messages).into_iter().rev() {
+    for image in images.iter().rev() {
         if kept.len() == MAX_IMAGES_KEPT {
             break;
         }
         if !kept.contains(&image.digest) {
+            kept.push(image.digest.clone());
+        }
+    }
+    for at in crate::model::person_pictures(&state.messages) {
+        if let Some(image) = images.get(at) {
             kept.push(image.digest.clone());
         }
     }
@@ -767,6 +915,7 @@ pub fn summarize(messages: &[Message]) -> String {
                     if *is_error { "error: " } else { "" },
                     shorten(content, 200)
                 ),
+                Block::Image { image } => format!("- I was shown a picture ({})", image.media_type),
             });
         }
     }

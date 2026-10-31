@@ -93,6 +93,7 @@ fn profile(
         instructions: None,
         skill_approvals: true,
         screen: Default::default(),
+        image_model: None,
     }
 }
 
@@ -399,7 +400,7 @@ fn profiles_are_reached_by_their_own_tokens_across_machines_and_messengers() {
         let profiles = vec![lead_profile.clone()];
         std::thread::spawn(move || {
             for _ in 0..100 {
-                match sion_cli::gateway::host(ledger.clone(), &url, &profiles, Some(1)) {
+                match sion_cli::gateway::host(ledger.clone(), &url, &profiles, Some(2)) {
                     Err(sion_cli::error::CliError::Connection(_)) => {
                         std::thread::sleep(std::time::Duration::from_millis(100))
                     }
@@ -434,6 +435,35 @@ fn profiles_are_reached_by_their_own_tokens_across_machines_and_messengers() {
     );
     assert_eq!(status, 200, "{answer}");
     assert_eq!(answer["said"], "Budget checked.", "{answer}");
+    // Streamed through the gateway: what the agent does as it works, told
+    // by its host, then the answer.
+    let bearer = format!("Bearer {lead_token}");
+    let streamed = client()
+        .post_json(
+            &format!("{gateway_url}/v1/profiles/lead/messages"),
+            &[("Authorization", bearer.as_str())],
+            json!({"text": "How much budget is left?", "conversation": "g3", "stream": true})
+                .to_string()
+                .as_bytes(),
+            1 << 20,
+        )
+        .unwrap();
+    assert_eq!(streamed.content_type.as_deref(), Some("text/event-stream"));
+    let events = String::from_utf8(streamed.body).unwrap();
+    let names: Vec<&str> = events
+        .lines()
+        .filter_map(|line| line.strip_prefix("event: "))
+        .collect();
+    assert_eq!(names.first(), Some(&"session"), "{events}");
+    assert!(
+        names.contains(&"tool") && names.contains(&"delta"),
+        "{events}"
+    );
+    assert_eq!(names.last(), Some(&"done"), "{events}");
+    assert!(
+        events.contains("{\"text\":\"Budget checked.\"}"),
+        "{events}"
+    );
     hosting.join().unwrap().unwrap();
     // A host without the agent's key is refused.
     let impostor = Profile {

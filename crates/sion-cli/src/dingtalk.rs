@@ -8,6 +8,13 @@
 //! |---|---|
 //! | `DINGTALK_CLIENT_ID` | the app's Client ID (its AppKey, and the robot's code) |
 //! | `DINGTALK_CLIENT_SECRET` | the app's Client Secret |
+//! | `DINGTALK_CARD_TEMPLATE_ID` | an AI card template made for the app, to stream replies on (optional) |
+//! | `DINGTALK_CARD_KEY` | the template's variable the reply goes in (`content` by default) |
+//!
+//! A robot cannot edit what it sent, so a reply shows as it is written only
+//! on an AI card: with a template, the card is made and delivered in the
+//! chat, its text streamed whole each time (`PUT /v1.0/card/streaming`),
+//! and finalized with the reply. Without one, the reply comes whole.
 //!
 //! DingTalk transcribes voice messages itself: what it heard is what the
 //! agent is given, marked as heard.
@@ -23,6 +30,7 @@ use sion_http::HttpError;
 use crate::jwt::Bearer;
 use crate::live::{again, keep, text_of, Fault, Link, Live, Next, MAX_EVENT};
 use crate::messengers::{Incoming, Messenger, LIVE_ONCE_WAIT};
+use crate::showing::{with_status, Draft, Drafting};
 use crate::webhooks::{client, cut, env, json_of, needed, Seen};
 
 /// The topic of a robot's messages.
@@ -110,6 +118,8 @@ pub fn dingtalk_message(data: &Value) -> Option<(Incoming, Session)> {
     };
     let direct = data["conversationType"] == "1";
     let incoming = Incoming {
+        id: String::new(),
+        thread: String::new(),
         chat: chat.to_string(),
         from: from.to_string(),
         text,
@@ -120,6 +130,7 @@ pub fn dingtalk_message(data: &Value) -> Option<(Incoming, Session)> {
         } else {
             Vec::new()
         },
+        files: Vec::new(),
     };
     let session = Session {
         webhook: data["sessionWebhook"]
@@ -383,6 +394,48 @@ impl Messenger for DingTalk {
         Ok(())
     }
 
+    fn room(&self) -> usize {
+        18_000
+    }
+
+    fn drafting(&self, message: &Incoming) -> Option<Drafting> {
+        let template = env("DINGTALK_CARD_TEMPLATE_ID")?;
+        let session = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&message.chat)
+            .cloned()?;
+        let token = self.bearer().ok()?;
+        let place = if session.direct {
+            Place::Robot(session.staff)
+        } else {
+            Place::Group(message.chat.clone())
+        };
+        let card = Card {
+            client: self.client.clone(),
+            base: self.base.clone(),
+            token,
+            robot: self.id.clone(),
+            template,
+            key: env("DINGTALK_CARD_KEY").unwrap_or_else(|| "content".into()),
+            place,
+            track: None,
+        };
+        Some(Drafting {
+            open: Box::new(move || {
+                Box::new(Card {
+                    track: None,
+                    ..card.clone()
+                })
+            }),
+            every: Duration::from_millis(500),
+            most: None,
+            keep: None,
+            first: 0,
+        })
+    }
+
     fn long_polls(&self) -> bool {
         true
     }
@@ -393,6 +446,105 @@ impl Messenger for DingTalk {
 
     fn me(&self) -> Result<Vec<String>, String> {
         Ok(vec![ROBOT.to_string()])
+    }
+}
+
+/// Where an AI card goes: a person's chat with the robot, or a group.
+#[derive(Clone, Debug)]
+enum Place {
+    Robot(String),
+    Group(String),
+}
+
+/// A reply on an AI card: made from the template and delivered at the
+/// first update, its text then streamed whole, and finalized at the end.
+#[derive(Clone)]
+struct Card {
+    client: sion_http::Client,
+    base: String,
+    token: String,
+    robot: String,
+    template: String,
+    key: String,
+    place: Place,
+    /// The card's track id, once delivered.
+    track: Option<String>,
+}
+
+impl Card {
+    fn call(&self, method: &str, path: &str, body: &Value) -> Result<Value, String> {
+        let fetched = self
+            .client
+            .request(
+                method,
+                &format!("{}{path}", self.base),
+                &[
+                    ("x-acs-dingtalk-access-token", self.token.as_str()),
+                    ("Content-Type", "application/json"),
+                ],
+                Some(body.to_string().as_bytes()),
+                1 << 16,
+            )
+            .map_err(|e| e.to_string().replace(&self.token, "<token>"))?;
+        if fetched.body.is_empty() {
+            return Ok(Value::Null);
+        }
+        json_of(&fetched.body, "DingTalk")
+    }
+
+    fn stream(&mut self, text: &str, last: bool) -> Result<(), String> {
+        let track = match &self.track {
+            Some(track) => track.clone(),
+            None => {
+                let track = format!("sion-{}", crate::runtime::new_id());
+                let mut body = json!({
+                    "cardTemplateId": self.template,
+                    "outTrackId": track,
+                    "cardData": {"cardParamMap": {}},
+                    "callbackType": "STREAM",
+                });
+                match &self.place {
+                    Place::Robot(staff) => {
+                        body["openSpaceId"] = json!(format!("dtv1.card//IM_ROBOT.{staff}"));
+                        body["imRobotOpenSpaceModel"] = json!({"supportForward": true});
+                        body["imRobotOpenDeliverModel"] =
+                            json!({"spaceType": "IM_ROBOT", "robotCode": self.robot});
+                    }
+                    Place::Group(chat) => {
+                        body["openSpaceId"] = json!(format!("dtv1.card//IM_GROUP.{chat}"));
+                        body["imGroupOpenSpaceModel"] = json!({"supportForward": true});
+                        body["imGroupOpenDeliverModel"] = json!({"robotCode": self.robot});
+                    }
+                }
+                self.call("POST", "/v1.0/card/instances/createAndDeliver", &body)?;
+                self.track = Some(track.clone());
+                track
+            }
+        };
+        self.call(
+            "PUT",
+            "/v1.0/card/streaming",
+            &json!({
+                "outTrackId": track,
+                "guid": crate::runtime::new_id(),
+                "key": self.key,
+                "content": cut(text, 18_000),
+                "isFull": true,
+                "isFinalize": last,
+                "isError": false,
+            }),
+        )
+        .map(|_| ())
+    }
+}
+
+impl Draft for Card {
+    fn show(&mut self, text: &str, status: Option<&str>) -> Result<(), String> {
+        self.stream(&with_status(text, status), false)
+    }
+
+    fn finish(&mut self, text: &str) -> Result<(), String> {
+        self.stream(text, true)
     }
 }
 

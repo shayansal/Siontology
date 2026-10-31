@@ -70,6 +70,10 @@ pub struct Profile {
     /// Its browser and desktop.
     #[serde(default, skip_serializing_if = "crate::screens::Screen::is_empty")]
     pub screen: crate::screens::Screen,
+    /// What makes pictures for it (`image_generate`, in its workspace):
+    /// `openai:<model>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_model: Option<String>,
 }
 
 fn yes() -> bool {
@@ -95,6 +99,9 @@ impl Profile {
             storage: self.storage,
             instructions: self.instructions.clone(),
             screen: self.screen.clone(),
+            chat_instructions: None,
+            only_tools: None,
+            image_model: self.image_model.clone(),
         }
     }
 
@@ -104,18 +111,63 @@ impl Profile {
         ledger: SharedLedger,
         task: &str,
     ) -> Result<(Saved, Vec<String>), CliError> {
-        crate::runtime::start(
+        self.start_watched(ledger, task, crate::runtime::Hooks::default())
+    }
+
+    /// [`Profile::start`], the run given `hooks`: watched, stopped and
+    /// steered.
+    pub fn start_watched(
+        &self,
+        ledger: SharedLedger,
+        task: &str,
+        hooks: crate::runtime::Hooks<'_>,
+    ) -> Result<(Saved, Vec<String>), CliError> {
+        self.start_in(
+            ledger,
+            task,
+            &[],
+            hooks,
+            &crate::channels::ChatSettings::default(),
+        )
+    }
+
+    /// [`Profile::start_watched`], as a chat's `settings` ask: its model
+    /// first, its instructions after the operator's, only its tools.
+    pub fn start_in(
+        &self,
+        ledger: SharedLedger,
+        task: &str,
+        pictures: &[sion_agent::Picture],
+        hooks: crate::runtime::Hooks<'_>,
+        settings: &crate::channels::ChatSettings,
+    ) -> Result<(Saved, Vec<String>), CliError> {
+        let mut models = self.models.clone();
+        if let Some(at) = settings
+            .model
+            .as_ref()
+            .and_then(|chosen| models.iter().position(|spec| spec == chosen))
+        {
+            let chosen = models.remove(at);
+            models.insert(0, chosen);
+        }
+        crate::runtime::start_watched(
             ledger,
             &self.wallet,
             self.agent,
             task,
-            self.models.clone(),
+            pictures,
+            models,
             Policy {
                 autonomy: self.autonomy,
                 skill_approvals: self.skill_approvals,
                 ..Policy::default()
             },
-            self.equipment(),
+            crate::runtime::Equipment {
+                chat_instructions: settings.instructions.clone(),
+                only_tools: settings.tools.clone(),
+                ..self.equipment()
+            },
+            hooks,
         )
     }
 }
@@ -152,10 +204,20 @@ pub fn write_json<T: Serialize>(path: &std::path::Path, value: &T) -> Result<(),
             .map_err(|e| CliError::Usage(format!("{}: {e}", dir.display())))?;
     }
     let text = serde_json::to_string_pretty(value).map_err(|e| CliError::Usage(e.to_string()))?;
-    let partial = path.with_extension("partial");
+    // A sibling of its own, so that two writers (two bridges, say) never
+    // write into one file; the rename puts it in place whole.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let partial = path.with_extension(format!(
+        "{}.{}.partial",
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::write(&partial, text)
         .and_then(|()| std::fs::rename(&partial, path))
-        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&partial);
+            CliError::Usage(format!("{}: {e}", path.display()))
+        })
 }
 
 /// The profile `name`.
@@ -237,6 +299,10 @@ pub enum ProfileCommand {
         /// skill it read pre-approves with `allowed-tools`.
         #[arg(long)]
         no_skill_approvals: bool,
+        /// Let it make pictures in its workspace (`image_generate`):
+        /// openai:<model>, such as openai:gpt-image-1 (OPENAI_API_KEY).
+        #[arg(long, value_name = "PROVIDER:MODEL", requires = "workspace")]
+        image_model: Option<String>,
     },
     /// The profiles on this machine.
     List,
@@ -309,6 +375,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             screen,
             instructions,
             no_skill_approvals,
+            image_model,
         } => {
             let shell = shell.sandbox()?;
             let screen = screen.screen()?;
@@ -358,6 +425,13 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 instructions: instructions.filter(|i| !i.trim().is_empty()),
                 skill_approvals: !no_skill_approvals,
                 screen,
+                image_model: match image_model {
+                    Some(spec) => {
+                        crate::files::image_model(&spec)?;
+                        Some(spec)
+                    }
+                    None => None,
+                },
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()

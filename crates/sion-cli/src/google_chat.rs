@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use crate::jwt::{Bearer, KeySet};
 use crate::live::Live;
 use crate::messengers::{Incoming, Messenger, Note, LIVE_ONCE_WAIT};
+use crate::showing::{with_status, Draft, Drafting};
 use crate::voice::{Audio, MAX_HEARD};
 use crate::webhooks::{
     client, cut, encode_form, env, inbox_holding, json_of, needed, respond, Answer, Handled, Held,
@@ -159,6 +160,7 @@ pub fn chat_event(event: &Value) -> Option<ChatEvent> {
             Some(Note {
                 id: a["attachmentDataRef"]["resourceName"].as_str()?.to_string(),
                 media_type: a["contentType"].as_str().map(str::to_string),
+                name: None,
             })
         });
     if text.is_empty() && voice.is_none() {
@@ -184,6 +186,8 @@ pub fn chat_event(event: &Value) -> Option<ChatEvent> {
         || space["singleUserBotDm"] == true;
     Some(ChatEvent {
         incoming: Incoming {
+            id: String::new(),
+            thread: String::new(),
             chat: chat.to_string(),
             from: message["sender"]["name"]
                 .as_str()
@@ -193,6 +197,7 @@ pub fn chat_event(event: &Value) -> Option<ChatEvent> {
             voice,
             direct,
             mentions,
+            files: Vec::new(),
         },
         id: id.to_string(),
         thread: message["thread"]["name"].as_str().map(str::to_string),
@@ -312,6 +317,76 @@ impl Account {
                 .unwrap_or("https://oauth2.googleapis.com/token")
                 .to_string(),
         })
+    }
+}
+
+/// A reply as a Chat message patched as it grows (`updateMask=text`).
+struct Edit {
+    client: sion_http::Client,
+    api: String,
+    token: String,
+    space: String,
+    thread: Option<String>,
+    /// The message's name, once sent.
+    name: Option<String>,
+    shown: String,
+}
+
+impl Edit {
+    fn put(&mut self, text: &str) -> Result<(), String> {
+        if self.name.is_some() && self.shown == text {
+            return Ok(());
+        }
+        self.shown = text.to_string();
+        let auth = format!("Bearer {}", self.token);
+        let headers = [
+            ("Authorization", auth.as_str()),
+            ("Content-Type", "application/json"),
+        ];
+        let mut message = json!({"text": cut(text, 4_000)});
+        let (method, url) = match &self.name {
+            Some(name) => ("PATCH", format!("{}/v1/{name}?updateMask=text", self.api)),
+            None => {
+                if let Some(thread) = &self.thread {
+                    message["thread"] = json!({"name": thread});
+                }
+                (
+                    "POST",
+                    format!(
+                        "{}/v1/{}/messages?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD",
+                        self.api, self.space
+                    ),
+                )
+            }
+        };
+        let fetched = self
+            .client
+            .request(
+                method,
+                &url,
+                &headers,
+                Some(message.to_string().as_bytes()),
+                1 << 20,
+            )
+            .map_err(|e| e.to_string().replace(&self.token, "<token>"))?;
+        if self.name.is_none() {
+            let sent = json_of(&fetched.body, "Google Chat")?;
+            self.name = sent["name"]
+                .as_str()
+                .filter(|name| name.starts_with(&format!("{}/messages/", self.space)))
+                .map(str::to_string);
+        }
+        Ok(())
+    }
+}
+
+impl Draft for Edit {
+    fn show(&mut self, text: &str, status: Option<&str>) -> Result<(), String> {
+        self.put(&with_status(text, status))
+    }
+
+    fn finish(&mut self, text: &str) -> Result<(), String> {
+        self.put(text)
     }
 }
 
@@ -502,6 +577,45 @@ impl Messenger for GoogleChat {
         Ok(())
     }
 
+    fn room(&self) -> usize {
+        4_000
+    }
+
+    /// Through the Chat API only (a webhook's answer is the reply whole): a
+    /// message patched as it grows, at most one write a second and a half,
+    /// for Chat takes one a second in a space.
+    fn drafting(&self, message: &Incoming) -> Option<Drafting> {
+        self.account.as_ref()?;
+        if !space_name(&message.chat) {
+            return None;
+        }
+        let token = self.bearer().ok()?;
+        let thread = self
+            .threads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&message.chat)
+            .cloned();
+        let (client, api, space) = (self.client.clone(), self.api.clone(), message.chat.clone());
+        Some(Drafting {
+            open: Box::new(move || {
+                Box::new(Edit {
+                    client: client.clone(),
+                    api: api.clone(),
+                    token: token.clone(),
+                    space: space.clone(),
+                    thread: thread.clone(),
+                    name: None,
+                    shown: String::new(),
+                })
+            }),
+            every: Duration::from_millis(1_500),
+            most: None,
+            keep: None,
+            first: crate::drafts::FIRST,
+        })
+    }
+
     fn long_polls(&self) -> bool {
         true
     }
@@ -589,7 +703,8 @@ mod tests {
             event.incoming.voice,
             Some(Note {
                 id: "spaces/DM1/attachments/a1".into(),
-                media_type: Some("audio/ogg".into())
+                media_type: Some("audio/ogg".into()),
+                name: None,
             })
         );
         // Other events, and apps' own messages, are not talk.
