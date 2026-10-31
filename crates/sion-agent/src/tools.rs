@@ -21,6 +21,28 @@ pub enum Effect {
     Spend,
 }
 
+/// How a tool keeps a call's effect from happening twice when the call is
+/// made again after its outcome was lost: what makes the journal's
+/// "nothing is done twice" hold for that tool, or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Dedup {
+    /// Making the call again changes nothing more (writing the same content
+    /// to the same place): it may be made again.
+    Idempotent,
+    /// The service it calls drops a repeat of the call's key
+    /// ([`Tool::call`]'s `key`): it may be made again.
+    Keyed,
+    /// What the call did can be found from what it noted while it ran (a
+    /// transaction's digest and the last Pulse it may execute in): an
+    /// unknown outcome is reconciled ([`Tool::reconcile`]) before the call
+    /// is made again or answered.
+    Reconciled,
+    /// Nothing stops the effect happening twice: a call whose outcome is
+    /// unknown is not made again until a person settles it.
+    AtLeastOnce,
+}
+
 /// What a call returned.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
@@ -164,6 +186,50 @@ pub trait Tool: Send + Sync {
             .iter()
             .map(|(input, key)| self.call(input, key))
             .collect()
+    }
+
+    /// [`Tool::call_batch`] for a session that read content from outside:
+    /// by default, each call as [`Tool::call_tainted`].
+    fn call_batch_tainted(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
+        calls
+            .iter()
+            .map(|(input, key)| self.call_tainted(input, key))
+            .collect()
+    }
+
+    /// How the tool keeps a call's effect from happening twice
+    /// ([`Dedup`]): by default, nothing does.
+    fn dedup(&self) -> Dedup {
+        Dedup::AtLeastOnce
+    }
+
+    /// Runs one call as [`Tool::call`] (or [`Tool::call_tainted`]), telling
+    /// `note` what it learns on the way that would later show what it did
+    /// (a transaction's digest, before the transaction is sent): the
+    /// runtime keeps each note in the journal, on disk, before the call
+    /// ends. By default, nothing is noted.
+    fn call_noting(
+        &self,
+        input: &Value,
+        key: &str,
+        tainted: bool,
+        note: &mut dyn FnMut(&str),
+    ) -> Outcome {
+        let _ = note;
+        if tainted {
+            self.call_tainted(input, key)
+        } else {
+            self.call(input, key)
+        }
+    }
+
+    /// What a call whose outcome is unknown did, found from the `notes` it
+    /// left ([`Tool::call_noting`]): a certain outcome (an error if it did
+    /// nothing, so that it may be made again), or none if that cannot be
+    /// told yet. Asked only of a [`Dedup::Reconciled`] tool.
+    fn reconcile(&self, input: &Value, key: &str, notes: &[String]) -> Option<Outcome> {
+        let _ = (input, key, notes);
+        None
     }
 }
 

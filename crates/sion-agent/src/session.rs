@@ -13,7 +13,7 @@ use crate::model::{
     Response, Role, Stop, Usage,
 };
 use crate::policy::{Decision, Policy, Standing};
-use crate::tools::{Outcome, Toolbox, TOOLS_CALL, TOOLS_SEARCH};
+use crate::tools::{Dedup, Effect, Outcome, Toolbox, TOOLS_CALL, TOOLS_SEARCH};
 
 /// The limits of a session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,11 +131,57 @@ pub struct State {
     /// digests: at most [`MAX_IMAGES_KEPT`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub images: BTreeMap<String, String>,
+    /// The steps of its runs, for its trace: the last [`MAX_STEPS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Step>,
 }
 
 /// The most pictures a session keeps the bytes of: the last ones. The
 /// conversation keeps every picture's digest.
 pub const MAX_IMAGES_KEPT: usize = 6;
+
+/// The most steps a session keeps for its trace: the last ones.
+pub const MAX_STEPS: usize = 2_000;
+
+/// One step of a run, for its trace ([`crate::trace::otel`]): a model
+/// asked, or a call answered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Step {
+    /// `model` or `tool`.
+    pub kind: String,
+    /// The model that answered, or the tool called.
+    pub name: String,
+    /// When it began, in milliseconds since 1970, by the machine's clock.
+    pub start_ms: u64,
+    /// How long it took, in milliseconds.
+    pub ms: u64,
+    /// A model's tokens: in, and out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<(u64, u64)>,
+    /// A call's key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// A call's effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<Effect>,
+    /// How a call ended: `ok`, `error`, `unknown` (it may or may not have
+    /// taken effect), `answered` (by the journal or the checks, without
+    /// running) or `waiting` (for a person's approval).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// Whether the session had read content from outside when the step
+    /// began.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tainted: bool,
+}
+
+/// Milliseconds since 1970, by the machine's clock: for traces only, never
+/// for what a run decides.
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
 
 impl State {
     /// A new session `id` that starts with the person's `task`.
@@ -261,6 +307,10 @@ pub struct Runtime<'a> {
     /// before each model call, and what it gives is added to the
     /// conversation ([`State::steer`]), so that the run takes it in.
     pub steer: Option<&'a (dyn Fn() -> Vec<String> + Sync)>,
+    /// What keeps the session on disk while it runs, if anything: given
+    /// the state before a journaled call runs, after each note it takes and
+    /// after it ends, so that a crash loses no record of what was done.
+    pub checkpoint: Option<&'a (dyn Fn(&State) + Sync)>,
 }
 
 impl std::fmt::Debug for Runtime<'_> {
@@ -311,16 +361,29 @@ struct Ready {
     key: String,
     effect: crate::tools::Effect,
     journaled: bool,
+    /// How its tool keeps it from happening twice.
+    dedup: Dedup,
+    /// Whether an earlier identical call's outcome is unknown, and the
+    /// tool keeps a repeat from happening twice: it is made again.
+    retried: bool,
     /// The skill and rule that pre-approved the call, when the autonomy
     /// level would have asked.
     pre_approved: Option<String>,
 }
 
-/// An outcome as the model sees it: a pre-approved call's says so.
+/// An outcome as the model sees it: a pre-approved call's says so, and so
+/// does a call made again after its first outcome was lost.
 fn marked(ready: &Ready, mut outcome: Outcome) -> Outcome {
     if let Some(by) = &ready.pre_approved {
         outcome.content = format!(
             "[run without asking: pre-approved by skill {by}]\n{}",
+            outcome.content
+        );
+    }
+    if ready.retried {
+        outcome.content = format!(
+            "[made again: the first identical call's outcome was lost, and this tool keeps \
+             it from happening twice]\n{}",
             outcome.content
         );
     }
@@ -342,9 +405,154 @@ impl Runtime<'_> {
         }
     }
 
+    /// Keeps the session on disk, if the runtime was given a way to.
+    fn save(&self, state: &State) {
+        if let Some(checkpoint) = self.checkpoint {
+            checkpoint(state);
+        }
+    }
+
+    /// Adds a step to the session's trace.
+    fn step(&self, state: &mut State, step: Step) {
+        state.steps.push(step);
+        if state.steps.len() > MAX_STEPS {
+            let over = state.steps.len() - MAX_STEPS;
+            state.steps.drain(..over);
+        }
+    }
+
+    /// A call's step, as it ended.
+    fn call_step(
+        &self,
+        state: &State,
+        name: &str,
+        key: Option<&str>,
+        effect: Option<Effect>,
+        outcome: &str,
+        start_ms: u64,
+    ) -> Step {
+        Step {
+            kind: "tool".into(),
+            name: name.to_string(),
+            start_ms,
+            ms: wall_ms().saturating_sub(start_ms),
+            tokens: None,
+            key: key.map(str::to_string),
+            effect,
+            outcome: Some(outcome.to_string()),
+            tainted: state.standing.tainted((self.now)()),
+        }
+    }
+
+    /// The tool and input a call names: inside `tools_call`, the inner
+    /// call's.
+    fn inner<'v>(name: &'v str, input: &'v Value) -> (&'v str, std::borrow::Cow<'v, Value>) {
+        if name == TOOLS_CALL {
+            let inner = input["name"].as_str().unwrap_or_default();
+            let inner_input = input.get("input").cloned().unwrap_or_else(|| json!({}));
+            return (inner, std::borrow::Cow::Owned(inner_input));
+        }
+        (name, std::borrow::Cow::Borrowed(input))
+    }
+
+    /// Before a call is checked: if an identical earlier call's outcome is
+    /// unknown and its tool can tell what it did from its notes, the
+    /// journal is settled (it did it) or the call forgotten (it did not,
+    /// and may be made again).
+    fn reconcile(&self, state: &mut State, name: &str, input: &Value) {
+        let (name, input) = Self::inner(name, input);
+        let Some(tool) = self.tools.get(name) else {
+            return;
+        };
+        if tool.dedup() != Dedup::Reconciled {
+            return;
+        }
+        let call_key = key(&state.id, name, &input);
+        let Some(entry) = state.journal.entry(&call_key) else {
+            return;
+        };
+        if entry.outcome.certain {
+            return;
+        }
+        let Some(found) = tool.reconcile(&input, &call_key, &entry.notes) else {
+            return;
+        };
+        if !found.certain {
+            return;
+        }
+        if found.is_error {
+            state.journal.forget(&call_key);
+        } else {
+            state.journal.settle(&call_key, found);
+        }
+        self.save(state);
+    }
+
+    /// Answers the calls of a turn that a stopped run (a crash) left
+    /// without results, so that the conversation can go on: from the
+    /// journal where it recorded them, as unknown where it had written them
+    /// down before they ran, and as not recorded otherwise. Whether
+    /// anything was repaired.
+    fn repair(&self, state: &mut State) -> bool {
+        let Some(last) = state.messages.last() else {
+            return false;
+        };
+        if last.role != Role::Assistant {
+            return false;
+        }
+        let calls: Vec<(String, String, Value)> = last
+            .tool_uses()
+            .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
+            .collect();
+        if calls.is_empty() {
+            return false;
+        }
+        let mut results = Vec::new();
+        for (use_id, name, input) in &calls {
+            let (inner, inner_input) = Self::inner(name, input);
+            let call_key = key(&state.id, inner, &inner_input);
+            let outcome = match state.journal.entry(&call_key) {
+                Some(entry) if entry.outcome.certain => Outcome {
+                    content: format!(
+                        "(recorded before the run stopped:)\n{}",
+                        entry.outcome.content
+                    ),
+                    ..entry.outcome.clone()
+                },
+                Some(_) => Outcome::uncertain(crate::journal::IN_FLIGHT),
+                None => {
+                    let effect = self
+                        .tools
+                        .get(inner)
+                        .map(|tool| tool.effect_of(&inner_input).min(tool.effect()));
+                    match effect {
+                        Some(Effect::Read) | None => Outcome::error(
+                            "not answered: the run stopped during this turn; call it again if \
+                             it is still needed",
+                        ),
+                        Some(_) => Outcome::uncertain(
+                            "the run stopped during this turn, and whether this call ran was not \
+                             recorded: check before making it again",
+                        ),
+                    }
+                }
+            };
+            results.push(result_block(use_id, &outcome, &mut state.images));
+        }
+        state.messages.push(Message {
+            role: Role::User,
+            content: results,
+        });
+        state.pending = None;
+        true
+    }
+
     /// Runs the session until it ends or must wait.
     pub fn run(&self, state: &mut State) -> Ended {
         self.seen(&Seen::Began(state.id.clone()));
+        if self.repair(state) {
+            self.save(state);
+        }
         loop {
             if (self.stopped)() {
                 return Ended::Stopped;
@@ -380,6 +588,8 @@ impl Runtime<'_> {
                 }
             }
             self.compact(state);
+            let start_ms = wall_ms();
+            let tainted = state.standing.tainted((self.now)());
             let response = match self.ask(state) {
                 Ok(response) => response,
                 Err(error) => {
@@ -388,6 +598,20 @@ impl Runtime<'_> {
                     }
                 }
             };
+            self.step(
+                state,
+                Step {
+                    kind: "model".into(),
+                    name: response.model.clone(),
+                    start_ms,
+                    ms: wall_ms().saturating_sub(start_ms),
+                    tokens: Some((response.usage.input, response.usage.output)),
+                    key: None,
+                    effect: None,
+                    outcome: None,
+                    tainted,
+                },
+            );
             state.turns_left -= 1;
             state.turns_taken += 1;
             state.usage.input += response.usage.input;
@@ -443,6 +667,7 @@ impl Runtime<'_> {
         let mut index = 0;
         while index < calls.len() {
             let (use_id, name, input) = &calls[index];
+            self.reconcile(state, name, input);
             // The calls of a batching tool that follow this one in the turn,
             // if they too may run, run with it: each passed the policy by
             // itself, and none was decided after seeing another's result.
@@ -452,6 +677,7 @@ impl Runtime<'_> {
                     let mut group = vec![(index, first)];
                     let mut next = index + 1;
                     while next < calls.len() && calls[next].1 == *name {
+                        self.reconcile(state, name, &calls[next].2);
                         match self.check(state, name, &calls[next].2) {
                             // An identical call waits for the first's record.
                             Checked::Ready(ready)
@@ -468,16 +694,36 @@ impl Runtime<'_> {
                         .map(|(_, r)| (&r.input, r.key.as_str()))
                         .collect();
                     self.seen(&Seen::Running(group[0].1.tool.clone()));
-                    let mut outcomes = tool.call_batch(&inputs);
+                    let start_ms = wall_ms();
+                    let tainted = state.standing.tainted((self.now)());
+                    for (_, ready) in &group {
+                        self.begin(state, ready);
+                    }
+                    self.save(state);
+                    let mut outcomes = if tainted {
+                        tool.call_batch_tainted(&inputs)
+                    } else {
+                        tool.call_batch(&inputs)
+                    };
                     outcomes.resize_with(group.len(), || {
                         Outcome::uncertain("the tool gave no outcome for this call")
                     });
                     for ((at, ready), outcome) in group.iter().zip(outcomes) {
                         let outcome = marked(ready, outcome);
                         self.finish(state, ready, &outcome);
+                        let step = self.call_step(
+                            state,
+                            &ready.tool,
+                            Some(&ready.key),
+                            Some(ready.effect),
+                            ended_as(&outcome),
+                            start_ms,
+                        );
+                        self.step(state, step);
                         progress |= !outcome.is_error;
                         results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
                     }
+                    self.save(state);
                     index = next;
                     continue;
                 }
@@ -621,32 +867,83 @@ impl Runtime<'_> {
     }
 
     fn call(&self, state: &mut State, name: &str, input: &Value) -> Called {
+        self.reconcile(state, name, input);
+        let start_ms = wall_ms();
         match self.check(state, name, input) {
-            Checked::Answered(outcome) => Called::Ran(outcome),
+            Checked::Answered(outcome) => {
+                let (inner, _) = Self::inner(name, input);
+                let step = self.call_step(state, inner, None, None, "answered", start_ms);
+                self.step(state, step);
+                Called::Ran(outcome)
+            }
             Checked::Wait {
                 key,
                 tool,
                 input,
                 reason,
-            } => Called::Wait {
-                key,
-                tool,
-                input,
-                reason,
-            },
+            } => {
+                let step = self.call_step(state, &tool, Some(&key), None, "waiting", start_ms);
+                self.step(state, step);
+                Called::Wait {
+                    key,
+                    tool,
+                    input,
+                    reason,
+                }
+            }
             Checked::Ready(ready) => {
                 let tool = self.tools.get(&ready.tool).expect("checked");
                 self.seen(&Seen::Running(ready.tool.clone()));
-                let outcome = if state.standing.tainted((self.now)()) {
-                    tool.call_tainted(&ready.input, &ready.key)
-                } else {
-                    tool.call(&ready.input, &ready.key)
+                let tainted = state.standing.tainted((self.now)());
+                let written = self.begin(state, &ready);
+                if written {
+                    self.save(state);
+                }
+                let outcome = {
+                    let mut note = |text: &str| {
+                        state.journal.note(&ready.key, text);
+                        self.save(state);
+                    };
+                    tool.call_noting(&ready.input, &ready.key, tainted, &mut note)
                 };
                 let outcome = marked(&ready, outcome);
                 self.finish(state, &ready, &outcome);
+                let step = self.call_step(
+                    state,
+                    &ready.tool,
+                    Some(&ready.key),
+                    Some(ready.effect),
+                    ended_as(&outcome),
+                    start_ms,
+                );
+                self.step(state, step);
+                if written {
+                    self.save(state);
+                }
                 Called::Ran(outcome)
             }
         }
+    }
+
+    /// Writes a journaled call that changes something down before it runs
+    /// ([`Journal::begin`]); whether it was.
+    fn begin(&self, state: &mut State, ready: &Ready) -> bool {
+        if !ready.journaled || ready.effect == Effect::Read {
+            return false;
+        }
+        state.journal.begin(
+            &ready.key,
+            Entry {
+                tool: ready.tool.clone(),
+                input: ready.input.clone(),
+                effect: ready.effect,
+                outcome: Outcome::ok(""),
+                at: (self.now)(),
+                notes: Vec::new(),
+                dedup: Some(ready.dedup),
+            },
+        );
+        true
     }
 
     /// Everything that decides whether a call runs, without running it:
@@ -677,6 +974,8 @@ impl Runtime<'_> {
             ));
         }
         let journaled = tool.journaled();
+        let dedup = tool.dedup();
+        let mut retried = false;
         match state.journal.prior(&call_key) {
             Prior::Done(outcome) if journaled => {
                 // Said, so that the model does not take a recorded outcome
@@ -687,10 +986,20 @@ impl Runtime<'_> {
                 });
             }
             Prior::Unknown if journaled => {
-                return Checked::Answered(Outcome::uncertain(
-                    "not repeated: an identical earlier call may or may not have taken effect; \
-                     check its result before trying again",
-                ))
+                match dedup {
+                    // Made again: the tool keeps it from happening twice.
+                    Dedup::Idempotent | Dedup::Keyed => retried = true,
+                    Dedup::Reconciled => return Checked::Answered(Outcome::uncertain(
+                        "not repeated yet: an identical earlier call may or may not have taken \
+                         effect, and what it did cannot be told yet; ask again later",
+                    )),
+                    Dedup::AtLeastOnce => {
+                        return Checked::Answered(Outcome::uncertain(
+                            "not repeated: an identical earlier call may or may not have taken \
+                         effect; check its result before trying again",
+                        ))
+                    }
+                }
             }
             _ => {}
         }
@@ -738,6 +1047,8 @@ impl Runtime<'_> {
             key: call_key,
             effect,
             journaled,
+            dedup,
+            retried,
             pre_approved,
         })
     }
@@ -767,6 +1078,8 @@ impl Runtime<'_> {
                     effect: ready.effect,
                     outcome: outcome.clone(),
                     at: now,
+                    notes: Vec::new(),
+                    dedup: Some(ready.dedup),
                 },
             );
         }
@@ -826,6 +1139,15 @@ fn is_results(message: &Message) -> bool {
 
 /// The block that gives the model `outcome`: its pictures by their
 /// digests, their bytes kept in `images`.
+/// How a call ended, for its step: `ok`, `error` or `unknown`.
+fn ended_as(outcome: &Outcome) -> &'static str {
+    match (outcome.certain, outcome.is_error) {
+        (false, _) => "unknown",
+        (true, true) => "error",
+        (true, false) => "ok",
+    }
+}
+
 fn result_block(use_id: &str, outcome: &Outcome, images: &mut BTreeMap<String, String>) -> Block {
     let refs = outcome
         .pictures

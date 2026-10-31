@@ -58,6 +58,7 @@ fn runtime<'a>(models: Vec<&'a dyn Model>, tools: &'a Toolbox, autonomy: Autonom
         stopped: &never,
         watch: None,
         steer: None,
+        checkpoint: None,
     }
 }
 
@@ -991,4 +992,250 @@ fn a_person_s_album_stays_in_view_while_the_agent_takes_screenshots() {
     .body(&last)
     .to_string();
     assert_eq!(body.matches(r#""type":"image""#).count(), 11);
+}
+
+/// A paying tool that notes its transaction while it runs, and says what a
+/// lost call did as `found` says.
+struct Paying {
+    dedup: sion_agent::Dedup,
+    calls: Arc<AtomicUsize>,
+    found: Option<Outcome>,
+}
+
+impl sion_agent::Tool for Paying {
+    fn spec(&self) -> sion_agent::ToolSpec {
+        sion_agent::ToolSpec {
+            name: "pay".into(),
+            description: "pays".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Spend
+    }
+
+    fn call(&self, _input: &Value, _key: &str) -> Outcome {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        Outcome::ok(format!("paid, payment {n}"))
+    }
+
+    fn dedup(&self) -> sion_agent::Dedup {
+        self.dedup
+    }
+
+    fn call_noting(
+        &self,
+        input: &Value,
+        key: &str,
+        _tainted: bool,
+        note: &mut dyn FnMut(&str),
+    ) -> Outcome {
+        note("transaction t1");
+        self.call(input, key)
+    }
+
+    fn reconcile(&self, _input: &Value, _key: &str, notes: &[String]) -> Option<Outcome> {
+        // Without its note, what it did cannot be told.
+        if notes.is_empty() {
+            return None;
+        }
+        assert_eq!(notes, ["transaction t1"]);
+        self.found.clone()
+    }
+}
+
+/// A session that paid, as a crash would have left it on disk: kept before
+/// the call ran (`at` 0), the call written down as in flight, or after it
+/// noted its transaction (`at` 1).
+fn crashed_while_paying(tools: &Toolbox, at: usize) -> State {
+    let kept = std::sync::Mutex::new(Vec::<State>::new());
+    let keep = |state: &State| kept.lock().unwrap().push(state.clone());
+    let model = Scripted::new("m")
+        .calls("pay", json!({"to": "bob"}))
+        .says("Paid.");
+    let mut rt = runtime(vec![&model], tools, Autonomy::L6);
+    rt.checkpoint = Some(&keep);
+    let mut state = State::start("crash", "Pay bob", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    let kept = kept.into_inner().unwrap();
+    // Kept before the call ran, after its note, and after it ended.
+    assert_eq!(kept.len(), 3, "{kept:?}");
+    assert_eq!(
+        kept[1].journal.unknown().next().unwrap().1.notes,
+        ["transaction t1"]
+    );
+    assert_eq!(kept[2].journal.unknown().count(), 0);
+    let crashed = kept[at].clone();
+    assert_eq!(crashed.journal.unknown().count(), 1);
+    assert_eq!(crashed.messages.last().unwrap().role, Role::Assistant);
+    crashed
+}
+
+/// What the model was shown last in each request.
+fn last_shown(model: &Scripted) -> Vec<String> {
+    model
+        .requests()
+        .iter()
+        .map(|r| format!("{:?}", r.messages.last().unwrap()))
+        .collect()
+}
+
+#[test]
+fn a_call_cut_off_by_a_crash_is_not_made_again_until_settled() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut tools = Toolbox::new();
+    tools.add(Paying {
+        dedup: sion_agent::Dedup::AtLeastOnce,
+        calls: calls.clone(),
+        found: None,
+    });
+    let mut crashed = crashed_while_paying(&tools, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // Resumed, the cut-off turn is answered from the journal; the model
+    // pays again, and is not let to.
+    let model = Scripted::new("m2")
+        .calls("pay", json!({"to": "bob"}))
+        .says("I will check first.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    assert_eq!(
+        rt.run(&mut crashed),
+        Ended::Done {
+            text: "I will check first.".into()
+        }
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "not paid twice");
+    let shown = last_shown(&model);
+    assert!(
+        shown[0].contains("may or may not have taken effect"),
+        "{}",
+        shown[0]
+    );
+    assert!(shown[1].contains("not repeated"), "{}", shown[1]);
+    every_result_answers_a_call(&crashed);
+}
+
+#[test]
+fn a_lost_call_is_reconciled_from_what_it_noted() {
+    // Found done: the journal is settled, and a repeat is answered from it.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut tools = Toolbox::new();
+    tools.add(Paying {
+        dedup: sion_agent::Dedup::Reconciled,
+        calls: calls.clone(),
+        found: Some(Outcome::ok("paid at Pulse 7 (found on the ledger)")),
+    });
+    let mut crashed = crashed_while_paying(&tools, 1);
+    let model = Scripted::new("m2")
+        .calls("pay", json!({"to": "bob"}))
+        .says("Paid once.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    assert!(matches!(rt.run(&mut crashed), Ended::Done { .. }));
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "not paid twice");
+    assert!(last_shown(&model)[1].contains("paid at Pulse 7 (found on the ledger)"));
+    assert_eq!(crashed.journal.unknown().count(), 0);
+
+    // Found not done: forgotten, and made again.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut tools = Toolbox::new();
+    tools.add(Paying {
+        dedup: sion_agent::Dedup::Reconciled,
+        calls: calls.clone(),
+        found: Some(Outcome::error("never executed: past its last Pulse")),
+    });
+    let mut crashed = crashed_while_paying(&tools, 1);
+    let model = Scripted::new("m2")
+        .calls("pay", json!({"to": "bob"}))
+        .says("Paid now.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    assert!(matches!(rt.run(&mut crashed), Ended::Done { .. }));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "paid again: the first never was"
+    );
+    assert!(last_shown(&model)[1].contains("paid, payment 2"));
+}
+
+#[test]
+fn a_keyed_tool_is_made_again_after_a_lost_outcome() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut tools = Toolbox::new();
+    tools.add(Paying {
+        dedup: sion_agent::Dedup::Keyed,
+        calls: calls.clone(),
+        found: None,
+    });
+    let mut crashed = crashed_while_paying(&tools, 0);
+    let model = Scripted::new("m2")
+        .calls("pay", json!({"to": "bob"}))
+        .says("Done.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    assert!(matches!(rt.run(&mut crashed), Ended::Done { .. }));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let shown = &last_shown(&model)[1];
+    assert!(
+        shown.contains("[made again: the first identical call's outcome was lost"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_run_keeps_its_steps_for_its_trace() {
+    let (balance, _) = counted("balance", Effect::Read, |_| Outcome::ok("12.5 USD"));
+    let (pay, _) = counted("pay", Effect::Spend, |_| Outcome::error("refused"));
+    let mut tools = Toolbox::new();
+    tools.add(balance);
+    tools.add(pay);
+    let model = Scripted::new("m")
+        .calls("balance", json!({}))
+        .calls("pay", json!({"to": "bob"}))
+        .says("Done.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    let mut state = State::start("steps", "Pay bob", &rt.limits);
+    rt.run(&mut state);
+    let kinds: Vec<(&str, &str, Option<&str>)> = state
+        .steps
+        .iter()
+        .map(|s| (s.kind.as_str(), s.name.as_str(), s.outcome.as_deref()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("model", "scripted", None),
+            ("tool", "balance", Some("ok")),
+            ("model", "scripted", None),
+            ("tool", "pay", Some("error")),
+            ("model", "scripted", None),
+        ]
+    );
+    assert_eq!(state.steps[3].effect, Some(Effect::Spend));
+    let otel = sion_agent::trace::otel(&state, "lead", None);
+    assert_eq!(
+        otel["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+}
+
+#[test]
+fn a_lost_call_that_noted_nothing_is_held() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut tools = Toolbox::new();
+    tools.add(Paying {
+        dedup: sion_agent::Dedup::Reconciled,
+        calls: calls.clone(),
+        found: Some(Outcome::ok("unused")),
+    });
+    let mut crashed = crashed_while_paying(&tools, 0);
+    let model = Scripted::new("m2")
+        .calls("pay", json!({"to": "bob"}))
+        .says("Waiting.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    assert!(matches!(rt.run(&mut crashed), Ended::Done { .. }));
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "not paid twice");
+    assert!(last_shown(&model)[1].contains("cannot be told yet"));
+    assert_eq!(crashed.journal.unknown().count(), 1);
 }

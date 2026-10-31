@@ -75,6 +75,7 @@ fn runtime<'a>(model: &'a Scripted, tools: &'a Toolbox, autonomy: Autonomy) -> R
         stopped: &never,
         watch: None,
         steer: None,
+        checkpoint: None,
     }
 }
 

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sion_agent::model::Model;
 use sion_agent::scripted::Scripted;
-use sion_agent::tools::{Effect, Outcome, Tool};
+use sion_agent::tools::{Dedup, Effect, Outcome, Tool};
 use sion_agent::{
     Autonomy, Block, Ended, Limits, Policy, Role, Runtime, Seen, State, ToolSpec, Toolbox,
 };
@@ -149,11 +149,96 @@ impl Tool for PayTool {
     }
 
     fn call(&self, input: &Value, key: &str) -> Outcome {
-        pay(&self.0, input, key)
+        pay(&self.0, input, key, &mut |_| {})
+    }
+
+    /// A payment notes its transaction's digest, and the last Pulse it may
+    /// execute in, before it is sent: if its outcome is lost (a crash, the
+    /// node gone), the ledger says later what it did.
+    fn dedup(&self) -> Dedup {
+        Dedup::Reconciled
+    }
+
+    fn call_noting(
+        &self,
+        input: &Value,
+        key: &str,
+        _tainted: bool,
+        note: &mut dyn FnMut(&str),
+    ) -> Outcome {
+        pay(&self.0, input, key, note)
+    }
+
+    fn reconcile(&self, _input: &Value, _key: &str, notes: &[String]) -> Option<Outcome> {
+        reconcile_payment(&self.0, notes)
     }
 }
 
-fn pay(acting: &Acting, input: &Value, key: &str) -> Outcome {
+/// What a payment notes before it is sent: its transaction, and the last
+/// Pulse it may execute in, if known.
+fn payment_note(digest: TxDigest, last: Option<sion_core::ids::Pulse>) -> String {
+    match last {
+        Some(last) => format!(
+            "transaction {} may execute until Pulse {}",
+            digest.0.to_hex(),
+            last.0
+        ),
+        None => format!("transaction {}", digest.0.to_hex()),
+    }
+}
+
+/// The transaction a payment noted, and the last Pulse it may execute in.
+pub fn noted_payment(notes: &[String]) -> Option<(TxDigest, Option<u64>)> {
+    let note = notes.iter().rev().find(|n| n.starts_with("transaction "))?;
+    let mut words = note.split_whitespace().skip(1);
+    let digest = TxDigest::from_hash(Hash32::from_hex(words.next()?).ok()?);
+    let last = note
+        .rsplit_once("until Pulse ")
+        .and_then(|(_, n)| n.trim().parse().ok());
+    Some((digest, last))
+}
+
+/// What a payment whose outcome was lost did, from the ledger: executed (a
+/// success, or a refusal that moved nothing), rejected, or past the last
+/// Pulse it could execute in (it never will); none while it may still.
+fn reconcile_payment(acting: &Acting, notes: &[String]) -> Option<Outcome> {
+    let (digest, last) = noted_payment(notes)?;
+    let ledger = acting.ledger.as_ref();
+    match ledger.tx(digest).ok()? {
+        TxState::Executed(view) => {
+            let names = crate::describe::Names::devnet(["alice", "bob", "carol"]);
+            let receipt = crate::describe::receipt(&names, &view.effects);
+            Some(match &view.status {
+                ExecStatus::Success => Outcome::ok(format!(
+                    "Pulse {}: {receipt} Transaction {}. (Found on the ledger: the call's outcome \
+                     had been lost.)",
+                    view.pulse.0,
+                    digest.0.to_hex()
+                )),
+                _ => Outcome::error(format!(
+                    "refused by the ledger at Pulse {}: {receipt}",
+                    view.pulse.0
+                )),
+            })
+        }
+        TxState::Rejected(reason) => Some(Outcome::error(format!("not executed: {reason}"))),
+        TxState::Pending(_) => None,
+        TxState::Unknown => {
+            let last = last?;
+            let now = ledger.pulse().ok()?;
+            (now.0 > last).then(|| {
+                Outcome::error(format!(
+                    "never executed: transaction {} could execute until Pulse {last}, and the \
+                     chain is at Pulse {}",
+                    digest.0.to_hex(),
+                    now.0
+                ))
+            })
+        }
+    }
+}
+
+fn pay(acting: &Acting, input: &Value, key: &str, note: &mut dyn FnMut(&str)) -> Outcome {
     let to = input["to"].as_str().unwrap_or_default();
     let purpose = input["purpose"].as_str().unwrap_or_default();
     let amount = match crate::agents::parse_amount(input["amount"].as_str().unwrap_or_default()) {
@@ -206,14 +291,23 @@ fn pay(acting: &Acting, input: &Value, key: &str) -> Outcome {
     };
     // A keyless agent's payment is signed by its nearest keyed ancestor, in
     // a batch with whatever its siblings send at about the same time.
+    // The transaction is noted before it is sent (a batch's member once
+    // the batch is signed and sent): its digest shows later what it did.
     let submitted = match session.keyless_of(&acting.wallet) {
-        Some(alias) => crate::batcher::of(&alias.signer).submit(
-            &acting.ledger,
-            crate::session::Actor::Keyless(alias.charter),
+        Some(alias) => crate::batcher::of(&alias.signer)
+            .submit(
+                &acting.ledger,
+                crate::session::Actor::Keyless(alias.charter),
+                kind,
+                vec![reference],
+            )
+            .inspect(|digest| note(&payment_note(*digest, None))),
+        None => session.submit_noting(
+            &acting.wallet,
             kind,
             vec![reference],
+            &mut |digest, last| note(&payment_note(digest, Some(last))),
         ),
-        None => session.submit(&acting.wallet, kind, vec![reference]),
     };
     let digest = match submitted {
         Ok(digest) => digest,
@@ -253,6 +347,77 @@ fn pay(acting: &Acting, input: &Value, key: &str) -> Outcome {
              ledger_transaction before anything else; do not pay again."
         )),
     }
+}
+
+/// `sion agent settle`: lists the calls of `session` whose outcome is
+/// unknown, or settles the one `key` names (a unique prefix will do): it
+/// took effect (`done`, what it did), or it did not (`not_done`), so that
+/// it may be made again.
+pub fn settle(
+    session: &str,
+    key: Option<&str>,
+    done: Option<&str>,
+    not_done: bool,
+) -> Result<(), CliError> {
+    let mut saved = Saved::load(session)?;
+    let unknown: Vec<(String, sion_agent::journal::Entry)> = saved
+        .state
+        .journal
+        .unknown()
+        .map(|(key, entry)| (key.clone(), entry.clone()))
+        .collect();
+    let Some(prefix) = key else {
+        if unknown.is_empty() {
+            println!("session {}: no call's outcome is unknown", saved.state.id);
+        }
+        for (key, entry) in &unknown {
+            println!("{key}  {} {}", entry.tool, entry.input);
+            for note in &entry.notes {
+                println!("    noted: {note}");
+            }
+            println!("    {}", entry.outcome.content);
+        }
+        return Ok(());
+    };
+    let found: Vec<&String> = unknown
+        .iter()
+        .map(|(key, _)| key)
+        .filter(|key| key.starts_with(prefix))
+        .collect();
+    let key = match found.as_slice() {
+        [key] => (*key).clone(),
+        [] => {
+            return Err(CliError::Usage(format!(
+                "no call of session {} whose outcome is unknown has a key starting {prefix}",
+                saved.state.id
+            )))
+        }
+        _ => {
+            return Err(CliError::Usage(format!(
+                "{prefix} names several calls: give more of the key"
+            )))
+        }
+    };
+    match (done, not_done) {
+        (Some(what), false) => {
+            saved
+                .state
+                .journal
+                .settle(&key, Outcome::ok(format!("settled by a person: {what}")));
+            println!("{key}: done; the agent is told what it did when it calls it again");
+        }
+        (None, true) => {
+            saved.state.journal.forget(&key);
+            println!("{key}: not done; it may be made again");
+        }
+        _ => {
+            return Err(CliError::Usage(
+                "say what it did with --done <what>, or that it did nothing with --not-done".into(),
+            ))
+        }
+    }
+    saved.save()?;
+    Ok(())
 }
 
 /// The state of a transaction, by digest.
@@ -971,6 +1136,19 @@ impl Saved {
         // The kill switch, or this run's own stop.
         let stop = hooks.stop;
         let halted = move || stopped() || stop.is_some_and(|stop| stop());
+        // The session is kept on disk while it runs, before and after each
+        // call that changes something, so that a crash loses no record of
+        // what was done: the run it was in shows as ended by nothing.
+        let mut shell = self.clone();
+        shell.state = State::default();
+        shell.ended = None;
+        let checkpoint = move |state: &State| {
+            let mut copy = shell.clone();
+            copy.state = state.clone();
+            if let Err(e) = copy.save() {
+                eprintln!("session {}: not kept on disk: {e}", state.id);
+            }
+        };
         let runtime = Runtime {
             models: models.iter().map(|m| m.as_ref()).collect(),
             tools: &tools,
@@ -981,6 +1159,7 @@ impl Saved {
             stopped: &halted,
             watch: hooks.watch,
             steer: hooks.steer,
+            checkpoint: Some(&checkpoint),
         };
         let from = self.state.messages.len();
         let waiting = self.decided.take().or_else(|| self.state.pending.clone());
@@ -1023,6 +1202,7 @@ impl Saved {
                 },
                 watch: None,
                 steer: None,
+                checkpoint: None,
                 ..runtime
             };
             reflecting.run(&mut self.state);
@@ -1185,6 +1365,7 @@ impl Saved {
             stopped: &stopped,
             watch: None,
             steer: None,
+            checkpoint: None,
         };
         let pending = self.state.pending.clone();
         let done = if approve {

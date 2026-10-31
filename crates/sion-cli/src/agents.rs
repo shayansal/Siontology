@@ -419,6 +419,27 @@ pub enum AgentCommand {
     Trace {
         /// The session (its id, or a unique prefix of it).
         session: String,
+        /// Write its steps as OpenTelemetry spans (OTLP's JSON) instead:
+        /// the session, each model asked and each call, with their times,
+        /// tokens and outcomes.
+        #[arg(long)]
+        otel: bool,
+    },
+    /// The calls of a session whose outcome is unknown (a run stopped while
+    /// they ran, or a service did not answer), and settling one once you
+    /// know what it did: done, or not done (so that it may be made again).
+    Settle {
+        /// The session (its id, or a unique prefix of it).
+        session: String,
+        /// The call (its key, or a unique prefix of it); without it, the
+        /// calls whose outcome is unknown are listed.
+        key: Option<String>,
+        /// It took effect: what it did, as the agent will be told.
+        #[arg(long, value_name = "WHAT", conflicts_with = "not_done")]
+        done: Option<String>,
+        /// It did not take effect: it may be made again.
+        #[arg(long)]
+        not_done: bool,
     },
     /// The kill switch: `on` stops every agent run on this machine before
     /// its next call; `off` lets them run again.
@@ -930,14 +951,28 @@ pub fn run(
             }
             Ok(())
         }
-        AgentCommand::Trace { session: id } => {
+        AgentCommand::Trace { session: id, otel } => {
             let saved = crate::runtime::Saved::load(&id)?;
-            println!(
-                "{}",
-                sion_agent::trace::chat_line(&saved.state, &saved.prompt, saved.ended.as_ref())
-            );
+            if otel {
+                let agent = saved.wallet.clone();
+                println!(
+                    "{}",
+                    sion_agent::trace::otel(&saved.state, &agent, saved.ended.as_ref())
+                );
+            } else {
+                println!(
+                    "{}",
+                    sion_agent::trace::chat_line(&saved.state, &saved.prompt, saved.ended.as_ref())
+                );
+            }
             Ok(())
         }
+        AgentCommand::Settle {
+            session,
+            key,
+            done,
+            not_done,
+        } => crate::runtime::settle(&session, key.as_deref(), done.as_deref(), not_done),
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),

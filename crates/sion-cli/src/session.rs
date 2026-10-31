@@ -523,6 +523,19 @@ impl<'a> Session<'a> {
         kind: TxKind,
         extra: Vec<ObjectRef>,
     ) -> Result<sion_core::ids::TxDigest, CliError> {
+        self.submit_noting(name, kind, extra, &mut |_, _| {})
+    }
+
+    /// [`Session::submit`], telling `noted` the transaction's digest and the
+    /// last Pulse it may execute in before it is sent: what later shows
+    /// whether it was, if the answer is lost.
+    pub fn submit_noting(
+        &mut self,
+        name: &str,
+        kind: TxKind,
+        extra: Vec<ObjectRef>,
+        noted: &mut dyn FnMut(sion_core::ids::TxDigest, Pulse),
+    ) -> Result<sion_core::ids::TxDigest, CliError> {
         let config = self.config.clone();
         let ledger = self.ledger;
         let view = RemoteView::new(ledger, config);
@@ -535,6 +548,7 @@ impl<'a> Session<'a> {
                 .remove(0),
             None => self.wallet(name).build(&view, kind, extra)?,
         };
+        noted(tx.digest(), tx.tx.expires_at);
         Ok(ledger.submit(&tx)?.digest)
     }
 

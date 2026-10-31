@@ -178,7 +178,13 @@ session ec2bdc0df92e8230: done
 and lets it go on. `sion agent sessions` lists the sessions on this
 machine; `sion agent trace <session>` prints one as a single JSON line in
 the chat format with tool calls that fine-tuning tools read, with how it
-ended.
+ended. `sion agent trace <session> --otel` prints its steps as
+OpenTelemetry spans, OTLP's JSON, for a tracing backend: the session
+(`invoke_agent`), each model asked (`chat`, with its tokens) and each call
+(`execute_tool`, with its outcome), named as OpenTelemetry's generative-AI
+conventions name them. Those conventions are still at their Development
+stage, so the names may change; a call's effect and key, and whether the
+session was tainted, are under `sion.`.
 
 ## Memory
 
@@ -484,10 +490,25 @@ once others have verified the better version: see
 - **No accidental repeats.** A call that changed something is recorded
   under a key made of the session, the tool and the input. The same call
   again returns the recorded outcome, saying so, instead of paying twice.
-  A payment whose outcome is unknown (the node stopped answering after it
-  was submitted) is reported as uncertain and is never repeated: the agent
-  is told to check it with `ledger_transaction`. Calls meant to run again
-  are not recorded: shell commands, skills' scripts and file writes.
+  Calls meant to run again are not recorded: shell commands, skills'
+  scripts and file writes.
+- **Nothing lost in a crash.** A call that changes something is written
+  down before it runs, and the session is kept on disk then, after
+  whatever the call notes on the way, and after it ends. A session resumed
+  after a crash finds the call unknown, not forgotten: the turn it was in
+  is answered from the journal, and the call is not made again until its
+  outcome is known.
+- **What "exactly once" means here.** A completed call is never repeated.
+  A call whose outcome is unknown is repeated only by a tool that keeps
+  its effect from happening twice, as each tool declares: one whose
+  service drops a repeated key, or one that writes the same thing again,
+  is made again; a payment notes its transaction's digest and the last
+  Pulse it may execute in before it is sent, so the ledger says later
+  what it did (executed: its receipt, and it is not paid again; past its
+  last Pulse: it never will be, and it may be paid again; still pending:
+  it waits); any other call waits for a person. `sion agent settle
+  <session>` lists the calls whose outcome is unknown, and settles one:
+  `--done <what it did>`, or `--not-done` so that it may be made again.
 - **Bounded runs.** 12 model turns, 4 more after each turn in which a tool
   call succeeded, at most 32. A call that failed twice with the same input
   is blocked. Long conversations are compacted: the middle is replaced by

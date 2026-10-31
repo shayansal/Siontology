@@ -521,6 +521,7 @@ fn propose(mutator: &dyn Model, prompt: &str, limits: &Limits, generation: usize
         stopped: &|| false,
         watch: None,
         steer: None,
+        checkpoint: None,
     };
     let mut state = State::start(&format!("mutate-{generation}"), prompt, limits);
     runtime.run(&mut state);
@@ -848,6 +849,7 @@ pub fn evolve_instructions(
             stopped: &|| false,
             watch: None,
             steer: None,
+            checkpoint: None,
         };
         let mut state = State::start(
             &format!("mutate-instructions-{generation}"),

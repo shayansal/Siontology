@@ -10,6 +10,31 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Effects that cannot happen twice by accident; traces for OpenTelemetry
+
+- **Nothing lost in a crash.** A call that changes something is written
+  down before it runs, and the session kept on disk then, after each note
+  the call takes and after it ends. A session resumed after a crash finds
+  the call unknown, not forgotten, and the turn it was in is answered from
+  the journal.
+- **Each tool says how it keeps its effect from happening twice**
+  (`sion_agent::Dedup`): a repeat changes nothing, its service drops a
+  repeated key, what it did is reconciled from what it noted, or nothing
+  does (a person settles it). A completed call is never repeated; a call
+  whose outcome is unknown is repeated only by a tool that keeps it from
+  happening twice.
+- **Payments reconciled from the ledger.** `ledger_pay` notes its
+  transaction's digest and last Pulse before sending it; if its outcome
+  is lost, the ledger says what it did: executed (not paid again), past
+  its last Pulse (paid again), or pending (it waits).
+- **`sion agent settle <session>`** lists the calls whose outcome is
+  unknown and settles one, done or not done.
+- **`sion agent trace --otel`**: a session's steps (each model asked, each
+  call, their times, tokens and outcomes) as OpenTelemetry spans, named
+  after its generative-AI conventions (still at their Development stage).
+  The batched path (subagents) now runs tainted sessions' calls as
+  tainted.
+
 ### More channels: WeCom, QQ, WeChat, Zalo, X, Synology Chat, SimpleX, Nostr, ntfy and phone calls
 
 - **WeCom** (`--via wecom`): a self-built app's callbacks, encrypted and

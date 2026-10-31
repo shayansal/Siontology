@@ -128,6 +128,68 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
     let trace = sion_agent::trace::chat_line(&saved.state, &saved.system, saved.ended.as_ref());
     assert!(trace.contains("ledger_pay"));
 
+    // The payment noted its transaction before it was sent. Had its outcome
+    // been lost, the ledger says what it did: done, so it is not made
+    // again; a transaction past its last Pulse never will be, so it may be;
+    // one whose last Pulse is not known cannot be told yet.
+    let (key, paid) = saved
+        .state
+        .journal
+        .entries()
+        .iter()
+        .find(|(_, e)| e.tool == "ledger_pay" && !e.outcome.is_error)
+        .expect("the payment was journaled");
+    assert_eq!(paid.notes.len(), 1, "{:?}", paid.notes);
+    assert!(
+        paid.notes[0].starts_with("transaction "),
+        "{:?}",
+        paid.notes
+    );
+    assert!(
+        paid.notes[0].contains(" may execute until Pulse "),
+        "{:?}",
+        paid.notes
+    );
+    let tool = runtime::PayTool(runtime::Acting {
+        ledger: ledger.clone(),
+        wallet: "agent-7".into(),
+        agent,
+    });
+    use sion_agent::Tool;
+    assert_eq!(tool.dedup(), sion_agent::Dedup::Reconciled);
+    let found = tool
+        .reconcile(&paid.input, key, &paid.notes)
+        .expect("found on the ledger");
+    assert!(found.certain && !found.is_error, "{found:?}");
+    assert!(
+        found.content.contains("Found on the ledger"),
+        "{}",
+        found.content
+    );
+    let never = vec![format!(
+        "transaction {} may execute until Pulse 1",
+        "00".repeat(32)
+    )];
+    let gone = tool
+        .reconcile(&paid.input, key, &never)
+        .expect("past its last Pulse");
+    assert!(gone.certain && gone.is_error, "{gone:?}");
+    assert!(
+        gone.content.starts_with("never executed"),
+        "{}",
+        gone.content
+    );
+    let unsure = vec![format!("transaction {}", "00".repeat(32))];
+    assert_eq!(tool.reconcile(&paid.input, key, &unsure), None);
+    // Its steps, as OpenTelemetry spans.
+    let otel = sion_agent::trace::otel(&saved.state, "agent-7", saved.ended.as_ref());
+    let spans = otel["resourceSpans"][0]["scopeSpans"][0]["spans"].to_string();
+    assert!(spans.contains("execute_tool ledger_pay"), "{spans}");
+    assert!(
+        spans.contains(r#"{"key":"sion.effect","value":{"stringValue":"spend"}}"#),
+        "{spans}"
+    );
+
     // At L5 a payment waits for a person; approved, it is made once.
     let model = script(
         &home,

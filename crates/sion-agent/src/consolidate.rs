@@ -345,6 +345,7 @@ pub fn consolidate(
         stopped,
         watch: None,
         steer: None,
+        checkpoint: None,
     };
     let mut state = State::start("consolidate", &prompt(material), limits);
     let ended = runtime.run(&mut state);
