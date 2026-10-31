@@ -367,6 +367,7 @@ fn profile(home: &Path, name: &str, agent: ObjectId, scripts: &[Value]) -> Profi
         skill_approvals: true,
         screen: Default::default(),
         image_model: None,
+        home_assistant: false,
     }
 }
 
@@ -1175,6 +1176,195 @@ fn a_bridge_answers_chats_side_by_side_and_as_they_go_on() {
         their_words(&session_of("fake:files-again:c-files")),
         ["And the report?\n(A file was sent that could not be fetched: gone.)"]
     );
+
+    // A2A: the card other agents read, and a task in each wire version,
+    // its conversation going on in its context; streamed, the reply grows.
+    let a2a = profile(
+        &home,
+        "a2a",
+        agent,
+        &[json!([
+            {"say": "85 USD left."},
+            {"say": "Still 85 USD."},
+            {"say": "Streamed, 85 USD."}
+        ])],
+    );
+    let mut profiles = sion_cli::profiles::all().unwrap();
+    profiles.insert("a2a".into(), a2a.clone());
+    sion_cli::profiles::save_all(&profiles).unwrap();
+    sion_cli::a2a::publish(sion_cli::a2a::Published {
+        profiles: vec!["a2a".into()],
+        base: Some("https://agents.example.org".into()),
+    });
+    let listen = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("127.0.0.1:{}", probe.local_addr().unwrap().port())
+    };
+    let admin = "a2a-admin-token-0123456789";
+    let serving = {
+        let (ledger, listen) = (ledger.clone(), listen.clone());
+        std::thread::spawn(move || {
+            sion_cli::channels::serve_with(ledger, &listen, Some(admin), Some(6)).unwrap()
+        })
+    };
+    let client = sion_http::Client::new(sion_http::Options {
+        allow_private: true,
+        proxy_from_env: false,
+        timeout: Duration::from_secs(120),
+        ..sion_http::Options::default()
+    })
+    .unwrap();
+    let get = |path: &str| -> Value {
+        for _ in 0..100 {
+            if let Ok(fetched) = client.get(&format!("http://{listen}{path}"), 1 << 20) {
+                return serde_json::from_slice(&fetched.body).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the channel did not answer");
+    };
+    let card = get("/.well-known/agent-card.json");
+    assert_eq!(card["name"], "a2a");
+    assert_eq!(
+        card["url"],
+        "https://agents.example.org/v1/profiles/a2a/a2a"
+    );
+    assert_eq!(card["supportedInterfaces"][0]["protocolVersion"], "1.0");
+    assert_eq!(card["capabilities"]["streaming"], true);
+    let auth = format!("Bearer {admin}");
+    let rpc = |body: Value, version: Option<&str>| -> Vec<u8> {
+        let mut headers = vec![
+            ("Authorization", auth.as_str()),
+            ("Content-Type", "application/json"),
+        ];
+        if let Some(version) = version {
+            headers.push(("A2A-Version", version));
+        }
+        client
+            .request(
+                "POST",
+                &format!("http://{listen}/v1/profiles/a2a/a2a"),
+                &headers,
+                Some(body.to_string().as_bytes()),
+                1 << 20,
+            )
+            .unwrap()
+            .body
+    };
+    let sent: Value = serde_json::from_slice(&rpc(
+        json!({"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": {"message": {
+            "kind": "message", "role": "user", "messageId": "m1", "contextId": "ctx-1",
+            "parts": [{"kind": "text", "text": "How much budget is left?"}]}}}),
+        None,
+    ))
+    .unwrap();
+    let task = &sent["result"];
+    assert_eq!(
+        (
+            task["kind"].as_str(),
+            task["contextId"].as_str(),
+            task["status"]["state"].as_str()
+        ),
+        (Some("task"), Some("ctx-1"), Some("completed")),
+        "{sent}"
+    );
+    assert_eq!(task["artifacts"][0]["parts"][0]["text"], "85 USD left.");
+    let again: Value = serde_json::from_slice(&rpc(
+        json!({"jsonrpc": "2.0", "id": 2, "method": "SendMessage", "params": {"message": {
+            "role": "ROLE_USER", "messageId": "m2", "contextId": "ctx-1",
+            "parts": [{"text": "And now?"}]}}}),
+        Some("1.0"),
+    ))
+    .unwrap();
+    let task = &again["result"]["task"];
+    assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED", "{again}");
+    assert_eq!(task["artifacts"][0]["parts"][0]["text"], "Still 85 USD.");
+    let asked = session_of("a2a:a2a:ctx-1");
+    assert_eq!(
+        their_words(&asked),
+        ["How much budget is left?", "And now?"]
+    );
+    let found: Value = serde_json::from_slice(&rpc(
+        json!({"jsonrpc": "2.0", "id": 3, "method": "GetTask", "params": {"id": task["id"]}}),
+        None,
+    ))
+    .unwrap();
+    assert_eq!(found["result"]["id"], task["id"]);
+    let missing: Value = serde_json::from_slice(&rpc(
+        json!({"jsonrpc": "2.0", "id": 4, "method": "tasks/get", "params": {"id": "nope"}}),
+        None,
+    ))
+    .unwrap();
+    assert_eq!(missing["error"]["code"], -32001);
+    let streamed = String::from_utf8(rpc(
+        json!({"jsonrpc": "2.0", "id": 5, "method": "message/stream", "params": {"message": {
+            "kind": "message", "role": "user", "messageId": "m3",
+            "parts": [{"kind": "text", "text": "Stream it."}]}}}),
+        None,
+    ))
+    .unwrap();
+    let events: Vec<Value> = streamed
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(events[0]["result"]["kind"], "task");
+    assert!(events
+        .iter()
+        .any(|e| e["result"]["kind"] == "artifact-update"));
+    let last = events.last().unwrap();
+    assert_eq!(
+        (
+            last["result"]["kind"].as_str(),
+            last["result"]["final"].as_bool()
+        ),
+        (Some("status-update"), Some(true))
+    );
+    serving.join().unwrap();
+
+    // In the terminal: what is typed, answered as it is written; by voice,
+    // recorded, heard and spoken, through programs given the files.
+    let talker = profile(
+        &home,
+        "talker",
+        agent,
+        &[json!([{"say": "85 USD left."}, {"say": "Spoken: 85 USD."}])],
+    );
+    let mut out = Vec::new();
+    sion_cli::talk::run(
+        ledger.clone(),
+        &talker,
+        &sion_cli::talk::Talk {
+            conversation: "desk".into(),
+            ..Default::default()
+        },
+        &mut "How much budget is left?\n".as_bytes(),
+        &mut out,
+    )
+    .unwrap();
+    let shown = String::from_utf8(out).unwrap();
+    assert!(shown.contains("you> agent> 85 USD left.\n"), "{shown:?}");
+    let played = home.join("played");
+    let sh = |script: &str| vec!["sh".to_string(), "-c".to_string(), script.to_string()];
+    let mut out = Vec::new();
+    sion_cli::talk::run(
+        ledger.clone(),
+        &talker,
+        &sion_cli::talk::Talk {
+            conversation: "desk".into(),
+            hearing: Some(sion_cli::voice::Hearing::Command(sh("echo Say it aloud."))),
+            speaking: Some(sion_cli::voice::Speaking::Command(sh("printf OggS; cat"))),
+            record: sh("printf 'RIFF....WAVE' > \"$0\""),
+            play: sh(&format!("cp \"$0\" {}", played.display())),
+        },
+        &mut "\n".as_bytes(),
+        &mut out,
+    )
+    .unwrap();
+    let shown = String::from_utf8(out).unwrap();
+    assert!(shown.contains("you (heard): Say it aloud."), "{shown:?}");
+    assert!(shown.contains("agent> Spoken: 85 USD."), "{shown:?}");
+    assert_eq!(std::fs::read(&played).unwrap(), b"OggSSpoken: 85 USD.");
 
     drop(devnet);
     std::fs::remove_dir_all(&workspace).unwrap();

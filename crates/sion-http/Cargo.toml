@@ -12,6 +12,7 @@ homepage.workspace = true
 [dependencies]
 ureq.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
+aws-lc-rs.workspace = true
 rustls-pki-types = { version = "1", features = ["std"] }
 webpki-roots = "1"
 thiserror.workspace = true

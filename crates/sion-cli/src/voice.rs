@@ -6,12 +6,15 @@
 //! |---|---|
 //! | `openai:<model>` | OpenAI's transcriptions (`OPENAI_API_KEY`; `OPENAI_BASE_URL` for a compatible server, a local one included) |
 //! | `groq:<model>` | Groq's (`GROQ_API_KEY`) |
+//! | `deepgram:<model>` | Deepgram's (`DEEPGRAM_API_KEY`): `nova-3`, say |
+//! | `elevenlabs:<model>` | ElevenLabs' Scribe (`ELEVENLABS_API_KEY`): `scribe_v1`, say |
 //! | `command:<program …>` | A program on this machine, given the audio's file as its last argument, which prints the text |
 //!
 //! | `--speak` | What speaks |
 //! |---|---|
 //! | `openai:<model>:<voice>` | OpenAI's speech (`OPENAI_API_KEY`, `OPENAI_BASE_URL`), as Ogg Opus |
 //! | `elevenlabs:<voice id>[:<model>]` | ElevenLabs (`ELEVENLABS_API_KEY`), as MP3 |
+//! | `deepgram:<voice model>` | Deepgram's Aura (`DEEPGRAM_API_KEY`), as MP3: `aura-2-thalia-en`, say |
 //! | `command:<program …>` | A program given the text on its standard input, which writes Ogg Opus or MP3 to its standard output |
 //!
 //! What a voice note says is what its sender says: it goes to the agent as
@@ -204,16 +207,31 @@ pub enum Hearing {
         /// The model.
         model: String,
     },
+    /// Deepgram's speech to text (`/v1/listen`), the audio as the body.
+    Deepgram {
+        /// Its base URL (`https://api.deepgram.com`).
+        base: String,
+        /// The model (`nova-3`).
+        model: String,
+    },
+    /// ElevenLabs' speech to text (Scribe, `/v1/speech-to-text`).
+    ElevenLabs {
+        /// Its base URL (`https://api.elevenlabs.io`).
+        base: String,
+        /// The model (`scribe_v1`).
+        model: String,
+    },
     /// A program given the audio's file as its last argument, which prints
     /// the text.
     Command(Vec<String>),
 }
 
 impl Hearing {
-    /// From `openai:<model>`, `groq:<model>` or `command:<program …>`.
+    /// From `openai:<model>`, `groq:<model>`, `deepgram:<model>`,
+    /// `elevenlabs:<model>` or `command:<program …>`.
     pub fn parse(spec: &str) -> Result<Hearing, String> {
         let (kind, rest) = spec.split_once(':').ok_or_else(|| {
-            format!("{spec:?}: give openai:<model>, groq:<model> or command:<program>")
+            format!("{spec:?}: give openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model> or command:<program>")
         })?;
         match kind {
             "openai" if !rest.is_empty() => Ok(Hearing::Api {
@@ -227,9 +245,17 @@ impl Hearing {
                 key: Some("GROQ_API_KEY".into()),
                 model: rest.to_string(),
             }),
+            "deepgram" if !rest.is_empty() => Ok(Hearing::Deepgram {
+                base: env("DEEPGRAM_BASE_URL").unwrap_or_else(|| "https://api.deepgram.com".into()),
+                model: rest.to_string(),
+            }),
+            "elevenlabs" if !rest.is_empty() => Ok(Hearing::ElevenLabs {
+                base: env("ELEVENLABS_API_BASE").unwrap_or_else(|| "https://api.elevenlabs.io".into()),
+                model: rest.to_string(),
+            }),
             "command" => Ok(Hearing::Command(command_line(rest)?)),
             _ => Err(format!(
-                "{spec:?}: give openai:<model>, groq:<model> or command:<program>"
+                "{spec:?}: give openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model> or command:<program>"
             )),
         }
     }
@@ -278,6 +304,73 @@ impl Hearing {
                 value["text"]
                     .as_str()
                     .ok_or("the transcription service gave no text")?
+                    .to_string()
+            }
+            Hearing::Deepgram { base, model } => {
+                let key =
+                    env("DEEPGRAM_API_KEY").ok_or("set DEEPGRAM_API_KEY to hear voice notes")?;
+                let auth = format!("Token {key}");
+                let url = format!(
+                    "{}/v1/listen?model={}&smart_format=true",
+                    base.trim_end_matches('/'),
+                    crate::webhooks::encode_form(&[("m", model)]).trim_start_matches("m=")
+                );
+                let response = client()?
+                    .send(
+                        "POST",
+                        &url,
+                        &[
+                            ("Authorization", &auth),
+                            ("Content-Type", &audio.media_type),
+                        ],
+                        Some(&audio.bytes),
+                    )
+                    .map_err(|e| format!("{url}: {}", e.to_string().replace(&key, "<key>")))?;
+                let status = response.status;
+                let bytes = response.read_all(1 << 20).map_err(|e| e.to_string())?;
+                let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                if status != 200 {
+                    return Err(format!(
+                        "Deepgram answered HTTP {status}: {}",
+                        value["err_msg"].as_str().unwrap_or("no reason given")
+                    ));
+                }
+                value["results"]["channels"][0]["alternatives"][0]["transcript"]
+                    .as_str()
+                    .ok_or("Deepgram gave no transcript")?
+                    .to_string()
+            }
+            Hearing::ElevenLabs { base, model } => {
+                let key = env("ELEVENLABS_API_KEY")
+                    .ok_or("set ELEVENLABS_API_KEY to hear voice notes")?;
+                let (content_type, body) = Form::new()
+                    .text("model_id", model)
+                    .file("file", audio)
+                    .finish();
+                let url = format!("{}/v1/speech-to-text", base.trim_end_matches('/'));
+                let response = client()?
+                    .send(
+                        "POST",
+                        &url,
+                        &[("xi-api-key", &key), ("Content-Type", &content_type)],
+                        Some(&body),
+                    )
+                    .map_err(|e| format!("{url}: {}", e.to_string().replace(&key, "<key>")))?;
+                let status = response.status;
+                let bytes = response.read_all(1 << 20).map_err(|e| e.to_string())?;
+                let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                if status != 200 {
+                    return Err(format!(
+                        "ElevenLabs answered HTTP {status}: {}",
+                        value["detail"]["message"]
+                            .as_str()
+                            .or(value["detail"].as_str())
+                            .unwrap_or("no reason given")
+                    ));
+                }
+                value["text"]
+                    .as_str()
+                    .ok_or("ElevenLabs gave no text")?
                     .to_string()
             }
             Hearing::Command(argv) => {
@@ -330,6 +423,13 @@ pub enum Speaking {
         /// The model.
         model: String,
     },
+    /// Deepgram's Aura (`/v1/speak`), asked for MP3.
+    Deepgram {
+        /// Its base URL (`https://api.deepgram.com`).
+        base: String,
+        /// The voice's model (`aura-2-thalia-en`).
+        model: String,
+    },
     /// A program given the text on its standard input, which writes the
     /// audio (Ogg Opus or MP3) to its standard output.
     Command(Vec<String>),
@@ -341,7 +441,7 @@ impl Speaking {
     pub fn parse(spec: &str) -> Result<Speaking, String> {
         let bad = || {
             format!(
-                "{spec:?}: give openai:<model>:<voice>, elevenlabs:<voice id>[:<model>] or command:<program>"
+                "{spec:?}: give openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model> or command:<program>"
             )
         };
         let (kind, rest) = spec.split_once(':').ok_or_else(bad)?;
@@ -373,6 +473,10 @@ impl Speaking {
                     model: model.to_string(),
                 })
             }
+            "deepgram" if !rest.is_empty() => Ok(Speaking::Deepgram {
+                base: env("DEEPGRAM_BASE_URL").unwrap_or_else(|| "https://api.deepgram.com".into()),
+                model: rest.to_string(),
+            }),
             "command" => Ok(Speaking::Command(command_line(rest)?)),
             _ => Err(bad()),
         }
@@ -416,6 +520,21 @@ impl Speaking {
                 );
                 let body = json!({"text": text, "model_id": model});
                 fetch_audio(&url, &headers, &body)?
+            }
+            Speaking::Deepgram { base, model } => {
+                let key = env("DEEPGRAM_API_KEY").ok_or("set DEEPGRAM_API_KEY to speak replies")?;
+                let auth = format!("Token {key}");
+                let headers = [
+                    ("Content-Type", "application/json"),
+                    ("Authorization", auth.as_str()),
+                ];
+                let url = format!(
+                    "{}/v1/speak?model={}&encoding=mp3",
+                    base.trim_end_matches('/'),
+                    crate::webhooks::encode_form(&[("m", model)]).trim_start_matches("m=")
+                );
+                fetch_audio(&url, &headers, &json!({"text": text}))
+                    .map_err(|e| e.replace(&key, "<key>"))?
             }
             Speaking::Command(argv) => {
                 let mut child = Command::new(&argv[0])

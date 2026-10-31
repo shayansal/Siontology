@@ -719,13 +719,15 @@ Commands:
   login          Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
   pairing        People a channel did not know who asked to talk to a profile: the codes waiting, approving one, letting a chat out again
   chatgpt        Sign in with ChatGPT, so that agents may run on your plan (`--model chatgpt:<model>`): OpenAI's sign-in for open-source apps, in your browser; the tokens kept encrypted on this machine
+  weixin         Sign a WeChat account in for `--via weixin`, by a QR code scanned with WeChat (Tencent's iLink bot protocol), or sign it out
   service        Long-running commands (a bridge, the server, the scheduler) as services of your own: systemd user units on Linux, launchd agents on macOS
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
   serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's POST /v1/chat/completions (a profile as the model) and GET /v1/models, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
+  talk           Talk with a profile in the terminal: what you type goes to it, its reply comes as the model writes it; with --voice, heard and spoken
   telegram       Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
-  bridge         Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN, SLACK_APP_TOKEN for Socket Mode), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api), telegram, mattermost (MATTERMOST_URL, MATTERMOST_TOKEN), irc (IRC_SERVER, IRC_NICK, IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), email (EMAIL_ADDRESS, EMAIL_IMAP_URL, EMAIL_SMTP_URL, EMAIL_PASSWORD or EMAIL_TOKEN_COMMAND), imessage (through imsg on the Mac that runs Messages, IMSG_COMMAND), dingtalk (DINGTALK_CLIENT_ID, DINGTALK_CLIENT_SECRET), or through webhooks to --listen: whatsapp (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET), sms through Twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL), teams (TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID for a single-tenant bot), google-chat (GOOGLE_CHAT_AUDIENCE, and GOOGLE_CHAT_CREDENTIALS to answer through the Chat API), feishu or lark (FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_VERIFICATION_TOKEN) or nextcloud-talk (NEXTCLOUD_URL, NEXTCLOUD_TALK_SECRET)
+  bridge         Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN, SLACK_APP_TOKEN for Socket Mode), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api), telegram, mattermost (MATTERMOST_URL, MATTERMOST_TOKEN), irc (IRC_SERVER, IRC_NICK, IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), email (EMAIL_ADDRESS, EMAIL_IMAP_URL, EMAIL_SMTP_URL, EMAIL_PASSWORD or EMAIL_TOKEN_COMMAND), imessage (through imsg on the Mac that runs Messages, IMSG_COMMAND), dingtalk (DINGTALK_CLIENT_ID, DINGTALK_CLIENT_SECRET), or through webhooks to --listen: whatsapp (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET), sms through Twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL), teams (TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID for a single-tenant bot), google-chat (GOOGLE_CHAT_AUDIENCE, and GOOGLE_CHAT_CREDENTIALS to answer through the Chat API), feishu or lark (FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_VERIFICATION_TOKEN, FEISHU_ENCRYPT_KEY), nextcloud-talk (NEXTCLOUD_URL, NEXTCLOUD_TALK_SECRET), wecom (WECOM_CORP_ID, WECOM_AGENT_ID, WECOM_SECRET, WECOM_TOKEN, WECOM_AES_KEY), qq (QQ_APP_ID, QQ_APP_SECRET), synology-chat (SYNOLOGY_CHAT_INCOMING_URL, SYNOLOGY_CHAT_TOKEN) or phone calls through Twilio Voice (TWILIO_AUTH_TOKEN, TWILIO_VOICE_URL); or weixin (after `sion agent weixin login`), zalo (ZALO_BOT_TOKEN), ntfy (NTFY_URL, NTFY_TOKEN, its topics as --allow), x, its direct messages (X_ACCESS_TOKEN), simplex, through SimpleX's terminal client (SIMPLEX_URL), or nostr, direct messages on relays (NOSTR_PRIVATE_KEY, NOSTR_RELAYS)
   gateway        Run a gateway: people write to profiles served from other machines, through POST /v1/profiles/<name>/messages with a profile's token (`sion agent profile token add`); hosts connect out to it and prove they hold each profile's agent key, and messages reach an agent only while the ledger has it in good standing
   host           Serve profiles through a gateway: connect out to it, prove the agents' keys, and answer the messages it passes on
   help           Print this message or the help of the given subcommand(s)
@@ -1277,6 +1279,8 @@ Options:
           Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
       --image-model <PROVIDER:MODEL>
           Let it make pictures in its workspace (`image_generate`): openai:<model>, such as openai:gpt-image-1 (OPENAI_API_KEY)
+      --home-assistant
+          Give it Home Assistant's devices as tools (HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN): their states read, a service called as an external call
   -h, --help
           Print help
 ```
@@ -1645,6 +1649,51 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion agent weixin`
+
+```text
+Sign a WeChat account in for `--via weixin`, by a QR code scanned with WeChat (Tencent's iLink bot protocol), or sign it out
+
+Usage: sion agent weixin [OPTIONS] <COMMAND>
+
+Commands:
+  login   Sign a WeChat account in: scan the QR code shown with WeChat, and confirm
+  logout  Forget the sign-in
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+WeChat's iLink bot protocol is published only as Tencent's plugin's code and others' descriptions of it; the bridge has been run only against a stand-in built from them. See [WeChat](../guides/agent-teams.md#wechat).
+
+## `sion agent weixin login`
+
+```text
+Sign a WeChat account in: scan the QR code shown with WeChat, and confirm
+
+Usage: sion agent weixin login [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Draws the QR code in the terminal (black on white where the output is a terminal) and prints its address; the sign-in is kept sealed beside the secrets (`weixin.bin`).
+
+## `sion agent weixin logout`
+
+```text
+Forget the sign-in
+
+Usage: sion agent weixin logout [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
 ## `sion agent service`
 
 ```text
@@ -1969,10 +2018,35 @@ Options:
       --listen <LISTEN>        Where to listen [default: 127.0.0.1:8790]
       --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --token-env <TOKEN_ENV>  The environment variable holding the machine's token, which reaches every profile and session (at least 16 characters); without it, only profiles' own tokens are taken [default: SION_AGENT_TOKEN]
+      --a2a <PROFILE>          Give other agents A2A cards for these profiles (comma-separated): the first at /.well-known/agent-card.json, each at /v1/profiles/<name>/agent-card.json, answered at /v1/profiles/<name>/a2a
+      --public-url <URL>       The address other agents reach this channel at, for the cards (https://agents.example.org); else the one a request came to
   -h, --help                   Print help
 ```
 
-Whoever holds the token can start and continue every profile's sessions, approvals included (`agent:channel-token`). Requests are handled one at a time. See [Teams, schedules and channels](../guides/agent-teams.md#http).
+Whoever holds the token can start and continue every profile's sessions, approvals included (`agent:channel-token`). Requests are handled one at a time. With `--a2a`, the profiles named are A2A agents for other agents, with a card each ([Agents that talk A2A](../guides/agent-teams.md#agents-that-talk-a2a)). See [Teams, schedules and channels](../guides/agent-teams.md#http).
+
+## `sion agent talk`
+
+```text
+Talk with a profile in the terminal: what you type goes to it, its reply comes as the model writes it; with --voice, heard and spoken
+
+Usage: sion agent talk [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --conversation <CONVERSATION>  The conversation: each is a session of its own [default: default]
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --voice                        Speak instead of typing: press Enter and speak; heard with --hear, answered aloud with --speak if given
+      --hear <PROVIDER>              What hears you: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, or command:<program>
+      --speak <PROVIDER>             What speaks the replies: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, or command:<program>
+      --record <COMMAND>             The program that records you, given the file to write (sox's rec by default, stopping after a second and a half of silence)
+      --play <COMMAND>               The program that plays a spoken reply, given its file (mpv, ffplay, afplay or paplay, the first there, by default)
+  -h, --help                         Print help
+```
+
+The conversation is a session as on any channel, its commands included (`/new`, `/status`, `/approve`…). There is no `/stop` while the agent works: Ctrl-C ends the conversation, the session kept. See [In the terminal, and by voice](../guides/agent-teams.md#in-the-terminal-and-by-voice).
 
 ## `sion agent telegram`
 
@@ -2062,7 +2136,7 @@ In a group chat, every member speaks for you, approvals included (`agent:telegra
 ## `sion agent bridge`
 
 ```text
-Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN, SLACK_APP_TOKEN for Socket Mode), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api), telegram, mattermost (MATTERMOST_URL, MATTERMOST_TOKEN), irc (IRC_SERVER, IRC_NICK, IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), email (EMAIL_ADDRESS, EMAIL_IMAP_URL, EMAIL_SMTP_URL, EMAIL_PASSWORD or EMAIL_TOKEN_COMMAND), imessage (through imsg on the Mac that runs Messages, IMSG_COMMAND), dingtalk (DINGTALK_CLIENT_ID, DINGTALK_CLIENT_SECRET), or through webhooks to --listen: whatsapp (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET), sms through Twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL), teams (TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID for a single-tenant bot), google-chat (GOOGLE_CHAT_AUDIENCE, and GOOGLE_CHAT_CREDENTIALS to answer through the Chat API), feishu or lark (FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_VERIFICATION_TOKEN) or nextcloud-talk (NEXTCLOUD_URL, NEXTCLOUD_TALK_SECRET)
+Answer a messenger's chats with a profile: slack (SLACK_BOT_TOKEN, SLACK_APP_TOKEN for Socket Mode), discord (DISCORD_BOT_TOKEN), matrix (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN), signal (SIGNAL_API_BASE, SIGNAL_NUMBER, for signal-cli-rest-api), telegram, mattermost (MATTERMOST_URL, MATTERMOST_TOKEN), irc (IRC_SERVER, IRC_NICK, IRC_PASSWORD), twitch (TWITCH_NICK, TWITCH_TOKEN), email (EMAIL_ADDRESS, EMAIL_IMAP_URL, EMAIL_SMTP_URL, EMAIL_PASSWORD or EMAIL_TOKEN_COMMAND), imessage (through imsg on the Mac that runs Messages, IMSG_COMMAND), dingtalk (DINGTALK_CLIENT_ID, DINGTALK_CLIENT_SECRET), or through webhooks to --listen: whatsapp (WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN), line (LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET), sms through Twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_NUMBER, TWILIO_WEBHOOK_URL), teams (TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID for a single-tenant bot), google-chat (GOOGLE_CHAT_AUDIENCE, and GOOGLE_CHAT_CREDENTIALS to answer through the Chat API), feishu or lark (FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_VERIFICATION_TOKEN, FEISHU_ENCRYPT_KEY), nextcloud-talk (NEXTCLOUD_URL, NEXTCLOUD_TALK_SECRET), wecom (WECOM_CORP_ID, WECOM_AGENT_ID, WECOM_SECRET, WECOM_TOKEN, WECOM_AES_KEY), qq (QQ_APP_ID, QQ_APP_SECRET), synology-chat (SYNOLOGY_CHAT_INCOMING_URL, SYNOLOGY_CHAT_TOKEN) or phone calls through Twilio Voice (TWILIO_AUTH_TOKEN, TWILIO_VOICE_URL); or weixin (after `sion agent weixin login`), zalo (ZALO_BOT_TOKEN), ntfy (NTFY_URL, NTFY_TOKEN, its topics as --allow), x, its direct messages (X_ACCESS_TOKEN), simplex, through SimpleX's terminal client (SIMPLEX_URL), or nostr, direct messages on relays (NOSTR_PRIVATE_KEY, NOSTR_RELAYS)
 
 Usage: sion agent bridge [OPTIONS] --via <VIA> <PROFILE>
 
@@ -2090,7 +2164,7 @@ Options:
           Answer one batch of messages, then stop
 
       --listen <LISTEN>
-          Where whatsapp, line, sms, teams, google-chat, feishu and nextcloud-talk send their webhooks (expose it to them behind TLS)
+          Where whatsapp, line, sms, teams, google-chat, feishu, nextcloud-talk, wecom, qq, synology-chat and phone send their webhooks (expose it to them behind TLS)
 
           [default: 127.0.0.1:8797]
 

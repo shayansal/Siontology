@@ -449,6 +449,10 @@ pub enum AgentCommand {
     /// in your browser; the tokens kept encrypted on this machine.
     #[command(subcommand)]
     Chatgpt(crate::chatgpt::ChatgptCommand),
+    /// Sign a WeChat account in for `--via weixin`, by a QR code scanned
+    /// with WeChat (Tencent's iLink bot protocol), or sign it out.
+    #[command(subcommand)]
+    Weixin(crate::weixin::WeixinCommand),
     /// Long-running commands (a bridge, the server, the scheduler) as
     /// services of your own: systemd user units on Linux, launchd agents
     /// on macOS.
@@ -486,6 +490,45 @@ pub enum AgentCommand {
         /// without it, only profiles' own tokens are taken.
         #[arg(long, default_value = "SION_AGENT_TOKEN")]
         token_env: String,
+        /// Give other agents A2A cards for these profiles (comma-separated):
+        /// the first at /.well-known/agent-card.json, each at
+        /// /v1/profiles/<name>/agent-card.json, answered at
+        /// /v1/profiles/<name>/a2a.
+        #[arg(long, value_delimiter = ',', value_name = "PROFILE")]
+        a2a: Vec<String>,
+        /// The address other agents reach this channel at, for the cards
+        /// (https://agents.example.org); else the one a request came to.
+        #[arg(long, value_name = "URL")]
+        public_url: Option<String>,
+    },
+    /// Talk with a profile in the terminal: what you type goes to it, its
+    /// reply comes as the model writes it; with --voice, heard and spoken.
+    Talk {
+        /// The agent profile.
+        profile: String,
+        /// The conversation: each is a session of its own.
+        #[arg(long, default_value = "default")]
+        conversation: String,
+        /// Speak instead of typing: press Enter and speak; heard with
+        /// --hear, answered aloud with --speak if given.
+        #[arg(long, requires = "hear")]
+        voice: bool,
+        /// What hears you: openai:<model>, groq:<model>, deepgram:<model>,
+        /// elevenlabs:<model>, or command:<program>.
+        #[arg(long, value_name = "PROVIDER")]
+        hear: Option<String>,
+        /// What speaks the replies: openai:<model>:<voice>, elevenlabs:<voice
+        /// id>[:<model>], deepgram:<voice model>, or command:<program>.
+        #[arg(long, value_name = "PROVIDER")]
+        speak: Option<String>,
+        /// The program that records you, given the file to write (sox's rec
+        /// by default, stopping after a second and a half of silence).
+        #[arg(long, value_name = "COMMAND")]
+        record: Option<String>,
+        /// The program that plays a spoken reply, given its file (mpv,
+        /// ffplay, afplay or paplay, the first there, by default).
+        #[arg(long, value_name = "COMMAND")]
+        play: Option<String>,
     },
     /// Answer Telegram chats with a profile, by long polling
     /// (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server).
@@ -523,8 +566,17 @@ pub enum AgentCommand {
     /// (TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID for a
     /// single-tenant bot), google-chat (GOOGLE_CHAT_AUDIENCE, and
     /// GOOGLE_CHAT_CREDENTIALS to answer through the Chat API), feishu or
-    /// lark (FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_VERIFICATION_TOKEN) or
-    /// nextcloud-talk (NEXTCLOUD_URL, NEXTCLOUD_TALK_SECRET).
+    /// lark (FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_VERIFICATION_TOKEN,
+    /// FEISHU_ENCRYPT_KEY), nextcloud-talk (NEXTCLOUD_URL,
+    /// NEXTCLOUD_TALK_SECRET), wecom (WECOM_CORP_ID, WECOM_AGENT_ID,
+    /// WECOM_SECRET, WECOM_TOKEN, WECOM_AES_KEY), qq (QQ_APP_ID,
+    /// QQ_APP_SECRET), synology-chat (SYNOLOGY_CHAT_INCOMING_URL,
+    /// SYNOLOGY_CHAT_TOKEN) or phone calls through Twilio Voice
+    /// (TWILIO_AUTH_TOKEN, TWILIO_VOICE_URL); or weixin (after `sion agent
+    /// weixin login`), zalo (ZALO_BOT_TOKEN), ntfy (NTFY_URL, NTFY_TOKEN,
+    /// its topics as --allow), x, its direct messages (X_ACCESS_TOKEN),
+    /// simplex, through SimpleX's terminal client (SIMPLEX_URL), or nostr,
+    /// direct messages on relays (NOSTR_PRIVATE_KEY, NOSTR_RELAYS).
     Bridge {
         /// The agent profile.
         profile: String,
@@ -543,9 +595,9 @@ pub enum AgentCommand {
         /// Answer one batch of messages, then stop.
         #[arg(long)]
         once: bool,
-        /// Where whatsapp, line, sms, teams, google-chat, feishu and
-        /// nextcloud-talk send their webhooks (expose it to them behind
-        /// TLS).
+        /// Where whatsapp, line, sms, teams, google-chat, feishu,
+        /// nextcloud-talk, wecom, qq, synology-chat and phone send their
+        /// webhooks (expose it to them behind TLS).
         #[arg(long, default_value = crate::webhooks::LISTEN)]
         listen: String,
         #[command(flatten)]
@@ -611,6 +663,7 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
         AgentCommand::Chatgpt(command) => crate::chatgpt::run(command),
+        AgentCommand::Weixin(command) => crate::weixin::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Service(command) => crate::service::run(command),
@@ -890,6 +943,7 @@ pub fn run(
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
         AgentCommand::Chatgpt(command) => crate::chatgpt::run(command),
+        AgentCommand::Weixin(command) => crate::weixin::run(command),
         AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
@@ -897,10 +951,24 @@ pub fn run(
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)
         }
-        AgentCommand::Serve { listen, token_env } => {
+        AgentCommand::Serve {
+            listen,
+            token_env,
+            a2a,
+            public_url,
+        } => {
             // A server hears its sessions' approvals itself: what they
             // browse stays open while they wait.
             crate::screens::keep_between_runs();
+            for name in &a2a {
+                crate::profiles::get(name)?;
+            }
+            if !a2a.is_empty() {
+                crate::a2a::publish(crate::a2a::Published {
+                    profiles: a2a,
+                    base: public_url,
+                });
+            }
             let token = std::env::var(&token_env).ok().filter(|t| !t.is_empty());
             if token.is_none() && crate::channels::tokens()?.is_empty() {
                 return Err(CliError::Usage(format!(
@@ -908,6 +976,55 @@ pub fn run(
                 )));
             }
             crate::channels::serve_with(shared, &listen, token.as_deref(), None)
+        }
+        AgentCommand::Talk {
+            profile,
+            conversation,
+            voice,
+            hear,
+            speak,
+            record,
+            play,
+        } => {
+            let profile = crate::profiles::get(&profile)?;
+            let usage = CliError::Usage;
+            let (hearing, speaking, record, play) = if voice {
+                let hearing = crate::voice::Hearing::parse(hear.as_deref().unwrap_or_default())
+                    .map_err(usage)?;
+                let speaking = speak
+                    .as_deref()
+                    .map(crate::voice::Speaking::parse)
+                    .transpose()
+                    .map_err(usage)?;
+                let record = crate::talk::program(record.as_deref(), &[crate::talk::RECORD])
+                    .ok_or_else(|| {
+                        usage("nothing records you: install sox (rec), or give --record".into())
+                    })?;
+                let play = match &speaking {
+                    Some(_) => crate::talk::program(play.as_deref(), crate::talk::PLAYERS)
+                        .ok_or_else(|| {
+                            usage(
+                                "nothing plays the replies: install mpv or ffplay, or give --play"
+                                    .into(),
+                            )
+                        })?,
+                    None => Vec::new(),
+                };
+                (Some(hearing), speaking, record, play)
+            } else {
+                (None, None, Vec::new(), Vec::new())
+            };
+            let talk = crate::talk::Talk {
+                conversation,
+                hearing,
+                speaking,
+                record,
+                play,
+            };
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let mut out = std::io::stdout();
+            crate::talk::run(shared, &profile, &talk, &mut input, &mut out)
         }
         AgentCommand::Telegram {
             profile,

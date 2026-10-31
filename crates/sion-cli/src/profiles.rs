@@ -74,6 +74,9 @@ pub struct Profile {
     /// `openai:<model>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_model: Option<String>,
+    /// Whether it has Home Assistant's tools ([`crate::home_assistant`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub home_assistant: bool,
 }
 
 fn yes() -> bool {
@@ -102,6 +105,7 @@ impl Profile {
             chat_instructions: None,
             only_tools: None,
             image_model: self.image_model.clone(),
+            home_assistant: self.home_assistant,
         }
     }
 
@@ -303,6 +307,11 @@ pub enum ProfileCommand {
         /// openai:<model>, such as openai:gpt-image-1 (OPENAI_API_KEY).
         #[arg(long, value_name = "PROVIDER:MODEL", requires = "workspace")]
         image_model: Option<String>,
+        /// Give it Home Assistant's devices as tools (HOME_ASSISTANT_URL,
+        /// HOME_ASSISTANT_TOKEN): their states read, a service called as an
+        /// external call.
+        #[arg(long)]
+        home_assistant: bool,
     },
     /// The profiles on this machine.
     List,
@@ -376,6 +385,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             instructions,
             no_skill_approvals,
             image_model,
+            home_assistant,
         } => {
             let shell = shell.sandbox()?;
             let screen = screen.screen()?;
@@ -432,6 +442,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                     }
                     None => None,
                 },
+                home_assistant,
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()

@@ -8,9 +8,14 @@
 //! | `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | the app's credentials |
 //! | `FEISHU_VERIFICATION_TOKEN` | the Verification Token of its event subscription |
 //! | `FEISHU_DOMAIN` | `feishu` (`open.feishu.cn`, the default) or `lark` (`open.larksuite.com`) |
+//! | `FEISHU_ENCRYPT_KEY` | the Encrypt Key, if the subscription has one |
 //!
-//! An event encrypted with an Encrypt Key is refused, as the bridge reads
-//! no AES: leave the Encrypt Key empty, the webhook being behind TLS.
+//! With an Encrypt Key, events come encrypted (AES-256-CBC under the key's
+//! SHA-256) and signed (`X-Lark-Signature`, SHA-256 over the time, the
+//! nonce, the key and the body): an event whose signature is not the key's
+//! is refused, and the verification token is checked in what it decrypts
+//! to. Pictures and files a person sends are fetched as the message's
+//! resources.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -111,8 +116,69 @@ pub fn feishu_said(message: &Value) -> (String, Option<Note>) {
                 });
             (String::new(), note)
         }
+        "image" | "file" | "media" => (String::new(), None),
         other => (format!("(a message of type {other}, not read)"), None),
     }
+}
+
+/// The picture or file a message carries: fetched as its resource, of the
+/// kind Feishu names it by (`image`, or `file`).
+pub fn feishu_files(message: &Value) -> Vec<Note> {
+    let content: Value = message["content"]
+        .as_str()
+        .and_then(|c| serde_json::from_str(c).ok())
+        .unwrap_or_default();
+    let id = message["message_id"].as_str().unwrap_or_default();
+    let (key, kind) = match message["message_type"].as_str().unwrap_or_default() {
+        "image" => (content["image_key"].as_str(), "image"),
+        "file" | "media" => (content["file_key"].as_str(), "file"),
+        _ => (None, ""),
+    };
+    key.filter(|key| plain_id(key) && plain_id(id))
+        .map(|key| Note {
+            id: format!("{id}/{key}/{kind}"),
+            media_type: None,
+            name: content["file_name"].as_str().map(str::to_string),
+        })
+        .into_iter()
+        .collect()
+}
+
+/// What an encrypted event (`{"encrypt": …}`) says: AES-256-CBC under the
+/// SHA-256 of the Encrypt Key, the IV its first sixteen bytes.
+pub fn feishu_decrypt(encrypted: &str, key: &str) -> Result<String, String> {
+    use base64::Engine;
+    let unreadable = || "the event does not decrypt with the Encrypt Key".to_string();
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(encrypted.trim())
+        .map_err(|_| unreadable())?;
+    if data.len() < 32 {
+        return Err(unreadable());
+    }
+    let (iv, body) = data.split_at(16);
+    let iv: [u8; 16] = iv.try_into().expect("16 bytes");
+    let plain = sion_http::cipher::aes_cbc_decrypt(&sion_http::sha256(key.as_bytes()), &iv, body)
+        .map_err(|_| unreadable())?;
+    let plain = sion_http::cipher::pkcs7_unpad(&plain, 16).map_err(|_| unreadable())?;
+    String::from_utf8(plain.to_vec()).map_err(|_| unreadable())
+}
+
+/// Whether an event is signed with the Encrypt Key: `X-Lark-Signature` is
+/// the SHA-256 of its time, nonce, the key and its body.
+fn feishu_signed(hook: &Hook, key: &str) -> bool {
+    let (Some(time), Some(nonce), Some(signature)) = (
+        hook.header("x-lark-request-timestamp"),
+        hook.header("x-lark-request-nonce"),
+        hook.header("x-lark-signature"),
+    ) else {
+        return false;
+    };
+    let mut signed = format!("{time}{nonce}{key}").into_bytes();
+    signed.extend_from_slice(&hook.body);
+    sion_http::same_bytes(
+        hex::encode(sion_http::sha256(&signed)).as_bytes(),
+        signature.trim().as_bytes(),
+    )
 }
 
 /// Answers one of Feishu's webhooks: refused unless it carries the
@@ -121,6 +187,7 @@ pub fn feishu_said(message: &Value) -> (String, Option<Note>) {
 pub fn feishu_hook(
     hook: &Hook,
     token: &str,
+    encrypt_key: Option<&str>,
     replies: &Replies,
     seen: &mut Seen,
 ) -> (Answer, Vec<Incoming>) {
@@ -128,14 +195,38 @@ pub fn feishu_hook(
     if hook.method != "POST" {
         return refused(405, "only POST");
     }
-    let Ok(body) = serde_json::from_slice::<Value>(&hook.body) else {
+    let Ok(mut body) = serde_json::from_slice::<Value>(&hook.body) else {
         return refused(400, "not JSON");
     };
-    if body.get("encrypt").is_some() {
-        return refused(
-            400,
-            "an encrypted event: the bridge reads none (leave the Encrypt Key empty)",
-        );
+    if let Some(encrypted) = body
+        .get("encrypt")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        let Some(key) = encrypt_key else {
+            return refused(
+                400,
+                "an encrypted event: set FEISHU_ENCRYPT_KEY to the subscription's Encrypt Key",
+            );
+        };
+        // Events are signed; the address's check is not, and is taken
+        // only if it decrypts with the key and carries the token.
+        let signed = feishu_signed(hook, key);
+        if hook.header("x-lark-signature").is_some() && !signed {
+            return refused(401, "not signed with the Encrypt Key");
+        }
+        body = match feishu_decrypt(&encrypted, key)
+            .ok()
+            .and_then(|plain| serde_json::from_str(&plain).ok())
+        {
+            Some(body) => body,
+            None => return refused(401, "the event does not decrypt with the Encrypt Key"),
+        };
+        if !signed && body["type"] != "url_verification" {
+            return refused(401, "not signed with the Encrypt Key");
+        }
+    } else if encrypt_key.is_some() {
+        return refused(401, "not encrypted with the Encrypt Key");
     }
     let given = body["header"]["token"]
         .as_str()
@@ -169,7 +260,8 @@ pub fn feishu_hook(
         return nothing;
     };
     let (text, voice) = feishu_said(message);
-    if text.is_empty() && voice.is_none() {
+    let files = feishu_files(message);
+    if text.is_empty() && voice.is_none() && files.is_empty() {
         return nothing;
     }
     replies
@@ -196,7 +288,7 @@ pub fn feishu_hook(
             voice,
             direct: message["chat_type"] == "p2p",
             mentions,
-            files: Vec::new(),
+            files,
         }],
     )
 }
@@ -221,11 +313,12 @@ impl Feishu {
             (None, "lark") => "https://open.larksuite.com".into(),
             (None, other) => return Err(format!("FEISHU_DOMAIN is {other}: feishu or lark")),
         };
+        let encrypt_key = env("FEISHU_ENCRYPT_KEY");
         let replies: Replies = Arc::new(Mutex::new(BTreeMap::new()));
         let kept = replies.clone();
         let mut seen = Seen::default();
         let live = inbox("feishu", listen, move |hook| {
-            feishu_hook(hook, &token, &kept, &mut seen)
+            feishu_hook(hook, &token, encrypt_key.as_deref(), &kept, &mut seen)
         })?;
         Ok(Feishu {
             client: client()?,
@@ -555,7 +648,18 @@ impl Messenger for Feishu {
     }
 
     fn fetch_voice(&self, note: &Note) -> Result<Audio, String> {
-        let (message, key) = note.id.split_once('/').ok_or("not a voice note's id")?;
+        let mut parts = note.id.splitn(3, '/');
+        let (message, key) = (
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+        );
+        // A voice note and a file are `file` resources; a picture is an
+        // `image` one.
+        let kind = match parts.next() {
+            None | Some("file") => "file",
+            Some("image") => "image",
+            Some(_) => return Err("not a resource's id".into()),
+        };
         if !plain_id(message) || !plain_id(key) {
             return Err("not a voice note's id".into());
         }
@@ -566,7 +670,7 @@ impl Messenger for Feishu {
             .request(
                 "GET",
                 &format!(
-                    "{}/open-apis/im/v1/messages/{message}/resources/{key}?type=file",
+                    "{}/open-apis/im/v1/messages/{message}/resources/{key}?type={kind}",
                     self.base
                 ),
                 &[("Authorization", &auth)],
@@ -595,8 +699,89 @@ mod tests {
         let audio = json!({"message_id": "om_3", "message_type": "audio",
             "content": "{\"file_key\":\"file_v3_abc\",\"duration\":2000}"});
         assert_eq!(feishu_said(&audio).1.unwrap().id, "om_3/file_v3_abc");
-        let image = json!({"message_id": "om_4", "message_type": "image", "content": "{}"});
-        assert_eq!(feishu_said(&image).0, "(a message of type image, not read)");
+        let image = json!({"message_id": "om_4", "message_type": "image",
+            "content": "{\"image_key\":\"img_v3_x\"}"});
+        assert_eq!(feishu_said(&image).0, "");
+        assert_eq!(feishu_files(&image)[0].id, "om_4/img_v3_x/image");
+        let file = json!({"message_id": "om_6", "message_type": "file",
+            "content": "{\"file_key\":\"file_v3_y\",\"file_name\":\"r.pdf\"}"});
+        assert_eq!(feishu_files(&file)[0].name.as_deref(), Some("r.pdf"));
+        let sticker = json!({"message_id": "om_5", "message_type": "sticker", "content": "{}"});
+        assert_eq!(
+            feishu_said(&sticker).0,
+            "(a message of type sticker, not read)"
+        );
         assert!(plain_id("om_dc13264520392913993dd051dba21dcf") && !plain_id("../x"));
+    }
+
+    #[test]
+    fn encrypted_events_are_read_with_the_key_and_their_signature_checked() {
+        use base64::Engine;
+        // Feishu's own example: "hello world" under "test key".
+        assert_eq!(
+            feishu_decrypt("P37w+VZImNgPEO1RBhJ6RtKl7n6zymIbEG1pReEzghk=", "test key").unwrap(),
+            "hello world"
+        );
+        assert!(feishu_decrypt("P37w+VZImNgPEO1RBhJ6RtKl7n6zymIbEG1pReEzghk=", "other").is_err());
+        let event = json!({"schema": "2.0", "header": {"event_id": "e1", "token": "vt",
+            "event_type": "im.message.receive_v1"},
+            "event": {"sender": {"sender_type": "user", "sender_id": {"open_id": "ou_1"}},
+                "message": {"message_id": "om_1", "chat_id": "oc_1", "chat_type": "p2p",
+                    "message_type": "text", "content": "{\"text\":\"How much is left?\"}"}}});
+        let iv = [9u8; 16];
+        let mut encrypted = iv.to_vec();
+        encrypted.extend(
+            sion_http::cipher::aes_cbc_encrypt(
+                &sion_http::sha256(b"ek"),
+                &iv,
+                &sion_http::cipher::pkcs7_pad(event.to_string().as_bytes(), 16),
+            )
+            .unwrap(),
+        );
+        let body = json!({"encrypt": base64::engine::general_purpose::STANDARD.encode(encrypted)})
+            .to_string();
+        let mut signed = b"1700000000n1ek".to_vec();
+        signed.extend_from_slice(body.as_bytes());
+        let hook = |signature: &str| Hook {
+            method: "POST".into(),
+            url: "/".into(),
+            headers: vec![
+                ("x-lark-request-timestamp".into(), "1700000000".into()),
+                ("x-lark-request-nonce".into(), "n1".into()),
+                ("x-lark-signature".into(), signature.into()),
+            ],
+            body: body.as_bytes().to_vec(),
+        };
+        let replies: Replies = Arc::default();
+        let mut seen = Seen::default();
+        let signature = hex::encode(sion_http::sha256(&signed));
+        let (answer, messages) =
+            feishu_hook(&hook(&signature), "vt", Some("ek"), &replies, &mut seen);
+        assert_eq!(answer.status, 200);
+        assert_eq!(messages[0].text, "How much is left?");
+        let forged = hook(&"0".repeat(64));
+        assert_eq!(
+            feishu_hook(&forged, "vt", Some("ek"), &replies, &mut seen)
+                .0
+                .status,
+            401
+        );
+        // Without the key, an encrypted event is refused; with it, a plain one.
+        assert_eq!(
+            feishu_hook(&hook(&signature), "vt", None, &replies, &mut seen)
+                .0
+                .status,
+            400
+        );
+        let plain = Hook {
+            body: event.to_string().into_bytes(),
+            ..hook(&signature)
+        };
+        assert_eq!(
+            feishu_hook(&plain, "vt", Some("ek"), &replies, &mut seen)
+                .0
+                .status,
+            401
+        );
     }
 }

@@ -84,6 +84,7 @@ fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile)
         skill_approvals: true,
         screen: Default::default(),
         image_model: None,
+        home_assistant: false,
     };
     (home, devnet, ledger, profile)
 }

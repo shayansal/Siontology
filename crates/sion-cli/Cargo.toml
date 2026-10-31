@@ -36,9 +36,12 @@ thiserror.workspace = true
 clap.workspace = true
 ureq.workspace = true
 tiny_http.workspace = true
+qrcode.workspace = true
 base64.workspace = true
 rand_core.workspace = true
 chacha20poly1305.workspace = true
+chacha20.workspace = true
+k256.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

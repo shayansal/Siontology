@@ -313,12 +313,29 @@ JSON-RPC over stdio, there or through SSH), from the bridge's place in
 the Messages database; trust atom `agent:imessage-handles`. DingTalk is
 reached in Stream mode (a WebSocket the bridge opens, each frame
 acknowledged), Feishu and Lark as webhooks with the event subscription's
-verification token, Nextcloud Talk as webhooks signed with the bot's
-secret; trust atoms `agent:dingtalk-stream`, `agent:feishu-token`,
-`agent:talk-signatures`.
+verification token (and, with an Encrypt Key, encrypted and signed),
+Nextcloud Talk as webhooks signed with the bot's secret; trust atoms
+`agent:dingtalk-stream`, `agent:feishu-token`, `agent:talk-signatures`.
+WeCom's callbacks are decrypted and checked as its `WXBizMsgCrypt` has
+them (AES-256-CBC, a SHA-1 signature), QQ's webhooks against Ed25519
+signatures under the key derived from the bot's secret, Synology Chat's
+against the bot's token; WeChat is reached through Tencent's iLink bot
+protocol (signed in with a QR code), Zalo and X's direct messages by
+polling their APIs, SimpleX through its terminal client's WebSocket API,
+ntfy's topics by polling and publishing, phone calls through Twilio
+Voice's signed webhooks, and Nostr on its relays: NIP-17's private
+messages (NIP-44, NIP-59) and NIP-04's, every event's signature and a
+seal's sender checked; trust atoms `agent:wecom-callbacks`,
+`agent:qq-signatures`, `agent:synology-chat-token`,
+`agent:simplex-client`, `agent:nostr-relays`, `agent:ntfy-topics`,
+`agent:phone-callers`. The HTTP channel answers other agents in A2A
+(0.3 and 1.0), with an agent card for each profile it publishes, and a
+profile may have Home Assistant's entities and services as tools
+(`agent:home-assistant`). `sion agent talk` is a conversation in the
+terminal, by voice with `--voice`.
 Voice notes are heard on every messenger (OpenAI-compatible
-transcription, Groq, or a command) and answered aloud (OpenAI,
-ElevenLabs, or a command): a voice note on Telegram, a voice message on
+transcription, Groq, Deepgram, ElevenLabs, or a command) and answered
+aloud (OpenAI, ElevenLabs, Deepgram, or a command): a voice note on Telegram, a voice message on
 Matrix, audio attached to the reply on Discord, Slack and Signal; trust
 atoms `agent:pairing`, `agent:voice`. While the agent works, a chat sees
 it typing (each platform's own indicator, refreshed on its clock, or a
@@ -898,7 +915,7 @@ the architecture's own:
 | `agent:eval-runs` | Evaluation runs are not proven. A verifier's attestation that a version passes an evaluation set rests on its bond and the bounty's adjudicator; with a model that varies between runs, another run can differ. The ledger refuses an attestation by the version's author (specification v1.15), but not one by an account the author controls under another name: such an attestation is worth its own bond. |
 | `agent:channel-token` | Whoever holds the machine's channel token can start and continue the sessions of every profile on the machine, approvals included; whoever holds a profile's own token, that profile's, and approvals only with a token made for them; always within each profile's autonomy and the agent's charter. Tokens are kept as their hashes. The channel speaks plain HTTP. |
 | `agent:gateway` | An agent gateway sees, and could change, the messages and answers it passes; it cannot act as an agent on the ledger, holding no key. It routes a profile's messages only to a host that proved the key of the agent its tokens name for the profile, and checks the agent's standing at most five seconds old, from the node it trusts: a message can reach an agent suspended within those seconds. It speaks plain HTTP unless put behind TLS. |
-| `agent:messenger-identity` | Slack, Discord, Matrix, Signal and Telegram say who wrote a message: a bridge's approvers are who the messenger says they are, and anyone who can write in an allowed chat talks to the profile. |
+| `agent:messenger-identity` | Slack, Discord, Matrix, Signal, Telegram, WeChat, Zalo and X say who wrote a message: a bridge's approvers are who the messenger says they are, and anyone who can write in an allowed chat talks to the profile. |
 | `agent:telegram-chats` | A Telegram bot trusts Telegram for who writes in the chats it answers; in a group chat, every member speaks for its owner, approvals included unless `--approvers` names who may decide. |
 | `agent:pairing` | An approved pairing code lets in the chat it was sent to, on that channel and profile, until revoked: the operator trusts that whoever gave them the code is the person they mean to let in, and the messenger for who writes in that chat afterwards (`agent:messenger-identity`). Codes are kept in a file only the operator's user can read. |
 | `agent:irc-nicks` | On IRC, who wrote a message is the nick the server gives: on a network that does not hold nicks to accounts, anyone can take a nick that is free, approvals included where `--approvers` names nicks. |
@@ -909,8 +926,16 @@ the architecture's own:
 | `agent:teams-tokens` | A Teams webhook is taken as the Bot Connector's when its token is signed by a key `login.botframework.com` publishes (fetched over TLS, kept a day), issued by `https://api.botframework.com` for the bot's app ID, within five minutes of its times, by a key endorsed for the activity's channel, and naming the activity's service URL, where the reply goes with the app's token; who wrote a message is who the Bot Connector says (`agent:messenger-identity`). |
 | `agent:google-chat-tokens` | A Google Chat webhook is taken as Chat's when its token is signed by a key Google publishes for `chat@system.gserviceaccount.com`, for the app's project number (or, with the endpoint URL as audience, is Google's ID token of the sender named, for that URL), within five minutes of its times; who wrote a message is who Chat says. With a service account's key, the bridge signs its token requests with it: whoever reads the key file can act as the app. |
 | `agent:dingtalk-stream` | DingTalk's messages come over a connection the bridge opens to DingTalk with the app's credentials, over TLS: who wrote a message is who DingTalk says, and a voice note says what DingTalk heard. Replies go to the session webhook the message names, which is DingTalk's, or after it expires through the robot's API. |
-| `agent:feishu-token` | A Feishu or Lark webhook is taken as theirs when it carries the event subscription's verification token: a secret in each event's body, as Feishu sends it, not a signature, so whoever saw one event on its way could send others. Encrypted events are not read. |
+| `agent:feishu-token` | A Feishu or Lark webhook is taken as theirs when it carries the event subscription's verification token: a secret in each event's body, as Feishu sends it, not a signature, so whoever saw one event on its way could send others; unless the subscription has an Encrypt Key, with which events are encrypted and signed (SHA-256 over the time, a nonce, the key and the body) and one not signed with it is refused. The address's check, which Feishu does not sign, is taken when it decrypts with the key and carries the token. |
 | `agent:talk-signatures` | A Nextcloud Talk webhook is taken as the server's when it is signed with the bot's secret (HMAC-SHA256 over a random value and the body) and names the server. The signature names no time: a webhook copied on its way could be sent again, and is answered again once its message has left the last thousand remembered. |
+| `agent:wecom-callbacks` | A WeCom callback is taken as WeCom's when it is signed with the callback's token (SHA-1 over the token, the time, a nonce and the ciphertext) and decrypts with the `EncodingAESKey` to a message for the company. The signature names a time the bridge does not bound: a callback copied on its way could be sent again, and is answered again once its message has left the last thousand remembered. Who wrote it is who WeCom says. |
+| `agent:qq-signatures` | A QQ webhook is taken as QQ's when it is signed with Ed25519 under the key both sides derive from the bot's secret: whoever has the secret can sign events as QQ. The bridge signs the address's check back with the same key, only a plain token and time, so that nothing it signs can pass for an event. Who wrote a message is who QQ says. |
+| `agent:ntfy-topics` | ntfy names no writer: whoever may publish to a topic the bridge answers speaks for the operator there, approvals included unless `--approvers` names who may decide (ntfy names no one, so no one may). A topic on a server that asks who publishes, or one whose name nobody can guess, is the operator's to keep. |
+| `agent:phone-callers` | A phone call is taken as Twilio's when each of its steps is signed with the account's auth token for the public address Twilio was given; who calls is the number Twilio gives, which the phone network carries and which can be forged. What the caller said is what Twilio heard, and the reply is what Twilio speaks. |
+| `agent:synology-chat-token` | A Synology Chat request is taken as the NAS's when it carries the bot's token: a secret in each request's body, as Synology Chat sends it, not a signature, so whoever saw one request on its way could send others. Who wrote it is who the NAS says; replies go to the incoming URL the operator gives, on their own network. |
+| `agent:simplex-client` | SimpleX's terminal client is trusted with the bot's profile: its WebSocket API asks no password, so any program on the machine that reaches its port acts as the bot, and the bridge must be the client's only program. Who wrote is the contact or member the client says, as it numbers them; SimpleX names no one beyond that. |
+| `agent:nostr-relays` | Nostr's relays carry the messages: one can withhold or delay them, not forge or read them, as every event is checked against its signature and a private message against who sealed it. Who wrote is the key that signed. An older message (NIP-04) shows the relays who writes to whom and when; a private one (NIP-17) hides both. `NOSTR_PRIVATE_KEY` speaks for the account, and signs the bridge in to the relays that ask. |
+| `agent:home-assistant` | Home Assistant's token (`HOME_ASSISTANT_TOKEN`) acts as the user it was made for: calling a service does whatever that user may, in the home itself. Calls are external calls, which autonomy L4 asks a person for; what Home Assistant says (names its users gave) taints a session as a web page does. |
 | `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |

@@ -21,6 +21,15 @@
 //! | DingTalk | Stream mode, a WebSocket of its own ([`crate::dingtalk`]) | `DINGTALK_CLIENT_ID`, `DINGTALK_CLIENT_SECRET` | conversation ids |
 //! | Feishu, Lark, Nextcloud Talk | webhooks with the app's token or the bot's signature ([`crate::feishu`], [`crate::nextcloud`]) | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_VERIFICATION_TOKEN`; `NEXTCLOUD_URL`, `NEXTCLOUD_TALK_SECRET` | chat ids, conversation tokens |
 //! | Email | IMAP, IDLE where the server has it ([`crate::email`]) | `EMAIL_ADDRESS`, `EMAIL_IMAP_URL`, `EMAIL_SMTP_URL`, `EMAIL_PASSWORD` | addresses |
+//! | WeCom, QQ | encrypted or signed webhooks ([`crate::wecom`], [`crate::qq`]) | `WECOM_CORP_ID`, `WECOM_AGENT_ID`, `WECOM_SECRET`, `WECOM_TOKEN`, `WECOM_AES_KEY`; `QQ_APP_ID`, `QQ_APP_SECRET` | user ids; `user:`, `group:`, `channel:` ids |
+//! | WeChat | long polling iLink's `getupdates` ([`crate::weixin`]) | `sion agent weixin login`, or `WEIXIN_BOT_TOKEN` | WeChat ids |
+//! | Zalo | long polling `getUpdates` ([`crate::zalo`]) | `ZALO_BOT_TOKEN` | chat ids |
+//! | ntfy | polling each topic ([`crate::ntfy`]) | `NTFY_URL`, `NTFY_TOKEN` | topics |
+//! | Phone calls | Twilio Voice's webhooks ([`crate::phone`]) | `TWILIO_AUTH_TOKEN`, `TWILIO_VOICE_URL` | numbers |
+//! | X | polling its DM events ([`crate::x_dm`]) | `X_ACCESS_TOKEN` | user ids |
+//! | Synology Chat | a chatbot's outgoing webhooks ([`crate::synology`]) | `SYNOLOGY_CHAT_INCOMING_URL`, `SYNOLOGY_CHAT_TOKEN` | user ids |
+//! | SimpleX | its terminal client's WebSocket API ([`crate::simplex`]) | `SIMPLEX_URL` (`ws://127.0.0.1:5225`) | `@<contact id>`, `#<group id>` |
+//! | Nostr | NIP-17 and NIP-04 direct messages on relays ([`crate::nostr`]) | `NOSTR_PRIVATE_KEY`, `NOSTR_RELAYS` | `npub1…` keys |
 //!
 //! Each `*_API_BASE` variable points a messenger at another server (a
 //! stand-in, in the tests). Bots are not answered: Telegram does not show a
@@ -1692,9 +1701,19 @@ pub fn for_bridge(name: &str, options: &Options) -> Result<Box<dyn Messenger>, S
         "nextcloud-talk" => Box::new(crate::nextcloud::NextcloudTalk::from_env(listen)?),
         "teams" => Box::new(crate::teams::Teams::from_env(listen)?),
         "google-chat" => Box::new(crate::google_chat::GoogleChat::from_env(listen)?),
+        "wecom" => Box::new(crate::wecom::WeCom::from_env(listen)?),
+        "qq" => Box::new(crate::qq::Qq::from_env(listen)?),
+        "weixin" | "wechat" => Box::new(crate::weixin::Weixin::from_env()?),
+        "zalo" => Box::new(crate::zalo::Zalo::from_env()?),
+        "ntfy" => Box::new(crate::ntfy::Ntfy::from_env(chats)?),
+        "phone" => Box::new(crate::phone::Phone::from_env(listen, chats)?),
+        "x" => Box::new(crate::x_dm::XDm::from_env()?),
+        "synology-chat" | "synology" => Box::new(crate::synology::SynologyChat::from_env(listen)?),
+        "simplex" => Box::new(crate::simplex::SimpleX::from_env()?),
+        "nostr" => Box::new(crate::nostr::Nostr::from_env()?),
         other => {
             return Err(format!(
-                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line, sms, teams, google-chat, feishu, nextcloud-talk, dingtalk, email or imessage"
+                "{other} is not a messenger: telegram, slack, discord, matrix, signal, mattermost, irc, twitch, whatsapp, line, sms, teams, google-chat, feishu, nextcloud-talk, dingtalk, wecom, qq, weixin, zalo, ntfy, phone, x, synology-chat, simplex, nostr, email or imessage"
             ))
         }
     })

@@ -68,6 +68,8 @@ finish. The agent's tools:
 | `storage_keep`, `storage_deals`, `storage_close` | spend, read, write | With `--storage`: keep a workspace file with storage providers, follow and close the deals |
 | `share_file` | read | With a workspace: a file of it sent to the person the agent answers, after its reply, where the channel takes files ([Pictures and files](agent-teams.md#pictures-and-files)); a run in the terminal names it |
 | `image_generate` | write | With `--image-model openai:<model>` on the profile, and a workspace: a picture made through OpenAI's Images API (`OPENAI_API_KEY`, `OPENAI_BASE_URL`), put in the workspace's `images/` and shown to the agent |
+| `ha_states`, `ha_state`, `ha_services` | read | With `--home-assistant` on the profile: Home Assistant's entities and their states, one entity's state, and the services it offers, through its REST API (`HOME_ASSISTANT_URL`, `HOME_ASSISTANT_TOKEN`); what they say is from outside, as a web page is (`agent:home-assistant`) |
+| `ha_call` | external | With `--home-assistant`: a Home Assistant service called (a light turned on, a thermostat set), as the token's user may |
 
 ## Models
 

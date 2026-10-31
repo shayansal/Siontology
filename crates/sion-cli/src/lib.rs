@@ -18,6 +18,7 @@
 // macro recursion limit allows.
 #![recursion_limit = "256"]
 
+pub mod a2a;
 pub mod agent_mcp;
 pub mod agent_memory;
 pub mod agent_storage;
@@ -42,6 +43,7 @@ pub mod feishu;
 pub mod files;
 pub mod gateway;
 pub mod google_chat;
+pub mod home_assistant;
 pub mod imessage;
 pub mod irc;
 pub mod jwt;
@@ -55,9 +57,13 @@ pub mod memory;
 pub mod messengers;
 pub mod network;
 pub mod nextcloud;
+pub mod nostr;
+pub mod ntfy;
 pub mod openai_api;
 pub mod pairing;
+pub mod phone;
 pub mod profiles;
+pub mod qq;
 pub mod recall;
 pub mod runtime;
 pub mod schedules;
@@ -66,17 +72,24 @@ pub mod secrets;
 pub mod service;
 pub mod session;
 pub mod showing;
+pub mod simplex;
 pub mod skill_improve;
 pub mod skills;
 pub mod stake;
 pub mod storage;
 pub mod stream;
+pub mod synology;
+pub mod talk;
 pub mod tasks;
 pub mod teams;
 pub mod verify;
 pub mod voice;
 pub mod webhooks;
+pub mod wecom;
+pub mod weixin;
 pub mod x402;
+pub mod x_dm;
+pub mod zalo;
 
 pub use error::CliError;
 pub use ledger::{HttpLedger, Ledger, LedgerExt, TxState};

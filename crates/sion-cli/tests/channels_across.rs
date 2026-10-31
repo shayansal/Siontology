@@ -94,6 +94,7 @@ fn profile(
         skill_approvals: true,
         screen: Default::default(),
         image_model: None,
+        home_assistant: false,
     }
 }
 

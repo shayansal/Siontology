@@ -219,7 +219,12 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
             format!("{} set", models.join(", "))
         },
     ));
-    let speech = set(&["OPENAI_API_KEY", "GROQ_API_KEY", "ELEVENLABS_API_KEY"]);
+    let speech = set(&[
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "DEEPGRAM_API_KEY",
+    ]);
     out.push(finding(
         true,
         "voice",
@@ -278,6 +283,26 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
             "nextcloud-talk",
             &["NEXTCLOUD_URL", "NEXTCLOUD_TALK_SECRET"],
         ),
+        (
+            "wecom",
+            &[
+                "WECOM_CORP_ID",
+                "WECOM_AGENT_ID",
+                "WECOM_SECRET",
+                "WECOM_TOKEN",
+                "WECOM_AES_KEY",
+            ],
+        ),
+        ("qq", &["QQ_APP_ID", "QQ_APP_SECRET"]),
+        ("zalo", &["ZALO_BOT_TOKEN"]),
+        ("ntfy", &["NTFY_URL"]),
+        ("phone", &["TWILIO_AUTH_TOKEN", "TWILIO_VOICE_URL"]),
+        ("x", &["X_ACCESS_TOKEN"]),
+        (
+            "synology-chat",
+            &["SYNOLOGY_CHAT_INCOMING_URL", "SYNOLOGY_CHAT_TOKEN"],
+        ),
+        ("nostr", &["NOSTR_PRIVATE_KEY"]),
     ];
     let mut ready: Vec<&str> = messengers
         .iter()
@@ -287,6 +312,14 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
     // iMessage needs imsg, on this Mac or reached by a command of its own.
     if on_path("imsg").is_some() || std::env::var_os("IMSG_COMMAND").is_some() {
         ready.push("imessage");
+    }
+    // SimpleX talks to its terminal client, here or at SIMPLEX_URL.
+    if on_path("simplex-chat").is_some() || std::env::var_os("SIMPLEX_URL").is_some() {
+        ready.push("simplex");
+    }
+    // WeChat, once signed in (or given a token).
+    if crate::weixin::bot().is_ok() {
+        ready.push("weixin");
     }
     // Email logs in with a password or with a command's token.
     if set(&["EMAIL_ADDRESS", "EMAIL_IMAP_URL", "EMAIL_SMTP_URL"]).len() == 3

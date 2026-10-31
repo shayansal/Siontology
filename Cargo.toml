@@ -66,6 +66,10 @@ fips203 = "0.5"
 fips204 = "0.5"
 fips205 = "0.5"
 chacha20poly1305 = "0.10"
+# Nostr: BIP-340 signatures and secp256k1's ECDH (NIP-04, NIP-44), and
+# the ChaCha20 NIP-44 encrypts with.
+k256 = { version = "0.13.4", default-features = false, features = ["ecdh", "schnorr", "std"] }
+chacha20 = "0.9"
 zeroize = { version = "1", features = ["derive"] }
 
 # Randomness (rand_core 0.6 matches the FIPS crates)
@@ -92,6 +96,8 @@ aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sy
 # Interfaces
 clap = { version = "4", features = ["derive", "env"] }
 tiny_http = "0.12"
+# QR codes drawn in the terminal (WeChat's sign-in); no image features.
+qrcode = { version = "0.14.1", default-features = false }
 ureq = { version = "2", default-features = false, features = ["json"] }
 
 # Testing

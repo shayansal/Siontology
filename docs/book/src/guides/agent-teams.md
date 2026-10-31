@@ -343,6 +343,24 @@ The second answer is the same session's (`chatcmpl-b3362ad0e5d01a89`); the
 streamed one, a conversation the server had not seen, began another. The
 answer's `id` names the session (`sion agent trace`).
 
+### Agents that talk A2A
+
+`sion agent serve --a2a <profile>` gives other agents an Agent2Agent
+card for the profile, at `/.well-known/agent-card.json` and
+`/v1/profiles/<profile>/agent-card.json`, and answers A2A's JSON-RPC at
+`POST /v1/profiles/<profile>/a2a`, with one of the channel's tokens
+(`--public-url` is the address the card gives, if not the one the
+request came to). Both wire versions are spoken, as the request names
+them: 0.3 (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`)
+and 1.0 (`SendMessage`, `SendStreamingMessage`, `GetTask`, `CancelTask`).
+A message's `contextId` is a conversation, each a session as on every
+channel; each message is a task, `completed` when the agent is done, or
+`input-required` while the session waits for an approval, which a token
+made to decide gives in the same context (`/approve`). A streamed task
+sends its reply as an artifact that grows, and ends with its state,
+marked final. The card names no instructions of the operator's: only
+what the agent is. Push notifications are not offered.
+
 ### Telegram
 
 `sion agent telegram` answers a profile's chats by long polling, with the
@@ -673,14 +691,14 @@ GET /jwk/chat
 | `--via` | Credentials | Receives by | Answers through |
 |---|---|---|---|
 | `dingtalk` | `DINGTALK_CLIENT_ID`, `DINGTALK_CLIENT_SECRET` (an internal app's robot) | Stream mode: a WebSocket the bridge opens to DingTalk, every frame acknowledged, so there is no address to expose | the message's session webhook, or after it expires the robot's API with the app's token |
-| `feishu`, `lark` | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_VERIFICATION_TOKEN` | webhooks to `--listen` carrying the subscription's verification token | a reply to the message through the Open Platform's API, with the tenant token |
+| `feishu`, `lark` | `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_VERIFICATION_TOKEN`; `FEISHU_ENCRYPT_KEY` if the subscription has an Encrypt Key | webhooks to `--listen` carrying the subscription's verification token, and with an Encrypt Key encrypted and signed | a reply to the message through the Open Platform's API, with the tenant token |
 | `nextcloud-talk` | `NEXTCLOUD_URL`, `NEXTCLOUD_TALK_SECRET` (a bot installed with `occ talk:bot:install`) | webhooks to `--listen`, signed with the bot's secret by the server named | Talk's bot API, signed the same way, as a reply to the message |
 
 DingTalk transcribes voice messages itself, and the agent is given what
 it heard, marked as such. Feishu's voice messages are fetched to be heard
-(`--hear`). Feishu's events encrypted with an Encrypt Key are refused, as
-the bridge reads no AES: leave the key empty, the webhook being behind
-TLS. Talk's webhooks do not say whether a conversation is one person's,
+(`--hear`), and its pictures and files to be shown or kept. With an
+Encrypt Key, Feishu encrypts each event (AES-256) and signs it: an event
+not signed with the key is refused. Talk's webhooks do not say whether a conversation is one person's,
 so there is no pairing on Talk; name the conversations (`--allow`, by
 their tokens).
 
@@ -694,15 +712,16 @@ conversation cid-dm (staff7): How much budget is left?
     → ledger_balance {}
     ← {"budget_remaining_usd":"100",…}
   agent: 100 USD left in the budget.
-  session 65cf8dff1b2370b1: done
+  session 5f964ff5927c0f96: done
 to conversation cid-dm: 100 USD left in the budget.
 $ FEISHU_APP_ID=cli_a1 FEISHU_APP_SECRET=… FEISHU_VERIFICATION_TOKEN=… FEISHU_API_BASE=http://127.0.0.1:8786 sion agent bridge lead --via feishu --allow oc_dm --listen 127.0.0.1:8785 --once
 feishu: webhooks on http://127.0.0.1:8785/
 chat oc_dm (ou_alice): How much budget is left?
+  (the reply is not shown as it is written: Feishu made no card)
     → ledger_balance {}
     ← {"budget_remaining_usd":"100",…}
   agent: 100 USD left in the budget.
-  session 726529e4c8097cca: done
+  session 6eccad7c90a2c784: done
 to chat oc_dm: 100 USD left in the budget.
 $ NEXTCLOUD_URL=http://127.0.0.1:8786 NEXTCLOUD_TALK_SECRET=… sion agent bridge lead --via nextcloud-talk --allow n3xtc10ud --listen 127.0.0.1:8784 --once
 nextcloud-talk: webhooks on http://127.0.0.1:8784/
@@ -710,7 +729,7 @@ conversation n3xtc10ud (users/alice): How much budget is left?
     → ledger_balance {}
     ← {"budget_remaining_usd":"100",…}
   agent: 100 USD left in the budget.
-  session 25454693a175dc53: done
+  session 6e03b59d2b58e874: done
 to conversation n3xtc10ud: 100 USD left in the budget.
 ```
 
@@ -731,7 +750,7 @@ What the stand-ins for Feishu and Talk sent the bridge, and the answers:
 ```text
 POST (the address's check): HTTP 200 {"challenge":"c-42"}
 POST (another app's token): HTTP 401 not the app's verification token
-POST (encrypted): HTTP 400 an encrypted event: the bridge reads none (leave the Encrypt Key empty)
+POST (encrypted): HTTP 400 an encrypted event: set FEISHU_ENCRYPT_KEY to the subscription's Encrypt Key
 POST (the app's token): HTTP 200 {}
 POST (unsigned): HTTP 401 not signed with the bot's secret
 POST (signed, from another server): HTTP 401 from another server
@@ -742,8 +761,11 @@ And what their APIs were asked, the secrets named and not shown:
 
 ```text
 POST /open-apis/auth/v3/tenant_access_token/internal (app_id, app_secret)
+POST /open-apis/im/v1/messages/om_1/reactions (Authorization: Bearer …) {"reaction_type":{"emoji_type":"Typing"}}
+POST /open-apis/cardkit/v1/cards (Authorization: Bearer …) {"data":"{\"body\":{\"elements\":[{\"content\":\"… ledger_balance\",\"element_id\":\"reply\",\"tag\":\"markdown\"}]},\"config\":{\"streaming_config\":{\"print_frequency_ms\":{\"default\":30},\"print_step\":{\"default\":2},\"print_strategy\":\"fast\"},\"streaming_mode\":true},\"schema\":\"2.0\"}","type":"card_json"}
 POST /open-apis/im/v1/messages/om_1/reply (Authorization: Bearer …) {"content":"{\"text\":\"100 USD left in the budget.\"}","msg_type":"text"}
-POST /ocs/v2.php/apps/spreed/api/v1/bot/n3xtc10ud/message (signed: random, signature) {"message":"100 USD left in the budget.","referenceId":"1ac60660c1b9f4e99397d8315d64c6911ac297b7e27feb67e8b72d0ba8a2f6de","replyTo":1567}
+POST /ocs/v2.php/apps/spreed/api/v1/bot/n3xtc10ud/reaction/1567 (signed: random, signature) {"reaction":"⏳"}
+POST /ocs/v2.php/apps/spreed/api/v1/bot/n3xtc10ud/message (signed: random, signature) {"message":"100 USD left in the budget.","referenceId":"f91ac0ee1d62106e2839bf19c83d9238c61a02b5211837fd629ab915d4875f66","replyTo":1567}
 ```
 
 ### Email
@@ -898,6 +920,137 @@ What imsg was asked over the two runs:
 {"method": "send", "params": {"chat_identifier": "+15550001111", "text": "100 USD left in the budget."}}
 ```
 
+### WeCom, QQ and Zalo
+
+`--via wecom` answers a WeCom (企业微信) self-built app. WeCom posts each
+message to `--listen` encrypted and signed, as its `WXBizMsgCrypt` has it:
+AES-256-CBC under the callback's `EncodingAESKey`, and a SHA-1 signature
+over the callback's token, the time, a nonce and the ciphertext. A
+callback whose signature is not the token's, or whose message does not
+decrypt to one for the company, is refused before anything reaches the
+profile; the address's check (`echostr`) is answered decrypted, as WeCom
+asks. Replies go through the app's API (`message/send`) with an access
+token from the corp id and the app's secret, renewed before it lapses;
+pictures, voice messages and files come through `media/get`, and what the
+agent shares goes up through `media/upload`.
+
+| Variable | What |
+|---|---|
+| `WECOM_CORP_ID` | the company's id, which every callback names |
+| `WECOM_AGENT_ID`, `WECOM_SECRET` | the app's id and secret |
+| `WECOM_TOKEN`, `WECOM_AES_KEY` | the callback's token and `EncodingAESKey` |
+
+`--via qq` answers a bot of QQ's bot platform (QQ 机器人) in webhook mode:
+QQ signs each event with Ed25519 under a key both sides derive from the
+bot's secret, and the bridge answers the address's check (op 13) by
+signing its token back, signing nothing that could pass for an event. A
+chat is named by its kind: `user:<openid>` for a person's direct
+messages, `group:<openid>` for a group that mentions the bot,
+`channel:<id>` for a channel of a QQ guild. Replies are QQ's passive
+ones, each part numbered (`msg_seq`), while QQ takes them for the message
+(a few minutes); later a message is sent unprompted, which QQ allows only
+a few times a month (`QQ_APP_ID`, `QQ_APP_SECRET`).
+
+`--via zalo` answers a bot of the Zalo Bot Platform, whose API has
+Telegram's shape: `getUpdates` long polled, `sendMessage`,
+`sendChatAction` for typing (`ZALO_BOT_TOKEN`). A picture or a voice
+message comes as an address on Zalo's servers, fetched to be shown or
+heard; the bot sends no files, as Zalo takes a bot's pictures and voice
+only from a public address.
+
+### WeChat
+
+`--via weixin` answers a WeChat (微信) account through Tencent's iLink bot
+protocol, the one its own ClawBot plugin speaks. `sion agent weixin
+login` draws a QR code in the terminal: scan it with WeChat on the phone
+and confirm, and the bot's token is kept encrypted beside the secrets
+(`sion agent weixin logout` forgets it; `WEIXIN_BOT_TOKEN` gives one
+instead). The bridge long polls `getupdates`, and each reply carries the
+context token of the message it answers, as iLink asks. Text is taken,
+and a voice message as WeChat transcribed it; pictures and files, which
+iLink keeps encrypted on its CDN, are named to the agent, not fetched.
+The protocol is published only as Tencent's plugin's code and others'
+descriptions of it, which is what the bridge speaks.
+
+### X, Synology Chat and SimpleX
+
+`--via x` answers an X account's direct messages, polled through the X
+API v2 (`/2/dm_events`) once a minute, as X's smaller tiers allow
+(`X_POLL_SECS` says otherwise), and answered in the conversation with
+whoever wrote. `X_ACCESS_TOKEN` is a user's OAuth 2.0 token with
+`dm.read`, `dm.write`, `users.read` and `tweet.read`; with
+`X_REFRESH_TOKEN` and `X_CLIENT_ID` (and `X_CLIENT_SECRET` for a
+confidential app) it is renewed when X refuses it. The first poll takes
+the bridge's place: what was written before it started is not answered.
+
+`--via synology-chat` answers a Synology Chat chatbot: Synology Chat
+posts what people write to the bot to `--listen` (the bot's outgoing
+URL), each request carrying the bot's token (`SYNOLOGY_CHAT_TOKEN`), and
+the reply goes through the bot's incoming URL
+(`SYNOLOGY_CHAT_INCOMING_URL`, as Synology Chat shows it), to the user
+who wrote, named by the id Synology Chat gives.
+
+`--via simplex` answers a SimpleX Chat profile through the WebSocket API
+of SimpleX's terminal client, run on the same machine with the bot's
+profile (`simplex-chat -p 5225`; `SIMPLEX_URL` names another address).
+The client's API asks no password, so it listens on localhost only, and
+the bridge must be its only program. A chat is `@<contact id>` or
+`#<group id>`, as the client numbers them; in a group, the bot answers
+what mentions it. The profile's address, and accepting whoever asks to
+connect, are set up in the client (`/address`, `/auto_accept on`); the
+bridge answers only the chats it is let into, or pairs them. A reply
+shows as it is written as a SimpleX live message, updated every two
+seconds until it is done.
+
+### Nostr
+
+`--via nostr` answers an account's direct messages on Nostr's relays
+(`NOSTR_RELAYS`, comma-separated; `wss://relay.damus.io` and
+`wss://nos.lol` by default), with its key in `NOSTR_PRIVATE_KEY` (an
+`nsec1…` or hex). Both kinds are read: NIP-17's private messages,
+encrypted with NIP-44 and sealed and gift-wrapped as NIP-59 has it,
+which hide from relays who writes to whom and when; and NIP-04's older
+encrypted messages (kind 4), which do not. A reply goes the way its
+message came; a chat that has not written yet is written to as
+`NOSTR_DM` says (`nip17`, or `nip04`). A chat is the writer's key, as an
+`npub1…` (`--allow npub1…`).
+
+Every event is checked against its signature, and a private message
+against who sealed it, so a relay can withhold messages but not forge
+them. A private reply goes to the relays its reader names for theirs
+(kind 10050) as well as to the bridge's own; an older one to the relays
+they read (kind 10002). If the account names no relays for its private
+messages, the bridge names its own, so that others' apps know where to
+write. A relay that asks who reads (NIP-42) is answered with the
+account's key. The bridge's place is the time of the last message it
+took: on starting again, what was written meanwhile is answered.
+
+### ntfy
+
+`--via ntfy` treats each topic in `--allow` as a chat: polled for what was
+published to it since the bridge's place, and answered by publishing to
+it, tagged `robot` and `sion` so that the bridge does not take its own
+answers for messages (`NTFY_URL`, `https://ntfy.sh` by default;
+`NTFY_TOKEN`, or `NTFY_USER` and `NTFY_PASSWORD`, for a server that asks).
+ntfy names no writer: whoever may publish to a topic speaks for you there
+(`agent:ntfy-topics`), so use a topic of your own on a server that asks
+who publishes, or a name nobody can guess.
+
+### Phone calls
+
+`--via phone` answers calls to a Twilio number. Twilio hears what the
+caller says (`<Gather input="speech">`) and speaks the agent's reply
+(`<Say>`), each step of the call a webhook to `--listen`, signed with the
+account's auth token for the public address Twilio was given
+(`TWILIO_VOICE_URL`, the number's voice webhook). While the agent works,
+the call waits on two-second pauses, the bridge asked again after each;
+then the reply is said and the caller heard again. Only the numbers in
+`--allow` are answered: other callers are told so, and hung up on.
+`PHONE_LANGUAGE` (`en-US` by default) is the language heard and spoken,
+`PHONE_VOICE` one of Twilio's voices, `PHONE_GREETING` what a call is
+greeted with. A caller is named by the number Twilio gives, which can be
+forged (`agent:phone-callers`).
+
 ### Pairing and voice notes
 
 With `--pairing`, a bridge gives someone who writes to it directly, and
@@ -929,9 +1082,12 @@ audio attached:
 |---|---|---|
 | `--hear openai:<model>` | OpenAI's transcriptions, or a compatible server's at `OPENAI_BASE_URL` | `OPENAI_API_KEY` |
 | `--hear groq:<model>` | Groq's transcriptions | `GROQ_API_KEY` |
+| `--hear deepgram:<model>` | Deepgram's (`nova-3`, say) | `DEEPGRAM_API_KEY` |
+| `--hear elevenlabs:<model>` | ElevenLabs' Scribe (`scribe_v1`, say) | `ELEVENLABS_API_KEY` |
 | `--hear command:<program>` | A program on this machine, given the audio's file, which prints the text | |
 | `--speak openai:<model>:<voice>` | OpenAI's speech (or a compatible server's), as Ogg Opus | `OPENAI_API_KEY` |
 | `--speak elevenlabs:<voice id>[:<model>]` | ElevenLabs, as MP3 | `ELEVENLABS_API_KEY` |
+| `--speak deepgram:<voice model>` | Deepgram's Aura (`aura-2-thalia-en`, say), as MP3 | `DEEPGRAM_API_KEY` |
 | `--speak command:<program>` | A program given the text on its standard input, which writes Ogg Opus or MP3 | |
 
 Here `TELEGRAM_API_BASE` and `OPENAI_BASE_URL` point the bridge at
@@ -986,6 +1142,18 @@ to chat 77: 100 USD left in the budget.
 `sion agent pairing revoke telegram:lead 77` lets the chat out again.
 Pairings are kept in `agents/pairing.json` under `SION_HOME`, readable
 only by your user.
+
+### In the terminal, and by voice
+
+`sion agent talk <profile>` is a conversation in the terminal: what you
+type goes to the agent, its reply comes as the model writes it, and each
+tool it runs shows on a line of its own. The conversation goes on in its
+session, the channel's commands included; `--conversation` names another.
+With `--voice`, you are heard: press Enter and speak, recorded until you
+stop (`--record`, sox's `rec` by default, stopping after a second and a
+half of silence), transcribed with `--hear`; the reply is spoken with
+`--speak` and played (`--play`: mpv, ffplay, afplay or paplay, the first
+there). Each program is given the audio file's path.
 
 ### Pictures and files
 
@@ -1314,11 +1482,41 @@ a host at work is waited for as long as it keeps telling.
 - DingTalk's, Feishu's and Talk's messages are taken as their services'
   (`agent:dingtalk-stream`, `agent:feishu-token`,
   `agent:talk-signatures`): Feishu's verification token is a secret in
-  every event, not a signature, and Talk's signature names no time.
-  Encrypted Feishu events and WeCom, whose callbacks are always
-  encrypted (AES), are not read: the bridge has no AES to read them with.
-  Spoken answers go as text on all three. They have been run only
+  every event, not a signature, unless the subscription has an Encrypt
+  Key, which encrypts and signs each event; Talk's signature names no
+  time. Spoken answers go as text on all three. They have been run only
   against stand-ins.
+- WeCom, QQ, WeChat, Zalo, X, Synology Chat, SimpleX, Nostr, ntfy and
+  phone calls have been run only against stand-ins for their services
+  (`agent:wecom-callbacks`, `agent:qq-signatures`,
+  `agent:synology-chat-token`, `agent:simplex-client`,
+  `agent:nostr-relays`, `agent:ntfy-topics`, `agent:phone-callers`).
+  Nostr's cryptography is checked against NIP-44's and BIP-340's test
+  vectors and NIP-19's examples.
+  WeChat's iLink protocol is published only as Tencent's plugin's code
+  and others' descriptions of it: the bridge speaks what those
+  describe, takes text and WeChat's own transcriptions of voice
+  messages, and names the pictures and files it does not fetch (iLink
+  keeps them encrypted on its CDN). A WeChat bot only replies, so a job
+  cannot write to a chat first. QQ takes a bot's unprompted messages
+  only a few times a month: a reply later than a few minutes after its
+  message may be refused. Zalo, LINE, SMS, X, Synology Chat and SimpleX
+  take no files from the bridge, and SimpleX's pictures, voice messages
+  and files are named to the agent, not fetched, as are the files of
+  Nostr's private messages. X is answered in direct messages only, not
+  in posts or mentions. Nostr's group messages (NIP-17 with more than
+  two people) are not answered. On a phone call, what was said is what Twilio heard, and the
+  reply is Twilio's voice; a reply longer than a few paragraphs is said
+  whole. A call that hangs up loses the reply it was waiting for.
+- A2A's push notifications are not offered, a task is answered when the
+  agent is done (streamed, as it writes), and tasks are remembered only
+  while the server runs. Files in A2A messages are not taken: text only.
+- `sion agent talk` has no `/stop` while the agent works (the terminal
+  is waiting on it): Ctrl-C ends the conversation, the session kept.
+  Voice mode needs programs that record and play audio on this machine.
+- Discord's voice channels are not joined: since March 2026 Discord
+  admits only clients that speak DAVE, its end-to-end encryption (MLS
+  and Opus frames encrypted per sender), which the bridge does not.
 - On iMessage, who wrote is the handle Messages shows; an SMS's number
   can be forged (`agent:imessage-handles`). Groups carry no mentions
   here, so `--require-mention` answers nothing in them; a voice note is

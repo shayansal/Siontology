@@ -492,6 +492,9 @@ pub struct Saved {
     /// What makes pictures for it (`image_generate`): `openai:<model>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_model: Option<String>,
+    /// Whether it has Home Assistant's tools.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub home_assistant: bool,
 }
 
 /// Who watches a run as it goes ([`Hooks::watch`]).
@@ -827,6 +830,11 @@ impl Saved {
             });
             if let Some(spec) = &self.image_model {
                 tools.add(crate::files::ImageMaker::new(spec, root)?);
+            }
+        }
+        if self.home_assistant {
+            for tool in crate::home_assistant::HomeAssistant::from_env()?.tools() {
+                tools.add(tool);
             }
         }
         if self.web {
@@ -1522,6 +1530,8 @@ pub struct Equipment {
     pub only_tools: Option<std::collections::BTreeSet<String>>,
     /// What makes pictures for it ([`Saved::image_model`]).
     pub image_model: Option<String>,
+    /// Whether it has Home Assistant's tools ([`Saved::home_assistant`]).
+    pub home_assistant: bool,
 }
 
 /// The default directory of an agent's skills.
@@ -1584,6 +1594,7 @@ pub fn start_watched(
         chat_instructions,
         only_tools,
         image_model,
+        home_assistant,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -1666,6 +1677,7 @@ pub fn start_watched(
         only_tools,
         shared: Vec::new(),
         image_model,
+        home_assistant,
     };
     let lines = saved.run_watched(ledger, hooks)?;
     Ok((saved, lines))

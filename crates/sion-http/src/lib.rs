@@ -36,6 +36,8 @@ pub mod ws;
 
 pub use digest::{base64, hmac_sha1, hmac_sha256, same_bytes, sha1};
 
+pub mod cipher;
+
 /// What went wrong.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HttpError {

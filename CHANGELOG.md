@@ -10,6 +10,77 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### More channels: WeCom, QQ, WeChat, Zalo, X, Synology Chat, SimpleX, Nostr, ntfy and phone calls
+
+- **WeCom** (`--via wecom`): a self-built app's callbacks, encrypted and
+  signed as WeCom's `WXBizMsgCrypt` has it (AES-256-CBC under the
+  `EncodingAESKey`, a SHA-1 signature over the token, time, nonce and
+  ciphertext), checked and decrypted before anything reaches the profile;
+  replies through the app's API, pictures, voice messages and files both
+  ways through its media API.
+- **Feishu's Encrypt Key.** With `FEISHU_ENCRYPT_KEY`, encrypted events are
+  read (AES-256-CBC under the key's SHA-256) and their signatures
+  (`X-Lark-Signature`) checked; pictures and files people send are
+  fetched.
+- **QQ** (`--via qq`): the bot platform's webhooks, signed with Ed25519
+  under the key both sides derive from the bot's secret; direct messages,
+  groups that mention the bot and guild channels; replies as QQ's passive
+  ones, numbered.
+- **WeChat** (`--via weixin`): Tencent's iLink bot protocol, the one its
+  ClawBot plugin speaks. `sion agent weixin login` draws a QR code in the
+  terminal to scan with WeChat; the sign-in is kept sealed beside the
+  secrets. Long polled; each reply carries the context of what it answers.
+- **Zalo** (`--via zalo`): the Zalo Bot Platform's API, long polled, typing
+  shown, pictures and voice messages fetched.
+- **X** (`--via x`): an account's direct messages through the X API v2,
+  polled once a minute; the token renewed from its refresh token when X
+  refuses it.
+- **Synology Chat** (`--via synology-chat`): a chatbot's webhooks, carrying
+  its token, answered through its incoming URL.
+- **SimpleX** (`--via simplex`): through the WebSocket API of SimpleX's
+  terminal client; contacts and groups that mention the bot; a reply shown
+  as it is written, as a SimpleX live message.
+- **Nostr** (`--via nostr`): NIP-17's private messages (NIP-44, sealed and
+  gift-wrapped as NIP-59 has it) and NIP-04's encrypted ones, each answered
+  the way it came. Every event's signature is checked, and a sealed
+  message's sender; relays that ask are signed in to (NIP-42); a private
+  reply goes to the relays its reader names (kind 10050), an older one to
+  the relays they read (kind 10002). The cryptography is checked against
+  NIP-44's and BIP-340's test vectors.
+- **ntfy** (`--via ntfy`): each topic a chat, polled and published to,
+  the bridge's own answers tagged and left out.
+- **Phone calls** (`--via phone`): calls to a Twilio number, heard with
+  `<Gather input="speech">` and answered with `<Say>`, each step a webhook
+  signed with the account's auth token; only the numbers allowed are
+  answered.
+- These have been run only against stand-ins for their services. Discord's
+  voice channels are not joined: Discord admits only clients that speak
+  DAVE, its end-to-end encryption, which the bridge does not.
+
+### Agents that talk A2A, and Home Assistant's devices
+
+- **A2A.** `sion agent serve --a2a <profile>` gives other agents an
+  Agent2Agent card for the profile and answers A2A's JSON-RPC at
+  `/v1/profiles/<profile>/a2a`, both wire versions (0.3 and 1.0), streamed
+  or whole. A message's `contextId` is a conversation; a task waiting for
+  an approval is `input-required`. The card names no instructions of the
+  operator's. Push notifications are not offered.
+- **Home Assistant.** A profile made with `--home-assistant` has its home's
+  entities and services as tools (`ha_states`, `ha_state`, `ha_services`,
+  `ha_call`), through Home Assistant's REST API; calling a service is an
+  external call (`agent:home-assistant`).
+
+### Voice in the terminal, and more speech services
+
+- **`sion agent talk <profile>`**: a conversation in the terminal, the reply
+  as the model writes it and each tool on a line of its own, in a session
+  like any channel's. With `--voice`, you are recorded (`--record`, sox's
+  `rec` by default), heard (`--hear`), and answered aloud (`--speak`,
+  played by `--play`).
+- **Deepgram and ElevenLabs.** `--hear deepgram:<model>`, `--hear
+  elevenlabs:<model>` (Scribe) and `--speak deepgram:<voice model>` (Aura),
+  wherever voice is heard or spoken.
+
 ### Pictures and files, both ways
 
 - **What a person sends reaches the agent.** A picture (PNG, JPEG, GIF or

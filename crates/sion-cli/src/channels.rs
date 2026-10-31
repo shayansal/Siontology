@@ -1227,6 +1227,65 @@ fn answer_request(ledger: SharedLedger, admin: Option<&str>, mut request: tiny_h
         .unwrap_or_default()
         .to_string();
     let method = request.method().as_str().to_string();
+    // A2A: cards are public, for the profiles the channel publishes.
+    if method == "GET" && (path.ends_with("agent-card.json") || path == "/.well-known/agent.json") {
+        let host = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Host"))
+            .map(|h| h.value.as_str().to_string());
+        return match crate::a2a::card_at(&path, host.as_deref()) {
+            Some(card) => respond(request, 200, &card),
+            None => respond(request, 404, &json!({"error": "no agent card here"})),
+        };
+    }
+    if let (Some(name), "POST") = (
+        path.strip_prefix("/v1/profiles/")
+            .and_then(|p| p.strip_suffix("/a2a")),
+        method.as_str(),
+    ) {
+        let name = name.to_string();
+        let version = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("A2A-Version"))
+            .map(|h| h.value.as_str().to_string());
+        let mut body = String::new();
+        let read = request
+            .as_reader()
+            .take(MAX_HTTP_MESSAGE + 1)
+            .read_to_string(&mut body);
+        let served = if read.is_err() || body.len() as u64 > MAX_HTTP_MESSAGE {
+            crate::openai_api::Served::Whole(crate::openai_api::Answered {
+                status: 413,
+                content_type: "application/json",
+                body: json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "the request is too long"}}).to_string(),
+            })
+        } else {
+            crate::a2a::answer(
+                ledger.clone(),
+                &name,
+                &body,
+                version.as_deref(),
+                presented.as_deref(),
+                admin,
+            )
+        };
+        match served {
+            crate::openai_api::Served::Whole(answered) => {
+                let header =
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], answered.content_type)
+                        .expect("a valid header");
+                let _ = request.respond(
+                    tiny_http::Response::from_string(answered.body)
+                        .with_status_code(answered.status)
+                        .with_header(header),
+                );
+            }
+            crate::openai_api::Served::Streamed(pieces) => respond_streaming(request, pieces),
+        }
+        return;
+    }
     if crate::openai_api::is_openai(&path) {
         let mut body = String::new();
         let read = request
@@ -1798,6 +1857,7 @@ mod tests {
             skill_approvals: true,
             screen: Default::default(),
             image_model: None,
+            home_assistant: false,
         };
         let sent = json!({"text": "Look at these.", "files": [
             {"name": "plan.png", "base64": "iVBORw0KGgoAAA=="},
