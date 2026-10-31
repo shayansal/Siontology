@@ -95,6 +95,7 @@ fn profile(
         screen: Default::default(),
         image_model: None,
         home_assistant: false,
+        budget_tokens: None,
     }
 }
 
@@ -259,7 +260,7 @@ fn profiles_are_reached_by_their_own_tokens_across_machines_and_messengers() {
     let serving = {
         let ledger = ledger.clone();
         let listen = listen.clone();
-        std::thread::spawn(move || sion_cli::channels::serve_with(ledger, &listen, None, Some(4)))
+        std::thread::spawn(move || sion_cli::channels::serve_with(ledger, &listen, None, Some(6)))
     };
     let (status, answer) = say(&base, "payer", Some(&lead_token), "Pay bob 1 USD.", "c1");
     assert_eq!(status, 401, "another profile's token");
@@ -276,9 +277,35 @@ fn profiles_are_reached_by_their_own_tokens_across_machines_and_messengers() {
         answer["error"].as_str().unwrap().contains("not approve"),
         "{answer}"
     );
+    // A decision that names another request than the one waiting is
+    // refused; the one that decides is kept with the token that made it.
+    let (status, answer) = say(&base, "payer", Some(&decide), "/approve 00000000", "c1");
+    assert_eq!(status, 400, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("not the one the session waits on"),
+        "{answer}"
+    );
     let (status, answer) = say(&base, "payer", Some(&decide), "/approve", "c1");
     assert_eq!(status, 200, "{answer}");
     assert_eq!(answer["said"], "Paid bob 1 USD.", "{answer}");
+    let paid = sion_cli::runtime::Saved::load(answer["session"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        paid.state.decisions[0].by,
+        format!("http:token {}", approver.id)
+    );
+    // A payment allows nothing more: approved on its own.
+    let (status, answer) = say(&base, "payer", Some(&talk), "/allowed", "c1");
+    assert_eq!(status, 200, "{answer}");
+    assert!(
+        answer["said"]
+            .as_str()
+            .unwrap()
+            .starts_with("Nothing is allowed here without asking"),
+        "{answer}"
+    );
     serving.join().unwrap().unwrap();
     assert!(sion_cli::channels::remove_token("payer", &approver.id).unwrap());
     assert!(!sion_cli::channels::remove_token("payer", &approver.id).unwrap());

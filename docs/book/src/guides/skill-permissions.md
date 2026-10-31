@@ -51,8 +51,8 @@ Once the session has read it, a write there runs, and the model is told
 it ran without asking; a write anywhere else still waits for a person:
 
 ```text
-$ sion agent run coder a888b3fc…b899 --task 'Write the notes for release 2.4.0.' --model script:notes.json --workspace work --autonomy L2
-session 8f0ec53b181aef67 for agent a888b3fc
+$ sion agent run coder d4058eaf…65b7 --task 'Write the notes for release 2.4.0.' --model script:notes.json --workspace work --autonomy L2
+session d0df39cc6a7650f8 for agent d4058eaf
   → skill_read {"name":"release-notes"}
   ← ---
     name: release-notes
@@ -67,24 +67,24 @@ session 8f0ec53b181aef67 for agent a888b3fc
     wrote 71 bytes to notes/2.4.0.md
   → write_file {"content":"See notes/.\n","path":"README.md"}
   ← waiting for a person's approval
-session 8f0ec53b181aef67: waiting for you: write_file {"content":"See notes/.\n","path":"README.md"} (a write at autonomy L2). Answer with `sion agent continue 8f0ec53b181aef67 --approve` or `--decline <why>`.
-$ sion agent continue 8f0ec53b181aef67 --decline 'leave the README as it is'
-  → write_file {"content":"See notes/.\n","path":"README.md"} (decided)
+session d0df39cc6a7650f8: waiting for you: write_file {"content":"See notes/.\n","path":"README.md"} (a write at autonomy L2; request 1ff665d0). Answer with `sion agent continue d0df39cc6a7650f8 --approve` (`--always` for the same call again this session) or `--decline <why>`.
+$ sion agent continue d0df39cc6a7650f8 --decline 'leave the README as it is'
+  → write_file {"content":"See notes/.\n","path":"README.md"} (declined by cli:operator: leave the README as it is)
   ✗ a person declined this call: leave the README as it is
 agent: The notes for 2.4.0 are in notes/2.4.0.md.
-session 8f0ec53b181aef67: done
+session d0df39cc6a7650f8: done
 ```
 
 `--no-skill-approvals` (on `sion agent run` and on profiles) turns
 pre-approvals off: every call is decided by the autonomy level alone.
 
 ```text
-$ sion agent run coder a888b3fc…b899 --task 'Write the notes for release 2.4.0.' --model script:notes.json --workspace work --autonomy L2 --no-skill-approvals
-session fa9c0bab7807f4d6 for agent a888b3fc
+$ sion agent run coder d4058eaf…65b7 --task 'Write the notes for release 2.4.0.' --model script:notes.json --workspace work --autonomy L2 --no-skill-approvals
+session 80ec7c90d99602b9 for agent d4058eaf
   …
   → write_file {"content":"# 2.4.0\n\n- Skills declare what they may do.\n\nUpgrading: nothing to do.\n","path":"notes/2.4.0.md"}
   ← waiting for a person's approval
-session fa9c0bab7807f4d6: waiting for you: write_file {"content":"# 2.4.0\n\n- Skills declare what they may do.\n\nUpgrading: nothing to do.\n","path":"notes/2.4.0.md"} (a write at autonomy L2). Answer with `sion agent continue fa9c0bab7807f4d6 --approve` or `--decline <why>`.
+session 80ec7c90d99602b9: waiting for you: write_file {"content":"# 2.4.0\n\n- Skills declare what they may do.\n\nUpgrading: nothing to do.\n","path":"notes/2.4.0.md"} (a write at autonomy L2; request 66bcc87c). Answer with `sion agent continue 80ec7c90d99602b9 --approve` (`--always` for the same call again this session) or `--decline <why>`.
 ```
 
 A pre-approval never goes past these limits:
@@ -102,6 +102,11 @@ A pre-approval never goes past these limits:
   that program can be told to do through its arguments
   (`agent:skill-pre-approval`).
 - The agent's charter, on the ledger, bounds what any call can spend.
+
+A person who approves a call may allow calls like it for the rest of the
+session with a rule of the same form (`--always 'write_file(notes:*)'`,
+or `/approve always write_file(notes:*)` on a channel), under the same
+limits ([Approvals](agent-runtime.md#calls-like-it-for-the-rest-of-the-session)).
 
 ## Secrets
 

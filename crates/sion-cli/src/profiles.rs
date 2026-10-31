@@ -77,6 +77,9 @@ pub struct Profile {
     /// Whether it has Home Assistant's tools ([`crate::home_assistant`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub home_assistant: bool,
+    /// Tokens each run of its sessions may use, its subagents' included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u64>,
 }
 
 fn yes() -> bool {
@@ -106,6 +109,7 @@ impl Profile {
             only_tools: None,
             image_model: self.image_model.clone(),
             home_assistant: self.home_assistant,
+            budget_tokens: self.budget_tokens,
         }
     }
 
@@ -312,6 +316,12 @@ pub enum ProfileCommand {
         /// external call.
         #[arg(long)]
         home_assistant: bool,
+        /// Tokens each run may use, its subagents' included: before each
+        /// model call, what it sends (estimated) and the most it may answer
+        /// must fit in what is left, and when they do not, the run ends with
+        /// a last answer, without tools, of what it did and what remains.
+        #[arg(long, value_name = "TOKENS")]
+        budget_tokens: Option<u64>,
     },
     /// The profiles on this machine.
     List,
@@ -386,6 +396,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             no_skill_approvals,
             image_model,
             home_assistant,
+            budget_tokens,
         } => {
             let shell = shell.sandbox()?;
             let screen = screen.screen()?;
@@ -443,6 +454,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                     None => None,
                 },
                 home_assistant,
+                budget_tokens,
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()
@@ -581,6 +593,9 @@ pub fn describe(profile: &Profile) -> String {
     }
     if profile.storage {
         extras.push("storage deals".to_string());
+    }
+    if let Some(tokens) = profile.budget_tokens {
+        extras.push(format!("a budget of {tokens} tokens a run"));
     }
     format!(
         "profile {}: agent {} as {}, {} at {:?}{}",

@@ -108,8 +108,8 @@ default, as with fetching a web page, a session that has read a page waits
 for your approval before its next external call:
 
 ```text
-$ sion agent run coder 0f3d94ab…e058 --task 'Search docs.rs for tiny_http.' --model script:ask.json --browser --autonomy L5
-session 1611c8fd855a82f8 for agent 0f3d94ab
+$ sion agent run coder 7799dcea…2bce --task 'Search docs.rs for tiny_http.' --model script:ask.json --browser --autonomy L5
+session 5bbf5b05e6b0d4f7 for agent 7799dcea
   → browser_open {"url":"https://docs.rs/"}
   ← page https://docs.rs/
     title "Docs.rs"
@@ -126,9 +126,9 @@ session 1611c8fd855a82f8 for agent 0f3d94ab
     …
   → browser_type {"ref":"e11","submit":true,"text":"tiny_http"}
   ← waiting for a person's approval
-session 1611c8fd855a82f8: waiting for you: browser_type {"ref":"e11","submit":true,"text":"tiny_http"} (the session has read content from outside; external calls and spending need approval until the taint expires). Answer with `sion agent continue 1611c8fd855a82f8 --approve` or `--decline <why>`.
-$ sion agent continue 1611c8fd855a82f8 --approve
-  → browser_type {"ref":"e11","submit":true,"text":"tiny_http"} (decided)
+session 5bbf5b05e6b0d4f7: waiting for you: browser_type {"ref":"e11","submit":true,"text":"tiny_http"} (the session has read content from outside; external calls and spending need approval until the taint expires; request e6757544). Answer with `sion agent continue 5bbf5b05e6b0d4f7 --approve` or `--decline <why>`.
+$ sion agent continue 5bbf5b05e6b0d4f7 --approve
+  → browser_type {"ref":"e11","submit":true,"text":"tiny_http"} (approved by cli:operator)
   ← typed into e11
     page https://docs.rs/releases/search?query=tiny_http
     title "Releases - Docs.rs"
@@ -143,7 +143,7 @@ $ sion agent continue 1611c8fd855a82f8 --approve
           - list [ref=e7]
     …
 agent: The search for tiny_http found it.
-session 1611c8fd855a82f8: done
+session 5bbf5b05e6b0d4f7: done
 ```
 
 Name hosts (`--browser-host docs.rs`; repeat for more; `*` for every

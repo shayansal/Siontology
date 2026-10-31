@@ -85,6 +85,7 @@ fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile)
         screen: Default::default(),
         image_model: None,
         home_assistant: false,
+        budget_tokens: None,
     };
     (home, devnet, ledger, profile)
 }

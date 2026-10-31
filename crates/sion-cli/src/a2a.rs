@@ -267,8 +267,20 @@ pub fn answer(
             };
             keep(&task);
             let key = format!("a2a:{name}:{context}");
+            // Another agent's message is content from outside: it taints the
+            // session. A decision it carries is its token's holder's.
+            let who = crate::channels::holder(name, presented, admin)
+                .map(|holder| format!("a2a:{holder}"));
             if method.contains("stream") || method == "SendStreamingMessage" {
-                return Served::Streamed(streamed(ledger, profile, key, text, task, id, version));
+                return Served::Streamed(streamed(
+                    ledger,
+                    profile,
+                    (key, who),
+                    text,
+                    task,
+                    id,
+                    version,
+                ));
             }
             match converse_with(
                 ledger,
@@ -276,7 +288,11 @@ pub fn answer(
                 &key,
                 &text,
                 &[],
-                crate::runtime::Hooks::default(),
+                crate::runtime::Hooks {
+                    who: who.as_deref(),
+                    outside: true,
+                    ..crate::runtime::Hooks::default()
+                },
             ) {
                 Ok(answer) => {
                     let waits = waits(&answer);
@@ -344,7 +360,7 @@ fn waits(answer: &Answer) -> bool {
 fn streamed(
     ledger: SharedLedger,
     profile: Profile,
-    key: String,
+    (key, who): (String, Option<String>),
     text: String,
     mut task: Task,
     id: Value,
@@ -388,7 +404,11 @@ fn streamed(
             &key,
             &text,
             &[],
-            crate::runtime::Hooks::watched(&watch),
+            crate::runtime::Hooks {
+                who: who.as_deref(),
+                outside: true,
+                ..crate::runtime::Hooks::watched(&watch)
+            },
         );
         match answered {
             Ok(answer) => {

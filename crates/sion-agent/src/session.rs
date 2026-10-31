@@ -36,6 +36,30 @@ pub struct Limits {
     pub keep_last: usize,
     /// Seconds a model that failed is not asked again.
     pub cooldown: u64,
+    /// Times one call may be made with the same result before the model is
+    /// told it is going round in circles; two more, and the run stops
+    /// ([`Ended::Stuck`]). Two calls that alternate with the same results
+    /// count each round as one.
+    #[serde(default = "default_stuck_after")]
+    pub stuck_after: u32,
+    /// Tokens a run may use, its subagents' included, if it has a budget:
+    /// each model call is checked against what is left before it is sent
+    /// (what it is sent, and the most it may answer), and the run ends
+    /// ([`Ended::OutOfBudget`]) rather than go over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u64>,
+    /// Tokens of the budget kept for a last answer without tools, in which
+    /// the model says what it did and what remains.
+    #[serde(default = "default_reserve_tokens")]
+    pub reserve_tokens: u64,
+}
+
+fn default_stuck_after() -> u32 {
+    3
+}
+
+fn default_reserve_tokens() -> u64 {
+    2_000
 }
 
 impl Default for Limits {
@@ -50,6 +74,9 @@ impl Default for Limits {
             compact_chars: 120_000,
             keep_last: 12,
             cooldown: 30,
+            stuck_after: default_stuck_after(),
+            budget_tokens: None,
+            reserve_tokens: default_reserve_tokens(),
         }
     }
 }
@@ -86,6 +113,18 @@ pub enum Ended {
     },
     /// The kill switch is on.
     Stopped,
+    /// The model went round in circles: the same calls with the same
+    /// results, after it was told.
+    Stuck {
+        /// What it repeated.
+        why: String,
+    },
+    /// The run's token budget ran out ([`Limits::budget_tokens`]).
+    OutOfBudget {
+        /// What the model said in its last answer, within the reserve,
+        /// if there was room for one.
+        text: String,
+    },
 }
 
 /// A call waiting for approval.
@@ -100,6 +139,53 @@ pub struct Pending {
     pub tool: String,
     /// Its input.
     pub input: Value,
+    /// What the call can do, as its tool declared it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<Effect>,
+}
+
+impl Pending {
+    /// The approval request's id, as a person is shown it and may give it
+    /// back (`/approve 3f2a9c1e`): the first eight digits of the call's
+    /// key, the same for as long as the call waits.
+    pub fn request(&self) -> &str {
+        &self.key[..self.key.len().min(8)]
+    }
+}
+
+/// What approving a call allows besides it ([`Runtime::approve_as`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// That call only.
+    Once,
+    /// That call, made again with the same input, for the rest of the
+    /// session.
+    Call,
+    /// The calls of its tool this rule matches, for the rest of the
+    /// session (as a skill's `allowed-tools` writes it: `shell(git
+    /// status:*)`, `fetch_url(domain:example.org)`).
+    Rule(crate::permissions::ToolRule),
+}
+
+/// A person's decision on a call, as the session keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decided {
+    /// The approval request's id ([`Pending::request`]).
+    pub request: String,
+    /// The tool.
+    pub tool: String,
+    /// Whether it was approved.
+    pub approved: bool,
+    /// Who decided, as the channel names them.
+    pub by: String,
+    /// When (seconds).
+    pub at: u64,
+    /// What else it allowed, in words, if anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<String>,
+    /// Why it was declined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// Everything a session needs to stop and resume. It serialises.
@@ -134,7 +220,21 @@ pub struct State {
     /// The steps of its runs, for its trace: the last [`MAX_STEPS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<Step>,
+    /// The decisions people made on its calls, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<Decided>,
+    /// The last calls made and what they gave, to tell when the model goes
+    /// round in circles: at most [`RECENT_KEPT`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<Made>,
+    /// Tokens the calls' own models used (subagents at work).
+    #[serde(default)]
+    pub delegated: Usage,
 }
+
+/// The most recent calls a session keeps to tell when it goes round in
+/// circles.
+pub const RECENT_KEPT: usize = 16;
 
 /// The most pictures a session keeps the bytes of: the last ones. The
 /// conversation keeps every picture's digest.
@@ -335,6 +435,7 @@ enum Called {
         tool: String,
         input: Value,
         reason: String,
+        effect: Effect,
     },
 }
 
@@ -348,6 +449,7 @@ enum Checked {
         tool: String,
         input: Value,
         reason: String,
+        effect: Effect,
     },
     /// May run: the tool (inside `tools_call`, the inner one), its input,
     /// the call's key and effect, and whether it is journaled.
@@ -375,10 +477,7 @@ struct Ready {
 /// does a call made again after its first outcome was lost.
 fn marked(ready: &Ready, mut outcome: Outcome) -> Outcome {
     if let Some(by) = &ready.pre_approved {
-        outcome.content = format!(
-            "[run without asking: pre-approved by skill {by}]\n{}",
-            outcome.content
-        );
+        outcome.content = format!("[run without asking: {by}]\n{}", outcome.content);
     }
     if ready.retried {
         outcome.content = format!(
@@ -392,6 +491,111 @@ fn marked(ready: &Ready, mut outcome: Outcome) -> Outcome {
 
 /// What a tool use waiting for approval says to the model meanwhile.
 const WAITING: &str = "waiting for a person's approval";
+
+/// What the model is told when the run's token budget is nearly spent: its
+/// last answer.
+pub const BUDGET_SPENT: &str = "[The token budget for this task is nearly spent. Do not call \
+     tools now. Say what you did, what you found, and what remains to be done.]";
+
+/// What a run used, when it began: to count what it uses against its
+/// budget.
+#[derive(Clone, Copy)]
+struct RunStart {
+    usage: Usage,
+    delegated: Usage,
+}
+
+impl RunStart {
+    fn of(state: &State) -> RunStart {
+        RunStart {
+            usage: state.usage,
+            delegated: state.delegated,
+        }
+    }
+
+    /// Tokens used since, the subagents' included.
+    fn spent(&self, state: &State) -> u64 {
+        let total = |u: &Usage| u.input + u.output;
+        total(&state.usage).saturating_sub(total(&self.usage))
+            + total(&state.delegated).saturating_sub(total(&self.delegated))
+    }
+}
+
+/// A call a session made lately, to tell when it goes round in circles.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Made {
+    /// The call's key.
+    pub key: String,
+    /// Its tool.
+    pub tool: String,
+    /// A digest of what it gave.
+    pub gave: String,
+}
+
+/// Calls going round in circles.
+struct Circling {
+    /// How many times in a row (rounds, for two that take turns).
+    count: usize,
+    /// The tool repeated, or the two that take turns.
+    tools: Vec<String>,
+    /// Whether it is two more than the limit: the run stops.
+    stop: bool,
+}
+
+/// Whether the last calls go round in circles: the same call with the same
+/// result `after` times or more in a row, or two that take turns with the
+/// same results for `after` rounds or more.
+fn circling(recent: &[Made], after: u32) -> Option<Circling> {
+    let n = recent.len();
+    if n == 0 || after == 0 {
+        return None;
+    }
+    let last = &recent[n - 1];
+    let same = recent.iter().rev().take_while(|r| *r == last).count();
+    let rounds = if n >= 2 && recent[n - 1] != recent[n - 2] {
+        let (a, b) = (&recent[n - 1], &recent[n - 2]);
+        recent
+            .iter()
+            .rev()
+            .enumerate()
+            .take_while(|(i, r)| if i % 2 == 0 { *r == a } else { *r == b })
+            .count()
+            / 2
+    } else {
+        0
+    };
+    let after = after as usize;
+    let (count, tools) = if same >= rounds {
+        (same, vec![last.tool.clone()])
+    } else {
+        (rounds, vec![recent[n - 2].tool.clone(), last.tool.clone()])
+    };
+    (count >= after).then(|| Circling {
+        count,
+        tools,
+        stop: count >= after + 2,
+    })
+}
+
+/// Adds the runtime's `note` to the model to what it is told next: to the
+/// last call's result, where there is one, so that it is not taken for
+/// the person's words; otherwise as text of its own.
+fn note_to_model(blocks: &mut Vec<Block>, note: &str) {
+    match blocks.last_mut() {
+        Some(Block::ToolResult { content, .. }) => {
+            content.push('\n');
+            content.push_str(note);
+        }
+        _ => blocks.push(Block::text(note)),
+    }
+}
+
+/// A digest of what a call gave, to tell when it gives the same again.
+fn result_digest(outcome: &Outcome) -> String {
+    sion_core::hash::hash_parts("sion-agent/recent/v1", &[outcome.content.as_bytes()]).to_hex()
+        [..16]
+        .to_string()
+}
 
 /// What precedes an outcome the journal answers a repeated call with.
 pub const REPLAYED: &str = "(Not done again: an identical call earlier in this session already \
@@ -553,17 +757,20 @@ impl Runtime<'_> {
         if self.repair(state) {
             self.save(state);
         }
+        let start = RunStart::of(state);
         loop {
             if (self.stopped)() {
                 return Ended::Stopped;
             }
             if let Some(pending) = state.pending.clone() {
-                match self.call(state, &pending.tool, &pending.input) {
+                let left = self.left(state, &start);
+                match self.call(state, &pending.tool, &pending.input, left) {
                     Called::Wait {
                         key,
                         tool,
                         input,
                         reason,
+                        ..
                     } => {
                         self.seen(&Seen::Waiting(tool.clone()));
                         return Ended::NeedsApproval {
@@ -588,6 +795,16 @@ impl Runtime<'_> {
                 }
             }
             self.compact(state);
+            // Within budget: what this call sends and the most it may
+            // answer must fit in what is left, besides the reserve for a
+            // last answer.
+            if let Some(budget) = self.limits.budget_tokens {
+                let left = budget.saturating_sub(start.spent(state));
+                let need = self.request_tokens(state, self.limits.max_tokens);
+                if need.saturating_add(self.limits.reserve_tokens) > left {
+                    return self.wrap_up(state, left);
+                }
+            }
             let start_ms = wall_ms();
             let tainted = state.standing.tainted((self.now)());
             let response = match self.ask(state) {
@@ -653,7 +870,7 @@ impl Runtime<'_> {
                     _ => return Ended::Done { text },
                 }
             }
-            if let Some(ended) = self.run_calls(state, &calls) {
+            if let Some(ended) = self.run_calls(state, &calls, &start) {
                 return ended;
             }
         }
@@ -661,9 +878,15 @@ impl Runtime<'_> {
 
     /// Runs one turn's calls in order, stopping at the first that needs
     /// approval.
-    fn run_calls(&self, state: &mut State, calls: &[(String, String, Value)]) -> Option<Ended> {
+    fn run_calls(
+        &self,
+        state: &mut State,
+        calls: &[(String, String, Value)],
+        start: &RunStart,
+    ) -> Option<Ended> {
         let mut results = Vec::new();
         let mut progress = false;
+        let mut made: Vec<Made> = Vec::new();
         let mut index = 0;
         while index < calls.len() {
             let (use_id, name, input) = &calls[index];
@@ -700,11 +923,9 @@ impl Runtime<'_> {
                         self.begin(state, ready);
                     }
                     self.save(state);
-                    let mut outcomes = if tainted {
-                        tool.call_batch_tainted(&inputs)
-                    } else {
-                        tool.call_batch(&inputs)
-                    };
+                    // Subagents work within what is left of the budget.
+                    let left = self.left(state, start);
+                    let mut outcomes = tool.call_batch_budgeted(&inputs, tainted, left);
                     outcomes.resize_with(group.len(), || {
                         Outcome::uncertain("the tool gave no outcome for this call")
                     });
@@ -721,6 +942,11 @@ impl Runtime<'_> {
                         );
                         self.step(state, step);
                         progress |= !outcome.is_error;
+                        made.push(Made {
+                            key: ready.key.clone(),
+                            tool: ready.tool.clone(),
+                            gave: result_digest(&outcome),
+                        });
                         results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
                     }
                     self.save(state);
@@ -729,9 +955,16 @@ impl Runtime<'_> {
                 }
             }
             index += 1;
-            match self.call(state, name, input) {
+            let left = self.left(state, start);
+            match self.call(state, name, input, left) {
                 Called::Ran(outcome) => {
                     progress |= !outcome.is_error;
+                    let (inner, inner_input) = Self::inner(name, input);
+                    made.push(Made {
+                        key: key(&state.id, inner, &inner_input),
+                        tool: inner.to_string(),
+                        gave: result_digest(&outcome),
+                    });
                     results.push(result_block(use_id, &outcome, &mut state.images));
                 }
                 Called::Wait {
@@ -739,6 +972,7 @@ impl Runtime<'_> {
                     tool,
                     input: inner,
                     reason,
+                    effect,
                 } => {
                     self.seen(&Seen::Waiting(tool.clone()));
                     results.push(result_block(
@@ -763,6 +997,7 @@ impl Runtime<'_> {
                         key: key.clone(),
                         tool: name.clone(),
                         input: input.clone(),
+                        effect: Some(effect),
                     });
                     return Some(Ended::NeedsApproval {
                         key,
@@ -771,6 +1006,41 @@ impl Runtime<'_> {
                         reason,
                     });
                 }
+            }
+        }
+        // Going round in circles: the model is told, and if it goes on,
+        // the run stops.
+        let mut stuck = None;
+        state.recent.extend(made);
+        if state.recent.len() > RECENT_KEPT {
+            let over = state.recent.len() - RECENT_KEPT;
+            state.recent.drain(..over);
+        }
+        if let Some(circling) = circling(&state.recent, self.limits.stuck_after) {
+            let count = circling.count;
+            let (what, did) = match circling.tools.as_slice() {
+                [a, b] => (
+                    format!("{a} and {b}"),
+                    format!("took turns with the same results {count} times"),
+                ),
+                tools => (
+                    tools.join(", "),
+                    format!("gave the same result {count} times in a row"),
+                ),
+            };
+            if circling.stop {
+                stuck = Some(Ended::Stuck {
+                    why: format!("{what} {did}"),
+                });
+            } else {
+                progress = false;
+                note_to_model(
+                    &mut results,
+                    &format!(
+                        "[{what} {did}: calling again will not change that. Change your \
+                         approach, or say what stops you.]"
+                    ),
+                );
             }
         }
         if progress {
@@ -782,25 +1052,171 @@ impl Runtime<'_> {
             content: results,
         });
         keep_last_images(state);
-        None
+        stuck
+    }
+
+    /// What is left of the run's token budget, the reserve for a last
+    /// answer kept back, if the run has a budget.
+    fn left(&self, state: &State, start: &RunStart) -> Option<u64> {
+        self.limits.budget_tokens.map(|budget| {
+            budget
+                .saturating_sub(start.spent(state))
+                .saturating_sub(self.limits.reserve_tokens)
+        })
+    }
+
+    /// Tokens the next model call may cost at most: what it is sent, as an
+    /// estimate (a token for every three bytes, which counts English text
+    /// high), and the most it may answer.
+    fn request_tokens(&self, state: &State, max_tokens: u32) -> u64 {
+        let tools: usize = self
+            .tools
+            .shown()
+            .iter()
+            .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+            .sum();
+        let chars =
+            self.system.len() + state.messages.iter().map(Message::chars).sum::<usize>() + tools;
+        (chars as u64).div_ceil(3) + u64::from(max_tokens)
+    }
+
+    /// The last answer of a run whose budget is spent: within what is
+    /// `left`, the model is asked to say what it did and what remains, and
+    /// its calls, if it makes any, are not made.
+    fn wrap_up(&self, state: &mut State, left: u64) -> Ended {
+        match state.messages.last_mut() {
+            Some(last) if last.role == Role::User => note_to_model(&mut last.content, BUDGET_SPENT),
+            _ => state.messages.push(Message::user(BUDGET_SPENT)),
+        }
+        let room = left.saturating_sub(self.request_tokens(state, 0));
+        if room < 256 {
+            return Ended::OutOfBudget {
+                text: String::new(),
+            };
+        }
+        let max = room.min(u64::from(self.limits.max_tokens)) as u32;
+        let start_ms = wall_ms();
+        match self.ask_with(state, max) {
+            Ok(response) => {
+                self.step(
+                    state,
+                    Step {
+                        kind: "model".into(),
+                        name: response.model.clone(),
+                        start_ms,
+                        ms: wall_ms().saturating_sub(start_ms),
+                        tokens: Some((response.usage.input, response.usage.output)),
+                        key: None,
+                        effect: None,
+                        outcome: None,
+                        tainted: state.standing.tainted((self.now)()),
+                    },
+                );
+                state.turns_taken += 1;
+                state.usage.input += response.usage.input;
+                state.usage.output += response.usage.output;
+                // Its words only: a call it asks for is not made.
+                let content: Vec<Block> = response
+                    .content
+                    .into_iter()
+                    .filter(|block| matches!(block, Block::Text { text } if !text.is_empty()))
+                    .collect();
+                let text = Message {
+                    role: Role::Assistant,
+                    content: content.clone(),
+                }
+                .text();
+                if !content.is_empty() {
+                    state.messages.push(Message {
+                        role: Role::Assistant,
+                        content,
+                    });
+                }
+                Ended::OutOfBudget { text }
+            }
+            Err(_) => Ended::OutOfBudget {
+                text: String::new(),
+            },
+        }
     }
 
     /// Approves the call waiting in `state`: the next run makes it.
     pub fn approve(&self, state: &mut State) -> bool {
-        match &state.pending {
-            Some(pending) => {
-                state
-                    .standing
-                    .approve(&self.policy, &pending.key, (self.now)());
-                true
+        self.approve_as(state, "", Scope::Once).is_ok()
+    }
+
+    /// Approves the call waiting in `state`, as `by` (who the channel says
+    /// decided), and, as `scope` says, the calls like it for the rest of the
+    /// session. A payment is approved one at a time, a tainted session
+    /// allows nothing for the rest of it, and a rule must be for the waiting
+    /// call's tool and match it. The decision is kept with the session
+    /// ([`State::decisions`]).
+    pub fn approve_as(&self, state: &mut State, by: &str, scope: Scope) -> Result<(), String> {
+        let Some(pending) = state.pending.clone() else {
+            return Err("nothing waits for a decision".into());
+        };
+        let now = (self.now)();
+        let (inner, inner_input) = Self::inner(&pending.tool, &pending.input);
+        let allowance = match scope {
+            Scope::Once => None,
+            _ if pending.effect.unwrap_or(Effect::Spend) >= Effect::Spend => {
+                return Err("a payment is approved one at a time: approve it once".into())
             }
-            None => false,
+            // What is allowed would not hold while the taint lasts.
+            _ if state.standing.tainted(now) => {
+                return Err(
+                    "the session has read content from outside, so nothing is allowed \
+                            for the rest of it: approve this call once"
+                        .into(),
+                )
+            }
+            Scope::Call => Some(crate::policy::Allowance {
+                tool: inner.to_string(),
+                input: Some(inner_input.into_owned()),
+                rule: None,
+                by: by.to_string(),
+                at: now,
+            }),
+            Scope::Rule(rule) => {
+                if rule.tool != inner || !rule.matches(inner, &inner_input) {
+                    return Err(format!(
+                        "{} does not match the call waiting ({inner})",
+                        rule.describe()
+                    ));
+                }
+                Some(crate::policy::Allowance {
+                    tool: inner.to_string(),
+                    input: None,
+                    rule: Some(rule),
+                    by: by.to_string(),
+                    at: now,
+                })
+            }
+        };
+        state.standing.approve(&self.policy, &pending.key, now);
+        state.decisions.push(Decided {
+            request: pending.request().to_string(),
+            tool: inner.to_string(),
+            approved: true,
+            by: by.to_string(),
+            at: now,
+            allowed: allowance.as_ref().map(|a| a.describe()),
+            why: None,
+        });
+        if let Some(allowance) = allowance {
+            state.standing.allowed.push(allowance);
         }
+        Ok(())
     }
 
     /// Declines the call waiting in `state`: the model is told why, and the
     /// next run continues without it.
     pub fn decline(&self, state: &mut State, why: &str) -> bool {
+        self.decline_as(state, "", why)
+    }
+
+    /// [`Runtime::decline`], as `by`; the decision is kept with the session.
+    pub fn decline_as(&self, state: &mut State, by: &str, why: &str) -> bool {
         match state.pending.take() {
             Some(pending) => {
                 replace_result(
@@ -808,6 +1224,16 @@ impl Runtime<'_> {
                     &pending.use_id,
                     &Outcome::error(format!("a person declined this call: {why}")),
                 );
+                let (inner, _) = Self::inner(&pending.tool, &pending.input);
+                state.decisions.push(Decided {
+                    request: pending.request().to_string(),
+                    tool: inner.to_string(),
+                    approved: false,
+                    by: by.to_string(),
+                    at: (self.now)(),
+                    allowed: None,
+                    why: Some(why.to_string()),
+                });
                 true
             }
             None => false,
@@ -815,11 +1241,16 @@ impl Runtime<'_> {
     }
 
     fn ask(&self, state: &mut State) -> Result<Response, ModelError> {
+        self.ask_with(state, self.limits.max_tokens)
+    }
+
+    /// [`Runtime::ask`], the answer at most `max_tokens` long.
+    fn ask_with(&self, state: &mut State, max_tokens: u32) -> Result<Response, ModelError> {
         let request = Request {
             system: self.system.clone(),
             messages: state.messages.clone(),
             tools: self.tools.shown(),
-            max_tokens: self.limits.max_tokens,
+            max_tokens,
             images: state.images.clone(),
         };
         let now = (self.now)();
@@ -866,7 +1297,7 @@ impl Runtime<'_> {
         Err(last)
     }
 
-    fn call(&self, state: &mut State, name: &str, input: &Value) -> Called {
+    fn call(&self, state: &mut State, name: &str, input: &Value, left: Option<u64>) -> Called {
         self.reconcile(state, name, input);
         let start_ms = wall_ms();
         match self.check(state, name, input) {
@@ -881,14 +1312,17 @@ impl Runtime<'_> {
                 tool,
                 input,
                 reason,
+                effect,
             } => {
-                let step = self.call_step(state, &tool, Some(&key), None, "waiting", start_ms);
+                let step =
+                    self.call_step(state, &tool, Some(&key), Some(effect), "waiting", start_ms);
                 self.step(state, step);
                 Called::Wait {
                     key,
                     tool,
                     input,
                     reason,
+                    effect,
                 }
             }
             Checked::Ready(ready) => {
@@ -899,7 +1333,15 @@ impl Runtime<'_> {
                 if written {
                     self.save(state);
                 }
-                let outcome = {
+                let outcome = if tool.batches() {
+                    // A batching tool's call is a batch of one, within what
+                    // is left of the budget (subagents at work).
+                    tool.call_batch_budgeted(&[(&ready.input, ready.key.as_str())], tainted, left)
+                        .pop()
+                        .unwrap_or_else(|| {
+                            Outcome::uncertain("the tool gave no outcome for this call")
+                        })
+                } else {
                     let mut note = |text: &str| {
                         state.journal.note(&ready.key, text);
                         self.save(state);
@@ -1014,28 +1456,40 @@ impl Runtime<'_> {
             Decision::Deny(reason) => {
                 return Checked::Answered(Outcome::error(format!("refused by policy: {reason}")))
             }
-            Decision::Ask(reason) => match state.standing.pre_approving(name, input) {
-                // A skill the session read pre-approves the call, and the
-                // session has read nothing from outside since: no one is
-                // asked. What the level refuses stays refused, and spending
-                // is never pre-approved: a person approves it, or the
-                // operator's autonomy level does.
-                Some((skill, rule))
-                    if self.policy.skill_approvals
-                        && effect < crate::tools::Effect::Spend
-                        && !state.standing.tainted(now) =>
-                {
-                    pre_approved = Some(format!("{skill}: {}", rule.describe()));
-                }
-                _ => {
-                    return Checked::Wait {
-                        key: call_key,
-                        tool: name.to_string(),
-                        input: input.clone(),
-                        reason,
+            Decision::Ask(reason) => {
+                // A skill the session read pre-approves the call, or a
+                // person allowed it for the session when they approved
+                // another, and the session has read nothing from outside
+                // since: no one is asked. What the level refuses stays
+                // refused, and spending is never pre-approved: a person
+                // approves each payment, or the operator's autonomy level
+                // does.
+                let open = effect < Effect::Spend && !state.standing.tainted(now);
+                let by_skill = state
+                    .standing
+                    .pre_approving(name, input)
+                    .filter(|_| open && self.policy.skill_approvals)
+                    .map(|(skill, rule)| {
+                        format!("pre-approved by skill {skill}: {}", rule.describe())
+                    });
+                let by_person = state
+                    .standing
+                    .allowing(name, input)
+                    .filter(|_| open)
+                    .map(|a| format!("allowed for this session by {}: {}", a.by, a.describe()));
+                match by_skill.or(by_person) {
+                    Some(by) => pre_approved = Some(by),
+                    None => {
+                        return Checked::Wait {
+                            key: call_key,
+                            tool: name.to_string(),
+                            input: input.clone(),
+                            reason,
+                            effect,
+                        }
                     }
                 }
-            },
+            }
             Decision::Run => {}
         }
         if (self.stopped)() {
@@ -1057,6 +1511,10 @@ impl Runtime<'_> {
     /// is journaled, its outcome.
     fn finish(&self, state: &mut State, ready: &Ready, outcome: &Outcome) {
         let now = (self.now)();
+        if let Some(spent) = outcome.spent {
+            state.delegated.input += spent.input;
+            state.delegated.output += spent.output;
+        }
         if outcome.untrusted {
             state.standing.taint(&self.policy, now);
         }

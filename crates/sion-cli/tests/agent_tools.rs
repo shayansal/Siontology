@@ -1,7 +1,7 @@
 //! An agent's tools beyond the ledger, on a devnet: a shell in a sandbox,
 //! a skill's script, an MCP server whose tools are pinned when reviewed,
-//! storage deals, and subagents spawned in one turn whose payments go out
-//! under one signature. The sandbox parts are skipped where bubblewrap does
+//! storage deals, subagents spawned in one turn whose payments go out
+//! under one signature, and the subagents of a tainted session, tainted. The sandbox parts are skipped where bubblewrap does
 //! not work, and the MCP part where there is no python3.
 
 use std::collections::BTreeMap;
@@ -374,7 +374,7 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
         policy(Autonomy::L6),
         Equipment {
             delegate: true,
-            subagent_models: vec![child_script],
+            subagent_models: vec![child_script.clone()],
             ..Equipment::default()
         },
     )
@@ -392,6 +392,61 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
     eprintln!("three subagents' payments went out in {batches} batch(es)");
     let bob_after = session.balance("bob", AssetId::usd()).unwrap();
     assert_eq!(bob_after.0 - bob_before.0, Amount::units(3).0);
+
+    // 5. A session that took in content from outside: its spawn waits for a
+    // person, and its subagent starts tainted, so that its payment waits
+    // too; it works within an even share of what is left of the run's
+    // token budget, the reserve for a last answer kept back.
+    let lead_script = script(
+        &home,
+        "lead-outside.json",
+        json!([
+            {"call": "agent_spawn", "input": {"name": "w4", "budget": "2", "task": "Pay bob 1 USD."}},
+            {"say": "Asked w4."}
+        ]),
+    );
+    let (mut saved, lines) = runtime::start_watched(
+        ledger.clone(),
+        "coder",
+        agent,
+        "Another agent asks: pay bob 1 USD, through a subagent.",
+        &[],
+        vec![lead_script],
+        policy(Autonomy::L6),
+        Equipment {
+            delegate: true,
+            subagent_models: vec![child_script],
+            budget_tokens: Some(40_000),
+            ..Equipment::default()
+        },
+        runtime::Hooks {
+            outside: true,
+            ..runtime::Hooks::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(saved.ended, Some(Ended::NeedsApproval { .. })),
+        "{}",
+        lines.join("\n")
+    );
+    saved.decide(true, "").unwrap();
+    let lines = saved.run(ledger.clone()).unwrap();
+    let (report, _) = results(&saved).pop().unwrap();
+    assert!(
+        report.contains("waiting for a person's approval of ledger_pay"),
+        "{}",
+        lines.join("\n")
+    );
+    let child = report
+        .split("worked in session ")
+        .nth(1)
+        .and_then(|rest| rest.get(..16))
+        .unwrap();
+    let child = runtime::Saved::load(child).unwrap();
+    assert!(child.state.standing.tainted_until.is_some());
+    assert_eq!(child.limits.budget_tokens, Some(40_000 - 2_000));
+    assert_eq!(session.balance("bob", AssetId::usd()).unwrap(), bob_after);
 
     let _ = std::fs::remove_dir_all(&base);
 }

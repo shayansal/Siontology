@@ -65,6 +65,10 @@ pub struct Outcome {
     /// are not journaled: the session keeps the last few.
     #[serde(skip)]
     pub pictures: Vec<Picture>,
+    /// Tokens the call's own models used (subagents at work): counted in
+    /// the run's budget.
+    #[serde(skip)]
+    pub spent: Option<crate::model::Usage>,
 }
 
 /// A picture a tool returned: as a person sends one.
@@ -80,6 +84,7 @@ impl Outcome {
             untrusted: false,
             pre_approval: None,
             pictures: Vec::new(),
+            spent: None,
         }
     }
 
@@ -92,6 +97,7 @@ impl Outcome {
             untrusted: false,
             pre_approval: None,
             pictures: Vec::new(),
+            spent: None,
         }
     }
 
@@ -104,6 +110,7 @@ impl Outcome {
             untrusted: false,
             pre_approval: None,
             pictures: Vec::new(),
+            spent: None,
         }
     }
 
@@ -195,6 +202,25 @@ pub trait Tool: Send + Sync {
             .iter()
             .map(|(input, key)| self.call_tainted(input, key))
             .collect()
+    }
+
+    /// [`Tool::call_batch`] (or [`Tool::call_batch_tainted`]) within a run
+    /// that has `budget` tokens left, if it has a budget: a tool whose calls
+    /// run models of their own (subagents) keeps them within it, and says
+    /// what they used ([`Outcome::spent`]). By default the budget is not
+    /// the tool's concern.
+    fn call_batch_budgeted(
+        &self,
+        calls: &[(&Value, &str)],
+        tainted: bool,
+        budget: Option<u64>,
+    ) -> Vec<Outcome> {
+        let _ = budget;
+        if tainted {
+            self.call_batch_tainted(calls)
+        } else {
+            self.call_batch(calls)
+        }
     }
 
     /// How the tool keeps a call's effect from happening twice

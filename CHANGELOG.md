@@ -10,6 +10,45 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Decisions that name what they decide; runs held to a token budget and out of circles
+
+- **A waiting call names its request**: the first eight hex digits of its
+  key, the same for as long as it waits. A decision may give it
+  (`/approve 3f2a9c1e`, `sion agent continue … --approve --request
+  3f2a9c1e`), and is refused if another call waits by then, so that a
+  late answer cannot decide a call the person never saw.
+- **Decisions kept with who made them** (`State::decisions`): as the
+  channel names them (`slack:U07`, `http:token 3046d92e`, `cli:<user>`),
+  when, and what else they allowed; a run shows `(approved by …)`.
+- **Approvals for the rest of a session.** `/approve always`
+  (`--always`): the same call again; `/approve always <rule>` (`--always
+  <rule>`), a rule as skills' `allowed-tools` write them
+  (`write_file(notes:*)`, `shell(git status:*)`): the calls of its tool
+  that the rule matches run without asking, marked as allowed and by whom.
+  Never a payment, which is approved on its own; never while the session
+  has read content from outside; never past what the autonomy level
+  refuses. `/allowed` lists them, `/allowed off` withdraws them
+  (`agent:session-allowance`).
+- **Going round in circles.** A call that gives the same result three
+  times in a row, or two that take turns with the same results for three
+  rounds: the model is told so, with the last result; two more, and the
+  run stops (`Ended::Stuck`). `Limits::stuck_after` sets the count (0
+  turns it off).
+- **Token budgets** (`--budget-tokens`, on `sion agent run` and on
+  profiles): the tokens a run may use, its subagents' included. Before
+  each model call, what it sends (estimated: a token for every three
+  bytes) and the most it may answer must fit in what is left, besides a
+  reserve of 2,000 tokens; when they do not, the model is asked, within
+  what is left, to say what it did and what remains, and a call it makes
+  then is not made (`Ended::OutOfBudget`). The subagents a turn spawns
+  share what is left, the reserve kept back, and say what they used
+  (`agent:token-estimate`). `/usage` shows subagents' tokens and the
+  budget.
+- **More is content from outside.** A message from another agent over
+  A2A taints its session; so does a task's output that `task_status`
+  reads (another agent's work); and the subagents of a tainted session
+  start tainted, since the tasks it writes them may carry what it read.
+
 ### Effects that cannot happen twice by accident; traces for OpenTelemetry
 
 - **Nothing lost in a crash.** A call that changes something is written

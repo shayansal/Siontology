@@ -22,9 +22,9 @@ pays its transactions' fees, so it gets 1 USD for them:
 
 ```text
 $ sion agent register alice agent-7 --payees bob --max-payment 10 --burst 50 --rate 0.05 --funding 100
-alice signs: Register agent-7 as an agent, funded with 100 USD: only to bob, at most 10 USD per payment, 50 USD at once, refilled by 0.05 USD a Pulse, until Pulse 100116, a receipt claim for every payment, may delegate narrower limits. Fee 0.0011 USD; valid until Pulse 136.
-Pulse 118: Done: agent 1e6739d2 registered, signing as agent-7; fee 0.0011 USD.
-agent 1e6739d22704e3a8d11f45e383253240c1b4c78217f0f081b37396874e9d1967
+alice signs: Register agent-7 as an agent, funded with 100 USD: only to bob, at most 10 USD per payment, 50 USD at once, refilled by 0.05 USD a Pulse, until Pulse 100000, a receipt claim for every payment, may delegate narrower limits. Fee 0.0011 USD; valid until Pulse 20.
+Pulse 2: Done: agent bdbdb742 registered, signing as agent-7; fee 0.0011 USD.
+agent bdbdb742f506a53671928c83efc1c57321d70dd0636d84ab873575f9f70f60df
 …
 $ sion faucet agent-7 1
 ```
@@ -36,18 +36,18 @@ its charter forbids: a tip to carol, and 50 USD to bob. At autonomy L6
 the runtime lets every call through, so the ledger is what refuses them:
 
 ```text
-$ sion agent run agent-7 1e6739d2…1967 --task 'Pay bob 5 USD for inference.' --model script:pay.json --autonomy L6
-session 7fa7a7ab979c4da7 for agent 1e6739d2
+$ sion agent run agent-7 bdbdb742…60df --task 'Pay bob 5 USD for inference.' --model script:pay.json --autonomy L6
+session 4c16d4afda9b2fc7 for agent bdbdb742
   → ledger_balance {}
-  ← {"budget_remaining_usd":"100","burst_usd":"50","can_spend_now_usd":"50","expires_at_pulse":100116,"fee_balance_usd":"1","max_per_payment_usd":"10","payees":["bob"],"refill_usd_per_pulse":"0.05","status":"active"}
+  ← {"budget_remaining_usd":"100","burst_usd":"50","can_spend_now_usd":"50","expires_at_pulse":100000,"fee_balance_usd":"1","max_per_payment_usd":"10","payees":["bob"],"refill_usd_per_pulse":"0.05","status":"active"}
   → ledger_pay {"amount":"5","purpose":"inference","to":"bob"}
-  ← Pulse 123: Done: agent paid 5 USD to bob (receipt claim 3d512f94); fee 0.0012 USD. Transaction 5350fd4e….
+  ← Pulse 7: Done: agent paid 5 USD to bob (receipt claim 60bed29d); fee 0.0012 USD. Transaction ef8072e0….
   → ledger_pay {"amount":"5","purpose":"a tip","to":"carol"}
-  ✗ refused by the ledger at Pulse 125: Failed (charter caveat violated: payee not allowed); nothing happened except the fee of 0.0011 USD.
+  ✗ refused by the ledger at Pulse 9: Failed (charter caveat violated: payee not allowed); nothing happened except the fee of 0.0011 USD.
   → ledger_pay {"amount":"50","purpose":"a big order","to":"bob"}
-  ✗ refused by the ledger at Pulse 127: Failed (charter caveat violated: payment 50 above per-payment limit 10); nothing happened except the fee of 0.0011 USD.
+  ✗ refused by the ledger at Pulse 12: Failed (charter caveat violated: payment 50 above per-payment limit 10); nothing happened except the fee of 0.0011 USD.
 agent: Paid bob 5 USD for inference. The ledger refused a tip to carol, who is not a payee my charter allows, and a 50 USD order, above my 10 USD limit per payment.
-session 7fa7a7ab979c4da7: done
+session 4c16d4afda9b2fc7: done
 ```
 
 A script is a JSON array of steps: `{"call": "<tool>", "input": {…}}`,
@@ -139,6 +139,9 @@ what the agent tries, the ledger what it can do.
 Content from outside, such as a fetched page, **taints** the session for
 24 hours: until then, external calls and spending wait for approval even
 at L6, so instructions hidden in a page cannot move money on their own.
+Another agent's message (over [A2A](agent-teams.md#agents-that-talk-a2a)),
+a task's output that `task_status` reads, and the task a tainted session
+gives a subagent are content from outside too.
 A browser or a desktop held to the hosts the operator names is the one
 exception: it acts on their pages as the level allows, while the
 session's other external calls, and all spending, still wait ([A browser
@@ -149,30 +152,78 @@ and a desktop](agent-browser.md#where-it-acts-on-its-own)).
 At L5 the payment waits. The session is saved, and the command returns:
 
 ```text
-$ sion agent run agent-7 1e6739d2…1967 --task 'Plan the labelling job and pay bob 3 USD for it.' --model script:ask.json --workspace work
-session 403d8d22d822eda5 for agent 1e6739d2
+$ sion agent run agent-7 bdbdb742…60df --task 'Plan the labelling job and pay bob 3 USD for it.' --model script:ask.json --workspace work
+session 9795b3a33b6e299b for agent bdbdb742
   → write_file {"content":"Buy 1 GPU-hour of data labelling from bob for 3 USD.\n","path":"plan.md"}
   ← wrote 53 bytes to plan.md
   → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"}
   ← waiting for a person's approval
-session 403d8d22d822eda5: waiting for you: ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (spending at autonomy L5). Answer with `sion agent continue 403d8d22d822eda5 --approve` or `--decline <why>`.
-$ sion agent continue 403d8d --approve
-  → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (decided)
-  ← Pulse 130: Done: agent paid 3 USD to bob (receipt claim 42733002); fee 0.0011 USD. Transaction 4c086f4e….
+session 9795b3a33b6e299b: waiting for you: ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (spending at autonomy L5; request 74f23e21). Answer with `sion agent continue 9795b3a33b6e299b --approve` or `--decline <why>`.
+$ sion agent continue 9795b3 --approve
+  → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (approved by cli:operator)
+  ← Pulse 16: Done: agent paid 3 USD to bob (receipt claim 3722068c); fee 0.0011 USD. Transaction 6500057e….
 agent: Wrote the plan to plan.md and paid bob 3 USD for data labelling.
-session 403d8d22d822eda5: done
+session 9795b3a33b6e299b: done
 ```
 
-An approval covers that one call and lasts 15 minutes. Declined, the call
-is not made and the model is told why:
+The call that waits names its request, `74f23e21`, the start of its
+key: it stays the same for as long as the call waits. A decision that
+names it (`--request 74f23e21`, or `/approve 74f23e21` on a channel) is
+refused if another call waits by then, so it cannot decide a call you did
+not see. An approval covers that one call and lasts 15 minutes. The
+session keeps each decision, with who made it (here `cli:` and the user
+name, on a channel as the channel names them) and when. Declined, the
+call is not made and the model is told why:
 
 ```text
-$ sion agent continue ec2bdc --decline 'we already paid bob for this job'
-  → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (decided)
+$ sion agent continue 834618 --decline 'we already paid bob for this job'
+  → ledger_pay {"amount":"3","purpose":"data labelling","to":"bob"} (declined by cli:operator: we already paid bob for this job)
   ✗ a person declined this call: we already paid bob for this job
 agent: I did not pay bob: you declined, since the job is already paid for.
-session ec2bdc0df92e8230: done
+session 834618219452230b: done
 ```
+
+### Calls like it, for the rest of the session
+
+`--always` approves the call and, for the rest of the session, the same
+call again: a command to run again after a fix, say. `--always <rule>`
+approves the calls of its tool that the rule matches, a rule as a skill's
+`allowed-tools` writes it ([Skill permissions](skill-permissions.md)):
+`write_file(notes:*)`, `shell(git status:*)`, `fetch_url(domain:docs.rs)`.
+At L2, where each write waits, the first of two notes is approved with
+the writes under `notes/`; the second runs without asking, and the model
+is told who allowed it; a write elsewhere still waits:
+
+```text
+$ sion agent run agent-7 bdbdb742…60df --task 'Write down the sources and the plan in notes/.' --model script:notes.json --workspace work3 --autonomy L2
+session 7e977e07449b5888 for agent bdbdb742
+  → write_file {"content":"- the labelling vendor's price list\n","path":"notes/sources.md"}
+  ← waiting for a person's approval
+session 7e977e07449b5888: waiting for you: write_file {"content":"- the labelling vendor's price list\n","path":"notes/sources.md"} (a write at autonomy L2; request a72bac04). Answer with `sion agent continue 7e977e07449b5888 --approve` (`--always` for the same call again this session) or `--decline <why>`.
+$ sion agent continue 7e977e --approve --request a72bac04 --always 'write_file(notes:*)'
+  → write_file {"content":"- the labelling vendor's price list\n","path":"notes/sources.md"} (approved by cli:operator, with write_file(notes:*) for the rest of the session)
+  ← wrote 36 bytes to notes/sources.md
+  → write_file {"content":"1. Label 1,000 images.\n","path":"notes/plan.md"}
+  ← [run without asking: allowed for this session by cli:operator: write_file(notes:*)]
+    wrote 23 bytes to notes/plan.md
+  → write_file {"content":"See notes/.\n","path":"README.md"}
+  ← waiting for a person's approval
+session 7e977e07449b5888: waiting for you: write_file {"content":"See notes/.\n","path":"README.md"} (a write at autonomy L2; request 7533eb1b). Answer with `sion agent continue 7e977e07449b5888 --approve` (`--always` for the same call again this session) or `--decline <why>`.
+$ sion agent continue 7e977e --decline 'leave the README as it is'
+  → write_file {"content":"See notes/.\n","path":"README.md"} (declined by cli:operator: leave the README as it is)
+  ✗ a person declined this call: leave the README as it is
+agent: Wrote the notes; the README is left as it was.
+session 7e977e07449b5888: done
+```
+
+What a person allows has the limits of a skill's pre-approval: it never
+covers a payment, which is approved on its own (`--always` on one is
+refused); it cannot be given while the session has read content from
+outside, and one given before does not hold until the taint expires; and
+it never goes past what the autonomy level refuses
+(`agent:session-allowance`). On a channel, `/approve always [rule]` does
+the same, `/allowed` lists what the session may do without asking, and
+`/allowed off` withdraws it.
 
 `sion agent continue <session> --say "…"` tells a finished session more
 and lets it go on. `sion agent sessions` lists the sessions on this
@@ -513,16 +564,55 @@ once others have verified the better version: see
   call succeeded, at most 32. A call that failed twice with the same input
   is blocked. Long conversations are compacted: the middle is replaced by
   a summary, never separating a call from its result.
+- **Going round in circles.** When a call gives the same result three
+  times in a row, or two calls take turns with the same results for three
+  rounds, the model is told so with the last result; two more, and the run
+  stops. Here a model waits for a build by reading a file that does not
+  change:
+
+  ```text
+  $ sion agent run agent-7 bdbdb742…60df --task 'Tell me when build 7 has finished.' --model script:poll.json --workspace work4
+  session 857bcdcab22dae24 for agent bdbdb742
+    → read_file {"path":"build-7.txt"}
+    ← build 7: running
+    → read_file {"path":"build-7.txt"}
+    ← build 7: running
+    → read_file {"path":"build-7.txt"}
+    ← build 7: running
+
+      [read_file gave the same result 3 times in a row: calling again will not change that. Change your approach, or say what stops you.]
+    → read_file {"path":"build-7.txt"}
+    ← build 7: running
+
+      [read_file gave the same result 4 times in a row: calling again will not change that. Change your approach, or say what stops you.]
+    → read_file {"path":"build-7.txt"}
+    ← build 7: running
+  session 857bcdcab22dae24: stopped going round in circles (read_file gave the same result 5 times in a row); `sion agent continue 857bcdcab22dae24 --say <more>` to go on another way
+  ```
+
+  A run's limits set the count (`stuck_after`; 0 turns the check off).
+- **A budget of tokens.** `--budget-tokens <n>` (on `sion agent run` and
+  on profiles) caps what each run may use, its subagents' tokens
+  included. Before each model call, what it sends (estimated at a token
+  for every three bytes) and the most it may answer must fit in what is
+  left, besides a reserve of 2,000 tokens for a last answer. When they do
+  not, the model is asked, within what is left, to say what it did, what
+  it found and what remains, and a call it makes then is not made; the
+  run ends with `its run's token budget is spent`. The subagents of a
+  turn share what is left, the reserve kept back, and what they used
+  counts against it. The estimate is not a provider's count: some text,
+  and pictures, cost more tokens than it says (`agent:token-estimate`).
 - **The kill switch.** `sion agent kill-switch on` stops every agent run
   on this machine before its next model or tool call:
 
   ```text
   $ sion agent kill-switch on
   kill switch on: every agent run stops before its next call (…/agents/STOP)
-  $ sion agent run agent-7 1e6739d2…1967 --task 'Pay bob 1 USD.' --model script:pay.json --autonomy L6
-  session c58d85c8dae08969 for agent 1e6739d2
-  session c58d85c8dae08969: stopped by the kill switch (…/agents/STOP)
+  $ sion agent run agent-7 bdbdb742…60df --task 'Pay bob 1 USD.' --model script:pay.json --autonomy L6
+  session 8c993ac4876029d0 for agent bdbdb742
+  session 8c993ac4876029d0: stopped by the kill switch (…/agents/STOP)
   $ sion agent kill-switch off
+  kill switch off
   ```
 
   The kill switch is local. To stop an agent everywhere, suspend its

@@ -371,6 +371,12 @@ pub enum AgentCommand {
         /// skill it read pre-approves with `allowed-tools`.
         #[arg(long)]
         no_skill_approvals: bool,
+        /// Tokens each run may use, its subagents' included: before each
+        /// model call, what it sends (estimated) and the most it may answer
+        /// must fit in what is left, and when they do not, the run ends with
+        /// a last answer, without tools, of what it did and what remains.
+        #[arg(long, value_name = "TOKENS")]
+        budget_tokens: Option<u64>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -380,6 +386,16 @@ pub enum AgentCommand {
         /// Approve the call it waits on.
         #[arg(long, conflicts_with_all = ["decline", "say"])]
         approve: bool,
+        /// With --approve: allow the same call again for the rest of the
+        /// session, or, given a rule such as `shell(git status:*)`, the
+        /// calls of its tool that the rule matches. Never a payment, and
+        /// never while the session is tainted.
+        #[arg(long, requires = "approve", num_args = 0..=1, default_missing_value = "", value_name = "RULE")]
+        always: Option<String>,
+        /// The request decided (as the session shows it): refused if it is
+        /// not the call waiting.
+        #[arg(long, value_name = "ID")]
+        request: Option<String>,
         /// Decline the call it waits on, saying why.
         #[arg(long, conflicts_with = "say")]
         decline: Option<String>,
@@ -719,6 +735,7 @@ pub fn run(
             storage,
             screen,
             no_skill_approvals,
+            budget_tokens,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shell = shell.sandbox()?;
@@ -772,6 +789,7 @@ pub fn run(
                     mcp,
                     storage,
                     screen,
+                    budget_tokens,
                     ..crate::runtime::Equipment::default()
                 },
             )?;
@@ -784,17 +802,39 @@ pub fn run(
         AgentCommand::Continue {
             session: id,
             approve,
+            always,
+            request,
             decline,
             say,
         } => {
+            if request.is_some() && !approve && decline.is_none() {
+                return Err(CliError::Usage(
+                    "--request goes with --approve or --decline".into(),
+                ));
+            }
             let reply = if approve {
-                Some(crate::runtime::Reply::Approve)
+                let words = always
+                    .map(|rule| format!("always {rule}"))
+                    .unwrap_or_default();
+                let mut approval =
+                    crate::runtime::Approval::parse(&words).map_err(CliError::Usage)?;
+                approval.request = request.clone();
+                Some(crate::runtime::Reply::Approve(approval))
             } else if let Some(why) = decline {
-                Some(crate::runtime::Reply::Decline(why))
+                Some(crate::runtime::Reply::Decline { request, why })
             } else {
                 say.map(crate::runtime::Reply::Say)
             };
-            let (_, lines) = crate::runtime::resume(shared, &id, reply)?;
+            let who = crate::runtime::local_person("cli");
+            let (_, lines) = crate::runtime::resume_watched(
+                shared,
+                &id,
+                reply,
+                crate::runtime::Hooks {
+                    who: Some(&who),
+                    ..crate::runtime::Hooks::default()
+                },
+            )?;
             for line in lines {
                 println!("{line}");
             }
@@ -929,6 +969,10 @@ pub fn run(
                                 Some(sion_agent::Ended::Done { .. }) => "done".to_string(),
                                 Some(sion_agent::Ended::NeedsApproval { tool, .. }) => {
                                     format!("waiting on {tool}")
+                                }
+                                Some(sion_agent::Ended::Stuck { .. }) => "stuck".to_string(),
+                                Some(sion_agent::Ended::OutOfBudget { .. }) => {
+                                    "out of budget".to_string()
                                 }
                                 Some(other) => format!("{other:?}").to_lowercase(),
                                 None => "new".into(),

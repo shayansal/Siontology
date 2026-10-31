@@ -1437,10 +1437,14 @@ impl Bridge<'_> {
             texts
         };
         let steering = options.busy == Busy::Steer;
+        // Who decides, if the turn decides: as the messenger names them.
+        let who = format!("{}:{}", self.messenger.name(), last.from);
         let hooks = Hooks {
             watch: Some(&watch),
             stop: Some(&stop),
             steer: steering.then_some(&steer as &(dyn Fn() -> Vec<String> + Sync)),
+            who: Some(&who),
+            outside: false,
         };
         let answer = crate::channels::converse_with(
             self.ledger.clone(),

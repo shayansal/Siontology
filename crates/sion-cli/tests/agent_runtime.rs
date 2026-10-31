@@ -1,7 +1,9 @@
 //! An agent at work on a devnet: a scripted model drives the runtime, which
 //! pays through the agent's charter. The ledger refuses what the charter
 //! forbids whatever the runtime allows; the runtime asks before paying at
-//! autonomy L5; the kill switch stops a run.
+//! autonomy L5, each payment on its own, and a person may allow calls like
+//! one they approve for the rest of the session; the kill switch stops a
+//! run.
 
 use std::sync::Arc;
 
@@ -222,12 +224,59 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
     // The session is kept on disk and continues from there.
     let mut saved_again = runtime::Saved::load(&saved.state.id[..6]).unwrap();
     assert_eq!(saved_again.state, saved.state);
-    saved_again.decide(true, "").unwrap();
+    let request = saved_again
+        .state
+        .pending
+        .as_ref()
+        .unwrap()
+        .request()
+        .to_string();
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .contains(&format!("request {request}")),
+        "{}",
+        lines.join("\n")
+    );
+    // A decision names the request it decides, if it names one; a payment
+    // is approved on its own, never for the rest of the session.
+    let approve = |words: &str| runtime::Reply::Approve(runtime::Approval::parse(words).unwrap());
+    let wrong = saved_again
+        .decide_as(&approve("00000000"), "alice")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        wrong.contains("not the one the session waits on"),
+        "{wrong}"
+    );
+    let always = saved_again
+        .decide_as(&approve(&format!("{request} always")), "alice")
+        .unwrap_err()
+        .to_string();
+    assert!(always.contains("one at a time"), "{always}");
+    saved_again.decide_as(&approve(&request), "alice").unwrap();
     let lines = saved_again.run(ledger.clone()).unwrap();
     assert!(
         matches!(saved_again.ended, Some(Ended::Done { .. })),
         "{}",
         lines.join("\n")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("ledger_pay") && l.contains("(approved by alice)")),
+        "{}",
+        lines.join("\n")
+    );
+    let decided = &saved_again.state.decisions;
+    assert_eq!(
+        (
+            decided.len(),
+            decided[0].by.as_str(),
+            decided[0].request.as_str()
+        ),
+        (1, "alice", request.as_str())
     );
     assert_eq!(
         session.balance("bob", AssetId::usd()).unwrap().0 - bob_after.0,
@@ -236,6 +285,85 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
     // Deciding again has nothing to decide.
     assert!(saved_again.decide(true, "").is_err());
     let _ = saved.decide(false, "too late");
+
+    // At L2 each write waits for a person, who may allow the writes a rule
+    // matches for the rest of the session: those run without asking, and
+    // say so; another still waits.
+    // The workspace is apart from the agent's home, as the runtime requires.
+    let workspace =
+        std::env::temp_dir().join(format!("sion-agent-runtime-work-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    let model = script(
+        &home,
+        "notes.json",
+        json!([
+            {"call": "write_file", "input": {"path": "notes/a.txt", "content": "a"}},
+            {"call": "write_file", "input": {"path": "notes/b.txt", "content": "b"}},
+            {"call": "write_file", "input": {"path": "plan.txt", "content": "c"}},
+            {"say": "Wrote the notes."}
+        ]),
+    );
+    let (mut notes, _) = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "Write the notes.",
+        vec![model],
+        Policy {
+            autonomy: Autonomy::L2,
+            ..Policy::default()
+        },
+        runtime::Equipment {
+            workspace: Some(workspace.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(matches!(notes.ended, Some(Ended::NeedsApproval { .. })));
+    let mismatch = notes
+        .decide_as(&approve("always write_file(plan:*)"), "alice")
+        .unwrap_err()
+        .to_string();
+    assert!(mismatch.contains("does not match"), "{mismatch}");
+    notes
+        .decide_as(&approve("always write_file(notes:*)"), "alice")
+        .unwrap();
+    let lines = notes.run(ledger.clone()).unwrap();
+    let Some(Ended::NeedsApproval { input, .. }) = &notes.ended else {
+        panic!("{}", lines.join("\n"));
+    };
+    assert_eq!(input["path"], "plan.txt");
+    assert!(workspace.join("notes/a.txt").exists() && workspace.join("notes/b.txt").exists());
+    assert!(!workspace.join("plan.txt").exists());
+    assert!(
+        lines.iter().any(|l| l.contains(
+            "[run without asking: allowed for this session by alice: write_file(notes:*)]"
+        )),
+        "{}",
+        lines.join("\n")
+    );
+    assert!(
+        lines.iter().any(|l| l
+            .contains("(approved by alice, with write_file(notes:*) for the rest of the session)")),
+        "{}",
+        lines.join("\n")
+    );
+    notes
+        .decide_as(
+            &runtime::Reply::Decline {
+                request: None,
+                why: "not the plan".into(),
+            },
+            "bob",
+        )
+        .unwrap();
+    notes.run(ledger.clone()).unwrap();
+    assert!(matches!(notes.ended, Some(Ended::Done { .. })));
+    assert!(!workspace.join("plan.txt").exists());
+    assert_eq!(
+        notes.state.decisions[1].why.as_deref(),
+        Some("not the plan")
+    );
 
     // The kill switch stops a run before its first call.
     std::fs::create_dir_all(runtime::kill_switch().parent().unwrap()).unwrap();
@@ -273,4 +401,5 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
     );
     assert!(wrong.is_err());
     std::fs::remove_dir_all(&home).unwrap();
+    std::fs::remove_dir_all(&workspace).unwrap();
 }

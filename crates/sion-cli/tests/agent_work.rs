@@ -267,6 +267,7 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         screen: Default::default(),
         image_model: None,
         home_assistant: false,
+        budget_tokens: None,
     };
     sion_cli::profiles::save_all(
         &[("lead".to_string(), profile.clone())]

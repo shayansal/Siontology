@@ -256,6 +256,9 @@ fn complete(
         }
     };
     let created = crate::schedules::now();
+    // Who decides, if the message decides: the token's holder.
+    let who =
+        crate::channels::holder(&model, presented, admin).map(|holder| format!("openai:{holder}"));
     if request["stream"] != true {
         let answer = match converse_with(
             ledger,
@@ -263,7 +266,10 @@ fn complete(
             &conversation,
             &text,
             &pictures,
-            crate::runtime::Hooks::default(),
+            crate::runtime::Hooks {
+                who: who.as_deref(),
+                ..crate::runtime::Hooks::default()
+            },
         ) {
             Ok(answer) => answer,
             Err(e) => return whole(400, "invalid_request_error", &e.to_string()),
@@ -334,7 +340,10 @@ fn complete(
             &conversation,
             &text,
             &pictures,
-            crate::runtime::Hooks::watched(&watch),
+            crate::runtime::Hooks {
+                who: who.as_deref(),
+                ..crate::runtime::Hooks::watched(&watch)
+            },
         );
         // A command is answered without a run.
         if !begun() {

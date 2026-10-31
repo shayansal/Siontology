@@ -234,6 +234,21 @@ pub fn access(profile: &str, presented: Option<&str>, admin: Option<&str>) -> Ac
     }
 }
 
+/// Who presents `presented` to `profile`, as a decision they make names
+/// them: the machine's token, or a token of the profile, by its id.
+pub fn holder(profile: &str, presented: Option<&str>, admin: Option<&str>) -> Option<String> {
+    let presented = presented?;
+    if admin.is_some_and(|admin| same_token(presented, admin)) {
+        return Some("the machine's token".into());
+    }
+    let hash = hash_token(presented);
+    tokens()
+        .ok()?
+        .iter()
+        .find(|t| t.profile == profile && t.hash == hash)
+        .map(|t| format!("token {}", t.id))
+}
+
 /// Why a request with `presented` (or none) may not reach a profile.
 pub fn refusal(presented: Option<&str>) -> &'static str {
     match presented {
@@ -311,7 +326,9 @@ impl ChatSettings {
 pub const COMMANDS: &str = "/new: start over, in a new session
 /status: where the session stands
 /stop: stop what the agent is doing
-/approve, /decline <why>: decide the call the session waits on
+/approve [id], /decline [id] <why>: decide the call the session waits on
+/approve [id] always [rule]: that call, and the same call again (or those of its tool the rule matches, as shell(git status:*)) for the rest of the session
+/allowed: what is allowed without asking; /allowed off withdraws it
 /retry: answer the last message again
 /undo: forget the last message and its answer
 /compact: shorten the session, its start kept as a summary
@@ -570,15 +587,29 @@ pub fn converse_with(
             return Ok(reply(
                 current,
                 format!(
-                    "This session: {} turns, {} input and {} output tokens, {} messages{}.",
+                    "This session: {} turns, {} input and {} output tokens{}, {} messages{}{}.",
                     state.turns_taken,
                     state.usage.input,
                     state.usage.output,
+                    match state.delegated {
+                        sion_agent::model::Usage {
+                            input: 0,
+                            output: 0,
+                        } => String::new(),
+                        delegated => format!(
+                            " (and its subagents {} and {})",
+                            delegated.input, delegated.output
+                        ),
+                    },
                     state.messages.len(),
                     match state.compactions {
                         0 => String::new(),
                         1 => ", compacted once".to_string(),
                         n => format!(", compacted {n} times"),
+                    },
+                    match saved.limits.budget_tokens {
+                        Some(budget) => format!("; a run may use {budget} tokens"),
+                        None => String::new(),
                     }
                 ),
             ));
@@ -847,12 +878,63 @@ pub fn converse_with(
             remember(key, Some(&saved.state.id))?;
             return Ok(answered(&saved, lines));
         }
-        "/approve" => Some(Reply::Approve),
-        "/decline" => Some(Reply::Decline(if rest.is_empty() {
-            "declined".to_string()
-        } else {
-            rest.to_string()
-        })),
+        "/approve" => match crate::runtime::Approval::parse(rest) {
+            Ok(approval) => Some(Reply::Approve(approval)),
+            Err(why) => return Ok(reply(current, why)),
+        },
+        "/decline" => {
+            let (request, why) = crate::runtime::request_named(rest);
+            Some(Reply::Decline {
+                request,
+                why: if why.is_empty() {
+                    "declined".to_string()
+                } else {
+                    why.to_string()
+                },
+            })
+        }
+        "/allowed" => {
+            let Some(mut saved) = session()? else {
+                return Ok(no_session());
+            };
+            let allowed = &saved.state.standing.allowed;
+            let said =
+                match rest {
+                    "" if allowed.is_empty() => {
+                        "Nothing is allowed here without asking beyond what the autonomy level and \
+                     the skills read allow: /approve always allows more."
+                            .to_string()
+                    }
+                    "" => format!(
+                        "Allowed for this session without asking (never a payment, and not while \
+                     it has read content from outside):\n{}\n/allowed off withdraws them.",
+                        allowed
+                            .iter()
+                            .map(|a| match a.by.as_str() {
+                                "" => format!("- {}", a.describe()),
+                                by => format!("- {} (by {by})", a.describe()),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ),
+                    "off" => {
+                        let withdrawn = allowed.len();
+                        saved.state.standing.allowed.clear();
+                        saved.save()?;
+                        match withdrawn {
+                            0 => "Nothing was allowed.".to_string(),
+                            1 => "Withdrawn: the next call like it asks again.".to_string(),
+                            n => format!("Withdrawn, all {n}: the next calls like them ask again."),
+                        }
+                    }
+                    _ => return Ok(reply(
+                        current,
+                        "/allowed shows what is allowed without asking; /allowed off withdraws it."
+                            .into(),
+                    )),
+                };
+            return Ok(reply(current, said));
+        }
         _ => None,
     };
     let hooks = held(hooks, &stopped);
@@ -865,10 +947,24 @@ pub fn converse_with(
             return Ok(reply(
                 Some(saved.state.id.clone()),
                 format!(
-                    "The session waits for your decision on {} {}: /approve, or /decline <why>.",
-                    waiting.tool, waiting.input
+                    "The session waits for your decision on {} {} (request {}): /approve{}, or \
+                     /decline <why>.",
+                    waiting.tool,
+                    waiting.input,
+                    waiting.request(),
+                    // A payment is approved on its own, and a tainted session
+                    // allows nothing for the rest of it.
+                    match waiting.effect {
+                        Some(effect)
+                            if effect < sion_agent::Effect::Spend
+                                && !saved.state.standing.tainted(crate::schedules::now()) =>
+                        {
+                            ", /approve always for the same call again in this session"
+                        }
+                        _ => "",
+                    }
                 ),
-            ))
+            ));
         }
         (None, None, Some(id)) => crate::runtime::resume_watched(
             ledger,
@@ -1019,7 +1115,7 @@ pub(crate) fn respond_streaming(request: tiny_http::Request, pieces: Pieces) {
 fn converse_streamed(
     ledger: SharedLedger,
     profile: Profile,
-    key: String,
+    (key, who): (String, Option<String>),
     text: String,
     pictures: Vec<sion_agent::Picture>,
     done: impl FnOnce(&Answer) -> Value + Send + 'static,
@@ -1029,7 +1125,15 @@ fn converse_streamed(
         let told = |name: &str, data: Value| {
             let _ = tell.send(event(Some(name), &data));
         };
-        match converse_events(ledger, &profile, &key, &text, &pictures, &told) {
+        match converse_events(
+            ledger,
+            &profile,
+            &key,
+            &text,
+            &pictures,
+            &told,
+            who.as_deref(),
+        ) {
             Ok(answer) => told("done", done(&answer)),
             Err(e) => told("error", json!({"error": e.to_string()})),
         }
@@ -1042,7 +1146,7 @@ fn converse_streamed(
 /// (`{"tool": name, "state": "calling" | "running" | "waiting"}`), and
 /// `delta` (`{"text": more}`), what the reply gains; the deltas, put
 /// together, are the reply, the last of them told before the answer is
-/// returned.
+/// returned. A decision the message carries is `who`'s.
 pub fn converse_events(
     ledger: SharedLedger,
     profile: &Profile,
@@ -1050,6 +1154,7 @@ pub fn converse_events(
     text: &str,
     pictures: &[sion_agent::Picture],
     tell: &(dyn Fn(&str, Value) + Sync),
+    who: Option<&str>,
 ) -> Result<Answer, CliError> {
     let growing = Mutex::new(Growing::default());
     let watch = |seen: &sion_agent::Seen| {
@@ -1077,7 +1182,10 @@ pub fn converse_events(
         key,
         text,
         pictures,
-        crate::runtime::Hooks::watched(&watch),
+        crate::runtime::Hooks {
+            who,
+            ..crate::runtime::Hooks::watched(&watch)
+        },
     )?;
     let rest = growing
         .lock()
@@ -1382,10 +1490,12 @@ fn answer_request(ledger: SharedLedger, admin: Option<&str>, mut request: tiny_h
                     });
                 match sent {
                     Ok((profile, (text, pictures))) => {
+                        let who = holder(name, presented.as_deref(), admin)
+                            .map(|holder| format!("http:{holder}"));
                         let pieces = converse_streamed(
                             ledger.clone(),
                             profile,
-                            key,
+                            (key, who),
                             text,
                             pictures,
                             move |answer| answer_json(&conversation, answer),
@@ -1401,6 +1511,8 @@ fn answer_request(ledger: SharedLedger, admin: Option<&str>, mut request: tiny_h
                     .map(str::to_string)
                     .unwrap_or_else(crate::runtime::new_id);
                 let key = format!("http:{name}:{conversation}");
+                let who = holder(name, presented.as_deref(), admin)
+                    .map(|holder| format!("http:{holder}"));
                 let answer = crate::profiles::get(name)
                     .map_err(|e| e.to_string())
                     .and_then(|profile| {
@@ -1411,7 +1523,10 @@ fn answer_request(ledger: SharedLedger, admin: Option<&str>, mut request: tiny_h
                             &key,
                             &text,
                             &pictures,
-                            crate::runtime::Hooks::default(),
+                            crate::runtime::Hooks {
+                                who: who.as_deref(),
+                                ..crate::runtime::Hooks::default()
+                            },
                         )
                         .map_err(|e| e.to_string())
                     });
@@ -1858,6 +1973,7 @@ mod tests {
             screen: Default::default(),
             image_model: None,
             home_assistant: false,
+            budget_tokens: None,
         };
         let sent = json!({"text": "Look at these.", "files": [
             {"name": "plan.png", "base64": "iVBORw0KGgoAAA=="},

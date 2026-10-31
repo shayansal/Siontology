@@ -162,6 +162,8 @@ pub fn run(
     out: &mut (dyn Write + Send),
 ) -> Result<(), CliError> {
     let key = format!("terminal:{}:{}", profile.name, talk.conversation);
+    // Who decides what the session waits on: the person at this terminal.
+    let who = crate::runtime::local_person("talk");
     let out = Mutex::new(out);
     loop {
         let said = {
@@ -203,7 +205,7 @@ pub fn run(
             }
             let _ = out.flush();
         };
-        let answer = converse_events(ledger.clone(), profile, &key, &said, &[], &tell);
+        let answer = converse_events(ledger.clone(), profile, &key, &said, &[], &tell, Some(&who));
         let mut out_now = out.lock().unwrap_or_else(|e| e.into_inner());
         let mid = *mid_line.lock().unwrap_or_else(|e| e.into_inner());
         match answer {

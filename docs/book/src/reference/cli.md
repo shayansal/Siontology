@@ -713,6 +713,7 @@ Commands:
   evolve         Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
   sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
+  settle         The calls of a session whose outcome is unknown (a run stopped while they ran, or a service did not answer), and settling one once you know what it did: done, or not done (so that it may be made again)
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
   secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
@@ -1083,6 +1084,8 @@ Options:
           With a Docker desktop, the Docker network its programs reach: one you set up (default: none) [default: none]
       --no-skill-approvals
           Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
+      --budget-tokens <TOKENS>
+          Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
   -h, --help
           Print help
 ```
@@ -1102,6 +1105,8 @@ Arguments:
 Options:
       --approve            Approve the call it waits on
       --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --always [<RULE>]    With --approve: allow the same call again for the rest of the session, or, given a rule such as `shell(git status:*)`, the calls of its tool that the rule matches. Never a payment, and never while the session is tainted
+      --request <ID>       The request decided (as the session shows it): refused if it is not the call waiting
       --decline <DECLINE>  Decline the call it waits on, saying why
       --say <SAY>          Tell it something more and let it go on
   -h, --help               Print help
@@ -1173,8 +1178,29 @@ Arguments:
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --otel         Write its steps as OpenTelemetry spans (OTLP's JSON) instead: the session, each model asked and each call, with their times, tokens and outcomes
   -h, --help         Print help
 ```
+
+## `sion agent settle`
+
+```text
+The calls of a session whose outcome is unknown (a run stopped while they ran, or a service did not answer), and settling one once you know what it did: done, or not done (so that it may be made again)
+
+Usage: sion agent settle [OPTIONS] <SESSION> [KEY]
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+  [KEY]      The call (its key, or a unique prefix of it); without it, the calls whose outcome is unknown are listed
+
+Options:
+      --done <WHAT>  It took effect: what it did, as the agent will be told
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --not-done     It did not take effect: it may be made again
+  -h, --help         Print help
+```
+
+See [Safety nets](../guides/agent-runtime.md#safety-nets).
 
 ## `sion agent kill-switch`
 
@@ -1281,6 +1307,8 @@ Options:
           Let it make pictures in its workspace (`image_generate`): openai:<model>, such as openai:gpt-image-1 (OPENAI_API_KEY)
       --home-assistant
           Give it Home Assistant's devices as tools (HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN): their states read, a service called as an external call
+      --budget-tokens <TOKENS>
+          Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
   -h, --help
           Print help
 ```

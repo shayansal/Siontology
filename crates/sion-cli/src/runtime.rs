@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sion_agent::model::Model;
 use sion_agent::scripted::Scripted;
+use sion_agent::session::Scope;
 use sion_agent::tools::{Dedup, Effect, Outcome, Tool};
 use sion_agent::{
     Autonomy, Block, Ended, Limits, Policy, Role, Runtime, Seen, State, ToolSpec, Toolbox,
@@ -677,6 +678,15 @@ pub struct Hooks<'a> {
     /// Asked before each model call: what the person said meanwhile, which
     /// the run takes in.
     pub steer: Option<&'a (dyn Fn() -> Vec<String> + Sync)>,
+    /// Who wrote what the run answers, as the channel names them
+    /// (`telegram:12345`, `http:token 3f2a9c1e`): a decision it carries is
+    /// theirs ([`sion_agent::session::Decided::by`]).
+    pub who: Option<&'a str>,
+    /// Whether what the run answers comes from outside: from another agent
+    /// (A2A), or a subagent's task from a session that read content from
+    /// outside. It taints the session, as content from outside that a tool
+    /// returns does.
+    pub outside: bool,
 }
 
 impl std::fmt::Debug for Hooks<'_> {
@@ -685,6 +695,8 @@ impl std::fmt::Debug for Hooks<'_> {
             .field("watch", &self.watch.is_some())
             .field("stop", &self.stop.is_some())
             .field("steer", &self.steer.is_some())
+            .field("who", &self.who)
+            .field("outside", &self.outside)
             .finish()
     }
 }
@@ -789,14 +801,106 @@ impl Spoken {
 /// What a person answers a session with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
-    /// Approve the call it waits on.
-    Approve,
-    /// Decline it, saying why.
-    Decline(String),
+    /// Approve the call it waits on, and what else the approval says.
+    Approve(Approval),
+    /// Decline it, saying why: the request named, if the person named one
+    /// (it must be the call waiting).
+    Decline {
+        /// The request declined ([`sion_agent::session::Pending::request`]).
+        request: Option<String>,
+        /// Why.
+        why: String,
+    },
     /// Tell it more, and let it go on.
     Say(String),
     /// Tell it more, with pictures the person sent, and let it go on.
     Show(String, Vec<sion_agent::Picture>),
+}
+
+/// An approval of the call a session waits on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approval {
+    /// The request approved, if the person named one (`/approve 3f2a9c1e`):
+    /// it must be the call waiting.
+    pub request: Option<String>,
+    /// What else it allows, for the rest of the session.
+    pub scope: Scope,
+}
+
+impl Approval {
+    /// The call waiting, whichever it is, and nothing else.
+    pub fn once() -> Approval {
+        Approval {
+            request: None,
+            scope: Scope::Once,
+        }
+    }
+
+    /// Reads what follows `/approve`: a request's id, if the person names
+    /// one, then `always` for the same call again for the rest of the
+    /// session, or `always` and a rule for the calls of its tool the rule
+    /// matches (`always shell(git status:*)`).
+    pub fn parse(words: &str) -> Result<Approval, String> {
+        let (request, rest) = request_named(words);
+        let scope = match rest.strip_prefix("always") {
+            _ if rest.is_empty() => Scope::Once,
+            Some("") => Scope::Call,
+            Some(rule) if rule.starts_with(char::is_whitespace) => {
+                Scope::Rule(sion_agent::permissions::ToolRule::parse(rule.trim())?)
+            }
+            _ => {
+                return Err(format!(
+                    "{rest:?} is not what an approval says: give the request's id, then \
+                     `always` for the same call again, or `always` and a rule such as \
+                     shell(git status:*)"
+                ))
+            }
+        };
+        Ok(Approval { request, scope })
+    }
+}
+
+/// The request a reply names first, if it does (eight hex digits, as a
+/// session shows them), and the rest of what it says.
+pub fn request_named(words: &str) -> (Option<String>, &str) {
+    let words = words.trim();
+    let first = words.split_whitespace().next().unwrap_or_default();
+    if first.len() == 8 && first.chars().all(|c| c.is_ascii_hexdigit()) {
+        (
+            Some(first.to_ascii_lowercase()),
+            words[first.len()..].trim_start(),
+        )
+    } else {
+        (None, words)
+    }
+}
+
+/// The person at this machine, as a decision they make on `channel` (`cli`,
+/// `talk`) names them: `cli:<their user name>`.
+pub fn local_person(channel: &str) -> String {
+    let name = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "operator".to_string());
+    format!("{channel}:{}", name.trim())
+}
+
+/// A decision a person made, in words: by whom, and what else it allowed.
+pub fn decision_words(decided: &sion_agent::session::Decided) -> String {
+    let by = if decided.by.is_empty() {
+        String::new()
+    } else {
+        format!(" by {}", decided.by)
+    };
+    match (decided.approved, &decided.allowed, &decided.why) {
+        (true, Some(allowed), _) => {
+            format!("approved{by}, with {allowed} for the rest of the session")
+        }
+        (true, None, _) => format!("approved{by}"),
+        (false, _, Some(why)) => format!("declined{by}: {why}"),
+        (false, _, None) => format!("declined{by}"),
+    }
 }
 
 /// Continues the session `id` (or a unique prefix of it), with a reply or
@@ -818,8 +922,9 @@ pub fn resume_watched(
 ) -> Result<(Saved, Vec<String>), CliError> {
     let mut saved = Saved::load(id)?;
     match reply {
-        Some(Reply::Approve) => saved.decide(true, "")?,
-        Some(Reply::Decline(why)) => saved.decide(false, &why)?,
+        Some(decision @ (Reply::Approve(_) | Reply::Decline { .. })) => {
+            saved.decide_as(&decision, hooks.who.unwrap_or_default())?
+        }
         Some(Reply::Say(more)) => {
             if saved.state.pending.is_some() {
                 return Err(CliError::Usage(
@@ -827,6 +932,7 @@ pub fn resume_watched(
                 ));
             }
             saved.state.tell(&more, &saved.limits);
+            saved.from_outside(hooks.outside);
         }
         Some(Reply::Show(more, pictures)) => {
             if saved.state.pending.is_some() {
@@ -835,6 +941,7 @@ pub fn resume_watched(
                 ));
             }
             saved.state.tell_with(&more, &pictures, &saved.limits);
+            saved.from_outside(hooks.outside);
         }
         None => {}
     }
@@ -850,14 +957,17 @@ pub fn last_words(saved: &Saved) -> String {
         Some(Ended::Done { text }) if saved.said.is_empty() => return text.clone(),
         Some(Ended::Done { .. }) => return saved.said.clone(),
         Some(Ended::NeedsApproval {
+            key,
             tool,
             input,
             reason,
-            ..
-        }) => format!("waiting for your approval: {tool} {input} ({reason})"),
+        }) => format!(
+            "waiting for your approval: {tool} {input} ({reason}; request {})",
+            &key[..key.len().min(8)]
+        ),
         // Stopped by a person (`/stop`), not by the kill switch.
         Some(Ended::Stopped) if !kill_switch().exists() => "Stopped.".to_string(),
-        Some(other) => ending(other, &saved.state.id),
+        Some(other) => ending(other, &saved.state),
         None => return "not run yet".into(),
     };
     if saved.said.is_empty() {
@@ -1226,7 +1336,18 @@ impl Saved {
                         _ => None,
                     })
                 });
-                lines.push(format!("  → {} {} (decided)", waiting.tool, waiting.input));
+                let decided = self
+                    .state
+                    .decisions
+                    .iter()
+                    .rev()
+                    .find(|d| d.request == waiting.request())
+                    .map(decision_words)
+                    .unwrap_or_else(|| "decided".to_string());
+                lines.push(format!(
+                    "  → {} {} ({decided})",
+                    waiting.tool, waiting.input
+                ));
                 if let Some(answer) = answer {
                     lines.extend(transcript(&[sion_agent::Message {
                         role: Role::User,
@@ -1240,7 +1361,7 @@ impl Saved {
         ));
         // What it shared: sent with the reply on a channel, named here.
         lines.extend(self.shared.iter().map(|path| format!("shared: {path}")));
-        lines.push(ending(&ended, &self.state.id));
+        lines.push(ending(&ended, &self.state));
         if !reflection.is_empty() {
             lines.push("asked whether to write down how it did the task, as a skill:".to_string());
             lines.extend(reflection);
@@ -1352,8 +1473,55 @@ impl Saved {
         );
     }
 
-    /// Approves or declines the call waiting for a person.
+    /// Approves or declines the call waiting for a person: that call only.
     pub fn decide(&mut self, approve: bool, why: &str) -> Result<(), CliError> {
+        let reply = if approve {
+            Reply::Approve(Approval::once())
+        } else {
+            Reply::Decline {
+                request: None,
+                why: why.to_string(),
+            }
+        };
+        self.decide_as(&reply, "")
+    }
+
+    /// Takes the session as content from outside, if `outside` (what it
+    /// was just told came from another agent): it is tainted from now.
+    pub fn from_outside(&mut self, outside: bool) {
+        if outside {
+            self.state.standing.taint(&self.policy, now());
+        }
+    }
+
+    /// Approves or declines the call waiting for a person as `reply` says
+    /// ([`Reply::Approve`] or [`Reply::Decline`]), as `by`: who the channel
+    /// says decided. A request the reply names must be the one waiting.
+    pub fn decide_as(&mut self, reply: &Reply, by: &str) -> Result<(), CliError> {
+        let waiting = self.state.pending.as_ref().map(|p| p.key.clone());
+        let named = match reply {
+            Reply::Approve(approval) => approval.request.as_deref(),
+            Reply::Decline { request, .. } => request.as_deref(),
+            _ => return Err(CliError::Usage("a decision approves or declines".into())),
+        };
+        match (&waiting, named) {
+            (None, _) => {
+                return Err(CliError::Usage(format!(
+                    "session {} is not waiting for a decision",
+                    self.state.id
+                )))
+            }
+            (Some(waiting), Some(named))
+                if named.len() < 4 || !waiting.starts_with(&named.to_ascii_lowercase()) =>
+            {
+                return Err(CliError::Usage(format!(
+                    "request {named} is not the one the session waits on ({}): see what it \
+                     waits on before you decide",
+                    &waiting[..waiting.len().min(8)]
+                )))
+            }
+            _ => {}
+        }
         let tools = Toolbox::new();
         let runtime = Runtime {
             models: Vec::new(),
@@ -1368,20 +1536,17 @@ impl Saved {
             checkpoint: None,
         };
         let pending = self.state.pending.clone();
-        let done = if approve {
-            runtime.approve(&mut self.state)
-        } else {
-            runtime.decline(&mut self.state, why)
-        };
-        self.decided = pending;
-        if done {
-            Ok(())
-        } else {
-            Err(CliError::Usage(format!(
-                "session {} is not waiting for a decision",
-                self.state.id
-            )))
+        match reply {
+            Reply::Approve(approval) => runtime
+                .approve_as(&mut self.state, by, approval.scope.clone())
+                .map_err(CliError::Usage)?,
+            Reply::Decline { why, .. } => {
+                runtime.decline_as(&mut self.state, by, why);
+            }
+            _ => {}
         }
+        self.decided = pending;
+        Ok(())
     }
 }
 
@@ -1436,20 +1601,43 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
     lines
 }
 
-fn ending(ended: &Ended, id: &str) -> String {
+/// How a run of the session in `state` ended, in a line, with what to do
+/// next.
+fn ending(ended: &Ended, state: &State) -> String {
+    let id = &state.id;
     match ended {
         Ended::Done { .. } => format!("session {id}: done"),
         Ended::NeedsApproval {
-            tool, input, reason, ..
-        } => format!(
-            "session {id}: waiting for you: {tool} {input} ({reason}). Answer with `sion agent continue {id} --approve` or `--decline <why>`."
-        ),
+            key,
+            tool,
+            input,
+            reason,
+        } => {
+            // A payment is approved on its own, and a tainted session
+            // allows nothing for the rest of it: `--always` is not offered.
+            let always = match state.pending.as_ref().and_then(|p| p.effect) {
+                Some(effect) if effect < Effect::Spend && !state.standing.tainted(now()) => {
+                    " (`--always` for the same call again this session)"
+                }
+                _ => "",
+            };
+            format!(
+                "session {id}: waiting for you: {tool} {input} ({reason}; request {}). Answer with `sion agent continue {id} --approve`{always} or `--decline <why>`.",
+                &key[..key.len().min(8)]
+            )
+        }
         Ended::OutOfTurns => format!("session {id}: out of turns; `sion agent continue {id} --say <more>` to go on"),
         Ended::Refused => format!("session {id}: the model declined the task"),
         Ended::ModelsFailed { error } => format!("session {id}: no model could answer: {error}"),
         Ended::Stopped => format!(
             "session {id}: stopped by the kill switch ({})",
             kill_switch().display()
+        ),
+        Ended::Stuck { why } => format!(
+            "session {id}: stopped going round in circles ({why}); `sion agent continue {id} --say <more>` to go on another way"
+        ),
+        Ended::OutOfBudget { .. } => format!(
+            "session {id}: its run's token budget is spent; `sion agent continue {id} --say <more>` to go on with another"
         ),
     }
 }
@@ -1713,6 +1901,9 @@ pub struct Equipment {
     pub image_model: Option<String>,
     /// Whether it has Home Assistant's tools ([`Saved::home_assistant`]).
     pub home_assistant: bool,
+    /// Tokens each of its runs may use, its subagents' included, if they
+    /// have a budget ([`Limits::budget_tokens`]).
+    pub budget_tokens: Option<u64>,
 }
 
 /// The default directory of an agent's skills.
@@ -1776,6 +1967,7 @@ pub fn start_watched(
         only_tools,
         image_model,
         home_assistant,
+        budget_tokens,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -1822,7 +2014,10 @@ pub fn start_watched(
         }
     }
     let did = crate::agents::did(ledger.as_ref(), &agent)?;
-    let limits = Limits::default();
+    let limits = Limits {
+        budget_tokens,
+        ..Limits::default()
+    };
     let mut saved = Saved {
         wallet: wallet.to_string(),
         agent,
@@ -1860,6 +2055,7 @@ pub fn start_watched(
         image_model,
         home_assistant,
     };
+    saved.from_outside(hooks.outside);
     let lines = saved.run_watched(ledger, hooks)?;
     Ok((saved, lines))
 }

@@ -368,6 +368,7 @@ fn profile(home: &Path, name: &str, agent: ObjectId, scripts: &[Value]) -> Profi
         screen: Default::default(),
         image_model: None,
         home_assistant: false,
+        budget_tokens: None,
     }
 }
 
@@ -523,7 +524,12 @@ fn a_bridge_answers_chats_side_by_side_and_as_they_go_on() {
     // Steered: what is said while the agent works reaches it before its
     // next step, and is answered with the rest; each message is marked
     // taken, then answered.
-    let mut steps: Vec<Value> = (0..12).map(|_| json!({"call": "ledger_balance"})).collect();
+    // Twelve looks at the budget, each a call of its own: the same call
+    // giving the same result again and again would be taken for going round
+    // in circles, and stopped.
+    let mut steps: Vec<Value> = (0..12)
+        .map(|look| json!({"call": "ledger_balance", "input": {"look": look}}))
+        .collect();
     steps.push(json!({"when": "in euros", "say": "About 92 EUR left."}));
     steps.push(json!({"say": "100 USD left."}));
     let steer = profile(&home, "steer", agent, &[Value::Array(steps)]);
@@ -1284,6 +1290,9 @@ fn a_bridge_answers_chats_side_by_side_and_as_they_go_on() {
         their_words(&asked),
         ["How much budget is left?", "And now?"]
     );
+    // Another agent's messages are content from outside: the session is
+    // tainted, so its external calls and payments would wait for a person.
+    assert!(asked.state.standing.tainted_until.is_some());
     let found: Value = serde_json::from_slice(&rpc(
         json!({"jsonrpc": "2.0", "id": 3, "method": "GetTask", "params": {"id": task["id"]}}),
         None,

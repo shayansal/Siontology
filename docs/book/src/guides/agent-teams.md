@@ -74,6 +74,13 @@ keyed ancestor's. `agent_spawn` is a spending call, so below autonomy L6
 it waits for a person's approval. Suspending the lead's identity on the
 ledger (`sion agent suspend`) stops the subagents too.
 
+A session that has read content from outside spawns its subagents
+tainted, since the task it writes them may carry what it read, and what a
+tainted subagent reports taints its parent. In a run with a token budget
+([Safety nets](agent-runtime.md#safety-nets)), the subagents of a turn
+share what is left of it, the reserve for a last answer kept back, and
+what they used counts in it.
+
 The subagents one turn asks for are spawned together, in one
 `SpawnAgents` transaction and one transfer of fee money, and work at the
 same time; the payments they make meanwhile are signed in batches
@@ -113,6 +120,10 @@ agent: The summary arrived: sales are up 4% a month.
 session d0de066195fbb1a8: done
 ```
 
+The output is the contractor's work, and the lead reads it as content
+from outside: its session is tainted from then on, so its external calls
+and payments wait for a person.
+
 A task posted without an adjudicator cannot be challenged: give the run
 `--adjudicator <atom>` to name one for the tasks it posts. `task_post`
 takes verifiers too, whose attestations count, as in
@@ -122,8 +133,8 @@ takes verifiers too, whose attestations count, as in
 
 A profile keeps how to run an agent under a name: the wallet, the agent,
 the models, the autonomy, and optionally its memory, skills, workspace,
-the web and delegation. Schedules and channels start sessions from a
-profile:
+the web, delegation and a token budget for each run (`--budget-tokens`).
+Schedules and channels start sessions from a profile:
 
 ```text
 $ sion agent profile add lead lead 7e37dd93…ffab --model script:check.json --autonomy L3
@@ -184,13 +195,15 @@ These commands work on every channel:
 | Command | What it does |
 |---|---|
 | `/stop` | stops what the agent is doing, at once: a model that is writing is cut off there, what it wrote kept |
-| `/approve`, `/decline <why>` | decide the call the session waits on |
+| `/approve`, `/decline <why>` | decide the call the session waits on; given its request's id first (`/approve 3f2a9c1e`), only if it is still the one waiting |
+| `/approve always`, `/approve always <rule>` | approve it, and for the rest of the session the same call again, or the calls of its tool the rule matches (`write_file(notes:*)`, `shell(git status:*)`) |
+| `/allowed`, `/allowed off` | what the session may do without asking beyond its autonomy level, and withdrawing it |
 | `/new` | starts over, in a new session |
 | `/status` | where the session stands |
 | `/retry` | answers the last message again |
 | `/undo` | forgets the last message and its answer (what its calls did stays done) |
 | `/compact` | shortens the session, its start kept as a summary |
-| `/usage` | the turns, tokens and messages the session used |
+| `/usage` | the turns, tokens and messages the session used, its subagents' tokens, and a run's budget if it has one |
 | `/sessions`, `/resume <id>` | this conversation's sessions, and going back to one of them |
 | `/title <name>` | names the session |
 | `/model`, `/model <number>` | the profile's models, and which one the session uses |
@@ -202,12 +215,20 @@ These commands work on every channel:
 `/approve`, `/decline`, `/model`, `/system` and `/tools` are for those
 who may decide: on a bridge, those `--approvers` names (anyone in a chat
 it answers, if it names no one); on the HTTP channel and through a
-gateway, a token made for approvals. While the agent works in a
-conversation, `/stop`, `/status`, `/help`, `/usage` and `/sessions` are
-answered at once; any other command waits for the agent on a bridge, and
-is refused on the HTTP channel and through a gateway (which answer many
-requests at once, so a `/stop` there reaches a run another request
-started).
+gateway, a token made for approvals. The session keeps each decision with
+who made it, as the channel names them (`slack:U07`, `http:token
+3046d92e`, `cli:<user>` on the command line), and the run shows it:
+`(approved by slack:U07)`. What `/approve always` allows is never a
+payment, which is approved on its own; it is not given while the session
+has read content from outside, nor holds then; and it never goes past
+what the autonomy level refuses, as for [a skill's
+pre-approvals](skill-permissions.md).
+
+While the agent works in a conversation, `/stop`, `/status`, `/help`,
+`/usage` and `/sessions` are answered at once; any other command waits
+for the agent on a bridge, and is refused on the HTTP channel and through
+a gateway (which answer many requests at once, so a `/stop` there reaches
+a run another request started).
 
 What a chat chooses holds for its sessions, the one it is in and those it
 starts later, and is kept with the channel's state: `/model <number>`
@@ -264,20 +285,20 @@ the machine's token:
 
 ```text
 $ sion agent profile token add lead
-token 4a69e79b for profile lead, agent 0d7240c5 (messages only); it is shown once, and kept here only as its hash:
-sion_ch_351fd3ba…
+token 5957d62c for profile lead, agent 94629049 (messages only); it is shown once, and kept here only as its hash:
+sion_ch_c7307346…
 $ sion agent profile token add payer
-token f4da1db6 for profile payer, agent 1ec0b150 (messages only); it is shown once, and kept here only as its hash:
-sion_ch_3714254c…
+token 2b871571 for profile payer, agent 23e91a81 (messages only); it is shown once, and kept here only as its hash:
+sion_ch_3a16ec5f…
 $ sion agent profile token add payer --approve
-token 110f8b2f for profile payer, agent 1ec0b150 (messages, approvals and declines); it is shown once, and kept here only as its hash:
-sion_ch_9754b3bb…
+token 3046d92e for profile payer, agent 23e91a81 (messages, approvals and declines); it is shown once, and kept here only as its hash:
+sion_ch_ea2edb78…
 $ sion agent profile token list
-4a69e79b  lead  agent 0d7240c5  messages
-f4da1db6  payer  agent 1ec0b150  messages
-110f8b2f  payer  agent 1ec0b150  messages, approvals
+5957d62c  lead  agent 94629049  messages
+2b871571  payer  agent 23e91a81  messages
+3046d92e  payer  agent 23e91a81  messages, approvals
 $ sion agent serve --listen 127.0.0.1:8794
-agent channel on http://127.0.0.1:8794 (POST /v1/profiles/<name>/messages)
+agent channel on http://127.0.0.1:8794 (POST /v1/profiles/<name>/messages; OpenAI's /v1/chat/completions and /v1/models)
 ```
 
 Below, `$LEAD_TOKEN` is lead's token, `$TALK` payer's first and `$DECIDE`
@@ -287,15 +308,16 @@ its second. payer runs at L5, where a payment waits for a person:
 $ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $LEAD_TOKEN" -d '{"text": "Pay bob 1 USD for invoice 7.", "conversation": "ops"}'
 {"error":"this token does not reach this profile"} (HTTP 401)
 $ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $TALK" -d '{"text": "Pay bob 1 USD for invoice 7.", "conversation": "ops"}'
-{"conversation":"ops","lines":["  → ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"}","  ← waiting for a person's approval","session 68e27c311ccd9f5e: waiting for you: ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (spending at autonomy L5). Answer with `sion agent continue 68e27c311ccd9f5e --approve` or `--decline <why>`."],"said":"waiting for your approval: ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (spending at autonomy L5)","session":"68e27c311ccd9f5e"} (HTTP 200)
-$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $TALK" -d '{"text": "/approve", "conversation": "ops"}'
+{"conversation":"ops","files":[],"lines":["  → ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"}","  ← waiting for a person's approval","session 3ffd3b1fd4d6aa36: waiting for you: ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (spending at autonomy L5; request e415977a). Answer with `sion agent continue 3ffd3b1fd4d6aa36 --approve` or `--decline <why>`."],"said":"waiting for your approval: ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (spending at autonomy L5; request e415977a)","session":"3ffd3b1fd4d6aa36"} (HTTP 200)
+$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $TALK" -d '{"text": "/approve e415977a", "conversation": "ops"}'
 {"error":"this token may talk to the profile, not approve or decline"} (HTTP 403)
-$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $DECIDE" -d '{"text": "/approve", "conversation": "ops"}'
-{"conversation":"ops","lines":["  → ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (decided)","  ← Pulse 17: Done: agent paid 1 USD to bob (receipt claim 1d3c6347); fee 0.0012 USD. Transaction 98561ad7…ff95.","agent: Paid bob 1 USD for invoice 7.","session 68e27c311ccd9f5e: done"],"said":"Paid bob 1 USD for invoice 7.","session":"68e27c311ccd9f5e"} (HTTP 200)
+$ curl -s -X POST http://127.0.0.1:8794/v1/profiles/payer/messages -H "Authorization: Bearer $DECIDE" -d '{"text": "/approve e415977a", "conversation": "ops"}'
+{"conversation":"ops","files":[],"lines":["  → ledger_pay {\"amount\":\"1\",\"purpose\":\"invoice 7\",\"to\":\"bob\"} (approved by http:token 3046d92e)","  ← Pulse 14: Done: agent paid 1 USD to bob (receipt claim cee25b76); fee 0.0012 USD. Transaction fc22f4f4…3633.","agent: Paid bob 1 USD for invoice 7.","session 3ffd3b1fd4d6aa36: done"],"said":"Paid bob 1 USD for invoice 7.","session":"3ffd3b1fd4d6aa36"} (HTTP 200)
 ```
 
 lead's token does not reach payer. `$TALK` starts the payment, which
-waits, but cannot approve it; `$DECIDE` can.
+waits, but cannot approve it; `$DECIDE` can, naming the request it was
+shown, and the session keeps the approval as that token's.
 `sion agent profile token remove <profile> <id>` takes a token back.
 
 ### OpenAI's chat API
@@ -356,7 +378,9 @@ and 1.0 (`SendMessage`, `SendStreamingMessage`, `GetTask`, `CancelTask`).
 A message's `contextId` is a conversation, each a session as on every
 channel; each message is a task, `completed` when the agent is done, or
 `input-required` while the session waits for an approval, which a token
-made to decide gives in the same context (`/approve`). A streamed task
+made to decide gives in the same context (`/approve`). Another agent's
+message is content from outside: the session is tainted, so its external
+calls and payments wait for a person, as after reading a web page. A streamed task
 sends its reply as an artifact that grows, and ends with its state,
 marked final. The card names no instructions of the operator's: only
 what the agent is. Push notifications are not offered.

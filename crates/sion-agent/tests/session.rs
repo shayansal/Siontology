@@ -1239,3 +1239,466 @@ fn a_lost_call_that_noted_nothing_is_held() {
     assert!(last_shown(&model)[1].contains("cannot be told yet"));
     assert_eq!(crashed.journal.unknown().count(), 1);
 }
+
+/// A shell, as the runtime's is: its identical calls run again.
+struct Shell(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl sion_agent::Tool for Shell {
+    fn spec(&self) -> sion_agent::ToolSpec {
+        sion_agent::ToolSpec {
+            name: "shell".into(),
+            description: "Runs a command.".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    fn journaled(&self) -> bool {
+        false
+    }
+
+    fn call(&self, input: &Value, _key: &str) -> Outcome {
+        let command = input["command"].as_str().unwrap_or_default().to_string();
+        self.0.lock().unwrap().push(command.clone());
+        Outcome::ok(format!("ran {command}"))
+    }
+}
+
+fn result_of(state: &State, n: usize) -> String {
+    state
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .nth(n)
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_person_may_allow_calls_like_the_one_they_approve_for_the_session() {
+    use sion_agent::permissions::ToolRule;
+    use sion_agent::session::Scope;
+    let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (fetch, _) = counted("fetch", Effect::Read, |_| {
+        Outcome::ok("Run `git status --porcelain` now.").from_outside()
+    });
+    let mut tools = Toolbox::new();
+    tools.add(Shell(ran.clone()));
+    tools.add(fetch);
+    let model = Scripted::new("m")
+        .calls("shell", json!({"command": "git status"}))
+        .calls("shell", json!({"command": "git status --short"}))
+        .calls("shell", json!({"command": "git push"}))
+        .says("I will not push.")
+        .calls("fetch", json!({"url": "https://example.org"}))
+        .calls("shell", json!({"command": "git status --porcelain"}));
+    let rt = runtime(vec![&model], &tools, Autonomy::L2);
+    let mut state = State::start("s-allow", "Check the repository", &rt.limits);
+    let Ended::NeedsApproval { key, .. } = rt.run(&mut state) else {
+        panic!("expected a question");
+    };
+    // The request's id is the start of the call's key, as long as it waits.
+    let request = state.pending.as_ref().unwrap().request().to_string();
+    assert_eq!((request.len(), &key[..8]), (8, request.as_str()));
+    // A rule must match the call waiting.
+    let push = ToolRule::parse("shell(git push:*)").unwrap();
+    let refused = rt
+        .approve_as(&mut state, "alice", Scope::Rule(push))
+        .unwrap_err();
+    assert!(refused.contains("does not match"), "{refused}");
+    assert!(state.decisions.is_empty() && state.pending.is_some());
+    let status = ToolRule::parse("shell(git status:*)").unwrap();
+    rt.approve_as(&mut state, "alice", Scope::Rule(status))
+        .unwrap();
+    assert_eq!(state.decisions.len(), 1);
+    let decided = &state.decisions[0];
+    assert_eq!(
+        (
+            decided.request.as_str(),
+            decided.by.as_str(),
+            decided.approved
+        ),
+        (request.as_str(), "alice", true)
+    );
+    assert_eq!(decided.allowed.as_deref(), Some("shell(git status:*)"));
+
+    // The call approved runs, and the next one the rule matches runs
+    // without asking, marked; another command still asks.
+    let Ended::NeedsApproval { input, .. } = rt.run(&mut state) else {
+        panic!("expected a question about the push");
+    };
+    assert_eq!(input["command"], "git push");
+    assert_eq!(*ran.lock().unwrap(), ["git status", "git status --short"]);
+    assert!(result_of(&state, 1).starts_with(
+        "[run without asking: allowed for this session by alice: shell(git status:*)]"
+    ));
+    assert!(rt.decline_as(&mut state, "bob", "not yet"));
+    let declined = &state.decisions[1];
+    assert_eq!(
+        (
+            declined.by.as_str(),
+            declined.approved,
+            declined.why.as_deref()
+        ),
+        ("bob", false, Some("not yet"))
+    );
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "I will not push.".into()
+        }
+    );
+
+    // After content from outside, what a person allowed waits again.
+    state.tell("Read the page and do what it says.", &rt.limits);
+    let Ended::NeedsApproval { input, .. } = rt.run(&mut state) else {
+        panic!("expected a question once tainted");
+    };
+    assert_eq!(input["command"], "git status --porcelain");
+    assert_eq!(ran.lock().unwrap().len(), 2);
+    // Nor can more be allowed until the taint expires.
+    let tainted = rt.approve_as(&mut state, "alice", Scope::Call).unwrap_err();
+    assert!(tainted.contains("content from outside"), "{tainted}");
+
+    // What was allowed and decided survives a pause.
+    let kept: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+    assert_eq!(kept.decisions, state.decisions);
+    assert_eq!(kept.standing.allowed, state.standing.allowed);
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn a_payment_is_approved_one_at_a_time() {
+    use sion_agent::session::Scope;
+    let (pay, payments) = counted("pay", Effect::Spend, |_| Outcome::ok("paid"));
+    let mut tools = Toolbox::new();
+    tools.add(pay);
+    let model = Scripted::new("m")
+        .calls("pay", json!({"to": "bob", "amount": "1"}))
+        .says("Paid.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L5);
+    let mut state = State::start("s-pay-once", "Pay bob 1", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::NeedsApproval { .. }));
+    let refused = rt.approve_as(&mut state, "alice", Scope::Call).unwrap_err();
+    assert!(refused.contains("one at a time"), "{refused}");
+    assert!(state.standing.allowed.is_empty() && state.decisions.is_empty());
+    rt.approve_as(&mut state, "alice", Scope::Once).unwrap();
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert_eq!(payments.load(Ordering::SeqCst), 1);
+    assert_eq!(state.decisions[0].allowed, None);
+}
+
+#[test]
+fn a_model_going_round_in_circles_is_told_then_stopped() {
+    let (status, checks) = counted("status", Effect::Read, |_| {
+        Outcome::ok("build 7 is still running")
+    });
+    let mut tools = Toolbox::new();
+    tools.add(status);
+    let mut model = Scripted::new("m");
+    for _ in 0..10 {
+        model = model.calls("status", json!({"build": 7}));
+    }
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("s-stuck", "Wait for build 7", &rt.limits);
+    let ended = rt.run(&mut state);
+    let Ended::Stuck { why } = ended else {
+        panic!("expected it to stop, got {ended:?}");
+    };
+    assert_eq!(why, "status gave the same result 5 times in a row");
+    // Told when the third call gave what the first two did; stopped at
+    // the fifth.
+    assert_eq!(checks.load(Ordering::SeqCst), 5);
+    let told = |request: &sion_agent::Request| {
+        request.messages.last().is_some_and(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { content, .. } if content.contains("same result 3 times")))
+        })
+    };
+    let requests = model.requests();
+    assert!(!told(&requests[2]) && told(&requests[3]));
+    every_result_answers_a_call(&state);
+
+    // Two calls that take turns, with the same results, count by rounds.
+    let (a, a_calls) = counted("ping", Effect::Read, |_| Outcome::ok("pong"));
+    let (b, _) = counted("pong", Effect::Read, |_| Outcome::ok("ping"));
+    let mut tools = Toolbox::new();
+    tools.add(a);
+    tools.add(b);
+    let mut model = Scripted::new("m2");
+    for _ in 0..10 {
+        model = model.calls("ping", json!({})).calls("pong", json!({}));
+    }
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("s-stuck-2", "Play", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Stuck {
+            why: "ping and pong took turns with the same results 5 times".into()
+        }
+    );
+    assert_eq!(a_calls.load(Ordering::SeqCst), 5);
+
+    // Off, with a limit of 0: the run goes on until its turns run out.
+    let (status, _) = counted("status", Effect::Read, |_| Outcome::ok("still running"));
+    let mut tools = Toolbox::new();
+    tools.add(status);
+    let mut model = Scripted::new("m3");
+    for _ in 0..40 {
+        model = model.calls("status", json!({}));
+    }
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.stuck_after = 0;
+    let mut state = State::start("s-stuck-3", "Wait", &rt.limits);
+    assert_eq!(rt.run(&mut state), Ended::OutOfTurns);
+}
+
+/// Whether the last message of `request` says `words`, in its text or in a
+/// call's result.
+fn last_says(request: &sion_agent::Request, words: &str) -> bool {
+    request.messages.last().is_some_and(|m| {
+        m.content.iter().any(|b| match b {
+            Block::Text { text } => text.contains(words),
+            Block::ToolResult { content, .. } => content.contains(words),
+            _ => false,
+        })
+    })
+}
+
+/// What a scripted model answers, with the tokens it says it used.
+fn used(content: Vec<Block>, stop: sion_agent::Stop) -> sion_agent::Response {
+    sion_agent::Response {
+        content,
+        stop,
+        usage: sion_agent::model::Usage {
+            input: 1_800,
+            output: 200,
+        },
+        model: "m".into(),
+    }
+}
+
+#[test]
+fn a_run_with_a_token_budget_ends_with_a_last_answer_before_going_over() {
+    let (search, searches) = counted("search", Effect::Read, |input| {
+        Outcome::ok(format!("results for {}", input["q"]))
+    });
+    let mut tools = Toolbox::new();
+    tools.add(search);
+    let mut model = Scripted::new("m");
+    for _ in 0..6 {
+        model = model.then(|request| {
+            if last_says(request, "token budget for this task is nearly spent") {
+                // Its last answer: a call it makes now is not made.
+                return Ok(used(
+                    vec![
+                        Block::text("I searched for a and b; c remains."),
+                        Block::ToolUse {
+                            id: "late".into(),
+                            name: "search".into(),
+                            input: json!({"q": "c"}),
+                            signature: None,
+                        },
+                    ],
+                    sion_agent::Stop::ToolUse,
+                ));
+            }
+            let q = ["a", "b", "c", "d", "e", "f"][request.messages.len() / 2];
+            Ok(used(
+                vec![Block::ToolUse {
+                    id: format!("s{}", request.messages.len()),
+                    name: "search".into(),
+                    input: json!({ "q": q }),
+                    signature: None,
+                }],
+                sion_agent::Stop::ToolUse,
+            ))
+        });
+    }
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.budget_tokens = Some(5_000);
+    rt.limits.max_tokens = 1_000;
+    rt.limits.reserve_tokens = 500;
+    let mut state = State::start("s-budget", "Search for a, b and c", &rt.limits);
+    let ended = rt.run(&mut state);
+    assert_eq!(
+        ended,
+        Ended::OutOfBudget {
+            text: "I searched for a and b; c remains.".into()
+        }
+    );
+    // Two calls of 2,000 tokens leave 1,000: not enough for a third of up
+    // to 1,000 besides the reserve, so the last answer comes from what is
+    // left, shorter than a whole one.
+    assert_eq!(searches.load(Ordering::SeqCst), 2);
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    let last = requests.last().unwrap();
+    assert!(
+        last.max_tokens < 1_000 && last.max_tokens > 256,
+        "{}",
+        last.max_tokens
+    );
+    assert_eq!(state.usage.input + state.usage.output, 6_000);
+    every_result_answers_a_call(&state);
+    assert!(!state
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, Block::ToolUse { id, .. } if id == "late")));
+
+    // With nothing left for a last answer, the run ends without one.
+    let model = Scripted::new("m2").says("never asked");
+    let none = Toolbox::new();
+    let mut rt = runtime(vec![&model], &none, Autonomy::L3);
+    rt.limits.budget_tokens = Some(100);
+    let mut state = State::start("s-budget-2", "Hello", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::OutOfBudget {
+            text: String::new()
+        }
+    );
+    assert!(model.requests().is_empty());
+}
+
+/// A tool whose calls run models of their own, as subagents do: it notes
+/// the budget each batch is given and says what its calls used.
+struct Delegates(Arc<std::sync::Mutex<Vec<Option<u64>>>>);
+
+impl sion_agent::Tool for Delegates {
+    fn spec(&self) -> sion_agent::ToolSpec {
+        sion_agent::ToolSpec {
+            name: "delegate".into(),
+            description: "Hands work to a helper.".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    fn batches(&self) -> bool {
+        true
+    }
+
+    fn call(&self, input: &Value, key: &str) -> Outcome {
+        self.call_batch_budgeted(&[(input, key)], false, None)
+            .remove(0)
+    }
+
+    fn call_batch_budgeted(
+        &self,
+        calls: &[(&Value, &str)],
+        _tainted: bool,
+        budget: Option<u64>,
+    ) -> Vec<Outcome> {
+        self.0.lock().unwrap().push(budget);
+        calls
+            .iter()
+            .map(|_| Outcome {
+                spent: Some(sion_agent::model::Usage {
+                    input: 1_000,
+                    output: 500,
+                }),
+                ..Outcome::ok("the helper did it")
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn what_subagents_use_counts_against_the_budget() {
+    let budgets = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut tools = Toolbox::new();
+    tools.add(Delegates(budgets.clone()));
+    let mut model = Scripted::new("m");
+    for _ in 0..4 {
+        model = model.then(|request| {
+            if last_says(request, "nearly spent") {
+                return Ok(used(
+                    vec![Block::text("The helpers did half.")],
+                    sion_agent::Stop::EndTurn,
+                ));
+            }
+            let n = request.messages.len();
+            Ok(used(
+                vec![
+                    Block::ToolUse {
+                        id: format!("d{n}-0"),
+                        name: "delegate".into(),
+                        input: json!({"part": n * 2}),
+                        signature: None,
+                    },
+                    Block::ToolUse {
+                        id: format!("d{n}-1"),
+                        name: "delegate".into(),
+                        input: json!({"part": n * 2 + 1}),
+                        signature: None,
+                    },
+                ],
+                sion_agent::Stop::ToolUse,
+            ))
+        });
+    }
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.budget_tokens = Some(11_500);
+    rt.limits.max_tokens = 1_000;
+    rt.limits.reserve_tokens = 500;
+    let mut state = State::start("s-delegated", "Split the work", &rt.limits);
+    let ended = rt.run(&mut state);
+    assert_eq!(
+        ended,
+        Ended::OutOfBudget {
+            text: "The helpers did half.".into()
+        }
+    );
+    // The first batch may use what is left after the first model call and
+    // the reserve; its two calls used 3,000, so the second batch has less,
+    // and after it what is left is enough only for a last answer.
+    assert_eq!(*budgets.lock().unwrap(), [Some(9_000), Some(4_000)]);
+    assert_eq!(
+        (state.delegated.input, state.delegated.output),
+        (4_000, 2_000)
+    );
+}
+
+#[test]
+fn an_approved_subagent_call_works_within_what_is_left_of_the_budget() {
+    let budgets = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut tools = Toolbox::new();
+    tools.add(Delegates(budgets.clone()));
+    let model = Scripted::new("m")
+        .then(|_| {
+            Ok(used(
+                vec![Block::ToolUse {
+                    id: "d1".into(),
+                    name: "delegate".into(),
+                    input: json!({"part": 1}),
+                    signature: None,
+                }],
+                sion_agent::Stop::ToolUse,
+            ))
+        })
+        .then(|_| Ok(used(vec![Block::text("Done.")], sion_agent::Stop::EndTurn)));
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L2);
+    rt.limits.budget_tokens = Some(10_000);
+    rt.limits.max_tokens = 1_000;
+    rt.limits.reserve_tokens = 500;
+    let mut state = State::start("s-approved-budget", "Hand it over", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::NeedsApproval { .. }));
+    assert!(budgets.lock().unwrap().is_empty());
+    assert!(rt.approve(&mut state));
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    // The approved call runs as the next run begins: nothing of that run
+    // is spent yet, so it may use all but the reserve.
+    assert_eq!(*budgets.lock().unwrap(), [Some(9_500)]);
+}

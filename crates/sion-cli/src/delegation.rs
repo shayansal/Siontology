@@ -177,15 +177,40 @@ impl Tool for SpawnTool {
         self.call_batch(&[(input, key)]).remove(0)
     }
 
+    fn call_tainted(&self, input: &Value, key: &str) -> Outcome {
+        self.call_batch_tainted(&[(input, key)]).remove(0)
+    }
+
     fn call_batch(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
-        spawn_all(&self.0, calls.iter().map(|(input, _)| *input).collect())
+        self.call_batch_budgeted(calls, false, None)
+    }
+
+    fn call_batch_tainted(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
+        self.call_batch_budgeted(calls, true, None)
+    }
+
+    /// The subagents of a session that read content from outside start
+    /// tainted, since the tasks it writes them may carry what it read; in a
+    /// run with a budget, they share what is left of it, and what they used
+    /// is counted in it.
+    fn call_batch_budgeted(
+        &self,
+        calls: &[(&Value, &str)],
+        tainted: bool,
+        budget: Option<u64>,
+    ) -> Vec<Outcome> {
+        let inputs = calls.iter().map(|(input, _)| *input).collect();
+        spawn_all(&self.0, inputs, tainted, budget)
             .into_iter()
             .map(|result| match result {
-                Ok((text, tainted)) => {
-                    let outcome = Outcome::ok(text);
+                Ok(report) => {
+                    let outcome = Outcome {
+                        spent: Some(report.spent),
+                        ..Outcome::ok(report.text)
+                    };
                     // What a subagent that read content from outside reports
                     // may carry it: it taints this session too.
-                    if tainted {
+                    if report.tainted {
                         outcome.from_outside()
                     } else {
                         outcome
@@ -195,6 +220,14 @@ impl Tool for SpawnTool {
             })
             .collect()
     }
+}
+
+/// What a subagent's session came to: its report, whether it read content
+/// from outside, and the tokens it used, its own subagents' included.
+struct Report {
+    text: String,
+    tainted: bool,
+    spent: sion_agent::model::Usage,
 }
 
 /// A subagent asked for.
@@ -379,11 +412,18 @@ fn launch(delegation: &Delegation, orders: &[&Order]) -> Result<Vec<Launched>, S
     Ok(launched)
 }
 
-/// Spawns the subagents `inputs` ask for, runs them at once, and returns
-/// each one's report and whether its session was tainted.
-fn spawn_all(delegation: &Delegation, inputs: Vec<&Value>) -> Vec<Result<(String, bool), String>> {
+/// Spawns the subagents `inputs` ask for and runs them at once, tainted
+/// from the start if `tainted`, each with an even share of `budget` tokens
+/// if there is one, and returns each one's report.
+fn spawn_all(
+    delegation: &Delegation,
+    inputs: Vec<&Value>,
+    tainted: bool,
+    budget: Option<u64>,
+) -> Vec<Result<Report, String>> {
     let checked = orders(delegation, &inputs);
     let valid: Vec<&Order> = checked.iter().filter_map(|o| o.as_ref().ok()).collect();
+    let share = budget.map(|budget| budget / valid.len().max(1) as u64);
     let launched = if valid.is_empty() {
         Ok(Vec::new())
     } else {
@@ -402,11 +442,13 @@ fn spawn_all(delegation: &Delegation, inputs: Vec<&Value>) -> Vec<Result<(String
         .map(|mut session| session.signer_of(&delegation.acting.wallet))
         .unwrap_or_else(|_| delegation.acting.wallet.clone());
     let before = crate::batcher::of(&signer).stats();
-    let runs: Vec<Result<(String, bool), String>> = std::thread::scope(|scope| {
+    let runs: Vec<Result<Report, String>> = std::thread::scope(|scope| {
         let handles: Vec<_> = valid
             .iter()
             .zip(&launched)
-            .map(|(order, launched)| scope.spawn(move || work(delegation, order, launched)))
+            .map(|(order, launched)| {
+                scope.spawn(move || work(delegation, order, launched, tainted, share))
+            })
             .collect();
         handles
             .into_iter()
@@ -437,25 +479,32 @@ fn spawn_all(delegation: &Delegation, inputs: Vec<&Value>) -> Vec<Result<(String
         .into_iter()
         .map(|o| {
             o.and_then(|_| runs.next().unwrap_or_else(|| Err("no run".into())))
-                .map(|(text, tainted)| (format!("{text}{signed}"), tainted))
+                .map(|report| Report {
+                    text: format!("{}{signed}", report.text),
+                    ..report
+                })
         })
         .collect()
 }
 
-/// Runs a launched subagent's task in a session of its own and reports how
-/// it went.
+/// Runs a launched subagent's task in a session of its own, tainted from
+/// the start if `tainted`, within `budget` tokens if there is one, and
+/// reports how it went.
 fn work(
     delegation: &Delegation,
     order: &Order,
     launched: &Launched,
-) -> Result<(String, bool), String> {
+    tainted: bool,
+    budget: Option<u64>,
+) -> Result<Report, String> {
     let acting = &delegation.acting;
     let Launched { wallet, child } = launched;
-    let (saved, _) = crate::runtime::start(
+    let (saved, _) = crate::runtime::start_watched(
         acting.ledger.clone(),
         wallet,
         *child,
         &order.task,
+        &[],
         delegation.models.clone(),
         delegation.policy.clone(),
         // A subagent gets no workspace, shell or web of its parent's: only
@@ -464,7 +513,12 @@ fn work(
             depth: delegation.depth + 1,
             subagent_models: delegation.models.clone(),
             adjudicator: delegation.adjudicator,
+            budget_tokens: budget,
             ..Equipment::default()
+        },
+        crate::runtime::Hooks {
+            outside: tainted,
+            ..crate::runtime::Hooks::default()
         },
     )
     .map_err(|e| {
@@ -480,6 +534,16 @@ fn work(
         Some(sion_agent::Ended::NeedsApproval { tool, .. }) => format!(
             "waiting for a person's approval of {tool} (`sion agent continue {}`)",
             saved.state.id
+        ),
+        Some(sion_agent::Ended::Stuck { why }) => {
+            format!("stopped going round in circles ({why})")
+        }
+        Some(sion_agent::Ended::OutOfBudget { text }) if text.trim().is_empty() => {
+            "its token budget ran out before it could answer".to_string()
+        }
+        Some(sion_agent::Ended::OutOfBudget { text }) => format!(
+            "its token budget ran out; it said: {}",
+            text.trim_end_matches('.')
         ),
         Some(other) => format!("ended: {other:?}"),
         None => "did not run".into(),
@@ -512,8 +576,12 @@ fn work(
         }
     }
     let tainted = saved.state.standing.tainted_until.is_some();
-    Ok((
-        format!(
+    let spent = sion_agent::model::Usage {
+        input: saved.state.usage.input + saved.state.delegated.input,
+        output: saved.state.usage.output + saved.state.delegated.output,
+    };
+    Ok(Report {
+        text: format!(
             "subagent {wallet} (agent {}, budget {} USD) worked in session {}: {ended}. Its calls: {}.",
             child.short(),
             order.budget,
@@ -525,7 +593,8 @@ fn work(
             }
         ),
         tainted,
-    ))
+        spent,
+    })
 }
 
 /// Posts a Task Charter from the agent's budget.
@@ -707,7 +776,12 @@ impl Tool for TaskStatusTool {
                 }
             }
         }
-        Outcome::ok(value.to_string())
+        // A task's output is another agent's work: content from outside.
+        if value.get("output").is_some() {
+            Outcome::ok(value.to_string()).from_outside()
+        } else {
+            Outcome::ok(value.to_string())
+        }
     }
 }
 

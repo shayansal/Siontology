@@ -132,6 +132,53 @@ pub struct Standing {
     /// `allowed-tools` rules, by its name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pre_approved: BTreeMap<String, Vec<crate::permissions::ToolRule>>,
+    /// The calls people allowed for the rest of the session, when they
+    /// approved one ([`crate::session::Scope`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<Allowance>,
+}
+
+/// Calls a person allowed for the rest of a session when they approved
+/// one: the same call again, or those of its tool a rule matches (as a
+/// skill's `allowed-tools` writes it). Like a skill's pre-approval, it
+/// never covers spending, and never holds while the session is tainted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Allowance {
+    /// The tool.
+    pub tool: String,
+    /// The exact input allowed, if only that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    /// The rule that matches the calls allowed, if a pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<crate::permissions::ToolRule>,
+    /// Who allowed it, as the channel names them.
+    pub by: String,
+    /// When (seconds).
+    pub at: u64,
+}
+
+impl Allowance {
+    /// Whether it allows calling `tool` with `input`.
+    pub fn matches(&self, tool: &str, input: &serde_json::Value) -> bool {
+        if self.tool != tool {
+            return false;
+        }
+        match (&self.input, &self.rule) {
+            (Some(allowed), _) => allowed == input,
+            (None, Some(rule)) => rule.matches(tool, input),
+            (None, None) => false,
+        }
+    }
+
+    /// What it allows, in words.
+    pub fn describe(&self) -> String {
+        match (&self.input, &self.rule) {
+            (Some(input), _) => format!("{} {input}", self.tool),
+            (None, Some(rule)) => rule.describe(),
+            (None, None) => self.tool.clone(),
+        }
+    }
 }
 
 impl Standing {
@@ -149,6 +196,12 @@ impl Standing {
     /// Whether the session is tainted at `now`.
     pub fn tainted(&self, now: u64) -> bool {
         self.tainted_until.is_some_and(|until| now < until)
+    }
+
+    /// The allowance a person gave that covers calling `tool` with
+    /// `input`, if one does.
+    pub fn allowing(&self, tool: &str, input: &serde_json::Value) -> Option<&Allowance> {
+        self.allowed.iter().find(|a| a.matches(tool, input))
     }
 
     /// The skill whose `allowed-tools` pre-approve calling `tool` with
