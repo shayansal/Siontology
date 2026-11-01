@@ -285,6 +285,10 @@ pub trait Executor: Sync {
     /// `outside`, what reached it came from a session that read content
     /// from outside, and its session is to be tainted from the start.
     fn run(&self, node: &Node, prompt: &str, outside: bool) -> Result<Answer, String>;
+
+    /// Told, before a wave runs, how many nodes run in it together (to
+    /// share a budget among them). By default, nothing is done.
+    fn wave(&self, _size: usize) {}
 }
 
 /// How a graph's run stands.
@@ -387,6 +391,7 @@ impl GraphRun {
                 return &self.standing;
             }
         }
+        executor.wave(wave.len());
         let task = self.task.clone();
         let answers: Vec<Result<Answer, String>> = std::thread::scope(|scope| {
             let handles: Vec<_> = wave
@@ -719,14 +724,56 @@ pub struct Route {
     pub why: String,
 }
 
+/// What the router is told when it may choose among one agent and
+/// `shapes` alone ([`ROUTER`] when it may choose any template).
+pub fn router_for(shapes: &[&str]) -> String {
+    if TEMPLATES.iter().all(|t| shapes.contains(t)) {
+        return ROUTER.into();
+    }
+    let mut text = String::from(
+        "You decide how a task is worked on. One agent with good tools is best for most tasks, \
+         and costs least: choose `single` unless the task clearly divides.",
+    );
+    for shape in shapes {
+        text.push(' ');
+        text.push_str(match *shape {
+            "fan-out" => {
+                "Choose `fan-out` only for a task of several parts that each need none of the \
+                 others' results (look up three things, review four files)."
+            }
+            "work-check" => {
+                "Choose `work-check` for work whose result can be checked by someone who did \
+                 not do it (code with tests, figures to recompute)."
+            }
+            "draft-review" => "Choose `draft-review` for writing that benefits from an editor.",
+            _ => "",
+        });
+    }
+    let options: Vec<String> = std::iter::once("single")
+        .chain(shapes.iter().copied())
+        .map(|s| format!("\"{s}\""))
+        .collect();
+    text.push_str(&format!(
+        " Answer with one JSON object: {{\"shape\": {}, \"why\": \"…\"}}.",
+        options.join(" | ")
+    ));
+    text
+}
+
 /// The route in what a router wrote: one of the shapes it may give, or
 /// `single` if it gave none it may.
 pub fn route_of(text: &str) -> Route {
+    route_among_of(text, &TEMPLATES)
+}
+
+/// The route in what a router wrote, among one agent and `shapes`:
+/// `single` if it gave none of them.
+pub fn route_among_of(text: &str, shapes: &[&str]) -> Route {
     let parsed = crate::quarantine::answer_of(text).ok();
     let shape = parsed
         .as_ref()
         .and_then(|j| j["shape"].as_str())
-        .filter(|s| *s == "single" || TEMPLATES.contains(s))
+        .filter(|s| *s == "single" || shapes.contains(s))
         .unwrap_or("single")
         .to_string();
     let why = parsed
@@ -921,8 +968,15 @@ mod tests {
         let prompts = script.prompts.lock().unwrap();
         let combine = &prompts.iter().find(|(n, _)| n == "combine").unwrap().1;
         assert_eq!(combine.matches("From part:").count(), 3);
-        let part = &prompts.iter().find(|(n, _)| n == "part").unwrap().1;
-        assert!(part.contains("Your part of it:\nthe price"));
+        // The parts ran side by side, in any order: each was told its own.
+        for item in ["the price", "the licence", "the support"] {
+            assert!(
+                prompts
+                    .iter()
+                    .any(|(n, p)| n == "part" && p.contains(&format!("Your part of it:\n{item}"))),
+                "no part was told {item}"
+            );
+        }
         // A run kept on disk comes back as it was.
         let kept: GraphRun = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
         assert_eq!(kept, run);
@@ -999,6 +1053,24 @@ mod tests {
         assert_eq!(of("part"), [false, false]);
         // The join took in what the tainted part said.
         assert_eq!(of("combine"), [true]);
+    }
+
+    #[test]
+    fn a_router_told_fewer_shapes_keeps_to_them() {
+        let text = router_for(&["fan-out"]);
+        assert!(text.starts_with("You decide how a task is worked on."));
+        assert!(
+            text.contains("`fan-out`") && !text.contains("`work-check`"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(r#"{"shape": "single" | "fan-out", "why": "…"}."#),
+            "{text}"
+        );
+        assert_eq!(router_for(&TEMPLATES), ROUTER);
+        let said = r#"{"shape": "work-check", "why": "tests to run"}"#;
+        assert_eq!(route_among_of(said, &["fan-out"]).shape, "single");
+        assert_eq!(route_among_of(said, &["work-check"]).shape, "work-check");
     }
 
     #[test]

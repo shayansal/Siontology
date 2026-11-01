@@ -185,32 +185,7 @@ impl EvalSet {
         if set.cases.is_empty() || set.cases.len() > MAX_CASES {
             return Err(format!("an evaluation set has 1 to {MAX_CASES} cases"));
         }
-        let mut ids = BTreeSet::new();
-        for case in &set.cases {
-            if case.id.is_empty() || !ids.insert(case.id.as_str()) {
-                return Err(format!(
-                    "case names must be unique and given: {:?}",
-                    case.id
-                ));
-            }
-            if case.task.trim().is_empty() || case.checks.is_empty() {
-                return Err(format!("case {} needs a task and a check", case.id));
-            }
-            let mut names = BTreeSet::new();
-            for tool in &case.tools {
-                if !valid_tool_name(&tool.name)
-                    || tool.name.starts_with("skill_")
-                    || tool.name == TOOLS_CALL
-                    || tool.name == TOOLS_SEARCH
-                    || !names.insert(tool.name.as_str())
-                {
-                    return Err(format!(
-                        "case {}: {:?} is not a stand-in tool's name, or is given twice",
-                        case.id, tool.name
-                    ));
-                }
-            }
-        }
+        check_cases(&set.cases)?;
         Ok(set)
     }
 
@@ -218,6 +193,39 @@ impl EvalSet {
     pub fn system(&self) -> &str {
         self.system.as_deref().unwrap_or(SYSTEM)
     }
+}
+
+/// Checks cases as a set must have them: names unique and given, each with
+/// a task and a check, and stand-in tools with valid, unique names that are
+/// neither the skill tools nor the toolbox's own.
+pub fn check_cases(cases: &[Case]) -> Result<(), String> {
+    let mut ids = BTreeSet::new();
+    for case in cases {
+        if case.id.is_empty() || !ids.insert(case.id.as_str()) {
+            return Err(format!(
+                "case names must be unique and given: {:?}",
+                case.id
+            ));
+        }
+        if case.task.trim().is_empty() || case.checks.is_empty() {
+            return Err(format!("case {} needs a task and a check", case.id));
+        }
+        let mut names = BTreeSet::new();
+        for tool in &case.tools {
+            if !valid_tool_name(&tool.name)
+                || tool.name.starts_with("skill_")
+                || tool.name == TOOLS_CALL
+                || tool.name == TOOLS_SEARCH
+                || !names.insert(tool.name.as_str())
+            {
+                return Err(format!(
+                    "case {}: {:?} is not a stand-in tool's name, or is given twice",
+                    case.id, tool.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A stand-in tool, as the runtime sees it.

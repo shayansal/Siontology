@@ -817,7 +817,9 @@ session ce6f69e7ab63b2f5: done, and its check passed at attempt 2
 What the check still reads from the workspace (the work itself, a test
 runner's settings, a module it imports) the agent can change, so a check
 that passed shows that its command exited with status 0 on what the
-agent left there, not that the work is right (`agent:verifier`). Work
+agent left there, not that the work is right (`agent:verifier`). A judge that reads
+a session's steps rather than its result is in
+[Judged step by step](agent-graphs.md#judged-step-by-step). Work
 another agent is paid for is checked by someone else, with a check its
 task fixed when it was posted
 ([Task Charters from the command line](tasks.md#9-a-check-fixed-when-the-task-is-posted)).

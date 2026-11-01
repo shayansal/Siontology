@@ -2,9 +2,11 @@
 //! agent run as the nodes of a graph ([`sion_agent::graph`]), each node a
 //! session of its own, the run kept under `$SION_HOME/agents/graphs`.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use sion_agent::compare::{Arm, Comparison, TaskSet};
 use sion_agent::graph::{
     outline, template, Answer, Executor, Graph, GraphRun, Node, Route, Standing, TEMPLATES,
 };
@@ -154,13 +156,42 @@ impl Executor for Sessions<'_> {
 /// Asks the profile's first model how to work on `task`: one agent, or a
 /// graph from the templates ([`sion_agent::graph::ROUTER`]).
 pub fn route(profile: &Profile, task: &str) -> Result<Route, CliError> {
+    route_among(profile, task, &TEMPLATES)
+}
+
+/// How to work on `task` for `profile`, among one agent and the templates
+/// that earned its traffic in a comparison ([`earned`]): one agent, without
+/// asking, if none has.
+pub fn route_earned(profile: &Profile, task: &str) -> Result<Route, CliError> {
+    let earned = earned(&profile.name)?;
+    let shapes: Vec<&str> = TEMPLATES
+        .iter()
+        .copied()
+        .filter(|t| earned.contains(*t))
+        .collect();
+    if shapes.is_empty() {
+        return Ok(Route {
+            shape: "single".into(),
+            why: format!(
+                "no template has beaten one agent in profile {}'s comparisons \
+                 (sion agent graph eval)",
+                profile.name
+            ),
+        });
+    }
+    route_among(profile, task, &shapes)
+}
+
+/// Asks the profile's first model how to work on `task`, among one agent
+/// and `shapes`.
+pub fn route_among(profile: &Profile, task: &str, shapes: &[&str]) -> Result<Route, CliError> {
     let spec = profile
         .models
         .first()
         .ok_or_else(|| CliError::Usage(format!("profile {} has no model", profile.name)))?;
     let model = crate::runtime::model(spec, 0)?;
     let request = sion_agent::model::Request {
-        system: sion_agent::graph::ROUTER.into(),
+        system: sion_agent::graph::router_for(shapes),
         messages: vec![sion_agent::Message::user(format!("The task:\n{task}"))],
         tools: Vec::new(),
         max_tokens: 512,
@@ -174,7 +205,102 @@ pub fn route(profile: &Profile, task: &str) -> Result<Route, CliError> {
         content: response.content,
     }
     .text();
-    Ok(sion_agent::graph::route_of(&text))
+    Ok(sion_agent::graph::route_among_of(&text, shapes))
+}
+
+/// Where a profile's comparisons are kept: `$SION_HOME/agents/evals/<profile>`,
+/// the latest for each set.
+pub fn evals_dir(profile: &str) -> PathBuf {
+    dir()
+        .parent()
+        .map(|agents| agents.join("evals").join(profile))
+        .unwrap_or_else(|| PathBuf::from(".sion/agents/evals").join(profile))
+}
+
+/// Keeps `comparison` for `profile`, in place of the one before for the
+/// same set.
+pub fn keep_comparison(profile: &str, comparison: &Comparison) -> Result<PathBuf, CliError> {
+    let dir = evals_dir(profile);
+    std::fs::create_dir_all(&dir).map_err(|e| CliError::Usage(e.to_string()))?;
+    let path = dir.join(format!("{}.json", comparison.digest.to_hex()));
+    let text =
+        serde_json::to_string_pretty(comparison).map_err(|e| CliError::Usage(e.to_string()))?;
+    let partial = path.with_extension("partial");
+    std::fs::write(&partial, text)
+        .and_then(|()| std::fs::rename(&partial, &path))
+        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+    Ok(path)
+}
+
+/// The graphs that earned `profile`'s traffic: those that beat both
+/// baselines in its latest comparison on some set.
+pub fn earned(profile: &str) -> Result<BTreeSet<String>, CliError> {
+    let dir = evals_dir(profile);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(BTreeSet::new());
+    };
+    let mut earned = BTreeSet::new();
+    for path in entries.flatten().map(|e| e.path()) {
+        if path.extension().is_some_and(|x| x == "json") {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+            let comparison: Comparison = serde_json::from_str(&text)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+            earned.extend(comparison.earned());
+        }
+    }
+    Ok(earned)
+}
+
+/// Compares, with `profile`'s models, one agent, one agent `samples` times
+/// with its answers put to a vote, and each of `graphs`, on the set of
+/// tasks in `set` (its exact bytes): each case run `runs` times by each,
+/// with `budget_tokens` for a case. With `judge` (a model's spec), a judge
+/// reads each run's steps.
+pub fn evaluate(
+    profile: &Profile,
+    set: &[u8],
+    graphs: Vec<Graph>,
+    samples: u32,
+    runs: u32,
+    budget_tokens: u64,
+    judge: Option<&str>,
+) -> Result<Comparison, CliError> {
+    let tasks = TaskSet::parse(set).map_err(CliError::Usage)?;
+    if graphs.is_empty() {
+        return Err(CliError::Usage(
+            "give a graph to compare with one agent: --template or --graph".into(),
+        ));
+    }
+    let mut arms = vec![Arm::Single, Arm::Vote { samples }];
+    arms.extend(graphs.into_iter().map(|graph| Arm::Graph { graph }));
+    let specs = profile.models.clone();
+    if specs.is_empty() {
+        return Err(CliError::Usage(format!(
+            "profile {} has no model",
+            profile.name
+        )));
+    }
+    let models = move || -> Result<Vec<Box<dyn sion_agent::model::Model>>, String> {
+        specs
+            .iter()
+            .map(|spec| crate::runtime::model(spec, 0).map_err(|e| e.to_string()))
+            .collect()
+    };
+    let judge = judge
+        .map(|spec| crate::runtime::model(spec, 0))
+        .transpose()?;
+    sion_agent::compare::compare(
+        &tasks,
+        sion_agent::evals::digest(set),
+        &arms,
+        &models,
+        judge.as_deref(),
+        budget_tokens,
+        runs,
+        &sion_agent::Limits::default(),
+    )
+    .map_err(CliError::Usage)
 }
 
 /// Runs `graph` on `task` with `profile`'s agent, keeping the run after
@@ -272,9 +398,48 @@ pub enum GraphCommand {
         #[arg(long, conflicts_with = "route")]
         graph: Option<PathBuf>,
         /// Ask the profile's model first how to work on the task: one agent
-        /// (a single session), or one of the templates.
+        /// (a single session), or one of the templates that beat one agent
+        /// in the profile's comparisons (`sion agent graph eval`).
         #[arg(long)]
         route: bool,
+        /// With --route, let the router choose any template, measured or
+        /// not.
+        #[arg(long, requires = "route")]
+        untested: bool,
+    },
+    /// Compare ways of working through a set of tasks, with a profile's
+    /// models: one agent, one agent several times with its answers put to
+    /// a vote, and each graph given, on the same token budget for a case,
+    /// each case run several times, with the cases' stand-in tools and
+    /// checks. A graph that beats both (by Newcombe's 95% interval for the
+    /// difference of pass rates) earns the profile's traffic: `run --route`
+    /// offers only templates that have.
+    Eval {
+        /// The profile whose models do the work.
+        profile: String,
+        /// The set of tasks: a JSON file of cases, as an evaluation set's.
+        #[arg(long, value_name = "FILE")]
+        set: PathBuf,
+        /// A template to compare (repeat for more).
+        #[arg(long = "template", value_name = "NAME")]
+        templates: Vec<String>,
+        /// A graph of your own to compare: a JSON file (repeat for more).
+        #[arg(long = "graph", value_name = "FILE")]
+        graphs: Vec<PathBuf>,
+        /// How many times one agent works on a case for the vote.
+        #[arg(long, default_value_t = 3)]
+        samples: u32,
+        /// How many times each case is run by each way of working.
+        #[arg(long, default_value_t = 5)]
+        runs: u32,
+        /// The tokens each way of working may use on a case, its sessions
+        /// together.
+        #[arg(long, default_value_t = 30_000)]
+        budget_tokens: u64,
+        /// A model that judges each run step by step, its agreement with
+        /// labelled steps it was not shown measured first.
+        #[arg(long, value_name = "MODEL")]
+        judge: Option<String>,
     },
     /// Show a graph's run: what each node answered, and how it stands.
     Show {
@@ -312,6 +477,7 @@ pub fn command(ledger: SharedLedger, command: GraphCommand) -> Result<(), CliErr
             template: chosen,
             graph,
             route: routed,
+            untested,
         } => {
             let profile = crate::profiles::get(&profile)?;
             let graph = match (chosen, graph, routed) {
@@ -323,7 +489,11 @@ pub fn command(ledger: SharedLedger, command: GraphCommand) -> Result<(), CliErr
                         .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?
                 }
                 (None, None, true) => {
-                    let chosen = route(&profile, &task)?;
+                    let chosen = if untested {
+                        route(&profile, &task)?
+                    } else {
+                        route_earned(&profile, &task)?
+                    };
                     println!("route: {} ({})", chosen.shape, chosen.why);
                     match template(&chosen.shape) {
                         Some(graph) => graph,
@@ -349,6 +519,44 @@ pub fn command(ledger: SharedLedger, command: GraphCommand) -> Result<(), CliErr
             print(lines);
         }
         GraphCommand::Show { run } => print(shown(&Kept::load(&run)?)),
+        GraphCommand::Eval {
+            profile,
+            set,
+            templates,
+            graphs,
+            samples,
+            runs,
+            budget_tokens,
+            judge,
+        } => {
+            let profile = crate::profiles::get(&profile)?;
+            let bytes = std::fs::read(&set)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", set.display())))?;
+            let mut compared = Vec::new();
+            for name in &templates {
+                compared.push(named(name)?);
+            }
+            for path in &graphs {
+                let text = std::fs::read_to_string(path)
+                    .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+                compared.push(
+                    serde_json::from_str(&text)
+                        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?,
+                );
+            }
+            let comparison = evaluate(
+                &profile,
+                &bytes,
+                compared,
+                samples,
+                runs,
+                budget_tokens,
+                judge.as_deref(),
+            )?;
+            print(comparison.lines());
+            let path = keep_comparison(&profile.name, &comparison)?;
+            println!("kept: {}", path.display());
+        }
     }
     Ok(())
 }

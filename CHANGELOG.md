@@ -10,6 +10,29 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Graphs measured against one agent; runs judged step by step
+
+- **`sion agent graph eval <profile> --set <file>`** (`sion_agent::compare`):
+  one agent, one agent several times with its answers put to a vote
+  (`--samples`), and each template or graph given, on a set of tasks with
+  stand-in tools and checks: the same token budget for a case
+  (`--budget-tokens`; a vote's samples split it, a graph's nodes share
+  what is left wave by wave), each case run several times (`--runs`).
+  Pass rates with 95% Wilson intervals, the passes of each repeat, tokens,
+  and each graph's difference from one agent with Newcombe's interval.
+  The comparison is kept per profile and set.
+- **The router is held to what earned it**: `run --route` offers only the
+  templates that beat both baselines in one of the profile's comparisons,
+  and keeps the task to one agent without asking when none has;
+  `--untested` lets it choose among all.
+- **`sion agent judge <session> --model <model>`** (`sion_agent::judge`): a
+  model reads a session's steps (each call, the start of what came back,
+  the answer) after labelled examples, and says of each whether it moved
+  the task on, stalled or did harm; `--calibrate` measures it on labelled
+  steps it was not shown first. `graph eval --judge` judges every run.
+- Trust atoms `agent:comparison` and `agent:judge`. The graphs guide is
+  recorded again with the router's gate, a comparison and a judge.
+
 ### Checks fixed when a task is posted
 
 - **`sion task post --check <dir>`** (and `task_post`'s `check`): a

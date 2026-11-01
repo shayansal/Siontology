@@ -482,6 +482,65 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
     assert_eq!(again.run, kept.run);
     assert_eq!(sion_cli::graphs::shown(&again), lines);
 
+    // The router offers only templates that beat one agent in one of the
+    // profile's comparisons: none has yet, so one agent, without asking.
+    let gated = sion_cli::graphs::route_earned(&team, task).unwrap();
+    assert_eq!(gated.shape, "single", "{gated:?}");
+    assert!(
+        gated.why.contains("no template has beaten one agent"),
+        "{gated:?}"
+    );
+    // A comparison on a set of tasks with stand-in tools: one agent looks
+    // up one of the two prices; the fan-out looks up both and adds them.
+    let set = json!({
+        "name": "lookups",
+        "cases": [{
+            "id": "plan-b",
+            "task": "What do plan B and its support cost together?",
+            "tools": [{"name": "price", "answers": [
+                {"when": {"item": "plan b"}, "says": "12 USD"},
+                {"when": {"item": "support"}, "says": "3 USD"}]}],
+            "checks": [{"says": "15 USD"}, "done"]
+        }]
+    })
+    .to_string();
+    let compared = Profile {
+        models: vec![script(
+            &home,
+            "compare.json",
+            json!([
+                {"when": "split the task into parts", "say": "{\"parts\": [\"the price of plan b\", \"the price of support\"]}"},
+                {"when": "your part of it:\nthe price of plan b", "call": "price", "input": {"item": "plan b"}},
+                {"when": "your part of it:\nthe price of plan b", "say": "12 USD"},
+                {"when": "your part of it:\nthe price of support", "call": "price", "input": {"item": "support"}},
+                {"when": "your part of it:\nthe price of support", "say": "3 USD"},
+                {"when": "put the parts' reports together", "say": "15 USD"},
+                {"call": "price", "input": {"item": "plan b"}},
+                {"say": "12 USD"}
+            ]),
+        )],
+        ..team.clone()
+    };
+    let comparison = sion_cli::graphs::evaluate(
+        &compared,
+        set.as_bytes(),
+        vec![sion_agent::graph::template("fan-out").unwrap()],
+        3,
+        8,
+        30_000,
+        None,
+    )
+    .unwrap();
+    assert_eq!(comparison.earned(), ["fan-out"], "{:?}", comparison.lines());
+    let kept_at = sion_cli::graphs::keep_comparison("team", &comparison).unwrap();
+    assert!(kept_at.starts_with(sion_cli::graphs::evals_dir("team")));
+    assert!(sion_cli::graphs::earned("team")
+        .unwrap()
+        .contains("fan-out"));
+    // Now the router is asked, among one agent and the fan-out alone.
+    let gated = sion_cli::graphs::route_earned(&team, task).unwrap();
+    assert_eq!(gated.shape, "fan-out", "{gated:?}");
+
     // A check fixed when a task is posted: the lead commits to it in the
     // task's spec, and it is kept here for the reviewer, who runs it before
     // attesting. A check needs someone who must attest.

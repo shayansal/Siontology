@@ -462,6 +462,20 @@ pub enum AgentCommand {
         #[arg(long)]
         otel: bool,
     },
+    /// Judge a session's steps with a model: whether each moved the task
+    /// on, stalled or did harm, and why. The judge is shown labelled steps
+    /// first; with --calibrate, its agreement with labelled steps it was
+    /// not shown is measured before it judges.
+    Judge {
+        /// The session (its id, or a unique prefix of it).
+        session: String,
+        /// The model that judges.
+        #[arg(long, value_name = "MODEL")]
+        model: String,
+        /// Measure the judge on labelled steps it was not shown, first.
+        #[arg(long)]
+        calibrate: bool,
+    },
     /// The calls of a session whose outcome is unknown (a run stopped while
     /// they ran, or a service did not answer), and settling one once you
     /// know what it did: done, or not done (so that it may be made again).
@@ -1046,6 +1060,36 @@ pub fn run(
                     "{}",
                     sion_agent::trace::chat_line(&saved.state, &saved.prompt, saved.ended.as_ref())
                 );
+            }
+            Ok(())
+        }
+        AgentCommand::Judge {
+            session,
+            model,
+            calibrate,
+        } => {
+            let saved = crate::runtime::Saved::load(&session)?;
+            let judge = crate::runtime::model(&model, 0)?;
+            if calibrate {
+                let (agreed, of) =
+                    sion_agent::judge::calibrate(judge.as_ref()).map_err(CliError::Usage)?;
+                println!(
+                    "calibration: {agreed} of {of} labelled steps the judge was not shown, \
+                     judged as labelled"
+                );
+            }
+            let task = saved
+                .state
+                .messages
+                .first()
+                .map(|m| m.text())
+                .unwrap_or_default();
+            let steps = sion_agent::judge::steps_of(&saved.state, saved.ended.as_ref());
+            let judgment =
+                sion_agent::judge::judge(judge.as_ref(), &task, &steps).map_err(CliError::Usage)?;
+            println!("session {}: {} steps", saved.state.id, steps.len());
+            for line in judgment.lines(&steps) {
+                println!("{line}");
             }
             Ok(())
         }

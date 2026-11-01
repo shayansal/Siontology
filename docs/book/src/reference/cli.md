@@ -713,6 +713,7 @@ Commands:
   evolve         Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
   sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
+  judge          Judge a session's steps with a model: whether each moved the task on, stalled or did harm, and why. The judge is shown labelled steps first; with --calibrate, its agreement with labelled steps it was not shown is measured before it judges
   settle         The calls of a session whose outcome is unknown (a run stopped while they ran, or a service did not answer), and settling one once you know what it did: done, or not done (so that it may be made again)
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
@@ -1205,6 +1206,23 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --not-done     It did not take effect: it may be made again
   -h, --help         Print help
+```
+
+## `sion agent judge`
+
+```text
+Judge a session's steps with a model: whether each moved the task on, stalled or did harm, and why. The judge is shown labelled steps first; with --calibrate, its agreement with labelled steps it was not shown is measured before it judges
+
+Usage: sion agent judge [OPTIONS] --model <MODEL> <SESSION>
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+
+Options:
+      --model <MODEL>  The model that judges
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --calibrate      Measure the judge on labelled steps it was not shown, first
+  -h, --help           Print help
 ```
 
 See [Safety nets](../guides/agent-runtime.md#safety-nets).
@@ -1970,6 +1988,7 @@ Usage: sion agent graph [OPTIONS] <COMMAND>
 Commands:
   templates  The graphs the runtime knows, a line each; with a name, that graph as JSON, to start a graph of your own from
   run        Run a graph on a task, each of its nodes a session of a profile's agent: a template, a graph of your own, or what the profile's model says the task needs
+  eval       Compare ways of working through a set of tasks, with a profile's models: one agent, one agent several times with its answers put to a vote, and each graph given, on the same token budget for a case, each case run several times, with the cases' stand-in tools and checks. A graph that beats both (by Newcombe's 95% interval for the difference of pass rates) earns the profile's traffic: `run --route` offers only templates that have
   show       Show a graph's run: what each node answered, and how it stands
   help       Print this message or the help of the given subcommand(s)
 
@@ -2012,7 +2031,8 @@ Options:
       --task <TASK>          The task
       --template <TEMPLATE>  A template: fan-out, work-check or draft-review
       --graph <GRAPH>        A graph of your own: a JSON file
-      --route                Ask the profile's model first how to work on the task: one agent (a single session), or one of the templates
+      --route                Ask the profile's model first how to work on the task: one agent (a single session), or one of the templates that beat one agent in the profile's comparisons (`sion agent graph eval`)
+      --untested             With --route, let the router choose any template, measured or not
   -h, --help                 Print help
 ```
 
@@ -2031,6 +2051,28 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent graph eval`
+
+```text
+Compare ways of working through a set of tasks, with a profile's models: one agent, one agent several times with its answers put to a vote, and each graph given, on the same token budget for a case, each case run several times, with the cases' stand-in tools and checks. A graph that beats both (by Newcombe's 95% interval for the difference of pass rates) earns the profile's traffic: `run --route` offers only templates that have
+
+Usage: sion agent graph eval [OPTIONS] --set <FILE> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile whose models do the work
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --set <FILE>                     The set of tasks: a JSON file of cases, as an evaluation set's
+      --template <NAME>                A template to compare (repeat for more)
+      --graph <FILE>                   A graph of your own to compare: a JSON file (repeat for more)
+      --samples <SAMPLES>              How many times one agent works on a case for the vote [default: 3]
+      --runs <RUNS>                    How many times each case is run by each way of working [default: 5]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each way of working may use on a case, its sessions together [default: 30000]
+      --judge <MODEL>                  A model that judges each run step by step, its agreement with labelled steps it was not shown measured first
+  -h, --help                           Print help
 ```
 
 See [Graphs of agents](../guides/agent-graphs.md).

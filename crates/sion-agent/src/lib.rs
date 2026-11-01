@@ -57,6 +57,7 @@
 pub mod browser;
 pub mod builtin;
 pub mod cdp;
+pub mod compare;
 pub mod consolidate;
 pub mod desktop;
 pub mod dream;
@@ -66,6 +67,7 @@ pub mod evals;
 pub mod evolve;
 pub mod graph;
 pub mod journal;
+pub mod judge;
 pub mod mcp;
 pub mod mcp_http;
 pub mod model;
