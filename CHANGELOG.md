@@ -17,7 +17,8 @@ Commit messages before the rename use the working name, Fold.
   manager), the person's wallet and the agent's with test dollars, the
   agent registered with a budget and a billion-Pulse lifetime, its memory
   log, a model checked to answer, a profile (`assistant`: workspace
-  `~/sion-workspace`, the web, L5), and Telegram if asked. Every step is
+  `~/sion-workspace`, the web, L5), the scheduler as a service (so that
+  scheduled tasks run), and Telegram if asked. Every step is
   skipped when done; `--yes` asks nothing. What it made is in
   `$SION_HOME/setup.json`.
 - **Bare `sion`** talks with that profile in a new conversation; **`sion

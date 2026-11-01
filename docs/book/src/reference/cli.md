@@ -284,6 +284,7 @@ Options:
       --idle-round-ms <MS>       How long the chain waits between rounds while it has nothing to order, in milliseconds [default: 10000]
       --no-service               Do not install the chain as a service: print the command that runs it, and wait for it
       --telegram                 Also answer on Telegram (the bot's token is asked for, or taken from TELEGRAM_BOT_TOKEN)
+      --no-scheduler             Do not run the scheduler as a service
       --no-check                 Do not check that the model answers
   -y, --yes                      Ask nothing: take the defaults and these options
   -h, --help                     Print help

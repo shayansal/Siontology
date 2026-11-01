@@ -31,7 +31,9 @@
 //!    (`~/sion-workspace`), the web, and autonomy L5: it asks before it
 //!    spends, and before it reaches outside once it has read something
 //!    from outside.
-//! 7. **Telegram**, if asked for: a service running the bridge with the
+//! 7. **Scheduled tasks**: a service running the scheduler, so that what
+//!    `sion agent schedule add` schedules runs.
+//! 8. **Telegram**, if asked for: a service running the bridge with the
 //!    bot's token, which gives whoever writes to it first a pairing code to
 //!    approve.
 //!
@@ -106,6 +108,9 @@ pub struct SetupArgs {
     /// TELEGRAM_BOT_TOKEN).
     #[arg(long)]
     pub telegram: bool,
+    /// Do not run the scheduler as a service.
+    #[arg(long)]
+    pub no_scheduler: bool,
     /// Do not check that the model answers.
     #[arg(long)]
     pub no_check: bool,
@@ -138,6 +143,9 @@ pub struct Made {
     /// The profile bare `sion` talks with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Whether a service of the user's runs scheduled tasks.
+    #[serde(default)]
+    pub scheduler: bool,
     /// Whether a Telegram bot answers for it.
     #[serde(default)]
     pub telegram: bool,
@@ -1000,7 +1008,29 @@ pub fn run(node: &str, args: &SetupArgs) -> Result<(), CliError> {
     made.profile = Some(args.profile.clone());
     save(&made)?;
 
-    // 7. Telegram.
+    // 7. Scheduled tasks.
+    if !args.no_scheduler && !made.scheduler {
+        match user_services() {
+            Some(manager) => {
+                if asker.yes("Run its scheduled tasks as a service too?", true)? {
+                    let run = vec!["agent".to_string(), "scheduler".to_string()];
+                    service(&manager, "scheduler", node, &run, &[])?;
+                    made.scheduler = true;
+                    save(&made)?;
+                    println!(
+                        "Scheduled tasks: a service of yours (`scheduler`) runs what you schedule \
+                         (sion agent schedule add)."
+                    );
+                }
+            }
+            None => println!(
+                "Scheduled tasks: for what you schedule (sion agent schedule add) to run, run \
+                 `sion agent scheduler` in a terminal of its own too."
+            ),
+        }
+    }
+
+    // 8. Telegram.
     let wants_telegram =
         args.telegram || (!made.telegram && asker.yes("Answer on Telegram too?", false)?);
     if wants_telegram {
@@ -1114,6 +1144,7 @@ mod tests {
             agent: Some(ObjectId::from_hash(Hash32([7; 32]))),
             memory: None,
             profile: Some("assistant".into()),
+            scheduler: false,
             telegram: false,
         };
         let text = serde_json::to_string(&made).unwrap();

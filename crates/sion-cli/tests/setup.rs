@@ -114,7 +114,14 @@ fn one_person_sets_up_a_chain_and_an_agent_and_talks_with_it() {
     .unwrap();
     let spec = format!("script:{}", model.display());
 
-    let out = sion(&dir, &node, &["setup", "--yes", "--model", &spec], "");
+    // No service is installed: where a service manager runs (some CI
+    // machines), this test's home is not the one it reads.
+    let out = sion(
+        &dir,
+        &node,
+        &["setup", "--yes", "--no-scheduler", "--model", &spec],
+        "",
+    );
     let said = text(&out);
     assert!(out.status.success(), "{said}");
     for expected in [
@@ -170,7 +177,12 @@ fn one_person_sets_up_a_chain_and_an_agent_and_talks_with_it() {
     );
 
     // Again: nothing made twice, nothing funded twice.
-    let out = sion(&dir, &node, &["setup", "--yes", "--no-check"], "");
+    let out = sion(
+        &dir,
+        &node,
+        &["setup", "--yes", "--no-check", "--no-scheduler"],
+        "",
+    );
     let said = text(&out);
     assert!(out.status.success(), "{said}");
     assert!(said.contains("registered already"), "{said}");

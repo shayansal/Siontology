@@ -60,7 +60,11 @@ What it makes:
    it may read and write (`~/sion-workspace`), the web, and autonomy L5: it
    asks before it spends, and before it reaches outside once it has read
    something from outside.
-7. **Telegram**, if you say so: a service of yours running the bot, which
+7. **Scheduled tasks**: a service of yours running the scheduler (service
+   `scheduler`), so that what you schedule (`sion agent schedule add`)
+   runs; where there is no service manager, setup says to run
+   `sion agent scheduler` in a terminal of its own.
+8. **Telegram**, if you say so: a service of yours running the bot, which
    gives whoever writes to it first a pairing code for you to approve.
 
 Here is setup on a machine with no service manager, with a scripted model
@@ -79,31 +83,32 @@ The chain: one validator of your own. Nothing here runs services for you, so run
   the chain answers at http://127.0.0.1:8730
 Your wallet, ana, and your agent's, ana-agent: test dollars from the chain's faucet fund its budget and its fees.
   $ sion keys new ana
-    created ana: account d80bdc63…6c80
+    created ana: account b571db5b…e0df
     seed stored in ~/.sion/wallets/ana.seed
   $ sion faucet ana 10000
     funded ana with 10,000
   $ sion keys new ana-agent
-    created ana-agent: account 3f7cfe2e…e304
+    created ana-agent: account a6a17028…abe3
     seed stored in ~/.sion/wallets/ana-agent.seed
   $ sion faucet ana-agent 100
     funded ana-agent with 100
 The agent: registered by ana, signing as ana-agent.
   $ sion agent register ana ana-agent --lifetime 1000000000
     ana signs: Register ana-agent as an agent, funded with 1,000 USD: any payee, at most 100 USD per payment, 500 USD at once, refilled by 0.5 USD a Pulse, until Pulse 1000000007, a receipt claim for every payment, may delegate narrower limits. Fee 0.0012 USD; valid until Pulse 27.
-    Pulse 9: Done: agent 5b62b2af registered, signing as ana-agent; fee 0.0012 USD.
-    agent 5b62b2af…eab0
-    allotment b3dd15e7…7c46
-    did did:sion:062600d1…36a0:5b62b2af…eab0
+    Pulse 9: Done: agent a0894889 registered, signing as ana-agent; fee 0.0012 USD.
+    agent a0894889…2b5f
+    allotment 3f4ce748…15bd
+    did did:sion:062600d1…36a0:a0894889…2b5f
 Its memory: a log of its own.
-  $ sion memory open ana-agent --agent 5b62b2af…eab0
-    ana-agent signs: Open a memory log for agent 5b62b2af, which only it can append to. Fee 0.0012 USD; valid until Pulse 31.
-    Pulse 13: Done: memory log 200c4fdf opened for agent 5b62b2af; fee 0.0012 USD.
-    log 200c4fdf…162f
+  $ sion memory open ana-agent --agent a0894889…2b5f
+    ana-agent signs: Open a memory log for agent a0894889, which only it can append to. Fee 0.0012 USD; valid until Pulse 31.
+    Pulse 13: Done: memory log a0ca885a opened for agent a0894889; fee 0.0012 USD.
+    log a0ca885a…6789
   checking that script:~/assistant.json answers… it said: Hello. I am ready.
 The profile assistant: how it runs.
-  $ sion agent profile add assistant ana-agent 5b62b2af…eab0 --model script:~/assistant.json --autonomy L5 --memory 200c4fdf…162f --workspace ~/sion-workspace --web
-    profile assistant: agent 5b62b2af as ana-agent, script:~/assistant.json at L5, with memory, web
+  $ sion agent profile add assistant ana-agent a0894889…2b5f --model script:~/assistant.json --autonomy L5 --memory a0ca885a…6789 --workspace ~/sion-workspace --web
+    profile assistant: agent a0894889 as ana-agent, script:~/assistant.json at L5, with memory, web
+Scheduled tasks: for what you schedule (sion agent schedule add) to run, run `sion agent scheduler` in a terminal of its own too.
 
 Ready.
   Talk with your agent:           sion
@@ -121,12 +126,12 @@ conversations; a conversation is what it was told and did in one.
 
 ```text
 $ sion
-Talking with assistant (conversation 2026-11-01-150905); end with Ctrl-D, continue later with `sion -c`.
+Talking with assistant (conversation 2026-11-01-153915); end with Ctrl-D, continue later with `sion -c`.
 you>   · list_files
 agent> Your workspace is empty so far. Put files in it, or ask me to write some.
 you> 
 $ sion -c
-Continuing with assistant (conversation 2026-11-01-150905); end with Ctrl-D, continue later with `sion -c`.
+Continuing with assistant (conversation 2026-11-01-153915); end with Ctrl-D, continue later with `sion -c`.
 you>   · write_file
 agent> I wrote notes.md in your workspace.
 you> 
@@ -147,11 +152,12 @@ $ sion setup --yes
 Setting up Siontology for you in ~/.sion (SION_HOME).
 The chain: http://127.0.0.1:8730 answers; setup uses it.
 Your wallet, ana, and your agent's, ana-agent: test dollars from the chain's faucet fund its budget and its fees.
-The agent: 5b62b2af…eab0, registered already.
-Its memory: log 200c4fdf…162f, opened already.
+The agent: a0894889…2b5f, registered already.
+Its memory: log a0ca885a…6789, opened already.
 The profile assistant: how it runs.
-  $ sion agent profile add assistant ana-agent 5b62b2af…eab0 --model script:~/assistant.json --autonomy L5 --memory 200c4fdf…162f --workspace ~/sion-workspace --web
-    profile assistant: agent 5b62b2af as ana-agent, script:~/assistant.json at L5, with memory, web
+  $ sion agent profile add assistant ana-agent a0894889…2b5f --model script:~/assistant.json --autonomy L5 --memory a0ca885a…6789 --workspace ~/sion-workspace --web
+    profile assistant: agent a0894889 as ana-agent, script:~/assistant.json at L5, with memory, web
+Scheduled tasks: for what you schedule (sion agent schedule add) to run, run `sion agent scheduler` in a terminal of its own too.
 
 Ready.
   Talk with your agent:           sion
