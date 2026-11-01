@@ -397,6 +397,11 @@ pub enum AgentCommand {
         /// while it runs. The agent's commands neither see nor change it.
         #[arg(long, value_name = "DIR", requires = "verify")]
         verify_files: Option<std::path::PathBuf>,
+        /// A curated log to keep in mind, read-only, besides the agent's own
+        /// memory (its id, or a unique prefix of it): one that only dreams
+        /// write (`sion memory dream --into`). Repeat for more.
+        #[arg(long = "shared-memory", value_name = "LOG")]
+        shared_memory: Vec<String>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -779,8 +784,13 @@ pub fn run(
             quarantine,
             verify,
             verify_files,
+            shared_memory,
         } => {
             let agent = parse_id(&agent, "agent")?;
+            let shared_memory = shared_memory
+                .iter()
+                .map(|log| crate::memory::find_log(ledger, log))
+                .collect::<Result<Vec<_>, _>>()?;
             let shell = shell.sandbox()?;
             let screen = screen.screen()?;
             let adjudicator = adjudicator
@@ -836,6 +846,7 @@ pub fn run(
                     budget_tokens,
                     verify,
                     verify_files,
+                    shared_memory,
                     ..crate::runtime::Equipment::default()
                 },
             )?;

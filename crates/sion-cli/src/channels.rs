@@ -1983,6 +1983,7 @@ mod tests {
             home_assistant: false,
             budget_tokens: None,
             quarantine: false,
+            shared_memory: Vec::new(),
         };
         let sent = json!({"text": "Look at these.", "files": [
             {"name": "plan.png", "base64": "iVBORw0KGgoAAA=="},

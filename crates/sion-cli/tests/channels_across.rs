@@ -97,6 +97,7 @@ fn profile(
         home_assistant: false,
         budget_tokens: None,
         quarantine: false,
+        shared_memory: Vec::new(),
     }
 }
 

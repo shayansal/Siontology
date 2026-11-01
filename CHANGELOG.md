@@ -10,6 +10,27 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Dreams tested before they are kept; a curated log only dreams write
+
+- **`sion memory dream --eval <set>`** (`--eval-model`, `--eval-runs`):
+  held-out tasks run with the core memory as it is and as it would be
+  with the dream's notes in mind; the notes are recorded only if no case
+  passes fewer times with them, and a case whose task the dream read is
+  refused as not held out.
+- **`--into <log> --curator <wallet>`**: the notes go into a curated log
+  that only dreams write, its marker per source log; **`--shared-memory
+  <log>`** on `sion agent run` and profiles keeps it in mind, read-only,
+  after the agent's own core memory.
+- **Confidence from provenance**: consolidated and dreamt notes were
+  recorded at full confidence; they now get 700‰ from a trusted session
+  (300‰ from content from outside), 50‰ for each further source up to
+  three, 100‰ for a dream's quote, never above 950‰, shown as
+  `confidence_permille`.
+- **Skill drafts**: a failure seen in two or more trusted sessions a dream
+  reads becomes a draft skill under `$SION_HOME/skills/drafts`, with a
+  note of where it came from; nothing installs it.
+- Trust atoms `agent:dream-test` and `agent:curated-log`.
+
 ### Graphs measured against one agent; runs judged step by step
 
 - **`sion agent graph eval <profile> --set <file>`** (`sion_agent::compare`):

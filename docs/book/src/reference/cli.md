@@ -1094,6 +1094,8 @@ Options:
           Check the task each time the agent says it is done: run this command with /bin/sh in its sandbox, in its workspace (it needs --shell). An exit status of 0 passes. A failed check is shown to the agent, which goes on; after three, the run ends unverified, with its best answer (the one whose check printed the highest last line `score: <0 to 1>`, if any). The agent may also say that it cannot complete the task
       --verify-files <DIR>
           The check's own files (its tests, say): a directory apart from the workspace, shown to the check alone, read-only at /check, while it runs. The agent's commands neither see nor change it
+      --shared-memory <LOG>
+          A curated log to keep in mind, read-only, besides the agent's own memory (its id, or a unique prefix of it): one that only dreams write (`sion memory dream --into`). Repeat for more
   -h, --help
           Print help
 ```
@@ -1336,6 +1338,8 @@ Options:
           Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
+      --shared-memory <LOG>
+          A curated log its sessions keep in mind, read-only (its id, or a unique prefix of it). Repeat for more
   -h, --help
           Print help
 ```
@@ -2856,9 +2860,14 @@ Arguments:
   <LOG>     The log (its id, or a unique prefix of it)
 
 Options:
-      --model <MODEL>  The model that reads: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>
-      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-  -h, --help           Print help
+      --model <MODEL>       The model that reads: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>
+      --node <NODE>         The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --eval <FILE>         Held-out tasks (a set of tasks, as `sion agent graph eval` takes): each case is run with the core memory as it is and as it would be with the dream's notes in mind, and the notes are recorded only if no case passes fewer times with them
+      --eval-model <MODEL>  The model those runs work with (default: the reader)
+      --eval-runs <N>       How many times each case runs each way [default: 3]
+      --into <LOG>          A curated log to record the notes in instead of the agent's own (its id, or a unique prefix of it): dreams are its only writer
+      --curator <WALLET>    The wallet that writes the curated log
+  -h, --help                Print help
 ```
 
 See [Dreaming](../guides/agent-runtime.md#dreaming).

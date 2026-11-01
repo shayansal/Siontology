@@ -111,10 +111,49 @@ pub fn promptable(atom: &MemoryAtom) -> bool {
     )
 }
 
+/// What an agent's core memory is headed with in its prompt.
+pub const CORE_HEADER: &str =
+    "What you remember and always keep in mind (from your memory log; use memory_recall for more):";
+
+/// What a curated log's core memory is headed with in a prompt.
+pub const SHARED_HEADER: &str =
+    "What your team keeps in mind, from a curated log that only its dreams write (read-only):";
+
 /// The agent's core memory as prompt text: its live preferences, goals and
 /// procedures, newest first, within [`MAX_CORE_CHARS`]. Atoms that may
 /// carry instructions from outside are left out ([`promptable`]).
 pub fn core(log: &ObjectId) -> String {
+    core_under(log, CORE_HEADER)
+}
+
+/// A curated log's core memory as prompt text, as [`core`] gives an
+/// agent's own, under [`SHARED_HEADER`].
+pub fn shared_core(log: &ObjectId) -> String {
+    core_under(log, SHARED_HEADER)
+}
+
+/// The line a note is in a prompt's memory: its kind and its statement.
+pub fn core_line(kind: MemoryKind, statement: &Statement) -> String {
+    format!("- ({}) {}", kind_name(kind), statement_text(statement))
+}
+
+/// Core memory text as [`core`] gives it (or nothing), with `lines` before
+/// its own, under [`CORE_HEADER`].
+pub fn with_lines(core: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
+        return core.to_string();
+    }
+    let mut all = lines.to_vec();
+    all.extend(
+        core.lines()
+            .skip(1)
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string),
+    );
+    format!("{CORE_HEADER}\n{}\n", all.join("\n"))
+}
+
+fn core_under(log: &ObjectId, header: &str) -> String {
     let Ok(store) = LogStore::open(store_dir(log)) else {
         return String::new();
     };
@@ -126,11 +165,7 @@ pub fn core(log: &ObjectId) -> String {
             continue;
         }
         if let Statement::Claim { .. } = atom.statement {
-            let text = format!(
-                "- ({}) {}",
-                kind_name(atom.kind),
-                statement_text(&atom.statement)
-            );
+            let text = core_line(atom.kind, &atom.statement);
             used += text.len() + 1;
             if used > MAX_CORE_CHARS {
                 break;
@@ -141,10 +176,7 @@ pub fn core(log: &ObjectId) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    format!(
-        "What you remember and always keep in mind (from your memory log; use memory_recall for more):\n{}\n",
-        lines.join("\n")
-    )
+    format!("{header}\n{}\n", lines.join("\n"))
 }
 
 fn schema(properties: Json, required: &[&str]) -> Json {
@@ -638,4 +670,35 @@ pub fn record_episode(
         trajectory.from_outside,
     )?;
     memory.commit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notes_go_before_what_core_memory_keeps() {
+        let line = core_line(
+            MemoryKind::Procedural,
+            &Statement::claim(
+                "invoices",
+                "are paid",
+                sion_memory::Value::Text("on Fridays".into()),
+            ),
+        );
+        assert!(
+            line.starts_with("- (procedure) invoices are paid"),
+            "{line}"
+        );
+        let core = format!("{CORE_HEADER}\n- (preference) user prefers email\n");
+        assert_eq!(
+            with_lines(&core, std::slice::from_ref(&line)),
+            format!("{CORE_HEADER}\n{line}\n- (preference) user prefers email\n")
+        );
+        assert_eq!(
+            with_lines("", std::slice::from_ref(&line)),
+            format!("{CORE_HEADER}\n{line}\n")
+        );
+        assert_eq!(with_lines(&core, &[]), core);
+    }
 }

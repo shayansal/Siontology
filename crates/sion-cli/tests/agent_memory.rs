@@ -206,13 +206,21 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
     )
     .unwrap();
     let model = format!("script:{}", reader.display());
-    let dreamt =
-        sion_cli::consolidate::dream(&mut session, ledger.as_ref(), "agent-8", &log, &model)
-            .unwrap();
+    let dreamt = sion_cli::consolidate::dream(
+        &mut session,
+        ledger.as_ref(),
+        "agent-8",
+        &log,
+        &model,
+        &Default::default(),
+    )
+    .unwrap();
     assert_eq!(dreamt["sessions_read"], 1, "{dreamt}");
     let kept = dreamt["kept"].as_array().unwrap();
     assert_eq!(kept.len(), 1, "{dreamt}");
     assert_eq!(kept[0]["note"], "acme is paid: 30 days after its invoice");
+    // Its confidence is its provenance's: one trusted session, quoted.
+    assert_eq!(kept[0]["confidence_permille"], 800, "{dreamt}");
     assert_eq!(kept[0]["from"].as_array().unwrap().len(), 1, "{dreamt}");
     assert!(
         dreamt["turned_down"]
@@ -221,10 +229,228 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
         "{dreamt}"
     );
     // A session is dreamt over once.
-    let again =
-        sion_cli::consolidate::dream(&mut session, ledger.as_ref(), "agent-8", &log, &model)
-            .unwrap();
+    let again = sion_cli::consolidate::dream(
+        &mut session,
+        ledger.as_ref(),
+        "agent-8",
+        &log,
+        &model,
+        &Default::default(),
+    )
+    .unwrap();
     assert_eq!(again["dreamt"], 0, "{again}");
+
+    // Two more sessions, in each of which the same call fails the same way.
+    for (n, task) in [
+        "Forget the note about Globex.",
+        "Forget the note about Initech.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let script = home.join(format!("fail-{n}.json"));
+        std::fs::write(
+            &script,
+            json!([
+                {"call": "memory_forget", "input": {"atom": "ffffffffff", "reason": "outdated"}},
+                {"say": "There was no such note to forget."}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let (saved, lines) = runtime::start(
+            ledger.clone(),
+            "agent-8",
+            agent,
+            task,
+            vec![format!("script:{}", script.display())],
+            Policy {
+                autonomy: Autonomy::L3,
+                ..Policy::default()
+            },
+            Equipment {
+                memory: Some(log),
+                ..Equipment::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(saved.ended, Some(Ended::Done { .. })),
+            "{}",
+            lines.join("\n")
+        );
+    }
+    // A reader that proposes a procedure from either session, and drafts a
+    // skill for the failure they share.
+    let reader = home.join("dream-2.json");
+    std::fs::write(
+        &reader,
+        json!([
+            {"when": "there was no such note to forget", "say": json!({"notes": [
+                {"kind": "procedure", "subject": "forgetting", "relation": "starts by",
+                 "value": "searching for the note before forgetting it",
+                 "quote": "There was no such note to forget"}
+            ]}).to_string()},
+            {"when": "the same failure came up in several", "say": json!({
+                "name": "forget-carefully",
+                "description": "Use before forgetting a note: find it first.",
+                "instructions": "1. Search your memory for the note (memory_search).\n2. Forget it by the id the search gives."
+            }).to_string()}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let reader = format!("script:{}", reader.display());
+    // The agent the held-out tasks are run with: it answers one way with
+    // the procedure in mind, another without.
+    let worker = home.join("held-out.json");
+    std::fs::write(
+        &worker,
+        json!([
+            {"when": "searching for the note before forgetting it", "say": "I search for it first."},
+            {"say": "Done."}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let worker = format!("script:{}", worker.display());
+    let set = |says: &str| {
+        json!({"name": "held-out", "cases": [{
+            "id": "forget-a-note",
+            "task": "Forget the note about Hooli.",
+            "checks": [{"says": says}]
+        }]})
+        .to_string()
+        .into_bytes()
+    };
+    // Held-out tasks it would do worse on: nothing is recorded, and the
+    // sessions are left to dream over.
+    let worse = sion_cli::consolidate::dream(
+        &mut session,
+        ledger.as_ref(),
+        "agent-8",
+        &log,
+        &reader,
+        &sion_cli::consolidate::DreamOptions {
+            eval: Some(set("Done")),
+            eval_model: Some(worker.clone()),
+            eval_runs: 2,
+            into: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(worse["recorded"], false, "{worse}");
+    assert!(
+        worse["why"]
+            .as_str()
+            .unwrap()
+            .contains("passed fewer times: forget-a-note"),
+        "{worse}"
+    );
+    assert_eq!(worse["test"][0]["passed_without"], 2, "{worse}");
+    assert_eq!(worse["test"][0]["passed_with"], 0, "{worse}");
+    // A case the dream has read is not held out.
+    let seen = json!({"name": "seen", "cases": [{
+        "id": "globex", "task": "Forget the note about Globex.", "checks": ["done"]
+    }]})
+    .to_string()
+    .into_bytes();
+    let refused = sion_cli::consolidate::dream(
+        &mut session,
+        ledger.as_ref(),
+        "agent-8",
+        &log,
+        &reader,
+        &sion_cli::consolidate::DreamOptions {
+            eval: Some(seen),
+            eval_model: Some(worker.clone()),
+            eval_runs: 1,
+            into: None,
+        },
+    );
+    assert!(
+        refused.is_err_and(|e| e.to_string().contains("is not held out")),
+        "a case the dream read was taken as held out"
+    );
+    // Held-out tasks it does no worse on, and a curated log that only the
+    // dream writes: the note is recorded there, with the confidence its
+    // provenance gives, and the shared failure becomes a skill draft.
+    session
+        .fund("curator", AssetId::usd(), Amount::units(1))
+        .unwrap();
+    let (_, curated) = sion_cli::memory::open(&mut session, "curator", None).unwrap();
+    let curated = curated.expect("a curated log was opened");
+    let dreamt = sion_cli::consolidate::dream(
+        &mut session,
+        ledger.as_ref(),
+        "agent-8",
+        &log,
+        &reader,
+        &sion_cli::consolidate::DreamOptions {
+            eval: Some(set("search")),
+            eval_model: Some(worker.clone()),
+            eval_runs: 2,
+            into: Some((curated, "curator".into())),
+        },
+    )
+    .unwrap();
+    let kept = dreamt["kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 1, "{dreamt}");
+    assert_eq!(
+        kept[0]["note"],
+        "forgetting starts by: searching for the note before forgetting it"
+    );
+    assert_eq!(kept[0]["confidence_permille"], 800, "{dreamt}");
+    assert_eq!(dreamt["test"][0]["passed_with"], 2, "{dreamt}");
+    assert_eq!(
+        sion_cli::memory::committed(ledger.as_ref(), &curated)
+            .unwrap()
+            .writer,
+        session.id("curator")
+    );
+    let draft = &dreamt["skill_drafts"][0];
+    assert_eq!(draft["skill"], "forget-carefully", "{dreamt}");
+    assert_eq!(draft["sessions"].as_array().unwrap().len(), 2, "{dreamt}");
+    let drafted = std::path::PathBuf::from(draft["draft"].as_str().unwrap());
+    assert!(drafted.starts_with(sion_cli::skill_improve::drafts_dir()));
+    assert!(std::fs::read_to_string(drafted.join("SKILL.md"))
+        .unwrap()
+        .starts_with("---\nname: forget-carefully\n"));
+    // A session that keeps the curated log in mind has its note in its
+    // prompt, under a heading of its own.
+    let quiet = home.join("quiet.json");
+    std::fs::write(&quiet, json!([{"say": "Noted."}]).to_string()).unwrap();
+    let (saved, _) = runtime::start(
+        ledger.clone(),
+        "agent-8",
+        agent,
+        "Anything to keep in mind?",
+        vec![format!("script:{}", quiet.display())],
+        Policy {
+            autonomy: Autonomy::L3,
+            ..Policy::default()
+        },
+        Equipment {
+            memory: Some(log),
+            shared_memory: vec![curated],
+            ..Equipment::default()
+        },
+    )
+    .unwrap();
+    let shared_at = saved
+        .prompt
+        .find(sion_cli::agent_memory::SHARED_HEADER)
+        .unwrap_or_else(|| panic!("no curated log in the prompt: {}", saved.prompt));
+    assert!(
+        saved.prompt[shared_at..].contains("- (procedure) forgetting starts by"),
+        "{}",
+        saved.prompt
+    );
+    assert!(
+        saved.prompt[shared_at..].contains("searching for the note before forgetting it"),
+        "{}",
+        saved.prompt
+    );
 
     // A long task done without writing a skill: the agent is asked whether
     // to write down how it did it, with only its skill tools, and does.

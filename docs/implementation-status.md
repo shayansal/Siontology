@@ -302,7 +302,11 @@ BM25), each hit checked against the trajectory digest its episode
 committed to the ledger; `sion memory consolidate` turns episodes into
 derived notes under gates, and `sion memory dream` reads the sessions
 themselves, a reader each, keeping a note only if its session says the
-words it quotes,
+words it quotes, tested first on held-out tasks with the notes in mind
+and without (`--eval`), into the agent's log or a curated log that only
+dreams write (`--into`, read by sessions given `--shared-memory`), with
+recurring failures turned into skill drafts and each note's confidence
+from its provenance,
 superseding and never deleting; what a tainted session records, its
 episode and the notes consolidated from it are marked as prompt-injection
 risks and kept out of prompts; `sion memory archive` and `restore` keep a
@@ -996,6 +1000,8 @@ the architecture's own:
 | `agent:comparison` | A comparison (`sion agent graph eval`) measures a profile's models on the set's cases with their stand-in tools, not on its real tools, and its figures are what those runs did: its intervals treat every run as independent, though repeats of a case are not, so they are narrower than they would be over as many different cases. A template that beat both baselines on one set is offered by the router for any of the profile's tasks, as the model judges them, until a later comparison on that set says otherwise. |
 | `agent:judge` | A judge (`sion agent judge`, `--judge`) is a model's judgment of each step, not a check: it can be wrong, and what the steps quote can steer it, though it is told that they are data. Its calibration is its agreement with four labelled steps it was not shown, which says little about steps unlike them. |
 | `agent:dream-quote` | A note a dream keeps rests on the words of its session it quotes: that they are in the session's transcript, as they are written there, shows that they were said in it (by the person, a tool or the agent itself), not that the note is true, nor that it says what they meant. |
+| `agent:dream-test` | A dream's test runs each held-out case with the core memory as it is and with the dream's notes in mind, every note as if kept in view, and records the notes only if no case passes fewer times with them: it tests what its cases check and no more, and a model that differs from the agent's (`--eval-model`) tests that model. |
+| `agent:curated-log` | A curated log is written only with its curator's key, so whoever holds that key decides what it says; the agents that keep it in mind (`--shared-memory`) see its notes as its local store on their machine shows them, and recall searches only their own logs. |
 | `agent:declared-hosts` | The egress proxy holds a skill's scripts to the hosts their skill declares by the name a script asks for, at addresses that are public where they resolve on the machine. A declared host that forwards what it is sent, serves what others put there, or shares a front (a CDN) whose other sites a script can ask for inside the encrypted tunnel takes a script further. Behind an upstream proxy, a name the machine cannot resolve goes to that proxy, and its network decides where the name leads. With Docker, declared hosts are not filtered: the operator's network decides. |
 | `agent:secret-store` | Skills' secrets are kept encrypted under a key in a file beside them, readable only by the operator's user: whoever can read that file can read them. A script that receives a secret can send it wherever its skill may connect, and can change it so that it is not cut out of what the model sees: the runtime removes the value as it is, not every encoding of it. |
 | `agent:mcp-remote` | An MCP server over HTTP runs elsewhere, under whoever runs it: it sees the arguments of every call made to it and answers what it likes. Over HTTPS its certificate shows only that it holds the name in its URL; plain HTTP, which the client allows to any address the operator gives, is as private as the networks it crosses. A header whose value names an environment variable (`${VAR}`) sends that value with every request. |

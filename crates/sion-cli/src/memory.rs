@@ -150,6 +150,25 @@ pub enum MemoryCommand {
         /// gemini:<model> or script:<file>.
         #[arg(long)]
         model: String,
+        /// Held-out tasks (a set of tasks, as `sion agent graph eval`
+        /// takes): each case is run with the core memory as it is and as it
+        /// would be with the dream's notes in mind, and the notes are
+        /// recorded only if no case passes fewer times with them.
+        #[arg(long, value_name = "FILE")]
+        eval: Option<PathBuf>,
+        /// The model those runs work with (default: the reader).
+        #[arg(long, value_name = "MODEL")]
+        eval_model: Option<String>,
+        /// How many times each case runs each way.
+        #[arg(long, value_name = "N", default_value_t = 3)]
+        eval_runs: u32,
+        /// A curated log to record the notes in instead of the agent's own
+        /// (its id, or a unique prefix of it): dreams are its only writer.
+        #[arg(long, value_name = "LOG", requires = "curator")]
+        into: Option<String>,
+        /// The wallet that writes the curated log.
+        #[arg(long, value_name = "WALLET", requires = "into")]
+        curator: Option<String>,
     },
     /// Archive a log for safekeeping: every atom the ledger holds,
     /// encrypted for the writer, named on the ledger as the log's manifest
@@ -318,9 +337,33 @@ pub fn run(
             );
             Ok(())
         }
-        MemoryCommand::Dream { wallet, log, model } => {
+        MemoryCommand::Dream {
+            wallet,
+            log,
+            model,
+            eval,
+            eval_model,
+            eval_runs,
+            into,
+            curator,
+        } => {
             let id = find_log(ledger, &log)?;
-            let answer = crate::consolidate::dream(session, ledger, &wallet, &id, &model)?;
+            let options = crate::consolidate::DreamOptions {
+                eval: eval
+                    .map(|path| {
+                        std::fs::read(&path)
+                            .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))
+                    })
+                    .transpose()?,
+                eval_model,
+                eval_runs,
+                into: match (into, curator) {
+                    (Some(into), Some(curator)) => Some((find_log(ledger, &into)?, curator)),
+                    _ => None,
+                },
+            };
+            let answer =
+                crate::consolidate::dream(session, ledger, &wallet, &id, &model, &options)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&answer).unwrap_or_default()

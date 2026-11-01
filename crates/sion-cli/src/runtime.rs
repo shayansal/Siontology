@@ -589,6 +589,10 @@ pub struct Saved {
     /// The agent's memory log, if it has one.
     #[serde(default)]
     pub memory: Option<ObjectId>,
+    /// Curated logs the agent keeps in mind besides its own, read-only:
+    /// their core memory follows its own in the system prompt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_memory: Vec<ObjectId>,
     /// The directory of the agent's skills.
     #[serde(default)]
     pub skills: Option<PathBuf>,
@@ -1455,6 +1459,12 @@ impl Saved {
                 known.push(core.trim_end().to_string());
             }
         }
+        for log in &self.shared_memory {
+            let shared = crate::agent_memory::shared_core(log);
+            if !shared.is_empty() {
+                known.push(shared.trim_end().to_string());
+            }
+        }
         if let Some(root) = &self.skills {
             let catalog = sion_agent::skills::catalog(&sion_agent::skills::list(root));
             if !catalog.is_empty() {
@@ -2073,6 +2083,8 @@ pub struct Equipment {
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
     pub verify_files: Option<PathBuf>,
+    /// Curated logs it keeps in mind ([`Saved::shared_memory`]).
+    pub shared_memory: Vec<ObjectId>,
 }
 
 /// The default directory of an agent's skills.
@@ -2139,6 +2151,7 @@ pub fn start_watched(
         budget_tokens,
         verify,
         verify_files,
+        shared_memory,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -2184,6 +2197,9 @@ pub fn start_watched(
             agent.short()
         )));
     }
+    for log in &shared_memory {
+        crate::memory::committed(ledger.as_ref(), log)?;
+    }
     if let Some(log) = &memory {
         let state = crate::memory::committed(ledger.as_ref(), log)?;
         if state.writer != charter.agent {
@@ -2212,6 +2228,7 @@ pub fn start_watched(
         workspace,
         web,
         memory,
+        shared_memory,
         skills: Some(skills),
         prompt: String::new(),
         verify,

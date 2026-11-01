@@ -84,6 +84,9 @@ pub struct Profile {
     /// quarantine ([`sion_agent::quarantine`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quarantine: bool,
+    /// Curated logs its sessions keep in mind, read-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_memory: Vec<ObjectId>,
 }
 
 fn yes() -> bool {
@@ -128,6 +131,7 @@ impl Profile {
             // a profile's sessions.
             verify: None,
             verify_files: None,
+            shared_memory: self.shared_memory.clone(),
         }
     }
 
@@ -341,6 +345,10 @@ pub enum ProfileCommand {
         /// to a schema, and the session is not tainted by values.
         #[arg(long)]
         quarantine: bool,
+        /// A curated log its sessions keep in mind, read-only (its id, or a
+        /// unique prefix of it). Repeat for more.
+        #[arg(long = "shared-memory", value_name = "LOG")]
+        shared_memory: Vec<String>,
     },
     /// The profiles on this machine.
     List,
@@ -417,8 +425,13 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             home_assistant,
             budget_tokens,
             quarantine,
+            shared_memory,
         } => {
             let shell = shell.sandbox()?;
+            let shared_memory = shared_memory
+                .iter()
+                .map(|log| crate::memory::find_log(ledger, log))
+                .collect::<Result<Vec<_>, _>>()?;
             let screen = screen.screen()?;
             screen.check(workspace.as_deref())?;
             for server in &mcp {
@@ -476,6 +489,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 home_assistant,
                 budget_tokens,
                 quarantine,
+                shared_memory,
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()

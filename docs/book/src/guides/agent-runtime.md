@@ -427,13 +427,13 @@ and called, and what its tools answered. Two sessions finished, each
 recorded as an episode; a third is asked about Acme:
 
 ```text
-$ sion agent run agent-9 6a9bfd01…c96f --task "Who gets Acme's invoices?" --model script:third.json --memory d5809f5a…e155 --autonomy L3
-session c44d10d5a8d5f733 for agent 6a9bfd01
+$ sion agent run agent-9 2d3b5672…c93a --task "Who gets Acme's invoices?" --model script:third.json --memory 6fb40b5b…96de --autonomy L3
+session b747ba719c7561c6 for agent 2d3b5672
   → session_search {"query":"acme invoices"}
-  ← {"found":[{…,"record":"checked",…,"session":"8b511dee66e1ce8b","snippet":"From now on, pay Acme's invoices to acme-ltd, not acme-old.",…},…],…}
+  ← {"found":[{…,"record":"checked",…,"session":"93a2c9ef077e81fd","snippet":"From now on, pay Acme's invoices to acme-ltd, not acme-old.",…}],…}
 agent: acme-ltd: you told me so in an earlier session, and that session is the one its episode on the ledger recorded.
-session c44d10d5a8d5f733: done
-memory committed: Pulse 24: Done: memory log d5809f5a now holds 3 atoms (head 3); fee 0.0011 USD.
+session b747ba719c7561c6: done
+memory committed: Pulse 20: Done: memory log 6fb40b5b now holds 3 atoms (head 3); fee 0.0011 USD.
 ```
 
 Each hit gives the session, its task, the message that matched best and a
@@ -462,7 +462,7 @@ $ sion agent sessions search agent-9 acme invoices
       "record": "checked",
       "record_detail": "its first 2 messages hash to the trajectory digest its episode (atom 0 of the memory log) committed to the ledger",
       "score": 1.11,
-      "session": "8b511dee66e1ce8b",
+      "session": "93a2c9ef077e81fd",
       "snippet": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
       "task": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
       "who": "person"
@@ -473,7 +473,7 @@ $ sion agent sessions search agent-9 acme invoices
       "record": "checked",
       "record_detail": "its first 4 messages hash to the trajectory digest its episode (atom 2 of the memory log) committed to the ledger",
       "score": 1.09,
-      "session": "c44d10d5a8d5f733",
+      "session": "b747ba719c7561c6",
       "snippet": "Who gets Acme's invoices?",
       "task": "Who gets Acme's invoices?",
       "who": "person"
@@ -497,10 +497,21 @@ $ sion agent sessions search agent-9 acme-old
       "record": "changed",
       "record_detail": "changed: the session as stored does not hash to the digest its episode recorded",
       "score": 2.0,
-      "session": "8b511dee66e1ce8b",
+      "session": "93a2c9ef077e81fd",
       "snippet": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
       "task": "From now on, pay Acme's invoices to acme-ltd, not acme-old.",
       "who": "person"
+    },
+    {
+      "matches": 4,
+      "message": 2,
+      "record": "checked",
+      "record_detail": "its first 4 messages hash to the trajectory digest its episode (atom 2 of the memory log) committed to the ledger",
+      "score": 1.36,
+      "session": "b747ba719c7561c6",
+      "snippet": "…the ledger\",\"score\":1.63,\"session\":\"93a2c9ef077e81fd\",\"snippet\":\"From now on, pay Acme's invoices to acme-ltd, not acme-old.\",\"task\":\"From now on, pay Acme's invoices to acme-ltd, not acme-old.\",\"who\":\"person\"}],\"query\":\"acme invoices\",\"sessions_searched\":2}",
+      "task": "Who gets Acme's invoices?",
+      "who": "tools"
     }
   ],
   "query": "acme-old",
@@ -526,16 +537,17 @@ is scripted, and one of its proposals cites an episode that does not
 exist:
 
 ```text
-$ sion memory consolidate agent-9 d5809f5a…e155 --model script:consolidate.json
-agent-9 signs: Commit memory log d5809f5a at 6 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 44.
+$ sion memory consolidate agent-9 6fb40b5b…96de --model script:consolidate.json
+agent-9 signs: Commit memory log 6fb40b5b at 6 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 41.
 {
-  "committed": "Pulse 26: Done: memory log d5809f5a now holds 6 atoms (head 4); fee 0.0011 USD.",
+  "committed": "Pulse 23: Done: memory log 6fb40b5b now holds 6 atoms (head 4); fee 0.0011 USD.",
   "consolidated_through": 2,
   "episodes": 3,
   "episodes_left": 0,
   "kept": [
     {
       "atom": 3,
+      "confidence_permille": 750,
       "from": [
         "atom 0",
         "atom 2"
@@ -549,6 +561,7 @@ agent-9 signs: Commit memory log d5809f5a at 6 atoms, proving it only grew. Fee 
     },
     {
       "atom": 4,
+      "confidence_permille": 700,
       "from": [
         "atom 1"
       ],
@@ -560,7 +573,7 @@ agent-9 signs: Commit memory log d5809f5a at 6 atoms, proving it only grew. Fee 
       "why": "how the weather question went"
     }
   ],
-  "log": "d5809f5a…e155",
+  "log": "6fb40b5b…96de",
   "marker": 5,
   "model": "script:consolidate.json",
   "notes_shown": 0,
@@ -585,16 +598,20 @@ agent-9 signs: Commit memory log d5809f5a at 6 atoms, proving it only grew. Fee 
 
 Each note kept is a derived atom with a `derived_from` link to every
 episode it cites and an extraction trace naming the model and the
-consolidator. A note that replaces an older one comes with a revision
+consolidator, recorded with a confidence that comes from where it came
+from, not from what the model says of it (`confidence_permille`): 700‰
+from a trusted session (300‰ if what it cites read content from outside),
+50‰ more for each further episode it cites, up to three, and never above
+950‰. A note that replaces an older one comes with a revision
 that supersedes it: the older one stays in the log, and recall, search
 and the prompt leave it out. A summary atom records how far the episodes
 were consolidated, so the next run reads only what came after:
 
 ```text
-$ sion memory consolidate agent-9 d5809f5a…e155 --model script:consolidate.json
+$ sion memory consolidate agent-9 6fb40b5b…96de --model script:consolidate.json
 {
   "consolidated": 0,
-  "log": "d5809f5a…e155",
+  "log": "6fb40b5b…96de",
   "note": "nothing to consolidate: no episode after atom 2"
 }
 ```
@@ -624,14 +641,16 @@ the other read a web page; the readers are scripted, each answering for
 its own session:
 
 ```text
-$ sion memory dream agent-7 0b87c5d6 --model script:dream.json
-agent-7 signs: Commit memory log 0b87c5d6 at 5 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 35.
+$ sion memory dream agent-7 ae444881 --model script:dream.json
+agent-7 signs: Commit memory log ae444881 at 5 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 35.
 {
-  "committed": "Pulse 18: Done: memory log 0b87c5d6 now holds 5 atoms (head 3); fee 0.0011 USD.",
+  "committed": "Pulse 17: Done: memory log ae444881 now holds 5 atoms (head 3); fee 0.0011 USD.",
   "dreamt_through": 1,
+  "into": null,
   "kept": [
     {
       "atom": 2,
+      "confidence_permille": 400,
       "from": [
         "atom 1"
       ],
@@ -644,6 +663,7 @@ agent-7 signs: Commit memory log 0b87c5d6 at 5 atoms, proving it only grew. Fee 
     },
     {
       "atom": 3,
+      "confidence_permille": 800,
       "from": [
         "atom 0"
       ],
@@ -655,13 +675,15 @@ agent-7 signs: Commit memory log 0b87c5d6 at 5 atoms, proving it only grew. Fee 
       "why": "the session says: \"From now on, show me bob's invoices before you pay them.\""
     }
   ],
-  "log": "0b87c5d6…3fc2",
+  "log": "ae444881…06fb",
   "marker": 4,
   "model": "script:dream.json",
   "sessions_elsewhere": [],
   "sessions_read": 2,
   "sessions_unread": [],
   "size_on_ledger": 5,
+  "skill_drafts": [],
+  "test": null,
   "tokens": 0,
   "turned_down": [
     {
@@ -694,17 +716,147 @@ session read a page. A summary atom marks how far the dream went
 (`memory dreamt-through`), so the next one reads only what came after:
 
 ```text
-$ sion memory dream agent-7 0b87c5d6 --model script:dream.json
+$ sion memory dream agent-7 ae444881 --model script:dream.json
 {
   "dreamt": 0,
-  "log": "0b87c5d6…3fc2",
+  "log": "ae444881…06fb",
   "note": "nothing to dream over: no episode after atom 1"
 }
 ```
 
 A note kept from a dream shows that its words were said in its session,
 by the person, a tool or the agent itself, not that what it says is true
-(`agent:dream-quote`).
+(`agent:dream-quote`). Its confidence is a consolidated note's, 100‰ more
+for the quote its session shows.
+
+#### Tested before it is kept
+
+`--eval <file>` runs a set of held-out tasks (as
+[`sion agent graph eval`](agent-graphs.md#measured-against-one-agent)
+takes them) before anything is recorded: each case with the core memory
+as it is, and as it would be with the dream's notes in mind, `--eval-runs`
+times each (with `--eval-model`, or the reader). The notes are recorded
+only if no case passes fewer times with them; a case whose task is in a
+session the dream read is not held out, and is refused. Here two
+sessions failed the same way, and the dream proposes a procedure. The
+held-out case is worked on by a scripted model that answers differently
+when the procedure is in its prompt (`when` matches it), and with the
+procedure the case's check no longer passes:
+
+```text
+$ sion memory dream agent-7 adaaa663 --model script:dream.json --eval done.json --eval-model script:worker.json --eval-runs 2
+{
+  "log": "adaaa663…1ed8",
+  "model": "script:dream.json",
+  "proposed": [
+    "forgetting starts by: searching for the note before forgetting it"
+  ],
+  "recorded": false,
+  "test": [
+    {
+      "case": "forget-a-note",
+      "passed_with": 0,
+      "passed_without": 2,
+      "runs": 2
+    }
+  ],
+  "tokens": 0,
+  "turned_down": [],
+  "why": "with the dream's notes in mind, 1 held-out case(s) passed fewer times: forget-a-note; nothing was recorded, and the sessions are left to dream over again"
+}
+$ sion memory open curator
+curator signs: Open a memory log that only the sender can append to. Fee 0.0012 USD; valid until Pulse 37.
+Pulse 19: Done: memory log 6f88e2cb opened; fee 0.0012 USD.
+log 6f88e2cb2ce22e66e6a8340f798bf0194d2d2b5847f793ff254c83d0a81b4361
+```
+
+The sessions are left to dream over again. The test treats every note as
+kept in mind, facts too, which is the most a note could steer the agent,
+and it tests only what its cases check (`agent:dream-test`).
+
+#### A curated log that only dreams write
+
+`--into <log> --curator <wallet>` records the notes in another log, opened
+by a wallet of its own (`sion memory open curator`) that nothing but
+dreams write with: the ledger takes a log's commits only from its writer,
+so whoever holds the curator's key decides what the shared log says, and
+the agents that read it cannot write it. A failure seen in two or more of
+the sessions read (trusted ones) becomes a skill draft under
+`$SION_HOME/skills/drafts`, which nothing installs: evaluate it with
+`sion skill eval` and install it yourself if it helps. Here the held-out
+case checks that the answer mentions searching, so the same scripted
+worker passes it only with the procedure in mind:
+
+```text
+$ sion memory dream agent-7 adaaa663 --model script:dream.json --eval search.json --eval-model script:worker.json --eval-runs 2 --into 6f88e2cb --curator curator
+curator signs: Commit memory log 6f88e2cb at 2 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 39.
+{
+  "committed": "Pulse 21: Done: memory log 6f88e2cb now holds 2 atoms (head 1); fee 0.0011 USD.",
+  "dreamt_through": 1,
+  "into": "6f88e2cb…4361",
+  "kept": [
+    {
+      "atom": 0,
+      "confidence_permille": 800,
+      "from": [
+        "atom 1"
+      ],
+      "kind": "procedure",
+      "note": "forgetting starts by: searching for the note before forgetting it",
+      "replaces": [],
+      "revision": null,
+      "untrusted": false,
+      "why": "the session says: \"There was no such note to forget\""
+    }
+  ],
+  "log": "adaaa663…1ed8",
+  "marker": 1,
+  "model": "script:dream.json",
+  "sessions_elsewhere": [],
+  "sessions_read": 2,
+  "sessions_unread": [],
+  "size_on_ledger": 2,
+  "skill_drafts": [
+    {
+      "draft": "$SION_HOME/skills/drafts/forget-carefully-6c1f5abb",
+      "failure": "memory_forget failed: no atom ffffffffff in your memory",
+      "sessions": [
+        "16f92323c9668a09",
+        "a8f58ba9de468ead"
+      ],
+      "skill": "forget-carefully"
+    }
+  ],
+  "test": [
+    {
+      "case": "forget-a-note",
+      "passed_with": 2,
+      "passed_without": 0,
+      "runs": 2
+    }
+  ],
+  "tokens": 0,
+  "turned_down": []
+}
+```
+
+A session given `--shared-memory <log>` (or a profile with it) keeps the
+curated log in mind, read-only, after its own core memory, under a
+heading of its own ("What your team keeps in mind, from a curated log
+that only its dreams write (read-only):"). The scripted agent here
+answers so only when its prompt holds that heading:
+
+```text
+$ sion agent run agent-7 0f236ced…a646 --task 'How do you go about forgetting a note?' --model script:mindful.json --memory adaaa663…1ed8 --shared-memory 6f88e2cb --autonomy L3
+session 9bc42b44cd6ad453 for agent 0f236ced
+agent: Before I forget a note, I search for it first: the team's memory says so.
+session 9bc42b44cd6ad453: done
+memory committed: Pulse 24: Done: memory log adaaa663 now holds 3 atoms (head 3); fee 0.0011 USD.
+```
+
+The agent keeps the curated log's notes in mind as its core memory shows
+them on this machine; `memory_recall` searches only its own log
+(`agent:curated-log`).
 
 ### Content from outside
 
