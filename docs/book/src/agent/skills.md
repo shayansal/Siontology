@@ -9,8 +9,8 @@ auditor's bond. Installing a skill means
 agent's budget at risk. A skill goes in only if the backing behind it
 covers what the agent could lose. If it turns out to be malicious, the
 bonds pay the agents that relied on it. How a skill is measured, and how
-a better version is verified by others before it is released, is in
-[Skills that get better](skill-improvement.md).
+a better version can be released on the strength of others' checks, is
+in [Skills that get better](skill-improvement.md).
 
 Every output below is from a real run on a local devnet (long identifiers
 and paths shortened with `…`). The agent's model is a scripted one, as in

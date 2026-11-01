@@ -12,6 +12,13 @@ Commit messages before the rename use the working name, Fold.
 
 ### The website and the book
 
+- **The website shows the agent at work**: its first figure is a chat in
+  which the agent asks before it pays and the ledger refuses a payment a
+  page slipped in, whatever you approved; a figure in six parts follows,
+  one button for each (its apps, its sandbox, its memory, its schedule,
+  its helpers, its skills), every part a run of one mechanism with the
+  numbers of a recording in the book. The messaging services and models
+  it works with are listed by name.
 - **The website leads with two doors**: run your own agent, or build on
   the ledger. A page of its own for the agent (`site/agents.html`): where
   it talks, what it asks, its tools, memory, skills, models, teams, the

@@ -244,7 +244,7 @@
       /* a stranger on WhatsApp */
       var stranger = U.win(t, 19.2, 21.8, 0.2);
       if (stranger > 0) {
-        U.text(ctx, 'pairing code 7K2Q', N ? 344 : wa.x + wa.w + 12, N ? L.more.y : wa.y + wa.h / 2 + 4,
+        U.text(ctx, 'pairing code QBRS-9XRF', N ? 344 : wa.x + wa.w + 12, N ? L.more.y : wa.y + wa.h / 2 + 4,
           { size: 11, weight: 600, color: C.ink2, align: N ? 'right' : 'left', alpha: stranger });
       }
 

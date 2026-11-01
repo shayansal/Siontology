@@ -16,6 +16,11 @@
  *     wide: { w, h }, narrow: { w, h }   logical drawing spaces,
  *     draw(ctx, t, view) }                view = { narrow, W, H, u }
  * A scene with free: true draws in CSS pixels instead: view = { w, h }.
+ *
+ * A scene may have chapters: [{ at: start in seconds, still: seconds into
+ * the chapter for its static frame }]. Buttons with data-chapter="i" in its
+ * figure go to chapter i, and are pressed while it plays; elements with
+ * data-chapter-panel, in the same order, are shown only while theirs plays.
  */
 (function () {
   'use strict';
@@ -288,7 +293,30 @@
     this.h = 0;
     var figure = canvas.closest('figure');
     this.button = figure ? figure.querySelector('[data-scene-toggle]') : null;
+    this.chapterButtons = figure ? Array.prototype.slice.call(figure.querySelectorAll('[data-chapter]')) : [];
+    this.chapterPanels = figure ? Array.prototype.slice.call(figure.querySelectorAll('[data-chapter-panel]')) : [];
+    this.chapter = -1;
   }
+
+  /* Show which chapter is playing: its button pressed, its caption shown. */
+  Runner.prototype.syncChapter = function (t) {
+    var ch = this.def.chapters;
+    if (!ch || (!this.chapterButtons.length && !this.chapterPanels.length)) return;
+    var i = 0;
+    while (i + 1 < ch.length && t >= ch[i + 1].at) i++;
+    if (i === this.chapter) return;
+    this.chapter = i;
+    this.chapterButtons.forEach(function (b, k) { b.setAttribute('aria-pressed', k === i ? 'true' : 'false'); });
+    this.chapterPanels.forEach(function (p, k) { p.hidden = k !== i; });
+  };
+
+  /* Go to chapter i: from its start while playing, to its still while paused. */
+  Runner.prototype.goTo = function (i) {
+    var c = this.def.chapters[i];
+    this.t = c.at + (this.paused ? (c.still || 0) : 0);
+    this.dirty = true;
+    kick();
+  };
 
   Runner.prototype.resize = function () {
     var r = this.canvas.getBoundingClientRect();
@@ -320,6 +348,7 @@
     ctx.clearRect(0, 0, w, h);
     var t = this.t;
     if (def.duration) t = t % def.duration;
+    this.syncChapter(t);
     if (def.free) {
       def.draw(ctx, t, { w: w, h: h, raw: this.t });
       return;
@@ -390,6 +419,9 @@
           r.setPaused(!r.paused);
         });
       }
+      r.chapterButtons.forEach(function (b, k) {
+        b.addEventListener('click', function () { r.goTo(k); });
+      });
       r.resize();
     });
 

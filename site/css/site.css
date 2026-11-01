@@ -580,20 +580,27 @@ main {
   margin-top: var(--space-8);
 }
 
-.hero-intro {
+/* The hero: the headline, then what it means beside a run of it. */
+.hero-stage {
   display: grid;
-  gap: var(--space-5);
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
   margin-top: var(--space-6);
-  align-items: end;
+  align-items: start;
+}
+
+.hero-stage .lede {
+  margin: 0;
+}
+
+.hero-stage .actions {
+  margin-top: var(--space-5);
 }
 
 @media (min-width: 64rem) {
-  .hero-intro {
-    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  }
-
-  .hero-intro .actions {
-    justify-content: flex-end;
+  .hero-stage {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: var(--space-8);
   }
 }
 
@@ -988,6 +995,143 @@ main {
   .plate canvas {
     aspect-ratio: 3 / 5;
   }
+}
+
+.plate.plate--hero canvas {
+  aspect-ratio: 8 / 5;
+}
+
+@media (max-width: 39.99rem) {
+  .plate.plate--hero canvas {
+    aspect-ratio: 3 / 5;
+  }
+}
+
+/* A figure in chapters: a button goes to each, and the caption follows the
+   one that plays (js/scenes/core.js). */
+.reel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: var(--rule-hair) solid var(--color-rule);
+}
+
+.reel-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.reel-chapters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: var(--rule-hair) solid var(--color-rule);
+}
+
+.reel-chapter {
+  appearance: none;
+  margin: 0;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: none;
+  color: var(--color-ink-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-label);
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  min-height: 44px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard);
+}
+
+.reel-chapter:hover {
+  color: var(--color-ink);
+}
+
+.reel-chapter[aria-pressed="true"] {
+  color: var(--color-ink);
+  border-left-color: var(--color-ink);
+}
+
+.reel-chapter:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: -2px;
+}
+
+.reel-panel {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.reel-panel[hidden] {
+  display: none;
+}
+
+.reel-panel-name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-strong);
+}
+
+@media (min-width: 64rem) {
+  .reel-body {
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+
+  .reel-chapters {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    padding-block: var(--space-3);
+    border-bottom: 0;
+    border-right: var(--rule-hair) solid var(--color-rule);
+  }
+}
+
+/* Without JavaScript there is nothing to step through: every caption shows. */
+html:not(.js) .reel-chapters {
+  display: none;
+}
+
+html:not(.js) .reel-panel[hidden] {
+  display: grid;
+}
+
+/* Where it answers, and what it thinks with: by name. The services' and the
+   model makers' logos are their own marks, so none are used. */
+.names {
+  display: grid;
+  gap: var(--space-6);
+  margin-top: var(--space-8);
+}
+
+.names-group {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.names-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-label);
+  color: var(--color-ink-3);
+}
+
+.names-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+
+.names-list li,
+.names-list li + li {
+  margin: 0;
+  padding: var(--space-3) var(--space-3) var(--space-3) 0;
+  border-bottom: var(--rule-hair) solid var(--color-rule);
+  font-size: var(--text-md);
+  font-stretch: 106%;
 }
 
 .plate figcaption {

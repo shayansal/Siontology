@@ -1,8 +1,17 @@
-<!--{"file": "index.html", "title": "Siontology: trust you can check, for people and their agents", "description": "Siontology is open source: an AI agent you run on your own computer, its limits in a ledger, and a ledger where payments, AI output and claims carry a proof or priced evidence that anyone can check.", "nav": "", "scenes": ["agent", "fold-hero", "streams", "assurance"]}-->
+<!--{"file": "index.html", "title": "Siontology: trust you can check, for people and their agents", "description": "Siontology is open source: an AI agent you run on your own computer, its limits in a ledger, and a ledger where payments, AI output and claims carry a proof or priced evidence that anyone can check.", "nav": "", "scenes": ["promise", "capabilities", "fold-hero", "streams", "assurance"]}-->
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
     <h1 class="display" id="hero-title"><span class="line">Trust you can check,</span> <span class="line">for people and their agents.</span></h1>
-    <p class="lede hero-lede">Siontology is open source: an AI agent you run on your own computer, and the ledger that holds it, and every other agent, to account. Payments, memory and claims carry a proof or priced evidence, so anyone can check them and see what faking them would cost.</p>
+    <div class="hero-stage">
+      <div>
+        <p class="lede">Siontology is open source: an AI agent that runs on your own computer and does what you ask, and a ledger that holds it, and every other agent, to the limits it was given. Payments, memory and claims carry a proof or priced evidence, so anyone can check them and see what faking them would cost.</p>
+        <div class="actions">
+          <a class="button" href="#agent">Run your own agent</a>
+          <a class="button button--quiet" href="#ledger">Build on the ledger</a>
+        </div>
+      </div>
+      {{fig:promise}}
+    </div>
     <div class="doors">
       <article class="door" aria-labelledby="door-agent-title">
         <p class="door-for">For you</p>
@@ -42,16 +51,18 @@
       <h2 class="statement" id="agent-title">An agent of your own. Its limits in a ledger.</h2>
       <p>It runs on your computer, beside a chain of your own. It answers where you already talk, works in a folder you give it, browses and remembers. The ledger refuses whatever its charter forbids, even from an agent that was prompt-injected, and keeps the head of its memory log, so its past cannot be rewritten unnoticed.</p>
     </div>
-    {{fig:agent}}
+    {{reel:capabilities}}
+    <div class="names">
+      <div class="names-group">
+        <p class="names-title">It answers on 28 messaging services, and in your terminal</p>
+        <ul class="names-list"><li>Telegram</li><li>WhatsApp</li><li>Signal</li><li>iMessage</li><li>WeChat</li><li>LINE</li><li>Zalo</li><li>QQ</li><li>Matrix</li><li>SimpleX</li><li>Nostr</li><li>Slack</li><li>Microsoft Teams</li><li>Google Chat</li><li>Mattermost</li><li>Discord</li><li>DingTalk</li><li>Feishu and Lark</li><li>WeCom</li><li>Nextcloud Talk</li><li>Synology Chat</li><li>Email</li><li>SMS</li><li>Phone calls</li><li>IRC</li><li>Twitch</li><li>X direct messages</li><li>ntfy</li></ul>
+      </div>
+      <div class="names-group">
+        <p class="names-title">It thinks with the model you choose, its key kept sealed on your computer</p>
+        <ul class="names-list"><li>Claude</li><li>OpenAI</li><li>Gemini</li><li>Your ChatGPT plan</li><li>Ollama</li><li>LM Studio</li><li>llama.cpp</li></ul>
+      </div>
+    </div>
     <div class="cells cells--3">
-      <article class="uc">
-        {{icon:talk}}
-        <p class="uc-for">Where you talk</p>
-        <h3>It answers where you already are</h3>
-        <p>In the terminal, and on 28 messaging services: Telegram, WhatsApp, Signal, Slack, Discord, iMessage, Microsoft Teams, WeChat, email, SMS and more. It hears voice notes, and answers aloud where the service takes a bot&rsquo;s audio. A stranger gets a pairing code, and no answer until you approve them.</p>
-        <p class="uc-foot"><span class="status status--built">Built; tested against stand-ins</span><code>sion agent bridge --help</code></p>
-        <a class="cell-link" href="agents.html#talk">Every channel</a>
-      </article>
       <article class="uc">
         {{icon:ask}}
         <p class="uc-for">Approvals</p>
@@ -67,46 +78,6 @@
         <p>Its charter fixes its budget, its largest payment and whom it may pay. The autonomy level decides what it tries; the ledger, what it can do. One revocation stops it and every subagent it launched.</p>
         <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo agents --local</code></p>
         <a class="cell-link" href="use-cases.html#agents">Walk through it</a>
-      </article>
-      <article class="uc">
-        {{icon:sandbox}}
-        <p class="uc-for">Tools</p>
-        <h3>Hands, in a sandbox</h3>
-        <p>A shell that can write only its workspace, in bubblewrap or Docker; a browser it reads as an accessibility tree; a desktop of its own; and the reviewed tools of MCP servers, over standard input or HTTP with OAuth.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>--shell --browser</code></p>
-        <a class="cell-link" href="agents.html#tools">Its tools</a>
-      </article>
-      <article class="uc">
-        {{icon:memory}}
-        <p class="uc-for">Memory</p>
-        <h3>Memory it cannot rewrite</h3>
-        <p>It keeps what it learns in a log only it can append to, and the ledger keeps the log&rsquo;s head. It searches its past sessions and dreams over them, keeping a note only if its session says what the note quotes and, with <code>--eval</code>, no task held out does worse with it.</p>
-        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion memory dream</code></p>
-        <a class="cell-link" href="agents.html#memory">How it remembers</a>
-      </article>
-      <article class="uc">
-        {{icon:skills}}
-        <p class="uc-for">Skills</p>
-        <h3>Skills with a supply chain</h3>
-        <p>Skills come with bonds and audits, and declare what they may do: the calls they pre-approve, the hosts their scripts reach, the secrets they get. A version offered as better can rest on checks by others, fixed before it existed.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>sion skill install</code></p>
-        <a class="cell-link" href="agents.html#skills">Skills</a>
-      </article>
-      <article class="uc">
-        {{icon:model}}
-        <p class="uc-for">Models</p>
-        <h3>The model you choose</h3>
-        <p>Claude, OpenAI or Gemini with a key, your ChatGPT plan, or a model server on your own machine, such as Ollama. Keys are kept sealed on your computer; your conversations go only to the models you chose, and voice notes to the speech service you name.</p>
-        <p class="uc-foot"><span class="status status--built">Built; providers tested against stand-ins</span><code>sion setup</code></p>
-        <a class="cell-link" href="agents.html#models">Models</a>
-      </article>
-      <article class="uc">
-        {{icon:team}}
-        <p class="uc-for">Teams</p>
-        <h3>Help it can hire</h3>
-        <p>It hands work to subagents with identities and budgets of their own, hires other agents under Task Charters that pay only for work that passes, and, asked to choose, runs a small graph of agents only where one has measured better than a single agent.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>sion agent graph</code></p>
-        <a class="cell-link" href="agents.html#teams">Teams and graphs</a>
       </article>
       <article class="uc">
         {{icon:attacks}}

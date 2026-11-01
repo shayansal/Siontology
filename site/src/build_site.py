@@ -33,7 +33,7 @@ PAGES = os.path.join(SRC, "pages")
 SITE = os.path.dirname(SRC)
 sys.path.insert(0, SRC)
 sys.dont_write_bytecode = True  # keep site/ free of __pycache__
-from figures import FIGURES, CODE, ICONS  # noqa: E402
+from figures import FIGURES, CODE, ICONS, REELS  # noqa: E402
 
 ORIGIN = "https://siontology.org/"
 REPO = "https://github.com/ColdAI-org/siontology"
@@ -151,7 +151,8 @@ def figure(fid, number=None):
         cls, label = f["status"]
         meta.append(f'<div><dt>Status</dt><dd><span class="status status--{cls}">{label}</span></dd></div>')
     meta_html = f'<dl class="plate-meta">{"".join(meta)}</dl>' if meta else ""
-    return f'''<figure class="plate" aria-labelledby="{uid}-title">
+    cls = "plate" + (" " + f["class"] if f.get("class") else "")
+    return f'''<figure class="{cls}" aria-labelledby="{uid}-title">
   <canvas data-scene="{f["scene"]}" role="img" aria-label="{html.escape(f["label"])}" aria-describedby="{uid}-desc"></canvas>
   <figcaption>
     <div class="plate-title"><p class="plate-name" id="{uid}-title">{num}{f["title"]}</p>{toggle()}</div>
@@ -163,6 +164,42 @@ def figure(fid, number=None):
 
 WRAP = {"verify-output", "demo-agents", "demo-x402", "demo-receipts", "demo-invoice",
         "demo-market", "demo-streams", "demo-tasks", "demo-robots", "demo-storage"}  # terminal output that reads better wrapped than scrolled
+
+
+def plate_meta(f):
+    meta = []
+    if f.get("run"):
+        meta.append(f'<div><dt>Run it</dt><dd><code>{html.escape(f["run"])}</code></dd></div>')
+    if f.get("spec"):
+        label, href = f["spec"]
+        meta.append(f'<div><dt>Source</dt><dd><a href="{href}">{label}</a></dd></div>')
+    if f.get("status"):
+        cls, label = f["status"]
+        meta.append(f'<div><dt>Status</dt><dd><span class="status status--{cls}">{label}</span></dd></div>')
+    return f'<dl class="plate-meta">{"".join(meta)}</dl>' if meta else ""
+
+
+def reel(rid):
+    """A figure in chapters: buttons that go to each, one canvas, and a caption
+    per chapter, shown while it plays (site/js/scenes/core.js)."""
+    r = REELS[rid]
+    uid = f"reel-{rid}"
+    buttons = "".join(
+        f'<button class="reel-chapter" type="button" data-chapter="{i}" aria-pressed="{"true" if i == 0 else "false"}" '
+        f'aria-controls="{uid}-{i}">{c["name"]}</button>'
+        for i, c in enumerate(r["chapters"]))
+    panels = "".join(
+        f'<div class="reel-panel" id="{uid}-{i}" data-chapter-panel{"" if i == 0 else " hidden"}>'
+        f'<p class="reel-panel-name">{c["name"]}</p><p class="plate-desc">{c["desc"]}</p>{plate_meta(c)}</div>'
+        for i, c in enumerate(r["chapters"]))
+    return f'''<figure class="plate reel" aria-labelledby="{uid}-title">
+  <div class="reel-head"><p class="plate-name" id="{uid}-title">{r["title"]}</p>{toggle()}</div>
+  <div class="reel-body">
+    <div class="reel-chapters" role="group" aria-label="Parts of the figure">{buttons}</div>
+    <canvas data-scene="{r["scene"]}" role="img" aria-label="{html.escape(r["label"])}" aria-describedby="{uid}-caption"></canvas>
+  </div>
+  <figcaption id="{uid}-caption">{panels}</figcaption>
+</figure>'''
 
 
 def code(cid):
@@ -281,6 +318,7 @@ def icon(iid):
 def expand(body):
     body = re.sub(r"\{\{icon:([a-z0-9-]+)\}\}", lambda m: icon(m.group(1)), body)
     body = re.sub(r"\{\{fig:([a-z0-9-]+)(?::(\d+))?\}\}", lambda m: figure(m.group(1), m.group(2)), body)
+    body = re.sub(r"\{\{reel:([a-z0-9-]+)\}\}", lambda m: reel(m.group(1)), body)
     body = re.sub(r"\{\{code:([a-z0-9-]+)\}\}", lambda m: code(m.group(1)), body)
     body = body.replace("{{REPO}}", REPO).replace("{{DOCS}}", DOCS).replace("{{toggle}}", toggle())
     body = re.sub(r'<table class="table[^"]*">.*?</table>', label_table, body, flags=re.S)

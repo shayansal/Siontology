@@ -29,6 +29,18 @@ FIGURES = {
         "spec": ("Run it on your computer", DOCS + "getting-started/your-computer.html"),
         "status": ("built", "Built; tested with a scripted model and stand-ins"),
     },
+    "promise": {
+        "scene": "promise",
+        "class": "plate--hero",
+        "title": "Its limits hold",
+        "label": "Animation: in a chat, you ask your agent to buy compute from gpu-cloud; it asks before paying 80 USD, you approve, and the ledger accepts it. A page then tells it to send 90 USD to mallory; you approve by mistake, and the ledger refuses: mallory is not a payee its charter allows.",
+        "desc": ("Illustration of the design, with the charter of the agents demo: pay only gpu-cloud, at most 100 USD "
+                 "a payment, a 1,000 USD budget. The questions in the chat are the agent runtime&rsquo;s, at autonomy "
+                 "L5; the yes and no are the ledger&rsquo;s, which no message and no approval can change."),
+        "run": "sion demo agents --local",
+        "spec": ("Agent Charters", DOCS + "concepts/agent-charters.html"),
+        "status": ("built", "Built on the devnet; chat apps tested against stand-ins"),
+    },
     "two-sorted": {
         "scene": "two-sorted",
         "title": "Two sorts of state",
@@ -533,4 +545,65 @@ ICONS = {
                 '<path d="M7 11h8M7 15h8M7 19h5" ' + _S + '/>'
                 '<path class="pict-signal" d="M22 13l7 7M29 13l-7 7" fill="none" stroke-width="1.6"/>'),
     'storage': '<rect x="3" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="3" width="7" height="7" fill="currentColor"/><rect x="22" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="12.5" width="7" height="7" fill="currentColor"/><rect x="3" y="22" width="7" height="7" fill="currentColor"/><rect x="12.5" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+}
+
+
+# Figures in chapters: one canvas plays each chapter in turn, and a button
+# for each goes to it; each chapter has its own caption, command, source and
+# status. The chapters' timing is in the scene's file.
+REELS = {
+    "capabilities": {
+        "scene": "capabilities",
+        "title": "What your agent can do",
+        "label": "Animation in six parts: one agent on many messaging apps; a script run in a sandbox; a memory log the ledger lets only grow; a job run every weekday; helpers with budgets carved from its own; a skill installed only once the bonds behind it cover what is at risk.",
+        "chapters": [
+            {"name": "Answers on your apps",
+             "desc": ("One agent on the apps you already use: 28 messaging services, voice notes heard and, where the "
+                      "service takes a bot&rsquo;s audio, answered aloud. Someone it does not know gets a pairing code "
+                      "and no answer until you let them in. From the recording in the book, with stand-ins for the "
+                      "services&rsquo; APIs."),
+             "run": "sion agent bridge --help",
+             "spec": ("Pairing and voice", DOCS + "agent/voice.html"),
+             "status": ("built", "Built; tested against stand-ins")},
+            {"name": "Works in a sandbox",
+             "desc": ("Its shell runs in bubblewrap or a Docker image: it writes only its own folder, sees the "
+                      "machine&rsquo;s programs read-only and none of your files, and reaches no network unless you give "
+                      "it one. From the recording in the book: primes.py, 17 primes below 60, a write to /usr/local "
+                      "refused, no name resolution."),
+             "run": "sion agent run --help",
+             "spec": ("Commands, scripts and MCP servers", DOCS + "agent/tools.html"),
+             "status": ("built", "Built; bubblewrap run for real")},
+            {"name": "Remembers, for good",
+             "desc": ("Its memory is a log on your computer that only it can add to; the ledger keeps the log&rsquo;s "
+                      "head and moves it only along proofs that the log grew, so a rewritten past is refused, as in the "
+                      "robots demo. A reader&rsquo;s answer comes with a proof against that head, complete as far as "
+                      "the log&rsquo;s index, which the ledger stores without checking."),
+             "run": "sion demo robots --local",
+             "spec": ("Memory", DOCS + "agent/memory.html"),
+             "status": ("built", "Built on the devnet")},
+            {"name": "Works on a schedule",
+             "desc": ("A job at a time, every interval or on a calendar, each run a session of its own under the same "
+                      "limits, its answer sent to your chat app, a file or a webhook. Jobs run while the scheduler "
+                      "runs on your computer, which setup starts as a service; a run missed while it was off happens "
+                      "once, late. From the recording in the book."),
+             "run": "sion agent schedule add --help",
+             "spec": ("Profiles and schedules", DOCS + "agent/schedules.html"),
+             "status": ("built", "Built; services not run on a desktop")},
+            {"name": "Gets help, on budget",
+             "desc": ("Helpers get identities of their own and budgets carved from their parent&rsquo;s, each limit "
+                      "narrower than the one above, and the ledger checks every payment against all of them. From "
+                      "the swarm demo: 12 researchers, 3 more below one of them, 6 USD refused over a 5 USD limit, and "
+                      "a suspension that refuses the whole tree until it is lifted."),
+             "run": "sion demo swarm --local",
+             "spec": ("Agent identities and subagents", DOCS + "concepts/agent-identities.html"),
+             "status": ("built", "Built on the devnet")},
+            {"name": "Learns skills safely",
+             "desc": ("A skill is installed only if the bonds behind its release cover, by default, twice what your "
+                      "agent could lose by it; an audit on the auditor&rsquo;s own bond adds to them. From the recording in the book: "
+                      "150 USD refused for 100 USD at risk, then 250 accepted, and refusing cost no fee."),
+             "run": "sion skill install --help",
+             "spec": ("Skills from others", DOCS + "agent/skills.html"),
+             "status": ("built", "Built on the devnet")},
+        ],
+    },
 }

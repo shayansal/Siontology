@@ -27,7 +27,8 @@
 <script>(function(){var d=document.documentElement;d.classList.add('js');try{var t=localStorage.getItem('siontology-theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t)}catch(e){}})();</script>
 <script src="js/site.js" defer></script>
 <script src="js/scenes/core.js" defer></script>
-<script src="js/scenes/agent.js" defer></script>
+<script src="js/scenes/promise.js" defer></script>
+<script src="js/scenes/capabilities.js" defer></script>
 <script src="js/scenes/fold-hero.js" defer></script>
 <script src="js/scenes/streams.js" defer></script>
 <script src="js/scenes/assurance.js" defer></script>
@@ -52,7 +53,23 @@
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
     <h1 class="display" id="hero-title"><span class="line">Trust you can check,</span> <span class="line">for people and their agents.</span></h1>
-    <p class="lede hero-lede">Siontology is open source: an AI agent you run on your own computer, and the ledger that holds it, and every other agent, to account. Payments, memory and claims carry a proof or priced evidence, so anyone can check them and see what faking them would cost.</p>
+    <div class="hero-stage">
+      <div>
+        <p class="lede">Siontology is open source: an AI agent that runs on your own computer and does what you ask, and a ledger that holds it, and every other agent, to the limits it was given. Payments, memory and claims carry a proof or priced evidence, so anyone can check them and see what faking them would cost.</p>
+        <div class="actions">
+          <a class="button" href="#agent">Run your own agent</a>
+          <a class="button button--quiet" href="#ledger">Build on the ledger</a>
+        </div>
+      </div>
+      <figure class="plate plate--hero" aria-labelledby="fig-promise-title">
+  <canvas data-scene="promise" role="img" aria-label="Animation: in a chat, you ask your agent to buy compute from gpu-cloud; it asks before paying 80 USD, you approve, and the ledger accepts it. A page then tells it to send 90 USD to mallory; you approve by mistake, and the ledger refuses: mallory is not a payee its charter allows." aria-describedby="fig-promise-desc"></canvas>
+  <figcaption>
+    <div class="plate-title"><p class="plate-name" id="fig-promise-title">Its limits hold</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+    <p class="plate-desc" id="fig-promise-desc">Illustration of the design, with the charter of the agents demo: pay only gpu-cloud, at most 100 USD a payment, a 1,000 USD budget. The questions in the chat are the agent runtime&rsquo;s, at autonomy L5; the yes and no are the ledger&rsquo;s, which no message and no approval can change.</p>
+    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo agents --local</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/concepts/agent-charters.html">Agent Charters</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built on the devnet; chat apps tested against stand-ins</span></dd></div></dl>
+  </figcaption>
+</figure>
+    </div>
     <div class="doors">
       <article class="door" aria-labelledby="door-agent-title">
         <p class="door-for">For you</p>
@@ -92,23 +109,25 @@
       <h2 class="statement" id="agent-title">An agent of your own. Its limits in a ledger.</h2>
       <p>It runs on your computer, beside a chain of your own. It answers where you already talk, works in a folder you give it, browses and remembers. The ledger refuses whatever its charter forbids, even from an agent that was prompt-injected, and keeps the head of its memory log, so its past cannot be rewritten unnoticed.</p>
     </div>
-    <figure class="plate" aria-labelledby="fig-agent-title">
-  <canvas data-scene="agent" role="img" aria-label="Animation: you write to your agent on Telegram; it reads a page from the web, asks you before it pays, pays 8 USD within its charter, asks again when the page tells it to pay 150 USD and you decline, notes what it learned in its memory log, and answers; a stranger on WhatsApp gets a pairing code." aria-describedby="fig-agent-desc"></canvas>
-  <figcaption>
-    <div class="plate-title"><p class="plate-name" id="fig-agent-title">Your agent</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
-    <p class="plate-desc" id="fig-agent-desc">Illustration of the design, with the limits <code>sion setup</code> gives an agent: autonomy L5, and a charter of at most 100 USD a payment from a 1,000 USD budget. You write on Telegram; it reads gpu-cloud&rsquo;s page from the web and asks you before it pays. Once you approve, the ledger checks the payment against its charter, and a receipt claim joins the knowledge log. The page told it to pay 150 USD more: content from outside, so it asks again, and you decline; past its charter the ledger would refuse it whatever you said. It notes what it learned in its memory log, whose head the ledger keeps, and answers you. A stranger on WhatsApp, which a bridge answers rather than setup, gets a pairing code and no answer until you approve them. The channels, approvals, payments under a charter and memory log are built, and were tested with a scripted model and stand-ins for the messengers&rsquo; and providers&rsquo; APIs.</p>
-    <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion setup</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/getting-started/your-computer.html">Run it on your computer</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built; tested with a scripted model and stand-ins</span></dd></div></dl>
-  </figcaption>
+    <figure class="plate reel" aria-labelledby="reel-capabilities-title">
+  <div class="reel-head"><p class="plate-name" id="reel-capabilities-title">What your agent can do</p><button class="plate-toggle" type="button" data-scene-toggle aria-pressed="false" hidden><svg class="icon-pause" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg><svg class="icon-play" viewBox="0 0 10 10" aria-hidden="true" focusable="false"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg><span data-label>Pause</span></button></div>
+  <div class="reel-body">
+    <div class="reel-chapters" role="group" aria-label="Parts of the figure"><button class="reel-chapter" type="button" data-chapter="0" aria-pressed="true" aria-controls="reel-capabilities-0">Answers on your apps</button><button class="reel-chapter" type="button" data-chapter="1" aria-pressed="false" aria-controls="reel-capabilities-1">Works in a sandbox</button><button class="reel-chapter" type="button" data-chapter="2" aria-pressed="false" aria-controls="reel-capabilities-2">Remembers, for good</button><button class="reel-chapter" type="button" data-chapter="3" aria-pressed="false" aria-controls="reel-capabilities-3">Works on a schedule</button><button class="reel-chapter" type="button" data-chapter="4" aria-pressed="false" aria-controls="reel-capabilities-4">Gets help, on budget</button><button class="reel-chapter" type="button" data-chapter="5" aria-pressed="false" aria-controls="reel-capabilities-5">Learns skills safely</button></div>
+    <canvas data-scene="capabilities" role="img" aria-label="Animation in six parts: one agent on many messaging apps; a script run in a sandbox; a memory log the ledger lets only grow; a job run every weekday; helpers with budgets carved from its own; a skill installed only once the bonds behind it cover what is at risk." aria-describedby="reel-capabilities-caption"></canvas>
+  </div>
+  <figcaption id="reel-capabilities-caption"><div class="reel-panel" id="reel-capabilities-0" data-chapter-panel><p class="reel-panel-name">Answers on your apps</p><p class="plate-desc">One agent on the apps you already use: 28 messaging services, voice notes heard and, where the service takes a bot&rsquo;s audio, answered aloud. Someone it does not know gets a pairing code and no answer until you let them in. From the recording in the book, with stand-ins for the services&rsquo; APIs.</p><dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion agent bridge --help</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/agent/voice.html">Pairing and voice</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built; tested against stand-ins</span></dd></div></dl></div><div class="reel-panel" id="reel-capabilities-1" data-chapter-panel hidden><p class="reel-panel-name">Works in a sandbox</p><p class="plate-desc">Its shell runs in bubblewrap or a Docker image: it writes only its own folder, sees the machine&rsquo;s programs read-only and none of your files, and reaches no network unless you give it one. From the recording in the book: primes.py, 17 primes below 60, a write to /usr/local refused, no name resolution.</p><dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion agent run --help</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/agent/tools.html">Commands, scripts and MCP servers</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built; bubblewrap run for real</span></dd></div></dl></div><div class="reel-panel" id="reel-capabilities-2" data-chapter-panel hidden><p class="reel-panel-name">Remembers, for good</p><p class="plate-desc">Its memory is a log on your computer that only it can add to; the ledger keeps the log&rsquo;s head and moves it only along proofs that the log grew, so a rewritten past is refused, as in the robots demo. A reader&rsquo;s answer comes with a proof against that head, complete as far as the log&rsquo;s index, which the ledger stores without checking.</p><dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo robots --local</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/agent/memory.html">Memory</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span></dd></div></dl></div><div class="reel-panel" id="reel-capabilities-3" data-chapter-panel hidden><p class="reel-panel-name">Works on a schedule</p><p class="plate-desc">A job at a time, every interval or on a calendar, each run a session of its own under the same limits, its answer sent to your chat app, a file or a webhook. Jobs run while the scheduler runs on your computer, which setup starts as a service; a run missed while it was off happens once, late. From the recording in the book.</p><dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion agent schedule add --help</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/agent/schedules.html">Profiles and schedules</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built; services not run on a desktop</span></dd></div></dl></div><div class="reel-panel" id="reel-capabilities-4" data-chapter-panel hidden><p class="reel-panel-name">Gets help, on budget</p><p class="plate-desc">Helpers get identities of their own and budgets carved from their parent&rsquo;s, each limit narrower than the one above, and the ledger checks every payment against all of them. From the swarm demo: 12 researchers, 3 more below one of them, 6 USD refused over a 5 USD limit, and a suspension that refuses the whole tree until it is lifted.</p><dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion demo swarm --local</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/concepts/agent-identities.html">Agent identities and subagents</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span></dd></div></dl></div><div class="reel-panel" id="reel-capabilities-5" data-chapter-panel hidden><p class="reel-panel-name">Learns skills safely</p><p class="plate-desc">A skill is installed only if the bonds behind its release cover, by default, twice what your agent could lose by it; an audit on the auditor&rsquo;s own bond adds to them. From the recording in the book: 150 USD refused for 100 USD at risk, then 250 accepted, and refusing cost no fee.</p><dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion skill install --help</code></dd></div><div><dt>Source</dt><dd><a href="https://siontology.org/docs/agent/skills.html">Skills from others</a></dd></div><div><dt>Status</dt><dd><span class="status status--built">Built on the devnet</span></dd></div></dl></div></figcaption>
 </figure>
+    <div class="names">
+      <div class="names-group">
+        <p class="names-title">It answers on 28 messaging services, and in your terminal</p>
+        <ul class="names-list"><li>Telegram</li><li>WhatsApp</li><li>Signal</li><li>iMessage</li><li>WeChat</li><li>LINE</li><li>Zalo</li><li>QQ</li><li>Matrix</li><li>SimpleX</li><li>Nostr</li><li>Slack</li><li>Microsoft Teams</li><li>Google Chat</li><li>Mattermost</li><li>Discord</li><li>DingTalk</li><li>Feishu and Lark</li><li>WeCom</li><li>Nextcloud Talk</li><li>Synology Chat</li><li>Email</li><li>SMS</li><li>Phone calls</li><li>IRC</li><li>Twitch</li><li>X direct messages</li><li>ntfy</li></ul>
+      </div>
+      <div class="names-group">
+        <p class="names-title">It thinks with the model you choose, its key kept sealed on your computer</p>
+        <ul class="names-list"><li>Claude</li><li>OpenAI</li><li>Gemini</li><li>Your ChatGPT plan</li><li>Ollama</li><li>LM Studio</li><li>llama.cpp</li></ul>
+      </div>
+    </div>
     <div class="cells cells--3">
-      <article class="uc">
-        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="2" y="4" width="18" height="12" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 16v5l5-5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12" y="19" width="18" height="9" fill="currentColor"/></svg>
-        <p class="uc-for">Where you talk</p>
-        <h3>It answers where you already are</h3>
-        <p>In the terminal, and on 28 messaging services: Telegram, WhatsApp, Signal, Slack, Discord, iMessage, Microsoft Teams, WeChat, email, SMS and more. It hears voice notes, and answers aloud where the service takes a bot&rsquo;s audio. A stranger gets a pairing code, and no answer until you approve them.</p>
-        <p class="uc-foot"><span class="status status--built">Built; tested against stand-ins</span><code>sion agent bridge --help</code></p>
-        <a class="cell-link" href="agents.html#talk">Every channel</a>
-      </article>
       <article class="uc">
         <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><path d="M9 5 16 16 9 27 2 16Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M20 9v14" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M23 17l2.5 2.5L30 13" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
         <p class="uc-for">Approvals</p>
@@ -124,46 +143,6 @@
         <p>Its charter fixes its budget, its largest payment and whom it may pay. The autonomy level decides what it tries; the ledger, what it can do. One revocation stops it and every subagent it launched.</p>
         <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo agents --local</code></p>
         <a class="cell-link" href="use-cases.html#agents">Walk through it</a>
-      </article>
-      <article class="uc">
-        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="3" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="9" width="6" height="6" fill="currentColor"/><rect x="17" y="9" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="17" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="17" y="17" width="6" height="6" fill="currentColor"/></svg>
-        <p class="uc-for">Tools</p>
-        <h3>Hands, in a sandbox</h3>
-        <p>A shell that can write only its workspace, in bubblewrap or Docker; a browser it reads as an accessibility tree; a desktop of its own; and the reviewed tools of MCP servers, over standard input or HTTP with OAuth.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>--shell --browser</code></p>
-        <a class="cell-link" href="agents.html#tools">Its tools</a>
-      </article>
-      <article class="uc">
-        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="4" width="20" height="5" fill="currentColor"/><rect x="3" y="11" width="20" height="5" fill="currentColor"/><rect x="3" y="18" width="20" height="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 27h20" fill="none" stroke="currentColor" stroke-width="1.6"/><path class="pict-signal" d="M25 4l5 5M30 4l-5 5" fill="none" stroke-width="1.6"/></svg>
-        <p class="uc-for">Memory</p>
-        <h3>Memory it cannot rewrite</h3>
-        <p>It keeps what it learns in a log only it can append to, and the ledger keeps the log&rsquo;s head. It searches its past sessions and dreams over them, keeping a note only if its session says what the note quotes and, with <code>--eval</code>, no task held out does worse with it.</p>
-        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion memory dream</code></p>
-        <a class="cell-link" href="agents.html#memory">How it remembers</a>
-      </article>
-      <article class="uc">
-        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="9" width="16" height="20" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="7" y="5" width="16" height="20" fill="var(--color-bg)" stroke="currentColor" stroke-width="1.6"/><path d="M11 11h8M11 15h8" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="23" y="20" width="7" height="7" fill="currentColor"/></svg>
-        <p class="uc-for">Skills</p>
-        <h3>Skills with a supply chain</h3>
-        <p>Skills come with bonds and audits, and declare what they may do: the calls they pre-approve, the hosts their scripts reach, the secrets they get. A version offered as better can rest on checks by others, fixed before it existed.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>sion skill install</code></p>
-        <a class="cell-link" href="agents.html#skills">Skills</a>
-      </article>
-      <article class="uc">
-        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="3" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="18" y="3" width="11" height="11" fill="currentColor"/><rect x="3" y="18" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="18" y="18" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-        <p class="uc-for">Models</p>
-        <h3>The model you choose</h3>
-        <p>Claude, OpenAI or Gemini with a key, your ChatGPT plan, or a model server on your own machine, such as Ollama. Keys are kept sealed on your computer; your conversations go only to the models you chose, and voice notes to the speech service you name.</p>
-        <p class="uc-foot"><span class="status status--built">Built; providers tested against stand-ins</span><code>sion setup</code></p>
-        <a class="cell-link" href="agents.html#models">Models</a>
-      </article>
-      <article class="uc">
-        <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><path d="M9 3 16 11 9 19 2 11Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M23 13 29 20 23 27 17 20Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 16l6 3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-        <p class="uc-for">Teams</p>
-        <h3>Help it can hire</h3>
-        <p>It hands work to subagents with identities and budgets of their own, hires other agents under Task Charters that pay only for work that passes, and, asked to choose, runs a small graph of agents only where one has measured better than a single agent.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>sion agent graph</code></p>
-        <a class="cell-link" href="agents.html#teams">Teams and graphs</a>
       </article>
       <article class="uc">
         <svg class="pict" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false"><rect x="3" y="5" width="16" height="22" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 11h8M7 15h8M7 19h5" fill="none" stroke="currentColor" stroke-width="1.6"/><path class="pict-signal" d="M22 13l7 7M29 13l-7 7" fill="none" stroke-width="1.6"/></svg>
