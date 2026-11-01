@@ -184,7 +184,7 @@ fn ancestry(lineage: &Lineage) -> Vec<ObjectId> {
 }
 
 /// What a passing standing check yields.
-pub(crate) struct Standing {
+pub(crate) struct CharterStanding {
     /// The charter's depth.
     pub(crate) depth: usize,
     /// The narrowings found, in order.
@@ -199,7 +199,7 @@ fn standing_with(
     id: ObjectId,
     charter: &Charter,
     ignoring_suspension: bool,
-) -> Step<Standing> {
+) -> Step<CharterStanding> {
     let ids = ancestry(&charter.lineage);
     if ids.last() != Some(&id) {
         return Err(fail("the charter's lineage does not lead to it"));
@@ -222,14 +222,18 @@ fn standing_with(
             narrowings.push(narrowing.clone());
         }
     }
-    Ok(Standing {
+    Ok(CharterStanding {
         depth: charter.lineage.path.len(),
         narrowings,
     })
 }
 
 /// The standing check (§5.13), suspension included.
-pub(super) fn standing(run: &mut TxRun<'_>, id: ObjectId, charter: &Charter) -> Step<Standing> {
+pub(super) fn standing(
+    run: &mut TxRun<'_>,
+    id: ObjectId,
+    charter: &Charter,
+) -> Step<CharterStanding> {
     standing_with(run, id, charter, false)
 }
 
@@ -512,7 +516,7 @@ pub(super) fn register_agent(
 fn spawning_parent(
     run: &mut TxRun<'_>,
     charter_id: ObjectId,
-) -> Step<(Object, Allotment, Charter, Standing)> {
+) -> Step<(Object, Allotment, Charter, CharterStanding)> {
     let sender = run.sender();
     let allotment_id = allotment_input(run)?;
     let allotment_object = run.load(&allotment_id)?;
