@@ -87,6 +87,44 @@
   </div>
 </section>
 
+<section class="section" id="compare" aria-labelledby="compare-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="compare-title">How it compares.</h2>
+      <p>Other agents keep their spending limits in their own code, or in their maker&rsquo;s cloud. Siontology keeps them in a ledger, so they hold even when the agent is fooled. Here is what that adds, and where the others are ahead today.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide table--compare">
+        <caption>Compared on 2 November 2026, from each one&rsquo;s own documentation and announcements.</caption>
+        <colgroup><col class="compare-what"><col class="compare-us"><col span="4"></colgroup>
+        <thead><tr><th scope="col"><span class="visually-hidden">What</span></th><th scope="col">Siontology</th><th scope="col">Hermes Agent</th><th scope="col">OpenClaw</th><th scope="col">Grok Bot</th><th scope="col">ChatGPT dots</th></tr></thead>
+        <tbody>
+          <tr class="compare-group"><th colspan="6" scope="rowgroup">What only Siontology does</th></tr>
+          <tr><th scope="row">Spending limits a ledger enforces, even on a fooled agent</th><td>{{yes}}Yes: its charter fixes the budget, the largest payment and whom it may pay</td><td>{{no}}No</td><td>{{no}}No</td><td>{{no}}No: it asks you when something needs approval</td><td>{{no}}No: it follows rules you set, and asks for approval</td></tr>
+          <tr><th scope="row">Memory a rewrite cannot hide</th><td>{{yes}}Yes: the ledger keeps the head of its memory, and refuses a rewritten past</td><td>{{no}}No</td><td>{{no}}No</td><td>{{no}}No</td><td>{{no}}No</td></tr>
+          <tr><th scope="row">Hiring another agent, paid only for a result that passes a rule set in advance</th><td>{{yes}}Yes: a Task Charter holds the pay in escrow</td><td>{{no}}No</td><td>{{no}}No</td><td>{{no}}No</td><td>{{no}}No</td></tr>
+          <tr><th scope="row">A bond behind every skill from someone else</th><td>{{yes}}Yes: installed only if bonds cover, by default, twice what it could cost you</td><td>{{no}}No</td><td>{{no}}No</td><td>{{no}}No</td><td>{{no}}No</td></tr>
+        </tbody>
+        <tbody>
+          <tr class="compare-group"><th colspan="6" scope="rowgroup">Everything else, side by side</th></tr>
+          <tr><th scope="row">Runs on</th><td>Your computer, beside a chain of its own</td><td>Your computer, a server or serverless</td><td>Your computer or a server</td><td>xAI&rsquo;s cloud, on a computer of its own</td><td>OpenAI&rsquo;s cloud, on a computer of its own; it can use yours too</td></tr>
+          <tr><th scope="row">Open source</th><td>{{yes}}Yes: Apache-2.0 or MIT</td><td>{{yes}}Yes: MIT</td><td>{{yes}}Yes: MIT</td><td>{{no}}No</td><td>{{no}}No</td></tr>
+          <tr><th scope="row">Models</th><td>Claude, OpenAI, Gemini, your ChatGPT plan, or local models</td><td>Any: Nous Portal, OpenRouter, OpenAI or your own endpoint</td><td>Many providers, local ones among them</td><td>Chosen by xAI</td><td>OpenAI&rsquo;s GPT-6 Astra</td></tr>
+          <tr><th scope="row">Where you talk to it</th><td>28 messaging services, voice notes and the terminal</td><td>Telegram, Discord, Slack, WhatsApp, Signal, email and the terminal</td><td>More than 30 chat channels</td><td>Its app, on desktop and iOS</td><td>ChatGPT, by message or call; Slack and Microsoft Teams</td></tr>
+          <tr><th scope="row">Helpers working side by side</th><td>{{yes}}Subagents on budgets carved from its own, and graphs of agents</td><td>{{yes}}Isolated subagents</td><td>{{yes}}Sub-agent sessions in the background</td><td>{{yes}}Several bots, one overseeing the others</td><td>Background agents; teams of dots planned</td></tr>
+          <tr><th scope="row">Commands in a sandbox</th><td>{{yes}}Always: bubblewrap or Docker, with no network unless you give it one</td><td>Optional: seven backends, your machine by default</td><td>Optional, off by default: Docker, Podman, SSH and others</td><td>On its own cloud computer</td><td>On its own cloud computer</td></tr>
+          <tr><th scope="row">Web search and browsing</th><td>A browser of its own and public pages; no search tool</td><td>{{yes}}Search and a browser</td><td>{{yes}}Search and a browser</td><td>Websites, on its own computer</td><td>A browser, on its own computer</td></tr>
+          <tr><th scope="row">Works while your computer is off</th><td>{{no}}Only while the machine it runs on is on</td><td>{{yes}}On a server, or serverless</td><td>{{yes}}On a server</td><td>{{yes}}Yes</td><td>{{yes}}Yes</td></tr>
+          <tr><th scope="row">Status</th><td>A devnet reference implementation, tested with a scripted model and stand-ins; no release yet</td><td>Available</td><td>Available</td><td>Beta</td><td>Out since 29 September 2026</td></tr>
+          <tr><th scope="row">Cost</th><td>Free; you bring a model</td><td>Free; you bring a model, or a Nous Portal plan</td><td>Free; you bring a model</td><td>In SuperGrok and Cursor plans</td><td>In ChatGPT Business Premium, and in Pro outside the EEA, the UK and Switzerland</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="notice-line"><strong>How we compared:</strong> from each one&rsquo;s own documentation and announcements, and from reporting on them where they say little; products change, so check the sources. The Siontology column keeps to <a href="{{REPO}}/blob/main/docs/implementation-status.md">what is built</a>. Hermes Agent is Nous Research&rsquo;s, OpenClaw its contributors&rsquo;, Grok Bot xAI&rsquo;s and dots OpenAI&rsquo;s: the names are their owners&rsquo; marks, and none of them has reviewed this table.</p>
+    <p class="compare-sources"><strong>Sources:</strong> Hermes Agent: <a href="https://github.com/NousResearch/hermes-agent">its repository</a>, <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/tools">tools</a>. OpenClaw: <a href="https://github.com/openclaw">its repository</a>, <a href="https://docs.openclaw.ai/channels/index">channels</a>, <a href="https://docs.openclaw.ai/gateway/sandboxing.md">sandboxing</a>, <a href="https://docs.openclaw.ai/tools/web">web tools</a>, <a href="https://docs.openclaw.ai/concepts/session-tool">sub-agents</a>, <a href="https://docs.openclaw.ai/providers/ollama.md">local models</a>. Grok Bot: <a href="https://x.ai/news/introducing-grok-bot">xAI&rsquo;s announcement</a>, <a href="https://keywordseverywhere.com/news/grok-updates/grok-bot/">a timeline of its plans</a>. ChatGPT dots: <a href="https://techcrunch.com/2026/09/29/openai-launches-dots-its-bubbly-agentic-avatar/">TechCrunch</a>, <a href="https://thenextweb.com/news/openai-dots-always-on-ai-agents-cloud-computers-devday">The Next Web</a>, <a href="https://flaviocopes.com/openai-dots/">Flavio Copes</a>.</p>
+  </div>
+</section>
+
 <section class="section" id="start" aria-labelledby="start-title">
   <div class="wrap">
     <div class="section-head">

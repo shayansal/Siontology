@@ -19,7 +19,7 @@ figure and {{code:<id>}} for a code block, both defined in figures.py;
 {{REPO}} and {{DOCS}} for the repository and documentation addresses;
 {{toggle}} for a figure's Pause button; {{icon:<id>}} for a pictogram from
 figures.py; {{reel:<id>}} for a figure in chapters; {{team}} for the team of
-agents, faces and all.
+agents, faces and all; {{yes}} and {{no}} for a check or a dash in a table.
 
 Besides the pages, the build writes sitemap.xml and robots.txt.
 """
@@ -339,11 +339,17 @@ def label_table(match):
         out.append(row.group(0)[pos:])
         return "".join(out)
 
-    body = re.search(r"<tbody>(.*?)</tbody>", table, re.S)
-    if not body:
-        return table
-    labelled = re.sub(r"<tr>.*?</tr>", label_row, body.group(1), flags=re.S)
-    return table[:body.start(1)] + labelled + table[body.end(1):]
+    return re.sub(r"(<tbody>)(.*?)(</tbody>)",
+                  lambda b: b.group(1) + re.sub(r"<tr>.*?</tr>", label_row, b.group(2), flags=re.S) + b.group(3),
+                  table, flags=re.S)
+
+
+# A check and a dash, from the diagram vocabulary: there, and not there. The
+# words beside them say the same, so the marks are hidden from screen readers.
+YES = ('<svg class="mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">'
+       '<path d="M3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>')
+NO = ('<svg class="mark mark--no" viewBox="0 0 16 16" aria-hidden="true" focusable="false">'
+      '<path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>')
 
 
 def icon(iid):
@@ -358,6 +364,7 @@ def expand(body):
     body = body.replace("{{team}}", team())
     body = re.sub(r"\{\{code:([a-z0-9-]+)\}\}", lambda m: code(m.group(1)), body)
     body = body.replace("{{REPO}}", REPO).replace("{{DOCS}}", DOCS).replace("{{toggle}}", toggle())
+    body = body.replace("{{yes}}", YES).replace("{{no}}", NO)
     body = re.sub(r'<table class="table[^"]*">.*?</table>', label_table, body, flags=re.S)
     return body
 

@@ -12,6 +12,13 @@ Commit messages before the rename use the working name, Fold.
 
 ### The website and the book
 
+- **How it compares**: a table on the landing page sets Siontology beside
+  Hermes Agent, OpenClaw, Grok Bot and ChatGPT dots, from each one's own
+  documentation and announcements as of 2 November 2026, with sources. Four
+  rows are Siontology's alone (spending limits a ledger enforces, memory a
+  rewrite cannot hide, hiring paid only for a result that passes a rule
+  set in advance, a bond behind every skill from someone else); the rest
+  include where the others are ahead, its status among them.
 - **The website leads with your agent, and a team of them**: its first
   figure, an illustration of a graph of agents, is a lead agent handing the
   parts of a job to three others, which work side by side and pass their
