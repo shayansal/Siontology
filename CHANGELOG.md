@@ -10,6 +10,20 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Dreaming, and cases an evolution never saw
+
+- **`sion memory dream`**: the sessions of the episodes recorded since
+  the last dream, each read whole by a reader of its own, four at a
+  time. A note a reader proposes is kept only if its session says the
+  words it quotes (12 characters at least), a session that read content
+  from outside yields facts only, and what is left goes through
+  consolidation's gates and is recorded as consolidation records it,
+  citing the session's episode; `memory dreamt-through` marks how far it
+  went (`agent:dream-quote`).
+- **`sion skill evolve --held-out <file>`**: the version given and the
+  best are scored on cases the evolution never saw, and the best is kept
+  as a draft only if it passes every one that the version given passes.
+
 ### Graphs of agents
 
 - **`sion agent graph`**: a profile's agent run as the nodes of a small

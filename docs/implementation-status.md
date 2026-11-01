@@ -228,7 +228,8 @@ digest of its bytes; `sion skill evolve` shows a model the cases a
 version fails and scores the variants it proposes (new instructions, and
 the skill's other files but never its scripts), under gates (purpose,
 files, size, novelty, no regression), keeping a Pareto front, and keeps
-the best as a draft; `sion agent evolve` does the same for a profile's
+the best as a draft, with `--held-out` only if it passes every case the
+evolution never saw that the version given passes; `sion agent evolve` does the same for a profile's
 own instructions, which follow the fixed system prompt; a bounty is a Task Charter whose spec names the release, the
 set and the cases to pass, with its verifiers, adjudicator and required
 claims (such as the set's author vouching for it, `skill.evals/v1`) fixed
@@ -292,7 +293,9 @@ Docker with `SION_TEST_DOCKER_IMAGE`. An agent with a memory log searches
 its past sessions (`session_search`, `sion agent sessions search`:
 BM25), each hit checked against the trajectory digest its episode
 committed to the ledger; `sion memory consolidate` turns episodes into
-derived notes under gates,
+derived notes under gates, and `sion memory dream` reads the sessions
+themselves, a reader each, keeping a note only if its session says the
+words it quotes,
 superseding and never deleting; what a tainted session records, its
 episode and the notes consolidated from it are marked as prompt-injection
 risks and kept out of prompts; `sion memory archive` and `restore` keep a
@@ -976,6 +979,7 @@ the architecture's own:
 | `agent:token-estimate` | A run's token budget is held to an estimate of what each model call sends (a token for every three bytes, pictures as some text would be) and the most it may answer; the tokens a provider reports are counted as it reports them. A provider that counts more tokens for the same request (some scripts, pictures) can take a run past its budget by the difference, and a subagent's tokens count once its run has ended. |
 | `agent:quarantine` | In quarantine, content from outside is held out of the agent's conversation and read by a reader that has no tools, whose answer is held to a schema the agent gives. An answer of values (booleans, numbers, strings from an enum, strings of a strict format) does not taint the session, though it is only what the content made the reader say, and can be false; an answer with free text taints it. The strings an answer gives are matched in arguments exactly as given (four characters or more), so an argument the agent writes from one in another form is not caught. A browser's pages, a desktop's screens and the shell's output are not held. |
 | `agent:verifier` | A check the operator gives (`--verify`) runs in the agent's sandbox, in its workspace, where the agent can change what the check reads or runs (its tests, its scripts): a check that passed shows that the command exited with status 0 then, not that the work is right, and a score is what the command printed. |
+| `agent:dream-quote` | A note a dream keeps rests on the words of its session it quotes: that they are in the session's transcript, as they are written there, shows that they were said in it (by the person, a tool or the agent itself), not that the note is true, nor that it says what they meant. |
 | `agent:declared-hosts` | The egress proxy holds a skill's scripts to the hosts their skill declares by the name a script asks for, at addresses that are public where they resolve on the machine. A declared host that forwards what it is sent, serves what others put there, or shares a front (a CDN) whose other sites a script can ask for inside the encrypted tunnel takes a script further. Behind an upstream proxy, a name the machine cannot resolve goes to that proxy, and its network decides where the name leads. With Docker, declared hosts are not filtered: the operator's network decides. |
 | `agent:secret-store` | Skills' secrets are kept encrypted under a key in a file beside them, readable only by the operator's user: whoever can read that file can read them. A script that receives a secret can send it wherever its skill may connect, and can change it so that it is not cut out of what the model sees: the runtime removes the value as it is, not every encoding of it. |
 | `agent:mcp-remote` | An MCP server over HTTP runs elsewhere, under whoever runs it: it sees the arguments of every call made to it and answers what it likes. Over HTTPS its certificate shows only that it holds the name in its URL; plain HTTP, which the client allows to any address the operator gives, is as private as the networks it crosses. A header whose value names an environment variable (`${VAR}`) sends that value with every request. |

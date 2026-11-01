@@ -229,16 +229,20 @@ pub fn eval(
 }
 
 /// Evolves the skill in `dir` against an evaluation set and keeps the best
-/// version found as a draft, if one did better than the version given;
-/// returns the evolution, the draft's directory and what to print.
+/// version found as a draft, if one did better than the version given and,
+/// with `held`, an evaluation set whose cases the evolution never sees,
+/// holds up on those ([`sion_agent::evolve::held_out`]); returns the
+/// evolution, the draft's directory and what to print.
 pub fn evolve(
     dir: &Path,
     evals: &Path,
+    held: Option<&Path>,
     models: &[String],
     mutator: &str,
     settings: &Settings,
 ) -> Result<(Evolution, Option<PathBuf>, Vec<String>), CliError> {
     let (set, _, digest) = load_evals(evals)?;
+    let held = held.map(load_evals).transpose()?;
     let (_, parent_root, name, _) = crate::skills::pack(dir)?;
     let mutator = crate::runtime::model(mutator, 0)?;
     let work = work_dir().join(format!("evolve-{}", parent_root.to_hex()));
@@ -298,6 +302,41 @@ pub fn evolve(
         std::fs::remove_dir_all(&work).ok();
         return Ok((evolution, None, lines));
     }
+    // On cases it never saw, the best must pass whatever the version given
+    // passes.
+    let mut held_record = serde_json::Value::Null;
+    if let Some((held_set, _, held_digest)) = &held {
+        let out = sion_agent::evolve::held_out(
+            &evolution,
+            &set,
+            held_set,
+            &models_of(models),
+            &settings.limits,
+        )
+        .map_err(CliError::Usage)?;
+        let passed = |passes: &[bool]| passes.iter().filter(|p| **p).count();
+        lines.push(format!(
+            "held out (evaluation set {}, {} cases the evolution never saw): the version given passes {}, version {} passes {}",
+            held_digest.short(),
+            held_set.cases.len(),
+            passed(&out.given),
+            evolution.best,
+            passed(&out.best)
+        ));
+        if let Some(case) = &out.regressed {
+            lines.push(format!(
+                "version {} fails held-out case {case}, which the version given passes: no draft",
+                evolution.best
+            ));
+            std::fs::remove_dir_all(&work).ok();
+            return Ok((evolution, None, lines));
+        }
+        held_record = json!({
+            "evals": held_digest.to_hex(),
+            "given": out.given,
+            "best": out.best,
+        });
+    }
     let best_dir = best.dir.join(&name);
     let (bytes, root, _, _) = crate::skills::pack(&best_dir)?;
     let draft = drafts_dir().join(format!("{name}-{}", &root.to_hex()[..8]));
@@ -330,6 +369,7 @@ pub fn evolve(
         "rejected": evolution.rejected,
         "front": evolution.front,
         "best": evolution.best,
+        "held_out": held_record,
     });
     std::fs::write(
         &record,

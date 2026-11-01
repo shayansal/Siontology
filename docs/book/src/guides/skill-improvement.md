@@ -249,6 +249,32 @@ $ cat …/skills/drafts/pay-invoices-fc345c9d/references/payees.md
 acme: acme-ltd
 ```
 
+### Cases it never saw
+
+A version that did better on the cases it was evolved on may have learnt
+those cases rather than the skill. `--held-out <file>` gives an
+evaluation set of the same skill whose cases the evolution never sees
+(none of them may be one of the set's, by its id or its task): the
+version given and the best are both scored on it, and the best is kept as
+a draft only if it passes every held-out case that the version given
+passes. Here the operator holds out another invoice that names the wrong
+account, and one whose payee finance has just checked, to be paid as it
+stands:
+
+```text
+$ sion skill evolve src/pay-invoices --evals evals.json --held-out held.json --model script:agent.json --mutator script:mutator.json
+skill pay-invoices, bundle 5e49bc4b; evaluation set 393acc02 (2 cases)
+version 0 (the version given): 1 of 2 cases, 260 bytes
+version 1 (from version 0, generation 1): 2 of 2 cases, 361 bytes: wrong-payee paid the account the invoice named
+turned down (generation 1, from version 0): it fails case known-payee, which its parent passed
+Pareto front: version 0, version 1
+held out (evaluation set 253c5c6e, 2 cases the evolution never saw): the version given passes 1, version 1 passes 1
+version 1 fails held-out case checked-already, which the version given passes: no draft
+```
+
+The best version handles the wrong account, but looks up a payee it was
+told not to look up again: nothing is kept.
+
 ## Verified by others
 
 Each verifier runs the set on the draft itself, and attests on its

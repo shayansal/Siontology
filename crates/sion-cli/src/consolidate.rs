@@ -20,6 +20,13 @@
 //! like that episode: it is kept, and recalled, but never put into the
 //! agent's prompt as something to keep in mind. The log is then committed,
 //! so the ledger holds the consolidation with the rest.
+//!
+//! Dreaming (`sion memory dream`) reads the sessions themselves, not their
+//! episodes: each by a reader of its own ([`sion_agent::dream`]), each
+//! note it proposes kept only if its session shows it word for word. What
+//! is left goes through the same gates and is recorded the same way,
+//! citing its session's episode, and a summary atom marks how far the
+//! dream went (`memory dreamt-through <seq>`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,8 +34,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value as Json};
 use sion_agent::consolidate::{self, Material, Shown};
 use sion_agent::Limits;
-use sion_core::hash::hash_domain;
-use sion_core::ids::ObjectId;
+use sion_core::hash::{hash_domain, Hash32};
+use sion_core::ids::{AccountId, ObjectId};
 use sion_memory::{
     AiUsage, AtomClass, BeliefState, Interval, LinkKind, LogStore, MemoryAtom, MemoryAtomId,
     MemoryKind, Statement, Taint, Value,
@@ -38,6 +45,13 @@ use crate::error::CliError;
 use crate::ledger::Ledger;
 use crate::memory::{committed, memory_error, open_store};
 use crate::session::Session;
+
+/// What a dream marks how far it went: `memory dreamt-through <seq>`.
+pub const DREAMT: (&str, &str) = ("memory", "dreamt-through");
+
+/// The most sessions one dream reads: those of the oldest episodes not
+/// dreamt over yet.
+pub const MAX_DREAMT: usize = 12;
 
 /// The most episodes one run is shown (the oldest not consolidated yet);
 /// a later run takes the rest.
@@ -84,6 +98,17 @@ pub fn untrusted(atom: &MemoryAtom) -> bool {
 /// Where a log's consolidation stands: the last episode consolidated, if
 /// any.
 pub fn consolidated_through(store: &LogStore) -> Option<u64> {
+    marked_through(store, MARKER)
+}
+
+/// Where a log's dreaming stands: the last episode whose session a dream
+/// read, or found was not on this machine, if any.
+pub fn dreamt_through(store: &LogStore) -> Option<u64> {
+    marked_through(store, DREAMT)
+}
+
+/// The last episode a summary atom of `marker` says was gone through.
+fn marked_through(store: &LogStore, marker: (&str, &str)) -> Option<u64> {
     store
         .log()
         .atoms()
@@ -93,7 +118,7 @@ pub fn consolidated_through(store: &LogStore) -> Option<u64> {
                 subject,
                 predicate,
                 object: Value::Integer(seq),
-            } if subject == MARKER.0 && predicate == MARKER.1 => u64::try_from(*seq).ok(),
+            } if subject == marker.0 && predicate == marker.1 => u64::try_from(*seq).ok(),
             _ => None,
         })
         .max()
@@ -227,9 +252,249 @@ pub fn run(
     let model_digest = hash_domain("sion-agent/model-id/v1", model.as_bytes());
     let code_digest = consolidate::code_digest();
     let now = nanos();
+    let kept = record_notes(
+        &mut store,
+        writer,
+        &outcome.notes,
+        &gathered.atoms,
+        (model_digest, code_digest),
+        now,
+    )?;
+    // How far the episodes were consolidated: the last one shown.
+    let shown: Vec<(MemoryAtomId, u64)> = gathered
+        .material
+        .episodes
+        .iter()
+        .filter_map(|e| gathered.atoms.get(&e.id).map(|(id, seq, _)| (*id, *seq)))
+        .collect();
+    let through = shown.iter().map(|(_, seq)| *seq).max().unwrap_or(0);
+    let mut marker = MemoryAtom::builder(
+        writer,
+        store.log().len(),
+        MemoryKind::Reflection,
+        AtomClass::Summary,
+        Statement::claim(MARKER.0, MARKER.1, Value::Integer(i128::from(through))),
+    )
+    .valid(Interval::starting(now))
+    .observed_at(now)
+    .extraction(model_digest, code_digest);
+    for (id, _) in &shown {
+        marker = marker.link(LinkKind::DerivedFrom, *id, 1000);
+    }
+    let marker = marker.build().map_err(|e| CliError::Usage(e.to_string()))?;
+    let marker_seq = store.append(marker).map_err(memory_error)?;
+    drop(store);
+    let view = crate::memory::commit(session, ledger, wallet, log, false)?;
+    let on_ledger = committed(ledger, log)?;
+    let rejected: Vec<Json> = outcome
+        .rejected
+        .iter()
+        .map(|r| json!({"proposal": r.proposal, "reason": r.reason}))
+        .collect();
+    Ok(json!({
+        "log": log,
+        "model": model,
+        "episodes": shown.len(),
+        "episodes_left": gathered.left,
+        "notes_shown": gathered.material.notes.len(),
+        "kept": kept,
+        "turned_down": rejected,
+        "consolidated_through": through,
+        "marker": marker_seq,
+        "committed": format!(
+            "Pulse {}: {}",
+            view.pulse.0,
+            crate::describe::receipt(&session.names(), &view.effects)
+        ),
+        "size_on_ledger": on_ledger.size,
+    }))
+}
+
+/// Dreams over `log`, written by `wallet`, with `model` (a model spec, as
+/// for `sion agent run`): the sessions of the episodes recorded since the
+/// last dream, those on this machine, each read whole by a reader of its
+/// own ([`sion_agent::dream`]). A note a reader proposes is kept only if
+/// its session shows it word for word (a session that read content from
+/// outside, facts only), then goes through consolidation's gates, and is
+/// recorded as consolidation records it, citing its session's episode; a
+/// summary atom marks how far the dream went (`memory dreamt-through
+/// <seq>`), and the log is committed.
+pub fn dream(
+    session: &mut Session<'_>,
+    ledger: &dyn Ledger,
+    wallet: &str,
+    log: &ObjectId,
+    model: &str,
+) -> Result<Json, CliError> {
+    let writer = session.id(wallet);
+    let mut store = open_store(log, writer)?;
+    let gone = crate::agent_memory::withdrawn(&store);
+    let after = dreamt_through(&store);
+    // The notes kept, which a reader is shown and the gates check against.
+    let gathered = gather(&store);
+    let mut material = Material {
+        episodes: Vec::new(),
+        notes: gathered.material.notes.clone(),
+    };
+    let mut atoms: BTreeMap<String, (MemoryAtomId, u64, bool)> = gathered
+        .atoms
+        .iter()
+        .filter(|(id, _)| id.starts_with('n'))
+        .map(|(id, atom)| (id.clone(), *atom))
+        .collect();
+    let mut transcripts = Vec::new();
+    let mut elsewhere = Vec::new();
+    let mut through = None;
+    let mut episodes = Vec::new();
+    for atom in store.log().atoms() {
+        let Statement::Claim {
+            subject,
+            predicate,
+            object,
+        } = &atom.statement
+        else {
+            continue;
+        };
+        if gone.contains(&atom.id())
+            || atom.kind != MemoryKind::Episodic
+            || predicate != "episode"
+            || after.is_some_and(|seen| atom.seq <= seen)
+        {
+            continue;
+        }
+        let Some(id) = subject.strip_prefix("session-") else {
+            continue;
+        };
+        if transcripts.len() + elsewhere.len() == MAX_DREAMT {
+            break;
+        }
+        through = Some(atom.seq);
+        let Ok(saved) = crate::runtime::Saved::load(id) else {
+            elsewhere.push(id.to_string());
+            continue;
+        };
+        let episode = format!("e{}", atom.seq);
+        let tainted = untrusted(atom) || saved.state.standing.tainted_until.is_some();
+        atoms.insert(episode.clone(), (atom.id(), atom.seq, tainted));
+        episodes.push(atom.id());
+        material.episodes.push(Shown {
+            id: episode.clone(),
+            text: plain(object),
+            untrusted: tainted,
+        });
+        transcripts.push(sion_agent::dream::Transcript {
+            session: id.to_string(),
+            episode,
+            tainted,
+            text: crate::runtime::transcript(&saved.state.messages).join("\n"),
+        });
+    }
+    let Some(through) = through else {
+        return Ok(json!({
+            "log": log,
+            "dreamt": 0,
+            "note": match after {
+                Some(seq) => format!("nothing to dream over: no episode after atom {seq}"),
+                None => "nothing to dream over: the log holds no episode".to_string(),
+            },
+        }));
+    };
+    // A reader of its own for each session: a scripted one plays its
+    // script for that session alone.
+    let readers = transcripts
+        .iter()
+        .map(|_| crate::runtime::model(model, 0))
+        .collect::<Result<Vec<_>, _>>()?;
+    let readers: Vec<&dyn sion_agent::model::Model> =
+        readers.iter().map(|reader| reader.as_ref()).collect();
+    let dreamt = sion_agent::dream::dream_with(&readers, &transcripts, &material.notes);
+    if dreamt.read == 0 && !transcripts.is_empty() {
+        return Err(CliError::Usage(format!(
+            "no reader could answer ({}); nothing was recorded",
+            dreamt
+                .unread
+                .iter()
+                .map(|(session, why)| format!("session {session}: {why}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+    let proposals = dreamt.kept.iter().map(|c| c.proposal()).collect();
+    let outcome = consolidate::gate(&material, proposals);
+    let extraction = (
+        hash_domain("sion-agent/model-id/v1", model.as_bytes()),
+        sion_agent::dream::code_digest(),
+    );
+    let now = nanos();
+    let kept = record_notes(&mut store, writer, &outcome.notes, &atoms, extraction, now)?;
+    let mut marker = MemoryAtom::builder(
+        writer,
+        store.log().len(),
+        MemoryKind::Reflection,
+        AtomClass::Summary,
+        Statement::claim(DREAMT.0, DREAMT.1, Value::Integer(i128::from(through))),
+    )
+    .valid(Interval::starting(now))
+    .observed_at(now)
+    .extraction(extraction.0, extraction.1);
+    for id in &episodes {
+        marker = marker.link(LinkKind::DerivedFrom, *id, 1000);
+    }
+    let marker = marker.build().map_err(|e| CliError::Usage(e.to_string()))?;
+    let marker_seq = store.append(marker).map_err(memory_error)?;
+    drop(store);
+    let view = crate::memory::commit(session, ledger, wallet, log, false)?;
+    let on_ledger = committed(ledger, log)?;
+    let turned_down: Vec<Json> = dreamt
+        .rejected
+        .iter()
+        .map(|(proposal, reason)| json!({"proposal": proposal, "reason": reason}))
+        .chain(
+            outcome
+                .rejected
+                .iter()
+                .map(|r| json!({"proposal": r.proposal, "reason": r.reason})),
+        )
+        .collect();
+    Ok(json!({
+        "log": log,
+        "model": model,
+        "sessions_read": dreamt.read,
+        "sessions_unread": dreamt.unread.iter().map(|(s, why)| json!({"session": s, "why": why})).collect::<Vec<_>>(),
+        "sessions_elsewhere": elsewhere,
+        "kept": kept,
+        "turned_down": turned_down,
+        "dreamt_through": through,
+        "marker": marker_seq,
+        "tokens": dreamt.usage.total(),
+        "committed": format!(
+            "Pulse {}: {}",
+            view.pulse.0,
+            crate::describe::receipt(&session.names(), &view.effects)
+        ),
+        "size_on_ledger": on_ledger.size,
+    }))
+}
+
+/// Records `notes` in `store`, written by `writer`: each a derived atom
+/// linked to the atoms it cites and to the notes it replaces (by the ids
+/// they were shown under, in `atoms`), with the extraction trace given
+/// (the model's digest, then the code's); each note it replaces revised to
+/// superseded; a note that cites an untrusted atom marked as a
+/// prompt-injection risk, unsafe for planning. What was kept, an object
+/// per note.
+fn record_notes(
+    store: &mut LogStore,
+    writer: AccountId,
+    notes: &[consolidate::Note],
+    atoms: &BTreeMap<String, (MemoryAtomId, u64, bool)>,
+    extraction: (Hash32, Hash32),
+    now: u64,
+) -> Result<Vec<Json>, CliError> {
+    let (model_digest, code_digest) = extraction;
     let mut kept = Vec::new();
     let mut superseded: BTreeSet<MemoryAtomId> = BTreeSet::new();
-    for note in &outcome.notes {
+    for note in notes {
         let kind = NOTE_KINDS
             .iter()
             .find(|(name, _)| *name == note.kind)
@@ -238,12 +503,12 @@ pub fn run(
         let sources: Vec<(MemoryAtomId, u64, bool)> = note
             .sources
             .iter()
-            .filter_map(|id| gathered.atoms.get(id).copied())
+            .filter_map(|id| atoms.get(id).copied())
             .collect();
         let replaces: Vec<(MemoryAtomId, u64, bool)> = note
             .replaces
             .iter()
-            .filter_map(|id| gathered.atoms.get(id).copied())
+            .filter_map(|id| atoms.get(id).copied())
             .filter(|(id, _, _)| !superseded.contains(id))
             .collect();
         let tainted = sources.iter().any(|(_, _, untrusted)| *untrusted);
@@ -311,54 +576,7 @@ pub fn run(
             "why": note.why,
         }));
     }
-    // How far the episodes were consolidated: the last one shown.
-    let shown: Vec<(MemoryAtomId, u64)> = gathered
-        .material
-        .episodes
-        .iter()
-        .filter_map(|e| gathered.atoms.get(&e.id).map(|(id, seq, _)| (*id, *seq)))
-        .collect();
-    let through = shown.iter().map(|(_, seq)| *seq).max().unwrap_or(0);
-    let mut marker = MemoryAtom::builder(
-        writer,
-        store.log().len(),
-        MemoryKind::Reflection,
-        AtomClass::Summary,
-        Statement::claim(MARKER.0, MARKER.1, Value::Integer(i128::from(through))),
-    )
-    .valid(Interval::starting(now))
-    .observed_at(now)
-    .extraction(model_digest, code_digest);
-    for (id, _) in &shown {
-        marker = marker.link(LinkKind::DerivedFrom, *id, 1000);
-    }
-    let marker = marker.build().map_err(|e| CliError::Usage(e.to_string()))?;
-    let marker_seq = store.append(marker).map_err(memory_error)?;
-    drop(store);
-    let view = crate::memory::commit(session, ledger, wallet, log, false)?;
-    let on_ledger = committed(ledger, log)?;
-    let rejected: Vec<Json> = outcome
-        .rejected
-        .iter()
-        .map(|r| json!({"proposal": r.proposal, "reason": r.reason}))
-        .collect();
-    Ok(json!({
-        "log": log,
-        "model": model,
-        "episodes": shown.len(),
-        "episodes_left": gathered.left,
-        "notes_shown": gathered.material.notes.len(),
-        "kept": kept,
-        "turned_down": rejected,
-        "consolidated_through": through,
-        "marker": marker_seq,
-        "committed": format!(
-            "Pulse {}: {}",
-            view.pulse.0,
-            crate::describe::receipt(&session.names(), &view.effects)
-        ),
-        "size_on_ledger": on_ledger.size,
-    }))
+    Ok(kept)
 }
 
 #[cfg(test)]

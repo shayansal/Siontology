@@ -300,6 +300,7 @@ fn a_better_version_is_released_only_on_evidence_from_others() {
     let (evolution, draft, lines) = sion_cli::skill_improve::evolve(
         &dir,
         &evals,
+        None,
         &models,
         &format!("script:{}", mutator.display()),
         &sion_agent::evolve::Settings::default(),

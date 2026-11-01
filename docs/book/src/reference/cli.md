@@ -2650,6 +2650,7 @@ Commands:
   recall       Everything the log had recorded in a box during an interval, as of its committed head, with a proof checked against the index root the ledger holds
   show         A log's head on the ledger and its local store
   consolidate  Consolidate an agent's memory: a model reads the episodes recorded since the last consolidation and the notes the log keeps, and proposes facts, procedures and preferences worth keeping, each citing its episodes. What the gates keep is recorded as derived atoms (the notes they replace are superseded, not deleted), and the log is committed
+  dream        Dream over an agent's memory: the sessions of the episodes recorded since the last dream, those on this machine, each read whole by a reader of its own, which proposes facts, procedures and preferences with the words of the session that show them. A note is kept only if its session says those words (a session that read content from outside, facts only), then as consolidation keeps it, and the log is committed
   archive      Archive a log for safekeeping: every atom the ledger holds, encrypted for the writer, named on the ledger as the log's manifest and kept by a storage provider under a deal
   restore      Restore a log's local store from its latest archive, checked against the head on the ledger before anything is replaced
   help         Print this message or the help of the given subcommand(s)
@@ -2771,6 +2772,25 @@ Options:
       --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help           Print help
 ```
+
+## `sion memory dream`
+
+```text
+Dream over an agent's memory: the sessions of the episodes recorded since the last dream, those on this machine, each read whole by a reader of its own, which proposes facts, procedures and preferences with the words of the session that show them. A note is kept only if its session says those words (a session that read content from outside, facts only), then as consolidation keeps it, and the log is committed
+
+Usage: sion memory dream [OPTIONS] --model <MODEL> <WALLET> <LOG>
+
+Arguments:
+  <WALLET>  The writer's wallet (the agent's)
+  <LOG>     The log (its id, or a unique prefix of it)
+
+Options:
+      --model <MODEL>  The model that reads: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help           Print help
+```
+
+See [Dreaming](../guides/agent-runtime.md#dreaming).
 
 ## `sion memory archive`
 
@@ -3005,6 +3025,7 @@ Options:
       --mutator <MUTATOR>          The model that proposes variants
       --generations <GENERATIONS>  Generations, at most [default: 3]
       --max-bytes <MAX_BYTES>      The largest SKILL.md a version may have, in bytes [default: 15000]
+      --held-out <FILE>            An evaluation set of the same skill whose cases the evolution never sees: the best version is kept as a draft only if it passes every one of them that the version given passes
   -h, --help                       Print help
 ```
 

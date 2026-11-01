@@ -606,6 +606,106 @@ What you remember and always keep in mind (from your memory log; use memory_reca
 - (preference) user prefers "plain answers about what I cannot do"
 ```
 
+### Dreaming
+
+`sion memory dream` reads the sessions themselves, where consolidation
+reads their episodes, a line or two each: the sessions of the episodes
+recorded since the last dream, those on this machine (12 at most a run),
+each read whole by a reader of its own, a model call without tools that
+is told the transcript is data, four at a time. A reader proposes facts,
+procedures and preferences, each with the words of the session that show
+it. Before anything is kept, those words must be in the session, as they
+are written there (spacing aside) and 12 characters at least, and a
+session that read content from outside yields facts only, kept as a
+prompt-injection risk; then consolidation's gates and its recording take
+over, each note citing its session's episode. Here one session paid an
+invoice for a person who asked to see that payee's invoices first, and
+the other read a web page; the readers are scripted, each answering for
+its own session:
+
+```text
+$ sion memory dream agent-7 0b87c5d6 --model script:dream.json
+agent-7 signs: Commit memory log 0b87c5d6 at 5 atoms, proving it only grew. Fee 0.0011 USD; valid until Pulse 35.
+{
+  "committed": "Pulse 18: Done: memory log 0b87c5d6 now holds 5 atoms (head 3); fee 0.0011 USD.",
+  "dreamt_through": 1,
+  "kept": [
+    {
+      "atom": 2,
+      "from": [
+        "atom 1"
+      ],
+      "kind": "fact",
+      "note": "tiny_http latest release: 0.12.0",
+      "replaces": [],
+      "revision": null,
+      "untrusted": true,
+      "why": "the session says: \"tiny_http's latest release is 0.12.0\""
+    },
+    {
+      "atom": 3,
+      "from": [
+        "atom 0"
+      ],
+      "kind": "preference",
+      "note": "user wants to see first: bob's invoices, before they are paid",
+      "replaces": [],
+      "revision": null,
+      "untrusted": false,
+      "why": "the session says: \"From now on, show me bob's invoices before you pay them.\""
+    }
+  ],
+  "log": "0b87c5d6…3fc2",
+  "marker": 4,
+  "model": "script:dream.json",
+  "sessions_elsewhere": [],
+  "sessions_read": 2,
+  "sessions_unread": [],
+  "size_on_ledger": 5,
+  "tokens": 0,
+  "turned_down": [
+    {
+      "proposal": {
+        "kind": "fact",
+        "quote": "bob takes bank transfers only",
+        "relation": "is paid",
+        "subject": "bob",
+        "value": "by bank transfer only"
+      },
+      "reason": "its quote is not in the transcript"
+    },
+    {
+      "proposal": {
+        "kind": "procedure",
+        "quote": "tiny_http's latest release is 0.12.0",
+        "relation": "are looked up",
+        "subject": "crate versions",
+        "value": "on docs.rs, the crate's latest page"
+      },
+      "reason": "the session read content from outside, so it yields facts only, not a procedure"
+    }
+  ]
+}
+```
+
+The second note proposed for the first session quotes words no one said
+in it, and the procedure from the second is turned down because that
+session read a page. A summary atom marks how far the dream went
+(`memory dreamt-through`), so the next one reads only what came after:
+
+```text
+$ sion memory dream agent-7 0b87c5d6 --model script:dream.json
+{
+  "dreamt": 0,
+  "log": "0b87c5d6…3fc2",
+  "note": "nothing to dream over: no episode after atom 1"
+}
+```
+
+A note kept from a dream shows that its words were said in its session,
+by the person, a tool or the agent itself, not that what it says is true
+(`agent:dream-quote`).
+
 ### Content from outside
 
 A session that read content from outside (a web page, another agent's

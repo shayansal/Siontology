@@ -59,6 +59,7 @@ pub mod builtin;
 pub mod cdp;
 pub mod consolidate;
 pub mod desktop;
+pub mod dream;
 pub mod egress;
 pub mod encoding;
 pub mod evals;

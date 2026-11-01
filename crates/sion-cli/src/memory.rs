@@ -134,6 +134,23 @@ pub enum MemoryCommand {
         #[arg(long)]
         model: String,
     },
+    /// Dream over an agent's memory: the sessions of the episodes recorded
+    /// since the last dream, those on this machine, each read whole by a
+    /// reader of its own, which proposes facts, procedures and preferences
+    /// with the words of the session that show them. A note is kept only
+    /// if its session says those words (a session that read content from
+    /// outside, facts only), then as consolidation keeps it, and the log
+    /// is committed.
+    Dream {
+        /// The writer's wallet (the agent's).
+        wallet: String,
+        /// The log (its id, or a unique prefix of it).
+        log: String,
+        /// The model that reads: anthropic:<model>, openai:<model>,
+        /// gemini:<model> or script:<file>.
+        #[arg(long)]
+        model: String,
+    },
     /// Archive a log for safekeeping: every atom the ledger holds,
     /// encrypted for the writer, named on the ledger as the log's manifest
     /// and kept by a storage provider under a deal.
@@ -298,6 +315,15 @@ pub fn run(
                     "local_atoms": local,
                 }))
                 .unwrap_or_default()
+            );
+            Ok(())
+        }
+        MemoryCommand::Dream { wallet, log, model } => {
+            let id = find_log(ledger, &log)?;
+            let answer = crate::consolidate::dream(session, ledger, &wallet, &id, &model)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&answer).unwrap_or_default()
             );
             Ok(())
         }

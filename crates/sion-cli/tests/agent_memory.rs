@@ -188,6 +188,44 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
         "nothing to commit: the ledger holds the whole log"
     );
 
+    // Dreaming: the session read whole by a reader of its own; a note it
+    // proposes is kept only if the session says it, word for word.
+    let reader = home.join("dream.json");
+    std::fs::write(
+        &reader,
+        json!([
+            {"when": "acme's terms are net 30", "say": json!({"notes": [
+                {"kind": "fact", "subject": "acme", "relation": "is paid",
+                 "value": "30 days after its invoice", "quote": "Acme's terms are net 30"},
+                {"kind": "preference", "subject": "user", "relation": "wants",
+                 "value": "invoices paid the day they arrive",
+                 "quote": "pay every invoice the day it arrives"}
+            ]}).to_string()}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let model = format!("script:{}", reader.display());
+    let dreamt =
+        sion_cli::consolidate::dream(&mut session, ledger.as_ref(), "agent-8", &log, &model)
+            .unwrap();
+    assert_eq!(dreamt["sessions_read"], 1, "{dreamt}");
+    let kept = dreamt["kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 1, "{dreamt}");
+    assert_eq!(kept[0]["note"], "acme is paid: 30 days after its invoice");
+    assert_eq!(kept[0]["from"].as_array().unwrap().len(), 1, "{dreamt}");
+    assert!(
+        dreamt["turned_down"]
+            .to_string()
+            .contains("its quote is not in the transcript"),
+        "{dreamt}"
+    );
+    // A session is dreamt over once.
+    let again =
+        sion_cli::consolidate::dream(&mut session, ledger.as_ref(), "agent-8", &log, &model)
+            .unwrap();
+    assert_eq!(again["dreamt"], 0, "{again}");
+
     // A long task done without writing a skill: the agent is asked whether
     // to write down how it did it, with only its skill tools, and does.
     let long = home.join("long.json");

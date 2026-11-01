@@ -223,6 +223,11 @@ pub enum SkillCommand {
         /// The largest SKILL.md a version may have, in bytes.
         #[arg(long, default_value_t = sion_agent::evolve::MAX_BYTES)]
         max_bytes: usize,
+        /// An evaluation set of the same skill whose cases the evolution
+        /// never sees: the best version is kept as a draft only if it
+        /// passes every one of them that the version given passes.
+        #[arg(long, value_name = "FILE")]
+        held_out: Option<PathBuf>,
     },
     /// Vouch for an evaluation set on your bond: claim that it has no known
     /// way to be passed without doing what the skill describes.
@@ -361,6 +366,7 @@ pub fn run_offline(command: &SkillCommand) -> Option<Result<(), CliError>> {
             mutator,
             generations,
             max_bytes,
+            held_out,
         } => {
             let settings = sion_agent::evolve::Settings {
                 generations: *generations,
@@ -368,8 +374,15 @@ pub fn run_offline(command: &SkillCommand) -> Option<Result<(), CliError>> {
                 ..sion_agent::evolve::Settings::default()
             };
             Some(
-                crate::skill_improve::evolve(dir, evals, models, mutator, &settings)
-                    .map(|(_, _, lines)| print(lines)),
+                crate::skill_improve::evolve(
+                    dir,
+                    evals,
+                    held_out.as_deref(),
+                    models,
+                    mutator,
+                    &settings,
+                )
+                .map(|(_, _, lines)| print(lines)),
             )
         }
         _ => None,
