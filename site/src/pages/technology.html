@@ -1,4 +1,4 @@
-<!--{"file": "technology.html", "title": "Technology | Siontology", "description": "How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, payment streams, forced inclusion and staking.", "nav": "technology", "scenes": ["two-sorted", "lanes", "dag", "da", "fold", "assurance", "clearing", "charters", "streams", "forced", "staking"]}-->
+<!--{"file": "technology.html", "title": "Technology | Siontology", "description": "How Siontology works: two-sorted state, Linear Lanes, Contention Consensus, data availability sampling, the Fold, the Assurance Algebra, Verifiable Clearing, Agent Charters, agent identities, memory logs, Task Charters, storage deals, payment streams, forced inclusion and staking.", "nav": "technology", "scenes": ["two-sorted", "lanes", "dag", "da", "fold", "assurance", "clearing", "charters", "streams", "forced", "staking"]}-->
 <header class="page-head wrap">
   <h1>How Siontology works.</h1>
   <p class="lede">A neo-blockchain pays for ordering only where the mathematics requires it, prices every assumption a claim rests on, and folds every proof into one. Each mechanism below comes with the demo, specification or code behind it, and with its status in the reference implementation.</p>
@@ -21,6 +21,10 @@
         <li><a href="#assurance">The Assurance Algebra</a></li>
         <li><a href="#clearing">Verifiable Clearing</a></li>
         <li><a href="#charters">Agent Charters</a></li>
+        <li><a href="#identities">Agent identities and subagents</a></li>
+        <li><a href="#memory">Memory logs</a></li>
+        <li><a href="#tasks">Task Charters</a></li>
+        <li><a href="#storage">Storage deals</a></li>
         <li><a href="#streams">Payment streams</a></li>
         <li><a href="#forced">Forced inclusion</a></li>
         <li><a href="#staking">Validators, stake and epochs</a></li>
@@ -205,6 +209,41 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
       {{fig:charters:8}}
     </section>
 
+    <section class="topic" id="identities" aria-labelledby="identities-title">
+      <h2 id="identities-title">Agent identities and subagents</h2>
+      <div class="prose">
+        <p>An agent registered on the ledger has an identity of its own: an id, a card that says what it is, and a charter. It can launch subagents in one transaction, each with an identity, an account and limits carved out of its own, down to eight levels. Every charter keeps its lineage, so anyone can recompute each ancestor&rsquo;s id by hashing. Suspending an agent stops every agent below it until it is resumed; revoking it stops them for good, and its principal reclaims what they did not spend.</p>
+        <p>A subagent need not hold keys. The ledger accepts its transactions only in a batch signed by its nearest ancestor that has keys, and one dual signature over a batch&rsquo;s Merkle root authorizes up to 256 transactions, each with a receipt of its own.</p>
+      </div>
+      <p class="status-line"><span class="status status--built">Built on the devnet</span><code>sion demo swarm --local</code><code>sion demo batch --local</code><span>Specification v1.8, v1.13 and v1.14</span><a href="{{DOCS}}concepts/agent-identities.html">In the book</a></p>
+    </section>
+
+    <section class="topic" id="memory" aria-labelledby="memory-title">
+      <h2 id="memory-title">Memory logs</h2>
+      <div class="prose">
+        <p>An agent&rsquo;s or a robot&rsquo;s memory is a log only it can append to. The entries stay with their writer; the ledger keeps the log&rsquo;s size, root and index root, and moves them only along proofs that the log grew, so a rewritten past is refused. A reader asks about a span of space and time and gets a complete answer, with a proof checked against the head on the ledger. What to believe is computed by the reader, under its own policy.</p>
+        <p>The ledger stores the index root without checking it. Anyone who holds an entry an index left out can prove the omission from the head alone, but nothing on the ledger acts on that proof yet (<code>impl:memory-index</code>).</p>
+      </div>
+      <p class="status-line"><span class="status status--built">Built on the devnet</span><code>sion demo robots --local</code><span>Specification v1.9</span><a href="{{DOCS}}concepts/memory.html">In the book</a></p>
+    </section>
+
+    <section class="topic" id="tasks" aria-labelledby="tasks-title">
+      <h2 id="tasks-title">Task Charters</h2>
+      <div class="prose">
+        <p>Work is paid only when its result passes a rule fixed when the task is posted: the claims a result must rest on, who may attest it and who must, and the policy its cost of corruption must meet for the amount at stake. The payment is escrowed at posting and released once. The backing of a paid result stays reserved for the buyer, so a result shown false later, such as one from a grader that could be gamed, is repaid from the slashed bonds.</p>
+      </div>
+      <p class="status-line"><span class="status status--built">Built on the devnet</span><code>sion demo tasks --local</code><span>Specification v1.10 and v1.15</span><a href="{{DOCS}}concepts/task-charters.html">In the book</a></p>
+    </section>
+
+    <section class="topic" id="storage" aria-labelledby="storage-title">
+      <h2 id="storage-title">Storage deals</h2>
+      <div class="prose">
+        <p>A client posts a deal for data named by its Merkle root: how many rounds, a price per proven round held in escrow, and the collateral a provider must post. In every round the provider answers a challenge for pieces drawn from the beacon of the round&rsquo;s first Pulse. A proven round is paid and a missed one is not, and a provider that misses rounds can lose its collateral.</p>
+        <p>A proof shows that the provider could produce the pieces during the round, not that it keeps a copy of its own (<code>storage:no-replication</code>).</p>
+      </div>
+      <p class="status-line"><span class="status status--built">Built on the devnet</span><code>sion demo storage --local</code><span>Specification v1.12</span><a href="{{DOCS}}concepts/storage.html">In the book</a></p>
+    </section>
+
     <section class="topic" id="streams" aria-labelledby="streams-title">
       <h2 id="streams-title">Payment streams</h2>
       <div class="prose">
@@ -261,6 +300,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
           <tbody>
             <tr><th scope="row">Validators and shards</th><td>4 validators, 2 shards, 4 seats per shard committee</td></tr>
             <tr><th scope="row">Pulse</th><td>4 consensus rounds per Pulse; on two shared cores with dual post-quantum signatures, one Pulse every 3.9 seconds was measured</td></tr>
+            <tr><th scope="row">Rounds with nothing to order</th><td>Run back to back; with <code>--idle-round-ms</code>, the chain waits that long between them (10 seconds on the chain <code>sion setup</code> makes)</td></tr>
             <tr><th scope="row">Lane approvals</th><td>Batched and signed every 25 ms</td></tr>
             <tr><th scope="row">Proving</th><td>16 transactions per chunk, replay proofs from two stacks</td></tr>
             <tr><th scope="row">Forced inclusion</th><td>8 Pulses to execute a forced intent</td></tr>
@@ -271,7 +311,7 @@ CoC(&phi;&#8321; &or; &phi;&#8322;) = CoC(&phi;&#8321;) + CoC(&phi;&#8322;)</p>
         </table>
       </div>
       <div class="prose">
-        <p>To measure the primitives, execution, proving and a live devnet on your own machine, run <code>sion bench</code>. Post-quantum signatures and the trust model are on the <a href="security.html">security page</a>; x402 and the agent interfaces are on the <a href="developers.html">developers page</a>.</p>
+        <p>To measure the primitives, execution, proving and a live devnet on your own machine, run <code>sion bench</code>. Post-quantum signatures and the trust model are on the <a href="security.html">security page</a>; x402 and the agent interfaces are on the <a href="developers.html">developers page</a>, and the agent you run on your own computer on <a href="agents.html">its own page</a>.</p>
       </div>
     </section>
   </div>

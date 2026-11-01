@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Papers | Siontology</title>
-<meta name="description" content="The architecture paper behind Siontology, the normative state transition specification, and the implementation status that every claim on the site is held to.">
+<meta name="description" content="The architecture paper behind Siontology, the normative state transition specification, the implementation status that every claim on the site is held to, and the research notes.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Siontology">
 <meta property="og:title" content="Papers | Siontology">
-<meta property="og:description" content="The architecture paper behind Siontology, the normative state transition specification, and the implementation status that every claim on the site is held to.">
+<meta property="og:description" content="The architecture paper behind Siontology, the normative state transition specification, the implementation status that every claim on the site is held to, and the research notes.">
 <meta property="og:url" content="https://siontology.org/whitepapers.html">
 <meta property="og:image" content="https://siontology.org/img/siontology-social-1200x630.png">
 <meta property="og:image:width" content="1200">
@@ -35,7 +35,7 @@
     <button class="icon-button menu-button" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav">Menu</button>
     <nav class="site-nav" id="site-nav" aria-label="Main">
       <ul>
-        <li><a href="use-cases.html">Use cases</a></li><li><a href="technology.html">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html" aria-current="page">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
+        <li><a href="agents.html">Your agent</a></li><li><a href="use-cases.html">Use cases</a></li><li><a href="technology.html">Technology</a></li><li><a href="developers.html">Developers</a></li><li><a href="open-source.html">Open source</a></li><li><a href="security.html">Security</a></li><li><a href="whitepapers.html" aria-current="page">Papers</a></li><li><a href="https://github.com/ColdAI-org/siontology">GitHub</a></li>
       </ul>
     </nav>
     <div class="header-tools">
@@ -67,11 +67,11 @@
   <article class="doc" id="specification" aria-labelledby="specification-title">
     <div>
       <h2 id="specification-title">The state transition specification</h2>
-      <p class="meta">Normative, version 1.5</p>
+      <p class="meta">Normative, version 1.15</p>
     </div>
     <div class="prose">
       <p>The function a proof stack evaluates for every chunk of every Pulse, and through it the whole state transition: preparing and executing a transaction, every operation, the three phases of a Pulse, the commitments a chunk statement carries, verifying a chunk and folding a Pulse. Proof stack B was written from this document alone.</p>
-      <p>Version 1.3 added validators, stake, epochs, rewards, slashing of equivocation, forced-inclusion obligations and committee rotation. Version 1.4 pays rewards from the fees collected during each epoch, and from nothing else. Version 1.5 takes their seats from slashed validators at the epoch boundary even when nobody else is eligible.</p>
+      <p>Version 1.3 added validators, stake, epochs, rewards, slashing of equivocation, forced-inclusion obligations and committee rotation. Version 1.4 pays rewards from the fees collected during each epoch, and from nothing else. Version 1.5 takes their seats from slashed validators at the epoch boundary even when nobody else is eligible. Later versions add, among other things, payment streams, agent identities and subagents, memory logs, Task Charters, storage deals and one signature for a batch of keyless subagents.</p>
       <div class="actions">
         <a class="button button--quiet" href="https://github.com/ColdAI-org/siontology/blob/main/docs/spec/state-transition.md">Read the specification</a>
       </div>
@@ -84,9 +84,22 @@
       <p class="meta">Kept in the repository, with the code</p>
     </div>
     <div class="prose">
-      <p>What the reference implementation builds, simplifies, simulates or leaves out, section by section of the architecture; the trust assumptions it adds; how a light client is trusted; and what two independent reviews found. Every claim on this site is held to it.</p>
+      <p>What the reference implementation builds, simplifies, simulates or leaves out, section by section of the architecture, the agent on your computer included; the trust assumptions it adds; how a light client is trusted; and what the independent reviews found. Every claim on this site is held to it.</p>
       <div class="actions">
         <a class="button button--quiet" href="https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md">Read the status</a>
+      </div>
+    </div>
+  </article>
+
+  <article class="doc" id="research" aria-labelledby="research-title">
+    <div>
+      <h2 id="research-title">Research notes</h2>
+      <p class="meta">In the documentation, with their sources</p>
+    </div>
+    <div class="prose">
+      <p>Where the architecture breaks, and what would have to be true for it to go much further: billions of payments a second, billions of agents, succinct validity proofs, networking between machines, and agents that are reliable and improve themselves. Each note says what is built, what is measured and what is only a plan.</p>
+      <div class="actions">
+        <a class="button button--quiet" href="https://siontology.org/docs/research/index.html">Read the notes</a>
       </div>
     </div>
   </article>
@@ -103,6 +116,7 @@
       <nav aria-labelledby="footer-project">
         <h2 id="footer-project">Project</h2>
         <ul>
+          <li><a href="agents.html">Your agent</a></li>
           <li><a href="use-cases.html">Use cases</a></li>
           <li><a href="technology.html">Technology</a></li>
           <li><a href="developers.html">Developers</a></li>
@@ -123,7 +137,7 @@
     </div>
     <div class="footer-base">
       <p>&copy; ColdAI. Code licensed Apache-2.0 OR MIT.</p>
-      <p>Status: a devnet-scale reference implementation. Proofs are simulated; there is no mainnet and no token.</p>
+      <p>Status: a devnet-scale reference implementation. Proofs are simulated; there is no mainnet.</p>
     </div>
   </div>
 </footer>

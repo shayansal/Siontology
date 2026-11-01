@@ -1,7 +1,7 @@
-<!--{"file": "developers.html", "title": "Developers | Siontology", "description": "Run a Siontology devnet on your machine: the sion CLI, scripted demos, a JSON HTTP API, an MCP server for AI agents, x402 payments, payment streams and a light client.", "nav": "developers", "scenes": ["x402"]}-->
+<!--{"file": "developers.html", "title": "Developers | Siontology", "description": "Build on Siontology: a devnet on your machine, the sion command line, a JSON HTTP API, an MCP server, agents your programs reach over HTTP, OpenAI's chat API and A2A, x402 payments, payment streams and a light client.", "nav": "developers", "scenes": ["x402"]}-->
 <header class="page-head wrap">
-  <h1>Build on the devnet.</h1>
-  <p class="lede">Everything runs on your machine: a devnet of validators that sign with two post-quantum signature families, the <code>sion</code> command line, a JSON HTTP API and a Model Context Protocol server for AI agents. The reference documentation lives at <a href="{{DOCS}}">siontology.org/docs</a>.</p>
+  <h1>Build on the ledger.</h1>
+  <p class="lede">Everything runs on your machine: a devnet whose validators sign with two post-quantum signature families, the <code>sion</code> command line, a JSON HTTP API, a Model Context Protocol server, and agents your programs reach over HTTP, OpenAI&rsquo;s chat API and A2A. The reference documentation lives at <a href="{{DOCS}}">siontology.org/docs</a>.</p>
   <div class="actions" style="margin-top: var(--space-6)">
     <a class="button" href="{{DOCS}}">Read the documentation</a>
     <a class="button button--quiet" href="{{REPO}}">Get the source</a>
@@ -15,6 +15,7 @@
       <div class="prose">
         <p>You need Rust 1.80 or later. One command starts an in-process devnet and drives real transactions through the whole protocol: lane certificates, consensus, Pulse execution, signed headers, data availability and proving. Each demo narrates what the ledger established.</p>
         <p>The devnet is for building and learning. Its validators run in one process, its proofs are checked by replay, and its validator keys are derived from the chain name, so it secures nothing of value.</p>
+        <p>To run an agent of your own instead, <code>sion setup</code> makes a chain, two wallets, the agent and its memory on your computer: see <a href="agents.html#start">Your agent</a>.</p>
       </div>
       {{code:quickstart}}
     </div>
@@ -22,19 +23,27 @@
 
   <section class="topic" id="demos" aria-labelledby="demos-title">
     <h2 id="demos-title">The demos</h2>
+    <div class="prose">
+      <p>Fourteen scripted demos, each run against a node you started or, with <code>--local</code>, against an in-process devnet of its own. The light demo needs a devnet that has already proven a Pulse, so it runs against a node, or inside <code>sion demo all --local</code>. Their recorded output is in <a href="{{DOCS}}getting-started/demos.html">the book</a>.</p>
+    </div>
     <div class="table-scroll">
       <table class="table table--wide">
         <thead><tr><th scope="col">Command</th><th scope="col">What it shows</th></tr></thead>
         <tbody>
           <tr><td><code>sion demo invoice --local</code></td><td>Trade finance on insured knowledge: a bonded invoice claim is priced with the Assurance Algebra, relied on within its backing, and the financier is compensated from slashed bonds when the claim proves false.</td></tr>
           <tr><td><code>sion demo agents --local</code></td><td>An AI agent with a budget the ledger enforces: a payment to an unlisted payee and an over-limit payment are refused; revoking the charter stops the agent and its sub-agent.</td></tr>
+          <tr><td><code>sion demo swarm --local</code></td><td>An orchestrator and fifteen subagents, each with an identity of its own, made in three transactions: a payment over a subagent&rsquo;s limit is refused, suspending the orchestrator stops a subagent two levels down, and an unspent budget is reclaimed.</td></tr>
+          <tr><td><code>sion demo batch --local</code></td><td>Sixty-four keyless subagents each pay, all authorized by one signature over the batch&rsquo;s Merkle root; a batch signed by anyone but their nearest keyed ancestor is not certified.</td></tr>
+          <tr><td><code>sion demo tasks --local</code></td><td>Work paid only when its result passes a rule fixed when the task was posted: a result without enough backing is refused, a task pays once, and a reward hack found later slashes the environment&rsquo;s vendor and repays the lab.</td></tr>
+          <tr><td><code>sion demo robots --local</code></td><td>Two robots share a memory the ledger keeps append-only: complete answers with proofs, a rewrite refused, and an index that hides a scan convicted with a fraud proof.</td></tr>
+          <tr><td><code>sion demo storage --local</code></td><td>A robot&rsquo;s memory kept by a laptop and a phone it pays per proven round: the phone drops data, misses its rounds and forfeits its collateral; the laptop is paid.</td></tr>
           <tr><td><code>sion demo market --local</code></td><td>A sealed-bid GPU-hour market that clears at one price with an optimality certificate.</td></tr>
           <tr><td><code>sion demo receipts --local</code></td><td>Verifiable AI inference receipts: each consumer prices the same receipt under its own assumptions.</td></tr>
           <tr><td><code>sion demo x402 --local</code></td><td>An agent pays an HTTP API per request; a replayed payment and an over-limit payment are refused.</td></tr>
           <tr><td><code>sion demo streams --local</code></td><td>An agent pays an API 2,000 times from one payment stream: one hash per call at the server, a few settlements on the ledger, a call&rsquo;s receipt audited against the ledger.</td></tr>
           <tr><td><code>sion demo censorship --local</code></td><td>Forced inclusion: a censored user gets through by posting straight to consensus. When more than a third of a committee censors too, the shard misses its deadline, its committee is replaced, and certified headers count the overdue intent.</td></tr>
           <tr><td><code>sion demo staking --local</code></td><td>A standby validator stakes and joins the active set at the next epoch boundary, and a light client follows the committee change from genesis. Rewards are claimed; the newcomer signs two headers for one round, is slashed and loses its seat.</td></tr>
-          <tr><td><code>sion demo light --local</code></td><td>A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys.</td></tr>
+          <tr><td><code>sion demo light</code></td><td>A light client pins the chain identity, verifies the latest Pulse end to end and catches a node that serves substituted validator keys.</td></tr>
         </tbody>
       </table>
     </div>
@@ -47,32 +56,44 @@
       <div class="prose">
         <p><code>sion devnet</code> prints the chain identity: a digest of the genesis specification, the validators with their stake and keys, and the shard layout. Pin it with <code>--chain</code> or <code>SION_CHAIN</code>, and every light-client check is made against it; without a pin, the node vouches for itself.</p>
         <p>The client talks to the node at <code>SION_NODE</code>, by default <code>http://127.0.0.1:8730</code>. The demos also run against a live node. The staking demo needs a standby validator and epochs that end: with <code>--local</code> it starts such a devnet itself; for your own, run <code>sion devnet --standby 1 --epoch-length 24</code>.</p>
+        <p>With <code>--idle-round-ms</code>, a chain with nothing to order waits between rounds instead of running them back to back, as the chain <code>sion setup</code> makes does.</p>
       </div>
     </div>
   </section>
 
   <section class="topic" id="cli" aria-labelledby="cli-title">
     <h2 id="cli-title">The command line</h2>
+    <div class="prose">
+      <p>Every command, with its options, is in <a href="{{DOCS}}reference/cli.html">the reference</a>.</p>
+    </div>
     <div class="table-scroll">
       <table class="table table--wide">
         <thead><tr><th scope="col">Command</th><th scope="col">What it does</th></tr></thead>
         <tbody>
-          <tr><td><code>sion devnet</code></td><td>Runs a devnet and serves its API</td></tr>
+          <tr><td><code>sion devnet</code>, <code>sion genesis</code>, <code>sion node</code>, <code>sion gateway</code></td><td>Runs a devnet in one process; or collects validators into a network&rsquo;s genesis and runs each validator and gateway in a process of its own</td></tr>
           <tr><td><code>sion status</code>, <code>sion pulse</code>, <code>sion events</code></td><td>Chain status; a Pulse&rsquo;s header, certificate and summary; recent events</td></tr>
           <tr><td><code>sion keys new</code>, <code>sion keys show</code></td><td>Wallets with ML-DSA-44 and SLH-DSA keys</td></tr>
           <tr><td><code>sion balance</code>, <code>sion faucet</code>, <code>sion send</code></td><td>Balances, the devnet faucet and transfers; <code>send --forced</code> posts straight to consensus</td></tr>
-          <tr><td><code>sion forced</code></td><td>Forced-inclusion obligations: pending and overdue intents</td></tr>
-          <tr><td><code>sion bond</code>, <code>sion claim issue</code>, <code>sion claim show</code>, <code>sion claim decide</code></td><td>Bonds, claims, their cost of corruption and the decision rule</td></tr>
+          <tr><td><code>sion forced</code>, <code>sion censor</code></td><td>Forced-inclusion obligations; adversary simulation on a devnet, censoring accounts at the gateway or at validators</td></tr>
+          <tr><td><code>sion bond</code>, <code>sion claim issue</code>, <code>show</code>, <code>decide</code></td><td>Bonds, claims, their cost of corruption and the decision rule</td></tr>
           <tr><td><code>sion accept</code>, <code>sion challenge</code>, <code>sion rule</code></td><td>Rely on a claim and reserve its backing; challenge a bonded atom; rule as the adjudicator</td></tr>
-          <tr><td><code>sion charter create</code>, <code>sion charter pay</code>, <code>sion charter revoke</code></td><td>Agent Charters</td></tr>
+          <tr><td><code>sion charter create</code>, <code>pay</code>, <code>revoke</code></td><td>Agent Charters</td></tr>
+          <tr><td><code>sion agent register</code>, <code>spawn</code>, <code>show</code>, <code>suspend</code>, <code>resume</code>, <code>revoke</code>, <code>reclaim</code>, <code>narrow</code></td><td>Agent identities on the ledger, their subagents and their limits</td></tr>
+          <tr><td><code>sion setup</code>, <code>sion update</code>, <code>sion doctor</code></td><td>Sets up a chain, wallets and an agent on this machine; installs a release whose signature checks; says what the machine has</td></tr>
+          <tr><td><code>sion</code>, <code>sion -c</code>, <code>sion agent talk</code></td><td>Talks with the agent setup made, in a new conversation or the last; by voice with <code>--voice</code></td></tr>
+          <tr><td><code>sion agent profile</code>, <code>run</code>, <code>continue</code>, <code>sessions</code>, <code>trace</code>, <code>kill-switch</code></td><td>The agent runtime: profiles (model, autonomy level, tools, memory), runs and their approvals, sessions, and a switch that stops every agent on the machine</td></tr>
+          <tr><td><code>sion agent serve</code>, <code>bridge</code>, <code>telegram</code>, <code>gateway</code>, <code>host</code>, <code>pairing</code></td><td>Channels: HTTP, OpenAI&rsquo;s chat API and A2A; the messengers; a gateway for profiles served from other machines; pairing codes for strangers</td></tr>
+          <tr><td><code>sion agent mcp</code>, <code>graph</code>, <code>schedule</code></td><td>MCP servers the agent may use, reviewed and pinned; graphs of agents; scheduled runs</td></tr>
+          <tr><td><code>sion skill</code></td><td>Skills: pack, audit, publish, install, evaluate, improve and vouch for them; post a bounty for a better version</td></tr>
+          <tr><td><code>sion task</code></td><td>Task Charters: post work, attest, submit and settle a result, cancel</td></tr>
+          <tr><td><code>sion memory</code></td><td>Memory logs: open, remember, commit, recall with proofs, consolidate, dream, archive and restore</td></tr>
+          <tr><td><code>sion storage</code></td><td>Storage deals: post, accept, prove each round, settle, retrieve, close; <code>serve</code> runs a provider</td></tr>
           <tr><td><code>sion market create</code>, <code>order</code>, <code>clear</code>, <code>show</code></td><td>Markets that clear with a certificate</td></tr>
-          <tr><td><code>sion tx</code>, <code>sion receipt</code></td><td>A transaction&rsquo;s effects; its receipt, verified as a light client would</td></tr>
-          <tr><td><code>sion verify</code></td><td>Verifies a Pulse as a light client</td></tr>
+          <tr><td><code>sion tx</code>, <code>sion receipt</code>, <code>sion verify</code></td><td>A transaction&rsquo;s effects; its receipt, verified as a light client would; a Pulse, verified as a light client</td></tr>
           <tr><td><code>sion mcp</code></td><td>Serves the Model Context Protocol on stdio</td></tr>
           <tr><td><code>sion x402 serve</code>, <code>sion x402 fetch</code></td><td>Sells or buys HTTP resources per request, by transaction or from a payment stream</td></tr>
           <tr><td><code>sion stream open</code>, <code>pay</code>, <code>check</code>, <code>settle</code>, <code>top-up</code>, <code>close</code>, <code>show</code></td><td>Payment streams by hand: pay with chain elements, check them, settle by walk or by checkpoint</td></tr>
-          <tr><td><code>sion censor</code></td><td>Adversary simulation on a devnet: censor accounts at the gateway or at validators</td></tr>
-          <tr><td><code>sion bench</code></td><td>Measures signatures, hashing, data availability, clearing, the Assurance Algebra, execution, proving, payment streams and a live devnet</td></tr>
+          <tr><td><code>sion demo</code>, <code>sion bench</code></td><td>The scripted demos; measurements of signatures, hashing, data availability, clearing, the Assurance Algebra, execution, proving, payment streams and a live devnet</td></tr>
         </tbody>
       </table>
     </div>
@@ -91,11 +112,13 @@
           <tr><td>GET</td><td><code>/v1/validators</code></td><td>The chain identity, the validator set and the current committees</td></tr>
           <tr><td>GET</td><td><code>/v1/epochs/{e}</code></td><td>The proof linking epoch e &minus; 1 to epoch e, so a light client can follow the committee</td></tr>
           <tr><td>GET</td><td><code>/v1/genesis</code></td><td>The genesis specification and its digest</td></tr>
-          <tr><td>GET</td><td><code>/v1/accounts/{id}</code></td><td>Coins, balances and allotments</td></tr>
+          <tr><td>GET</td><td><code>/v1/accounts/{id}</code></td><td>Coins, balances, allotments and a provider&rsquo;s custody records</td></tr>
           <tr><td>GET</td><td><code>/v1/objects/{id}</code></td><td>An object with its state proof</td></tr>
+          <tr><td>GET</td><td><code>/v1/agents/{id}</code></td><td>An agent identity or a charter: its standing, lineage and limits, each with a state proof</td></tr>
           <tr><td>GET</td><td><code>/v1/claims/{id}</code></td><td>A claim, its status, cost of corruption and inclusion proof</td></tr>
           <tr><td>POST</td><td><code>/v1/claims/{id}/decide</code></td><td>The decision rule for <code>{value, policy?}</code></td></tr>
           <tr><td>POST</td><td><code>/v1/transactions</code></td><td>Submits <code>{tx}</code>: a signed transaction, hex of its canonical encoding</td></tr>
+          <tr><td>POST</td><td><code>/v1/batches</code></td><td>Submits a batch of transactions under one authorization</td></tr>
           <tr><td>GET</td><td><code>/v1/transactions/{digest}</code></td><td>Status, effects and receipt proof</td></tr>
           <tr><td>POST</td><td><code>/v1/faucet</code></td><td>The devnet faucet: <code>{account, amount, asset?}</code></td></tr>
           <tr><td>GET</td><td><code>/v1/pulses/latest</code>, <code>/v1/pulses/{n}</code></td><td>A Pulse&rsquo;s header, certificate and summary</td></tr>
@@ -103,6 +126,7 @@
           <tr><td>GET</td><td><code>/v1/pulses/{n}/data/{row}/{column}</code></td><td>One data share with its proof</td></tr>
           <tr><td>GET</td><td><code>/v1/pulses/{n}/world</code></td><td>The World Proof</td></tr>
           <tr><td>GET</td><td><code>/v1/events?from=&amp;limit=</code></td><td>Events</td></tr>
+          <tr><td>GET</td><td><code>/v1/deals</code></td><td>Storage deals and their state; with <code>?open=1</code>, those open for a provider to accept</td></tr>
           <tr><td>POST</td><td><code>/v1/forced</code></td><td>Posts a forced intent <code>{tx}</code>, bypassing the gateway</td></tr>
           <tr><td>GET</td><td><code>/v1/forced</code></td><td>Forced-inclusion obligations: pending, overdue, resolved</td></tr>
           <tr><td>POST</td><td><code>/v1/devnet/censor</code></td><td>Adversary simulation, devnet only</td></tr>
@@ -112,11 +136,36 @@
     {{code:http}}
   </section>
 
+  <section class="topic" id="agent-api" aria-labelledby="agent-api-title">
+    <h2 id="agent-api-title">Your agent, from a program</h2>
+    <div class="split split--even">
+      <div class="prose">
+        <p><code>sion agent serve</code> lets programs talk to the agents on a machine, each conversation a session, with the same commands and approvals as in a chat. Every request carries a token: the machine&rsquo;s, or one made for a single profile, which only approves or declines if it was made to.</p>
+        <p>The same server answers OpenAI&rsquo;s chat API, so an app made for it can talk to a profile as if it were a model, and, with <code>--a2a</code>, other agents in A2A, versions 0.3 and 1.0. Another agent&rsquo;s message counts as content from outside, so what it asks for that reaches outside or spends waits for a person. An agent gateway takes messages for profiles served from other machines, which connect out to it and prove the agent&rsquo;s key.</p>
+        <p>Tested with curl and test clients, against a local devnet and a scripted model; not with those apps or with other makers&rsquo; agents. <a href="{{DOCS}}agent/channels.html">Channels, in the book</a></p>
+      </div>
+      {{code:agent-api}}
+    </div>
+    <div class="table-scroll">
+      <table class="table table--wide table--api">
+        <thead><tr><th scope="col">Method</th><th scope="col">Path</th><th scope="col">What it returns or does</th></tr></thead>
+        <tbody>
+          <tr><td>POST</td><td><code>/v1/profiles/{name}/messages</code></td><td>A message in a conversation, <code>{text, conversation?, stream?}</code>: the answer, or Server-Sent Events while the agent works</td></tr>
+          <tr><td>GET</td><td><code>/v1/sessions/{id}</code></td><td>A session and where it stands</td></tr>
+          <tr><td>POST</td><td><code>/v1/chat/completions</code></td><td>OpenAI&rsquo;s chat API, the profile as the model; each conversation goes on in its session</td></tr>
+          <tr><td>GET</td><td><code>/v1/models</code></td><td>The profiles the token reaches</td></tr>
+          <tr><td>GET</td><td><code>/.well-known/agent-card.json</code></td><td>The A2A agent card of the profile served with <code>--a2a</code></td></tr>
+          <tr><td>POST</td><td><code>/v1/profiles/{name}/a2a</code></td><td>A2A&rsquo;s JSON-RPC: messages, streamed messages, tasks and their webhooks</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="topic" id="mcp" aria-labelledby="mcp-title">
     <h2 id="mcp-title">Tools for AI agents</h2>
     <div class="split split--even">
       <div class="prose">
-        <p><code>sion mcp</code> serves the Model Context Protocol over stdio, so an agent can pay, issue claims, price a claim before relying on it, pay within an Agent Charter and verify the chain. Every transaction and receipt also comes back as a sentence. The charter&rsquo;s limits are enforced by the ledger, whatever the agent was told.</p>
+        <p><code>sion mcp</code> serves the Model Context Protocol over stdio, so an agent built anywhere can pay, issue claims, price a claim before relying on it, pay within an Agent Charter, post and settle work, keep a memory log and verify the chain. Every transaction and receipt also comes back as a sentence. The charter&rsquo;s limits are enforced by the ledger, whatever the agent was told.</p>
       </div>
       {{code:mcp}}
     </div>
@@ -132,6 +181,9 @@
           <tr><td><code>sion_submit_intent</code></td><td>Submits a transaction the agent built and signed itself</td></tr>
           <tr><td><code>sion_fetch_receipt</code>, <code>sion_verify_pulse</code></td><td>Fetches a receipt or a Pulse and verifies it as a light client, against a pinned chain identity</td></tr>
           <tr><td><code>sion_fetch_paid</code></td><td>Fetches an HTTP resource that charges through x402, paying at most a cap the agent sets</td></tr>
+          <tr><td><code>sion_task_post</code>, <code>attest</code>, <code>submit</code>, <code>settle</code>, <code>show</code></td><td>Task Charters: work paid only when its result passes the rule fixed when it was posted</td></tr>
+          <tr><td><code>sion_memory_open</code>, <code>remember</code>, <code>commit</code>, <code>recall</code></td><td>A memory log the agent alone appends to, its head on the ledger, recalled with proofs</td></tr>
+          <tr><td><code>sion_storage_post</code>, <code>deals</code>, <code>close</code></td><td>Storage deals for the agent&rsquo;s data, proven every round</td></tr>
         </tbody>
       </table>
     </div>

@@ -46,6 +46,7 @@ SMALL_MARK = ('<svg viewBox="0 0 22 22" width="22" height="22" aria-hidden="true
               '<rect x="18" y="18" width="4" height="4"/></svg>')
 
 NAV = [
+    ("agents", "agents.html", "Your agent"),
     ("uses", "use-cases.html", "Use cases"),
     ("technology", "technology.html", "Technology"),
     ("developers", "developers.html", "Developers"),
@@ -55,7 +56,7 @@ NAV = [
 ]
 
 # Order of the sitemap; any other indexable page follows, sorted.
-SITEMAP_ORDER = ["index.html", "use-cases.html", "technology.html", "developers.html", "open-source.html",
+SITEMAP_ORDER = ["index.html", "agents.html", "use-cases.html", "technology.html", "developers.html", "open-source.html",
                  "security.html", "whitepapers.html", "brand.html", "legal.html"]
 
 THEME_ICON = ('<svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">'
@@ -101,6 +102,7 @@ def footer(base):
       <nav aria-labelledby="footer-project">
         <h2 id="footer-project">Project</h2>
         <ul>
+          <li><a href="{base}agents.html">Your agent</a></li>
           <li><a href="{base}use-cases.html">Use cases</a></li>
           <li><a href="{base}technology.html">Technology</a></li>
           <li><a href="{base}developers.html">Developers</a></li>
@@ -121,7 +123,7 @@ def footer(base):
     </div>
     <div class="footer-base">
       <p>&copy; ColdAI. Code licensed Apache-2.0 OR MIT.</p>
-      <p>Status: a devnet-scale reference implementation. Proofs are simulated; there is no mainnet and no token.</p>
+      <p>Status: a devnet-scale reference implementation. Proofs are simulated; there is no mainnet.</p>
     </div>
   </div>
 </footer>'''

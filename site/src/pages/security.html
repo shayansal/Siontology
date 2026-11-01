@@ -1,7 +1,7 @@
-<!--{"file": "security.html", "title": "Security | Siontology", "description": "What Siontology's security rests on, what the reference implementation simulates or leaves out, its post-quantum signatures, its reviews, and how to report a vulnerability.", "nav": "security", "scenes": ["pq"]}-->
+<!--{"file": "security.html", "title": "Security | Siontology", "description": "What Siontology's security rests on, for the ledger and for agents on your machine: what the reference implementation simulates or leaves out, its post-quantum signatures, its reviews, and how to report a vulnerability.", "nav": "security", "scenes": ["pq"]}-->
 <header class="page-head wrap">
   <h1>Every assumption, named.</h1>
-  <p class="lede">Validity is cryptographic. Ordering, liveness and censorship resistance rest on committee stake. Facts about the world rest on priced assumptions. This page lists what each guarantee rests on, what the reference implementation adds or leaves out, and how to report a flaw.</p>
+  <p class="lede">Validity is cryptographic. Ordering, liveness and censorship resistance rest on committee stake. Facts about the world rest on priced assumptions. An agent&rsquo;s spending rests on the ledger, and the rest of its limits on the machine it runs on. This page lists what each guarantee rests on, what the reference implementation adds or leaves out, and how to report a flaw.</p>
   <p class="notice-line"><strong>A devnet secures nothing of value.</strong> Its validator keys are derived from the chain name, so anyone can derive them.</p>
 </header>
 
@@ -13,6 +13,7 @@
         <li><a href="#model">What each guarantee rests on</a></li>
         <li><a href="#signatures">Post-quantum signatures</a></li>
         <li><a href="#stake">Stake and slashing</a></li>
+        <li><a href="#agents">Agents on your machine</a></li>
         <li><a href="#simulated">What is simulated</a></li>
         <li><a href="#not-claimed">What is not claimed</a></li>
         <li><a href="#reviews">Reviews</a></li>
@@ -62,6 +63,31 @@
       </div>
     </section>
 
+    <section class="topic" id="agents" aria-labelledby="agents-title">
+      <h2 id="agents-title">Agents on your machine</h2>
+      <div class="prose">
+        <p>An agent&rsquo;s limits live in two places. Its charter, what it may spend, to whom and until when, is enforced by the ledger, whatever the agent was told. Its autonomy level, the approvals people give, and the taint of content from outside are enforced by the runtime on the machine it runs on, so they hold only as far as that machine does (<code>agent:local-policy</code>). The model is not trusted to behave: a test gives nine attacks to a scripted model that does whatever it reads, and records what stopped each.</p>
+      </div>
+      <div class="table-scroll">
+        <table class="table table--wide">
+          <thead><tr><th scope="col">What</th><th scope="col">Rests on</th><th scope="col">Atoms</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">What it spends</th><td>Its charter on the ledger, checked by the validators at every payment from its budget; one revocation stops it and every subagent. A storage deal it posts is paid from the account it pays fees from, which the charter does not bound, and what a tool does elsewhere is up to that tool&rsquo;s server</td><td>As for the chain; <code>agent:storage-from-account</code>, <code>agent:mcp-effects</code></td></tr>
+            <tr><th scope="row">What it does without asking</th><td>The runtime on its machine: the autonomy level, approvals and the taint of content from outside</td><td><code>agent:local-policy</code></td></tr>
+            <tr><th scope="row">Commands it runs</th><td>Bubblewrap&rsquo;s namespaces or a container runtime; with a network allowed, whatever that network reaches</td><td><code>agent:sandbox</code>, <code>agent:sandbox-network</code></td></tr>
+            <tr><th scope="row">Keys and credentials</th><td>Encryption under a key in a file only your user can read; a variable set in the environment is used instead</td><td><code>agent:kept-credentials</code>, <code>agent:secret-store</code></td></tr>
+            <tr><th scope="row">Its conversations</th><td>The model provider you chose, which sees them; on your machine they are stored unencrypted</td><td><code>agent:provider-sees-context</code>, <code>agent:plain-sessions</code></td></tr>
+            <tr><th scope="row">Who it answers</th><td>Each messenger&rsquo;s word for who wrote, the signatures on its webhooks, and the pairing codes you approve</td><td><code>agent:messenger-identity</code>, <code>agent:webhooks</code>, <code>agent:pairing</code></td></tr>
+            <tr><th scope="row">The tools of MCP servers</th><td>Your review of each tool, pinned by a digest; a server you add without a sandbox runs as your user</td><td><code>agent:mcp-effects</code>, <code>agent:mcp-unsandboxed</code></td></tr>
+            <tr><th scope="row">Updates</th><td>A release whose checksums are signed by the release key the program names; the installer&rsquo;s first download trusts HTTPS and GitHub</td><td><code>release:signing-key</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="prose">
+        <p>Two of the nine attacks got through: a file in the workspace that tells the agent to post it, since what it reads from its own workspace does not taint a session (<code>agent:workspace-content</code>), and a page that has it send a key through a tool you contained, which reaches only where you named. <a href="agents.html#security">The attacks, row by row</a>. Every agent atom, more than sixty, is in <a href="{{DOCS}}security/trust-model.html">the trust model</a>.</p>
+      </div>
+    </section>
+
     <section class="topic" id="simulated" aria-labelledby="simulated-title">
       <h2 id="simulated-title">What is simulated</h2>
       <div class="prose">
@@ -106,9 +132,10 @@
     <section class="topic" id="not-claimed" aria-labelledby="not-claimed-title">
       <h2 id="not-claimed-title">What is not claimed</h2>
       <ul class="rows">
+        <li><h3>It does not make a model safe.</h3><p>A model that reads an attacker&rsquo;s words may do what they say. What holds it back is the runtime, which is only as safe as the machine it runs on, and the ledger, which holds its spending to its charter.</p></li>
         <li><h3>It does not make the world honest.</h3><p>A claim about a physical event is only as strong as the bonds and evidence behind it. The design prices that risk instead of hiding it.</p></li>
         <li><h3>It does not remove stake from safety.</h3><p>A Byzantine third of a committee can still double-certify, and is slashed for it. Two conflicting World Proofs could then exist, and only stake decides which is canonical.</p></li>
-        <li><h3>It is not proven at scale.</h3><p>The capacity and latency figures are design targets, to be met or missed on a public testnet. There is no testnet and no mainnet.</p></li>
+        <li><h3>It is not proven at scale.</h3><p>The capacity and latency figures are design targets, not measurements. There is no testnet and no mainnet.</p></li>
         <li><h3>It is not private yet.</h3><p>Payloads can be encrypted and orders sealed, but amounts and balances are public. Confidential transfers and compliance by proof need a zero-knowledge stack that is not built.</p></li>
         <li><h3>Some defences are not built.</h3><p>Personhood, a proving market, payments to provers and a cap on value in flight are missing. Networking between machines is simplified: processes have talked over QUIC on one machine, and a validator that stops cannot rejoin.</p></li>
       </ul>
@@ -117,7 +144,7 @@
     <section class="topic" id="reviews" aria-labelledby="reviews-title">
       <h2 id="reviews-title">Reviews</h2>
       <div class="prose">
-        <p>Four independent reviews, run by AI agents that had not written the code, read the consensus-critical libraries, the node, the validator machinery, and storage deals with the app, and confirmed their findings with tests. Everything they found is fixed with a regression test, except where marked open. Among the fixes:</p>
+        <p>Independent reviews, run by AI agents that had not written the code, read the consensus-critical libraries, the node, the validator machinery, the networking plan, and storage deals with the app, and confirmed their findings with tests. Everything they found is fixed with a regression test, except where marked open. Among the fixes:</p>
         <ul>
           <li>an unbounded chain of claim references could overflow a validator&rsquo;s stack; claim references and formulas now have bounded depth;</li>
           <li>a signature cache keyed on the transaction body but not its signatures, so a copy with stripped signatures could split replicas;</li>
@@ -131,7 +158,7 @@
           <li>a provider fetched from any address a deal named, including its own machine and network; it now refuses local files and private addresses unless told otherwise;</li>
           <li>the app presented the node&rsquo;s account of what a transaction did as fact; it now shows what the receipt it proved says, and labels anything else as the node&rsquo;s unproven report.</li>
         </ul>
-        <p><strong>Open:</strong> fee-paying transactions with large bodies can still make Pulses slow, since data-availability encoding of the largest allowed Pulse takes seconds on one core; an account query scans every object; the active set can shrink to a single validator (<code>impl:active-floor</code>).</p>
+        <p><strong>Open:</strong> fee-paying transactions with large bodies can still make Pulses slow, since data-availability encoding of the largest allowed Pulse takes seconds on one core; an account query scans every object; the active set can shrink to a single validator (<code>impl:active-floor</code>); Pulse headers do not yet commit to the beacon reveals a validator syncing from certified headers will need.</p>
         <p>Differential testing of the two proof stacks found two defects in the reference executor, including a market deadline overflow that let any account halt the chain; both were fixed in specification v1.1. The full list is in <a href="{{REPO}}/blob/main/docs/implementation-status.md#reviews-and-what-they-found">docs/implementation-status.md</a>.</p>
       </div>
     </section>

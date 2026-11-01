@@ -1,13 +1,149 @@
-<!--{"file": "index.html", "title": "Siontology: verified knowledge, not ordered transactions", "description": "Siontology is an open-source ledger where payments, AI output and claims carry a proof or priced evidence: AI agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices.", "nav": "", "scenes": ["fold-hero", "streams", "x402", "charters", "assurance"]}-->
+<!--{"file": "index.html", "title": "Siontology: trust you can check, for people and their agents", "description": "Siontology is open source: an AI agent you run on your own computer, its limits in a ledger, and a ledger where payments, AI output and claims carry a proof or priced evidence that anyone can check.", "nav": "", "scenes": ["agent", "fold-hero", "streams", "assurance"]}-->
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
-    <h1 class="display" id="hero-title"><span class="line">Know what to trust</span> <span class="line">before you rely on it.</span></h1>
-    <div class="hero-intro">
-      <p class="lede">Siontology is an open-source ledger for an economy in which AI agents buy, sell and publish. Payments, AI output and claims about the world carry a proof or priced evidence, so a person or an agent can check them and see what faking them would cost.</p>
-      <div class="actions">
-        <a class="button" href="#uses">What it is for</a>
-        <a class="button button--quiet" href="technology.html">How it works</a>
-      </div>
+    <h1 class="display" id="hero-title"><span class="line">Trust you can check,</span> <span class="line">for people and their agents.</span></h1>
+    <p class="lede hero-lede">Siontology is open source: an AI agent you run on your own computer, and the ledger that holds it, and every other agent, to account. Payments, memory and claims carry a proof or priced evidence, so anyone can check them and see what faking them would cost.</p>
+    <div class="doors">
+      <article class="door" aria-labelledby="door-agent-title">
+        <p class="door-for">For you</p>
+        <h2 id="door-agent-title">Run your own agent</h2>
+        <p>One command sets up an agent on your computer, with a chain of its own beside it. It answers you in the terminal and on 28 messaging services, works in a folder you give it, browses, remembers, and asks before it spends.</p>
+        <figure class="door-term">
+          <pre><code><span class="l">$ sion setup --yes --model script:assistant.json</span><span class="l c">&hellip;</span><span class="l">Ready.</span><span class="l c">&hellip;</span><span class="l">$ sion</span><span class="l">Talking with assistant (conversation 2026-11-01-153915); end with Ctrl-D, continue later with `sion -c`.</span><span class="l">you&gt; <span class="t">What is in your workspace?</span></span><span class="l">  &middot; list_files</span><span class="l">agent&gt; Your workspace is empty so far. Put files in it, or ask me to write some.</span></code></pre>
+          <figcaption>From the recording in the guide, shortened at &hellip;, with what was typed added after <code>you&gt;</code> (it went in on standard input). A scripted model stands in for a real one.</figcaption>
+        </figure>
+        <div class="actions">
+          <a class="button" href="#agent">What it does</a>
+          <a class="button button--quiet" href="agents.html">Your agent, in full</a>
+        </div>
+      </article>
+      <article class="door" aria-labelledby="door-ledger-title">
+        <p class="door-for">For builders</p>
+        <h2 id="door-ledger-title">Build on the ledger</h2>
+        <p>Agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices: a neo-blockchain whose product is verified knowledge, not ordered transactions.</p>
+        <figure class="door-term">
+          <pre><code><span class="l">$ sion demo agents --local</span><span class="l c">&hellip;</span><span class="l">Pulse   7  agent pays gpu-cloud 80 USD for inference: accepted; receipt claim 0586a32c joins the knowledge log</span><span class="l">Pulse  11  a prompt-injected agent tries to pay mallory 90 USD <span class="x">&rarr; refused by the ledger: charter caveat violated: payee not allowed</span></span><span class="l">Pulse  13  the agent tries a 150 USD payment <span class="x">&rarr; refused by the ledger: charter caveat violated: payment 150 above per-payment limit 100</span></span><span class="l c">&hellip;</span><span class="l">Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived in the ledger, not the agent.</span></code></pre>
+          <figcaption>From the recording of <code>sion demo agents --local</code> in the book, shortened at &hellip;</figcaption>
+        </figure>
+        <div class="actions">
+          <a class="button" href="#ledger">What it is for</a>
+          <a class="button button--quiet" href="technology.html">How it works</a>
+        </div>
+      </article>
+    </div>
+    <p class="status-line"><strong>Status</strong><span>A devnet-scale reference implementation in Rust. Succinct proofs are simulated, networking between machines is simplified and tested on one machine, the agent&rsquo;s model providers and messengers are tested against stand-ins, and there is no mainnet.</span><a href="#status">What exists today</a></p>
+  </div>
+</section>
+
+<section class="section" id="agent" aria-labelledby="agent-title">
+  <div class="wrap">
+    <p class="path-label">For you: your own agent</p>
+    <div class="section-head">
+      <h2 class="statement" id="agent-title">An agent of your own. Its limits in a ledger.</h2>
+      <p>It runs on your computer, beside a chain of your own. It answers where you already talk, works in a folder you give it, browses and remembers. The ledger refuses whatever its charter forbids, even from an agent that was prompt-injected, and keeps the head of its memory log, so its past cannot be rewritten unnoticed.</p>
+    </div>
+    {{fig:agent}}
+    <div class="cells cells--3">
+      <article class="uc">
+        {{icon:talk}}
+        <p class="uc-for">Where you talk</p>
+        <h3>It answers where you already are</h3>
+        <p>In the terminal, and on 28 messaging services: Telegram, WhatsApp, Signal, Slack, Discord, iMessage, Microsoft Teams, WeChat, email, SMS and more. It hears voice notes, and answers aloud where the service takes a bot&rsquo;s audio. A stranger gets a pairing code, and no answer until you approve them.</p>
+        <p class="uc-foot"><span class="status status--built">Built; tested against stand-ins</span><code>sion agent bridge --help</code></p>
+        <a class="cell-link" href="agents.html#talk">Every channel</a>
+      </article>
+      <article class="uc">
+        {{icon:ask}}
+        <p class="uc-for">Approvals</p>
+        <h3>It asks before it spends</h3>
+        <p>Autonomy levels from L0 to L6 decide what it does alone; by default it asks you, in the chat, before it pays. Once it has read anything from outside, it asks before reaching outside again. Each decision is kept with who made it; one made at the command line can be signed with a wallet.</p>
+        <p class="uc-foot"><span class="status status--built">Built</span><code>/approve</code></p>
+        <a class="cell-link" href="agents.html#asks">What it does alone</a>
+      </article>
+      <article class="uc">
+        {{icon:limits}}
+        <p class="uc-for">The ledger</p>
+        <h3>Limits it cannot talk its way past</h3>
+        <p>Its charter fixes its budget, its largest payment and whom it may pay. The autonomy level decides what it tries; the ledger, what it can do. One revocation stops it and every subagent it launched.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo agents --local</code></p>
+        <a class="cell-link" href="use-cases.html#agents">Walk through it</a>
+      </article>
+      <article class="uc">
+        {{icon:sandbox}}
+        <p class="uc-for">Tools</p>
+        <h3>Hands, in a sandbox</h3>
+        <p>A shell that can write only its workspace, in bubblewrap or Docker; a browser it reads as an accessibility tree; a desktop of its own; and the reviewed tools of MCP servers, over standard input or HTTP with OAuth.</p>
+        <p class="uc-foot"><span class="status status--built">Built</span><code>--shell --browser</code></p>
+        <a class="cell-link" href="agents.html#tools">Its tools</a>
+      </article>
+      <article class="uc">
+        {{icon:memory}}
+        <p class="uc-for">Memory</p>
+        <h3>Memory it cannot rewrite</h3>
+        <p>It keeps what it learns in a log only it can append to, and the ledger keeps the log&rsquo;s head. It searches its past sessions and dreams over them, keeping a note only if its session says what the note quotes and, with <code>--eval</code>, no task held out does worse with it.</p>
+        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion memory dream</code></p>
+        <a class="cell-link" href="agents.html#memory">How it remembers</a>
+      </article>
+      <article class="uc">
+        {{icon:skills}}
+        <p class="uc-for">Skills</p>
+        <h3>Skills with a supply chain</h3>
+        <p>Skills come with bonds and audits, and declare what they may do: the calls they pre-approve, the hosts their scripts reach, the secrets they get. A version offered as better can rest on checks by others, fixed before it existed.</p>
+        <p class="uc-foot"><span class="status status--built">Built</span><code>sion skill install</code></p>
+        <a class="cell-link" href="agents.html#skills">Skills</a>
+      </article>
+      <article class="uc">
+        {{icon:model}}
+        <p class="uc-for">Models</p>
+        <h3>The model you choose</h3>
+        <p>Claude, OpenAI or Gemini with a key, your ChatGPT plan, or a model server on your own machine, such as Ollama. Keys are kept sealed on your computer; your conversations go only to the models you chose, and voice notes to the speech service you name.</p>
+        <p class="uc-foot"><span class="status status--built">Built; providers tested against stand-ins</span><code>sion setup</code></p>
+        <a class="cell-link" href="agents.html#models">Models</a>
+      </article>
+      <article class="uc">
+        {{icon:team}}
+        <p class="uc-for">Teams</p>
+        <h3>Help it can hire</h3>
+        <p>It hands work to subagents with identities and budgets of their own, hires other agents under Task Charters that pay only for work that passes, and, asked to choose, runs a small graph of agents only where one has measured better than a single agent.</p>
+        <p class="uc-foot"><span class="status status--built">Built</span><code>sion agent graph</code></p>
+        <a class="cell-link" href="agents.html#teams">Teams and graphs</a>
+      </article>
+      <article class="uc">
+        {{icon:attacks}}
+        <p class="uc-for">Security</p>
+        <h3>Tried against attacks</h3>
+        <p>Nine attacks on a model that does whatever it reads. Seven were held for a person or never reached the model; two got through, at the boundaries as built, and the test says which.</p>
+        <p class="uc-foot"><span class="status status--built">Built</span><code>tests/attacks.rs</code></p>
+        <a class="cell-link" href="agents.html#security">What got through</a>
+      </article>
+    </div>
+    <p class="notice-line"><strong>How it was tested:</strong> with a scripted model, and with stand-ins for the model providers&rsquo; and the messengers&rsquo; APIs, which the environment it was built in cannot reach. Its autonomy, approvals and taint are enforced on your machine; its charter, by the ledger. <a href="agents.html#limits">What it does not do yet</a></p>
+    <div class="split split--even agent-start">
+      {{code:own-agent}}
+      <ul class="rows">
+        <li>
+          <h3>One command</h3>
+          <p>Setup makes a chain of your own, your wallet and your agent&rsquo;s, the agent with a budget, its memory log, its model and a profile. Run again, it changes only what it must.</p>
+        </li>
+        <li>
+          <h3>A chain that rests</h3>
+          <p>With nothing to order, the chain waits between rounds: 5.7% of one core at rest and a transfer in 2.3 s, measured on two cores, against 98.8% without the wait.</p>
+        </li>
+        <li>
+          <h3>Updates you can check</h3>
+          <p><code>sion update</code> installs a release only once its signature, by the release key the program was built with, and its checksum hold. The release key does not exist yet, and no release has been published.</p>
+        </li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="ledger" aria-labelledby="ledger-title">
+  <div class="wrap">
+    <p class="path-label">For builders: the ledger</p>
+    <div class="section-head">
+      <h2 class="statement" id="ledger-title">Know what to trust before you rely on it.</h2>
+      <p>Siontology is an open-source ledger for an economy in which AI agents buy, sell and publish. Payments, AI output and claims about the world carry a proof or priced evidence, so a person or an agent can check them and see what faking them would cost.</p>
     </div>
   </div>
   <figure class="hero-figure" aria-labelledby="hero-fig-title">
@@ -17,14 +153,12 @@
         <div>
           <p class="visually-hidden" id="hero-fig-title">The Fold</p>
           <p id="hero-fig-desc">Illustration of the design. Operations stream into leaf batches: solid for owned transfers, outline for claims, hatched for contended batches. Every Pulse, each level folds pairwise into the one above, and the root joins the World Proof, a pair of roots from two independent proof stacks. On today&rsquo;s devnet, four validators on two shared cores closed a Pulse about every four seconds, and World Proofs are checked by replay.</p>
+          <dl class="plate-meta"><div><dt>Run it</dt><dd><code>sion verify --chain &lt;identity&gt;</code></dd></div><div><dt>Source</dt><dd><a href="{{REPO}}/blob/main/docs/spec/state-transition.md">Specification &sect;8 and &sect;9</a></dd></div><div><dt>Status</dt><dd><span class="status status--simulated">Simulated: replay proofs with real bindings</span></dd></div></dl>
         </div>
         {{toggle}}
       </div>
     </figcaption>
   </figure>
-  <div class="wrap">
-    <p class="status-line"><strong>Status</strong><span>A devnet-scale reference implementation in Rust. Succinct proofs are simulated, networking between machines is simplified and tested on one machine, and there is no mainnet and no token.</span><a href="#status">What exists today</a></p>
-  </div>
 </section>
 
 <section class="section" id="uses" aria-labelledby="uses-title">
@@ -110,7 +244,7 @@
         {{icon:storage}}
         <p class="uc-for">For anyone who keeps data with someone else</p>
         <h3>Storage that proves itself every round</h3>
-        <p>Pay per round to have data kept, fixed by its Merkle root. The provider puts up collateral and, each round, shows pieces of the data nobody could predict. A provider that loses data is caught and loses its collateral. Any computer running the app can be a provider.</p>
+        <p>Pay per round to have data kept, fixed by its Merkle root. The provider puts up collateral and, each round, shows pieces of the data nobody could predict. A provider that cannot produce them misses the round and loses collateral. Any computer running the app can be a provider.</p>
         <p class="uc-today"><strong>Today</strong>You take a storage provider&rsquo;s word that your data is still there, until the day you need it.</p>
         <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo storage --local</code></p>
         <a class="cell-link" href="use-cases.html#storage">Walk through it</a>
@@ -134,26 +268,6 @@
     </dl>
     {{fig:streams}}
     <p class="notice-line"><strong>What this is not:</strong> a billion general transactions a second. A stream pays one payee, one way, out of escrow, and the settlement rates come from one machine, not a network. <a href="{{DOCS}}research/billion-scale.html">The research note: construction, measurements, prior art and limits</a></p>
-  </div>
-</section>
-
-<section class="section" aria-labelledby="x402-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="x402-title">An agent buys one API call.</h2>
-      <p>The agent asks for a forecast and gets 402 Payment Required with a price. It pays under its charter, the server checks the payment the way a light client would, and only then answers. No account, no key, no invoice, and the agent&rsquo;s limits hold even if its prompt is hijacked.</p>
-    </div>
-    {{fig:x402}}
-  </div>
-</section>
-
-<section class="section" aria-labelledby="charters-title">
-  <div class="wrap">
-    <div class="section-head">
-      <h2 class="statement" id="charters-title">Limits live in the ledger, not in the agent.</h2>
-      <p>An Agent Charter fixes whom an AI agent may pay, how much per payment and how fast, and who answers for it. Validators check every payment against the charter, so a hijacked or prompt-injected agent cannot exceed it, and revoking the charter stops every sub-agent at once.</p>
-    </div>
-    {{fig:charters}}
   </div>
 </section>
 
@@ -236,7 +350,7 @@
         </li>
         <li>
           <h3>A normative specification</h3>
-          <p>The state transition, version 1.7, written so that another implementation can be built from the document alone. It covers validators, stake, epochs, slashing, the response to censorship and payment streams, and pays validators from fees alone.</p>
+          <p>The state transition, version 1.15, written so that another implementation can be built from the document alone. It covers validators, stake, epochs, slashing, the response to censorship and payment streams, and pays validators from fees alone.</p>
         </li>
         <li>
           <h3>Every shortcut named</h3>
@@ -251,12 +365,17 @@
   <div class="wrap">
     <div class="section-head">
       <h2 class="statement" id="status-title">What exists today.</h2>
-      <p>A devnet-scale reference implementation in Rust. Where it falls short of the architecture, it says so. The full account is in <a href="{{REPO}}/blob/main/docs/implementation-status.md">docs/implementation-status.md</a>.</p>
+      <p>A devnet-scale reference implementation in Rust, and an agent you can run on it. Where it falls short of the architecture, it says so. The full account is in <a href="{{REPO}}/blob/main/docs/implementation-status.md">docs/implementation-status.md</a>.</p>
     </div>
     <div class="table-scroll">
       <table class="table table--wide">
-        <thead><tr><th scope="col">Part of the architecture</th><th scope="col">Status</th></tr></thead>
+        <thead><tr><th scope="col">Part</th><th scope="col">Status</th></tr></thead>
         <tbody>
+          <tr><td>Your agent: a model at work under autonomy levels and approvals, within its charter; memory, skills, verified self-improvement, subagents, schedules</td><td><span class="status status--simplified">Partly built; tested with a scripted model and stand-ins</span></td></tr>
+          <tr><td>Where it talks: the terminal, 28 messaging services, voice notes, an HTTP channel, OpenAI&rsquo;s chat API and A2A</td><td><span class="status status--built">Built; tested against stand-ins for the services</span></td></tr>
+          <tr><td>Its tools: a sandboxed shell, a browser, a desktop of its own, MCP servers over standard input or HTTP with OAuth</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>Graphs of agents, dreaming, evaluations and judges, quarantine, signed decisions</td><td><span class="status status--built">Built</span></td></tr>
+          <tr><td>One person, one machine: <code>sion setup</code>, the installer, signed updates</td><td><span class="status status--simplified">Built; no release published yet, services not run on a desktop</span></td></tr>
           <tr><td>Two-sorted state, with the coordination class derived from what a transaction touches</td><td><span class="status status--built">Built</span></td></tr>
           <tr><td>Post-quantum accounts: ML-DSA-44 and SLH-DSA on every authorization; ML-KEM-768 for payloads</td><td><span class="status status--built">Built</span></td></tr>
           <tr><td>Linear Lanes and Escrow Lanes</td><td><span class="status status--built">Built</span></td></tr>
@@ -271,7 +390,6 @@
           <tr><td>The Fold: a World Proof per Pulse, from two independent stacks</td><td><span class="status status--simulated">Simulated: replay proofs</span></td></tr>
           <tr><td>Agent identities and subagents, memory logs for agents and robots, Task Charters</td><td><span class="status status--built">Built (devnet)</span></td></tr>
           <tr><td>Batched authorization: one signature for up to 256 transactions, keyless subagents signed for by their nearest keyed ancestor</td><td><span class="status status--built">Built (devnet)</span></td></tr>
-          <tr><td>An agent runtime: a model works as an agent, under autonomy levels and approvals, within its charter</td><td><span class="status status--simplified">Runtime, memory, skills, verified self-improvement, subagents, schedules, channels, a sandboxed shell and MCP servers built</span></td></tr>
           <tr><td>Storage deals: data kept by providers who prove it every round</td><td><span class="status status--built">Built (devnet)</span></td></tr>
           <tr><td>The app: a light node on every device, which can also provide storage</td><td><span class="status status--simplified">Desktop built; mobile not built yet</span></td></tr>
           <tr><td>Networking between machines</td><td><span class="status status--simplified">Simplified: QUIC between processes, peers from files</span></td></tr>

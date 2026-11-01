@@ -40,7 +40,7 @@
     <div class="split split--even">
       <div class="prose">
         <p>The state transition specification is normative: it defines the function a proof stack evaluates for every chunk of every Pulse, and through it the whole state transition, from preparing and executing one transaction to the three phases of a Pulse and the commitments each chunk statement carries. Where the two implementations disagree, one of them is wrong.</p>
-        <p>Since version 1.3 the state transition covers validators, stake, epochs and the response to censorship, so every committee change follows its rules and the World Proof covers it. Version 1.4 pays validators from fees alone; version 1.5 takes their seats from slashed validators even when nobody else is eligible.</p>
+        <p>Since version 1.3 the state transition covers validators, stake, epochs and the response to censorship, so every committee change follows its rules and the World Proof covers it. Version 1.4 pays validators from fees alone; version 1.5 takes their seats from slashed validators even when nobody else is eligible. Later versions add what agents need from the ledger. It is at version 1.15, and both proof stacks implement it.</p>
       </div>
       <ol class="rows">
         <li><h3>v1.1</h3><p>From differential testing of stack B against stack A: saturating deadlines and windows, bounded market periods, specified deferred-phase errors, and what the World Proof binds.</p></li>
@@ -48,6 +48,7 @@
         <li><h3>v1.3</h3><p>Staking with proof of key possession, unbonding, rewards by weight, slashing of equivocation with a share to the reporter, forced-inclusion obligations and committee rotation.</p></li>
         <li><h3>v1.4</h3><p>Rewards from fees only: the state keeps a running total of fees collected, and each epoch pays its validators a share of what was collected during it, so slashed stake and other funds in the treasury never add to rewards.</p></li>
         <li><h3>v1.5</h3><p>From an independent review: slashed validators lose their seats at the epoch boundary even if nobody else is eligible, so a chain whose every eligible validator was slashed halts instead of running on them.</p></li>
+        <li><h3>v1.6 to v1.15</h3><p>Among them: payment streams with checkpoints; agent identities, subagents and suspension; memory logs that can only grow; Task Charters; storage deals proven every round; one signature for a batch of keyless subagents; lineage ids and token buckets; verifiers a task names who must attest. The <a href="{{REPO}}/blob/main/CHANGELOG.md">changelog</a> has every version.</p></li>
       </ol>
     </div>
   </section>
@@ -72,8 +73,13 @@
           <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-spec"><code>sion-spec</code></a></th><td>Proof stack B: an independent implementation of the state transition, written from the specification</td></tr>
           <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-prover"><code>sion-prover</code></a></th><td>Proof stacks, World Proofs and their verification</td></tr>
           <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-light"><code>sion-light</code></a></th><td>The light client: chain identity, epoch boundary proofs, header certificates, state and receipt proofs, availability sampling</td></tr>
-          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-node"><code>sion-node</code></a></th><td>The devnet: validators, gateway, prover, write-ahead log and snapshots, the HTTP API</td></tr>
-          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-cli"><code>sion-cli</code></a></th><td>The <code>sion</code> command: devnet, wallets, demos, light verification, the MCP server, x402, benchmarks</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-memory"><code>sion-memory</code></a></th><td>Memory for agents and robots: logs only their writer appends to, an index with proofs that an answer is complete, belief computed by the reader, sealed payloads</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-net"><code>sion-net</code></a></th><td>Networking between nodes: identities, message classes with size limits, and QUIC over TLS 1.3 with ML-DSA-44 keys pinned at both ends</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-node"><code>sion-node</code></a></th><td>The node: validators, gateway, prover, write-ahead log and snapshots, the HTTP API</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-agent"><code>sion-agent</code></a></th><td>The agent runtime: models, tools with effects and grants, autonomy levels, approvals, taint, a journal of side effects, budgets and sessions that pause and resume</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-http"><code>sion-http</code></a></th><td>Outbound HTTP for agents&rsquo; tools: TLS offering a hybrid post-quantum key exchange first, deadlines, bounded reads, and refusal of private and local addresses</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-app-core"><code>sion-app-core</code></a></th><td>The app&rsquo;s core, which the desktop app is built on: the device&rsquo;s key and a light client that verifies every Pulse it shows</td></tr>
+          <tr><th scope="row"><a href="{{REPO}}/tree/main/crates/sion-cli"><code>sion-cli</code></a></th><td>The <code>sion</code> command: setup and updates, devnets and nodes, wallets, demos, the agent and its channels, light verification, the MCP server, x402, benchmarks</td></tr>
         </tbody>
       </table>
     </div>
@@ -95,7 +101,7 @@
     </ol>
     <div class="split split--even">
       <div class="prose">
-        <p>Seed every random number generator, write a property test for every algebraic or adversarial invariant, and document and test public functions. The suite includes property tests for the Assurance Algebra, the linear-programming certificates and the state machine, a deterministic consensus simulator with adversarial network phases, scenario tests for every transaction kind, end-to-end devnet tests with dual post-quantum signatures, and the demos.</p>
+        <p>Seed every random number generator, write a property test for every algebraic or adversarial invariant, and document and test public functions. The suite includes property tests for the Assurance Algebra, the linear-programming certificates and the state machine, a deterministic consensus simulator with adversarial network phases, scenario tests for every transaction kind, end-to-end devnet tests with dual post-quantum signatures, the agent runtime against a scripted model and stand-ins for the services it talks to, and the demos.</p>
         <p>Found a vulnerability? Report it privately, as the <a href="security.html#disclosure">security page</a> describes, not in a public issue.</p>
       </div>
       {{code:develop}}

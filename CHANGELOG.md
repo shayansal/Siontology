@@ -10,6 +10,22 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### The website and the book
+
+- **The website leads with two doors**: run your own agent, or build on
+  the ledger. A page of its own for the agent (`site/agents.html`): where
+  it talks, what it asks, its tools, memory, skills, models, teams, the
+  attacks tried and what it does not do yet, with an animated figure of a
+  payment it is asked to make and one an injected page asks for. The
+  developers page adds the agent's HTTP, OpenAI-compatible and A2A
+  endpoints, every demo and the main commands; the security page, what an agent's
+  limits rest on; the technology page, agent identities, memory logs, Task
+  Charters and storage deals.
+- **The book is restructured** around who reads it: getting started, your
+  agent, build on the ledger, run a network, concepts, reference. The two
+  long agent guides are split into focused pages under `agent/`, and the
+  old addresses redirect to them.
+
 ### One person, one machine
 
 - **`sion setup`**: a chain of one's own (one validator as a systemd user
@@ -1091,7 +1107,7 @@ Commit messages before the rename use the working name, Fold.
 - New trust atoms `agent:sandbox`, `agent:sandbox-network`,
   `agent:shell-repeats`, `agent:workspace-content`, `agent:mcp-unsandboxed`,
   `agent:mcp-effects` and `agent:storage-from-account`. Docs: [Commands, scripts and MCP
-  servers](docs/book/src/guides/agent-tools.md).
+  servers](docs/book/src/agent/tools.md).
 
 ### Storage deals and batched signing for agents
 
@@ -1186,7 +1202,7 @@ Commit messages before the rename use the working name, Fold.
   the charter whatever the runtime's level. New trust atoms
   `agent:local-policy`, `agent:provider-sees-context` and
   `agent:plain-sessions`. Guide: [Agents at
-  work](docs/book/src/guides/agent-runtime.md).
+  work](docs/book/src/agent/index.md).
 - Memory: `sion agent run --memory <log>|new` gives the agent its memory
   log and the tools `memory_remember`, `memory_recall` (proved complete
   against the ledger for a subject and a relation), `memory_search`,
@@ -1208,7 +1224,7 @@ Commit messages before the rename use the working name, Fold.
   whose release is falsified is taken out of use before the next run;
   the agents that relied on it are compensated from the slashed bonds.
   New trust atom `agent:local-skill-checks`. Guide: [Skills from
-  others](docs/book/src/guides/skills.md).
+  others](docs/book/src/agent/skills.md).
 - Skills that get better: evaluation sets (`sion_agent::evals`: cases
   with stand-in tools and checks, fixed by the digest of their bytes) and
   evolution (`sion_agent::evolve`: a mutator model proposes variants for
@@ -1221,7 +1237,7 @@ Commit messages before the rename use the working name, Fold.
   verifier runs the set and attests), `submit` (result and settlement),
   `publish --evidence` (the release rests on the settled result and
   records it) and `lineage`. New trust atom `agent:eval-runs`. Guide:
-  [Skills that get better](docs/book/src/guides/skill-improvement.md).
+  [Skills that get better](docs/book/src/agent/skill-improvement.md).
 - After a finished task with at least five successful tool calls and no
   skill written, `sion agent run` asks the agent whether to write down how
   it did it, with only its skill tools (`--no-reflect` to skip).
@@ -1242,7 +1258,7 @@ Commit messages before the rename use the working name, Fold.
   each a session, with `/approve`, `/decline`, `/new` and `/status`. New
   trust atoms `agent:channel-token`, `agent:telegram-chats` and
   `agent:local-scheduler`. Guide: [Teams, schedules and
-  channels](docs/book/src/guides/agent-teams.md).
+  channels](docs/book/src/agent/index.md).
 
 ### Fixes from the review of storage deals, pooled stake and the app
 

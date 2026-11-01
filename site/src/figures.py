@@ -8,8 +8,27 @@ REPO = "https://github.com/ColdAI-org/siontology"
 SPEC = REPO + "/blob/main/docs/spec/state-transition.md"
 TREE = REPO + "/tree/main/crates/"
 BLOB = REPO + "/blob/main/crates/"
+DOCS = "https://siontology.org/docs/"
 
 FIGURES = {
+    "agent": {
+        "scene": "agent",
+        "title": "Your agent",
+        "label": "Animation: you write to your agent on Telegram; it reads a page from the web, asks you before it pays, pays 8 USD within its charter, asks again when the page tells it to pay 150 USD and you decline, notes what it learned in its memory log, and answers; a stranger on WhatsApp gets a pairing code.",
+        "desc": ("Illustration of the design, with the limits <code>sion setup</code> gives an agent: autonomy L5, and a "
+                 "charter of at most 100 USD a payment from a 1,000 USD budget. You write on Telegram; it reads "
+                 "gpu-cloud&rsquo;s page from the web and asks you before it pays. Once you approve, the ledger checks the payment against "
+                 "its charter, and a receipt claim joins the knowledge log. The page told it to pay 150 USD more: "
+                 "content from outside, so it asks again, and you decline; past its charter the ledger would refuse it "
+                 "whatever you said. It notes what it learned in its memory log, whose head the ledger keeps, and "
+                 "answers you. A stranger on WhatsApp, which a bridge answers rather than setup, gets a pairing code and no "
+                 "answer until you approve them. The channels, approvals, payments under a charter and memory log are "
+                 "built, and were tested with a scripted model and stand-ins for the messengers&rsquo; and "
+                 "providers&rsquo; APIs."),
+        "run": "sion setup",
+        "spec": ("Run it on your computer", DOCS + "getting-started/your-computer.html"),
+        "status": ("built", "Built; tested with a scripted model and stand-ins"),
+    },
     "two-sorted": {
         "scene": "two-sorted",
         "title": "Two sorts of state",
@@ -207,6 +226,16 @@ FIGURES = {
 }
 
 CODE = {
+    "own-agent": ("Your own agent, on your computer",
+                  "<span class=\"c\"># Install sion: a release checked before it is installed,</span>\n"
+                  "<span class=\"c\"># or built from source while there is none</span>\n"
+                  "curl -fsSL https://raw.githubusercontent.com/ColdAI-org/siontology/main/scripts/install.sh | sh\n"
+                  "\n"
+                  "<span class=\"c\"># A chain of your own, your agent, its model and memory</span>\n"
+                  "sion setup\n"
+                  "\n"
+                  "<span class=\"c\"># Talk with it; sion -c goes on with the last conversation</span>\n"
+                  "sion"),
     "quickstart": ("Quick start (Rust 1.80 or later)",
                    "git clone https://github.com/ColdAI-org/siontology\n"
                    "cd siontology\n"
@@ -267,6 +296,17 @@ CODE = {
              "<span class=\"c\"># the decision rule for 25,000 USD at risk (amounts in micro-units)</span>\n"
              "curl -X POST http://127.0.0.1:8730/v1/claims/&lt;claim id&gt;/decide \\\n"
              "     -d '{\"value\": 25000000000}'"),
+    "agent-api": ("Your agent, as a model for an app made for OpenAI&rsquo;s chat API",
+                  "<span class=\"c\"># A token that reaches one profile; it is shown once</span>\n"
+                  "sion agent profile token add assistant\n"
+                  "\n"
+                  "<span class=\"c\"># Serve this machine&rsquo;s profiles to programs</span>\n"
+                  "sion agent serve --listen 127.0.0.1:8794\n"
+                  "\n"
+                  "curl http://127.0.0.1:8794/v1/chat/completions \\\n"
+                  "  -H \"Authorization: Bearer $TOKEN\" \\\n"
+                  "  -d '{\"model\": \"assistant\", \"messages\":\n"
+                  "       [{\"role\": \"user\", \"content\": \"How much budget is left?\"}]}'"),
     "develop": ("Before every commit",
                 "cargo fmt --all\n"
                 "cargo clippy --workspace --all-targets -- -D warnings\n"
@@ -464,5 +504,33 @@ ICONS = {
                    '<path d="M21.5 18l2 2 3.5-4.5" ' + _S + '/>'),
     'tasks': '<rect x="2" y="12" width="9" height="9" fill="currentColor"/><path d="M13 16.5h6M16.5 14l2.5 2.5-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="21" y="6" width="9" height="21" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M23 17l2 2 3.5-4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>',
     'memory': '<rect x="3" y="4" width="20" height="5" fill="currentColor"/><rect x="3" y="11" width="20" height="5" fill="currentColor"/><rect x="3" y="18" width="20" height="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 27h20" fill="none" stroke="currentColor" stroke-width="1.6"/><path class="pict-signal" d="M25 4l5 5M30 4l-5 5" fill="none" stroke-width="1.6"/>',
+    "talk": ('<rect x="2" y="4" width="18" height="12" ' + _S + '/>'
+             '<path d="M6 16v5l5-5" ' + _S + '/>'
+             '<rect x="12" y="19" width="18" height="9" fill="currentColor"/>'),
+    "ask": ('<path d="M9 5 16 16 9 27 2 16Z" ' + _S + '/>'
+            '<path d="M20 9v14" ' + _S + '/>'
+            '<path d="M23 17l2.5 2.5L30 13" ' + _S + '/>'),
+    "limits": ('<path d="M9 5 16 16 9 27 2 16Z" ' + _S + '/>'
+               '<path d="M21 3v26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.5 2.5"/>'
+               '<path class="pict-signal" d="M24 13l6 6M30 13l-6 6" fill="none" stroke-width="1.6"/>'),
+    "sandbox": ('<rect x="3" y="3" width="26" height="26" ' + _S + '/>'
+                '<rect x="9" y="9" width="6" height="6" fill="currentColor"/>'
+                '<rect x="17" y="9" width="6" height="6" ' + _S + '/>'
+                '<rect x="9" y="17" width="6" height="6" ' + _S + '/>'
+                '<rect x="17" y="17" width="6" height="6" fill="currentColor"/>'),
+    "skills": ('<rect x="3" y="9" width="16" height="20" ' + _S + '/>'
+               '<rect x="7" y="5" width="16" height="20" fill="var(--color-bg)" stroke="currentColor" stroke-width="1.6"/>'
+               '<path d="M11 11h8M11 15h8" ' + _S + '/>'
+               '<rect x="23" y="20" width="7" height="7" fill="currentColor"/>'),
+    "model": ('<rect x="3" y="3" width="11" height="11" ' + _S + '/>'
+              '<rect x="18" y="3" width="11" height="11" fill="currentColor"/>'
+              '<rect x="3" y="18" width="11" height="11" ' + _S + '/>'
+              '<rect x="18" y="18" width="11" height="11" ' + _S + '/>'),
+    "team": ('<path d="M9 3 16 11 9 19 2 11Z" ' + _S + '/>'
+             '<path d="M23 13 29 20 23 27 17 20Z" ' + _S + '/>'
+             '<path d="M13 16l6 3" ' + _S + '/>'),
+    "attacks": ('<rect x="3" y="5" width="16" height="22" ' + _S + '/>'
+                '<path d="M7 11h8M7 15h8M7 19h5" ' + _S + '/>'
+                '<path class="pict-signal" d="M22 13l7 7M29 13l-7 7" fill="none" stroke-width="1.6"/>'),
     'storage': '<rect x="3" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="3" width="7" height="7" fill="currentColor"/><rect x="22" y="3" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.5" y="12.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="12.5" width="7" height="7" fill="currentColor"/><rect x="3" y="22" width="7" height="7" fill="currentColor"/><rect x="12.5" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="22" y="22" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/>',
 }
