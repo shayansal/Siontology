@@ -724,7 +724,7 @@ Commands:
   weixin         Sign a WeChat account in for `--via weixin`, by a QR code scanned with WeChat (Tencent's iLink bot protocol), or sign it out
   service        Long-running commands (a bridge, the server, the scheduler) as services of your own: systemd user units on Linux, launchd agents on macOS
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
-  graph          Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, or one of your own), each node a session of its own
+  graph          Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, self-consistency, orchestrator, or one of your own), each node a session of its own
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
   serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's POST /v1/chat/completions (a profile as the model) and GET /v1/models, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
@@ -1985,7 +1985,7 @@ Options:
 ## `sion agent graph`
 
 ```text
-Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, or one of your own), each node a session of its own
+Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, self-consistency, orchestrator, or one of your own), each node a session of its own
 
 Usage: sion agent graph [OPTIONS] <COMMAND>
 
@@ -1994,6 +1994,8 @@ Commands:
   run        Run a graph on a task, each of its nodes a session of a profile's agent: a template, a graph of your own, or what the profile's model says the task needs
   eval       Compare ways of working through a set of tasks, with a profile's models: one agent, one agent several times with its answers put to a vote, and each graph given, on the same token budget for a case, each case run several times, with the cases' stand-in tools and checks. A graph that beats both (by Newcombe's 95% interval for the difference of pass rates) earns the profile's traffic: `run --route` offers only templates that have
   show       Show a graph's run: what each node answered, and how it stands
+  continue   Go on with a graph's run that stopped at nodes whose sessions waited for a person, once those sessions were approved and run on (`sion agent continue <session> --approve`)
+  replay     Replay a graph's run from what it recorded: each node answered as it was, the graph (as it is kept with the run) must ask the same and route the answers the same way, to the same end
   help       Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2033,7 +2035,7 @@ Arguments:
 Options:
       --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --task <TASK>          The task
-      --template <TEMPLATE>  A template: fan-out, work-check or draft-review
+      --template <TEMPLATE>  A template: fan-out, work-check, draft-review, self-consistency or orchestrator
       --graph <GRAPH>        A graph of your own: a JSON file
       --route                Ask the profile's model first how to work on the task: one agent (a single session), or one of the templates that beat one agent in the profile's comparisons (`sion agent graph eval`)
       --untested             With --route, let the router choose any template, measured or not
@@ -2055,6 +2057,37 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent graph continue`
+
+```text
+Go on with a graph's run that stopped at nodes whose sessions waited for a person, once those sessions were approved and run on (`sion agent continue <session> --approve`)
+
+Usage: sion agent graph continue [OPTIONS] <RUN>
+
+Arguments:
+  <RUN>  The run, or the start of its id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent graph replay`
+
+```text
+Replay a graph's run from what it recorded: each node answered as it was, the graph (as it is kept with the run) must ask the same and route the answers the same way, to the same end
+
+Usage: sion agent graph replay [OPTIONS] <RUN>
+
+Arguments:
+  <RUN>  The run, or the start of its id
+
+Options:
+      --graph <FILE>  Replay it through this graph instead (a JSON file): to see whether a changed graph would have routed the run the same way
+      --node <NODE>   The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help          Print help
 ```
 
 ## `sion agent graph eval`

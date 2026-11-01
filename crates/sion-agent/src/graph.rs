@@ -24,11 +24,22 @@
 //! An answer from a session that read content from outside may be steered
 //! by that content: the nodes it reaches run as content from outside too
 //! ([`Activation::outside`]), as a tainted parent's subagents do.
+//!
+//! A join waits for everything that leads to it ([`Wait::All`]), for the
+//! first answer, or for a quorum; a [`Kind::Vote`] is a join that answers,
+//! without a model, with the answer that reached it most often. A node may
+//! run in several copies side by side ([`Node::copies`]), and with only
+//! the tools that read ([`Node::read_only`]). A run is pinned to its
+//! graph's digest ([`digest`]), can be replayed from what it recorded
+//! ([`replay`]) to check that the graph still routes it the same way, and
+//! goes on after a node that waited for a person ([`GraphRun::resume`]).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sion_core::hash::{hash_domain, Hash32};
 
 /// A graph of agents.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -65,9 +76,48 @@ pub enum Kind {
     /// An agent's session, on each activation.
     #[default]
     Agent,
-    /// An agent's session that waits for everything that leads to it, and
-    /// runs once with every answer that reached it.
+    /// An agent's session that waits for what leads to it, as its
+    /// [`Wait`] says, and runs once with every answer that reached it.
     Join,
+    /// A join that runs no session: its answer is the one that reached it
+    /// most often, case and spacing aside (a tie goes to the earliest).
+    Vote,
+}
+
+impl Kind {
+    /// Whether it gathers the answers that reach it into one run.
+    pub fn joins(self) -> bool {
+        matches!(self, Kind::Join | Kind::Vote)
+    }
+}
+
+/// When a join runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wait {
+    /// Once nothing that leads to it is left to run.
+    #[default]
+    All,
+    /// As soon as an answer has reached it, with every answer that reached
+    /// it in the same wave; what reaches it later is not passed on.
+    First,
+    /// As soon as this many answers have reached it, or nothing that leads
+    /// to it is left to run; what reaches it later is not passed on.
+    Quorum(u32),
+}
+
+impl Wait {
+    fn is_all(&self) -> bool {
+        *self == Wait::All
+    }
+}
+
+fn one() -> u32 {
+    1
+}
+
+fn is_one(n: &u32) -> bool {
+    *n == 1
 }
 
 /// A node: an agent, with its instructions.
@@ -93,6 +143,16 @@ pub struct Node {
     /// The most times it runs.
     #[serde(default = "default_max_visits")]
     pub max_visits: u32,
+    /// How many copies of it run side by side each time it is reached,
+    /// each told which attempt it is (for a vote).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub copies: u32,
+    /// Whether it may use only the tools that read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+    /// When it runs, if it is a join.
+    #[serde(default, skip_serializing_if = "Wait::is_all")]
+    pub wait: Wait,
 }
 
 /// When an edge is followed.
@@ -175,6 +235,27 @@ impl Graph {
             if node.max_visits == 0 || node.max_visits as usize > MAX_FAN_OUT {
                 return Err(format!("{}: max_visits is 1 to {MAX_FAN_OUT}", node.id));
             }
+            if node.copies == 0 || node.copies > node.max_visits {
+                return Err(format!(
+                    "{}: copies is 1 to its max_visits ({})",
+                    node.id, node.max_visits
+                ));
+            }
+            if node.copies > 1 && node.kind.joins() {
+                return Err(format!("{}: a join runs in one copy", node.id));
+            }
+            if !node.kind.joins() && !node.wait.is_all() {
+                return Err(format!("{}: only a join waits", node.id));
+            }
+            if node.wait == Wait::Quorum(0) {
+                return Err(format!("{}: a quorum is at least 1", node.id));
+            }
+            if node.kind == Kind::Vote && node.output.is_some() {
+                return Err(format!(
+                    "{}: a vote answers with what reached it, and keeps to no schema",
+                    node.id
+                ));
+            }
         }
         if self.max_runs == 0 || self.max_runs > 100 {
             return Err("max_runs is 1 to 100".into());
@@ -199,7 +280,7 @@ impl Graph {
                 ));
             }
         }
-        if self.node(&self.start).expect("checked").kind == Kind::Join {
+        if self.node(&self.start).expect("checked").kind.joins() {
             return Err("the start is not a join".into());
         }
         let mut reached = BTreeSet::from([self.start.as_str()]);
@@ -267,6 +348,9 @@ pub struct Activation {
     /// content from outside: its own session starts tainted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outside: bool,
+    /// Which copy it is, and of how many, for a node run in copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<(u32, u32)>,
 }
 
 /// A node that ran.
@@ -313,21 +397,30 @@ pub struct GraphRun {
     pub ran: Vec<Ran>,
     /// How it stands.
     pub standing: Standing,
+    /// The joins that waited for the first answer or a quorum and ran: what
+    /// reaches them later is not passed on.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub closed: BTreeSet<String>,
 }
 
 impl GraphRun {
-    /// A run of `graph` on `task`, its start to run first.
+    /// A run of `graph` on `task`, its start to run first (in its copies).
     pub fn start(graph: &Graph, task: &str) -> GraphRun {
+        let start = graph.node(&graph.start).map_or(1, |n| n.copies.max(1));
         GraphRun {
             task: task.to_string(),
-            queue: vec![Activation {
-                node: graph.start.clone(),
-                inputs: Vec::new(),
-                item: None,
-                outside: false,
-            }],
+            queue: (1..=start)
+                .map(|k| Activation {
+                    node: graph.start.clone(),
+                    inputs: Vec::new(),
+                    item: None,
+                    outside: false,
+                    attempt: (start > 1).then_some((k, start)),
+                })
+                .collect(),
             ran: Vec::new(),
             standing: Standing::Going,
+            closed: BTreeSet::new(),
         }
     }
 
@@ -355,11 +448,17 @@ impl GraphRun {
         let (wave, rest): (Vec<Activation>, Vec<Activation>) =
             self.queue.drain(..).partition(|a| {
                 let node = graph.node(&a.node).expect("checked");
-                node.kind != Kind::Join || {
-                    let upstream = graph.leading_to(&a.node);
-                    waiting
-                        .iter()
-                        .all(|w| w == &a.node || !upstream.contains(w))
+                if !node.kind.joins() {
+                    return true;
+                }
+                let upstream = graph.leading_to(&a.node);
+                let alone = waiting
+                    .iter()
+                    .all(|w| w == &a.node || !upstream.contains(w));
+                match node.wait {
+                    Wait::All => alone,
+                    Wait::First => !a.inputs.is_empty(),
+                    Wait::Quorum(n) => a.inputs.len() >= n as usize || alone,
                 }
             });
         self.queue = rest;
@@ -391,66 +490,125 @@ impl GraphRun {
                 return &self.standing;
             }
         }
-        executor.wave(wave.len());
+        for activation in &wave {
+            let node = graph.node(&activation.node).expect("checked");
+            if node.kind.joins() && !node.wait.is_all() {
+                self.closed.insert(node.id.clone());
+            }
+        }
+        let sessions = wave
+            .iter()
+            .filter(|a| graph.node(&a.node).is_some_and(|n| n.kind != Kind::Vote))
+            .count();
+        executor.wave(sessions);
         let task = self.task.clone();
         let answers: Vec<Result<Answer, String>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = wave
+            let started: Vec<Started<'_>> = wave
                 .iter()
                 .map(|activation| {
                     let node = graph.node(&activation.node).expect("checked");
+                    if node.kind == Kind::Vote {
+                        return Started::Done(voted(activation));
+                    }
                     let prompt = prompt_for(node, &task, activation);
                     let outside = activation.outside;
-                    scope.spawn(move || {
+                    Started::Running(scope.spawn(move || {
                         executor
                             .run(node, &prompt, outside)
                             .and_then(|a| kept(node, a))
-                    })
+                    }))
                 })
                 .collect();
-            handles
+            started
                 .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err("the node's run failed".into()))
+                .map(|s| match s {
+                    Started::Running(h) => h
+                        .join()
+                        .unwrap_or_else(|_| Err("the node's run failed".into())),
+                    Started::Done(answer) => answer,
                 })
                 .collect()
         });
+        // Every answer of the wave is kept, and what the answers lead to is
+        // queued, before a failure stops the run.
+        let mut failed = None;
         for (activation, answer) in wave.into_iter().zip(answers) {
-            if let Ok(answer) = &answer {
-                let next = next_of(graph, &activation.node, answer);
-                for (to, item) in next {
-                    let from = (activation.node.clone(), answer.text.clone());
-                    let to_node = graph.node(&to).expect("checked");
-                    match self
-                        .queue
-                        .iter_mut()
-                        .find(|a| a.node == to && to_node.kind == Kind::Join)
-                    {
-                        Some(join) => {
-                            join.inputs.push(from);
-                            join.outside |= answer.outside;
-                        }
-                        None => self.queue.push(Activation {
-                            node: to,
-                            inputs: vec![from],
-                            item,
-                            outside: answer.outside,
-                        }),
-                    }
+            match &answer {
+                Ok(answer) => self.route(graph, &activation, answer),
+                Err(why) => {
+                    failed.get_or_insert_with(|| format!("{} failed: {why}", activation.node));
                 }
             }
-            let failed = answer.as_ref().err().cloned();
             self.ran.push(Ran { activation, answer });
-            if let Some(why) = failed {
-                let node = &self.ran.last().expect("pushed").activation.node;
-                self.standing = Standing::Stopped(format!("{node} failed: {why}"));
-                return &self.standing;
-            }
+        }
+        if let Some(why) = failed {
+            self.standing = Standing::Stopped(why);
+            return &self.standing;
         }
         if self.queue.is_empty() {
             self.standing = self.finish(graph);
         }
         &self.standing
+    }
+
+    /// Queues what `answer`, from `from`'s run, leads to: a join's input
+    /// added to it if it waits in the queue (and dropped if it has closed),
+    /// a node run in copies queued in each.
+    fn route(&mut self, graph: &Graph, from: &Activation, answer: &Answer) {
+        for (to, item) in next_of(graph, &from.node, answer) {
+            if self.closed.contains(&to) {
+                continue;
+            }
+            let input = (from.node.clone(), answer.text.clone());
+            let to_node = graph.node(&to).expect("checked");
+            if to_node.kind.joins() {
+                if let Some(join) = self.queue.iter_mut().find(|a| a.node == to) {
+                    join.inputs.push(input);
+                    join.outside |= answer.outside;
+                    continue;
+                }
+            }
+            let copies = to_node.copies.max(1);
+            for k in 1..=copies {
+                self.queue.push(Activation {
+                    node: to.clone(),
+                    inputs: vec![input.clone()],
+                    item: item.clone(),
+                    outside: answer.outside,
+                    attempt: (copies > 1).then_some((k, copies)),
+                });
+            }
+        }
+    }
+
+    /// Goes on after the node run `index`, which failed (its session waited
+    /// for a person's approval, say), now that it has `answer`: what the
+    /// answer leads to is queued, and the run goes on once no node run has
+    /// failed.
+    pub fn resume(&mut self, graph: &Graph, index: usize, answer: Answer) -> Result<(), String> {
+        if !matches!(self.standing, Standing::Stopped(_)) {
+            return Err("the run did not stop".into());
+        }
+        let ran = self.ran.get(index).ok_or("no such node run")?;
+        if ran.answer.is_ok() {
+            return Err(format!("{} did not fail", ran.activation.node));
+        }
+        let node = graph.node(&ran.activation.node).ok_or("no such node")?;
+        let answer = kept(node, answer)?;
+        let activation = ran.activation.clone();
+        self.route(graph, &activation, &answer);
+        self.ran[index].answer = Ok(answer);
+        self.standing = match self.ran.iter().find_map(|r| {
+            r.answer
+                .as_ref()
+                .err()
+                .map(|why| format!("{} failed: {why}", r.activation.node))
+        }) {
+            Some(why) => Standing::Stopped(why),
+            None if self.queue.is_empty() => self.finish(graph),
+            None => Standing::Going,
+        };
+        Ok(())
     }
 
     /// Runs the graph until it is done or stops, calling `kept` after each
@@ -494,6 +652,156 @@ impl GraphRun {
     }
 }
 
+/// A node of a wave: running in a thread, or answered already (a vote).
+enum Started<'scope> {
+    Running(std::thread::ScopedJoinHandle<'scope, Result<Answer, String>>),
+    Done(Result<Answer, String>),
+}
+
+/// The answer given most often, case and spacing aside, a tie going to the
+/// earliest: its first wording, its votes, of how many answers.
+pub fn vote(answers: &[String]) -> Option<(String, usize, usize)> {
+    let key = |text: &str| {
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+            .trim_end_matches('.')
+            .to_string()
+    };
+    let mut counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for (i, answer) in answers.iter().enumerate() {
+        let entry = counts.entry(key(answer)).or_insert((0, i));
+        entry.0 += 1;
+    }
+    counts
+        .values()
+        .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+        .map(|&(votes, first)| (answers[first].trim().to_string(), votes, answers.len()))
+}
+
+/// A vote node's answer: the most common of what reached it, with its
+/// count (`{"votes": …, "of": …}`).
+fn voted(activation: &Activation) -> Result<Answer, String> {
+    let answers: Vec<String> = activation.inputs.iter().map(|(_, t)| t.clone()).collect();
+    let (text, votes, of) = vote(&answers).ok_or("nothing reached the vote")?;
+    Ok(Answer {
+        text,
+        json: Some(json!({"votes": votes, "of": of})),
+        session: None,
+        tokens: 0,
+        outside: activation.outside,
+    })
+}
+
+/// The digest a run of `graph` is pinned to: of its definition, as it
+/// serialises.
+pub fn digest(graph: &Graph) -> Hash32 {
+    hash_domain(
+        "sion-agent/graph/v1",
+        &serde_json::to_vec(graph).unwrap_or_default(),
+    )
+}
+
+/// Answers each node of a replay from what a run recorded: the first node
+/// run not yet used of the same node and the same prompt.
+struct Recorded<'a> {
+    run: &'a GraphRun,
+    used: Mutex<Vec<bool>>,
+}
+
+impl Executor for Recorded<'_> {
+    fn run(&self, node: &Node, prompt: &str, _outside: bool) -> Result<Answer, String> {
+        let mut used = self.used.lock().unwrap_or_else(|e| e.into_inner());
+        let found = self.run.ran.iter().enumerate().find(|(i, ran)| {
+            !used[*i]
+                && ran.activation.node == node.id
+                && prompt_for(node, &self.run.task, &ran.activation) == prompt
+        });
+        match found {
+            Some((i, ran)) => {
+                used[i] = true;
+                ran.answer.clone()
+            }
+            None => Err(format!(
+                "the run recorded no answer to what {} is asked now",
+                node.id
+            )),
+        }
+    }
+}
+
+/// What a replay came to: whether the graph routed the recorded answers as
+/// the run did, and if not, where it went another way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Replayed {
+    /// The run the replay made.
+    pub run: GraphRun,
+    /// The first node run at which it differs from the recorded one, and
+    /// how; none if it ran the same.
+    pub differs: Option<(usize, String)>,
+}
+
+/// Replays `recorded` (a run that finished or stopped) through `graph`,
+/// each node answered with what the run recorded for it: the graph, as it
+/// is now, must ask each node what it asked then and route the answers the
+/// same way, to the same end.
+pub fn replay(graph: &Graph, recorded: &GraphRun) -> Result<Replayed, String> {
+    if recorded.standing == Standing::Going {
+        return Err("the run has not finished: go on with it first".into());
+    }
+    graph.check()?;
+    let executor = Recorded {
+        run: recorded,
+        used: Mutex::new(vec![false; recorded.ran.len()]),
+    };
+    let mut run = GraphRun::start(graph, &recorded.task);
+    while run.standing == Standing::Going && run.ran.len() <= recorded.ran.len() {
+        run.step(graph, &executor);
+    }
+    let differs = (0..run.ran.len().max(recorded.ran.len()))
+        .find(|&i| run.ran.get(i) != recorded.ran.get(i))
+        .map(|i| {
+            let what = match (run.ran.get(i), recorded.ran.get(i)) {
+                (Some(now), Some(then)) if now.activation.node != then.activation.node => {
+                    format!(
+                        "the graph ran {} where the run had run {}",
+                        now.activation.node, then.activation.node
+                    )
+                }
+                (Some(now), Some(then)) if now.activation != then.activation => format!(
+                    "{} was reached with other inputs than in the run",
+                    now.activation.node
+                ),
+                (Some(now), Some(_)) => match &now.answer {
+                    Err(why) => why.clone(),
+                    Ok(_) => format!("{} answered otherwise", now.activation.node),
+                },
+                (Some(now), None) => format!(
+                    "the graph ran {} after the run had ended",
+                    now.activation.node
+                ),
+                (None, Some(then)) => format!("the graph ended before {}", then.activation.node),
+                (None, None) => unreachable!("one of them ran it"),
+            };
+            (i, what)
+        })
+        .or_else(|| {
+            (run.standing != recorded.standing).then(|| {
+                let how = match &run.standing {
+                    Standing::Done(answer) => format!(
+                        "it ended with another answer: {}",
+                        answer.text.lines().next().unwrap_or_default()
+                    ),
+                    Standing::Stopped(why) => format!("it stopped: {why}"),
+                    Standing::Going => "it did not end".to_string(),
+                };
+                (run.ran.len(), how)
+            })
+        });
+    Ok(Replayed { run, differs })
+}
+
 /// What a node is told: its instructions, the task, its item, what reached
 /// it, and the schema its answer keeps to.
 pub fn prompt_for(node: &Node, task: &str, activation: &Activation) -> String {
@@ -503,6 +811,11 @@ pub fn prompt_for(node: &Node, task: &str, activation: &Activation) -> String {
             .as_str()
             .map_or_else(|| item.to_string(), str::to_string);
         prompt.push_str(&format!("\n\nYour part of it:\n{item}"));
+    }
+    if let Some((k, of)) = activation.attempt {
+        prompt.push_str(&format!(
+            "\n\nThis is attempt {k} of {of}, made apart from the others: work it out on your own."
+        ));
     }
     for (from, text) in &activation.inputs {
         prompt.push_str(&format!("\n\nFrom {from}:\n{}", text.trim()));
@@ -573,7 +886,30 @@ fn next_of(graph: &Graph, from: &str, answer: &Answer) -> Vec<(String, Option<Va
 }
 
 /// The graphs a router may propose, by name.
-pub const TEMPLATES: [&str; 3] = ["fan-out", "work-check", "draft-review"];
+pub const TEMPLATES: [&str; 5] = [
+    "fan-out",
+    "work-check",
+    "draft-review",
+    "self-consistency",
+    "orchestrator",
+];
+
+/// A node as a template has it: one copy, any tools, a join waiting for
+/// all.
+fn plain(id: &str, kind: Kind, instructions: &str, output: Option<Value>) -> Node {
+    Node {
+        id: id.into(),
+        kind,
+        instructions: instructions.into(),
+        tools: None,
+        model: None,
+        output,
+        max_visits: default_max_visits(),
+        copies: 1,
+        read_only: false,
+        wait: Wait::All,
+    }
+}
 
 /// A graph the runtime knows: `fan-out` (a task split into parts that need
 /// no one else's work, each done by an agent of its own, then put
@@ -586,15 +922,7 @@ pub fn template(name: &str) -> Option<Graph> {
         "properties": {"pass": {"type": "boolean"}, "why": {"type": "string"}},
         "required": ["pass", "why"]
     });
-    let node = |id: &str, kind: Kind, instructions: &str, output: Option<Value>| Node {
-        id: id.into(),
-        kind,
-        instructions: instructions.into(),
-        tools: None,
-        model: None,
-        output,
-        max_visits: default_max_visits(),
-    };
+    let node = plain;
     let edge = |from: &str, to: &str, when: When| Edge {
         from: from.into(),
         to: to.into(),
@@ -701,6 +1029,96 @@ pub fn template(name: &str) -> Option<Graph> {
             ],
             max_runs: default_max_runs(),
         },
+        "self-consistency" => Graph {
+            name: name.into(),
+            start: "solve".into(),
+            end: Some("vote".into()),
+            nodes: vec![
+                Node {
+                    copies: 3,
+                    ..node(
+                        "solve",
+                        Kind::Agent,
+                        "Do the task, and answer with the answer alone: a figure, a name, a \
+                         yes or no, as the task asks.",
+                        None,
+                    )
+                },
+                node("vote", Kind::Vote, "The answer given most often.", None),
+            ],
+            edges: vec![edge("solve", "vote", When::Always)],
+            max_runs: default_max_runs(),
+        },
+        "orchestrator" => Graph {
+            name: name.into(),
+            start: "plan".into(),
+            end: Some("write".into()),
+            nodes: vec![
+                Node {
+                    max_visits: 2,
+                    ..node(
+                        "plan",
+                        Kind::Agent,
+                        "Break the task into questions to look up, two to six, each said in \
+                         full, and look up none of them yourself. If a verification came back, \
+                         list under known the findings it found sound, and ask only what it \
+                         found missing.",
+                        Some(json!({
+                            "type": "object",
+                            "properties": {
+                                "questions": {"type": "array", "items": {"type": "string"}},
+                                "known": {"type": "array", "items": {"type": "string"}}
+                            },
+                            "required": ["questions"]
+                        })),
+                    )
+                },
+                Node {
+                    max_visits: MAX_FAN_OUT as u32,
+                    read_only: true,
+                    ..node(
+                        "research",
+                        Kind::Agent,
+                        "Look up your question with the tools you have, which only read (files, \
+                         the ledger, memory), and report what you found and where you found it.",
+                        None,
+                    )
+                },
+                Node {
+                    max_visits: 2,
+                    ..node(
+                        "verify",
+                        Kind::Join,
+                        "Check the findings that reached you, and those the plan lists as known, \
+                         against each other and against the task, as someone who looked up none \
+                         of them. Pass them only if together they answer the task and agree, and \
+                         then restate the findings that answer it; otherwise say what is wrong or \
+                         missing, and which findings hold.",
+                        Some(check.clone()),
+                    )
+                },
+                node(
+                    "write",
+                    Kind::Agent,
+                    "Write the answer to the task from the findings the verification passed.",
+                    None,
+                ),
+            ],
+            edges: vec![
+                edge(
+                    "plan",
+                    "research",
+                    When::Each {
+                        field: "questions".into(),
+                    },
+                ),
+                edge("plan", "verify", When::Always),
+                edge("research", "verify", When::Always),
+                edge("verify", "write", When::Pass),
+                edge("verify", "plan", When::Fail),
+            ],
+            max_runs: default_max_runs(),
+        },
         _ => return None,
     };
     Some(graph)
@@ -712,8 +1130,12 @@ pub const ROUTER: &str = "You decide how a task is worked on. One agent with goo
      `fan-out` only for a task of several parts that each need none of the others' results (look \
      up three things, review four files); `work-check` for work whose result can be checked by \
      someone who did not do it (code with tests, figures to recompute); `draft-review` for \
-     writing that benefits from an editor. Answer with one JSON object: {\"shape\": \"single\" | \
-     \"fan-out\" | \"work-check\" | \"draft-review\", \"why\": \"…\"}.";
+     writing that benefits from an editor; `self-consistency` for a question with one short \
+     answer that one agent sometimes gets wrong (a figure, a name, a yes or no); `orchestrator` \
+     for research that splits into questions, looked up with tools that only read, whose \
+     findings one checker verifies before the answer is written. Answer with one JSON object: \
+     {\"shape\": \"single\" | \"fan-out\" | \"work-check\" | \"draft-review\" | \
+     \"self-consistency\" | \"orchestrator\", \"why\": \"…\"}.";
 
 /// How a router said to work on a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -746,6 +1168,15 @@ pub fn router_for(shapes: &[&str]) -> String {
                  not do it (code with tests, figures to recompute)."
             }
             "draft-review" => "Choose `draft-review` for writing that benefits from an editor.",
+            "self-consistency" => {
+                "Choose `self-consistency` for a question with one short answer that one agent \
+                 sometimes gets wrong (a figure, a name, a yes or no)."
+            }
+            "orchestrator" => {
+                "Choose `orchestrator` for research that splits into questions, looked up with \
+                 tools that only read, whose findings one checker verifies before the answer is \
+                 written."
+            }
             _ => "",
         });
     }
@@ -799,15 +1230,22 @@ pub fn summary(run: &GraphRun) -> Vec<String> {
                 )
             })
             .unwrap_or_default();
+        let item = match ran.activation.attempt {
+            Some((k, of)) => format!("{item} (attempt {k} of {of})"),
+            None => item,
+        };
         lines.push(match &ran.answer {
             Ok(answer) => {
                 let first = answer.text.lines().next().unwrap_or_default();
                 let short: String = first.chars().take(120).collect();
-                let session = answer
-                    .session
-                    .as_ref()
-                    .map(|s| format!(" (session {s})"))
-                    .unwrap_or_default();
+                let session = match (&answer.session, &answer.json) {
+                    (Some(s), _) => format!(" (session {s})"),
+                    // A vote's: how many gave its answer.
+                    (None, Some(json)) if json.get("votes").is_some() => {
+                        format!(" (given by {} of {})", json["votes"], json["of"])
+                    }
+                    _ => String::new(),
+                };
                 format!("{}{item}{session}: {short}", ran.activation.node)
             }
             Err(why) => format!("{}{item}: failed: {why}", ran.activation.node),
@@ -823,11 +1261,18 @@ pub fn outline(graph: &Graph) -> String {
         .edges
         .iter()
         .map(|edge| {
-            let to = match graph.node(&edge.to).map(|n| n.kind) {
-                Some(Kind::Join) => format!("{} (waits for all)", edge.to),
+            let to = match graph.node(&edge.to).map(|n| (n.kind, n.wait, n.copies)) {
+                Some((Kind::Join, Wait::All, _)) => format!("{} (waits for all)", edge.to),
+                Some((Kind::Join, Wait::First, _)) => format!("{} (takes the first)", edge.to),
+                Some((Kind::Join, Wait::Quorum(n), _)) => format!("{} (waits for {n})", edge.to),
+                Some((Kind::Vote, _, _)) => format!("{} (votes)", edge.to),
+                Some((_, _, copies)) if copies > 1 => format!("{} (×{copies})", edge.to),
                 _ => edge.to.clone(),
             };
-            let from = &edge.from;
+            let from = match graph.node(&edge.from).map(|n| n.copies) {
+                Some(copies) if copies > 1 => format!("{} (×{copies})", edge.from),
+                _ => edge.from.clone(),
+            };
             match &edge.when {
                 When::Always => format!("{from} → {to}"),
                 When::Pass => format!("{from} → {to} if it passes"),
@@ -1071,6 +1516,284 @@ mod tests {
         let said = r#"{"shape": "work-check", "why": "tests to run"}"#;
         assert_eq!(route_among_of(said, &["fan-out"]).shape, "single");
         assert_eq!(route_among_of(said, &["work-check"]).shape, "work-check");
+    }
+
+    #[test]
+    fn a_vote_takes_the_answer_its_copies_give_most_often() {
+        let graph = template("self-consistency").unwrap();
+        graph.check().unwrap();
+        // The copies run together, so which of them gives which answer is
+        // the threads' order: the vote does not depend on it.
+        let script = Script::new(&[("solve", &["42", "41", "42"])]);
+        let mut run = GraphRun::start(&graph, "What is six times seven?");
+        let Standing::Done(answer) = run.run(&graph, &script, &mut |_| {}) else {
+            panic!("{:?}", run.standing);
+        };
+        assert_eq!(answer.text, "42");
+        assert_eq!(answer.json, Some(json!({"votes": 2, "of": 3})));
+        assert_eq!(answer.tokens, 0, "a vote runs no session");
+        let lines = summary(&run);
+        assert_eq!(lines.last().unwrap(), "vote (given by 2 of 3): 42");
+        assert!(lines[0].starts_with("solve (attempt "), "{lines:?}");
+        let prompts = script.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 3);
+        for k in 1..=3 {
+            let told = format!("This is attempt {k} of 3, made apart from the others");
+            assert!(prompts.iter().any(|(_, p)| p.contains(&told)), "{told}");
+        }
+        assert_eq!(outline(&graph), "solve (×3) → vote (votes)");
+        // Case, spacing and a closing full stop aside; a tie goes to the
+        // earliest.
+        let said = |texts: &[&str]| texts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            vote(&said(&["Paris.", "  paris", "Rome"])),
+            Some(("Paris.".to_string(), 2, 3))
+        );
+        assert_eq!(
+            vote(&said(&["Rome", "Paris"])),
+            Some(("Rome".to_string(), 1, 2))
+        );
+        assert_eq!(vote(&[]), None);
+        let mut copied = graph.clone();
+        copied.nodes[1].copies = 2;
+        assert!(copied
+            .check()
+            .unwrap_err()
+            .contains("a join runs in one copy"));
+        copied.nodes[1].copies = 1;
+        copied.nodes[1].output = Some(json!({"type": "object"}));
+        assert!(copied.check().unwrap_err().contains("keeps to no schema"));
+        copied.nodes[0].copies = 4;
+        assert!(copied
+            .check()
+            .unwrap_err()
+            .contains("copies is 1 to its max_visits"));
+    }
+
+    #[test]
+    fn a_join_may_take_the_first_answer_or_a_quorum() {
+        // Two ways to the join, one a node longer than the other.
+        let edge = |from: &str, to: &str| Edge {
+            from: from.into(),
+            to: to.into(),
+            when: When::Always,
+        };
+        let graph = |wait: Wait| Graph {
+            name: "race".into(),
+            start: "ask".into(),
+            end: Some("join".into()),
+            nodes: vec![
+                plain("ask", Kind::Agent, "Ask.", None),
+                plain("quick", Kind::Agent, "Answer at once.", None),
+                plain("slow", Kind::Agent, "Begin.", None),
+                plain("slower", Kind::Agent, "Finish.", None),
+                Node {
+                    wait,
+                    ..plain("join", Kind::Join, "Put them together.", None)
+                },
+            ],
+            edges: vec![
+                edge("ask", "quick"),
+                edge("ask", "slow"),
+                edge("slow", "slower"),
+                edge("quick", "join"),
+                edge("slower", "join"),
+            ],
+            max_runs: default_max_runs(),
+        };
+        let joined = |wait: Wait| {
+            let graph = graph(wait);
+            graph.check().unwrap();
+            let script = Script::new(&[
+                ("ask", &["go"]),
+                ("quick", &["Q"]),
+                ("slow", &["S"]),
+                ("slower", &["SS"]),
+                ("join", &["joined"]),
+            ]);
+            let mut run = GraphRun::start(&graph, "Race.");
+            assert!(matches!(
+                run.run(&graph, &script, &mut |_| {}),
+                Standing::Done(_)
+            ));
+            assert_eq!(run.visits("join"), 1);
+            let join = run
+                .ran
+                .iter()
+                .find(|r| r.activation.node == "join")
+                .unwrap();
+            let inputs: Vec<String> = join
+                .activation
+                .inputs
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect();
+            let order: Vec<String> = run.ran.iter().map(|r| r.activation.node.clone()).collect();
+            (order, inputs, run.closed.clone())
+        };
+        let (order, inputs, closed) = joined(Wait::First);
+        assert_eq!(order, ["ask", "quick", "slow", "join", "slower"]);
+        assert_eq!(inputs, ["quick"], "what came later was not passed on");
+        assert!(closed.contains("join"));
+        let (order, inputs, closed) = joined(Wait::All);
+        assert_eq!(order, ["ask", "quick", "slow", "slower", "join"]);
+        assert_eq!(inputs, ["quick", "slower"]);
+        assert!(closed.is_empty());
+        let (_, inputs, _) = joined(Wait::Quorum(2));
+        assert_eq!(inputs, ["quick", "slower"]);
+        let mut wrong = graph(Wait::Quorum(0));
+        assert!(wrong.check().unwrap_err().contains("at least 1"));
+        wrong.nodes[4].wait = Wait::All;
+        wrong.nodes[0].wait = Wait::First;
+        assert!(wrong.check().unwrap_err().contains("only a join waits"));
+    }
+
+    #[test]
+    fn an_orchestrator_has_its_findings_verified_before_it_writes() {
+        let graph = template("orchestrator").unwrap();
+        assert!(graph.node("research").unwrap().read_only);
+        let script = Script::new(&[
+            (
+                "plan",
+                &[
+                    r#"{"questions": ["the price", "the hosting"], "known": []}"#,
+                    r#"{"questions": ["the support"], "known": ["12 USD a month", "Frankfurt"]}"#,
+                ],
+            ),
+            ("research", &["12 USD a month", "Frankfurt", "email only"]),
+            (
+                "verify",
+                &[
+                    r#"{"pass": false, "why": "nothing on support; the price and hosting hold"}"#,
+                    r#"{"pass": true, "why": "12 USD a month, in Frankfurt, email support"}"#,
+                ],
+            ),
+            (
+                "write",
+                &["12 USD a month, hosted in Frankfurt, with email support."],
+            ),
+        ]);
+        let mut run = GraphRun::start(&graph, "Tell me about the plan.");
+        let Standing::Done(answer) = run.run(&graph, &script, &mut |_| {}) else {
+            panic!("{:?}", run.standing);
+        };
+        assert_eq!(
+            answer.text,
+            "12 USD a month, hosted in Frankfurt, with email support."
+        );
+        assert_eq!(
+            (
+                run.visits("plan"),
+                run.visits("research"),
+                run.visits("verify")
+            ),
+            (2, 3, 2)
+        );
+        // The second verification is told the plan's known findings with
+        // the new one; the plan was told what the first found missing.
+        let prompts = script.prompts.lock().unwrap();
+        let of = |node: &str| -> Vec<&String> {
+            prompts
+                .iter()
+                .filter(|(n, _)| n == node)
+                .map(|(_, p)| p)
+                .collect()
+        };
+        assert!(of("plan")[1].contains("nothing on support"));
+        let second = of("verify")[1];
+        assert!(
+            second.contains("From plan:")
+                && second.contains("Frankfurt")
+                && second.contains("email only"),
+            "{second}"
+        );
+        assert_eq!(
+            outline(&graph),
+            "plan → research for each of its questions; plan → verify (waits for all); \
+             research → verify (waits for all); verify → write if it passes; verify → plan if it \
+             fails"
+        );
+    }
+
+    #[test]
+    fn a_run_replays_as_it_ran_until_the_graph_changes() {
+        let graph = template("work-check").unwrap();
+        let script = Script::new(&[
+            ("work", &["first try", "second try"]),
+            (
+                "check",
+                &[
+                    r#"{"pass": false, "why": "the tests fail"}"#,
+                    r#"{"pass": true, "why": "the tests pass"}"#,
+                ],
+            ),
+        ]);
+        let mut run = GraphRun::start(&graph, "Fix the bug.");
+        run.run(&graph, &script, &mut |_| {});
+        let same = replay(&graph, &run).unwrap();
+        assert_eq!(same.differs, None, "{same:?}");
+        assert_eq!(same.run, run);
+        // A graph whose check no longer loops back: the replay goes another
+        // way where the change takes effect.
+        let mut changed = graph.clone();
+        changed.edges.retain(|e| e.when != When::Fail);
+        assert_ne!(digest(&changed), digest(&graph));
+        let other = replay(&changed, &run).unwrap();
+        let (at, why) = other.differs.expect("the changed graph routes otherwise");
+        assert_eq!(at, 2, "{why}");
+    }
+
+    #[test]
+    fn a_run_goes_on_after_a_node_that_waited() {
+        struct Waits;
+        impl Executor for Waits {
+            fn run(&self, node: &Node, _: &str, _: bool) -> Result<Answer, String> {
+                match node.id.as_str() {
+                    "split" => Ok(Answer {
+                        text: r#"{"parts": ["a", "b"]}"#.into(),
+                        json: None,
+                        session: None,
+                        tokens: 1,
+                        outside: false,
+                    }),
+                    "part" => Err("session s1 waits for a person's approval of ledger_pay".into()),
+                    _ => Ok(Answer {
+                        text: "both".into(),
+                        json: None,
+                        session: None,
+                        tokens: 1,
+                        outside: false,
+                    }),
+                }
+            }
+        }
+        let graph = template("fan-out").unwrap();
+        let mut run = GraphRun::start(&graph, "Two things.");
+        let Standing::Stopped(why) = run.run(&graph, &Waits, &mut |_| {}) else {
+            panic!("{:?}", run.standing);
+        };
+        assert!(why.starts_with("part failed: session s1 waits"), "{why}");
+        // Both parts of the wave were kept, though the first failed.
+        assert_eq!(run.visits("part"), 2);
+        let answer = |text: &str| Answer {
+            text: text.into(),
+            json: None,
+            session: None,
+            tokens: 1,
+            outside: false,
+        };
+        run.resume(&graph, 1, answer("A")).unwrap();
+        assert!(
+            matches!(run.standing, Standing::Stopped(_)),
+            "one part still failed"
+        );
+        run.resume(&graph, 2, answer("B")).unwrap();
+        assert_eq!(run.standing, Standing::Going);
+        assert_eq!(
+            run.run(&graph, &Waits, &mut |_| {}),
+            Standing::Done(answer("both"))
+        );
+        assert!(run.resume(&graph, 0, answer("x")).is_err());
     }
 
     #[test]

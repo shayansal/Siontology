@@ -669,6 +669,9 @@ pub struct Saved {
     /// The only tools it may use, if it was told so (`/tools`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub only_tools: Option<std::collections::BTreeSet<String>>,
+    /// Whether it may use only the tools that read (a graph's researcher).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
     /// The files of its workspace it shared in its last run
     /// (`share_file`), to go with its reply: their paths in the workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1251,6 +1254,18 @@ impl Saved {
         }
         if let Some(only) = &self.only_tools {
             tools.retain(|name| only.contains(name));
+        }
+        if self.read_only {
+            let readers: std::collections::BTreeSet<String> = tools
+                .names()
+                .into_iter()
+                .filter(|name| {
+                    tools
+                        .get(name)
+                        .is_some_and(|t| t.effect() == sion_agent::Effect::Read)
+                })
+                .collect();
+            tools.retain(|name| readers.contains(name));
         }
         let system = self.system_prompt();
         self.prompt = system.clone();
@@ -2072,6 +2087,8 @@ pub struct Equipment {
     pub chat_instructions: Option<String>,
     /// The only tools it may use ([`Saved::only_tools`]).
     pub only_tools: Option<std::collections::BTreeSet<String>>,
+    /// Whether it may use only the tools that read ([`Saved::read_only`]).
+    pub read_only: bool,
     /// What makes pictures for it ([`Saved::image_model`]).
     pub image_model: Option<String>,
     /// Whether it has Home Assistant's tools ([`Saved::home_assistant`]).
@@ -2152,6 +2169,7 @@ pub fn start_watched(
         verify,
         verify_files,
         shared_memory,
+        read_only,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -2252,6 +2270,7 @@ pub fn start_watched(
         title: None,
         chat_instructions,
         only_tools,
+        read_only,
         shared: Vec::new(),
         image_model,
         home_assistant,

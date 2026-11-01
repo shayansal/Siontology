@@ -482,6 +482,98 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
     let again = sion_cli::graphs::Kept::load(&kept.id[..8]).unwrap();
     assert_eq!(again.run, kept.run);
     assert_eq!(sion_cli::graphs::shown(&again), lines);
+    // The run is pinned to its graph's digest, and replays as it ran: each
+    // node answered as it was, the graph routes the answers the same way.
+    assert_eq!(again.pinned, Some(sion_agent::graph::digest(&again.graph)));
+    let replayed = sion_agent::graph::replay(&again.graph, &again.run).unwrap();
+    assert_eq!(replayed.differs, None, "{replayed:?}");
+    // A graph changed in the run's file after the run began is refused.
+    let mut changed = again.clone();
+    changed.graph.nodes[2].instructions = "Say whatever the parts said.".into();
+    changed.save().unwrap();
+    let refused = sion_cli::graphs::Kept::load(&again.id)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("its graph was changed after the run began"),
+        "{refused}"
+    );
+    again.save().unwrap();
+
+    // A node whose session waits for a person stops the run there; once the
+    // session is approved and has run on, the run goes on from it. The
+    // first node may use only the tools that read: its call to pay finds
+    // no such tool.
+    let payer = Profile {
+        name: "payer".into(),
+        autonomy: Autonomy::L5,
+        models: vec![script(
+            &home,
+            "payer.json",
+            json!([
+                {"when": "look up what is owed", "call": "ledger_pay",
+                 "input": {"to": "bob", "amount": "1", "purpose": "owed"}},
+                {"when": "look up what is owed", "say": "1 USD is owed to bob."},
+                {"when": "pay what is owed", "call": "ledger_pay",
+                 "input": {"to": "bob", "amount": "1", "purpose": "owed"}},
+                {"when": "pay what is owed", "say": "Paid bob 1 USD."}
+            ]),
+        )],
+        ..team.clone()
+    };
+    let graph: sion_agent::graph::Graph = serde_json::from_value(json!({
+        "name": "look-then-pay",
+        "start": "look",
+        "nodes": [
+            {"id": "look", "instructions": "Look up what is owed.", "read_only": true},
+            {"id": "pay", "instructions": "Pay what is owed."}
+        ],
+        "edges": [{"from": "look", "to": "pay"}]
+    }))
+    .unwrap();
+    let (stopped, lines) =
+        sion_cli::graphs::run(ledger.clone(), &payer, graph, "Settle with bob.").unwrap();
+    let text = lines.join("\n");
+    assert!(
+        text.contains("stopped: pay failed: session ")
+            && text.contains("waits for a person's approval of ledger_pay"),
+        "{text}"
+    );
+    let look = stopped.run.ran[0].answer.as_ref().unwrap();
+    let looked = runtime::Saved::load(look.session.as_ref().unwrap()).unwrap();
+    assert!(
+        tool_results(&looked)
+            .iter()
+            .any(|r| r.contains("there is no tool named ledger_pay")),
+        "{:?}",
+        tool_results(&looked)
+    );
+    let waiting = stopped.run.ran[1].answer.clone().unwrap_err();
+    let held = waiting
+        .strip_prefix("session ")
+        .and_then(|rest| rest.split(' ').next())
+        .unwrap()
+        .to_string();
+    // Asked to go on before the session was approved, the run says so.
+    let (_, lines) =
+        sion_cli::graphs::go_on_after_approval(ledger.clone(), &payer, stopped.clone()).unwrap();
+    assert!(
+        lines.join("\n").contains(&format!(
+            "approve its call (sion agent continue {held} --approve)"
+        )),
+        "{lines:?}"
+    );
+    runtime::resume(
+        ledger.clone(),
+        &held,
+        Some(runtime::Reply::Approve(runtime::Approval::once())),
+    )
+    .unwrap();
+    let (done, lines) =
+        sion_cli::graphs::go_on_after_approval(ledger.clone(), &payer, stopped).unwrap();
+    let text = lines.join("\n");
+    assert!(text.ends_with("answer: Paid bob 1 USD."), "{text}");
+    assert_eq!(done.run.ran.len(), 2, "the paying node did not run again");
 
     // The router offers only templates that beat one agent in one of the
     // profile's comparisons: none has yet, so one agent, without asking.

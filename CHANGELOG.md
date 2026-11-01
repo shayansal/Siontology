@@ -10,6 +10,27 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Graphs: votes, quorums, replays, and runs that go on after a person
+
+- **`copies`** runs a node side by side, each copy told which attempt it
+  is; **`"kind": "vote"`** answers with the answer given most often,
+  without a model; the **self-consistency** template puts three copies to
+  a vote.
+- **Joins wait** for all (as before), the first answer (`"wait":
+  "first"`) or a quorum (`{"quorum": n}`), and then close.
+- **`read_only`** gives a node only the tools that read; the
+  **orchestrator** template's researchers have it, and a verification
+  checks their findings before the answer is written, with one round back
+  to the plan.
+- **Pinned and replayed**: a run keeps its graph's digest and is refused
+  if the graph changes under it; **`sion agent graph replay <run>
+  [--graph <file>]`** runs the graph again on what the run recorded and
+  says whether it routes it the same way.
+- **`sion agent graph continue <run>`** goes on after nodes whose sessions
+  waited for a person, once they were approved; a wave's answers are all
+  kept when one of its nodes fails.
+- Trust atoms `agent:graph-replay` and `agent:read-only-node`.
+
 ### Dreams tested before they are kept; a curated log only dreams write
 
 - **`sion memory dream --eval <set>`** (`--eval-model`, `--eval-runs`):

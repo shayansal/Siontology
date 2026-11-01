@@ -191,7 +191,9 @@ caches counted; a check of the task, if given, run each time the model
 says it is done, and an end for a task it cannot complete; a kill switch;
 sessions that serialise, pause for approval and resume; trajectories
 in chat format; and graphs of a profile's agent (fan-out, work-check,
-draft-review or one's own), each node a session, a router that keeps a
+draft-review, self-consistency, orchestrator or one's own, with copies,
+votes, joins that wait for all, the first or a quorum, read-only nodes,
+runs pinned to their graph, replayed and continued after a person), each node a session, a router that keeps a
 task to one agent unless it divides, and taint passed along the edges
 ([Graphs of agents](book/src/guides/agent-graphs.md)). A comparison
 (`sion agent graph eval`) runs one agent, one agent voting over several
@@ -999,6 +1001,8 @@ the architecture's own:
 | `agent:task-check` | A task's check is fixed by the commitment in its spec when the task is posted, and `sion task verify` runs only the check committed, in a sandbox with no network, on a fresh copy of its files, attesting the output only if it exits with status 0. The ledger does not see the run: an attestation made without it (`sion task attest`) counts the same, so what keeps an attestation honest is still its verifier's bond and the task's adjudicator. A check passes what it was written to pass (one that looks only at an output's form passes a wrong answer); it is not handed to the worker, but whoever the poster gives it to can pass it on. |
 | `agent:comparison` | A comparison (`sion agent graph eval`) measures a profile's models on the set's cases with their stand-in tools, not on its real tools, and its figures are what those runs did: its intervals treat every run as independent, though repeats of a case are not, so they are narrower than they would be over as many different cases. A template that beat both baselines on one set is offered by the router for any of the profile's tasks, as the model judges them, until a later comparison on that set says otherwise. |
 | `agent:judge` | A judge (`sion agent judge`, `--judge`) is a model's judgment of each step, not a check: it can be wrong, and what the steps quote can steer it, though it is told that they are data. Its calibration is its agreement with four labelled steps it was not shown, which says little about steps unlike them. |
+| `agent:graph-replay` | A graph's run is pinned to the digest of its graph in the run's own file, which catches a graph changed after the run began, not one changed with its digest; a replay answers each node with what the run recorded, so it shows how the graph routes those answers, not that its models would answer the same again. |
+| `agent:read-only-node` | A read-only node (`read_only`) gets the tools whose declared effect is to read: a tool that declares less than its calls can do is not held back (`agent:mcp-effects`). |
 | `agent:dream-quote` | A note a dream keeps rests on the words of its session it quotes: that they are in the session's transcript, as they are written there, shows that they were said in it (by the person, a tool or the agent itself), not that the note is true, nor that it says what they meant. |
 | `agent:dream-test` | A dream's test runs each held-out case with the core memory as it is and with the dream's notes in mind, every note as if kept in view, and records the notes only if no case passes fewer times with them: it tests what its cases check and no more, and a model that differs from the agent's (`--eval-model`) tests that model. |
 | `agent:curated-log` | A curated log is written only with its curator's key, so whoever holds that key decides what it says; the agents that keep it in mind (`--shared-memory`) see its notes as its local store on their machine shows them, and recall searches only their own logs. |

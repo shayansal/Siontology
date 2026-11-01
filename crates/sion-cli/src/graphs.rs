@@ -26,6 +26,11 @@ pub struct Kept {
     pub profile: String,
     /// The graph.
     pub graph: Graph,
+    /// The digest of the graph the run began with
+    /// ([`sion_agent::graph::digest`]): a kept graph that no longer has it
+    /// was changed after the run began, and is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<sion_core::hash::Hash32>,
     /// The run.
     pub run: GraphRun,
 }
@@ -70,8 +75,19 @@ impl Kept {
             [path] => {
                 let text = std::fs::read_to_string(path)
                     .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
-                serde_json::from_str(&text)
-                    .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))
+                let kept: Kept = serde_json::from_str(&text)
+                    .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+                let now = sion_agent::graph::digest(&kept.graph);
+                match kept.pinned {
+                    Some(pinned) if pinned != now => Err(CliError::Usage(format!(
+                        "graph run {}: its graph was changed after the run began (it began \
+                         with graph {}, the run's file now holds {})",
+                        kept.id,
+                        pinned.short(),
+                        now.short()
+                    ))),
+                    _ => Ok(kept),
+                }
             }
             [] => Err(CliError::Usage(format!("no graph run {id}"))),
             _ => Err(CliError::Usage(format!(
@@ -118,6 +134,7 @@ impl Executor for Sessions<'_> {
             profile.policy(),
             crate::runtime::Equipment {
                 only_tools: node.tools.clone(),
+                read_only: node.read_only,
                 // A node is one step of the graph: it does not stop to write
                 // down how it did it.
                 reflect: false,
@@ -129,27 +146,33 @@ impl Executor for Sessions<'_> {
             },
         )
         .map_err(|e| e.to_string())?;
-        let mut used = saved.state.usage;
-        used.add(&saved.state.delegated);
-        match &saved.ended {
-            Some(Ended::Done { text }) => Ok(Answer {
-                text: text.clone(),
-                json: None,
-                session: Some(saved.state.id.clone()),
-                tokens: used.total(),
-                // What it says may be steered by what it read from outside.
-                outside: saved.state.standing.tainted_until.is_some(),
-            }),
-            Some(Ended::NeedsApproval { tool, .. }) => Err(format!(
-                "session {} waits for a person's approval of {tool}",
-                saved.state.id
-            )),
-            _ => Err(format!(
-                "session {} ended without an answer: {}",
-                saved.state.id,
-                crate::runtime::last_words(&saved)
-            )),
-        }
+        answer_of(&saved)
+    }
+}
+
+/// A node's answer from its session as it ended: what it said, or why it
+/// has none (it waits for a person's approval, or ended without one).
+fn answer_of(saved: &crate::runtime::Saved) -> Result<Answer, String> {
+    let mut used = saved.state.usage;
+    used.add(&saved.state.delegated);
+    match &saved.ended {
+        Some(Ended::Done { text }) => Ok(Answer {
+            text: text.clone(),
+            json: None,
+            session: Some(saved.state.id.clone()),
+            tokens: used.total(),
+            // What it says may be steered by what it read from outside.
+            outside: saved.state.standing.tainted_until.is_some(),
+        }),
+        Some(Ended::NeedsApproval { tool, .. }) => Err(format!(
+            "session {} waits for a person's approval of {tool}",
+            saved.state.id
+        )),
+        _ => Err(format!(
+            "session {} ended without an answer: {}",
+            saved.state.id,
+            crate::runtime::last_words(saved)
+        )),
     }
 }
 
@@ -315,6 +338,7 @@ pub fn run(
     let kept = Kept {
         id: crate::runtime::new_id(),
         profile: profile.name.clone(),
+        pinned: Some(sion_agent::graph::digest(&graph)),
         run: GraphRun::start(&graph, task),
         graph,
     };
@@ -332,6 +356,7 @@ pub fn go_on(
     let graph = kept.graph.clone();
     let id = kept.id.clone();
     let name = kept.profile.clone();
+    let pinned = kept.pinned;
     let mut run = kept.run.clone();
     let mut failed = None;
     run.run(&graph, &executor, &mut |run| {
@@ -339,6 +364,7 @@ pub fn go_on(
             id: id.clone(),
             profile: name.clone(),
             graph: graph.clone(),
+            pinned,
             run: run.clone(),
         };
         if let Err(e) = copy.save() {
@@ -350,6 +376,58 @@ pub fn go_on(
     }
     kept.run = run;
     let lines = shown(&kept);
+    Ok((kept, lines))
+}
+
+/// Goes on with a kept run that stopped at nodes whose sessions waited for
+/// a person: each such session, approved and run on since
+/// (`sion agent continue`), gives its node's answer, and the run goes on.
+pub fn go_on_after_approval(
+    ledger: SharedLedger,
+    profile: &Profile,
+    mut kept: Kept,
+) -> Result<(Kept, Vec<String>), CliError> {
+    let waiting: Vec<(usize, String)> = kept
+        .run
+        .ran
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ran)| {
+            let why = ran.answer.as_ref().err()?;
+            let session = why.strip_prefix("session ")?.split(' ').next()?;
+            why.contains(" waits for a person's approval")
+                .then(|| (i, session.to_string()))
+        })
+        .collect();
+    if waiting.is_empty() {
+        return Err(CliError::Usage(format!(
+            "graph run {} did not stop at a node that waits for a person",
+            kept.id
+        )));
+    }
+    let mut still = Vec::new();
+    for (index, session) in waiting {
+        let saved = crate::runtime::Saved::load(&session)?;
+        match answer_of(&saved) {
+            Ok(answer) => kept
+                .run
+                .resume(&kept.graph, index, answer)
+                .map_err(CliError::Usage)?,
+            Err(why) if why.contains(" waits for a person's approval") => still.push(format!(
+                "{why}: approve its call (sion agent continue {session} --approve) or decline \
+                 it (--decline <why>), then continue this run again"
+            )),
+            Err(why) => still.push(format!("{why}: its node stays failed")),
+        }
+    }
+    kept.save()?;
+    let (kept, mut lines) = if kept.run.standing == Standing::Going {
+        go_on(ledger, profile, kept)?
+    } else {
+        let lines = shown(&kept);
+        (kept, lines)
+    };
+    lines.extend(still);
     Ok((kept, lines))
 }
 
@@ -391,7 +469,8 @@ pub enum GraphCommand {
         /// The task.
         #[arg(long)]
         task: String,
-        /// A template: fan-out, work-check or draft-review.
+        /// A template: fan-out, work-check, draft-review, self-consistency
+        /// or orchestrator.
         #[arg(long, conflicts_with_all = ["graph", "route"])]
         template: Option<String>,
         /// A graph of your own: a JSON file.
@@ -446,6 +525,24 @@ pub enum GraphCommand {
         /// The run, or the start of its id.
         run: String,
     },
+    /// Go on with a graph's run that stopped at nodes whose sessions waited
+    /// for a person, once those sessions were approved and run on
+    /// (`sion agent continue <session> --approve`).
+    Continue {
+        /// The run, or the start of its id.
+        run: String,
+    },
+    /// Replay a graph's run from what it recorded: each node answered as it
+    /// was, the graph (as it is kept with the run) must ask the same and
+    /// route the answers the same way, to the same end.
+    Replay {
+        /// The run, or the start of its id.
+        run: String,
+        /// Replay it through this graph instead (a JSON file): to see
+        /// whether a changed graph would have routed the run the same way.
+        #[arg(long, value_name = "FILE")]
+        graph: Option<PathBuf>,
+    },
 }
 
 /// Runs a graph command.
@@ -462,7 +559,7 @@ pub fn command(ledger: SharedLedger, command: GraphCommand) -> Result<(), CliErr
     match command {
         GraphCommand::Templates { name: None } => {
             for name in TEMPLATES {
-                println!("{name:<14}{}", outline(&named(name)?));
+                println!("{name:<18}{}", outline(&named(name)?));
             }
         }
         GraphCommand::Templates { name: Some(name) } => {
@@ -519,6 +616,41 @@ pub fn command(ledger: SharedLedger, command: GraphCommand) -> Result<(), CliErr
             print(lines);
         }
         GraphCommand::Show { run } => print(shown(&Kept::load(&run)?)),
+        GraphCommand::Continue { run } => {
+            let kept = Kept::load(&run)?;
+            let profile = crate::profiles::get(&kept.profile)?;
+            let (_, lines) = go_on_after_approval(ledger, &profile, kept)?;
+            print(lines);
+        }
+        GraphCommand::Replay { run, graph } => {
+            let kept = Kept::load(&run)?;
+            let graph = match graph {
+                Some(path) => {
+                    let text = std::fs::read_to_string(&path)
+                        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+                    serde_json::from_str(&text)
+                        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?
+                }
+                None => kept.graph.clone(),
+            };
+            let replayed = sion_agent::graph::replay(&graph, &kept.run).map_err(CliError::Usage)?;
+            match replayed.differs {
+                None => println!(
+                    "graph run {} replays as it ran: {} node runs, routed the same way, to the \
+                     same end (graph {})",
+                    kept.id,
+                    kept.run.ran.len(),
+                    sion_agent::graph::digest(&graph).short()
+                ),
+                Some((at, why)) => {
+                    return Err(CliError::Verification(format!(
+                        "graph run {} replays otherwise at node run {}: {why}",
+                        kept.id,
+                        at + 1
+                    )))
+                }
+            }
+        }
         GraphCommand::Eval {
             profile,
             set,

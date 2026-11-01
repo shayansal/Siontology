@@ -540,8 +540,8 @@ pub enum AgentCommand {
     #[command(subcommand)]
     Mcp(crate::agent_mcp::McpCommand),
     /// Graphs of agents: a profile's agent run as the nodes of a small
-    /// graph (fan-out, work-check, draft-review, or one of your own), each
-    /// node a session of its own.
+    /// graph (fan-out, work-check, draft-review, self-consistency,
+    /// orchestrator, or one of your own), each node a session of its own.
     #[command(subcommand)]
     Graph(crate::graphs::GraphCommand),
     /// Scheduled jobs: a task a profile works on at a time, every interval

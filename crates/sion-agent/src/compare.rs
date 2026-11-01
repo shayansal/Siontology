@@ -17,7 +17,7 @@
 //! of a case are not, so they are narrower than they would be over more
 //! cases. With a scripted model, the figures are the script's.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -454,7 +454,7 @@ fn run_arm(
     match arm {
         Arm::Single => {
             let session = session(
-                case, system, &case.task, None, false, models, budget, limits,
+                case, system, &case.task, None, false, false, models, budget, limits,
             )?;
             let calls = calls_of(&session.state);
             Ok(Run {
@@ -472,7 +472,9 @@ fn run_arm(
             let mut answers = Vec::new();
             let mut first_ended = None;
             for sample in 1..=*samples {
-                let ran = session(case, system, &case.task, None, false, models, share, limits)?;
+                let ran = session(
+                    case, system, &case.task, None, false, false, models, share, limits,
+                )?;
                 calls.extend(calls_of(&ran.state));
                 steps.extend(
                     judge::steps_of(&ran.state, Some(&ran.ended))
@@ -552,6 +554,7 @@ pub fn trial(
         &case.task,
         None,
         false,
+        false,
         models,
         budget_tokens,
         limits,
@@ -584,27 +587,7 @@ fn failures(
         .collect()
 }
 
-/// The answer given most often, case and spacing aside, a tie going to the
-/// earliest: its first wording, its votes, of how many answers.
-pub fn vote(answers: &[String]) -> Option<(String, usize, usize)> {
-    let key = |text: &str| {
-        text.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase()
-            .trim_end_matches('.')
-            .to_string()
-    };
-    let mut counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    for (i, answer) in answers.iter().enumerate() {
-        let entry = counts.entry(key(answer)).or_insert((0, i));
-        entry.0 += 1;
-    }
-    counts
-        .values()
-        .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
-        .map(|&(votes, first)| (answers[first].trim().to_string(), votes, answers.len()))
-}
+pub use crate::graph::vote;
 
 /// A session of one agent on `prompt`, with the case's stand-in tools (only
 /// those of `only`, if given) and `budget` tokens.
@@ -620,6 +603,7 @@ fn session(
     system: &str,
     prompt: &str,
     only: Option<&BTreeSet<String>>,
+    read_only: bool,
     outside: bool,
     models: Models<'_>,
     budget: u64,
@@ -627,7 +611,9 @@ fn session(
 ) -> Result<Session, String> {
     let mut tools = Toolbox::new();
     for fixture in &case.tools {
-        if only.map_or(true, |only| only.contains(&fixture.name)) {
+        if only.map_or(true, |only| only.contains(&fixture.name))
+            && (!read_only || fixture.effect == crate::tools::Effect::Read)
+        {
             tools.add(FixtureTool(fixture.clone()));
         }
     }
@@ -696,6 +682,7 @@ impl Executor for Fixtures<'_> {
             self.system,
             prompt,
             node.tools.as_ref(),
+            node.read_only,
             outside,
             self.models,
             share,

@@ -132,6 +132,7 @@ impl Profile {
             verify: None,
             verify_files: None,
             shared_memory: self.shared_memory.clone(),
+            read_only: false,
         }
     }
 
