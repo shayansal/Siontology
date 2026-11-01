@@ -127,6 +127,7 @@ impl Profile {
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
+            verify_files: None,
         }
     }
 

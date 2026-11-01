@@ -62,7 +62,7 @@ finish. The agent's tools:
 | `read_file`, `write_file`, `list_files` | read, write | Files in the directory `--workspace` gives, and nowhere else |
 | `fetch_url` | external | Public web pages, with `--web`; local and private addresses are refused |
 | `agent_spawn` | spend | With `--delegate`: a subagent with a budget carved from the agent's, working on a task in a session of its own ([Teams, schedules and channels](agent-teams.md)); those of one turn are spawned together and work at the same time |
-| `task_post`, `task_status`, `task_submit` | spend, read, external | With `--delegate`: hire another agent through a Task Charter, follow it, or deliver one you were hired for |
+| `task_post`, `task_status`, `task_submit`, `task_release` | spend, read, external, external | With `--delegate`: hire another agent through a Task Charter (with a check its verifiers run, if you fix one), follow it, deliver one you were hired for (with the attestations it needs), or give one up that cannot be done |
 | `shell`, `skill_run` | write, or external with the network | With `--shell`: commands, and a skill's own scripts, in a sandbox that writes only the workspace ([Commands, scripts and MCP servers](agent-tools.md)) |
 | `<server>_<tool>` | as reviewed | With `--mcp <server>`: the reviewed tools of an MCP server |
 | `storage_keep`, `storage_deals`, `storage_close` | spend, read, write | With `--storage`: keep a workspace file with storage providers, follow and close the deals |
@@ -786,9 +786,41 @@ session 9e7ffee20a4ae380: the agent cannot complete the task: the integration te
 ```
 
 The check runs where the agent works, so the agent can change what it
-reads or runs (a test, a script): a check that passed shows that the
-command exited with status 0, not that the work is right
-(`agent:verifier`).
+reads or runs there (a test, a script). A check's own files are kept out
+of its reach with `--verify-files <dir>`: a directory apart from the
+workspace and the skills, bound into the sandbox read-only at `/check`
+while the check runs, and only then, so the agent's commands neither see
+nor change it. Here the cases are the check's, and the agent cannot list
+them:
+
+```text
+$ sion agent run agent-7 6a3e150a…6549 --task 'Write sum.sh, which prints the sum of the numbers it is given.' --model script:files.json --workspace work --shell --verify 'sh /check/check.sh' --verify-files hidden --autonomy L3
+session ce6f69e7ab63b2f5 for agent 6a3e150a
+  → shell {"command":"ls /check"}
+  ← exit status 2
+    --- stderr
+    ls: cannot access '/check': No such file or directory
+  → write_file {"content":"echo $(($1 + $2))\n","path":"sum.sh"}
+  ← wrote 18 bytes to sum.sh
+agent: sum.sh is written: it prints the sum of the numbers it is given.
+  ✗ The check of your answer failed, attempt 1 of 3. It reported:
+    exit status 1
+    --- stdout
+    sh sum.sh 1 2 3 4 printed '3', not 10
+    Fix what it reports and finish again, or, if the task cannot be done, say so with cannot_complete.]
+  → write_file {"content":"s=0\nfor n in \"$@\"; do s=$((s + n)); done\necho $s\n","path":"sum.sh"}
+  ← wrote 49 bytes to sum.sh
+agent: Fixed: sum.sh added only its first two numbers. It adds them all now.
+session ce6f69e7ab63b2f5: done, and its check passed at attempt 2
+```
+
+What the check still reads from the workspace (the work itself, a test
+runner's settings, a module it imports) the agent can change, so a check
+that passed shows that its command exited with status 0 on what the
+agent left there, not that the work is right (`agent:verifier`). Work
+another agent is paid for is checked by someone else, with a check its
+task fixed when it was posted
+([Task Charters from the command line](tasks.md#9-a-check-fixed-when-the-task-is-posted)).
 
 ## Safety nets
 

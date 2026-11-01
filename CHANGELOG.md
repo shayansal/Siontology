@@ -10,6 +10,28 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Checks fixed when a task is posted
+
+- **`sion task post --check <dir>`** (and `task_post`'s `check`): a
+  command and its files, committed with the description in the task's
+  spec, so that they cannot change once the task is posted; kept on the
+  poster's machine for the task's verifiers, and not handed to the
+  worker, which sees the check's commitment (`task_status`). A task with
+  a check must ask for an attestation.
+- **`sion task verify <verifier> <task> <output>`**: runs the check the
+  task fixed, refusing any other, in a sandbox with no network, in a
+  fresh directory holding its files, the output read-only at `$OUTPUT`,
+  and attests the output on the verifier's bond only if it passes.
+- **`task_submit`** takes the attestations a result rests on, and for a
+  task that needs them keeps the output for its verifiers rather than
+  submit it without; **`task_release`** lets a worker give up a task it
+  cannot complete, saying why: the escrow goes back, its bond untouched.
+- **`sion agent run --verify-files <dir>`**: a check's own files, bound
+  into the sandbox read-only at `/check` only while the check runs, so
+  that the agent's commands neither see nor change them.
+- Trust atom `agent:task-check`; `agent:verifier` names the check's own
+  files.
+
 ### Dreaming, and cases an evolution never saw
 
 - **`sion memory dream`**: the sessions of the episodes recorded since

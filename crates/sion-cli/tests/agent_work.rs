@@ -88,6 +88,31 @@ fn script(home: &std::path::Path, name: &str, steps: Value) -> String {
     format!("script:{}", path.display())
 }
 
+/// What a session's tool calls returned, in full.
+fn tool_results(saved: &runtime::Saved) -> Vec<String> {
+    saved
+        .state
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            sion_agent::Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The task a `task_post` result names.
+fn posted(result: &str) -> String {
+    result
+        .split("Task ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no task posted: {result}"))
+        .chars()
+        .take(64)
+        .collect()
+}
+
 #[test]
 fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
     let home = std::env::temp_dir().join(format!("sion-agent-work-{}", std::process::id()));
@@ -456,5 +481,207 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
     let again = sion_cli::graphs::Kept::load(&kept.id[..8]).unwrap();
     assert_eq!(again.run, kept.run);
     assert_eq!(sion_cli::graphs::shown(&again), lines);
+
+    // A check fixed when a task is posted: the lead commits to it in the
+    // task's spec, and it is kept here for the reviewer, who runs it before
+    // attesting. A check needs someone who must attest.
+    session
+        .fund("reviewer", AssetId::usd(), Amount::units(20))
+        .unwrap();
+    session
+        .must(
+            "reviewer",
+            TxKind::PostBond {
+                class: AtomClass::Economic,
+                label: "verifier".into(),
+                amount: Amount::units(10),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let check_sh = "n=$(cat \"$OUTPUT\")\n[ \"$n\" = 1200 ] || { echo \"counted $n rows, not 1200\"; exit 1; }\n";
+    let check = json!({"files": {"check.sh": check_sh}});
+    let posting = script(
+        &home,
+        "lead-checked.json",
+        json!([
+            {"call": "task_post", "input": {"amount": "5", "description": "Count the dataset's rows.", "worker": "contractor", "check": check}},
+            {"call": "task_post", "input": {"amount": "5", "description": "Count the dataset's rows: answer with the number alone.", "worker": "contractor", "verifiers": ["reviewer"], "must_attest": ["reviewer"], "check": check}},
+            {"call": "task_post", "input": {"amount": "3", "description": "Sum the column nobody can read.", "worker": "contractor"}},
+            {"say": "The count is commissioned with its check, and the sum."}
+        ]),
+    );
+    let (saved, lines) = runtime::start(
+        ledger.clone(),
+        "lead",
+        lead,
+        "Commission the count and the sum.",
+        vec![posting],
+        Policy {
+            autonomy: Autonomy::L6,
+            ..Policy::default()
+        },
+        Equipment {
+            delegate: true,
+            ..Equipment::default()
+        },
+    )
+    .unwrap();
+    let text = lines.join("\n");
+    let posts = tool_results(&saved);
+    assert!(
+        posts[0].contains("not posted: a check is run by the verifiers who attest results"),
+        "{text}"
+    );
+    let fixed = sion_cli::tasks::Check {
+        command: sion_cli::tasks::CHECK_COMMAND.into(),
+        files: [("check.sh".to_string(), check_sh.as_bytes().to_vec())].into(),
+    };
+    assert!(
+        posts[1].contains(&format!(
+            "its check {} is fixed",
+            fixed.commitment().short()
+        )),
+        "{text}"
+    );
+    let counted = posted(&posts[1]);
+    let summed = posted(&posts[2]);
+    let id = |hex: &str| ObjectId::from_hash(sion_core::hash::Hash32::from_hex(hex).unwrap());
+
+    // The contractor sees that a check is fixed, not what it is; its counts
+    // are kept here for the reviewer, not submitted without an attestation.
+    let delivering = script(
+        &home,
+        "contractor-checked.json",
+        json!([
+            {"call": "task_status", "input": {"task": counted}},
+            {"call": "task_submit", "input": {"task": counted, "output": "1199"}},
+            {"call": "task_submit", "input": {"task": counted, "output": "1200"}},
+            {"say": "Both counts are with the reviewer."}
+        ]),
+    );
+    let contractor_run = |model: String, task: &str| {
+        runtime::start(
+            ledger.clone(),
+            "contractor",
+            contractor,
+            task,
+            vec![model],
+            Policy {
+                autonomy: Autonomy::L5,
+                ..Policy::default()
+            },
+            Equipment {
+                delegate: true,
+                ..Equipment::default()
+            },
+        )
+        .unwrap()
+    };
+    let (saved, lines) = contractor_run(delivering, "Do the count you were hired for.");
+    let text = lines.join("\n");
+    let delivered = tool_results(&saved);
+    let status: Value = serde_json::from_str(&delivered[0]).unwrap();
+    assert_eq!(
+        status["check"].as_str(),
+        Some(fixed.commitment().to_hex().as_str()),
+        "{text}"
+    );
+    assert!(!delivered[0].contains("check.sh"), "{text}");
+    for (result, output) in delivered[1..3].iter().zip(["1199", "1200"]) {
+        assert!(result.starts_with("Not submitted yet"), "{text}");
+        let kept = sion_cli::tasks::output_commitment(output.as_bytes());
+        assert!(result.contains(&kept.to_hex()), "{text}");
+        assert!(
+            sion_cli::tasks::kept(&kept).is_some(),
+            "{output} was not kept"
+        );
+    }
+
+    // The check kept is the one the task fixed, and an edited one is
+    // refused.
+    let given = sion_cli::tasks::committed_check(ledger.as_ref(), id(&counted), Default::default())
+        .unwrap();
+    assert_eq!(given, fixed);
+    let mut edited = fixed.clone();
+    edited.files.insert("check.sh".into(), b"exit 0\n".to_vec());
+    let refused = sion_cli::tasks::committed_check(
+        ledger.as_ref(),
+        id(&counted),
+        sion_cli::tasks::Given {
+            spec: None,
+            check: Some(edited),
+        },
+    );
+    assert!(
+        refused.is_err_and(|e| e.to_string().contains("is not the one task")),
+        "an edited check was taken"
+    );
+
+    // The reviewer runs the check: the wrong count is not attested, the
+    // right one is, and with its attestation the contractor is paid.
+    let sandbox = sion_agent::sandbox::Sandbox::new(sion_agent::sandbox::Backend::Bubblewrap);
+    if let Err(e) = sandbox.probe() {
+        eprintln!("skipped running the check: bubblewrap does not work here: {e}");
+    } else {
+        let verify = |session: &mut Session<'_>, verifier: &str, output: &[u8]| {
+            sion_cli::tasks::verify_output(
+                session,
+                ledger.as_ref(),
+                verifier,
+                id(&counted),
+                output,
+                Default::default(),
+                "verifier",
+                &sandbox,
+            )
+        };
+        let stranger = verify(&mut session, "bob", &b"1200"[..]);
+        assert!(
+            stranger.is_err_and(|e| e.to_string().contains("not one of task")),
+            "bob's attestation was taken"
+        );
+        let wrong = verify(&mut session, "reviewer", &b"1199"[..]).unwrap();
+        assert_eq!(wrong.attestation, None, "{}", wrong.report);
+        assert!(
+            wrong.report.contains("counted 1199 rows, not 1200"),
+            "{}",
+            wrong.report
+        );
+        let right = verify(&mut session, "reviewer", &b"1200"[..]).unwrap();
+        let attestation = right.attestation.expect("the right count is attested");
+        let paid = script(
+            &home,
+            "contractor-paid.json",
+            json!([
+                {"call": "task_submit", "input": {"task": counted, "output": "1200", "attestations": [attestation.to_string()]}},
+                {"say": "Paid for the count."}
+            ]),
+        );
+        let (_, lines) = contractor_run(paid, "Deliver the count the reviewer attested.");
+        let text = lines.join("\n");
+        assert!(text.contains("settled: 5 USD paid to contractor"), "{text}");
+    }
+
+    // The sum cannot be done: the contractor says so and releases the
+    // task, whose escrow goes back; its bond is untouched.
+    let giving_up = script(
+        &home,
+        "contractor-release.json",
+        json!([
+            {"call": "task_release", "input": {"task": summed, "why": "the column cannot be read"}},
+            {"say": "Released the sum: the column cannot be read."}
+        ]),
+    );
+    let (saved, lines) = contractor_run(giving_up, "Do the sum you were hired for.");
+    let text = lines.join("\n");
+    let released = tool_results(&saved);
+    assert!(
+        released[0]
+            .ends_with("Released because the column cannot be read; your task bond is untouched."),
+        "{text}"
+    );
+    let state = sion_cli::tasks::describe(ledger.as_ref(), id(&summed)).unwrap();
+    assert!(state["state"]["Cancelled"].is_object(), "{state}");
     std::fs::remove_dir_all(&home).unwrap();
 }

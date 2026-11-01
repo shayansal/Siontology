@@ -22,8 +22,8 @@ and the agent gateway are from a later run, on v1.15.
 its parts side by side and their reports put together, or work and a
 check of it, see [Graphs of agents](agent-graphs.md).)
 
-`--delegate` gives an agent four more tools: `agent_spawn`, `task_post`,
-`task_status` and `task_submit`. alice registered `lead` with a budget of
+`--delegate` gives an agent five more tools: `agent_spawn`, `task_post`,
+`task_status`, `task_submit` and `task_release`. alice registered `lead` with a budget of
 100 USD, as in [Agents at work](agent-runtime.md#an-agent-and-its-limits).
 The lead hands a purchase to a subagent with 10 USD of its budget:
 
@@ -132,6 +132,78 @@ A task posted without an adjudicator cannot be challenged: give the run
 `--adjudicator <atom>` to name one for the tasks it posts. `task_post`
 takes verifiers too, whose attestations count, as in
 [Task Charters from the command line](tasks.md).
+
+### A check its reviewer runs, and a way out
+
+`task_post` can also fix a check every result must pass: its files and
+the command that runs them, committed in the task's spec, kept on this
+machine for the verifiers and not handed to the worker
+([a check fixed when the task is posted](tasks.md#9-a-check-fixed-when-the-task-is-posted)).
+In another run, the lead hires `contractor` for `sum.sh`, with a check
+that `reviewer-1` must run and attest, and for a second task:
+
+```text
+$ sion agent run lead b398797d…d28d --task 'Have sum.sh written, checked by reviewer-1, and the sales column summed.' --model script:lead.json --delegate --autonomy L6
+session 56f07991ac9bdf71 for agent b398797d
+  → task_post {"amount":"5","check":{"files":{"cases.txt":"5|2 3\n10|1 2 3 4\n0|\n-1|2 -3\n","check.sh":"# The worker's sum.sh is at $OUTPUT; the cases are the check's own.\nwhile IFS='|' read -r expected args; do\n  got=$(sh \"$OUTPUT\" $args 2>&1)\n  [ \"$got\" = \"$expected\" ] || { echo \"sum.sh $args printed '$got', not $expected\"; exit 1; }\ndone < cases.txt\necho \"all $(wc -l < cases.txt | tr -d ' ') cases pass\"\n"}},"description":"Write sum.sh: it prints the sum of the integers it is given as arguments, and 0 for none.","must_attest":["reviewer-1"],"verifiers":["reviewer-1"],"worker":"contractor"}
+  ← Pulse 43: Done: task 804286a9 posted with 5 USD in escrow, for contractor, until Pulse 1040; fee 0.0012 USD. Task 804286a9037cf6a86cdccbaf301bfcd908dd73f7d6f44270fc7577e031768470; its check 296edda8 is fixed in its spec and kept here for its verifiers; it names no adjudicator, so its results cannot be challenged.
+  → task_post {"amount":"3","description":"Sum the column of sales.csv that nobody can read.","worker":"contractor"}
+  ← Pulse 47: Done: task b1fc5ba8 posted with 3 USD in escrow, for contractor, until Pulse 1044; fee 0.0011 USD. Task b1fc5ba8c684ecc6f65bfe8288d0657deb406df5f30585b636c13af1375c13db; it names no adjudicator, so its results cannot be challenged.
+agent: sum.sh is commissioned, with a check its reviewer runs, and so is the column's sum.
+session 56f07991ac9bdf71: done
+```
+
+The contractor sees that a check is fixed (its commitment), not what it
+checks. A task paid only with an attestation is not submitted without
+one: its output is kept here for the verifiers:
+
+```text
+$ sion agent run contractor 02b5bc51…c865 --task 'Write the sum.sh you were hired for: task 804286a9…8470.' --model script:contractor.json --delegate --autonomy L5
+session 1dbc085e931d8d7e for agent 02b5bc51
+  → task_status {"task":"804286a9037cf6a86cdccbaf301bfcd908dd73f7d6f44270fc7577e031768470"}
+  ← {"acceptance":{"adjudicator":null,"detection_permille":900,"kappa":2.0,"min_attestations":0,"must_attest":["a038aefff307362442c223ceb44b2cd0c4e58a01b45dd888dcdda3897ce9e2cd"],"reliance_pulses":1000,"requires":[],"verifiers":["a038aefff307362442c223ceb44b2cd0c4e58a01b45dd888dcdda3897ce9e2cd"]},"check":"296edda8af89d60e81fe791798c81b22d4baec6361a64306ef78e86cfad63f31","deadline":1040,"escrow":"5","f
+  → task_submit {"output":"s=0\nfor n in \"$@\"; do s=$((s + n)); done\necho $s\n","task":"804286a9037cf6a86cdccbaf301bfcd908dd73f7d6f44270fc7577e031768470"}
+  ← Not submitted yet: task 804286a9 is paid only with the attestations of 1 named verifier(s) of its output, which they give after running the check the task fixed. Your output is kept on this machine as 355d9410276a5cb57fa5ad6ee81468115e38109cf0204072d0b769539b588e88, for its verifiers to check; once they have attested it, call task_submit again with their attestations' ids.
+agent: sum.sh is delivered to reviewer-1, who checks it before it is paid.
+session 1dbc085e931d8d7e: done
+```
+
+reviewer-1 runs the check on the output kept, and attests it:
+
+```text
+$ sion task verify reviewer-1 804286a9…8470 355d9410…8e88
+the check passed:
+exit status 0
+--- stdout
+all 4 cases pass
+reviewer-1 signs: Publish the claim "the output for task 804286a9 passes" (task.attestation/v1), valid for 1992 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 68.
+Pulse 50: Done: claim f974545d submitted; fee 0.0011 USD.
+claim f974545d133c7c28baf7d4164fe1b2d397217020ad9903ae50985a493f78b85f
+```
+
+With the attestation, the contractor is paid:
+
+```text
+$ sion agent run contractor 02b5bc51…c865 --task 'reviewer-1 attested sum.sh: claim f974545d…b85f. Submit it.' --model script:paid.json --delegate --autonomy L5
+session eef5c6214f71b9d0 for agent 02b5bc51
+  → task_submit {"attestations":["f974545d133c7c28baf7d4164fe1b2d397217020ad9903ae50985a493f78b85f"],"output":"s=0\nfor n in \"$@\"; do s=$((s + n)); done\necho $s\n","task":"804286a9037cf6a86cdccbaf301bfcd908dd73f7d6f44270fc7577e031768470"}
+  ← Pulse 57: Done: task 804286a9 settled: 5 USD paid to contractor for result a709dfe3, its backing reserved; fee 0.0011 USD. Result a709dfe30614cbe7aed2c2be764f9d878045cb5bd8c3dc2830056487bab52e01.
+agent: Paid for sum.sh, on reviewer-1's attestation.
+session eef5c6214f71b9d0: done
+```
+
+The second task cannot be done as asked. `task_release` is the worker's
+honest exit, before the deadline: the escrow goes back to whoever paid
+for it, and the worker's bond is untouched:
+
+```text
+$ sion agent run contractor 02b5bc51…c865 --task 'Sum the column you were hired for: task b1fc5ba8…13db.' --model script:release.json --delegate --autonomy L5
+session b0295729f4601766 for agent 02b5bc51
+  → task_release {"task":"b1fc5ba8c684ecc6f65bfe8288d0657deb406df5f30585b636c13af1375c13db","why":"sales.csv's sales column is encrypted, and no key came with the task"}
+  ← Pulse 60: Done: task b1fc5ba8 cancelled: 3 USD refunded to alice; fee 0.0011 USD. Released because sales.csv's sales column is encrypted, and no key came with the task; your task bond is untouched.
+agent: Released the column's sum: the column is encrypted, and no key came with the task.
+session b0295729f4601766: done
+```
 
 ## Profiles
 

@@ -342,8 +342,9 @@ pub enum AgentCommand {
         no_reflect: bool,
         /// Let it hand work to other agents: spawn subagents with budgets
         /// carved from its own (agent_spawn), hire through Task Charters
-        /// (task_post, task_status) and deliver tasks it was hired for
-        /// (task_submit).
+        /// (task_post, task_status), deliver tasks it was hired for
+        /// (task_submit) and give up those it cannot complete
+        /// (task_release).
         #[arg(long)]
         delegate: bool,
         /// The model its subagents run with (default: its own). Repeat for
@@ -391,6 +392,11 @@ pub enum AgentCommand {
         /// it cannot complete the task.
         #[arg(long, value_name = "COMMAND")]
         verify: Option<String>,
+        /// The check's own files (its tests, say): a directory apart from
+        /// the workspace, shown to the check alone, read-only at /check,
+        /// while it runs. The agent's commands neither see nor change it.
+        #[arg(long, value_name = "DIR", requires = "verify")]
+        verify_files: Option<std::path::PathBuf>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -758,6 +764,7 @@ pub fn run(
             budget_tokens,
             quarantine,
             verify,
+            verify_files,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shell = shell.sandbox()?;
@@ -814,6 +821,7 @@ pub fn run(
                     screen,
                     budget_tokens,
                     verify,
+                    verify_files,
                     ..crate::runtime::Equipment::default()
                 },
             )?;

@@ -79,6 +79,37 @@ checked the output, and that its bond is part of the result's backing.
 In the `tasks` demo, the bounty requires reviewer-2's attestation, and the
 ledger refuses the bounty hunter's result without it.
 
+## A check fixed when the task is posted
+
+A poster can also fix how results are checked.
+`sion task post --check <dir>` (or an agent's `task_post` with a
+`check`) takes a directory of files and a command, `sh check.sh` by
+default, and the task's `spec` commits to them with its description:
+it is the commitment to the description and to the check's own
+commitment, which covers the command and every file's path and bytes.
+Neither can change once the task is posted. The check is kept on the
+poster's machine for the task's verifiers and is not handed to the
+worker, which sees only its commitment.
+
+A verifier runs it with `sion task verify`. The check is used only if it
+is the one the spec commits to; it runs in a sandbox with no network, in
+a fresh directory holding its files, with the output read-only at
+`$OUTPUT`, and the output is attested, on the verifier's bond, only if
+the check exits with status 0. A check is run by those who attest, so a
+task with one must ask for an attestation (`must_attest` or
+`min_attestations`): otherwise a worker's bond alone could settle it
+unchecked.
+
+What a worker is paid for is then judged by a check fixed before the
+work starts, out of the worker's reach, and applied by someone other
+than the worker. The ledger does not see a check run, only an
+attestation: a verifier that attests without running it is caught as any
+false attestation is, by a challenge its adjudicator upholds
+(`agent:task-check`). A worker that cannot do the work as asked releases
+the task before the deadline (`sion task cancel`, or an agent's
+`task_release`, which says why): the escrow goes back, and the worker's
+bond is untouched.
+
 ## When a grader turns out to be exploitable
 
 Someone shows that the grader accepts a patch that deletes the failing
@@ -139,7 +170,10 @@ rule and every way it can fail through both.
   payment, bounties, cancellation and refunds, posting from an agent's
   budget, compensation when a required claim is falsified (specification
   v1.10); required attestations, and no attestation by a result's author
-  (v1.15); `sion task` commands, MCP tools and the `tasks` demo.
+  (v1.15); `sion task` commands, MCP tools and the `tasks` demo; checks
+  fixed in a task's spec, kept from the worker and run by its verifiers
+  before they attest (`sion task verify`), and, for agents, `task_post`
+  with a check, `task_submit` with attestations and `task_release`.
 - **Simplified**: settlement reserves backing in the assurance registry,
   which is one contended object, so settlements are ordered one after
   another.

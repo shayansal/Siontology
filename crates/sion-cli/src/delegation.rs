@@ -14,10 +14,15 @@
 //!   [`MAX_DEPTH`]; suspending the parent stops the tree.
 //! - `task_post` escrows money from the agent's budget for work by another
 //!   agent (`PostTask` with the agent's charter): its spec, worker,
-//!   verifiers and adjudicator are fixed when it is posted.
+//!   verifiers and adjudicator are fixed when it is posted, and so is its
+//!   check, if it gives one (`crate::tasks::Check`), kept here for the
+//!   verifiers.
 //! - `task_status` reads a task; `task_submit` is the worker's side: a
-//!   result resting on its task bond, and the settlement.
+//!   result resting on its task bond and the attestations it was given,
+//!   and the settlement; `task_release` is the worker's honest exit from a
+//!   task it cannot complete, which costs it nothing but the fee.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
@@ -59,13 +64,15 @@ pub struct Delegation {
 }
 
 impl Delegation {
-    /// The tools: spawn, post a task, a task's status, submit a result.
+    /// The tools: spawn, post a task, a task's status, submit a result,
+    /// release a task.
     pub fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(SpawnTool(self.clone())),
             Box::new(TaskPostTool(self.clone())),
             Box::new(TaskStatusTool(self.acting.clone())),
             Box::new(TaskSubmitTool(self.acting.clone())),
+            Box::new(TaskReleaseTool(self.acting.clone())),
         ]
     }
 }
@@ -86,7 +93,8 @@ pub fn tasks_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".sion/agents/tasks"))
 }
 
-fn keep(bytes: &[u8], commitment: &Hash32) -> Result<PathBuf, String> {
+/// Keeps `bytes` on this machine under `commitment`, in [`tasks_dir`].
+pub(crate) fn keep(bytes: &[u8], commitment: &Hash32) -> Result<PathBuf, String> {
     let dir = tasks_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(commitment.to_hex());
@@ -614,7 +622,13 @@ impl Tool for TaskPostTool {
                           in USD, the work's description in full, and optionally the worker (a \
                           wallet name or account), verifiers whose attestations count, those of \
                           them who must attest every result, how many attestations a result \
-                          needs at least, and the deadline in Pulses (default 1000)."
+                          needs at least, and the deadline in Pulses (default 1000). You may \
+                          also fix a check every result must pass: its files (each path and its \
+                          text) and the command that runs them (default `sh check.sh`), with \
+                          the output to check at $OUTPUT. It is kept here for the verifiers, \
+                          who run it before they attest, and not given to the worker; a task \
+                          with a check needs a verifier who must attest, or at least one \
+                          attestation."
                 .into(),
             input_schema: schema(
                 json!({
@@ -624,7 +638,15 @@ impl Tool for TaskPostTool {
                     "verifiers": {"type": "array", "items": {"type": "string"}},
                     "must_attest": {"type": "array", "items": {"type": "string"}},
                     "min_attestations": {"type": "integer"},
-                    "deadline": {"type": "integer"}
+                    "deadline": {"type": "integer"},
+                    "check": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "files": {"type": "object", "additionalProperties": {"type": "string"}}
+                        },
+                        "required": ["files"]
+                    }
                 }),
                 &["amount", "description"],
             ),
@@ -653,8 +675,6 @@ fn post(delegation: &Delegation, input: &Value) -> Result<String, String> {
     let ledger = acting.ledger.as_ref();
     let (allotment, _) = allotment_holding(ledger, acting.agent, amount)?;
     let mut session = Session::open(ledger).map_err(|e| e.to_string())?;
-    let spec = crate::tasks::spec_commitment(description.as_bytes());
-    keep(description.as_bytes(), &spec)?;
     let worker = match text(input, "worker") {
         "" => None,
         w => Some(session.id(w)),
@@ -682,6 +702,32 @@ fn post(delegation: &Delegation, input: &Value) -> Result<String, String> {
         .unwrap_or(0)
         .min(u64::from(u8::MAX)) as u8;
     let deadline = input["deadline"].as_u64().unwrap_or(1_000).max(1);
+    let acceptance = Acceptance {
+        policy: Assurance::standard(),
+        requires: Default::default(),
+        verifiers,
+        must_attest,
+        min_attestations,
+        adjudicator: delegation.adjudicator,
+        detection_permille: 900,
+        reliance: 1_000,
+    };
+    // The description is kept here; a check is fixed in the spec with it,
+    // and kept for the verifiers.
+    let (spec, check) = match input.get("check").filter(|c| c.is_object()) {
+        Some(given) => {
+            let check = check_of(given)?;
+            let (spec, check) =
+                crate::tasks::commit_check(description.as_bytes(), &check, &acceptance)
+                    .map_err(|e| e.to_string())?;
+            (spec, Some(check))
+        }
+        None => {
+            let spec = crate::tasks::spec_commitment(description.as_bytes());
+            keep(description.as_bytes(), &spec)?;
+            (spec, None)
+        }
+    };
     let now = ledger.pulse().map_err(|e| e.to_string())?;
     let reference = session.reference(&allotment).map_err(|e| e.to_string())?;
     let view = session
@@ -689,16 +735,7 @@ fn post(delegation: &Delegation, input: &Value) -> Result<String, String> {
             &acting.wallet,
             TxKind::PostTask {
                 spec,
-                acceptance: Acceptance {
-                    policy: Assurance::standard(),
-                    requires: Default::default(),
-                    verifiers,
-                    must_attest,
-                    min_attestations,
-                    adjudicator: delegation.adjudicator,
-                    detection_permille: 900,
-                    reliance: 1_000,
-                },
+                acceptance,
                 worker,
                 amount,
                 deadline: Pulse(now.0 + deadline),
@@ -722,14 +759,47 @@ fn post(delegation: &Delegation, input: &Value) -> Result<String, String> {
         })
         .ok_or("the ledger posted no task")?;
     Ok(format!(
-        "Pulse {}: {receipt} Task {task}{}.",
+        "Pulse {}: {receipt} Task {task}{}{}.",
         view.pulse.0,
+        match check {
+            Some(check) => format!(
+                "; its check {} is fixed in its spec and kept here for its verifiers",
+                check.short()
+            ),
+            None => String::new(),
+        },
         if delegation.adjudicator.is_none() {
             "; it names no adjudicator, so its results cannot be challenged"
         } else {
             ""
         }
     ))
+}
+
+/// The check `task_post` was given: its files, each a path and its text,
+/// and its command.
+fn check_of(given: &Value) -> Result<crate::tasks::Check, String> {
+    let command = given["command"]
+        .as_str()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .unwrap_or(crate::tasks::CHECK_COMMAND);
+    let files = given["files"]
+        .as_object()
+        .ok_or("give the check's files: each path and its text")?
+        .iter()
+        .map(|(path, text)| {
+            text.as_str()
+                .map(|text| (path.clone(), text.as_bytes().to_vec()))
+                .ok_or_else(|| format!("the check's file {path} is not text"))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let check = crate::tasks::Check {
+        command: command.to_string(),
+        files,
+    };
+    check.validate()?;
+    Ok(check)
 }
 
 fn parse_task(input: &Value) -> Result<ObjectId, String> {
@@ -746,7 +816,8 @@ impl Tool for TaskStatusTool {
         ToolSpec {
             name: "task_status".into(),
             description: "A task's terms and state: open, settled (and with which result) or \
-                          cancelled. If its output is kept on this machine, it is included."
+                          cancelled. If its output is kept on this machine, it is included, and \
+                          so is the commitment to its check, if it was posted with one."
                 .into(),
             input_schema: schema(json!({"task": {"type": "string"}}), &["task"]),
         }
@@ -766,6 +837,14 @@ impl Tool for TaskStatusTool {
             Ok(value) => value,
             Err(e) => return Outcome::error(e.to_string()),
         };
+        // A check fixed in the task's spec, if the spec is kept here: its
+        // commitment, not its files, which are for the verifiers.
+        if let Some(spec) = crate::tasks::load_task(ledger, task)
+            .ok()
+            .and_then(|state| crate::tasks::kept_spec(&state))
+        {
+            value["check"] = json!(spec.check);
+        }
         // The output of a settled task, if it is kept here.
         if let Some(result) = value["state"]["Settled"]["result"].as_str() {
             if let Ok(stored) = crate::tasks::stored_claim(ledger, result) {
@@ -799,10 +878,18 @@ impl Tool for TaskSubmitTool {
             name: "task_submit".into(),
             description: "Deliver the work for a task you were hired for, and be paid if the \
                           result passes the task's rule: give the task's id and the output. The \
-                          result rests on your task bond (bond:<you>:task-worker)."
+                          result rests on your task bond (bond:<you>:task-worker) and on the \
+                          attestations you give, by the task's verifiers, of the same output. \
+                          A task that needs attestations is not submitted without them: your \
+                          output is kept here for the verifiers, and you submit again with \
+                          their attestations' ids."
                 .into(),
             input_schema: schema(
-                json!({"task": {"type": "string"}, "output": {"type": "string"}}),
+                json!({
+                    "task": {"type": "string"},
+                    "output": {"type": "string"},
+                    "attestations": {"type": "array", "items": {"type": "string"}}
+                }),
                 &["task", "output"],
             ),
         }
@@ -827,9 +914,64 @@ fn submit(acting: &Acting, input: &Value) -> Result<String, String> {
         return Err("give the output".into());
     }
     let ledger = acting.ledger.as_ref();
+    let state = crate::tasks::load_task(ledger, task).map_err(|e| e.to_string())?;
+    let commitment = crate::tasks::output_commitment(output.as_bytes());
+    // The attestations given, each of this output for this task.
+    let mut attested = Vec::new();
+    for id in input["attestations"].as_array().into_iter().flatten() {
+        let id = id.as_str().unwrap_or_default();
+        let claim =
+            crate::tasks::stored_claim(ledger, id).map_err(|e| format!("attestation {id}: {e}"))?;
+        let of = match &claim.body.payload {
+            sion_exec::claim::Payload::Public(bytes) => {
+                sion_core::encode::decode::<sion_exec::task::TaskResult>(bytes).ok()
+            }
+            _ => None,
+        };
+        if of
+            != Some(sion_exec::task::TaskResult {
+                task,
+                output: commitment,
+            })
+        {
+            return Err(format!(
+                "attestation {id} is not of this output for task {}",
+                task.short()
+            ));
+        }
+        attested.push((sion_core::ids::ClaimId::from_hash(claim_hash(id)?), claim));
+    }
+    // A task paid only for attested work is not submitted without its
+    // attestations: the output is kept here for its verifiers to check.
+    let (must, least) = (
+        state.acceptance.must_attest.len(),
+        state.acceptance.min_attestations,
+    );
+    if attested.is_empty() && (must > 0 || least > 0) {
+        keep(output.as_bytes(), &commitment)?;
+        let needs = match (must, least) {
+            (0, least) => format!("at least {least} attestation(s)"),
+            (must, 0) => format!("the attestations of {must} named verifier(s)"),
+            (must, least) => {
+                format!("the attestations of {must} named verifier(s), and at least {least} in all")
+            }
+        };
+        return Ok(format!(
+            "Not submitted yet: task {} is paid only with {needs} of its output{}. Your output is \
+             kept on this machine as {commitment}, for its verifiers to check; once they have \
+             attested it, call task_submit again with their attestations' ids.",
+            task.short(),
+            if crate::tasks::kept_spec(&state).is_some() {
+                ", which they give after running the check the task fixed"
+            } else {
+                ""
+            }
+        ));
+    }
     let mut session = Session::open(ledger).map_err(|e| e.to_string())?;
     let who = session.id(&acting.wallet);
-    let body = crate::tasks::result_body(ledger, task, &who, output.as_bytes(), &[])
+    let ids: Vec<_> = attested.iter().map(|(id, _)| *id).collect();
+    let body = crate::tasks::result_body(ledger, task, &who, output.as_bytes(), &ids)
         .map_err(|e| e.to_string())?;
     let id = sion_exec::claim::claim_id(&who, &body);
     let view = session
@@ -852,17 +994,17 @@ fn submit(acting: &Acting, input: &Value) -> Result<String, String> {
             acting.wallet
         ));
     };
-    keep(
-        output.as_bytes(),
-        &crate::tasks::output_commitment(output.as_bytes()),
-    )?;
+    keep(output.as_bytes(), &commitment)?;
     let view = session
         .send(
             &acting.wallet,
             TxKind::SettleTask {
                 task,
                 result: result.body,
-                attestations: Vec::new(),
+                attestations: attested
+                    .into_iter()
+                    .map(|(_, claim)| (claim.issuer, claim.body))
+                    .collect(),
             },
             Vec::new(),
         )
@@ -872,6 +1014,72 @@ fn submit(acting: &Acting, input: &Value) -> Result<String, String> {
         return Err(format!("not settled: {receipt}"));
     }
     Ok(format!("Pulse {}: {receipt} Result {id}.", view.pulse.0))
+}
+
+fn claim_hash(id: &str) -> Result<Hash32, String> {
+    Hash32::from_hex(id.trim()).map_err(|_| format!("{id:?} is not a claim's id (64 hex digits)"))
+}
+
+/// The worker's honest exit: it gives up a task it was hired for and
+/// cannot complete, before the deadline, and says why. The escrow goes
+/// back; the worker's bond is untouched.
+struct TaskReleaseTool(Acting);
+
+impl Tool for TaskReleaseTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "task_release".into(),
+            description: "Give up a task you were hired for and cannot complete, before its \
+                          deadline, saying why: its escrow goes back to whoever paid for it, \
+                          and your task bond is untouched; the ledger imposes nothing for it. \
+                          It is the honest end when the work cannot be done as asked, better \
+                          than a result that only looks done."
+                .into(),
+            input_schema: schema(
+                json!({"task": {"type": "string"}, "why": {"type": "string"}}),
+                &["task", "why"],
+            ),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::External
+    }
+
+    fn call(&self, input: &Value, _key: &str) -> Outcome {
+        match release(&self.0, input) {
+            Ok(text) => Outcome::ok(text),
+            Err(e) => Outcome::error(format!("not released: {e}")),
+        }
+    }
+}
+
+fn release(acting: &Acting, input: &Value) -> Result<String, String> {
+    let task = parse_task(input)?;
+    let why = text(input, "why");
+    if why.is_empty() {
+        return Err("say why the task cannot be completed".into());
+    }
+    let ledger = acting.ledger.as_ref();
+    let state = crate::tasks::load_task(ledger, task).map_err(|e| e.to_string())?;
+    let mut session = Session::open(ledger).map_err(|e| e.to_string())?;
+    if state.worker != Some(session.id(&acting.wallet)) {
+        return Err(format!(
+            "task {} was not given to you: only the worker it names may release it",
+            task.short()
+        ));
+    }
+    let view = session
+        .send(&acting.wallet, TxKind::CancelTask { task }, Vec::new())
+        .map_err(|e| e.to_string())?;
+    let receipt = crate::describe::receipt(&session.names(), &view.effects);
+    if view.status != ExecStatus::Success {
+        return Err(format!("refused by the ledger: {receipt}"));
+    }
+    Ok(format!(
+        "Pulse {}: {receipt} Released because {why}; your task bond is untouched.",
+        view.pulse.0
+    ))
 }
 
 impl std::fmt::Debug for Delegation {

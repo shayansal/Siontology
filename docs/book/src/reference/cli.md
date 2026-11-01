@@ -1052,7 +1052,7 @@ Options:
       --no-reflect
           Do not ask the agent, after a long task it finished without writing a skill, whether to write down how it did it
       --delegate
-          Let it hand work to other agents: spawn subagents with budgets carved from its own (agent_spawn), hire through Task Charters (task_post, task_status) and deliver tasks it was hired for (task_submit)
+          Let it hand work to other agents: spawn subagents with budgets carved from its own (agent_spawn), hire through Task Charters (task_post, task_status), deliver tasks it was hired for (task_submit) and give up those it cannot complete (task_release)
       --subagent-model <SUBAGENT_MODELS>
           The model its subagents run with (default: its own). Repeat for fallbacks
       --adjudicator <ADJUDICATOR>
@@ -1091,6 +1091,8 @@ Options:
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --verify <COMMAND>
           Check the task each time the agent says it is done: run this command with /bin/sh in its sandbox, in its workspace (it needs --shell). An exit status of 0 passes. A failed check is shown to the agent, which goes on; after three, the run ends unverified, with its best answer (the one whose check printed the highest last line `score: <0 to 1>`, if any). The agent may also say that it cannot complete the task
+      --verify-files <DIR>
+          The check's own files (its tests, say): a directory apart from the workspace, shown to the check alone, read-only at /check, while it runs. The agent's commands neither see nor change it
   -h, --help
           Print help
 ```
@@ -2376,6 +2378,7 @@ Usage: sion task [OPTIONS] <COMMAND>
 Commands:
   post    Post a task: escrow money for work whose acceptance rule is fixed now. Without --worker, anyone may settle it (a bounty)
   attest  Attest a task's output as a verifier, on your bond `bond:<you>:verifier`
+  verify  Run the check a task fixed when it was posted on an output, as one of its verifiers, and attest the output (on your bond `bond:<you>:verifier`) only if the check passes. The check runs in a sandbox with no network, in a fresh directory holding its files, with the output read-only at $OUTPUT; an exit status of 0 passes
   submit  Submit a result claim for a task, as its worker, resting on your task bond, the attestations given, and the task's required claims
   settle  Settle a task with your result claim and its attestations
   cancel  Cancel a task: a worker releases it, or the poster withdraws an open or expired one. The escrow is refunded
@@ -2404,6 +2407,8 @@ Options:
       --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --worker <WORKER>            The worker (wallet or account); omit for an open bounty
       --spec <SPEC>                A file describing the task (its exact bytes are committed)
+      --check <DIR>                A check results must pass, fixed now: the files of this directory and --check-command, committed in the task's spec with the description --spec gives, and kept on this machine for the task's verifiers, who run it with `sion task verify`. A task with a check needs an attestation (--must-attest or --min-attestations)
+      --check-command <COMMAND>    The check's command, run with /bin/sh in a directory holding its files, the output to check at $OUTPUT [default: "sh check.sh"]
       --requires <REQUIRES>        Claims every result must rest on (comma-separated ids)
       --verifiers <VERIFIERS>      Verifiers whose attestations count (comma-separated wallets or accounts)
       --must-attest <MUST_ATTEST>  Verifiers who must each attest every result, among --verifiers (comma-separated; spec v1.15)
@@ -2434,6 +2439,30 @@ Options:
       --bond <BOND>  The bond label the attestation rests on [default: verifier]
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion task verify`
+
+```text
+Run the check a task fixed when it was posted on an output, as one of its verifiers, and attest the output (on your bond `bond:<you>:verifier`) only if the check passes. The check runs in a sandbox with no network, in a fresh directory holding its files, with the output read-only at $OUTPUT; an exit status of 0 passes
+
+Usage: sion task verify [OPTIONS] <VERIFIER> <TASK> <OUTPUT>
+
+Arguments:
+  <VERIFIER>  The verifier's wallet
+  <TASK>      The task
+  <OUTPUT>    The output: a file (its exact bytes), or the commitment of an output kept on this machine (as an agent's task_submit keeps it)
+
+Options:
+      --check <DIR>              The check's files, if the check is not kept on this machine: it must be the one the task fixed
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --check-command <COMMAND>  The check's command, with --check: the one the task was posted with [default: "sh check.sh"]
+      --spec <FILE>              The task's description, with --check, if it is not kept on this machine
+      --bond <BOND>              The bond label the attestation rests on [default: verifier]
+      --sandbox <SANDBOX>        What runs the check: `bwrap` (bubblewrap, the default) or `docker:<image>@sha256:<digest>`, an image already on this machine [default: bwrap]
+      --sandbox-read <DIR>       A directory the check may read, at its own path (a toolchain, say). Repeat for more
+      --timeout <SECONDS>        Seconds the check may run before it is stopped (and fails) [default: 600]
+  -h, --help                     Print help
 ```
 
 ## `sion task submit`

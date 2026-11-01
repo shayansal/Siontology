@@ -1,8 +1,9 @@
 # Task Charters from the command line
 
 This guide posts a task, has two reviewers attest a worker's output, pays
-the worker for a result that passes the rule fixed at posting, and
-withdraws a bounty nobody took. It assumes a devnet is running
+the worker for a result that passes the rule fixed at posting, withdraws
+a bounty nobody took, and fixes a check that a reviewer runs before it
+attests. It assumes a devnet is running
 (`sion devnet`) and uses its deterministic wallet `alice` as the poster.
 For background, see [Task Charters](../concepts/task-charters.md).
 
@@ -183,6 +184,89 @@ $ sion task post alice 30 --worker reviewer-1 --requires 90284b8c…de9b --verif
 alice signs: Escrow 30 USD for a task for reviewer-1, paid to them for a result resting on 1 required claim and accepted under your policy, settled by Pulse 560. Fee 0.0011 USD; valid until Pulse 80.
 Pulse 62: Failed (invalid transaction: the task's worker cannot be one of its verifiers: nobody attests its own result); nothing happened except the fee of 0.0011 USD.
 ```
+
+## 9. A check fixed when the task is posted
+
+A poster can also fix how results are checked: `--check <dir>` takes a
+directory of files and a command (`--check-command`, `sh check.sh` by
+default), and the task's spec commits to them with the description
+`--spec` gives. Neither can change once the task is posted. The check is
+kept on this machine for the task's verifiers and is not handed to the
+worker. It is run by those who attest, so a task with one must ask for
+an attestation:
+
+```text
+$ sion task post alice 50 --worker coder --spec task.md --check check --deadline 500
+error: a check is run by the verifiers who attest results, so a task with one must ask for an attestation: name a verifier who must attest every result, or how many attestations a result needs
+[exit 1]
+```
+
+In a separate run, alice posts a task for `sum.sh`, whose check runs the
+worker's script on cases of its own, and which reviewer-1 must attest:
+
+```text
+$ sion task post alice 50 --worker coder --spec task.md --check check --verifiers reviewer-1 --must-attest reviewer-1 --deadline 500
+alice signs: Escrow 50 USD for a task for coder, paid to them for a result resting on 0 required claims, attested by reviewer-1 and accepted under your policy, settled by Pulse 512. Fee 0.0011 USD; valid until Pulse 32.
+Pulse 14: Done: task 4b8d2f24 posted with 50 USD in escrow, for coder, until Pulse 512; fee 0.0011 USD.
+task 4b8d2f24afcdc080734ef1a38dd70e3431f865faaa7e63ea634e9bfbfb7570d9
+check 296edda8af89d60e81fe791798c81b22d4baec6361a64306ef78e86cfad63f31 (fixed in the task's spec, kept on this machine for its verifiers)
+```
+
+reviewer-1 runs the check with `sion task verify`, in a sandbox with no
+network, in a fresh directory holding the check's files, with the output
+read-only at `$OUTPUT`. A first version of the script fails it, and is not
+attested:
+
+```text
+$ sion task verify reviewer-1 4b8d2f24…70d9 sum-v1.sh
+error: verification failed: the check did not pass, so nothing was attested. It reported:
+exit status 1
+--- stdout
+sum.sh 1 2 3 4 printed '3', not 10
+[exit 1]
+```
+
+A check other than the one the task fixed is refused, before it runs:
+
+```text
+$ sion task verify reviewer-1 4b8d2f24…70d9 sum-v1.sh --check edited
+error: verification failed: the check given is not the one task 4b8d2f24 fixed when it was posted: its spec commits to check 296edda8, and the one given is 547c5c71
+[exit 1]
+```
+
+The script that passes is attested, on reviewer-1's verifier bond:
+
+```text
+$ sion task verify reviewer-1 4b8d2f24…70d9 sum.sh
+the check passed:
+exit status 0
+--- stdout
+all 4 cases pass
+reviewer-1 signs: Publish the claim "the output for task 4b8d2f24 passes" (task.attestation/v1), valid for 1498 Pulses, resting on 3 assumptions and 0 other claims. Fee 0.0011 USD; valid until Pulse 35.
+Pulse 17: Done: claim 423f172e submitted; fee 0.0011 USD.
+claim 423f172e08399065b91888fe6218f56009b04ac6d11af28886cf5409bcc6d81a
+```
+
+With that attestation, coder's result is paid as in section 7:
+
+```text
+$ sion task submit coder 4b8d2f24…70d9 sum.sh --attestations 423f172e…d81a
+coder signs: Publish the claim "result for task 4b8d2f24" (task.result/v1), valid for 1494 Pulses, resting on 3 assumptions and 1 other claims. Fee 0.0011 USD; valid until Pulse 38.
+Pulse 21: Done: claim 2e352923 submitted; fee 0.0011 USD.
+claim 2e3529234dfc9f77abeba6edb30694d1b955473f22d92bb1609a7e5bcf22f880
+$ sion task settle coder 4b8d2f24…70d9 2e352923…f880 --attestations 423f172e…d81a
+coder signs: Settle task 4b8d2f24 with your result and 1 attestation. Fee 0.0011 USD; valid until Pulse 42.
+Pulse 25: Done: task 4b8d2f24 settled: 50 USD paid to coder for result 2e352923, its backing reserved; fee 0.0011 USD.
+```
+
+The check is kept under `$SION_HOME/agents/tasks` on the poster's
+machine. A verifier elsewhere is given the description and the check's
+files and runs `sion task verify … --spec task.md --check <dir>`
+(`--check-command` if the task was posted with another command): the
+command refuses them unless they are the ones the task's spec commits
+to. The ledger sees the attestation, not the run, so a verifier that
+attests without running the check is caught only as any false attestation
+is, by a challenge its adjudicator upholds (`agent:task-check`).
 
 ## If the environment turns out to be exploitable
 

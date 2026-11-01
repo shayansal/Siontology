@@ -599,6 +599,10 @@ pub struct Saved {
     /// /bin/sh in its sandbox, in its workspace (`--verify`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
+    /// The check's own files (`--verify-files`): shown to the check alone,
+    /// read-only at [`CHECK_FILES`], and never to the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_files: Option<PathBuf>,
     /// What the agent knew of itself (its core memory and the skills it
     /// has) when the session began, or when its conversation was last
     /// compacted: kept as it was in the system prompt, so that a
@@ -1281,15 +1285,19 @@ impl Saved {
             }
         };
         // The operator's check of the task, run in the agent's sandbox, in
-        // its workspace, each time the model says it is done.
+        // its workspace, each time the model says it is done, with its own
+        // files beside it if it has them.
         let check = match (&self.verify, &self.shell, &self.workspace) {
-            (Some(command), Some(sandbox), Some(root)) => {
-                Some((command.clone(), sandbox.clone(), root.clone()))
-            }
+            (Some(command), Some(sandbox), Some(root)) => Some((
+                command.clone(),
+                sandbox.clone(),
+                root.clone(),
+                self.verify_files.clone(),
+            )),
             _ => None,
         };
-        let verifier = check.map(|(command, sandbox, root)| {
-            move |_: &State, _: &str| run_check(&sandbox, &root, &command)
+        let verifier = check.map(|(command, sandbox, root, files)| {
+            move |_: &State, _: &str| run_check(&sandbox, &root, &command, files.as_deref())
         });
         let runtime = Runtime {
             models: models.iter().map(|m| m.as_ref()).collect(),
@@ -1608,16 +1616,32 @@ impl Saved {
     }
 }
 
+/// Where a check's own files are, inside the sandbox it runs in
+/// (`--verify-files`).
+pub const CHECK_FILES: &str = "/check";
+
 /// Runs the operator's check `command` with /bin/sh in `sandbox`, in the
-/// workspace at `root`: it passes if it exits with status 0, and its score
-/// is the last line of what it printed, `score: <0 to 1>`, if there is one.
+/// workspace at `root`, with the check's own `files`, if it has them,
+/// read-only at [`CHECK_FILES`]: it passes if it exits with status 0, and
+/// its score is the last line of what it printed, `score: <0 to 1>`, if
+/// there is one. The files are in the sandbox only while the check runs,
+/// so the agent's commands neither see nor change them.
 pub fn run_check(
     sandbox: &sion_agent::sandbox::Sandbox,
     root: &Path,
     command: &str,
+    files: Option<&Path>,
 ) -> sion_agent::verify::Verdict {
     use sion_agent::sandbox::{Mount, WORKSPACE};
-    match sandbox.run(&[Mount::workspace(root)], WORKSPACE, command) {
+    let mut mounts = vec![Mount::workspace(root)];
+    if let Some(files) = files {
+        mounts.push(Mount {
+            host: files.to_path_buf(),
+            inside: CHECK_FILES.into(),
+            writable: false,
+        });
+    }
+    match sandbox.run(&mounts, WORKSPACE, command) {
         Ok(run) => sion_agent::verify::Verdict {
             passed: run.succeeded(),
             score: sion_agent::verify::score_of(&run.stdout),
@@ -1850,6 +1874,43 @@ pub fn check_shell(
     Ok(())
 }
 
+/// Why a check's own files (`--verify-files`) may not be used: they go with
+/// `--verify`, are a directory, and lie apart from the agent's workspace
+/// and its skills, where the agent could change them or read them.
+pub fn check_check_files(
+    files: &Path,
+    verify: bool,
+    workspace: Option<&Path>,
+    skills: &Path,
+) -> Result<(), CliError> {
+    if !verify {
+        return Err(CliError::Usage(
+            "--verify-files gives the files of the check --verify runs: give --verify too".into(),
+        ));
+    }
+    if !files.is_dir() {
+        return Err(CliError::Usage(format!(
+            "{} is not a directory of the check's files",
+            files.display()
+        )));
+    }
+    let apart = workspace
+        .map(|dir| (dir, "workspace"))
+        .into_iter()
+        .chain([(skills, "skills directory")]);
+    for (dir, what) in apart {
+        if overlap(files, dir) {
+            return Err(CliError::Usage(format!(
+                "the check's files {} and the agent's {what} {} overlap: the agent could see \
+                 or change what checks it; keep them apart",
+                files.display(),
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The flags that give an agent a shell.
 #[derive(Clone, Debug, Default, clap::Args)]
 pub struct ShellArgs {
@@ -2010,6 +2071,8 @@ pub struct Equipment {
     pub budget_tokens: Option<u64>,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
+    /// The check's own files ([`Saved::verify_files`]).
+    pub verify_files: Option<PathBuf>,
 }
 
 /// The default directory of an agent's skills.
@@ -2075,6 +2138,7 @@ pub fn start_watched(
         home_assistant,
         budget_tokens,
         verify,
+        verify_files,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -2095,6 +2159,10 @@ pub fn start_watched(
             "a check runs in the agent's sandbox, in its workspace: give --shell with --verify"
                 .into(),
         ));
+    }
+    let verify_files = verify_files.map(|dir| resolved(&dir));
+    if let Some(files) = &verify_files {
+        check_check_files(files, verify.is_some(), workspace.as_deref(), &skills)?;
     }
     if let Some(sandbox) = &shell {
         let root = workspace.as_ref().ok_or_else(|| {
@@ -2147,6 +2215,7 @@ pub fn start_watched(
         skills: Some(skills),
         prompt: String::new(),
         verify,
+        verify_files,
         known: None,
         state: State::start_with(&new_id(), task, pictures, &limits),
         ended: None,
