@@ -507,7 +507,10 @@ fn the_kill_switch_stops_a_run_before_its_next_call() {
     fn stop() -> bool {
         STOP.load(Ordering::SeqCst)
     }
-    let (work, calls) = counted("work", Effect::Read, |_| {
+    // Calls that only read run side by side, started together, so a switch
+    // thrown while they run stops the run before the call after them; these
+    // calls write, and run one at a time.
+    let (work, calls) = counted("work", Effect::Write, |_| {
         STOP.store(true, Ordering::SeqCst);
         Outcome::ok("ok")
     });
@@ -2147,4 +2150,107 @@ fn with_a_check_the_model_may_say_it_cannot_complete_the_task() {
         .tools
         .iter()
         .all(|t| t.name != CANNOT_COMPLETE));
+}
+
+#[test]
+fn calls_that_only_read_run_side_by_side() {
+    // Each waits for the other: called one after the other, the first would
+    // wait alone.
+    let arrived = Arc::new(AtomicUsize::new(0));
+    let waiting = |name: &str| {
+        let arrived = arrived.clone();
+        FnTool::new(
+            name,
+            "waits for the other",
+            json!({"type": "object"}),
+            Effect::Read,
+            move |_: &Value| {
+                arrived.fetch_add(1, Ordering::SeqCst);
+                let start = std::time::Instant::now();
+                while arrived.load(Ordering::SeqCst) < 2
+                    && start.elapsed() < std::time::Duration::from_secs(5)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Outcome::ok(if arrived.load(Ordering::SeqCst) >= 2 {
+                    "together"
+                } else {
+                    "alone"
+                })
+            },
+        )
+    };
+    let mut tools = Toolbox::new();
+    tools.add(waiting("left"));
+    tools.add(waiting("right"));
+    let (write, writes) = counted("note", Effect::Write, |_| Outcome::ok("noted"));
+    tools.add(write);
+    let model = Scripted::new("reads")
+        .calls_all(vec![
+            ("left".into(), json!({})),
+            ("right".into(), json!({})),
+            ("note".into(), json!({"text": "both read"})),
+        ])
+        .says("Done.");
+    let runtime = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("reads", "Read both, then note it.", &Limits::default());
+    assert!(matches!(runtime.run(&mut state), Ended::Done { .. }));
+    let results: Vec<String> = state
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    // The write ran after them, on its own, and each result answers its
+    // call in order.
+    assert_eq!(results, ["together", "together", "noted"]);
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn what_a_session_last_read_and_wrote_outlives_compaction() {
+    let root = std::env::temp_dir().join(format!("sion-latest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("notes.md"), "hello").unwrap();
+    let mut tools = Toolbox::new();
+    for tool in sion_agent::builtin::workspace(&root) {
+        tools.add_boxed(tool);
+    }
+    let model = Scripted::new("latest")
+        .calls("read_file", json!({"path": "notes.md"}))
+        .calls(
+            "write_file",
+            json!({"path": "plan.md", "content": "ship on Friday"}),
+        )
+        .calls("read_file", json!({"path": "./notes.md"}))
+        .says("Done.");
+    let runtime = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start(
+        "latest",
+        "Read the notes, write the plan.",
+        &Limits::default(),
+    );
+    assert!(matches!(runtime.run(&mut state), Ended::Done { .. }));
+    // The same file, however its path was written, is one thing.
+    assert_eq!(
+        state.latest.keys().collect::<Vec<_>>(),
+        ["file:notes.md", "file:plan.md"]
+    );
+    assert!(sion_agent::session::compact_now(&mut state, 1));
+    let summary = match &state.messages[1].content[0] {
+        Block::Text { text } => text.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        summary.contains("[The latest of what this session read or changed")
+            && summary.contains("- file:notes.md (read_file): hello")
+            && summary.contains("- file:plan.md (write_file): "),
+        "{summary}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
 }

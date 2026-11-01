@@ -461,7 +461,23 @@ message is content from outside: the session is tainted, so its external
 calls and payments wait for a person, as after reading a web page. A streamed task
 sends its reply as an artifact that grows, and ends with its state,
 marked final. The card names no instructions of the operator's: only
-what the agent is. Push notifications are not offered.
+what the agent is.
+
+A client may have a task's updates pushed to it rather than wait or
+stream: it registers a webhook for the task (0.3's
+`tasks/pushNotificationConfig/set`, `get`, `list` and `delete`; 1.0's
+`CreateTaskPushNotificationConfig` and the rest), or gives one with its
+message (`configuration.pushNotificationConfig`, or 1.0's
+`taskPushNotificationConfig`), and each time the task's state changes the
+server POSTs the task, as it stands, to it: with the client's token in
+`X-A2A-Notification-Token`, and its Bearer credentials if it gave any (no
+other scheme is offered). A webhook is an HTTPS address that resolves to
+a public one; `--a2a-push-private` lets them be on this machine's network,
+for testing. A task has at most eight, and they are forgotten with it.
+`tasks/resubscribe` (1.0's `SubscribeToTask`) streams a task's state as it
+changes, the task first, until it is final. Whoever holds a token that
+reaches the profile may register a webhook for its tasks, anywhere public
+(`agent:a2a-webhooks`).
 
 ### Telegram
 
@@ -1610,9 +1626,11 @@ a host at work is waited for as long as it keeps telling.
   two people) are not answered. On a phone call, what was said is what Twilio heard, and the
   reply is Twilio's voice; a reply longer than a few paragraphs is said
   whole. A call that hangs up loses the reply it was waiting for.
-- A2A's push notifications are not offered, a task is answered when the
-  agent is done (streamed, as it writes), and tasks are remembered only
-  while the server runs. Files in A2A messages are not taken: text only.
+- An A2A task is answered when the agent is done (streamed as it writes,
+  or pushed to a webhook as its state changes); resubscribing streams its
+  state, not the reply's pieces; a push that fails is not tried again; and
+  tasks, with their webhooks, are remembered only while the server runs.
+  Files in A2A messages are not taken: text only.
 - `sion agent talk` has no `/stop` while the agent works (the terminal
   is waiting on it): Ctrl-C ends the conversation, the session kept.
   Voice mode needs programs that record and play audio on this machine.

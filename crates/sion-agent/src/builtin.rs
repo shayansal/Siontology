@@ -113,6 +113,15 @@ impl Tool for ReadFile {
         Effect::Read
     }
 
+    fn resource(&self, input: &Value) -> Option<String> {
+        let path = input["path"]
+            .as_str()
+            .unwrap_or(".")
+            .trim_start_matches("./");
+        let path = if path.is_empty() { "." } else { path };
+        Some(format!("file:{path}"))
+    }
+
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         let relative = input["path"].as_str().unwrap_or_default();
         let path = match inside(&self.root, relative) {
@@ -186,6 +195,15 @@ impl Tool for WriteFile {
         Effect::Write
     }
 
+    fn resource(&self, input: &Value) -> Option<String> {
+        let path = input["path"]
+            .as_str()
+            .unwrap_or(".")
+            .trim_start_matches("./");
+        let path = if path.is_empty() { "." } else { path };
+        Some(format!("file:{path}"))
+    }
+
     fn journaled(&self) -> bool {
         // Writing a file again leaves it as the first write did, and puts
         // it back if a command changed it since.
@@ -239,6 +257,15 @@ impl Tool for ListFiles {
 
     fn effect(&self) -> Effect {
         Effect::Read
+    }
+
+    fn resource(&self, input: &Value) -> Option<String> {
+        let path = input["path"]
+            .as_str()
+            .unwrap_or(".")
+            .trim_start_matches("./");
+        let path = if path.is_empty() { "." } else { path };
+        Some(format!("dir:{path}"))
     }
 
     fn call(&self, input: &Value, _key: &str) -> Outcome {

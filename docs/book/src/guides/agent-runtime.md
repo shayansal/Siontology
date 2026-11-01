@@ -144,7 +144,19 @@ summary, never separating a call from its result. A summary begins with
 what the session did that lasts: its last 40 calls that changed something
 or reached outside (the files it wrote, the commands it ran, the payments
 it made, the messages it sent), earlier ones counted by tool, kept apart
-from the conversation so that no summary of a summary loses them.
+from the conversation so that no summary of a summary loses them. Then
+comes the latest of what it read or changed: for each thing a tool names
+(a file, `file:notes/a.txt`, whichever way its path was written; a
+directory listed), the start of what its last call returned, the 32 most
+recent, so that a model that lost the conversation's middle still knows
+what a file held when it last looked, rather than what it held first.
+That is what the session saw then, not what is so now.
+
+Calls that only read, made one after another in a turn, each of which
+may run without anyone, run side by side: reading three files takes the
+time of the slowest. A call that writes, reaches outside or waits for a
+person runs on its own, after them, and the results answer the calls in
+the order they were made.
 
 ## Autonomy
 
@@ -1154,9 +1166,11 @@ task fixed when it was posted
   kill switch off
   ```
 
-  The kill switch is local. To stop an agent everywhere, suspend its
-  identity on the ledger (`sion agent suspend`): every payment it then
-  tries is refused, and so are its subagents'.
+  Reads that run side by side start together, so a switch thrown while
+  they run stops the run before the call after them. The kill switch is
+  local. To stop an agent everywhere, suspend its identity on the ledger
+  (`sion agent suspend`): every payment it then tries is refused, and so
+  are its subagents'.
 
 ## What this does not do yet
 

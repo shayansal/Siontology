@@ -608,6 +608,12 @@ pub enum AgentCommand {
         /// (https://agents.example.org); else the one a request came to.
         #[arg(long, value_name = "URL")]
         public_url: Option<String>,
+        /// Let other agents' A2A webhooks be on this machine's network:
+        /// loopback and private addresses, and plain HTTP (for testing; by
+        /// default a webhook is an HTTPS address that resolves to a public
+        /// one).
+        #[arg(long, requires = "a2a")]
+        a2a_push_private: bool,
     },
     /// Talk with a profile in the terminal: what you type goes to it, its
     /// reply comes as the model writes it; with --voice, heard and spoken.
@@ -1173,6 +1179,7 @@ pub fn run(
             token_env,
             a2a,
             public_url,
+            a2a_push_private,
         } => {
             // A server hears its sessions' approvals itself: what they
             // browse stays open while they wait.
@@ -1184,6 +1191,7 @@ pub fn run(
                 crate::a2a::publish(crate::a2a::Published {
                     profiles: a2a,
                     base: public_url,
+                    push_private: a2a_push_private,
                 });
             }
             let token = std::env::var(&token_env).ok().filter(|t| !t.is_empty());

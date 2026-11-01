@@ -299,6 +299,12 @@ pub struct State {
     /// How many calls of each tool were let go from [`State::done`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub done_before: BTreeMap<String, u64>,
+    /// The latest outcome of each thing the session read or changed, by
+    /// what its tool names it ([`crate::tools::Tool::resource`]), kept
+    /// apart from the conversation like [`State::done`]: the
+    /// [`LATEST_KEPT`] most recent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub latest: BTreeMap<String, Latest>,
     /// The checks of the model's answers since the person last spoke
     /// ([`Runtime::verify`]).
     #[serde(default, skip_serializing_if = "Attempts::is_empty")]
@@ -990,6 +996,45 @@ impl Runtime<'_> {
         }
     }
 
+    /// The calls from `index` on that only read and may each run without
+    /// anyone, two or more one after another in the turn (none a batching
+    /// tool's, none the same call twice), with where the turn goes on after
+    /// them; none if there are fewer than two.
+    fn readers(
+        &self,
+        state: &mut State,
+        calls: &[(String, String, Value)],
+        index: usize,
+    ) -> Option<(Vec<(usize, Ready)>, usize)> {
+        // A run told to stop starts nothing more.
+        if (self.stopped)() {
+            return None;
+        }
+        let mut group: Vec<(usize, Ready)> = Vec::new();
+        let mut next = index;
+        while next < calls.len() {
+            let (_, name, input) = &calls[next];
+            if name == TOOLS_CALL || name == CANNOT_COMPLETE {
+                break;
+            }
+            if next > index {
+                self.reconcile(state, name, input);
+            }
+            match self.check(state, name, input) {
+                Checked::Ready(ready)
+                    if ready.effect == Effect::Read
+                        && self.tools.get(&ready.tool).is_some_and(|t| !t.batches())
+                        && group.iter().all(|(_, g)| g.key != ready.key) =>
+                {
+                    group.push((next, ready));
+                    next += 1;
+                }
+                _ => break,
+            }
+        }
+        (group.len() >= 2).then_some((group, next))
+    }
+
     /// Runs one turn's calls in order, stopping at the first that needs
     /// approval.
     fn run_calls(
@@ -1035,6 +1080,64 @@ impl Runtime<'_> {
                 });
             }
             self.reconcile(state, name, input);
+            // Calls that only read, one after another in the turn, each of
+            // which may run without anyone, run side by side: none changes
+            // what another reads, and each passed the policy by itself.
+            if let Some((group, next)) = self.readers(state, calls, index) {
+                let start_ms = wall_ms();
+                let held = state.standing.held((self.now)());
+                for (_, ready) in &group {
+                    self.seen(&Seen::Running(ready.tool.clone()));
+                    self.begin(state, ready);
+                }
+                self.save(state);
+                let outcomes: Vec<Outcome> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = group
+                        .iter()
+                        .map(|(_, ready)| {
+                            let tool = self.tools.get(&ready.tool).expect("checked");
+                            scope.spawn(move || {
+                                if held.tainted {
+                                    tool.call_tainted(&ready.input, &ready.key)
+                                } else {
+                                    tool.call(&ready.input, &ready.key)
+                                }
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join()
+                                .unwrap_or_else(|_| Outcome::error("the tool's call failed"))
+                        })
+                        .collect()
+                });
+                for ((at, ready), outcome) in group.iter().zip(outcomes) {
+                    let outcome = marked(ready, outcome);
+                    let outcome = self.hold(state, &ready.tool, outcome);
+                    self.finish(state, ready, &outcome);
+                    let step = self.call_step(
+                        state,
+                        &ready.tool,
+                        Some(&ready.key),
+                        Some(ready.effect),
+                        ended_as(&outcome),
+                        start_ms,
+                    );
+                    self.step(state, step);
+                    progress |= !outcome.is_error;
+                    made.push(Made {
+                        key: ready.key.clone(),
+                        tool: ready.tool.clone(),
+                        gave: result_digest(&outcome),
+                    });
+                    results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
+                }
+                self.save(state);
+                index = next;
+                continue;
+            }
             // The calls of a batching tool that follow this one in the turn,
             // if they too may run, run with it: each passed the policy by
             // itself, and none was decided after seeing another's result.
@@ -1908,6 +2011,33 @@ impl Runtime<'_> {
         if outcome.confidential {
             state.standing.hold_confidential();
         }
+        // What is now so of what the call read or changed, by its name.
+        if let Some(name) = self
+            .tools
+            .get(&ready.tool)
+            .and_then(|tool| tool.resource(&ready.input))
+            .filter(|_| !outcome.is_error)
+        {
+            let at = state.latest.values().map(|l| l.at).max().unwrap_or(0) + 1;
+            state.latest.insert(
+                name,
+                Latest {
+                    tool: ready.tool.clone(),
+                    outcome: shorten(&outcome.content, 200),
+                    at,
+                },
+            );
+            if state.latest.len() > LATEST_KEPT {
+                let oldest = state
+                    .latest
+                    .iter()
+                    .min_by_key(|(_, l)| l.at)
+                    .map(|(name, _)| name.clone());
+                if let Some(oldest) = oldest {
+                    state.latest.remove(&oldest);
+                }
+            }
+        }
         // What lasts is kept apart from the conversation, so that no
         // summary of it loses it.
         if ready.effect >= Effect::Write && !outcome.is_error {
@@ -2024,6 +2154,45 @@ pub struct Done {
     pub unknown: bool,
 }
 
+/// The latest outcome of a thing a session read or changed
+/// ([`State::latest`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Latest {
+    /// The tool whose call it was.
+    pub tool: String,
+    /// What the call returned, shortened.
+    pub outcome: String,
+    /// Its order among the session's latest outcomes (the higher, the
+    /// later).
+    pub at: u64,
+}
+
+/// How many things [`State::latest`] keeps the latest outcome of.
+pub const LATEST_KEPT: usize = 32;
+
+/// What is now so of what the session read or changed, as a summary
+/// carries it after what lasts: the latest outcome of each, the most recent
+/// last. Empty if there is none.
+pub fn latest(state: &State) -> String {
+    if state.latest.is_empty() {
+        return String::new();
+    }
+    let mut by_time: Vec<(&String, &Latest)> = state.latest.iter().collect();
+    by_time.sort_by_key(|(_, l)| l.at);
+    let mut lines = vec![
+        "[The latest of what this session read or changed, each as its last call left it:]"
+            .to_string(),
+    ];
+    for (name, latest) in by_time {
+        lines.push(format!(
+            "- {name} ({}): {}",
+            latest.tool,
+            latest.outcome.replace('\n', " ")
+        ));
+    }
+    lines.join("\n")
+}
+
 /// What the session has done that lasts, as a summary begins: its calls
 /// that changed something or reached outside and did not fail, oldest
 /// first, those let go counted by tool. Empty if there are none.
@@ -2073,9 +2242,13 @@ pub fn compact_now(state: &mut State, keep_last: usize) -> bool {
     }
     // What lasts first, kept apart from the conversation, so that no
     // summary of a summary loses it; then what the compacted messages said.
-    let summary = match lasting(state) {
-        lasted if lasted.is_empty() => summarize(&state.messages[1..tail]),
-        lasted => format!("{lasted}\n{}", summarize(&state.messages[1..tail])),
+    let kept: Vec<String> = [lasting(state), latest(state)]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+    let summary = match kept.join("\n") {
+        kept if kept.is_empty() => summarize(&state.messages[1..tail]),
+        kept => format!("{kept}\n{}", summarize(&state.messages[1..tail])),
     };
     let mut messages = vec![state.messages[0].clone()];
     messages.push(Message {

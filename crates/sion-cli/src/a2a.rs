@@ -19,7 +19,17 @@
 //! `completed`, or `input-required` while the session waits for an
 //! approval, which a token made to decide gives in the same context
 //! (`/approve`, `/decline <why>`). Tasks are remembered while the server
-//! runs (the last thousand). Push notifications are not offered.
+//! runs (the last thousand).
+//!
+//! A client may have a task's updates pushed to it: each time the task's
+//! state changes, the task is POSTed to the webhooks it registered for it
+//! (`tasks/pushNotificationConfig/set`, or `CreateTaskPushNotificationConfig`;
+//! get, list and delete too, or a message's own config), with its token in
+//! `X-A2A-Notification-Token` and, if it gave Bearer credentials, those.
+//! A webhook is an HTTPS address that resolves to a public one, unless the
+//! operator lets them reach this machine's network (`--a2a-push-private`).
+//! `tasks/resubscribe` (`SubscribeToTask`) streams a task's state as it
+//! changes, until it is final.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -125,12 +135,349 @@ impl Task {
 static TASKS: Mutex<VecDeque<Task>> = Mutex::new(VecDeque::new());
 
 fn keep(task: &Task) {
-    let mut tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
-    tasks.retain(|t| t.id != task.id);
-    tasks.push_back(task.clone());
-    while tasks.len() > TASKS_KEPT {
-        tasks.pop_front();
+    let changed = {
+        let mut tasks = TASKS.lock().unwrap_or_else(|e| e.into_inner());
+        let before = tasks
+            .iter()
+            .find(|t| t.id == task.id)
+            .map(|t| t.state.clone());
+        tasks.retain(|t| t.id != task.id);
+        tasks.push_back(task.clone());
+        let mut gone = Vec::new();
+        while tasks.len() > TASKS_KEPT {
+            if let Some(old) = tasks.pop_front() {
+                gone.push(old.id);
+            }
+        }
+        if !gone.is_empty() {
+            let mut pushes = PUSHES.lock().unwrap_or_else(|e| e.into_inner());
+            for id in gone {
+                pushes.remove(&id);
+            }
+        }
+        before.as_deref() != Some(task.state.as_str())
+    };
+    if changed {
+        notify(task);
     }
+}
+
+/// Where a task's updates are pushed: a webhook its client registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Push {
+    /// The config's id.
+    id: String,
+    /// The webhook.
+    url: String,
+    /// The client's token, sent back in `X-A2A-Notification-Token`.
+    token: Option<String>,
+    /// Bearer credentials the client asked to be called with.
+    bearer: Option<String>,
+    /// The wire version the client spoke, which its notifications are in.
+    version: Version,
+}
+
+/// The most webhooks a task has.
+const PUSHES_PER_TASK: usize = 8;
+
+/// The webhooks of the tasks kept, by task.
+static PUSHES: Mutex<std::collections::BTreeMap<String, Vec<Push>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+fn pushes_of(task: &str) -> Vec<Push> {
+    PUSHES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(task)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Whether the operator lets webhooks reach this machine's network.
+fn push_private() -> bool {
+    PUBLISHED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|p| p.push_private)
+}
+
+/// A webhook a client gave, checked: an absolute HTTPS address (HTTP too,
+/// where the operator lets webhooks reach this machine's network), its
+/// token and credentials of reasonable size, and Bearer the only scheme.
+fn push_of(config: &Value, version: Version) -> Result<Push, (i64, String)> {
+    let invalid = |why: &str| (-32602, why.to_string());
+    let url = config["url"]
+        .as_str()
+        .ok_or_else(|| invalid("a push notification config needs a url"))?;
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://").filter(|_| push_private()))
+        .ok_or_else(|| invalid("a webhook is an https:// address"))?;
+    if rest.is_empty()
+        || rest.starts_with('/')
+        || url.len() > 2_048
+        || url.contains(char::is_whitespace)
+    {
+        return Err(invalid("a webhook names its host"));
+    }
+    let token = match config["token"].as_str() {
+        Some(token) if token.len() > 512 => return Err(invalid("the token is too long")),
+        Some(token) if !token.is_empty() => Some(token.to_string()),
+        _ => None,
+    };
+    let auth = &config["authentication"];
+    let bearer = if auth.is_null() {
+        None
+    } else {
+        let schemes: Vec<&str> = match version {
+            Version::V03 => auth["schemes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect(),
+            Version::V10 => auth["scheme"].as_str().into_iter().collect(),
+        };
+        if !schemes.iter().any(|s| s.eq_ignore_ascii_case("bearer")) {
+            return Err(invalid(
+                "only Bearer authentication is offered for webhooks",
+            ));
+        }
+        auth["credentials"]
+            .as_str()
+            .filter(|c| !c.is_empty() && c.len() <= 4_096 && !c.contains(['\r', '\n']))
+            .map(str::to_string)
+    };
+    let id = config["id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 128 && !id.contains(char::is_control))
+        .map(str::to_string)
+        .unwrap_or_else(crate::runtime::new_id);
+    Ok(Push {
+        id,
+        url: url.to_string(),
+        token,
+        bearer,
+        version,
+    })
+}
+
+/// Registers `push` for `task`, replacing a webhook of the same id.
+fn add_push(task: &str, push: Push) -> Result<Push, (i64, String)> {
+    let mut pushes = PUSHES.lock().unwrap_or_else(|e| e.into_inner());
+    let list = pushes.entry(task.to_string()).or_default();
+    list.retain(|p| p.id != push.id);
+    if list.len() >= PUSHES_PER_TASK {
+        return Err((
+            -32602,
+            format!("a task has at most {PUSHES_PER_TASK} webhooks"),
+        ));
+    }
+    list.push(push.clone());
+    Ok(push)
+}
+
+/// A webhook as the client is shown it (its credentials not).
+fn config_json(task: &str, push: &Push) -> Value {
+    let mut config = json!({"id": push.id, "url": push.url});
+    if let Some(token) = &push.token {
+        config["token"] = json!(token);
+    }
+    match push.version {
+        Version::V03 => json!({"taskId": task, "pushNotificationConfig": config}),
+        Version::V10 => {
+            config["taskId"] = json!(task);
+            config
+        }
+    }
+}
+
+/// Whether `method` is one of the webhook methods, in either version.
+fn is_push_method(method: &str) -> bool {
+    method.starts_with("tasks/pushNotificationConfig/")
+        || method.ends_with("TaskPushNotificationConfig")
+        || method.ends_with("TaskPushNotificationConfigs")
+}
+
+/// Answers a webhook method for profile `profile`'s tasks: set (create),
+/// get, list and delete, as `version` writes them.
+fn push_config(
+    method: &str,
+    params: &Value,
+    profile: &str,
+    version: Version,
+) -> Result<Value, (i64, String)> {
+    let v03 = method.starts_with("tasks/");
+    let verb = if v03 {
+        method
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    } else {
+        method
+            .trim_end_matches('s')
+            .strip_suffix("TaskPushNotificationConfig")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let task_id = if v03 && verb != "set" {
+        &params["id"]
+    } else {
+        &params["taskId"]
+    };
+    let task = task_id
+        .as_str()
+        .and_then(find)
+        .filter(|t| t.profile == profile)
+        .ok_or((-32001, "no such task".to_string()))?;
+    let named = if v03 {
+        &params["pushNotificationConfigId"]
+    } else {
+        &params["id"]
+    };
+    match verb.as_str() {
+        "set" | "create" => {
+            let config = if v03 {
+                &params["pushNotificationConfig"]
+            } else {
+                params
+            };
+            let push = add_push(&task.id, push_of(config, version)?)?;
+            Ok(config_json(&task.id, &push))
+        }
+        "get" => {
+            let pushes = pushes_of(&task.id);
+            let push = match named.as_str() {
+                Some(named) => pushes.iter().find(|p| p.id == named),
+                None => pushes.first(),
+            }
+            .ok_or((-32001, "the task has no such webhook".to_string()))?;
+            Ok(config_json(&task.id, push))
+        }
+        "list" => {
+            let configs: Vec<Value> = pushes_of(&task.id)
+                .iter()
+                .map(|p| config_json(&task.id, p))
+                .collect();
+            Ok(if v03 {
+                json!(configs)
+            } else {
+                json!({"configs": configs, "nextPageToken": ""})
+            })
+        }
+        "delete" => {
+            let named = named
+                .as_str()
+                .ok_or((-32602, "say which webhook to delete".to_string()))?;
+            let mut pushes = PUSHES.lock().unwrap_or_else(|e| e.into_inner());
+            let list = pushes.entry(task.id.clone()).or_default();
+            let before = list.len();
+            list.retain(|p| p.id != named);
+            if list.len() == before {
+                return Err((-32001, "the task has no such webhook".to_string()));
+            }
+            Ok(if v03 { Value::Null } else { json!({}) })
+        }
+        _ => Err((-32601, format!("no method {method}"))),
+    }
+}
+
+/// Pushes `task`, as it now stands, to each webhook registered for it, each
+/// from a thread of its own: a webhook that does not answer holds up no
+/// other, nor the task.
+fn notify(task: &Task) {
+    let pushes = pushes_of(&task.id);
+    if pushes.is_empty() {
+        return;
+    }
+    let private = push_private();
+    for push in pushes {
+        let task = task.clone();
+        std::thread::spawn(move || {
+            let _ = deliver(&push, &task, private);
+        });
+    }
+}
+
+/// POSTs `task` to `push`'s webhook, in its client's version: the task in
+/// 0.3, a stream response holding it in 1.0.
+fn deliver(push: &Push, task: &Task, private: bool) -> Result<(), String> {
+    let client = sion_http::Client::new(sion_http::Options {
+        timeout: std::time::Duration::from_secs(10),
+        allow_private: private,
+        // A webhook on this machine's network is not reached through the
+        // proxy.
+        proxy_from_env: !private,
+        ..sion_http::Options::default()
+    })
+    .map_err(|e| e.to_string())?;
+    let body = match push.version {
+        Version::V03 => task.json(Version::V03),
+        Version::V10 => json!({"task": task.json(Version::V10)}),
+    };
+    let bearer = push.bearer.as_ref().map(|b| format!("Bearer {b}"));
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(token) = &push.token {
+        headers.push(("X-A2A-Notification-Token", token));
+    }
+    if let Some(bearer) = &bearer {
+        headers.push(("Authorization", bearer));
+    }
+    client
+        .post_json(&push.url, &headers, body.to_string().as_bytes(), 64 * 1024)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Whether a task in `state` changes no more: its stream ends there.
+fn is_final(state: &str) -> bool {
+    matches!(
+        state,
+        "completed" | "failed" | "canceled" | "rejected" | "input-required"
+    )
+}
+
+/// A task's updates as Server-Sent Events, for a client that subscribes to
+/// it again: the task as it stands, then its state each time it changes,
+/// until it is final (at most an hour).
+fn resubscribed(task: Task, id: Value, version: Version) -> Pieces {
+    let (tell, pieces) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let send = |result: Value| tell.send(event(None, &rpc_result(&id, result))).is_ok();
+        let status = |task: &Task| {
+            let mut status = json!({"taskId": task.id, "contextId": task.context,
+                "status": task.json(version)["status"].clone(), "final": is_final(&task.state)});
+            match version {
+                Version::V03 => {
+                    status["kind"] = json!("status-update");
+                    status
+                }
+                Version::V10 => json!({"statusUpdate": status}),
+            }
+        };
+        let first = match version {
+            Version::V03 => task.json(version),
+            Version::V10 => json!({"task": task.json(version)}),
+        };
+        if !send(first) {
+            return;
+        }
+        let mut last = task;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3_600);
+        while !is_final(&last.state) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let Some(now) = find(&last.id) else {
+                return;
+            };
+            if now.state != last.state && !send(status(&now)) {
+                return;
+            }
+            last = now;
+        }
+    });
+    pieces
 }
 
 fn find(id: &str) -> Option<Task> {
@@ -166,7 +513,7 @@ pub fn card(profile: &Profile, base: &str) -> Value {
         "preferredTransport": "JSONRPC",
         // 1.0's.
         "supportedInterfaces": [{"url": url, "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
-        "capabilities": {"streaming": true, "pushNotifications": false},
+        "capabilities": {"streaming": true, "pushNotifications": true},
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/plain"],
         "skills": [{"id": "converse", "name": format!("Talk with {}", profile.name),
@@ -265,6 +612,20 @@ pub fn answer(
                 state: "working".into(),
                 reply: String::new(),
             };
+            // The message's own webhook, if it gives one, before the task
+            // is first kept.
+            let configuration = &params["configuration"];
+            let given = match version {
+                Version::V03 => &configuration["pushNotificationConfig"],
+                Version::V10 => &configuration["taskPushNotificationConfig"],
+            };
+            if !given.is_null() {
+                if let Err((code, why)) =
+                    push_of(given, version).and_then(|push| add_push(&task.id, push))
+                {
+                    return whole(200, rpc_error(&id, code, &why));
+                }
+            }
             keep(&task);
             let key = format!("a2a:{name}:{context}");
             // Another agent's message is content from outside: it taints the
@@ -333,13 +694,16 @@ pub fn answer(
             }
             whole(200, rpc_result(&id, task.json(version)))
         }
-        _ if method.starts_with("tasks/pushNotificationConfig")
-            || method.contains("PushNotification") =>
-        {
-            whole(
-                200,
-                rpc_error(&id, -32003, "push notifications are not offered"),
-            )
+        _ if is_push_method(&method) => match push_config(&method, params, name, version) {
+            Ok(result) => whole(200, rpc_result(&id, result)),
+            Err((code, why)) => whole(200, rpc_error(&id, code, &why)),
+        },
+        "tasks/resubscribe" | "SubscribeToTask" => {
+            let task_id = params["id"].as_str().unwrap_or_default();
+            let Some(task) = find(task_id).filter(|t| t.profile == name) else {
+                return whole(200, rpc_error(&id, -32001, "no such task"));
+            };
+            Served::Streamed(resubscribed(task, id, version))
         }
         _ => whole(200, rpc_error(&id, -32601, &format!("no method {method}"))),
     }
@@ -451,6 +815,9 @@ pub struct Published {
     pub profiles: Vec<String>,
     /// The address other agents reach the channel at.
     pub base: Option<String>,
+    /// Whether other agents' webhooks may be on this machine's network
+    /// (loopback and private addresses, plain HTTP): for testing.
+    pub push_private: bool,
 }
 
 static PUBLISHED: Mutex<Option<Published>> = Mutex::new(None);
@@ -490,6 +857,161 @@ pub fn card_at(path: &str, host: Option<&str>) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tasks_updates_are_pushed_to_the_webhooks_its_client_gave() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        // A webhook on this machine, which the operator allowed.
+        publish(Published {
+            profiles: Vec::new(),
+            base: None,
+            push_private: true,
+        });
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        let heard = std::thread::spawn(move || {
+            let mut heard = Vec::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut headers = Vec::new();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = n.trim().parse().unwrap();
+                    }
+                    headers.push(line.trim().to_string());
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let mut stream = stream;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                heard.push((headers, String::from_utf8(body).unwrap()));
+            }
+            heard
+        });
+        let mut task = Task {
+            id: format!("push-{}", std::process::id()),
+            context: "c1".into(),
+            profile: "lead".into(),
+            state: "working".into(),
+            reply: String::new(),
+        };
+        keep(&task);
+        let config = json!({"url": url, "token": "t0k3n", "id": "hook-1"});
+        let set = json!({"taskId": task.id, "pushNotificationConfig": config});
+        let shown = push_config(
+            "tasks/pushNotificationConfig/set",
+            &set,
+            "lead",
+            Version::V03,
+        )
+        .unwrap();
+        assert_eq!(shown["pushNotificationConfig"]["id"], "hook-1");
+        // Another profile's token does not reach the task.
+        assert!(push_config(
+            "tasks/pushNotificationConfig/set",
+            &set,
+            "other",
+            Version::V03
+        )
+        .is_err());
+        let listed = push_config(
+            "tasks/pushNotificationConfig/list",
+            &json!({"id": task.id}),
+            "lead",
+            Version::V03,
+        )
+        .unwrap();
+        assert_eq!(listed.as_array().map(Vec::len), Some(1));
+        // Each change of state is pushed, the task as it stands.
+        task.state = "input-required".into();
+        task.reply = "Approve paying bob 3 USD?".into();
+        keep(&task);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        task.state = "completed".into();
+        task.reply = "Paid.".into();
+        keep(&task);
+        let heard = heard.join().unwrap();
+        let states: Vec<String> = heard
+            .iter()
+            .map(|(_, body)| {
+                serde_json::from_str::<Value>(body).unwrap()["status"]["state"].to_string()
+            })
+            .collect();
+        assert!(
+            states.contains(&"\"input-required\"".to_string())
+                && states.contains(&"\"completed\"".to_string()),
+            "{states:?}"
+        );
+        for (headers, _) in &heard {
+            assert!(
+                headers
+                    .iter()
+                    .any(|h| h.eq_ignore_ascii_case("x-a2a-notification-token: t0k3n")),
+                "{headers:?}"
+            );
+        }
+        // 1.0's shapes; a webhook that is not HTTPS is refused unless allowed.
+        let v10 = json!({"taskId": task.id, "url": "https://agents.example.org/hook", "id": "hook-2",
+            "authentication": {"scheme": "Bearer", "credentials": "abc"}});
+        let shown = push_config(
+            "CreateTaskPushNotificationConfig",
+            &v10,
+            "lead",
+            Version::V10,
+        )
+        .unwrap();
+        assert_eq!(
+            (shown["id"].as_str(), shown.get("authentication")),
+            (Some("hook-2"), None)
+        );
+        let listed = push_config(
+            "ListTaskPushNotificationConfigs",
+            &json!({"taskId": task.id}),
+            "lead",
+            Version::V10,
+        )
+        .unwrap();
+        assert_eq!(listed["configs"].as_array().map(Vec::len), Some(2));
+        push_config(
+            "DeleteTaskPushNotificationConfig",
+            &json!({"taskId": task.id, "id": "hook-2"}),
+            "lead",
+            Version::V10,
+        )
+        .unwrap();
+        let basic = json!({"taskId": task.id, "url": "https://x.example/h", "authentication": {"scheme": "Basic"}});
+        assert!(push_config(
+            "CreateTaskPushNotificationConfig",
+            &basic,
+            "lead",
+            Version::V10
+        )
+        .is_err());
+        publish(Published::default());
+        let plain = json!({"taskId": task.id, "pushNotificationConfig": {"url": "http://agents.example.org/h"}});
+        let refused = push_config(
+            "tasks/pushNotificationConfig/set",
+            &plain,
+            "lead",
+            Version::V03,
+        )
+        .unwrap_err();
+        assert!(refused.1.contains("https://"), "{refused:?}");
+        assert!(
+            is_push_method("tasks/pushNotificationConfig/get")
+                && is_push_method("GetTaskPushNotificationConfig")
+        );
+        assert!(!is_push_method("tasks/get"));
+    }
 
     #[test]
     fn each_version_is_written_as_it_is_spoken() {

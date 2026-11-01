@@ -2236,6 +2236,7 @@ Options:
       --token-env <TOKEN_ENV>  The environment variable holding the machine's token, which reaches every profile and session (at least 16 characters); without it, only profiles' own tokens are taken [default: SION_AGENT_TOKEN]
       --a2a <PROFILE>          Give other agents A2A cards for these profiles (comma-separated): the first at /.well-known/agent-card.json, each at /v1/profiles/<name>/agent-card.json, answered at /v1/profiles/<name>/a2a
       --public-url <URL>       The address other agents reach this channel at, for the cards (https://agents.example.org); else the one a request came to
+      --a2a-push-private       Let other agents' A2A webhooks be on this machine's network: loopback and private addresses, and plain HTTP (for testing; by default a webhook is an HTTPS address that resolves to a public one)
   -h, --help                   Print help
 ```
 

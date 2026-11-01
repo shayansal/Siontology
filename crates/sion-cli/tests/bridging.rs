@@ -1205,6 +1205,7 @@ fn a_bridge_answers_chats_side_by_side_and_as_they_go_on() {
     sion_cli::a2a::publish(sion_cli::a2a::Published {
         profiles: vec!["a2a".into()],
         base: Some("https://agents.example.org".into()),
+        ..Default::default()
     });
     let listen = {
         let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

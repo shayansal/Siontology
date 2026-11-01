@@ -209,7 +209,10 @@ its external calls and spending wait for a person; decisions can be signed
 with a wallet's keys and checked (`sion agent decisions`); the runtime's
 own notes are marked where a tool's result imitates them; and a test of
 nine attacks on a model that obeys everything it reads shows what holds,
-and that two get through, as built. `sion agent run` gives it the
+and that two get through, as built. Calls that only read run side by side
+in a turn, the latest of what a session read or changed outlives
+compaction, and A2A tasks push their updates to their clients' webhooks
+and can be subscribed to again. `sion agent run` gives it the
 ledger as tools (balance, payments under the agent's charter, transaction
 status), files in a workspace and public web pages
 ([Agents at work](book/src/guides/agent-runtime.md)). With a memory log,
@@ -1014,6 +1017,7 @@ the architecture's own:
 | `agent:signed-decisions` | A signed decision shows that the wallet's keys signed it as recorded, not who held them; decisions made in chat apps are not signed, and a signature names the call by its key and the digest of its input, which a compacted session may no longer show. |
 | `agent:imitated-notes` | Only the runtime's notes as it writes them are marked in a tool's result, case aside; other words that claim the same are not. The mark informs the model: what holds a call is the policy, and approvals are kept in the session's state, never read from text. |
 | `agent:attack-tests` | The attacks tested are the ones listed, against a scripted model that obeys every instruction it reads: they show what the runtime enforces without the model, not that no other attack gets through, and what got through in them gets through. |
+| `agent:a2a-webhooks` | An A2A task's updates go to the webhooks its client registered, which the server checks only for being HTTPS addresses that resolve to public ones (unless the operator allows this machine's network): whoever holds a token that reaches the profile can have its tasks' states sent anywhere public, and a webhook is told the task as it stands, its reply included. |
 | `agent:dream-quote` | A note a dream keeps rests on the words of its session it quotes: that they are in the session's transcript, as they are written there, shows that they were said in it (by the person, a tool or the agent itself), not that the note is true, nor that it says what they meant. |
 | `agent:dream-test` | A dream's test runs each held-out case with the core memory as it is and with the dream's notes in mind, every note as if kept in view, and records the notes only if no case passes fewer times with them: it tests what its cases check and no more, and a model that differs from the agent's (`--eval-model`) tests that model. |
 | `agent:curated-log` | A curated log is written only with its curator's key, so whoever holds that key decides what it says; the agents that keep it in mind (`--shared-memory`) see its notes as its local store on their machine shows them, and recall searches only their own logs. |

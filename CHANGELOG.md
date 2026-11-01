@@ -10,6 +10,26 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Reads side by side, what a session last saw kept, A2A pushes
+
+- **Reads side by side**: calls that only read, one after another in a
+  turn and each free to run without anyone, run at once; the results
+  answer the calls in order.
+- **The latest of what a session read or changed** (`Tool::resource`:
+  `file:<path>` for the workspace's tools) is kept apart from the
+  conversation, the 32 most recent, and a compaction's summary carries it
+  after what lasts.
+- **A2A push notifications**: webhooks per task (0.3's
+  `tasks/pushNotificationConfig/set|get|list|delete`, 1.0's
+  `CreateTaskPushNotificationConfig` and the rest, or a message's own
+  config), each POSTed the task as its state changes, with the client's
+  token and Bearer credentials; HTTPS and public addresses only unless
+  `sion agent serve --a2a-push-private`. The card now says
+  `pushNotifications: true`.
+- **`tasks/resubscribe`** (`SubscribeToTask`) streams a task's state as it
+  changes, until it is final.
+- Trust atom `agent:a2a-webhooks`.
+
 ### Confidential content, signed decisions, imitated notes, attacks tried
 
 - **Confidentiality label**: a session holds confidential content once

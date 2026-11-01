@@ -259,6 +259,16 @@ pub trait Tool: Send + Sync {
         true
     }
 
+    /// What the call with `input` reads or changes, named the same by every
+    /// call of it (`file:notes/a.txt`), if the tool can say: the session
+    /// keeps the latest outcome for each apart from the conversation
+    /// ([`crate::session::State::latest`]), so that compacting the
+    /// conversation does not lose what is now so. By default, nothing.
+    fn resource(&self, input: &Value) -> Option<String> {
+        let _ = input;
+        None
+    }
+
     /// How the tool keeps a call's effect from happening twice
     /// ([`Dedup`]): by default, nothing does.
     fn dedup(&self) -> Dedup {
