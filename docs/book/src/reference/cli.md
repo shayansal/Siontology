@@ -723,6 +723,7 @@ Commands:
   weixin         Sign a WeChat account in for `--via weixin`, by a QR code scanned with WeChat (Tencent's iLink bot protocol), or sign it out
   service        Long-running commands (a bridge, the server, the scheduler) as services of your own: systemd user units on Linux, launchd agents on macOS
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
+  graph          Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, or one of your own), each node a session of its own
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
   serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's POST /v1/chat/completions (a profile as the model) and GET /v1/models, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
@@ -1956,6 +1957,81 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
+
+## `sion agent graph`
+
+```text
+Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, or one of your own), each node a session of its own
+
+Usage: sion agent graph [OPTIONS] <COMMAND>
+
+Commands:
+  templates  The graphs the runtime knows, a line each; with a name, that graph as JSON, to start a graph of your own from
+  run        Run a graph on a task, each of its nodes a session of a profile's agent: a template, a graph of your own, or what the profile's model says the task needs
+  show       Show a graph's run: what each node answered, and how it stands
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Graphs of agents](../guides/agent-graphs.md).
+
+## `sion agent graph templates`
+
+```text
+The graphs the runtime knows, a line each; with a name, that graph as JSON, to start a graph of your own from
+
+Usage: sion agent graph templates [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]  A template's name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Graphs of agents](../guides/agent-graphs.md).
+
+## `sion agent graph run`
+
+```text
+Run a graph on a task, each of its nodes a session of a profile's agent: a template, a graph of your own, or what the profile's model says the task needs
+
+Usage: sion agent graph run [OPTIONS] --task <TASK> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile whose agent runs the nodes
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --task <TASK>          The task
+      --template <TEMPLATE>  A template: fan-out, work-check or draft-review
+      --graph <GRAPH>        A graph of your own: a JSON file
+      --route                Ask the profile's model first how to work on the task: one agent (a single session), or one of the templates
+  -h, --help                 Print help
+```
+
+See [Graphs of agents](../guides/agent-graphs.md).
+
+## `sion agent graph show`
+
+```text
+Show a graph's run: what each node answered, and how it stands
+
+Usage: sion agent graph show [OPTIONS] <RUN>
+
+Arguments:
+  <RUN>  The run, or the start of its id
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Graphs of agents](../guides/agent-graphs.md).
 
 ## `sion agent schedule`
 

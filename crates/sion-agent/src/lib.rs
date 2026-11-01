@@ -63,6 +63,7 @@ pub mod egress;
 pub mod encoding;
 pub mod evals;
 pub mod evolve;
+pub mod graph;
 pub mod journal;
 pub mod mcp;
 pub mod mcp_http;

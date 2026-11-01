@@ -10,6 +10,24 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Graphs of agents
+
+- **`sion agent graph`**: a profile's agent run as the nodes of a small
+  graph, each node a session of its own, the nodes of a wave side by
+  side: `run <profile> --task … --template fan-out|work-check|draft-review`,
+  or `--graph <file>` for one of your own (nodes with instructions, and
+  optionally tools, a model and a schema for their answer; edges taken
+  always, when a check passes or fails, on a field's value, or once for
+  each item of a list); `show <run>`; `templates`.
+- **`--route`**: the profile's model is asked first whether the task
+  needs one agent (the default, and what an answer it may not give is
+  taken as) or one of the templates.
+- A graph is checked before it runs (every node reachable, at most 16
+  nodes, 12 parts to a fan-out, 24 node runs unless it says more, 100 at
+  most), and its run kept a wave at a time under
+  `$SION_HOME/agents/graphs`. A node whose session read content from
+  outside taints the nodes its answer reaches.
+
 ### What a model is sent, and checked before it is done
 
 - **Prompt caches counted.** The input tokens a provider read from its

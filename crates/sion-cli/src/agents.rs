@@ -514,6 +514,11 @@ pub enum AgentCommand {
     /// reviewed and pinned), list them, review one again, remove one.
     #[command(subcommand)]
     Mcp(crate::agent_mcp::McpCommand),
+    /// Graphs of agents: a profile's agent run as the nodes of a small
+    /// graph (fan-out, work-check, draft-review, or one of your own), each
+    /// node a session of its own.
+    #[command(subcommand)]
+    Graph(crate::graphs::GraphCommand),
     /// Scheduled jobs: a task a profile works on at a time, every interval
     /// or on a cron expression, each run a session whose answer goes to a
     /// channel.
@@ -1043,6 +1048,7 @@ pub fn run(
             not_done,
         } => crate::runtime::settle(&session, key.as_deref(), done.as_deref(), not_done),
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
+        AgentCommand::Graph(command) => crate::graphs::command(shared, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),

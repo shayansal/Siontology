@@ -91,6 +91,16 @@ fn yes() -> bool {
 }
 
 impl Profile {
+    /// The rules its sessions run under.
+    pub fn policy(&self) -> Policy {
+        Policy {
+            autonomy: self.autonomy,
+            skill_approvals: self.skill_approvals,
+            quarantine: self.quarantine,
+            ..Policy::default()
+        }
+    }
+
     /// What its sessions may use besides the ledger.
     pub fn equipment(&self) -> Equipment {
         Equipment {
@@ -172,12 +182,7 @@ impl Profile {
             task,
             pictures,
             models,
-            Policy {
-                autonomy: self.autonomy,
-                skill_approvals: self.skill_approvals,
-                quarantine: self.quarantine,
-                ..Policy::default()
-            },
+            self.policy(),
             crate::runtime::Equipment {
                 chat_instructions: settings.instructions.clone(),
                 only_tools: settings.tools.clone(),

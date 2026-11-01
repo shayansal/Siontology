@@ -18,6 +18,10 @@ and the agent gateway are from a later run, on v1.15.
 
 ## Subagents
 
+(To run a profile's agent as the nodes of a small graph instead, a split,
+its parts side by side and their reports put together, or work and a
+check of it, see [Graphs of agents](agent-graphs.md).)
+
 `--delegate` gives an agent four more tools: `agent_spawn`, `task_post`,
 `task_status` and `task_submit`. alice registered `lead` with a budget of
 100 USD, as in [Agents at work](agent-runtime.md#an-agent-and-its-limits).

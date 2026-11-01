@@ -189,8 +189,11 @@ did that lasts; a system prompt that stays the same through a session,
 for providers' caches, and the tokens read from and written to those
 caches counted; a check of the task, if given, run each time the model
 says it is done, and an end for a task it cannot complete; a kill switch;
-sessions that serialise, pause for approval and resume; and trajectories
-in chat format. `sion agent run` gives it the
+sessions that serialise, pause for approval and resume; trajectories
+in chat format; and graphs of a profile's agent (fan-out, work-check,
+draft-review or one's own), each node a session, a router that keeps a
+task to one agent unless it divides, and taint passed along the edges
+([Graphs of agents](book/src/guides/agent-graphs.md)). `sion agent run` gives it the
 ledger as tools (balance, payments under the agent's charter, transaction
 status), files in a workspace and public web pages
 ([Agents at work](book/src/guides/agent-runtime.md)). With a memory log,

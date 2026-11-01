@@ -407,5 +407,54 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
     assert_eq!(message["chat_id"], 42);
     assert_eq!(message["text"], "85 USD left in the budget.");
     assert!(received.try_recv().is_err(), "chat 99 got no answer");
+
+    // A graph of agents: the task split, its parts done side by side, each
+    // a session of its own, and put together. One script answers every
+    // node, each step by what its node is asked.
+    let team = Profile {
+        name: "team".into(),
+        models: vec![script(
+            &home,
+            "team.json",
+            json!([
+                {"when": "you decide how a task is worked on",
+                 "say": "{\"shape\": \"fan-out\", \"why\": \"two things to look up\"}"},
+                {"when": "split the task into parts",
+                 "say": "{\"parts\": [\"the budget left\", \"the tasks posted\"]}"},
+                {"when": "your part of it:\nthe budget left", "call": "ledger_balance"},
+                {"when": "your part of it:\nthe budget left", "say": "85 USD left."},
+                {"when": "your part of it:\nthe tasks posted", "say": "One task, settled."},
+                {"when": "put the parts' reports together",
+                 "say": "85 USD left; the one task posted is settled."}
+            ]),
+        )],
+        ..profile.clone()
+    };
+    let task = "What is left of the budget, and what became of the tasks posted?";
+    let route = sion_cli::graphs::route(&team, task).unwrap();
+    assert_eq!(route.shape, "fan-out", "{route:?}");
+    let graph = sion_agent::graph::template(&route.shape).unwrap();
+    let (kept, lines) = sion_cli::graphs::run(ledger.clone(), &team, graph, task).unwrap();
+    let text = lines.join("\n");
+    assert!(
+        text.ends_with("answer: 85 USD left; the one task posted is settled."),
+        "{text}"
+    );
+    assert_eq!(kept.run.visits("part"), 2, "{text}");
+    // Each node ran in a session of its own, kept like any other.
+    let sessions: std::collections::BTreeSet<String> = kept
+        .run
+        .ran
+        .iter()
+        .filter_map(|ran| ran.answer.as_ref().ok()?.session.clone())
+        .collect();
+    assert_eq!(sessions.len(), 4, "{text}");
+    for id in &sessions {
+        assert!(sion_cli::runtime::Saved::load(id).is_ok(), "session {id}");
+    }
+    // The run is kept as it went, and shown again as it ended.
+    let again = sion_cli::graphs::Kept::load(&kept.id[..8]).unwrap();
+    assert_eq!(again.run, kept.run);
+    assert_eq!(sion_cli::graphs::shown(&again), lines);
     std::fs::remove_dir_all(&home).unwrap();
 }

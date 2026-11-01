@@ -66,6 +66,7 @@
 - [What a skill may do](guides/skill-permissions.md)
 - [Skills that get better](guides/skill-improvement.md)
 - [Teams, schedules and channels](guides/agent-teams.md)
+- [Graphs of agents](guides/agent-graphs.md)
 - [Task Charters from the command line](guides/tasks.md)
 - [Memory from the command line](guides/memory.md)
 - [Storage from the command line](guides/storage.md)

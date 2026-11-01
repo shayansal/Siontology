@@ -43,6 +43,7 @@ pub mod feishu;
 pub mod files;
 pub mod gateway;
 pub mod google_chat;
+pub mod graphs;
 pub mod home_assistant;
 pub mod imessage;
 pub mod irc;
