@@ -174,6 +174,13 @@ Motion explains a mechanism or it does not happen.
 - **In the reader's control.** Every animation has a Pause button. With
   `prefers-reduced-motion: reduce`, each shows one static, labelled frame,
   chosen to carry the whole idea, and offers Play.
+- **Faces, the one exception.** Where a page shows agents to people rather
+  than a protocol at work, an agent's diamond may have a face: eyes of
+  solid cells, a mouth of lines, and beside it a sign of its work. A face
+  may breathe, blink, look about and follow the pointer, slowly, to show
+  that the agent is at work, though it explains no mechanism. It never
+  flashes, stops with a Pause button, and starts paused with reduced
+  motion.
 
 ## 6. Iconography
 
@@ -189,7 +196,7 @@ Shapes keep one meaning everywhere, in diagrams, icons and status markers.
 | Hatched cell | A contended batch, ordered by consensus |
 | Tally strokes | Approvals, one stroke per validator |
 | Rounded rectangle | A phone running a light client: the only rounded shape |
-| Diamond | An AI agent |
+| Diamond | An AI agent; with a face, an agent shown at work |
 | Check | Accepted or verified |
 | Cross, in signal red | Refused, conflicting or withheld |
 

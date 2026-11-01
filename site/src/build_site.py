@@ -18,7 +18,8 @@ Placeholders in a fragment: {{fig:<id>}} or {{fig:<id>:<number>}} for a
 figure and {{code:<id>}} for a code block, both defined in figures.py;
 {{REPO}} and {{DOCS}} for the repository and documentation addresses;
 {{toggle}} for a figure's Pause button; {{icon:<id>}} for a pictogram from
-figures.py.
+figures.py; {{reel:<id>}} for a figure in chapters; {{team}} for the team of
+agents, faces and all.
 
 Besides the pages, the build writes sitemap.xml and robots.txt.
 """
@@ -33,7 +34,7 @@ PAGES = os.path.join(SRC, "pages")
 SITE = os.path.dirname(SRC)
 sys.path.insert(0, SRC)
 sys.dont_write_bytecode = True  # keep site/ free of __pycache__
-from figures import FIGURES, CODE, ICONS, REELS  # noqa: E402
+from figures import FIGURES, CODE, ICONS, REELS, TEAM  # noqa: E402
 
 ORIGIN = "https://siontology.org/"
 REPO = "https://github.com/ColdAI-org/siontology"
@@ -181,18 +182,34 @@ def plate_meta(f):
 
 def reel(rid):
     """A figure in chapters: buttons that go to each, one canvas, and a caption
-    per chapter, shown while it plays (site/js/scenes/core.js)."""
+    per chapter, shown while it plays (site/js/scenes/core.js). A chapter with
+    a headline and a blurb gets a numbered button that shows them, and a line
+    under it that fills as the chapter plays."""
     r = REELS[rid]
     uid = f"reel-{rid}"
-    buttons = "".join(
-        f'<button class="reel-chapter" type="button" data-chapter="{i}" aria-pressed="{"true" if i == 0 else "false"}" '
-        f'aria-controls="{uid}-{i}">{c["name"]}</button>'
-        for i, c in enumerate(r["chapters"]))
-    panels = "".join(
-        f'<div class="reel-panel" id="{uid}-{i}" data-chapter-panel{"" if i == 0 else " hidden"}>'
-        f'<p class="reel-panel-name">{c["name"]}</p><p class="plate-desc">{c["desc"]}</p>{plate_meta(c)}</div>'
-        for i, c in enumerate(r["chapters"]))
-    return f'''<figure class="plate reel" aria-labelledby="{uid}-title">
+    rich = all(c.get("head") for c in r["chapters"])
+
+    def button(i, c):
+        pressed = "true" if i == 0 else "false"
+        if not rich:
+            return (f'<button class="reel-chapter" type="button" data-chapter="{i}" aria-pressed="{pressed}" '
+                    f'aria-controls="{uid}-{i}">{c["name"]}</button>')
+        return (f'<button class="reel-chapter reel-chapter--rich" type="button" data-chapter="{i}" aria-pressed="{pressed}" '
+                f'aria-controls="{uid}-{i}" aria-label="{c["name"]}: {c["head"]}" aria-describedby="{uid}-{i}-blurb">'
+                f'<span class="reel-chapter-name"><span class="reel-chapter-n">{i + 1:02d}</span>{c["name"]}</span>'
+                f'<span class="reel-chapter-head">{c["head"]}</span>'
+                f'<span class="reel-chapter-blurb" id="{uid}-{i}-blurb">{c["blurb"]}</span></button>')
+
+    def panel(i, c):
+        name = f'{c["name"]}: {c["head"]}' if rich else c["name"]
+        blurb = f'<p class="reel-panel-blurb">{c["blurb"]}</p>' if rich else ""
+        return (f'<div class="reel-panel" id="{uid}-{i}" data-chapter-panel{"" if i == 0 else " hidden"}>'
+                f'<p class="reel-panel-name">{name}</p>{blurb}<p class="plate-desc">{c["desc"]}</p>{plate_meta(c)}</div>')
+
+    buttons = "".join(button(i, c) for i, c in enumerate(r["chapters"]))
+    panels = "".join(panel(i, c) for i, c in enumerate(r["chapters"]))
+    cls = "plate reel" + (" reel--rich" if rich else "")
+    return f'''<figure class="{cls}" aria-labelledby="{uid}-title">
   <div class="reel-head"><p class="plate-name" id="{uid}-title">{r["title"]}</p>{toggle()}</div>
   <div class="reel-body">
     <div class="reel-chapters" role="group" aria-label="Parts of the figure">{buttons}</div>
@@ -200,6 +217,25 @@ def reel(rid):
   </div>
   <figcaption id="{uid}-caption">{panels}</figcaption>
 </figure>'''
+
+
+def team():
+    """The team of agents: a face for each role, what it does and what it
+    uses, and one button that pauses every face (site/js/site.js)."""
+    cards = []
+    for i, (key, role, line, tools, face) in enumerate(TEAM):
+        uses = f"<code>{tools}</code>" if tools.startswith("sion ") else tools
+        label = "Make it with" if tools.startswith("sion ") else "Uses"
+        cards.append(
+            f'<li class="mate mate--{key}" style="--i: {i}">{face}'
+            f'<h3 class="mate-role">{role}</h3><p class="mate-line">{line}</p>'
+            f'<p class="mate-uses"><span>{label}</span> {uses}</p></li>')
+    button = ('<button class="plate-toggle" type="button" data-faces-toggle aria-pressed="false" hidden>'
+              f'{PAUSE}<span data-label>Pause</span></button>')
+    return f'''<div class="team" data-faces>
+  <div class="team-bar"><p class="team-bar-label">Example roles</p>{button}</div>
+  <ul class="team-list">{"".join(cards)}</ul>
+</div>'''
 
 
 def code(cid):
@@ -319,6 +355,7 @@ def expand(body):
     body = re.sub(r"\{\{icon:([a-z0-9-]+)\}\}", lambda m: icon(m.group(1)), body)
     body = re.sub(r"\{\{fig:([a-z0-9-]+)(?::(\d+))?\}\}", lambda m: figure(m.group(1), m.group(2)), body)
     body = re.sub(r"\{\{reel:([a-z0-9-]+)\}\}", lambda m: reel(m.group(1)), body)
+    body = body.replace("{{team}}", team())
     body = re.sub(r"\{\{code:([a-z0-9-]+)\}\}", lambda m: code(m.group(1)), body)
     body = body.replace("{{REPO}}", REPO).replace("{{DOCS}}", DOCS).replace("{{toggle}}", toggle())
     body = re.sub(r'<table class="table[^"]*">.*?</table>', label_table, body, flags=re.S)

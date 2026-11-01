@@ -239,6 +239,66 @@
       { close: true, fill: o.fill, color: o.stroke || C.ink, lw: o.lw || 1.5, alpha: o.alpha, noStroke: o.noStroke });
   }
 
+  /* An agent with a face: the diamond, with eyes of solid cells and a mouth
+     of lines. o: { look: -1..1, blink: 0..1, eyes: 'square' | 'happy' |
+     'closed' | 'goggles', mouth: 'flat' | 'smile' | 'open' | 'o', talk: 0..1,
+     think: 0..1 with thinkT (seconds), alpha, lw, stroke }. */
+  function face(ctx, cx, cy, r, o) {
+    o = o || {};
+    var col = o.stroke || C.ink, a = o.alpha === undefined ? 1 : o.alpha;
+    diamond(ctx, cx, cy, r, { lw: o.lw || 1.5, alpha: a, stroke: col });
+    var s = Math.max(2, r * 0.15), lw = Math.max(1.2, r * 0.07);
+    var ex = r * 0.3, ey = cy - r * 0.1, dx = (o.look || 0) * r * 0.1;
+    if (o.eyes === 'happy') {
+      [-1, 1].forEach(function (k) {
+        var x = cx + k * ex + dx;
+        poly(ctx, [[x - s * 0.8, ey + s * 0.45], [x, ey - s * 0.45], [x + s * 0.8, ey + s * 0.45]], { color: col, lw: lw, alpha: a });
+      });
+    } else if (o.eyes === 'closed') {
+      [-1, 1].forEach(function (k) {
+        var x = cx + k * ex;
+        line(ctx, x - s * 0.8, ey + s * 0.2, x + s * 0.8, ey + s * 0.2, { color: col, lw: lw, alpha: a });
+      });
+    } else {
+      var h = s * (1 - 0.85 * clamp(o.blink || 0));
+      [-1, 1].forEach(function (k) {
+        var x = cx + k * ex + dx;
+        if (o.eyes === 'goggles') rect(ctx, cx + k * ex - s * 1.15, ey - s * 1.15, s * 2.3, s * 2.3, { stroke: col, lw: 1, alpha: a });
+        rect(ctx, x - s / 2, ey - h / 2, s, h, { fill: col, alpha: a });
+      });
+      if (o.eyes === 'goggles') line(ctx, cx - ex + s * 1.15, ey, cx + ex - s * 1.15, ey, { color: col, lw: 1, alpha: a });
+    }
+    var my = cy + r * 0.32, mw = r * 0.42, talk = clamp(o.talk || 0);
+    if (talk > 0) {
+      rect(ctx, cx - mw * 0.3, my - s * 0.35, mw * 0.6, s * 0.35 + talk * s * 0.8, { fill: col, alpha: a });
+    } else if (o.mouth === 'smile') {
+      poly(ctx, [[cx - mw / 2, my - s * 0.45], [cx - mw / 4, my + s * 0.2], [cx + mw / 4, my + s * 0.2], [cx + mw / 2, my - s * 0.45]],
+        { color: col, lw: lw, alpha: a });
+    } else if (o.mouth === 'open') {
+      rect(ctx, cx - mw * 0.3, my - s * 0.35, mw * 0.6, s * 0.7, { fill: col, alpha: a });
+    } else if (o.mouth === 'o') {
+      rect(ctx, cx - s * 0.6, my - s * 0.6, s * 1.2, s * 1.2, { stroke: col, lw: 1.2, alpha: a });
+    } else {
+      line(ctx, cx - mw / 2, my, cx + mw / 2, my, { color: col, lw: lw, alpha: a });
+    }
+    if (o.think > 0) {
+      for (var i = 0; i < 3; i++) {
+        var on = Math.floor((o.thinkT || 0) * 3) % 3 === i ? 1 : 0.3;
+        rect(ctx, cx - s * 1.9 + i * s * 1.4, cy - r - s * 2.4, s, s, { fill: col, alpha: a * o.think * on });
+      }
+    }
+  }
+
+  /* A blink every period seconds, offset so that faces do not blink together;
+     none in a still frame (a paused scene, or Sion.render), so that a face
+     at rest keeps its eyes open. */
+  var still = false;
+  function blink(t, period, offset) {
+    if (still) return 0;
+    var p = (t + (offset || 0)) % period;
+    return p > period - 0.18 ? window_(p, period - 0.18, period, 0.07) : 0;
+  }
+
   function hatch(ctx, x, y, w, h, o) {
     o = o || {};
     ctx.save();
@@ -298,12 +358,16 @@
     this.chapter = -1;
   }
 
-  /* Show which chapter is playing: its button pressed, its caption shown. */
+  /* Show which chapter is playing: its button pressed, its caption shown,
+     and how far it has played as --progress (0 to 1) on its button. */
   Runner.prototype.syncChapter = function (t) {
     var ch = this.def.chapters;
     if (!ch || (!this.chapterButtons.length && !this.chapterPanels.length)) return;
     var i = 0;
     while (i + 1 < ch.length && t >= ch[i + 1].at) i++;
+    var end = i + 1 < ch.length ? ch[i + 1].at : this.def.duration;
+    var b = this.chapterButtons[i];
+    if (b && end > ch[i].at) b.style.setProperty('--progress', clamp((t - ch[i].at) / (end - ch[i].at), 0, 1).toFixed(3));
     if (i === this.chapter) return;
     this.chapter = i;
     this.chapterButtons.forEach(function (b, k) { b.setAttribute('aria-pressed', k === i ? 'true' : 'false'); });
@@ -358,7 +422,9 @@
     var u = Math.min(w / L.w, h / L.h);
     var ox = (w - L.w * u) / 2, oy = (h - L.h * u) / 2;
     ctx.setTransform(dpr * u, 0, 0, dpr * u, dpr * ox, dpr * oy);
+    still = this.paused;
     def.draw(ctx, t, { narrow: !!narrow, W: L.w, H: L.h, u: u });
+    still = false;
   };
 
   function frame(now) {
@@ -493,6 +559,7 @@
       var r = new Runner(canvas, defs[name]);
       r.resize();
       r.t = t;
+      r.paused = true;
       r.draw();
     },
     C: C,
@@ -500,7 +567,7 @@
       clamp: clamp, lerp: lerp, ease: ease, easeOut: easeOut, linear: linear, span: span, win: window_,
       rng: rng, fmt: fmt, hex: hex, font: font, rect: rect, line: line, poly: poly, arrow: arrow,
       text: text, measure: measure, para: para, check: check, cross: cross, phone: phone,
-      diamond: diamond, hatch: hatch, packet: packet, tally: tally
+      diamond: diamond, face: face, blink: blink, hatch: hatch, packet: packet, tally: tally
     }
   };
 

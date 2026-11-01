@@ -12,6 +12,20 @@ Commit messages before the rename use the working name, Fold.
 
 ### The website and the book
 
+- **The website leads with your agent, and a team of them**: its first
+  figure, an illustration of a graph of agents, is a lead agent handing the
+  parts of a job to three others, which work side by side and pass their
+  answers on. Six features follow, each with a headline, a line of plain
+  words and a short run of its own: where it talks, what it remembers,
+  what it does on a schedule, the helpers it brings in, its browser and
+  its sandbox. A grid of example roles (a CMO, a CTO, a CFO, a head of
+  sales, an artist manager, a biology researcher, a mental health
+  companion, no substitute for a clinician) shows each as an agent with a
+  face that blinks, looks about and follows the pointer, with one button
+  to pause them all; with reduced motion they start paused. The brand
+  guidelines record these faces as the one kind of motion that explains
+  no mechanism. The payments figure moves to a section on the limits, and
+  the transcripts to where each path starts.
 - **The website shows the agent at work**: its first figure is a chat in
   which the agent asks before it pays and the ledger refuses a payment a
   page slipped in, whatever you approved; a figure in six parts follows,

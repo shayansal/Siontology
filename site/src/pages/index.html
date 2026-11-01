@@ -1,44 +1,16 @@
-<!--{"file": "index.html", "title": "Siontology: trust you can check, for people and their agents", "description": "Siontology is open source: an AI agent you run on your own computer, its limits in a ledger, and a ledger where payments, AI output and claims carry a proof or priced evidence that anyone can check.", "nav": "", "scenes": ["promise", "capabilities", "fold-hero", "streams", "assurance"]}-->
+<!--{"file": "index.html", "title": "Siontology: trust you can check, for people and their agents", "description": "Siontology is open source: AI agents you run on your own computer, alone or as a team, in the apps where you talk, and a ledger that holds each to its limits, where payments, AI output and claims carry a proof or priced evidence anyone can check.", "nav": "", "scenes": ["team", "features", "promise", "fold-hero", "streams", "assurance"]}-->
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
     <h1 class="display" id="hero-title"><span class="line">Trust you can check,</span> <span class="line">for people and their agents.</span></h1>
     <div class="hero-stage">
       <div>
-        <p class="lede">Siontology is open source: an AI agent that runs on your own computer and does what you ask, and a ledger that holds it, and every other agent, to the limits it was given. Payments, memory and claims carry a proof or priced evidence, so anyone can check them and see what faking them would cost.</p>
+        <p class="lede">Siontology is open source: AI agents that run on your own computer, answer in the apps where you talk and work as a team, and a ledger that holds every one of them to the limits you set. What they pay, remember and claim carries a proof or priced evidence that anyone can check.</p>
         <div class="actions">
           <a class="button" href="#agent">Run your own agent</a>
           <a class="button button--quiet" href="#ledger">Build on the ledger</a>
         </div>
       </div>
-      {{fig:promise}}
-    </div>
-    <div class="doors">
-      <article class="door" aria-labelledby="door-agent-title">
-        <p class="door-for">For you</p>
-        <h2 id="door-agent-title">Run your own agent</h2>
-        <p>One command sets up an agent on your computer, with a chain of its own beside it. It answers you in the terminal and on 28 messaging services, works in a folder you give it, browses, remembers, and asks before it spends.</p>
-        <figure class="door-term">
-          <pre><code><span class="l">$ sion setup --yes --model script:assistant.json</span><span class="l c">&hellip;</span><span class="l">Ready.</span><span class="l c">&hellip;</span><span class="l">$ sion</span><span class="l">Talking with assistant (conversation 2026-11-01-153915); end with Ctrl-D, continue later with `sion -c`.</span><span class="l">you&gt; <span class="t">What is in your workspace?</span></span><span class="l">  &middot; list_files</span><span class="l">agent&gt; Your workspace is empty so far. Put files in it, or ask me to write some.</span></code></pre>
-          <figcaption>From the recording in the guide, shortened at &hellip;, with what was typed added after <code>you&gt;</code> (it went in on standard input). A scripted model stands in for a real one.</figcaption>
-        </figure>
-        <div class="actions">
-          <a class="button" href="#agent">What it does</a>
-          <a class="button button--quiet" href="agents.html">Your agent, in full</a>
-        </div>
-      </article>
-      <article class="door" aria-labelledby="door-ledger-title">
-        <p class="door-for">For builders</p>
-        <h2 id="door-ledger-title">Build on the ledger</h2>
-        <p>Agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices: a neo-blockchain whose product is verified knowledge, not ordered transactions.</p>
-        <figure class="door-term">
-          <pre><code><span class="l">$ sion demo agents --local</span><span class="l c">&hellip;</span><span class="l">Pulse   7  agent pays gpu-cloud 80 USD for inference: accepted; receipt claim 0586a32c joins the knowledge log</span><span class="l">Pulse  11  a prompt-injected agent tries to pay mallory 90 USD <span class="x">&rarr; refused by the ledger: charter caveat violated: payee not allowed</span></span><span class="l">Pulse  13  the agent tries a 150 USD payment <span class="x">&rarr; refused by the ledger: charter caveat violated: payment 150 above per-payment limit 100</span></span><span class="l c">&hellip;</span><span class="l">Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived in the ledger, not the agent.</span></code></pre>
-          <figcaption>From the recording of <code>sion demo agents --local</code> in the book, shortened at &hellip;</figcaption>
-        </figure>
-        <div class="actions">
-          <a class="button" href="#ledger">What it is for</a>
-          <a class="button button--quiet" href="technology.html">How it works</a>
-        </div>
-      </article>
+      {{fig:team}}
     </div>
     <p class="status-line"><strong>Status</strong><span>A devnet-scale reference implementation in Rust. Succinct proofs are simulated, networking between machines is simplified and tested on one machine, the agent&rsquo;s model providers and messengers are tested against stand-ins, and there is no mainnet.</span><a href="#status">What exists today</a></p>
   </div>
@@ -48,10 +20,10 @@
   <div class="wrap">
     <p class="path-label">For you: your own agent</p>
     <div class="section-head">
-      <h2 class="statement" id="agent-title">An agent of your own. Its limits in a ledger.</h2>
-      <p>It runs on your computer, beside a chain of your own. It answers where you already talk, works in a folder you give it, browses and remembers. The ledger refuses whatever its charter forbids, even from an agent that was prompt-injected, and keeps the head of its memory log, so its past cannot be rewritten unnoticed.</p>
+      <h2 class="statement" id="agent-title">An agent of your own, wherever you are.</h2>
+      <p>It runs on your computer and answers in the apps you already use. It remembers what you tell it, works on a schedule, hands work to helpers, browses the web and runs code in a sandbox, and the ledger refuses any payment its charter forbids, whatever it is told.</p>
     </div>
-    {{reel:capabilities}}
+    {{reel:features}}
     <div class="names">
       <div class="names-group">
         <p class="names-title">It answers on 28 messaging services, and in your terminal</p>
@@ -62,50 +34,86 @@
         <ul class="names-list"><li>Claude</li><li>OpenAI</li><li>Gemini</li><li>Your ChatGPT plan</li><li>Ollama</li><li>LM Studio</li><li>llama.cpp</li></ul>
       </div>
     </div>
-    <div class="cells cells--3">
-      <article class="uc">
-        {{icon:ask}}
-        <p class="uc-for">Approvals</p>
-        <h3>It asks before it spends</h3>
-        <p>Autonomy levels from L0 to L6 decide what it does alone; by default it asks you, in the chat, before it pays. Once it has read anything from outside, it asks before reaching outside again. Each decision is kept with who made it; one made at the command line can be signed with a wallet.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>/approve</code></p>
-        <a class="cell-link" href="agents.html#asks">What it does alone</a>
-      </article>
-      <article class="uc">
-        {{icon:limits}}
-        <p class="uc-for">The ledger</p>
-        <h3>Limits it cannot talk its way past</h3>
-        <p>Its charter fixes its budget, its largest payment and whom it may pay. The autonomy level decides what it tries; the ledger, what it can do. One revocation stops it and every subagent it launched.</p>
-        <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo agents --local</code></p>
-        <a class="cell-link" href="use-cases.html#agents">Walk through it</a>
-      </article>
-      <article class="uc">
-        {{icon:attacks}}
-        <p class="uc-for">Security</p>
-        <h3>Tried against attacks</h3>
-        <p>Nine attacks on a model that does whatever it reads. Seven were held for a person or never reached the model; two got through, at the boundaries as built, and the test says which.</p>
-        <p class="uc-foot"><span class="status status--built">Built</span><code>tests/attacks.rs</code></p>
-        <a class="cell-link" href="agents.html#security">What got through</a>
-      </article>
+  </div>
+</section>
+
+<section class="section" id="team" aria-labelledby="team-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="team-title">Build your team.</h2>
+      <p>Give each role an agent of its own, with its own model, tools, memory and budget, and talk to each wherever you like. For a job in several parts, a graph runs the parts side by side, each with its own instructions, tools or model. And one agent can hire another through a Task Charter: the ledger pays only for a result that passes the rule fixed when the task was posted.</p>
+    </div>
+    {{team}}
+    <p class="notice-line"><strong>These are examples:</strong> each role is a profile you make yourself, and what it can do depends on the model and tools you give it. Graphs and hiring are built, and were run on the devnet with a scripted model. <a href="{{DOCS}}agent/graphs.html">Graphs of agents</a> &middot; <a href="{{DOCS}}agent/teams.html">Subagents and hired help</a></p>
+  </div>
+</section>
+
+<section class="section" id="limits" aria-labelledby="limits-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="limits-title">Limits it cannot talk its way past.</h2>
+      <p>Each agent has a charter on the ledger: its budget, its largest payment and whom it may pay. The ledger refuses whatever the charter forbids, even from an agent that was prompt-injected, and keeps the head of its memory log, so its past cannot be rewritten unnoticed.</p>
+    </div>
+    <div class="split split--stage">
+      <div class="cells">
+        <article class="uc">
+          {{icon:ask}}
+          <p class="uc-for">Approvals</p>
+          <h3>It asks before it spends</h3>
+          <p>Autonomy levels from L0 to L6 decide what it does alone; by default it asks you, in the chat, before it pays. Once it has read anything from outside, it asks before reaching outside again. Each decision is kept with who made it; one made at the command line can be signed with a wallet.</p>
+          <p class="uc-foot"><span class="status status--built">Built</span><code>/approve</code></p>
+          <a class="cell-link" href="agents.html#asks">What it does alone</a>
+        </article>
+        <article class="uc">
+          {{icon:limits}}
+          <p class="uc-for">The ledger</p>
+          <h3>One revocation stops them all</h3>
+          <p>The autonomy level decides what it tries; the ledger, what it can do. One revocation stops an agent and every subagent it launched.</p>
+          <p class="uc-foot"><span class="status status--built">Built on the devnet</span><code>sion demo agents --local</code></p>
+          <a class="cell-link" href="use-cases.html#agents">Walk through it</a>
+        </article>
+        <article class="uc">
+          {{icon:attacks}}
+          <p class="uc-for">Security</p>
+          <h3>Tried against attacks</h3>
+          <p>Nine attacks on a model that does whatever it reads. Seven were held for a person or never reached the model; two got through, at the boundaries as built, and the test says which.</p>
+          <p class="uc-foot"><span class="status status--built">Built</span><code>tests/attacks.rs</code></p>
+          <a class="cell-link" href="agents.html#security">What got through</a>
+        </article>
+      </div>
+      {{fig:promise}}
     </div>
     <p class="notice-line"><strong>How it was tested:</strong> with a scripted model, and with stand-ins for the model providers&rsquo; and the messengers&rsquo; APIs, which the environment it was built in cannot reach. Its autonomy, approvals and taint are enforced on your machine; its charter, by the ledger. <a href="agents.html#limits">What it does not do yet</a></p>
-    <div class="split split--even agent-start">
-      {{code:own-agent}}
-      <ul class="rows">
-        <li>
-          <h3>One command</h3>
-          <p>Setup makes a chain of your own, your wallet and your agent&rsquo;s, the agent with a budget, its memory log, its model and a profile. Run again, it changes only what it must.</p>
-        </li>
-        <li>
-          <h3>A chain that rests</h3>
-          <p>With nothing to order, the chain waits between rounds: 5.7% of one core at rest and a transfer in 2.3 s, measured on two cores, against 98.8% without the wait.</p>
-        </li>
-        <li>
-          <h3>Updates you can check</h3>
-          <p><code>sion update</code> installs a release only once its signature, by the release key the program was built with, and its checksum hold. The release key does not exist yet, and no release has been published.</p>
-        </li>
-      </ul>
+  </div>
+</section>
+
+<section class="section" id="start" aria-labelledby="start-title">
+  <div class="wrap">
+    <div class="section-head">
+      <h2 class="statement" id="start-title">Start with one command.</h2>
+      <p>Install it, run setup, and talk to it, in the terminal or on the apps you connect. It all runs on your computer, apart from the model and the apps you choose.</p>
     </div>
+    <div class="split split--even">
+      {{code:own-agent}}
+      <figure class="door-term">
+        <pre><code><span class="l">$ sion setup --yes --model script:assistant.json</span><span class="l c">&hellip;</span><span class="l">Ready.</span><span class="l c">&hellip;</span><span class="l">$ sion</span><span class="l">Talking with assistant (conversation 2026-11-01-153915); end with Ctrl-D, continue later with `sion -c`.</span><span class="l">you&gt; <span class="t">What is in your workspace?</span></span><span class="l">  &middot; list_files</span><span class="l">agent&gt; Your workspace is empty so far. Put files in it, or ask me to write some.</span></code></pre>
+        <figcaption>From the recording in the guide, shortened at &hellip;, with what was typed added after <code>you&gt;</code> (it went in on standard input). A scripted model stands in for a real one.</figcaption>
+      </figure>
+    </div>
+    <ul class="rows rows--3">
+      <li>
+        <h3>One command</h3>
+        <p>Setup makes a chain of your own, your wallet and your agent&rsquo;s, the agent with a budget, its memory log, its model and a profile. Run again, it changes only what it must.</p>
+      </li>
+      <li>
+        <h3>A chain that rests</h3>
+        <p>With nothing to order, the chain waits between rounds: 5.7% of one core at rest and a transfer in 2.3 s, measured on two cores, against 98.8% without the wait.</p>
+      </li>
+      <li>
+        <h3>Updates you can check</h3>
+        <p><code>sion update</code> installs a release only once its signature, by the release key the program was built with, and its checksum hold. The release key does not exist yet, and no release has been published.</p>
+      </li>
+    </ul>
   </div>
 </section>
 
@@ -115,6 +123,19 @@
     <div class="section-head">
       <h2 class="statement" id="ledger-title">Know what to trust before you rely on it.</h2>
       <p>Siontology is an open-source ledger for an economy in which AI agents buy, sell and publish. Payments, AI output and claims about the world carry a proof or priced evidence, so a person or an agent can check them and see what faking them would cost.</p>
+    </div>
+    <div class="split split--even ledger-start">
+      <figure class="door-term">
+        <pre><code><span class="l">$ sion demo agents --local</span><span class="l c">&hellip;</span><span class="l">Pulse   7  agent pays gpu-cloud 80 USD for inference: accepted; receipt claim 0586a32c joins the knowledge log</span><span class="l">Pulse  11  a prompt-injected agent tries to pay mallory 90 USD <span class="x">&rarr; refused by the ledger: charter caveat violated: payee not allowed</span></span><span class="l">Pulse  13  the agent tries a 150 USD payment <span class="x">&rarr; refused by the ledger: charter caveat violated: payment 150 above per-payment limit 100</span></span><span class="l c">&hellip;</span><span class="l">Result: gpu-cloud received 100 USD; mallory received nothing; the limits lived in the ledger, not the agent.</span></code></pre>
+        <figcaption>From the recording of <code>sion demo agents --local</code> in the book, shortened at &hellip;</figcaption>
+      </figure>
+      <div class="ledger-start-text">
+        <p>Agents with budgets the ledger enforces, APIs paid per request, receipts for AI output and markets that prove their prices: a neo-blockchain whose product is verified knowledge, not ordered transactions.</p>
+        <div class="actions">
+          <a class="button" href="#uses">What it is for</a>
+          <a class="button button--quiet" href="technology.html">How it works</a>
+        </div>
+      </div>
     </div>
   </div>
   <figure class="hero-figure" aria-labelledby="hero-fig-title">

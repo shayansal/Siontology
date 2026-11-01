@@ -95,6 +95,61 @@
     });
   });
 
+  /* The team's faces (site.css, Team): one button pauses them all, and while
+     they move their eyes follow the pointer. With reduced motion they start
+     paused, and the button offers Play. */
+  document.querySelectorAll('[data-faces]').forEach(function (team) {
+    var motion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    var button = team.querySelector('[data-faces-toggle]');
+    var faces = Array.prototype.slice.call(team.querySelectorAll('.face'));
+    var paused = false;
+    var rest = function () {
+      faces.forEach(function (face) {
+        face.style.removeProperty('--lx');
+        face.style.removeProperty('--ly');
+      });
+    };
+    var setPaused = function (value) {
+      paused = value;
+      team.classList.toggle('is-paused', paused);
+      if (button) {
+        button.setAttribute('aria-pressed', paused ? 'true' : 'false');
+        var label = button.querySelector('[data-label]');
+        if (label) label.textContent = paused ? 'Play' : 'Pause';
+      }
+      if (paused) rest();
+    };
+    setPaused(!!(motion && motion.matches));
+    if (button) {
+      button.hidden = false;
+      button.addEventListener('click', function () { setPaused(!paused); });
+    }
+    var x = 0, y = 0, queued = false;
+    var look = function () {
+      queued = false;
+      if (paused) return;
+      var h = window.innerHeight;
+      faces.forEach(function (face) {
+        var r = face.getBoundingClientRect();
+        if (r.bottom < 0 || r.top > h) return;
+        var dx = x - (r.left + r.width / 2), dy = y - (r.top + r.height / 2);
+        var d = Math.sqrt(dx * dx + dy * dy) || 1, k = Math.min(1, d / 240);
+        face.style.setProperty('--lx', (dx / d * 3.5 * k).toFixed(2) + 'px');
+        face.style.setProperty('--ly', (dy / d * 2.5 * k).toFixed(2) + 'px');
+      });
+    };
+    document.addEventListener('pointermove', function (event) {
+      if (paused) return;
+      x = event.clientX;
+      y = event.clientY;
+      if (!queued) {
+        queued = true;
+        window.requestAnimationFrame(look);
+      }
+    }, { passive: true });
+    document.documentElement.addEventListener('pointerleave', rest);
+  });
+
   /* Highlight the current section in a table of contents */
   var toc = document.querySelector('[data-toc]');
   if (toc && 'IntersectionObserver' in window) {

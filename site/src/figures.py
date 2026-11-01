@@ -29,6 +29,19 @@ FIGURES = {
         "spec": ("Run it on your computer", DOCS + "getting-started/your-computer.html"),
         "status": ("built", "Built; tested with a scripted model and stand-ins"),
     },
+    "team": {
+        "scene": "team",
+        "class": "plate--hero",
+        "title": "Your team at work",
+        "label": "Animation: you ask your lead agent, an artist manager, to get a single's release ready. It hands the launch posts to a CMO, the pre-save page to a CTO and the studio booking to a CFO, which work side by side and pass their answers on, and the lead answers you.",
+        "desc": ("Illustration of a graph of agents: the job goes to three nodes, each with instructions of its own "
+                 "and, if the graph says so, its own tools or model. They work side by side, each in a session of "
+                 "its own, and the lead puts their answers together. A graph runs as sessions of one agent, under "
+                 "its one charter. The roles and the job are examples."),
+        "run": "sion agent graph templates",
+        "spec": ("Graphs of agents", DOCS + "agent/graphs.html"),
+        "status": ("built", "Built; the roles and the job are examples"),
+    },
     "promise": {
         "scene": "promise",
         "class": "plate--hero",
@@ -552,12 +565,13 @@ ICONS = {
 # for each goes to it; each chapter has its own caption, command, source and
 # status. The chapters' timing is in the scene's file.
 REELS = {
-    "capabilities": {
-        "scene": "capabilities",
+    "features": {
+        "scene": "features",
         "title": "What your agent can do",
-        "label": "Animation in six parts: one agent on many messaging apps; a script run in a sandbox; a memory log the ledger lets only grow; a job run every weekday; helpers with budgets carved from its own; a skill installed only once the bonds behind it cover what is at risk.",
+        "label": "Animation in six parts: one agent on many messaging apps; a memory it keeps and a skill it writes down; a job run every weekday; helpers with budgets carved from its own; a browser of its own on docs.rs; a script run in a sandbox.",
         "chapters": [
-            {"name": "Answers on your apps",
+            {"name": "Connect", "head": "Wherever you talk",
+             "blurb": "Telegram, WhatsApp, Slack, Discord, Signal, iMessage, email, 21 more services and your terminal: one agent, one memory, wherever you write.",
              "desc": ("One agent on the apps you already use: 28 messaging services, voice notes heard and, where the "
                       "service takes a bot&rsquo;s audio, answered aloud. Someone it does not know gets a pairing code "
                       "and no answer until you let them in. From the recording in the book, with stand-ins for the "
@@ -565,23 +579,18 @@ REELS = {
              "run": "sion agent bridge --help",
              "spec": ("Pairing and voice", DOCS + "agent/voice.html"),
              "status": ("built", "Built; tested against stand-ins")},
-            {"name": "Works in a sandbox",
-             "desc": ("Its shell runs in bubblewrap or a Docker image: it writes only its own folder, sees the "
-                      "machine&rsquo;s programs read-only and none of your files, and reaches no network unless you give "
-                      "it one. From the recording in the book: primes.py, 17 primes below 60, a write to /usr/local "
-                      "refused, no name resolution."),
-             "run": "sion agent run --help",
-             "spec": ("Commands, scripts and MCP servers", DOCS + "agent/tools.html"),
-             "status": ("built", "Built; bubblewrap run for real")},
-            {"name": "Remembers, for good",
+            {"name": "Remember", "head": "Learns as it works",
+             "blurb": "It remembers what you tell it, writes down how it did a job as a skill to use again, and searches its past conversations.",
              "desc": ("Its memory is a log on your computer that only it can add to; the ledger keeps the log&rsquo;s "
-                      "head and moves it only along proofs that the log grew, so a rewritten past is refused, as in the "
-                      "robots demo. A reader&rsquo;s answer comes with a proof against that head, complete as far as "
-                      "the log&rsquo;s index, which the ledger stores without checking."),
+                      "head, so a rewritten past is refused. After a long task it is asked whether to write down how "
+                      "it did it, as a skill, and it searches its past sessions, each find checked against its memory. "
+                      "From recordings in the book: the skill pay-bobs-invoices, and the robots demo&rsquo;s refused "
+                      "rewrite."),
              "run": "sion demo robots --local",
              "spec": ("Memory", DOCS + "agent/memory.html"),
-             "status": ("built", "Built on the devnet")},
-            {"name": "Works on a schedule",
+             "status": ("built", "Built; run with a scripted model")},
+            {"name": "Schedule", "head": "Works on a schedule",
+             "blurb": "Morning briefings, weekly reports, a check every hour: set a job and a time, and it runs on its own while your computer is on.",
              "desc": ("A job at a time, every interval or on a calendar, each run a session of its own under the same "
                       "limits, its answer sent to your chat app, a file or a webhook. Jobs run while the scheduler "
                       "runs on your computer, which setup starts as a service; a run missed while it was off happens "
@@ -589,21 +598,110 @@ REELS = {
              "run": "sion agent schedule add --help",
              "spec": ("Profiles and schedules", DOCS + "agent/schedules.html"),
              "status": ("built", "Built; services not run on a desktop")},
-            {"name": "Gets help, on budget",
+            {"name": "Delegate", "head": "A team, not a tool",
+             "blurb": "It hands parts of a job to helpers that work at the same time, each with its own conversation and budget.",
              "desc": ("Helpers get identities of their own and budgets carved from their parent&rsquo;s, each limit "
-                      "narrower than the one above, and the ledger checks every payment against all of them. From "
-                      "the swarm demo: 12 researchers, 3 more below one of them, 6 USD refused over a 5 USD limit, and "
-                      "a suspension that refuses the whole tree until it is lifted."),
+                      "narrower than the one above, and the ledger checks every payment against all of them; it can "
+                      "also hire other agents through Task Charters, and the ledger pays only for a result that passes "
+                      "the rule fixed when the task was posted. From the swarm "
+                      "demo: 12 helpers, 3 more below one of them, 6 USD refused over a 5 USD limit, and a suspension "
+                      "that refuses the whole tree until it is lifted."),
              "run": "sion demo swarm --local",
-             "spec": ("Agent identities and subagents", DOCS + "concepts/agent-identities.html"),
+             "spec": ("Subagents and hired help", DOCS + "agent/teams.html"),
              "status": ("built", "Built on the devnet")},
-            {"name": "Learns skills safely",
-             "desc": ("A skill is installed only if the bonds behind its release cover, by default, twice what your "
-                      "agent could lose by it; an audit on the auditor&rsquo;s own bond adds to them. From the recording in the book: "
-                      "150 USD refused for 100 USD at risk, then 250 accepted, and refusing cost no fee."),
-             "run": "sion skill install --help",
-             "spec": ("Skills from others", DOCS + "agent/skills.html"),
-             "status": ("built", "Built on the devnet")},
+            {"name": "Browse", "head": "Out on the web",
+             "blurb": "A browser of its own: it reads pages, clicks and types. It also sees the pictures you send, makes new ones and can answer voice notes aloud.",
+             "desc": ("Chromium or Chrome in a sandbox, with a profile made for the session: none of your cookies or "
+                      "passwords. It sees a page as its accessibility tree, clicks, types and takes pictures, and reaches "
+                      "public sites only, or only those you name. It also sees the pictures you send, makes pictures "
+                      "with an image model you give it, and answers voice notes aloud with a speech service. From the "
+                      "recording in the book, against docs.rs."),
+             "run": "sion agent run --help",
+             "spec": ("A browser and a desktop", DOCS + "agent/browser.html"),
+             "status": ("built", "Built; run against docs.rs")},
+            {"name": "Sandbox", "head": "Safe hands",
+             "blurb": "Its commands run in a sandbox: it writes only its own folder, sees none of your files, and reaches no network unless you allow it.",
+             "desc": ("Its shell runs in bubblewrap or a Docker image: it writes only its own folder, sees the "
+                      "machine&rsquo;s programs read-only and none of your files, and reaches no network unless you give "
+                      "it one. From the recording in the book: primes.py, 17 primes below 60, a write to /usr/local "
+                      "refused, no name resolution."),
+             "run": "sion agent run --help",
+             "spec": ("Commands, scripts and MCP servers", DOCS + "agent/tools.html"),
+             "status": ("built", "Built; bubblewrap run for real")},
         ],
     },
 }
+
+
+# Faces for the team of agents on the landing page: a diamond, the brand's
+# sign for an agent, with eyes of solid cells and a mouth of lines, and beside
+# it a sign of its work. Drawn on an 80-unit grid and moved by CSS (site.css,
+# Team): the body breathes, the eyes blink, look about and follow the pointer
+# (site.js), and some mouths talk. Nested groups keep each motion apart.
+_EYES = ('<g class="face-eyes"><rect x="27" y="34" width="6" height="6"/>'
+         '<rect class="face-eye-r" x="47" y="34" width="6" height="6"/></g>')
+_HAPPY = ('<g class="face-eyes" fill="none" stroke="currentColor" stroke-width="2">'
+          '<path d="M27 39l3-4 3 4M47 39l3-4 3 4"/></g>')
+_GOGGLES = ('<g class="face-goggles" fill="none" stroke="currentColor" stroke-width="1.4">'
+            '<rect x="24.5" y="31.5" width="11" height="11"/><rect x="44.5" y="31.5" width="11" height="11"/>'
+            '<path d="M35.5 37h9"/></g>')
+_MOUTHS = {
+    "smile": '<path class="face-mouth" d="M33 49l3.5 3h7l3.5-3" fill="none" stroke="currentColor" stroke-width="2"/>',
+    "flat": '<path class="face-mouth" d="M34 51h12" fill="none" stroke="currentColor" stroke-width="2"/>',
+    "talk": '<rect class="face-mouth face-talk" x="36" y="49" width="8" height="4"/>',
+    "o": '<rect class="face-mouth" x="38" y="49.5" width="4" height="4" fill="none" stroke="currentColor" stroke-width="1.5"/>',
+}
+_SIGNS = {
+    "broadcast": ('<path d="M60 10.5h4l8-5v15l-8-5h-4Z" fill="none" stroke="currentColor" stroke-width="1.6" '
+                  'stroke-linejoin="round"/><path d="M63 15.5l1.5 5" fill="none" stroke="currentColor" stroke-width="1.6"/>'),
+    "code": ('<path d="M65 7l-4 6 4 6M69 7l4 6-4 6" fill="none" stroke="currentColor" stroke-width="1.6"/>'
+             '<rect class="face-caret" x="75" y="8" width="2" height="10"/>'),
+    "receipt": ('<path d="M61 4h12v17l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5-2 1.5Z" fill="none" stroke="currentColor" '
+                'stroke-width="1.4" stroke-linejoin="round"/><path d="M63.5 9h7M63.5 13h7" fill="none" '
+                'stroke="currentColor" stroke-width="1.4"/>'),
+    "bars": '<rect x="61" y="15" width="3" height="5"/><rect x="66" y="11" width="3" height="9"/><rect x="71" y="6" width="3" height="14"/>',
+    "note": '<rect x="60" y="15" width="6" height="5"/><path d="M66 18V5l6 3v3" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+    "helix": '<path d="M62 4l10 5-10 5 10 5M72 4l-10 5 10 5-10 5" fill="none" stroke="currentColor" stroke-width="1.3"/>',
+    "sprout": ('<path d="M67 21V9" fill="none" stroke="currentColor" stroke-width="1.6"/>'
+               '<path d="M67 16l-6-4 1 5.5Z M67 12l5-6 1.5 5.5Z"/>'),
+    "plus": '<path d="M40 31v18M31 40h18" fill="none" stroke="currentColor" stroke-width="2"/>',
+}
+_THINK = ('<g class="face-think"><rect x="8" y="10" width="4" height="4"/><rect x="14" y="10" width="4" height="4"/>'
+          '<rect x="20" y="10" width="4" height="4"/></g>')
+_HEAD = '<path class="face-head" d="M40 6 74 40 40 74 6 40Z" fill="none" stroke="currentColor" stroke-width="2"/>'
+
+
+def _face(key, eyes, mouth, sign, goggles=False, think=False):
+    if eyes is None:  # a face not made yet: the head and a plus
+        inner = _SIGNS[sign]
+        extra = ""
+    else:
+        inner = ((_GOGGLES if goggles else "") + f'<g class="face-gaze"><g class="face-look">{eyes}</g></g>'
+                 + _MOUTHS[mouth])
+        extra = f'<g class="face-sign">{_SIGNS[sign]}</g>' + (_THINK if think else "")
+    return (f'<svg class="face face--{key}" viewBox="0 0 80 80" width="80" height="80" aria-hidden="true" '
+            f'focusable="false" fill="currentColor"><g class="face-body">{_HEAD}{inner}</g>{extra}</svg>')
+
+
+# The team: example roles, each a profile its owner makes. What each does is
+# said in words of what is built (docs/implementation-status.md): the browser,
+# pictures, the sandboxed shell, payments within a charter, schedules, chat
+# apps, voice notes, memory, helpers.
+TEAM = [
+    ("cmo", "CMO", "Plans the launch, drafts the posts and makes the pictures, in the voice you taught it.",
+     "browser, pictures, memory", _face("cmo", _EYES, "talk", "broadcast")),
+    ("cto", "CTO", "Writes and tests code in its sandbox, then tells you what changed and why.",
+     "sandboxed shell, files, browser", _face("cto", _EYES, "flat", "code", goggles=True)),
+    ("cfo", "CFO", "Pays the invoices you approve, within a budget the ledger enforces, and says what is left.",
+     "payments, schedules, memory", _face("cfo", _EYES, "flat", "receipt")),
+    ("sales", "Head of sales", "Looks up leads on the web, drafts the follow-ups and briefs you every Monday.",
+     "browser, email, schedules", _face("sales", _EYES, "smile", "bars")),
+    ("artist", "Artist manager", "Runs a release: keeps the dates, chases what is left and answers you on Telegram.",
+     "schedules, memory, Telegram", _face("artist", _EYES, "smile", "note")),
+    ("biology", "Biology researcher", "Reads papers on the sites you allow, runs the analysis in Python and shows its sources.",
+     "browser, Python, files", _face("biology", _EYES, "o", "helix", goggles=True, think=True)),
+    ("wellbeing", "Mental health companion", "Listens at the end of the day and helps you plan a calmer week. It is no substitute for a clinician.",
+     "voice notes, memory", _face("wellbeing", _HAPPY, "smile", "sprout")),
+    ("yours", "Yours to make", "Any role you need: a name, a model, tools, a memory and limits of its own.",
+     "sion agent profile add", _face("yours", None, None, "plus")),
+]
