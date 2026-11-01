@@ -164,7 +164,10 @@ lane locks, as any two transactions are. Trust atoms:
 
 **Agent runtime: partly built (beyond the paper).** `sion-agent` runs a
 language model as an agent: the Anthropic Messages API (version
-2026-10-21), any OpenAI-compatible API, or a scripted model; fallback with
+2026-10-21), any OpenAI-compatible API (with `local:`, a model server on
+the machine or its network), Google's Gemini API natively, OpenAI's
+Responses API, the Responses API on a ChatGPT plan signed in on the
+machine (`sion agent chatgpt login`), or a scripted model; fallback with
 a 30-second cooldown; tools that declare an effect (read, write, external,
 spend); autonomy levels L0 to L6 with approvals that expire after 15
 minutes, each waiting call named by a request id that a decision may give
@@ -195,7 +198,7 @@ draft-review, self-consistency, orchestrator or one's own, with copies,
 votes, joins that wait for all, the first or a quorum, read-only nodes,
 runs pinned to their graph, replayed and continued after a person), each node a session, a router that keeps a
 task to one agent unless it divides, and taint passed along the edges
-([Graphs of agents](book/src/guides/agent-graphs.md)). A comparison
+([Graphs of agents](book/src/agent/graphs.md)). A comparison
 (`sion agent graph eval`) runs one agent, one agent voting over several
 tries and each graph on a set of tasks with stand-in tools, on the same
 token budget, each case several times, and reports pass rates with
@@ -215,7 +218,7 @@ compaction, and A2A tasks push their updates to their clients' webhooks
 and can be subscribed to again. `sion agent run` gives it the
 ledger as tools (balance, payments under the agent's charter, transaction
 status), files in a workspace and public web pages
-([Agents at work](book/src/guides/agent-runtime.md)). With a memory log,
+([Your agent](book/src/agent/index.md)). With a memory log,
 the agent records facts, episodes, procedures, preferences, goals, plans
 and reflections as atoms; its preferences, goals and procedures are in
 every prompt; recall for a subject and a relation is proved complete
@@ -226,7 +229,7 @@ format, are listed in every prompt, read on use, and written and improved
 by the agent with their history kept; a skill's bundle is a canonical
 encoding of its files, and its root is the Merkle root a storage deal over
 the bundle commits to. Skills from others
-([Skills from others](book/src/guides/skills.md)): a release is a claim
+([Skills from others](book/src/agent/skills.md)): a release is a claim
 (`skill/v1`) naming a skill, its version and its bundle root, resting on
 the publisher's bond or audits of the same root (`skill.audit/v1`, each on
 its auditor's bond); `sion skill install` checks the bundle against the
@@ -241,7 +244,7 @@ proof against a certified header (a proof from more than 16 Pulses before
 the latest certified Pulse the command knows of is refused as stale; a
 node can still answer from an older state within that window, or when the
 command knows of no later Pulse). Self-improvement
-([Skills that get better](book/src/guides/skill-improvement.md)): an
+([Skills that get better](book/src/agent/skill-improvement.md)): an
 evaluation set is cases with stand-in tools and checks, fixed by the
 digest of its bytes; `sion skill evolve` shows a model the cases a
 version fails and scores the variants it proposes (new instructions, and
@@ -259,7 +262,9 @@ with at least five successful tool calls and no skill written, the
 runtime asks the agent whether to write one, with only its skill tools.
 Scripted models take conditions on the conversation, to stand in for a
 model that follows a skill. Teams, schedules and channels
-([Teams, schedules and channels](book/src/guides/agent-teams.md)): with
+([Subagents and hired help](book/src/agent/teams.md),
+[Profiles and schedules](book/src/agent/schedules.md),
+[Channels](book/src/agent/channels.md)): with
 `--delegate`, an agent spawns subagents (a budget carved from its
 allotment under attenuated caveats, fee money from its account, a session
 of their own, two levels deep at most), and posts, follows and delivers
@@ -282,7 +287,7 @@ only where it mentions the bot; with `--hear` and
 session; `sion agent gateway` routes a profile's messages to the machine
 that proved the agent's key with `sion agent host`.
 Commands, scripts and MCP servers
-([Commands, scripts and MCP servers](book/src/guides/agent-tools.md)):
+([Commands, scripts and MCP servers](book/src/agent/tools.md)):
 `--shell` runs `/bin/sh` commands in a sandbox (bubblewrap, or a Docker
 image pinned by digest and never pulled) that writes only the workspace
 and reaches no network unless the operator gives one (refusing Docker's
@@ -408,7 +413,7 @@ files, and a profile with an image model makes pictures
 (`image_generate`). The messengers and the speech services are tested against
 stand-ins for their APIs, and the bridge against a messenger kept in
 memory. What a skill may do
-([What a skill may do](book/src/guides/skill-permissions.md)) is
+([What a skill may do](book/src/agent/skill-permissions.md)) is
 declared in its front matter and enforced: `allowed-tools` pre-approves
 calls once a session has read the skill (never past a refusal, spending
 or a taint, and never from a skill the agent wrote, whose front matter
@@ -432,7 +437,7 @@ elicitation; client certificates (mutual TLS) for servers over HTTP; the
 device authorization grant
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 A browser and a desktop
-([A browser and a desktop](book/src/guides/agent-browser.md)):
+([A browser and a desktop](book/src/agent/browser.md)):
 `--browser` drives Chromium or Chrome over the DevTools protocol on a
 pipe, a page shown to the model as its accessibility tree with references
 (frames of the page's own site inside it), in bubblewrap on Linux with the
@@ -887,8 +892,10 @@ private addresses. An independent review changed the challenge, the
 forfeit, open deals' collateral and the provider before release
 ([Reviews](book/src/security/reviews.md)). **Not built:** proof of
 replication (a provider may fetch challenged leaves from elsewhere:
-`storage:no-replication`), retrieval (`storage:no-retrieval`), repair or
-re-assignment of a failed deal, deals funded from an agent's budget,
+`storage:no-replication`), retrieval the ledger enforces (`sion storage
+retrieve` gets a deal's data from a provider that serves it, checked
+against the deal's root, but nothing makes a provider answer:
+`storage:no-retrieval`), repair or re-assignment of a failed deal, deals funded from an agent's budget,
 encryption in the tooling (proofs publish the challenged leaves: a client
 encrypts private data itself), and storage proofs aggregated across deals
 (each round's leaves go on the ledger: `storage:raw-proofs`).

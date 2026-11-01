@@ -19,7 +19,7 @@ consent when it is installed.
 
 Every output below is from a real run on a local devnet (long
 identifiers and paths shortened with `…`). The agent's model is a
-scripted one, as in [Agents at work](agent-runtime.md).
+scripted one, as in [A run, within its limits](run.md).
 
 ## Calls a skill pre-approves
 
@@ -106,7 +106,7 @@ A pre-approval never goes past these limits:
 A person who approves a call may allow calls like it for the rest of the
 session with a rule of the same form (`--always 'write_file(notes:*)'`,
 or `/approve always write_file(notes:*)` on a channel), under the same
-limits ([Approvals](agent-runtime.md#calls-like-it-for-the-rest-of-the-session)).
+limits ([Approvals](autonomy.md#calls-like-it-for-the-rest-of-the-session)).
 
 ## Secrets
 

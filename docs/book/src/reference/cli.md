@@ -1160,7 +1160,7 @@ Options:
           Print help
 ```
 
-See [Agents at work](../guides/agent-runtime.md), [Commands, scripts and MCP servers](../guides/agent-tools.md) for `--shell`, `--mcp` and `--storage`, and [A browser and a desktop](../guides/agent-browser.md) for `--browser`, `--login` and `--computer`.
+See [Your agent](../agent/index.md), [Commands, scripts and MCP servers](../agent/tools.md) for `--shell`, `--mcp` and `--storage`, and [A browser and a desktop](../agent/browser.md) for `--browser`, `--login` and `--computer`.
 
 ## `sion agent decisions`
 
@@ -1198,7 +1198,7 @@ Options:
   -h, --help               Print help
 ```
 
-See [Agents at work](../guides/agent-runtime.md#approvals).
+See [What it does alone, and what it asks](../agent/autonomy.md#approvals).
 
 ## `sion agent evolve`
 
@@ -1303,7 +1303,7 @@ Options:
   -h, --help           Print help
 ```
 
-See [Safety nets](../guides/agent-runtime.md#safety-nets).
+See [Safety nets](../agent/checks.md#safety-nets).
 
 ## `sion agent kill-switch`
 
@@ -1339,7 +1339,7 @@ Options:
   -h, --help         Print help
 ```
 
-Profiles are kept in `$SION_HOME/agents/profiles.json`. See [Teams, schedules and channels](../guides/agent-teams.md#profiles).
+Profiles are kept in `$SION_HOME/agents/profiles.json`. See [Profiles and schedules](../agent/schedules.md#profiles).
 
 ## `sion agent profile add`
 
@@ -1661,7 +1661,7 @@ Options:
   -h, --help         Print help
 ```
 
-See [A browser and a desktop](../guides/agent-browser.md#logins).
+See [A browser and a desktop](../agent/browser.md#logins).
 
 ## `sion agent login add`
 
@@ -1731,7 +1731,7 @@ Options:
 A bridge with `--pairing` gives a chat it does not answer a code; the
 person writing gives it to you, and approving it lets their chat in on
 that channel, for that profile only (`agent:pairing`). See
-[Pairing and voice notes](../guides/agent-teams.md#pairing-and-voice-notes).
+[Pairing and voice notes](../agent/voice.md#pairing-and-voice-notes).
 
 ## `sion agent pairing list`
 
@@ -1800,7 +1800,7 @@ Options:
   -h, --help         Print help
 ```
 
-The account is the one you sign in with in your browser, on OpenAI's page; the bridge, the server and schedules use it like any model (`--model chatgpt:<model>`). See [Signing in with ChatGPT](../guides/agent-runtime.md#signing-in-with-chatgpt).
+The account is the one you sign in with in your browser, on OpenAI's page; the bridge, the server and schedules use it like any model (`--model chatgpt:<model>`). See [Signing in with ChatGPT](../agent/models.md#signing-in-with-chatgpt).
 
 ## `sion agent chatgpt login`
 
@@ -1870,7 +1870,7 @@ Options:
   -h, --help         Print help
 ```
 
-WeChat's iLink bot protocol is published only as Tencent's plugin's code and others' descriptions of it; the bridge has been run only against a stand-in built from them. See [WeChat](../guides/agent-teams.md#wechat).
+WeChat's iLink bot protocol is published only as Tencent's plugin's code and others' descriptions of it; the bridge has been run only against a stand-in built from them. See [WeChat](../agent/messengers.md#wechat).
 
 ## `sion agent weixin login`
 
@@ -1987,7 +1987,7 @@ Options:
   -h, --help         Print help
 ```
 
-Servers are kept in `$SION_HOME/agents/mcp.json`, with a digest of each reviewed tool's definition. See [Commands, scripts and MCP servers](../guides/agent-tools.md#tools-from-mcp-servers).
+Servers are kept in `$SION_HOME/agents/mcp.json`, with a digest of each reviewed tool's definition. See [Commands, scripts and MCP servers](../agent/tools.md#tools-from-mcp-servers).
 
 ## `sion agent mcp add`
 
@@ -2043,7 +2043,7 @@ Options:
           Print help
 ```
 
-The server is started (or, with `--url`, reached over HTTP), introduced to (protocol 2026-07-28, or the handshake of 2025-11-25 and before) and asked for its tools, then stopped. A tool that says nothing of itself is taken to reach the open world: its calls are external and what it returns taints the session. Without `--sandbox`, the server runs as you (`agent:mcp-unsandboxed`). A server over HTTP that answers `401` is logged in to first, as `sion agent mcp login` does; see [Servers over HTTP](../guides/agent-tools.md#servers-over-http).
+The server is started (or, with `--url`, reached over HTTP), introduced to (protocol 2026-07-28, or the handshake of 2025-11-25 and before) and asked for its tools, then stopped. A tool that says nothing of itself is taken to reach the open world: its calls are external and what it returns taints the session. Without `--sandbox`, the server runs as you (`agent:mcp-unsandboxed`). A server over HTTP that answers `401` is logged in to first, as `sion agent mcp login` does; see [Servers over HTTP](../agent/tools.md#servers-over-http).
 
 ## `sion agent mcp list`
 
@@ -2093,7 +2093,7 @@ Options:
   -h, --help           Print help
 ```
 
-The server's protected resource metadata names where to authorize; the client registered beforehand, named by a client ID metadata document, or registered then, is kept for later logins; tokens are kept encrypted beside the secrets. A browser on another machine cannot come back to this one: paste the address it was sent to at the terminal. See [Logging in to a server](../guides/agent-tools.md#logging-in-to-a-server).
+The server's protected resource metadata names where to authorize; the client registered beforehand, named by a client ID metadata document, or registered then, is kept for later logins; tokens are kept encrypted beside the secrets. A browser on another machine cannot come back to this one: paste the address it was sent to at the terminal. See [Logging in to a server](../agent/tools.md#logging-in-to-a-server).
 
 ## `sion agent mcp logout`
 
@@ -2148,7 +2148,7 @@ Options:
   -h, --help         Print help
 ```
 
-See [Graphs of agents](../guides/agent-graphs.md).
+See [Graphs of agents](../agent/graphs.md).
 
 ## `sion agent graph templates`
 
@@ -2165,7 +2165,7 @@ Options:
   -h, --help         Print help
 ```
 
-See [Graphs of agents](../guides/agent-graphs.md).
+See [Graphs of agents](../agent/graphs.md).
 
 ## `sion agent graph run`
 
@@ -2187,7 +2187,7 @@ Options:
   -h, --help                 Print help
 ```
 
-See [Graphs of agents](../guides/agent-graphs.md).
+See [Graphs of agents](../agent/graphs.md).
 
 ## `sion agent graph show`
 
@@ -2257,7 +2257,7 @@ Options:
   -h, --help                           Print help
 ```
 
-See [Graphs of agents](../guides/agent-graphs.md).
+See [Graphs of agents](../agent/graphs.md).
 
 ## `sion agent schedule`
 
@@ -2277,7 +2277,7 @@ Options:
   -h, --help         Print help
 ```
 
-Jobs are kept in `$SION_HOME/agents/schedules.json`, with their latest runs. See [Teams, schedules and channels](../guides/agent-teams.md#schedules).
+Jobs are kept in `$SION_HOME/agents/schedules.json`, with their latest runs. See [Profiles and schedules](../agent/schedules.md#schedules).
 
 ## `sion agent schedule add`
 
@@ -2360,7 +2360,7 @@ Options:
   -h, --help                   Print help
 ```
 
-Whoever holds the token can start and continue every profile's sessions, approvals included (`agent:channel-token`). Requests are handled one at a time. With `--a2a`, the profiles named are A2A agents for other agents, with a card each ([Agents that talk A2A](../guides/agent-teams.md#agents-that-talk-a2a)). See [Teams, schedules and channels](../guides/agent-teams.md#http).
+Whoever holds the token can start and continue every profile's sessions, approvals included (`agent:channel-token`). Requests are handled one at a time. With `--a2a`, the profiles named are A2A agents for other agents, with a card each ([Agents that talk A2A](../agent/channels.md#agents-that-talk-a2a)). See [Channels](../agent/channels.md#http).
 
 ## `sion agent talk`
 
@@ -2383,7 +2383,7 @@ Options:
   -h, --help                         Print help
 ```
 
-The conversation is a session as on any channel, its commands included (`/new`, `/status`, `/approve`…). There is no `/stop` while the agent works: Ctrl-C ends the conversation, the session kept. See [In the terminal, and by voice](../guides/agent-teams.md#in-the-terminal-and-by-voice).
+The conversation is a session as on any channel, its commands included (`/new`, `/status`, `/approve`…). There is no `/stop` while the agent works: Ctrl-C ends the conversation, the session kept. See [In the terminal, and by voice](../agent/voice.md#in-the-terminal-and-by-voice).
 
 ## `sion agent telegram`
 
@@ -2468,7 +2468,7 @@ Options:
           Print help (see a summary with '-h')
 ```
 
-In a group chat, every member speaks for you, approvals included (`agent:telegram-chats`). See [Teams, schedules and channels](../guides/agent-teams.md#telegram).
+In a group chat, every member speaks for you, approvals included (`agent:telegram-chats`). See [Messengers](../agent/messengers.md#telegram).
 
 ## `sion agent bridge`
 
@@ -3049,7 +3049,7 @@ Options:
   -h, --help                Print help
 ```
 
-See [Dreaming](../guides/agent-runtime.md#dreaming).
+See [Dreaming](../agent/memory.md#dreaming).
 
 ## `sion memory archive`
 
@@ -3124,7 +3124,7 @@ Options:
   -h, --help         Print help
 ```
 
-See [Skills from others](../guides/skills.md).
+See [Skills from others](../agent/skills.md).
 
 ## `sion skill pack`
 
@@ -3265,7 +3265,7 @@ Options:
   -h, --help                         Print help
 ```
 
-Needs no node. See [Skills that get better](../guides/skill-improvement.md#measuring-a-skill).
+Needs no node. See [Skills that get better](../agent/skill-improvement.md#measuring-a-skill).
 
 ## `sion skill evolve`
 
@@ -3288,7 +3288,7 @@ Options:
   -h, --help                       Print help
 ```
 
-Needs no node. Gates: the name and description unchanged, the size limit, a version not tried before, and no case lost that the parent passed. See [Skills that get better](../guides/skill-improvement.md#evolving-a-better-version).
+Needs no node. Gates: the name and description unchanged, the size limit, a version not tried before, and no case lost that the parent passed. See [Skills that get better](../agent/skill-improvement.md#evolving-a-better-version).
 
 ## `sion skill vouch`
 
@@ -3337,7 +3337,7 @@ Options:
   -h, --help                       Print help
 ```
 
-The spec is kept in `$SION_HOME/skills/specs`, under the commitment the task records. See [Skills that get better](../guides/skill-improvement.md#a-bounty-fixed-before-any-better-version-exists).
+The spec is kept in `$SION_HOME/skills/specs`, under the commitment the task records. See [Skills that get better](../agent/skill-improvement.md#a-bounty-fixed-before-any-better-version-exists).
 
 ## `sion skill verify`
 

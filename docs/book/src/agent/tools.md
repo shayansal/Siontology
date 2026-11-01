@@ -1,11 +1,11 @@
 # Commands, scripts and MCP servers
 
-An agent at work ([Agents at work](agent-runtime.md)) has the ledger as its
+An agent at work ([Your agent](index.md)) has the ledger as its
 tools, and files in a workspace. This page adds the rest of what agents
 use: a shell to run commands, the scripts that come with skills, and tools
 from MCP servers (a browser and a desktop have [a page of their
-own](agent-browser.md)). Each runs under the same rules as any other tool: it
-declares the most a call can do, the [autonomy level](agent-runtime.md#autonomy)
+own](browser.md)). Each runs under the same rules as any other tool: it
+declares the most a call can do, the [autonomy level](autonomy.md#autonomy)
 decides what runs and what waits for a person, and what comes from outside
 taints the session.
 
@@ -434,8 +434,8 @@ authorized notes at http://127.0.0.1:8812 for notes:read, renewed without you wh
 
 ## Spawning subagents together
 
-An agent that hands work to subagents (`--delegate`, see [Teams, schedules
-and channels](agent-teams.md)) may spawn several in one turn. They go
+An agent that hands work to subagents (`--delegate`, see [Subagents and hired
+help](teams.md)) may spawn several in one turn. They go
 together: one `SpawnAgents` transaction for all of them, one transfer of
 their fee money, and their sessions run at the same time. A keyless
 subagent's transactions are signed by its nearest keyed ancestor, so the

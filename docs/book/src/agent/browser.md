@@ -5,7 +5,7 @@ web pages as a person does, and a desktop of its own (`--computer`), seen
 in screenshots and used with a pointer and a keyboard. Both run in a
 sandbox, reach the network only through a proxy that refuses this machine
 and its network, and bring back content from outside, which taints the
-session ([Agents at work](agent-runtime.md)).
+session ([Your agent](index.md)).
 
 Every output below is from a real run on a local devnet, with a scripted
 model, against docs.rs as it was then (long identifiers and paths
@@ -246,7 +246,7 @@ session acb082eb9506efde: done
 
 Its last screenshot, as the model saw it:
 
-![The agent's desktop: Chrome on serde_json's page on docs.rs](agent-desktop.png)
+![The agent's desktop: Chrome on serde_json's page on docs.rs](../guides/agent-desktop.png)
 
 ## Pictures
 

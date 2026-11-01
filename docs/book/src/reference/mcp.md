@@ -274,7 +274,7 @@ Result (`structuredContent`, without `atoms`):
 
 ## sion_agent_pay
 
-Pay from an Agent Charter allotment. The ledger enforces the charter's payees, per-payment and per-window limits, expiry and revocation; a receipt claim is issued if the charter requires it.
+Pay from an Agent Charter allotment. The ledger enforces the charter's payees, per-payment limit, bucket (what it may spend at once and how fast that refills), expiry, revocation and any narrowing above it; a receipt claim is issued if the charter requires it.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|

@@ -188,5 +188,5 @@ See `CONTRIBUTING.md` for the full checklist.
 
 ## Next
 
-- [Run the demos](demos.md): nine scripted scenarios, no setup.
+- [Run the demos](demos.md): fourteen scripted scenarios, no setup.
 - [Run a devnet](devnet.md) and use it from another terminal.

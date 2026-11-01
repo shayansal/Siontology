@@ -2,8 +2,8 @@
 
 An agent's skill can be measured and improved: an evaluation set says
 what the skill must do, a variant search proposes better versions, and a
-better version becomes the skill's next release only when others have
-checked it. The checking runs through a [Task Charter](tasks.md) whose
+better version can become the skill's next release on the strength of
+others' checks. The checking runs through a [Task Charter](../guides/tasks.md) whose
 rule is fixed before any new version exists, so the version's author
 cannot pick its own judges or move the bar.
 
@@ -65,7 +65,7 @@ set is fixed by the digest of its exact bytes.
 The publisher, the examiner who wrote the evaluation set, a judge, an
 improver and two verifiers got test USD from the devnet's faucet and
 posted bonds. Each command prints the atom it backs, as in
-[Bonds and challenges](bonds-and-challenges.md); the judge's is
+[Bonds and challenges](../guides/bonds-and-challenges.md); the judge's is
 `da9fbb85…5ce4`.
 
 ```text

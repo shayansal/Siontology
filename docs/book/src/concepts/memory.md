@@ -149,7 +149,7 @@ peak.
   `sion_memory_recall`; `sion memory archive` and `restore`; for agents,
   episodes of every finished session, search over past sessions checked
   against them, and consolidation into derived notes
-  ([Agents at work](../guides/agent-runtime.md#memory)); and the `robots`
+  ([Memory](../agent/memory.md#memory)); and the `robots`
   demo, which runs agent identities, memory logs and the library together
   on a devnet.
 - **Simplified**: the index is rebuilt from scratch for every head (under

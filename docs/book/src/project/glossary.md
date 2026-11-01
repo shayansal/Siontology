@@ -22,6 +22,11 @@ consensus. See [Escrow Lanes](../concepts/escrow-lanes.md).
 **Anchor.** A leader's header in the consensus DAG; committing it orders
 its causal history.
 
+**Approval.** A person's decision on a call an agent's session waits on,
+kept in the session with who made it. One given for the rest of a session
+never covers a payment. See [What it does alone, and what it
+asks](../agent/autonomy.md).
+
 **Assurance Algebra.** The rules for formulas over assumptions, their cost
 of corruption, the decision rule, reservations and slashing. See
 [The Assurance Algebra](../concepts/assurance/index.md).
@@ -33,6 +38,12 @@ bonded, a bond.
 **Attestation.** A verifier's claim (`task.attestation/v1`) that a task's
 output passes, resting on the verifier's bond. A result may rest on the
 attestations of verifiers the task names.
+
+**Autonomy level.** L0 to L6: what an agent's runtime lets it do without
+asking a person, from nothing at all to spending within its charter.
+Enforced by the runtime on the agent's machine, not by the ledger
+(`agent:local-policy`). See [What it does alone, and what it
+asks](../agent/autonomy.md).
 
 **Beacon.** Public randomness for each Pulse, from validators' hash-chain
 reveals. It seals market batches, breaks clearing ties and seeds lane
@@ -49,6 +60,9 @@ is upheld.
 **Bounty.** A task that names no worker: anyone may settle it with an
 acceptable result, and its poster may withdraw it until then.
 
+**Bridge.** `sion agent bridge`: the process that answers a profile's
+conversations on messaging services. See [Messengers](../agent/messengers.md).
+
 **Certificate.** Signatures from more than two thirds of a committee's
 weight: on a transaction's inputs (a lane certificate), or on a Pulse
 header (a Pulse certificate).
@@ -59,6 +73,10 @@ validators with stake and keys, shard layout. See
 
 **Challenge.** A deposit-backed assertion that a bonded atom of a claim is
 broken, ruled on by the claim's adjudicator.
+
+**Channel.** A way to reach an agent's profile: the terminal, HTTP,
+OpenAI's chat API, A2A, a messaging service through a bridge, or an agent
+gateway. See [Channels](../agent/channels.md).
 
 **Checkpoint.** A commitment, made when a payment stream opens, to every
 `spacing`-th element of the payer's chain, as leaves of a Merkle tree. It
@@ -120,6 +138,11 @@ sealing and epoch ends.
 
 **Devnet.** A whole network in one process, for development and
 demonstration (`sion devnet`).
+
+**Dream.** `sion memory dream`: reading an agent's past sessions and
+keeping a note only if its session says the words the note quotes and,
+with `--eval`, only if no task held out does worse with the notes in mind. See
+[Memory](../agent/memory.md).
 
 **Epoch.** A run of Pulses with one validator set. Committees change at
 epoch boundaries. See [Epochs and committees](../concepts/validators/epochs.md).
@@ -183,6 +206,10 @@ rewards and withdrawals.
 **Overseer.** For an agent identity: its backer, its principal, or the
 agent of any charter above it. Any overseer may suspend or revoke it.
 
+**Pairing code.** A code a bridge gives someone who writes to it directly
+and whom it does not know. Once the operator approves it, that chat is let
+in, on that channel and profile. See [Pairing and voice](../agent/voice.md).
+
 **Payment stream.** Escrow from one payer for one payee, paid off the
 ledger by revealing a hash chain's elements, one per payment, and settled
 by the payee in batches. See [Payment streams](../concepts/payment-streams.md).
@@ -194,12 +221,22 @@ share its slashing.
 **Policy.** A consumer's view of which atoms and classes to trust,
 distrust or assume broken, and its κ.
 
+**Profile.** How an agent runs on a machine: the agent identity and wallet
+it acts as, its model, autonomy level, tools, workspace and memory log.
+`sion setup` makes one called `assistant`. See [Profiles and
+schedules](../agent/schedules.md).
+
 **Proof stack.** An implementation of chunk proving and verification. Stack
 A replays with the reference executor; stack B replays with an independent
 implementation of the specification.
 
 **Pulse.** The network's heartbeat: a batch of execution with a certified
 header, published data and a World Proof. See [Pulses](../concepts/pulses.md).
+
+**Quarantine.** Holding what tools return from outside out of an agent's
+conversation: a separate call of the model, with no tools, answers
+questions about it to a schema the agent gives. See [What it does alone,
+and what it asks](../agent/autonomy.md#quarantine).
 
 **Quorum.** More than two thirds of a committee's weight: `⌊2·total/3⌋ + 1`.
 
@@ -219,7 +256,15 @@ forced-inclusion deadline.
 **Session.** One consensus DAG. A new session starts at every epoch
 boundary and every restart.
 
+**Session (agent).** One conversation's run of an agent: its messages,
+calls, approvals and journal. It pauses while it waits for a person and
+resumes where it stopped.
+
 **Shard.** A partition of accounts, each with its own lane committee.
+
+**Skill.** A directory of instructions and files an agent reads when it
+needs them. Others' skills are installed from releases backed by bonds and
+audits. See [Skills from others](../agent/skills.md).
 
 **Slashing.** Forfeiting a bond (for a false claim) or a validator's stake
 (for equivocation).
@@ -247,12 +292,17 @@ checks each payment with one hash, decides when to settle, and settles by
 walk or jump.
 
 **Subagent.** An agent launched by another with `SpawnAgents`: its own
-identity, account, card and budget, with caveats and a window limit carved
+identity, account, card and budget, with caveats and a token bucket carved
 from its parent's.
 
 **Task.** Escrow for a piece of work, with the rule a result must pass
 fixed when it is posted (specification v1.10). See [Task
 Charters](../concepts/task-charters.md).
+
+**Taint.** The mark on an agent's session for 24 hours after it reads
+content from outside: until then its external calls and its spending wait
+for a person, at any autonomy level. See [What it does alone, and what it
+asks](../agent/autonomy.md).
 
 **The Fold.** Folding every chunk proof of a Pulse into one World Proof.
 See [The Fold and World Proofs](../concepts/the-fold.md).

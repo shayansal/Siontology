@@ -4,8 +4,13 @@
 on standard input and output, so an AI agent can use the ledger as a set of
 tools: check balances, pay, issue claims, price a claim before relying on
 it, pay inside an Agent Charter, submit a transaction it signed itself,
-verify a Pulse or a receipt, read events, and buy HTTP resources that
-charge through x402.
+verify a Pulse or a receipt, read events, buy HTTP resources that charge
+through x402, post and settle work, keep a memory log, and keep data with
+storage providers.
+
+This page is for an agent built elsewhere. An agent of your own, which
+the runtime that comes with `sion` runs on your computer, has the ledger
+among its tools already: see [Your agent](../agent/index.md).
 
 ```bash
 sion mcp            # talks to the node at $SION_NODE (default http://127.0.0.1:8730)

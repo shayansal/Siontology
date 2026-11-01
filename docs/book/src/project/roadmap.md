@@ -59,6 +59,11 @@ simulated:
   zero-knowledge proof**.
 - **Adapters** for AP2, ERC-8004 and C2PA (x402 is built).
 - **Archival** of published data, and incentives to keep it.
+- **A release** of `sion`, signed with the release key, and the agent run
+  against the real model providers and messaging services: it has been
+  tested with a scripted model and stand-ins for their APIs.
+- **The mobile app.** The desktop app is built; its Android and iOS builds
+  are configured, not attempted.
 
 ## Open research problems
 

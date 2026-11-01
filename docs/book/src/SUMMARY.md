@@ -13,6 +13,52 @@
 - [Connect an AI agent over MCP](getting-started/mcp.md)
 - [The app: a light node on every device](getting-started/app.md)
 
+# Your agent
+
+- [Your agent](agent/index.md)
+  - [A run, within its limits](agent/run.md)
+  - [Models](agent/models.md)
+  - [What it does alone, and what it asks](agent/autonomy.md)
+  - [Memory](agent/memory.md)
+  - [Checked before it is done](agent/checks.md)
+  - [Security](agent/security.md)
+- [Commands, scripts and MCP servers](agent/tools.md)
+  - [A browser and a desktop](agent/browser.md)
+- [Skills from others](agent/skills.md)
+  - [What a skill may do](agent/skill-permissions.md)
+  - [Skills that get better](agent/skill-improvement.md)
+- [Channels](agent/channels.md)
+  - [Messengers](agent/messengers.md)
+  - [Pairing and voice](agent/voice.md)
+- [Profiles and schedules](agent/schedules.md)
+- [Subagents and hired help](agent/teams.md)
+- [Graphs of agents](agent/graphs.md)
+
+# Build on the ledger
+
+- [Wallets and keys](guides/wallets.md)
+- [Transfers](guides/transfers.md)
+- [Charters for AI agents](guides/charters.md)
+- [Agent identities from the command line](guides/agents.md)
+- [Issuing and assessing claims](guides/claims.md)
+- [Bonds and challenges](guides/bonds-and-challenges.md)
+- [Task Charters from the command line](guides/tasks.md)
+- [Memory logs from the command line](guides/memory.md)
+- [Storage from the command line](guides/storage.md)
+- [Markets and clearing](guides/markets.md)
+- [x402: selling and buying an API](guides/x402.md)
+- [Streams from the command line](guides/streams.md)
+- [Light-client verification](guides/light-client.md)
+
+# Run a network
+
+- [Running a devnet](guides/devnet.md)
+- [Running a network of processes](guides/network.md)
+- [Staking and epochs](guides/staking.md)
+- [Delegating stake](guides/delegation.md)
+- [Forced inclusion and the censorship demo](guides/forced-inclusion.md)
+- [Benchmarks](guides/benchmarks.md)
+
 # Concepts
 
 - [Neo-blockchains](concepts/neo-blockchains.md)
@@ -49,36 +95,6 @@
   - [Rewards](concepts/validators/rewards.md)
   - [Slashing for equivocation](concepts/validators/equivocation-slashing.md)
   - [Pooled stake](concepts/validators/pooled-stake.md)
-
-# Guides
-
-- [Running a devnet](guides/devnet.md)
-- [Running a network of processes](guides/network.md)
-- [Wallets and keys](guides/wallets.md)
-- [Transfers](guides/transfers.md)
-- [Issuing and assessing claims](guides/claims.md)
-- [Bonds and challenges](guides/bonds-and-challenges.md)
-- [Charters for AI agents](guides/charters.md)
-- [Agent identities from the command line](guides/agents.md)
-- [Agents at work](guides/agent-runtime.md)
-- [Commands, scripts and MCP servers](guides/agent-tools.md)
-- [A browser and a desktop](guides/agent-browser.md)
-- [Skills from others](guides/skills.md)
-- [What a skill may do](guides/skill-permissions.md)
-- [Skills that get better](guides/skill-improvement.md)
-- [Teams, schedules and channels](guides/agent-teams.md)
-- [Graphs of agents](guides/agent-graphs.md)
-- [Task Charters from the command line](guides/tasks.md)
-- [Memory from the command line](guides/memory.md)
-- [Storage from the command line](guides/storage.md)
-- [Markets and clearing](guides/markets.md)
-- [Forced inclusion and the censorship demo](guides/forced-inclusion.md)
-- [Staking and epochs](guides/staking.md)
-- [Delegating stake](guides/delegation.md)
-- [x402: selling and buying an API](guides/x402.md)
-- [Streams from the command line](guides/streams.md)
-- [Light-client verification](guides/light-client.md)
-- [Benchmarks](guides/benchmarks.md)
 
 # Reference
 

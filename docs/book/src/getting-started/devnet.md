@@ -35,6 +35,13 @@ How often Pulses close depends on the machine. On the 2-core machine used
 for this book, shared with other work, an idle devnet closed about 0.3
 Pulses a second (17 Pulses in its first minute).
 
+An idle devnet runs its rounds back to back, so it keeps a core busy.
+With `--idle-round-ms 10000`, a devnet with nothing to order waits ten
+seconds between rounds, and starts the next at once when a transaction
+arrives. The chain `sion setup` makes runs that way: one validator at rest
+used 98.8% of a core unpaced and 5.7% paced, measured on two cores
+([The chain at rest](your-computer.md#the-chain-at-rest)).
+
 The devnet runs until you press Ctrl-C (or for `--duration` seconds).
 Without `--data-dir` it keeps
 everything in memory and starts from genesis every time; see

@@ -5,6 +5,14 @@ verified knowledge, not ordered transactions. Every claim it records, about
 a payment, a computation, an AI output or a physical event, carries a proof
 or priced evidence, and anyone can check it from a phone.
 
+It comes with an AI agent you run on your own computer. It answers you in
+the terminal and on messaging services, works in a folder you give it,
+browses and remembers. The ledger refuses whatever its charter forbids and
+keeps the head of its memory log; its sessions and decisions stay on your
+computer.
+[Run it on your computer](getting-started/your-computer.md) sets both up
+with one command.
+
 This book documents the reference implementation in Rust: how to run it,
 what each mechanism does, how the code is organised, and what is not built
 yet. The design it implements is described in the architecture paper
@@ -19,7 +27,9 @@ yet. The design it implements is described in the architecture paper
 > processes also talk over QUIC, tested on one machine), its validity
 > proofs are *replay proofs* that simulate succinct ones, and its devnet
 > keys can be derived by anyone. It secures nothing of value and has no
-> production deployment. [What exists today](#what-exists-today) below
+> production deployment. The agent has been tested with a scripted model
+> and stand-ins for the model providers' and messengers' APIs, and no
+> release of it has been published. [What exists today](#what-exists-today) below
 > says exactly what is built, simplified, simulated or missing, and every
 > chapter follows it.
 
@@ -98,7 +108,8 @@ summary.
 | Identity: personhood | Not built |
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts, MCP servers, storage deals) |
+| Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop, storage deals) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -123,6 +134,7 @@ summary.
 | Orchestration: Task Charters, escrowed work with acceptance fixed at posting (beyond the paper) | Built (devnet scale) |
 | Economics: fees, treasury, slashing with compensation | Built |
 | Economics: staking, rewards, equivocation slashing | Built |
+| Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
 | Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale) |
 | Economics: payments to provers, value-in-flight cap | Not built |
 | Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
@@ -148,17 +160,22 @@ From the architecture paper, stated plainly:
 
 ## How to read this book
 
-- To try it, start with [Install from source](getting-started/install.md)
+- To run an agent of your own, start with
+  [Run it on your computer](getting-started/your-computer.md), then
+  [Your agent](agent/index.md).
+- To try the ledger, start with [Install from source](getting-started/install.md)
   and [Run the demos](getting-started/demos.md).
 - To understand it, read the [Concepts](concepts/neo-blockchains.md) in
   order; each chapter ends with what the implementation does and does not
   do.
-- To build on it, use the [Guides](guides/devnet.md) and the
-  [Reference](reference/cli.md).
+- To build on it, use [Build on the ledger](guides/wallets.md),
+  [Run a network](guides/devnet.md) and the [Reference](reference/cli.md).
 - To change it, read [Architecture of the code](architecture/crates.md),
   the [specification](specification.md) and the repository's
   `CONTRIBUTING.md`.
 
 Command output in this book was captured from real runs of the devnet on one
 machine. Identifiers, chain identities, Pulse numbers and timings in your
-runs will differ.
+runs will differ. The agent's runs use a scripted model, and stand-ins for
+the services it talks to, because the machine they were made on reaches
+none of them.

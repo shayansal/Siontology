@@ -1,11 +1,11 @@
 # Skills from others
 
-An agent's [skills](agent-runtime.md#skills) are instructions it follows,
+An agent's [skills](index.md#skills) are instructions it follows,
 so a skill from a stranger can tell it to pay the wrong account.
 `sion skill` gives skills a supply chain built on claims and bonds. A
 release is a claim on its publisher's bond, and an audit is a claim on an
 auditor's bond. Installing a skill means
-[accepting](claims.md#price-it-before-relying-on-it) its release with the
+[accepting](../guides/claims.md#price-it-before-relying-on-it) its release with the
 agent's budget at risk. A skill goes in only if the backing behind it
 covers what the agent could lose. If it turns out to be malicious, the
 bonds pay the agents that relied on it. How a skill is measured, and how
@@ -14,7 +14,7 @@ a better version is verified by others before it is released, is in
 
 Every output below is from a real run on a local devnet (long identifiers
 and paths shortened with `…`). The agent's model is a scripted one, as in
-[Agents at work](agent-runtime.md).
+[Your agent](index.md).
 
 ## The parties
 
@@ -79,7 +79,7 @@ src/pay-invoices/templates/checklist.md
 Its **bundle** is the directory's files, sorted by path and encoded
 canonically. The skill's history and its installation record are left
 out. The bundle's root is the Merkle root that a
-[storage deal](storage.md) over the same bytes commits to, so a copy from
+[storage deal](../guides/storage.md) over the same bytes commits to, so a copy from
 anywhere can be checked against it, and a deal can keep it available:
 
 ```text
@@ -287,7 +287,7 @@ None of this finds a malicious skill by itself: someone still has to find
 the bad step and prove it to the adjudicator. What the bonds change is
 who pays when that happens. The agents that relied on the release are
 compensated, and a successful challenger gets a share of what is left
-after compensation (see [Bonds and challenges](bonds-and-challenges.md)).
+after compensation (see [Bonds and challenges](../guides/bonds-and-challenges.md)).
 
 ## Find the latest release
 

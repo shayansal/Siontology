@@ -21,3 +21,14 @@ no-section-label = false
 
 [output.html.search]
 enable = true
+
+# Pages that moved when the agent's pages became a part of their own.
+[output.html.redirect]
+"/guides/agent-runtime.html" = "../agent/index.html"
+"/guides/agent-teams.html" = "../agent/channels.html"
+"/guides/agent-tools.html" = "../agent/tools.html"
+"/guides/agent-browser.html" = "../agent/browser.html"
+"/guides/agent-graphs.html" = "../agent/graphs.html"
+"/guides/skills.html" = "../agent/skills.html"
+"/guides/skill-permissions.html" = "../agent/skill-permissions.html"
+"/guides/skill-improvement.html" = "../agent/skill-improvement.html"

@@ -124,6 +124,10 @@ Ready.
 goes on with the last one. The agent's memory log lasts across
 conversations; a conversation is what it was told and did in one.
 
+In this recording what was typed went in on standard input, so it does not
+show after `you>`: "What is in your workspace?", then "Write my notes
+down."
+
 ```text
 $ sion
 Talking with assistant (conversation 2026-11-01-153915); end with Ctrl-D, continue later with `sion -c`.
@@ -143,7 +147,7 @@ $ cat ~/sion-workspace/notes.md
 
 `sion agent talk <profile> --conversation <name>` talks with another
 profile, or in a conversation of your naming; `--voice` speaks instead of
-typing ([The agent runtime](../guides/agent-runtime.md)).
+typing ([Pairing and voice](../agent/voice.md)).
 
 Setup run again changes nothing it need not:
 
@@ -226,9 +230,8 @@ from `@BotFather`, asked for without showing it or taken from
 manager, it prints that command instead): write to your bot, and approve
 the code it gives you with `sion agent pairing approve <code>`. The token
 is kept in the service's environment file, which only you can read
-(`agent:service-tokens`). [Teams, schedules and
-channels](../guides/agent-teams.md) names the other messengers a profile
-can answer on.
+(`agent:service-tokens`). [Messengers](../agent/messengers.md) names the
+other messengers a profile can answer on.
 
 ## Update
 

@@ -328,6 +328,6 @@ a fan-out). Run it with `sion agent graph run <profile> --graph <file>
   the first wave's, not the first to finish.
 - Nodes run on this machine, as sessions of one profile's agent; work for
   another agent is hired with a Task Charter instead
-  ([Hiring another agent](agent-teams.md#hiring-another-agent)).
+  ([Hiring another agent](teams.md#hiring-another-agent)).
 - The router is a model's judgment, among what a comparison let through:
   it can be wrong, which is why its default is one agent.

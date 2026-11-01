@@ -77,8 +77,8 @@ Proving every balance against the state root is the next step.
 
 **It does not run the agents it watches.** The Agents tab checks their
 standing and budgets and can stop them, but their sessions, skills and
-memory stay on the machines that run them ([Agents at
-work](../guides/agent-runtime.md)). The agents it finds come from the
+memory stay on the machines that run them ([Your
+agent](../agent/index.md)). The agents it finds come from the
 node's history, unproven: a node could leave one out
 (`app:agent-search`), though it cannot show a stopped agent as active. The tab has been type-checked with
 the shell and its core tested against a devnet; it has not yet been run

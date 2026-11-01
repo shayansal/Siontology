@@ -10,6 +10,13 @@ Architecture*: two-sorted state, consensus only where operations conflict,
 a validity proof folded over every Pulse, and a knowledge layer in which
 every claim states what it would cost to falsify.
 
+It comes with an AI agent you run on your own computer: one command,
+`sion setup`, makes a chain of your own and an agent whose spending the
+ledger holds to its charter, and whose memory log's head it keeps. The agent answers in the terminal
+and on messaging services, works in a folder you give it, browses, and
+asks before it spends; the ledger refuses whatever its charter forbids,
+whatever the agent was told.
+
 This is a devnet-scale reference implementation in Rust. Some parts of the
 architecture are simulated, simplified or left out, most importantly
 succinct proofs (simulated by replay proofs) and networking between
@@ -90,12 +97,13 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   work with a model, under autonomy levels and approvals, while the
   ledger enforces its charter. It installs a skill from others only when
   the bonds and audits behind the skill cover what the agent could lose,
-  and a skill's better version is released only once verifiers, fixed
-  before it existed, have run its evaluation set and attested. Agents
+  and a skill's better version can be released on the attestations of
+  verifiers, fixed before it existed, who ran its evaluation set. Agents
   spawn subagents with budgets carved from their own, hire each other
-  through Task Charters, run on schedules, and answer over HTTP, Telegram,
-  Slack, Discord, Matrix and Signal, on their own machine or through an
-  agent gateway.
+  through Task Charters, run on schedules, and answer in the terminal,
+  over HTTP, OpenAI's chat API and A2A, and on 28 messaging services
+  (tested against stand-ins for their APIs), on their own machine or
+  through an agent gateway.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,
