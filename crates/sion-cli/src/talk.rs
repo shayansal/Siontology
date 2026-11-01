@@ -152,6 +152,85 @@ impl Talk {
     }
 }
 
+/// The conversation at a terminal that was had last: its profile and its
+/// name (`$SION_HOME/agents/last-talk.json`).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Last {
+    /// The profile.
+    pub profile: String,
+    /// The conversation.
+    pub conversation: String,
+}
+
+/// Where the last conversation is noted.
+fn last_path() -> std::path::PathBuf {
+    crate::secrets::dir().join("last-talk.json")
+}
+
+/// The conversation had last at a terminal, if any.
+pub fn last() -> Option<Last> {
+    let text = std::fs::read_to_string(last_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Notes `conversation` with `profile` as the one had last.
+pub fn note_last(profile: &str, conversation: &str) -> Result<(), CliError> {
+    crate::profiles::write_json(
+        &last_path(),
+        &Last {
+            profile: profile.to_string(),
+            conversation: conversation.to_string(),
+        },
+    )
+}
+
+/// A new conversation's name: when it began (UTC), `2026-11-01-153012`.
+pub fn new_conversation(now: u64) -> String {
+    sion_agent::schedule::rfc3339(now)
+        .trim_end_matches('Z')
+        .replace('T', "-")
+        .replace(':', "")
+}
+
+/// What bare `sion` runs, against the chain at `node`: a new conversation
+/// with the default profile ([`crate::setup::default_profile`]), or,
+/// `continuing`, the conversation had last.
+pub fn bare(node: &str, continuing: bool) -> Result<crate::agents::AgentCommand, CliError> {
+    let (profile, conversation) = if continuing {
+        let last = last().ok_or_else(|| {
+            CliError::Usage(
+                "there is no conversation to continue yet: start one with `sion`".into(),
+            )
+        })?;
+        (last.profile, last.conversation)
+    } else {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        (crate::setup::default_profile()?, new_conversation(now))
+    };
+    if crate::ledger::LedgerExt::status(&crate::ledger::HttpLedger::new(node)).is_err() {
+        return Err(CliError::Usage(format!(
+            "your chain does not answer at {node}: start it (sion agent service list names its \
+             service; sion setup starts it again)"
+        )));
+    }
+    eprintln!(
+        "{} {profile} (conversation {conversation}); end with Ctrl-D, continue later with `sion -c`.",
+        if continuing { "Continuing with" } else { "Talking with" }
+    );
+    Ok(crate::agents::AgentCommand::Talk {
+        profile,
+        conversation,
+        voice: false,
+        hear: None,
+        speak: None,
+        record: None,
+        play: None,
+    })
+}
+
 /// Talks with `profile` in conversation `talk.conversation`, reading from
 /// `input` and writing to `out` until the input ends.
 pub fn run(
@@ -234,6 +313,18 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_conversations_are_named_by_when_they_began() {
+        // 2026-11-01 15:30:12 UTC.
+        assert_eq!(new_conversation(1_793_547_012), "2026-11-01-153012");
+        let last = Last {
+            profile: "assistant".into(),
+            conversation: "2026-11-01-153012".into(),
+        };
+        let text = serde_json::to_string(&last).unwrap();
+        assert_eq!(serde_json::from_str::<Last>(&text).unwrap(), last);
+    }
 
     #[test]
     fn programs_are_named_or_found() {

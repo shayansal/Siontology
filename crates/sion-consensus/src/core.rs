@@ -127,6 +127,9 @@ pub enum TimerKind {
     Round(Round),
     /// Periodic re-broadcast and re-sync.
     Resend,
+    /// The end of the wait before proposing for a round while there was
+    /// nothing to order ([`Core::pace_when_idle`]).
+    Pace(Round),
 }
 
 /// Inputs to the core.
@@ -228,6 +231,14 @@ pub struct Core<A: Authenticator, V: SignatureVerifier> {
     delivered_by_round: BTreeMap<Round, Vec<BlockDigest>>,
     delivered_items: BTreeSet<Hash32>,
     gc_round: Round,
+    /// How long the next header waits while there is nothing to order (0:
+    /// it does not).
+    idle_round_ms: u64,
+    /// The round whose header waits, if one does.
+    deferred: Option<Round>,
+    /// The last round that goes at full pace whatever there is to order
+    /// ([`Core::keep_pace`]).
+    busy_until: Round,
     evidence: Vec<DagEvidence>,
     reported: BTreeSet<(u8, Round, ValidatorId)>,
     oversized: u64,
@@ -279,6 +290,9 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
             evidence: Vec::new(),
             reported: BTreeSet::new(),
             oversized: 0,
+            idle_round_ms: 0,
+            deferred: None,
+            busy_until: Round(0),
         };
         for certificate in Certificate::genesis(&core.committee) {
             let digest = certificate.digest();
@@ -294,6 +308,36 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
     /// This validator.
     pub fn validator(&self) -> ValidatorId {
         self.me
+    }
+
+    /// The core, its next header waiting `ms` after a round while there is
+    /// nothing to order, unless an item comes or another validator's header
+    /// for the round does: a chain at rest then advances a round each `ms`
+    /// rather than as fast as it can sign. `ms` 0 (the default): it never
+    /// waits. Safety is untouched; only how soon an idle validator proposes
+    /// changes.
+    pub fn pace_when_idle(mut self, ms: u64) -> Self {
+        self.idle_round_ms = ms;
+        self
+    }
+
+    /// Goes on at full pace for `rounds` rounds after this one, whatever
+    /// there is to order, proposing now if the header waits: what builds
+    /// on items just ordered (the Pulse that holds them closing) then does
+    /// not wait for the idle pace.
+    pub fn keep_pace(&mut self, rounds: u64) -> Vec<Action> {
+        self.busy_until = self
+            .busy_until
+            .max(Round(self.round.0.saturating_add(rounds)));
+        let mut out = Vec::new();
+        self.wake(&mut out);
+        self.progress(&mut out);
+        out
+    }
+
+    /// The round whose header waits for something to order, if one does.
+    pub fn deferred_round(&self) -> Option<Round> {
+        self.deferred
     }
 
     /// Whether this validator is a member of the committee. A non-member is
@@ -402,7 +446,12 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
                     });
                 }
             }
-            Event::Submit(item) => self.submit(item),
+            Event::Submit(item) => {
+                self.submit(item);
+                if !self.mempool.is_empty() {
+                    self.wake(&mut out);
+                }
+            }
             Event::Message { from, message } => match message {
                 Message::Header(signed) => self.on_header(from, signed, &mut out),
                 Message::Vote(vote) => self.on_vote(vote, &mut out),
@@ -422,6 +471,11 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
                     timer: TimerKind::Resend,
                     after_ms: self.config.resend_interval_ms,
                 });
+            }
+            Event::Timer(TimerKind::Pace(round)) => {
+                if self.deferred == Some(round) {
+                    self.wake(&mut out);
+                }
             }
         }
         self.progress(&mut out);
@@ -559,6 +613,11 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
         if !self.is_member() {
             // Observers neither vote nor gather votes; certificates suffice.
             return;
+        }
+        // Another validator proposing for the round: a committee goes at the
+        // pace of whichever member has work.
+        if signed.header.round == self.round {
+            self.wake(out);
         }
         let header = &signed.header;
         if header.chain != self.committee.chain()
@@ -956,12 +1015,36 @@ impl<A: Authenticator, V: SignatureVerifier> Core<A, V> {
                 break;
             }
             self.round = Round(round.0 + 1);
+            // With nothing to order, and nothing ordered lately, the header
+            // waits, unless something comes to order first.
+            if self.idle_round_ms > 0 && self.mempool.is_empty() && self.round > self.busy_until {
+                self.deferred = Some(self.round);
+                out.push(Action::SetTimer {
+                    timer: TimerKind::Pace(self.round),
+                    after_ms: self.idle_round_ms,
+                });
+                break;
+            }
+            self.deferred = None;
             self.propose(out);
             out.push(Action::SetTimer {
                 timer: TimerKind::Round(self.round),
                 after_ms: self.config.leader_timeout_ms,
             });
         }
+    }
+
+    /// Proposes for the current round now, if its header waits.
+    fn wake(&mut self, out: &mut Vec<Action>) {
+        if self.deferred != Some(self.round) {
+            return;
+        }
+        self.deferred = None;
+        self.propose(out);
+        out.push(Action::SetTimer {
+            timer: TimerKind::Round(self.round),
+            after_ms: self.config.leader_timeout_ms,
+        });
     }
 
     // ----- Commit rule -----------------------------------------------------
@@ -1196,6 +1279,97 @@ mod tests {
         }
         assert!(core.committed_count() > 0);
         assert_eq!(items, vec![b"hello".to_vec()]);
+    }
+
+    #[test]
+    fn an_idle_validator_waits_before_its_next_header_until_something_comes() {
+        let (keys, verifier) = insecure_sim_keyring(1, 4);
+        let committee =
+            Committee::equal_weight(Epoch(0), ShardId(0), keys.iter().map(|k| k.validator()))
+                .unwrap();
+        let mut core = Core::new(committee, keys[0].clone(), verifier, CoreConfig::default())
+            .pace_when_idle(2_000);
+        let paced = |actions: &[Action]| {
+            actions.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::SetTimer {
+                        timer: TimerKind::Pace(_),
+                        after_ms: 2_000
+                    }
+                )
+            })
+        };
+        // Round 1 is proposed and certified at once; round 2 waits, there
+        // being nothing to order.
+        let started = core.handle(Event::Start);
+        assert!(paced(&started), "{started:?}");
+        assert_eq!(core.deferred_round(), Some(Round(2)));
+        // An item wakes it: the header goes now, and the item is ordered.
+        let mut items = Vec::new();
+        let mut actions = core.handle(Event::Submit(b"pay bob".to_vec()));
+        for _ in 0..20 {
+            for action in &actions {
+                if let Action::Commit(sub) = action {
+                    items.extend(sub.items.clone());
+                }
+            }
+            if !items.is_empty() {
+                break;
+            }
+            // While something is in flight, nothing waits.
+            assert!(core.deferred_round().is_none() || core.mempool_len() == 0);
+            let round = core.round();
+            actions = core.handle(Event::Timer(TimerKind::Round(round)));
+            if let Some(waiting) = core.deferred_round() {
+                actions.extend(core.handle(Event::Timer(TimerKind::Pace(waiting))));
+            }
+        }
+        assert_eq!(items, vec![b"pay bob".to_vec()]);
+        // Ordered, it waits again, unless told to keep pace: then it goes on
+        // at full pace for 3 rounds (the Pulse that holds the item closing
+        // would not wait), then waits; its timer proposes the header, and
+        // the round after waits in turn.
+        for _ in 0..4 {
+            if core.deferred_round().is_some() {
+                break;
+            }
+            let round = core.round();
+            core.handle(Event::Timer(TimerKind::Round(round)));
+        }
+        let rested = core
+            .deferred_round()
+            .expect("ordered, the next header waits");
+        let woken = core.keep_pace(3);
+        assert!(woken
+            .iter()
+            .any(|a| matches!(a, Action::Broadcast(Message::Header(_)))));
+        assert_ne!(core.deferred_round(), Some(rested));
+        let ordered_at = rested;
+        for _ in 0..8 {
+            if core.deferred_round().is_some() {
+                break;
+            }
+            let round = core.round();
+            core.handle(Event::Timer(TimerKind::Round(round)));
+        }
+        let waiting = core
+            .deferred_round()
+            .expect("at rest, the next header waits");
+        assert!(
+            waiting.0 > ordered_at.0 + 3,
+            "{waiting:?} after {ordered_at:?}"
+        );
+        core.handle(Event::Timer(TimerKind::Pace(waiting)));
+        assert_ne!(core.deferred_round(), Some(waiting));
+        // Off by default.
+        let (keys, verifier) = insecure_sim_keyring(1, 4);
+        let committee =
+            Committee::equal_weight(Epoch(0), ShardId(0), keys.iter().map(|k| k.validator()))
+                .unwrap();
+        let mut plain = Core::new(committee, keys[0].clone(), verifier, CoreConfig::default());
+        assert!(!paced(&plain.handle(Event::Start)));
+        assert_eq!(plain.deferred_round(), None);
     }
 
     #[test]

@@ -1,7 +1,11 @@
 # Install from source
 
-Siontology has no binary releases yet. You build it from source, by hand,
-with the installer, in a container image, or with Homebrew or Nix.
+Releases are made by the release workflow on version tags
+(`scripts/release/README.md`); none had been published when this was
+written. Until there is one, you build `sion` from source: by hand, with
+the installer, in a container image, or with Homebrew or Nix. For one
+person's agent on one machine, [Run it on your computer](your-computer.md)
+is the short way.
 
 ## Requirements
 
@@ -45,12 +49,16 @@ The rest of this book calls the binary `sion`.
 ## The installer
 
 `scripts/install.sh` installs `sion` into `~/.local/bin`, or into the
-`bin` of the directory `--prefix` names: from the checkout it is in, from
-the repository with `--git` (and `--rev` for a tag or commit), or, once
-releases exist, from a release with `--release` and its base URL. A
-release archive is checked against its `SHA256SUMS`, and with
-`--allowed-signers` and a file of allowed signers, `SHA256SUMS` against
-its SSH signature, before anything is installed; `--dry-run` says what it
+`bin` of the directory `--prefix` names: from the checkout it is in; from
+the latest release on GitHub with `--latest`, which is what it does when it
+is not in a checkout (`curl … | sh`), building from the repository when no
+release can be fetched; from the repository with `--git` (and `--rev` for
+a tag or commit); or from a release with `--release` and its base URL. A
+release archive is checked against its `SHA256SUMS`, and `SHA256SUMS`
+against its SSH signature by the release key (the repository's
+`scripts/release/allowed_signers` for `--latest`; with `--release`, the
+file `--allowed-signers` names), before anything is installed. A private
+repository is read with the GitHub CLI, signed in. `--dry-run` says what it
 would do. It never uses root.
 
 ```bash
@@ -66,7 +74,10 @@ building sion from /home/claude/fold
 The release path was run here against a release made for the purpose
 and served on this machine: a signed release installed; one checked
 against another signer's key, and an archive changed by one byte, were
-refused, and nothing was installed.
+refused, and nothing was installed. `--latest` was run the same way, with
+a stand-in for the GitHub CLI giving it such a release. `sion update`
+keeps an installed `sion` current the same way
+([Update](your-computer.md#update)).
 
 ## A container image
 
@@ -133,15 +144,15 @@ them. Here, in the environment this book was made in:
 $ sion doctor
 ok sion        0.1.0 on linux x86_64
 ok home        /home/you/.sion (SION_HOME)
--- node        http://127.0.0.1:8730 does not answer: start one (`sion devnet`) or name another (--node, SION_NODE); only the ledger's commands need it
+-- node        http://127.0.0.1:8730 does not answer: start one (`sion setup` makes a chain of your own; `sion devnet`) or name another (--node, SION_NODE); only the ledger's commands need it
 ok bubblewrap  runs commands in a sandbox of their own
 -- docker      installed, but its daemon does not answer: Docker sandboxes need it
 ok browser     /opt/pw-browsers/chromium-1243/chrome-linux64/chrome (--browser)
 ok desktop     Xvfb, xdotool and ImageMagick are here (--computer)
--- models      no ANTHROPIC_API_KEY or OPENAI_API_KEY: agents run only scripted models
+-- models      no model's key set or kept, and no ChatGPT sign-in: agents run only scripted models (sion setup)
 ok voice       no speech service's key set (--hear and --speak can also run a command)
 ok messengers  none has its credentials set (see `sion agent bridge --help`)
-ok profiles    none yet (`sion agent profile add`)
+ok profiles    none yet (`sion setup` makes one; `sion agent profile add`)
 ok proxy       HTTPS_PROXY, https_proxy set: requests go through it, its roots from SSL_CERT_FILE
 ```
 
@@ -153,6 +164,8 @@ ok proxy       HTTPS_PROXY, https_proxy set: requests go through it, its roots f
 | The node the CLI talks to | `--node` or `$SION_NODE`, by default `http://127.0.0.1:8730` |
 | The chain identity you pin | `--chain` or `$SION_CHAIN` |
 | A devnet's data | the directory you pass to `sion devnet --data-dir`; without it, nothing is written to disk |
+| The chain `sion setup` makes | `$SION_HOME/chain`, and what setup made in `$SION_HOME/setup.json` |
+| Models' keys `sion` keeps | `$SION_HOME/agents/credentials.bin`, sealed (`sion agent credential list`) |
 
 ## Run the tests
 

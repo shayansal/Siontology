@@ -58,6 +58,11 @@ pub struct DevnetConfig {
     pub history: usize,
     /// Pulses a shard has to execute (or show invalid) a forced intent.
     pub forced_window: u64,
+    /// How long a validator with nothing to order waits before its next
+    /// header ([`sion_consensus::Core::pace_when_idle`]; 0: it does not), so
+    /// that a chain at rest uses little CPU.
+    #[serde(default)]
+    pub idle_round_ms: u64,
 }
 
 impl Default for DevnetConfig {
@@ -95,6 +100,7 @@ impl Default for DevnetConfig {
             prove_chunk: Some(16),
             history: 256,
             forced_window: 8,
+            idle_round_ms: 0,
         }
     }
 }

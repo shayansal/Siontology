@@ -26,7 +26,13 @@ use sion_exec::{Event, ObjectData, TxKind};
 use sion_node::{Devnet, DevnetConfig, SignatureMode};
 
 #[derive(Parser)]
-#[command(name = "sion", version, about = "Siontology: a neo-blockchain devnet and client", long_about = None)]
+#[command(
+    name = "sion",
+    version,
+    about = "Siontology: a neo-blockchain devnet and client",
+    long_about = None,
+    after_help = "With no command, sion talks with your agent in a new conversation (`sion setup` makes one); `sion -c` continues the last."
+)]
 struct Cli {
     /// The node's API.
     #[arg(
@@ -36,7 +42,17 @@ struct Cli {
         default_value = "http://127.0.0.1:8730"
     )]
     node: String,
+    /// With no command: continue the last conversation, rather than start
+    /// one.
+    #[arg(short = 'c', long = "continue")]
+    continue_last: bool,
     #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// What runs: the node, and the command (bare `sion` made one).
+struct Run {
+    node: String,
     command: Command,
 }
 
@@ -83,6 +99,12 @@ struct DevnetArgs {
     /// Do not run the prover.
     #[arg(long)]
     no_prove: bool,
+    /// When a validator has nothing to order, wait this long before its next
+    /// round (0: never): a chain at rest then uses little CPU. A
+    /// transaction, or another validator's header, starts the round at once,
+    /// and the chain goes at full pace until the Pulse holding it closes.
+    #[arg(long, default_value_t = 0, value_name = "MS")]
+    idle_round_ms: u64,
     /// Transactions per proof chunk.
     #[arg(long, default_value_t = 16)]
     chunk: usize,
@@ -116,6 +138,7 @@ impl DevnetArgs {
             data_dir: self.data_dir.clone(),
             demo_accounts: self.accounts.clone(),
             prove_chunk: (!self.no_prove).then_some(self.chunk.max(1)),
+            idle_round_ms: self.idle_round_ms,
             ..DevnetConfig::default()
         }
     }
@@ -133,6 +156,14 @@ enum Command {
     Gateway(sion_cli::network::GatewayArgs),
     /// Chain status.
     Status,
+    /// Set up Siontology for one person on this machine: a chain of your
+    /// own (a service of yours), your wallet and your agent's, the agent
+    /// with a budget and its memory, its model, a profile `sion` talks
+    /// with, and Telegram if you like. Safe to run again.
+    Setup(sion_cli::setup::SetupArgs),
+    /// Replace this sion with the latest release, once its signature and
+    /// SHA-256 are checked.
+    Update(sion_cli::update::UpdateArgs),
     /// What this machine has for Siontology and its agents, and what is
     /// missing: the home, the node, sandboxes, the browser and desktop,
     /// models', speech services' and messengers' credentials (by name).
@@ -790,7 +821,23 @@ fn run_devnet(args: &DevnetArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn run(mut cli: Cli) -> Result<(), CliError> {
+fn run(cli: Cli) -> Result<(), CliError> {
+    let command = match (cli.command, cli.continue_last) {
+        (Some(_), true) => {
+            return Err(CliError::Usage(
+                "-c continues the last conversation: give it with no command".into(),
+            ))
+        }
+        (Some(command), false) => command,
+        // Bare `sion`: talk with your agent.
+        (None, continuing) => {
+            Command::Agent(Box::new(sion_cli::talk::bare(&cli.node, continuing)?))
+        }
+    };
+    let mut cli = Run {
+        node: cli.node,
+        command,
+    };
     // Agent commands that need no node do not wait for one.
     if let Command::Agent(command) = cli.command {
         match sion_cli::agents::local(command) {
@@ -800,6 +847,8 @@ fn run(mut cli: Cli) -> Result<(), CliError> {
     }
     match &cli.command {
         Command::Doctor => return sion_cli::doctor::run(&cli.node),
+        Command::Setup(args) => return sion_cli::setup::run(&cli.node, args),
+        Command::Update(args) => return sion_cli::update::run(args),
         Command::Devnet(args) => return run_devnet(args),
         Command::Genesis(args) => return sion_cli::network::genesis(args).map(|_| ()),
         Command::Node(args) => return sion_cli::network::run_node(args),
@@ -903,6 +952,8 @@ fn run(mut cli: Cli) -> Result<(), CliError> {
         | Command::Keys(_)
         | Command::Mcp
         | Command::Doctor
+        | Command::Setup(_)
+        | Command::Update(_)
         | Command::Bench { .. } => {
             unreachable!("handled above")
         }

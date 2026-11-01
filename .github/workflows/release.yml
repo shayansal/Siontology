@@ -1,0 +1,120 @@
+name: release
+
+# A release, on a version tag (v*): sion built for Linux and macOS, the
+# archives' SHA-256 sums signed with the release key, published with the
+# installer. Run it by hand (workflow_dispatch) to build and sign without
+# publishing.
+#
+# The release key's private half is the secret SION_RELEASE_SSH_KEY (an
+# OpenSSH private key without a passphrase); its public half is in
+# scripts/release/allowed_signers, which sion is built with, so that
+# `sion update` installs only what that key signed (scripts/release/README.md).
+#
+# On a private repository, macOS minutes are billed at ten times Linux's;
+# this runs only on tags and by hand.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            runs: true
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            runs: true
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            runs: true
+          # Built on Apple silicon for Intel Macs: it does not run there.
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            runs: false
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --locked --release -p sion-cli --bin sion --target ${{ matrix.target }}
+      - name: It runs
+        if: matrix.runs
+        run: |
+          ./target/${{ matrix.target }}/release/sion --version
+          ./target/${{ matrix.target }}/release/sion doctor || true
+      - name: Pack
+        run: tar -czf sion-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release sion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sion-${{ matrix.target }}
+          path: sion-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sion-*
+          merge-multiple: true
+      - name: The tag is the workspace's version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME but Cargo.toml says $version"
+            exit 1
+          fi
+      - name: Sums
+        run: |
+          sha256sum sion-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Sign
+        env:
+          SION_RELEASE_SSH_KEY: ${{ secrets.SION_RELEASE_SSH_KEY }}
+        run: |
+          if [ -z "$SION_RELEASE_SSH_KEY" ]; then
+            echo "::error::the secret SION_RELEASE_SSH_KEY is not set: releases are signed (scripts/release/README.md)"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$SION_RELEASE_SSH_KEY" > "$RUNNER_TEMP/release-key"
+          ssh-keygen -q -Y sign -f "$RUNNER_TEMP/release-key" -n file SHA256SUMS
+          rm -f "$RUNNER_TEMP/release-key"
+          # The signature holds for the key sion is built with.
+          ssh-keygen -Y verify -f scripts/release/allowed_signers -I releases@siontology.org \
+            -n file -s SHA256SUMS.sig < SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            SHA256SUMS
+            SHA256SUMS.sig
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" sion-*.tar.gz SHA256SUMS SHA256SUMS.sig scripts/install.sh \
+            --title "sion $GITHUB_REF_NAME" --generate-notes --verify-tag

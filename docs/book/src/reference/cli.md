@@ -48,6 +48,7 @@ guides show the commands in use.
 | Markets | `market create`, `market order`, `market clear`, `market show` |
 | Payment streams | `stream open`, `stream pay`, `stream jump`, `stream check`, `stream settle`, `stream top-up`, `stream close`, `stream show` |
 | Verification | `tx`, `receipt`, `verify` |
+| Your computer | `setup`, `update`, `agent credential add`, `agent credential list`, `agent credential remove` |
 | Other | `demo`, `bench` |
 
 There is no command yet for registering a validator on a running chain,
@@ -62,7 +63,7 @@ forgetting. Those transactions are available through the Rust API
 ```text
 Siontology: a neo-blockchain devnet and client
 
-Usage: sion [OPTIONS] <COMMAND>
+Usage: sion [OPTIONS] [COMMAND]
 
 Commands:
   devnet     Run a devnet and serve its API
@@ -70,6 +71,8 @@ Commands:
   node       Run one validator of a network, in this process
   gateway    Run a gateway of a network, in this process
   status     Chain status
+  setup      Set up Siontology for one person on this machine: a chain of your own (a service of yours), your wallet and your agent's, the agent with a budget and its memory, its model, a profile `sion` talks with, and Telegram if you like. Safe to run again
+  update     Replace this sion with the latest release, once its signature and SHA-256 are checked
   doctor     What this machine has for Siontology and its agents, and what is missing: the home, the node, sandboxes, the browser and desktop, models', speech services' and messengers' credentials (by name)
   keys       Wallet keys
   balance    An account's balances and coins
@@ -104,8 +107,11 @@ Commands:
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -c, --continue     With no command: continue the last conversation, rather than start one
   -h, --help         Print help
   -V, --version      Print version
+
+With no command, sion talks with your agent in a new conversation (`sion setup` makes one); `sion -c` continues the last.
 ```
 
 ## `sion devnet`
@@ -142,6 +148,8 @@ Options:
           INSECURE: replace dual post-quantum validator signatures with a fast simulation MAC (load experiments only)
       --no-prove
           Do not run the prover
+      --idle-round-ms <MS>
+          When a validator has nothing to order, wait this long before its next round (0: never): a chain at rest then uses little CPU. A transaction, or another validator's header, starts the round at once, and the chain goes at full pace until the Pulse holding it closes [default: 0]
       --chunk <CHUNK>
           Transactions per proof chunk [default: 16]
       --accounts <ACCOUNTS>
@@ -256,6 +264,51 @@ Options:
 
 Prints `GET /v1/status` as JSON; see [HTTP API](http-api.md#get-v1status).
 
+
+## `sion setup`
+
+```text
+Set up Siontology for one person on this machine: a chain of your own (a service of yours), your wallet and your agent's, the agent with a budget and its memory, its model, a profile `sion` talks with, and Telegram if you like. Safe to run again
+
+Usage: sion setup [OPTIONS]
+
+Options:
+      --name <NAME>              Your wallet's name (default: your login name)
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>        The profile to make, which bare `sion` talks with [default: assistant]
+      --model <MODEL>            Its model: anthropic:<model>, openai-responses:<model>, gemini:<model>, chatgpt:<model> or local:<model>
+      --key-from-env <VARIABLE>  Take the model's key from this environment variable
+      --local-url <URL>          For local:<model>, where its server answers (OpenAI's API): Ollama http://127.0.0.1:11434/v1, LM Studio http://127.0.0.1:1234/v1, llama.cpp http://127.0.0.1:8080/v1
+      --workspace <WORKSPACE>    The directory it may read and write (default: ~/sion-workspace)
+      --autonomy <AUTONOMY>      How much it may do without asking, L0 to L6 [default: L5]
+      --idle-round-ms <MS>       How long the chain waits between rounds while it has nothing to order, in milliseconds [default: 10000]
+      --no-service               Do not install the chain as a service: print the command that runs it, and wait for it
+      --telegram                 Also answer on Telegram (the bot's token is asked for, or taken from TELEGRAM_BOT_TOKEN)
+      --no-check                 Do not check that the model answers
+  -y, --yes                      Ask nothing: take the defaults and these options
+  -h, --help                     Print help
+```
+
+What it makes, step by step, and what it does when a step is done already:
+[Run it on your computer](../getting-started/your-computer.md).
+
+## `sion update`
+
+```text
+Replace this sion with the latest release, once its signature and SHA-256 are checked
+
+Usage: sion update [OPTIONS]
+
+Options:
+      --check          Only say whether there is a newer release
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --version <TAG>  This release rather than the latest (its tag, `v0.2.0`)
+      --force          Install it even if it is not newer
+  -h, --help           Print help
+```
+
+It installs a release only once its `SHA256SUMS` are signed by the release
+key it was built with and its archive matches them: [Update](../getting-started/your-computer.md#update).
 
 ## `sion doctor`
 
@@ -719,6 +772,7 @@ Commands:
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
   secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
+  credential     The credentials sion itself uses (models' keys and addresses, speech services' keys), kept sealed on this machine so that sion and its services find them without the environment; never given to skills' scripts
   login          Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
   pairing        People a channel did not know who asked to talk to a profile: the codes waiting, approving one, letting a chat out again
   chatgpt        Sign in with ChatGPT, so that agents may run on your plan (`--model chatgpt:<model>`): OpenAI's sign-in for open-source apps, in your browser; the tokens kept encrypted on this machine
@@ -1038,7 +1092,7 @@ Options:
       --task <TASK>
           The task, in words
       --model <MODELS>
-          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>, chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent chatgpt login`), gemini:<model> (GEMINI_API_KEY) or script:<file>; several keys, comma-separated, are used in turn. Repeat for fallbacks, in order
+          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>, chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model> (a model server on this machine or its network, SION_LOCAL_MODEL_URL) or script:<file>; several keys, comma-separated, are used in turn, and keys may be kept on this machine (sion agent credential add). Repeat for fallbacks, in order
       --autonomy <AUTONOMY>
           How much it may do without asking: L0 (nothing) to L6 (spend within its charter). L3 reads and writes its workspace; L5 also fetches from the web and asks before paying [default: L5]
       --workspace <WORKSPACE>
@@ -1514,6 +1568,71 @@ Options:
 Remove a secret
 
 Usage: sion agent secret remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent credential`
+
+```text
+The credentials sion itself uses (models' keys and addresses, speech services' keys), kept sealed on this machine so that sion and its services find them without the environment; never given to skills' scripts
+
+Usage: sion agent credential [OPTIONS] <COMMAND>
+
+Commands:
+  add     Keep a model's or a speech service's credential on this machine: its value is read from standard input (not shown when typed), or taken from an environment variable
+  list    The names kept (never their values)
+  remove  Forget one
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+What `sion` itself uses (models' keys and addresses, speech services'
+keys), kept sealed in `$SION_HOME/agents/credentials.bin`; the environment
+wins over what is kept (`agent:kept-credentials`).
+
+## `sion agent credential add`
+
+```text
+Keep a model's or a speech service's credential on this machine: its value is read from standard input (not shown when typed), or taken from an environment variable
+
+Usage: sion agent credential add [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name: ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENAI_BASE_URL, GEMINI_API_KEY and the like
+
+Options:
+      --from-env <VARIABLE>  Take the value from this environment variable instead
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help                 Print help
+```
+
+## `sion agent credential list`
+
+```text
+The names kept (never their values)
+
+Usage: sion agent credential list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent credential remove`
+
+```text
+Forget one
+
+Usage: sion agent credential remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>  Its name
@@ -2902,7 +3021,7 @@ Arguments:
   <LOG>     The log (its id, or a unique prefix of it)
 
 Options:
-      --model <MODEL>  The model that proposes: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>
+      --model <MODEL>  The model that proposes: anthropic:<model>, openai:<model>, gemini:<model>, local:<model> or script:<file>
       --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help           Print help
 ```
@@ -2919,7 +3038,7 @@ Arguments:
   <LOG>     The log (its id, or a unique prefix of it)
 
 Options:
-      --model <MODEL>       The model that reads: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>
+      --model <MODEL>       The model that reads: anthropic:<model>, openai:<model>, gemini:<model>, local:<model> or script:<file>
       --node <NODE>         The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --eval <FILE>         Held-out tasks (a set of tasks, as `sion agent graph eval` takes): each case is run with the core memory as it is and as it would be with the dream's notes in mind, and the notes are recorded only if no case passes fewer times with them
       --eval-model <MODEL>  The model those runs work with (default: the reader)
@@ -3140,7 +3259,7 @@ Arguments:
 Options:
       --evals <EVALS>                The evaluation set (a JSON file)
       --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --model <MODELS>               The agent's model: anthropic:<model>, openai:<model>, gemini:<model> or script:<file>. Repeat for fallbacks, in order
+      --model <MODELS>               The agent's model: anthropic:<model>, openai:<model>, gemini:<model>, local:<model> or script:<file>. Repeat for fallbacks, in order
       --trajectories <TRAJECTORIES>  Write each run as a trajectory (JSON Lines in chat format), labelled with its result
   -h, --help                         Print help
 ```

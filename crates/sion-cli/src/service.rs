@@ -335,7 +335,7 @@ fn run_manager(program: &str, args: &[&str]) -> Result<(), CliError> {
 }
 
 /// Starts `name`, now and at each login.
-fn start(manager: &Manager, name: &str) -> Result<(), CliError> {
+pub fn start(manager: &Manager, name: &str) -> Result<(), CliError> {
     match manager {
         Manager::Systemd { .. } => {
             run_manager("systemctl", &["--user", "daemon-reload"])?;

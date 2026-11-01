@@ -10,6 +10,40 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### One person, one machine
+
+- **`sion setup`**: a chain of one's own (one validator as a systemd user
+  service or launchd agent, or a printed command where there is no service
+  manager), the person's wallet and the agent's with test dollars, the
+  agent registered with a budget and a billion-Pulse lifetime, its memory
+  log, a model checked to answer, a profile (`assistant`: workspace
+  `~/sion-workspace`, the web, L5), and Telegram if asked. Every step is
+  skipped when done; `--yes` asks nothing. What it made is in
+  `$SION_HOME/setup.json`.
+- **Bare `sion`** talks with that profile in a new conversation; **`sion
+  -c`** continues the last one.
+- **Kept credentials**: models' and speech services' keys and addresses
+  sealed in `$SION_HOME/agents/credentials.bin` (`sion agent credential
+  add|list|remove`), read when the environment has none; never given to
+  skills' scripts. Trust atom `agent:kept-credentials`.
+- **`local:<model>`**: a model server on this machine or its network that
+  speaks OpenAI's API (Ollama, LM Studio, llama.cpp), at
+  `SION_LOCAL_MODEL_URL`. A cloud provider's base URL may now be on this
+  machine (a loopback address).
+- **`sion update`**: the latest release installed in place of the running
+  program once `SHA256SUMS` is signed by the release key it was built with
+  (`scripts/release/allowed_signers`) and the archive matches it; a build
+  with no key refuses. The release workflow (`.github/workflows/release.yml`)
+  builds Linux and macOS archives on `v*` tags, signs the sums and
+  publishes; the installer now takes the latest release when it is not in
+  a checkout, through the GitHub CLI for a private repository. Trust atom
+  `release:signing-key`. No release key or release exists yet.
+- **An idle chain rests**: `sion devnet --idle-round-ms` makes a validator
+  with nothing to order wait before its next round, and keep full pace
+  after ordering a transaction until its Pulse closes. One validator at
+  rest, measured on 2 cores: 98.8% of a core unpaced, 5.7% at 10 s (the
+  chain `sion setup` makes); a transfer took 2.3 s.
+
 ### Reads side by side, what a session last saw kept, A2A pushes
 
 - **Reads side by side**: calls that only read, one after another in a

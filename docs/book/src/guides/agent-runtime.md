@@ -81,12 +81,16 @@ request the provider refuses as malformed or unauthorized is not retried.
 | `--model` | Provider |
 |---|---|
 | `anthropic:claude-opus-5-5` | The Anthropic Messages API, API version 2026-10-21, with automatic prompt caching; the key in `ANTHROPIC_API_KEY` |
-| `openai:<model>` | Any OpenAI-compatible chat completions API, including local servers: `OPENAI_BASE_URL` (default `https://api.openai.com/v1`), `OPENAI_API_KEY` if it needs one |
+| `openai:<model>` | Any OpenAI-compatible chat completions API: `OPENAI_BASE_URL` (default `https://api.openai.com/v1`; an address on this machine is reached, other local addresses are not), `OPENAI_API_KEY` if it needs one |
+| `local:<model>` | A model server on this machine or its network that speaks OpenAI's chat completions API (Ollama, LM Studio, llama.cpp's server): `SION_LOCAL_MODEL_URL` (default Ollama's, `http://127.0.0.1:11434/v1`), `SION_LOCAL_MODEL_KEY` if it needs one. Private addresses are reached, and not through a proxy |
 | `gemini:gemini-3-pro-preview` | Google's Gemini API, natively (`generateContent`, streamed): `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_BASE_URL` for another endpoint. Its thinking is not kept; the thought signature it gives with a call goes back with the call, as Gemini 3 requires, and a call another model made goes with the value Google gives for one it did not sign |
 | `openai-responses:<model>` | OpenAI's Responses API (`POST /v1/responses`), streamed and not stored: `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
 | `chatgpt:<model>` | The Responses API on the ChatGPT plan of whoever signed in on this machine (`sion agent chatgpt login`, below); `sion agent chatgpt models` lists the plan's models |
 | `script:<file>` | A scripted model, for tests and demos |
 
+Each variable may instead be kept on this machine, sealed (`sion agent
+credential add`, or `sion setup`): the environment's wins
+([Run it on your computer](../getting-started/your-computer.md#models)).
 A key variable may hold several keys, separated by commas: each call
 starts with the next key; a key the provider limits (HTTP 429) rests a
 minute and one it refuses (401, 402, 403) an hour, while the call goes on

@@ -130,7 +130,7 @@ pub enum MemoryCommand {
         /// The log (its id, or a unique prefix of it).
         log: String,
         /// The model that proposes: anthropic:<model>, openai:<model>,
-        /// gemini:<model> or script:<file>.
+        /// gemini:<model>, local:<model> or script:<file>.
         #[arg(long)]
         model: String,
     },
@@ -147,7 +147,7 @@ pub enum MemoryCommand {
         /// The log (its id, or a unique prefix of it).
         log: String,
         /// The model that reads: anthropic:<model>, openai:<model>,
-        /// gemini:<model> or script:<file>.
+        /// gemini:<model>, local:<model> or script:<file>.
         #[arg(long)]
         model: String,
         /// Held-out tasks (a set of tasks, as `sion agent graph eval`

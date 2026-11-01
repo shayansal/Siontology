@@ -305,9 +305,12 @@ pub enum AgentCommand {
         /// The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model>
         /// (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>,
         /// chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent
-        /// chatgpt login`), gemini:<model> (GEMINI_API_KEY) or
-        /// script:<file>; several keys, comma-separated, are used in turn.
-        /// Repeat for fallbacks, in order.
+        /// chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model>
+        /// (a model server on this machine or its network,
+        /// SION_LOCAL_MODEL_URL) or script:<file>; several keys,
+        /// comma-separated, are used in turn, and keys may be kept on this
+        /// machine (sion agent credential add). Repeat for fallbacks, in
+        /// order.
         #[arg(long = "model", required = true)]
         models: Vec<String>,
         /// How much it may do without asking: L0 (nothing) to L6 (spend
@@ -538,6 +541,12 @@ pub enum AgentCommand {
     /// script as environment variables, and cut out of what it prints.
     #[command(subcommand)]
     Secret(crate::secrets::SecretCommand),
+    /// The credentials sion itself uses (models' keys and addresses,
+    /// speech services' keys), kept sealed on this machine so that sion and
+    /// its services find them without the environment; never given to
+    /// skills' scripts.
+    #[command(subcommand)]
+    Credential(crate::credentials::CredentialCommand),
     /// Your logins agents' browsers may fill (`--login`): each bound to an
     /// origin, kept encrypted on this machine, filled only into fields of
     /// that origin, and never shown to the agent.
@@ -774,6 +783,7 @@ pub enum SessionsCommand {
 pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<AgentCommand>> {
     Ok(match *command {
         AgentCommand::Secret(command) => crate::secrets::run(command),
+        AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
         AgentCommand::Chatgpt(command) => crate::chatgpt::run(command),
@@ -1163,6 +1173,7 @@ pub fn run(
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
         AgentCommand::Graph(command) => crate::graphs::command(shared, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
+        AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
         AgentCommand::Chatgpt(command) => crate::chatgpt::run(command),
@@ -1246,6 +1257,7 @@ pub fn run(
                 record,
                 play,
             };
+            crate::talk::note_last(&profile.name, &talk.conversation)?;
             let stdin = std::io::stdin();
             let mut input = stdin.lock();
             let mut out = std::io::stdout();

@@ -49,11 +49,20 @@ fn on_path(program: &str) -> Option<std::path::PathBuf> {
 }
 
 /// The variables of `names` that are set (their names only).
+/// The variables of `names` that are set here, those this machine keeps
+/// ([`crate::credentials`]) marked so.
 fn set(names: &[&str]) -> Vec<String> {
     names
         .iter()
-        .filter(|n| std::env::var(n).is_ok_and(|v| !v.is_empty()))
-        .map(|n| n.to_string())
+        .filter_map(|n| {
+            if std::env::var(n).is_ok_and(|v| !v.is_empty()) {
+                Some(n.to_string())
+            } else if crate::credentials::is_kept(n) {
+                Some(format!("{n} (kept)"))
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -134,7 +143,7 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
         match reached {
             Some(_) => format!("{node} answers"),
             None => format!(
-                "{node} does not answer: start one (`sion devnet`) or name another (--node, SION_NODE); only the ledger's commands need it"
+                "{node} does not answer: start one (`sion setup` makes a chain of your own; `sion devnet`) or name another (--node, SION_NODE); only the ledger's commands need it"
             ),
         },
     ));
@@ -209,14 +218,24 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
     ));
 
     // Models, speech and messengers: which credentials are set.
-    let models = set(&["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+    let models = set(&[
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ]);
+    let chatgpt = crate::chatgpt::load()
+        .map(|store| store.account.is_some())
+        .unwrap_or(false);
     out.push(finding(
-        !models.is_empty(),
+        !models.is_empty() || chatgpt,
         "models",
-        if models.is_empty() {
-            "no ANTHROPIC_API_KEY or OPENAI_API_KEY: agents run only scripted models".to_string()
-        } else {
-            format!("{} set", models.join(", "))
+        match (models.is_empty(), chatgpt) {
+            (true, false) => "no model's key set or kept, and no ChatGPT sign-in: agents run only scripted models (sion setup)".to_string(),
+            (true, true) => "signed in with ChatGPT (chatgpt:<model>)".to_string(),
+            (false, false) => format!("{} set", models.join(", ")),
+            (false, true) => format!("{} set; signed in with ChatGPT", models.join(", ")),
         },
     ));
     let speech = set(&[
@@ -352,7 +371,7 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
             true,
             "profiles",
             if profiles.is_empty() {
-                "none yet (`sion agent profile add`)".to_string()
+                "none yet (`sion setup` makes one; `sion agent profile add`)".to_string()
             } else {
                 profiles
                     .iter()

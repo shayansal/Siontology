@@ -9,7 +9,7 @@ class Sion < Formula
   desc "Siontology: a post-quantum neo-blockchain for agents"
   homepage "https://siontology.org"
   license any_of: ["Apache-2.0", "MIT"]
-  head "https://github.com/ColdAI-org/siontology.git", branch: "master"
+  head "https://github.com/ColdAI-org/siontology.git", branch: "main"
 
   depends_on "rust" => :build
 

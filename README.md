@@ -111,7 +111,17 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
 
 ## Quickstart
 
-Requires Rust 1.80 or later and a C compiler. `sh scripts/install.sh`
+An agent of your own, on your computer ([Run it on your
+computer](docs/book/src/getting-started/your-computer.md)):
+
+```bash
+sh scripts/install.sh   # or curl -fsSL https://raw.githubusercontent.com/ColdAI-org/siontology/main/scripts/install.sh | sh
+sion setup              # a chain of your own, your wallet and your agent's, a model, a profile
+sion                    # talk with it; sion -c continues the last conversation
+sion update             # a newer release, once its signature and SHA-256 are checked
+```
+
+Building requires Rust 1.80 or later and a C compiler. `sh scripts/install.sh`
 puts `sion` in `~/.local/bin` (see [Install from
 source](docs/book/src/getting-started/install.md) for the image, Homebrew
 and Nix), and `sion doctor` says what else the machine has.

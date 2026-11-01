@@ -4,6 +4,7 @@
 
 # Getting started
 
+- [Run it on your computer](getting-started/your-computer.md)
 - [Install from source](getting-started/install.md)
 - [Run the demos](getting-started/demos.md)
 - [Run a devnet](getting-started/devnet.md)

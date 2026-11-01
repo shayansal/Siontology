@@ -1,0 +1,8 @@
+# The release key: who signs SHA256SUMS in each release, as ssh-keygen -Y
+# reads allowed signers. sion is built with this file, and `sion update`
+# installs only a release whose SHA256SUMS this key signed. It holds no key
+# yet, so no build updates itself: make one (scripts/release/README.md),
+# put its public half on the line below, and keep its private half in the
+# repository's secret SION_RELEASE_SSH_KEY.
+#
+# releases@siontology.org namespaces="file" ssh-ed25519 AAAA...

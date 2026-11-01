@@ -448,7 +448,8 @@ impl Validator {
             setup.auth.clone(),
             verifier.clone(),
             shared.config.core.clone(),
-        );
+        )
+        .pace_when_idle(shared.config.idle_round_ms);
         let mut lanes: BTreeMap<ShardId, LaneValidator<NodeAuthenticator>> = committees
             .lanes
             .iter()
@@ -801,6 +802,20 @@ impl Validator {
                 }
                 Action::Commit(commit) => {
                     self.anchors += 1;
+                    // Ordering anything but beacon reveals keeps an idle
+                    // chain at full pace until the Pulse holding it closes.
+                    if self.shared.config.idle_round_ms > 0
+                        && commit.items.iter().any(|item| {
+                            !matches!(
+                                PayloadItem::from_bytes(item),
+                                Some(PayloadItem::Reveal { .. })
+                            )
+                        })
+                    {
+                        let current = self.committees.session;
+                        let more = self.core.keep_pace(linger(&self.shared.config));
+                        actions.extend(more.into_iter().map(|a| (current, a)));
+                    }
                     for closed in self.builder.on_commit(&commit) {
                         let next = self.execute(closed);
                         let current = self.committees.session;
@@ -1700,7 +1715,8 @@ impl Validator {
                     self.auth.clone(),
                     self.verifier.clone(),
                     self.shared.config.core.clone(),
-                ),
+                )
+                .pace_when_idle(self.shared.config.idle_round_ms),
             );
             self.committees = next.clone();
             actions.extend(self.core.handle(sion_consensus::Event::Start));
@@ -2323,6 +2339,14 @@ fn store_boundary(dir: &std::path::Path, proof: &EpochProof) -> std::io::Result<
     let temp = dir.join(format!("epoch-{:010}.tmp", proof.epoch));
     std::fs::write(&temp, sion_core::encode::encode(proof))?;
     std::fs::rename(temp, path)
+}
+
+/// Rounds a validator goes on at full pace after ordering anything but
+/// beacon reveals, when it paces an idle chain: enough for the Pulse that
+/// holds it to close (the Pulse's remaining rounds, and the anchor commit
+/// after its last).
+fn linger(config: &DevnetConfig) -> u64 {
+    config.rounds_per_pulse.saturating_add(4)
 }
 
 #[cfg(test)]

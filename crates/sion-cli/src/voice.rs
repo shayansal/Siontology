@@ -183,7 +183,7 @@ fn client() -> Result<sion_http::Client, String> {
 }
 
 fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    crate::credentials::var(name)
 }
 
 /// A command line split on whitespace.

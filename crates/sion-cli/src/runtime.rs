@@ -479,30 +479,41 @@ pub fn ledger_tools(acting: &Acting) -> Vec<Box<dyn Tool>> {
 /// `GEMINI_BASE_URL`), `openai-responses:<model>` (OpenAI's Responses API,
 /// key in `OPENAI_API_KEY`), `chatgpt:<model>` (the Responses API on the
 /// ChatGPT plan of whoever signed in, [`crate::chatgpt`]), or
-/// `script:<file>` (a scripted model, for demos and
+/// `local:<model>` (a model server on this machine or its network that
+/// speaks OpenAI's API, at `SION_LOCAL_MODEL_URL`, by default Ollama's
+/// `http://127.0.0.1:11434/v1`; key in `SION_LOCAL_MODEL_KEY` if it needs
+/// one), or `script:<file>` (a scripted model, for demos and
 /// tests), whose first `skip` steps are dropped. A key variable may hold
 /// several keys, comma-separated, used in turn
-/// ([`sion_agent::providers::Keys`]).
+/// ([`sion_agent::providers::Keys`]). Each variable is the environment's,
+/// or else the one this machine keeps ([`crate::credentials`]). A base URL
+/// on this machine (a model server such as Ollama's,
+/// `http://127.0.0.1:11434/v1`) is reached; other local addresses are not.
 pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
     let (kind, rest) = spec.split_once(':').ok_or_else(|| {
         CliError::Usage(format!(
-            "a model is anthropic:<model>, openai:<model>, openai-responses:<model>, chatgpt:<model>, gemini:<model> or script:<file>, not {spec}"
+            "a model is anthropic:<model>, openai:<model>, openai-responses:<model>, chatgpt:<model>, gemini:<model>, local:<model> or script:<file>, not {spec}"
         ))
     })?;
-    let http = || {
+    // A model server on this machine is reached; no other local address.
+    let http = |base: Option<&str>| {
         sion_http::Client::new(sion_http::Options {
             timeout: std::time::Duration::from_secs(300),
+            allow_private: base.is_some_and(sion_agent::oauth::is_loopback),
             ..sion_http::Options::default()
         })
         .map_err(|e| CliError::Usage(e.to_string()))
     };
-    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let env = crate::credentials::var;
     match kind {
         "anthropic" => {
-            let key = env("ANTHROPIC_API_KEY")
-                .ok_or_else(|| CliError::Usage("set ANTHROPIC_API_KEY".into()))?;
-            let mut provider = sion_agent::providers::Anthropic::new(http()?, rest, &key);
-            if let Some(base) = env("ANTHROPIC_BASE_URL") {
+            let key = env("ANTHROPIC_API_KEY").ok_or_else(|| {
+                CliError::Usage("set ANTHROPIC_API_KEY (or keep it: sion setup)".into())
+            })?;
+            let base = env("ANTHROPIC_BASE_URL");
+            let mut provider =
+                sion_agent::providers::Anthropic::new(http(base.as_deref())?, rest, &key);
+            if let Some(base) = base {
                 provider.base = base;
             }
             Ok(Box::new(provider))
@@ -511,21 +522,42 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             let base = env("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into());
             let key = env("OPENAI_API_KEY");
             Ok(Box::new(sion_agent::providers::OpenAiCompatible::new(
-                http()?,
+                http(Some(&base))?,
+                &base,
+                rest,
+                key.as_deref(),
+            )))
+        }
+        "local" => {
+            // The operator's own server: on this machine or its network.
+            let base = env("SION_LOCAL_MODEL_URL")
+                .unwrap_or_else(|| crate::setup::LOCAL_MODEL_URL.to_string());
+            let client = sion_http::Client::new(sion_http::Options {
+                timeout: std::time::Duration::from_secs(600),
+                allow_private: true,
+                proxy_from_env: false,
+                ..sion_http::Options::default()
+            })
+            .map_err(|e| CliError::Usage(e.to_string()))?;
+            let key = env("SION_LOCAL_MODEL_KEY");
+            Ok(Box::new(sion_agent::providers::OpenAiCompatible::new(
+                client,
                 &base,
                 rest,
                 key.as_deref(),
             )))
         }
         "openai-responses" => {
-            let key = env("OPENAI_API_KEY")
-                .ok_or_else(|| CliError::Usage("set OPENAI_API_KEY".into()))?;
+            let key = env("OPENAI_API_KEY").ok_or_else(|| {
+                CliError::Usage("set OPENAI_API_KEY (or keep it: sion setup)".into())
+            })?;
+            let base = env("OPENAI_BASE_URL");
             let mut provider = sion_agent::providers::OpenAiResponses::new(
-                http()?,
+                http(base.as_deref())?,
                 rest,
                 sion_agent::providers::Bearer::Keys(sion_agent::providers::Keys::parse(&key)),
             );
-            if let Some(base) = env("OPENAI_BASE_URL") {
+            if let Some(base) = base {
                 provider.base = base;
             }
             Ok(Box::new(provider))
@@ -548,9 +580,13 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
         "gemini" => {
             let key = env("GEMINI_API_KEY")
                 .or_else(|| env("GOOGLE_API_KEY"))
-                .ok_or_else(|| CliError::Usage("set GEMINI_API_KEY".into()))?;
-            let mut provider = sion_agent::providers::Gemini::new(http()?, rest, &key);
-            if let Some(base) = env("GEMINI_BASE_URL") {
+                .ok_or_else(|| {
+                    CliError::Usage("set GEMINI_API_KEY (or keep it: sion setup)".into())
+                })?;
+            let base = env("GEMINI_BASE_URL");
+            let mut provider =
+                sion_agent::providers::Gemini::new(http(base.as_deref())?, rest, &key);
+            if let Some(base) = base {
                 provider.base = base;
             }
             Ok(Box::new(provider))
@@ -562,7 +598,7 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             Ok(Box::new(scripted.skip(skip)))
         }
         other => Err(CliError::Usage(format!(
-            "unknown model provider {other}: use anthropic, openai, openai-responses, chatgpt, gemini or script"
+            "unknown model provider {other}: use anthropic, openai, openai-responses, chatgpt, gemini, local or script"
         ))),
     }
 }

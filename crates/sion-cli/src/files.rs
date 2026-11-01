@@ -413,7 +413,7 @@ impl ImageMaker {
     /// `OPENAI_API_KEY`), its pictures put in the workspace at `root`.
     pub fn new(spec: &str, root: &Path) -> Result<ImageMaker, CliError> {
         let (_, model) = image_model(spec)?;
-        let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        let env = crate::credentials::var;
         let base = env("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into());
         let client = sion_http::Client::new(sion_http::Options {
             timeout: std::time::Duration::from_secs(300),
