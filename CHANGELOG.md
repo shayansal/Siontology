@@ -10,6 +10,36 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### What a model is sent, and checked before it is done
+
+- **Prompt caches counted.** The input tokens a provider read from its
+  cache or wrote to it are read from every provider (Anthropic, OpenAI's
+  two APIs, Gemini) and count as the input they are, in a run's budget
+  and in `/usage` (Anthropic's had gone uncounted); `/usage` and traces
+  tell them apart (`gen_ai.usage.cache_read.input_tokens`,
+  `gen_ai.usage.cache_write.input_tokens`).
+- **A system prompt that stays the same.** A session's system prompt
+  keeps the agent's core memory and skills as they were when the session
+  began, or at the first run after its conversation was compacted, so
+  that a provider's cache of it holds; what a chat asks (`/system`) comes
+  after them.
+- **Old results cut before a summary.** Past 120,000 characters, the
+  results longer than 400 characters of the calls before the last 12
+  messages become a line each, the calls kept; only if that is not
+  enough, or past 36 messages, is the middle summarised.
+- **What lasts survives compaction.** A summary begins with what the
+  session did that lasts, kept apart from the conversation: its last 40
+  calls that changed something or reached outside, earlier ones counted
+  by tool.
+- **`--verify <command>`** (on `sion agent run`, with `--shell`): each
+  time the agent says it is done, the command runs in its sandbox, in its
+  workspace, and exit status 0 passes. A failed check is shown to the
+  agent, which goes on; after three (`verify_attempts`) the run ends
+  unverified with its best answer (by the `score: <0 to 1>` the check
+  printed last, if any). With a check, the agent is given
+  `cannot_complete`, which ends the run as not done, saying why
+  (`agent:verifier`).
+
 ### Content from outside, read in quarantine
 
 - **`--quarantine`** (on `sion agent run` and on profiles): what tools

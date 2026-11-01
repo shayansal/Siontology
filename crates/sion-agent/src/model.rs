@@ -287,10 +287,42 @@ pub enum Stop {
 /// Tokens used by one call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-    /// Input tokens.
+    /// Input tokens, those read from or written to the provider's cache
+    /// among them.
     pub input: u64,
     /// Output tokens.
     pub output: u64,
+    /// Of the input, the tokens the provider read from its prompt cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_read: u64,
+    /// Of the input, the tokens the provider wrote to its prompt cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl Usage {
+    /// Adds what `other` used.
+    pub fn add(&mut self, other: &Usage) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+    }
+
+    /// The tokens used in all: input and output.
+    pub fn total(&self) -> u64 {
+        self.input + self.output
+    }
+
+    /// The input tokens read from the provider's cache and written to it,
+    /// if it reported either.
+    pub fn cached(&self) -> Option<(u64, u64)> {
+        (self.cache_read > 0 || self.cache_write > 0).then_some((self.cache_read, self.cache_write))
+    }
 }
 
 /// A model's answer.

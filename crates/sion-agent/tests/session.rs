@@ -59,6 +59,7 @@ fn runtime<'a>(models: Vec<&'a dyn Model>, tools: &'a Toolbox, autonomy: Autonom
         watch: None,
         steer: None,
         checkpoint: None,
+        verify: None,
     }
 }
 
@@ -1483,6 +1484,9 @@ fn used(content: Vec<Block>, stop: sion_agent::Stop) -> sion_agent::Response {
         usage: sion_agent::model::Usage {
             input: 1_800,
             output: 200,
+            // Of the input, what the provider's cache gave.
+            cache_read: 1_500,
+            cache_write: 0,
         },
         model: "m".into(),
     }
@@ -1550,6 +1554,9 @@ fn a_run_with_a_token_budget_ends_with_a_last_answer_before_going_over() {
         last.max_tokens
     );
     assert_eq!(state.usage.input + state.usage.output, 6_000);
+    // What the cache gave is input all the same: counted, and told apart.
+    assert_eq!(state.usage.total(), 6_000);
+    assert_eq!(state.usage.cache_read, 3 * 1_500);
     every_result_answers_a_call(&state);
     assert!(!state
         .messages
@@ -1611,6 +1618,7 @@ impl sion_agent::Tool for Delegates {
                 spent: Some(sion_agent::model::Usage {
                     input: 1_000,
                     output: 500,
+                    ..Default::default()
                 }),
                 ..Outcome::ok("the helper did it")
             })
@@ -1899,4 +1907,244 @@ fn a_call_carrying_a_value_read_in_quarantine_is_approved_on_its_own() {
     );
     assert_eq!(fetches.load(Ordering::SeqCst), 2);
     every_result_answers_a_call(&state);
+}
+
+#[test]
+fn old_results_are_cut_before_a_long_conversation_is_summarised() {
+    let (look, _) = counted("look", Effect::Read, |input| {
+        Outcome::ok(format!("{}{}", input["page"], "x".repeat(1_000)))
+    });
+    let mut tools = Toolbox::new();
+    tools.add(look);
+    let mut model = Scripted::new("m");
+    for page in 0..6 {
+        model = model.calls("look", json!({ "page": page }));
+    }
+    let model = model.says("Read them all.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.compact_chars = 4_000;
+    rt.limits.keep_last = 4;
+    let mut state = State::start("s-mask", "Read six pages", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "Read them all.".into()
+        }
+    );
+    // Cut, not summarised: every call is still there, the old results
+    // each replaced by a line, the last ones whole.
+    assert_eq!(state.compactions, 2);
+    let calls: usize = state.messages.iter().map(|m| m.tool_uses().count()).sum();
+    assert_eq!(calls, 6);
+    let results: Vec<&str> = state
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    for cut in &results[..4] {
+        assert!(cut.starts_with(sion_agent::session::MASKED), "{cut}");
+        assert!(cut.contains("the result of look, 1001 characters"), "{cut}");
+    }
+    assert!(results[4..].iter().all(|whole| whole.len() == 1_001));
+    assert!(!state
+        .messages
+        .iter()
+        .any(|m| m.text().contains("Summary of")));
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn a_summary_begins_with_what_the_session_did_that_lasts() {
+    let (write, _) = counted("write", Effect::Write, |_| Outcome::ok("written"));
+    let (look, _) = counted("look", Effect::Read, |input| {
+        Outcome::ok(format!("page {}", input["i"]))
+    });
+    let mut tools = Toolbox::new();
+    tools.add(write);
+    tools.add(look);
+    let mut model = Scripted::new("m").calls("write", json!({"path": "notes/a.md"}));
+    for i in 0..8 {
+        model = model.calls("look", json!({ "i": i }));
+    }
+    let model = model.says("Done.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.compact_messages = 8;
+    rt.limits.keep_last = 3;
+    let mut state = State::start("s-lasting", "Write, then look around", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert!(state.compactions >= 2, "{}", state.compactions);
+    // However many times it was compacted, the write is still named; the
+    // reads, which changed nothing, are not.
+    let summary = state.messages[1].text();
+    assert!(
+        summary.starts_with("[What this session has done that lasts"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains(r#"- write {"path":"notes/a.md"}"#),
+        "{summary}"
+    );
+    assert!(!summary.contains("- look"), "{summary}");
+    every_result_answers_a_call(&state);
+}
+
+/// A check that gives its verdicts in turn, and keeps what it was asked to
+/// check.
+struct Checks {
+    verdicts: std::sync::Mutex<std::collections::VecDeque<sion_agent::verify::Verdict>>,
+    checked: std::sync::Mutex<Vec<String>>,
+}
+
+impl Checks {
+    fn new(verdicts: &[(bool, Option<f64>, &str)]) -> Checks {
+        Checks {
+            verdicts: std::sync::Mutex::new(
+                verdicts
+                    .iter()
+                    .map(|(passed, score, report)| sion_agent::verify::Verdict {
+                        passed: *passed,
+                        score: *score,
+                        report: report.to_string(),
+                    })
+                    .collect(),
+            ),
+            checked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn check(&self, _: &State, answer: &str) -> sion_agent::verify::Verdict {
+        self.checked.lock().unwrap().push(answer.to_string());
+        self.verdicts
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("a verdict for each check")
+    }
+}
+
+#[test]
+fn an_answer_is_checked_and_a_failed_check_shown_to_the_model() {
+    use sion_agent::verify::CANNOT_COMPLETE;
+    let (write, _) = counted("write", Effect::Write, |_| Outcome::ok("written"));
+    let mut tools = Toolbox::new();
+    tools.add(write);
+    let model = Scripted::new("m")
+        .calls(
+            "write",
+            json!({"path": "add.sh", "content": "echo $(($1 - $2))"}),
+        )
+        .says("Written.")
+        .calls(
+            "write",
+            json!({"path": "add.sh", "content": "echo $(($1 + $2))"}),
+        )
+        .says("Fixed.");
+    let checks = Checks::new(&[
+        (false, None, "exit status 1\nadd.sh 2 3 printed -1, not 5"),
+        (true, None, "exit status 0"),
+    ]);
+    let check = |s: &State, answer: &str| checks.check(s, answer);
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.verify = Some(&check);
+    let mut state = State::start("s-check", "Write add.sh", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "Fixed.".into()
+        }
+    );
+    assert_eq!(*checks.checked.lock().unwrap(), ["Written.", "Fixed."]);
+    assert_eq!(state.attempts.checked, 2);
+    // The model could give up, and was shown what the check reported.
+    let requests = model.requests();
+    assert!(requests[0].tools.iter().any(|t| t.name == CANNOT_COMPLETE));
+    let told = requests[2].messages.last().unwrap().text();
+    assert!(told.starts_with(sion_agent::verify::FAILED), "{told}");
+    assert!(told.contains("add.sh 2 3 printed -1, not 5"), "{told}");
+    assert!(told.contains("attempt 1 of 3"), "{told}");
+    // The checks are in the trace.
+    let checked: Vec<&str> = state
+        .steps
+        .iter()
+        .filter(|s| s.name == sion_agent::verify::CHECK)
+        .filter_map(|s| s.outcome.as_deref())
+        .collect();
+    assert_eq!(checked, ["error", "ok"]);
+    every_result_answers_a_call(&state);
+    // What the person says next is checked afresh.
+    state.tell("Now make it subtract.", &rt.limits);
+    assert!(state.attempts.is_empty());
+}
+
+#[test]
+fn after_the_last_failed_check_the_run_ends_with_its_best_answer() {
+    let tools = Toolbox::new();
+    let model = Scripted::new("m")
+        .says("First.")
+        .says("Second.")
+        .says("Third.");
+    let checks = Checks::new(&[
+        (false, Some(0.5), "10 of 20 failed\nscore: 0.5"),
+        (false, Some(0.9), "2 of 20 failed\nscore: 0.9"),
+        (false, Some(0.4), "12 of 20 failed\nscore: 0.4"),
+    ]);
+    let check = |s: &State, answer: &str| checks.check(s, answer);
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.verify = Some(&check);
+    let mut state = State::start("s-unverified", "Pass the tests", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Unverified {
+            text: "Second.".into(),
+            attempt: 2,
+            why: "score: 0.4".into()
+        }
+    );
+    assert_eq!(model.requests().len(), 3);
+}
+
+#[test]
+fn with_a_check_the_model_may_say_it_cannot_complete_the_task() {
+    use sion_agent::verify::CANNOT_COMPLETE;
+    let (write, writes) = counted("write", Effect::Write, |_| Outcome::ok("written"));
+    let mut tools = Toolbox::new();
+    tools.add(write);
+    let model = Scripted::new("m").calls_all(vec![
+        (
+            CANNOT_COMPLETE.to_string(),
+            json!({"why": "the tests need a database I cannot reach"}),
+        ),
+        ("write".to_string(), json!({"path": "a"})),
+    ]);
+    let checks = Checks::new(&[]);
+    let check = |s: &State, answer: &str| checks.check(s, answer);
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.verify = Some(&check);
+    let mut state = State::start("s-cannot", "Make the tests pass", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::CannotComplete {
+            why: "the tests need a database I cannot reach".into()
+        }
+    );
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        0,
+        "the turn's later calls wait"
+    );
+    assert!(checks.checked.lock().unwrap().is_empty());
+    every_result_answers_a_call(&state);
+    // Without a check, the model is not given the tool.
+    let other = Scripted::new("o").says("Done.");
+    let plain = runtime(vec![&other], &tools, Autonomy::L3);
+    let mut state = State::start("s-plain", "Hello", &plain.limits);
+    assert!(matches!(plain.run(&mut state), Ended::Done { .. }));
+    assert!(other.requests()[0]
+        .tools
+        .iter()
+        .all(|t| t.name != CANNOT_COMPLETE));
 }

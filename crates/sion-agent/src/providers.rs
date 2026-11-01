@@ -407,10 +407,7 @@ pub fn anthropic_response(answer: &Value) -> Result<Response, ModelError> {
     Ok(Response {
         content,
         stop: anthropic_stop(answer["stop_reason"].as_str()),
-        usage: Usage {
-            input: answer["usage"]["input_tokens"].as_u64().unwrap_or(0),
-            output: answer["usage"]["output_tokens"].as_u64().unwrap_or(0),
-        },
+        usage: anthropic_usage(&answer["usage"]),
         model: answer["model"].as_str().unwrap_or_default().to_string(),
     })
 }
@@ -464,8 +461,7 @@ pub fn anthropic_stream<R: Read>(
             "message_start" => {
                 let message = &data["message"];
                 model = message["model"].as_str().unwrap_or_default().to_string();
-                usage.input = message["usage"]["input_tokens"].as_u64().unwrap_or(0);
-                usage.output = message["usage"]["output_tokens"].as_u64().unwrap_or(0);
+                usage = anthropic_usage(&message["usage"]);
             }
             "content_block_start" => {
                 let block = &data["content_block"];
@@ -518,11 +514,20 @@ pub fn anthropic_stream<R: Read>(
                 if let Some(reason) = data["delta"]["stop_reason"].as_str() {
                     stop = Some(reason.to_string());
                 }
-                if let Some(output) = data["usage"]["output_tokens"].as_u64() {
+                let more = &data["usage"];
+                if let Some(output) = more["output_tokens"].as_u64() {
                     usage.output = output;
                 }
-                if let Some(input) = data["usage"]["input_tokens"].as_u64() {
-                    usage.input = input;
+                if let Some(input) = more["input_tokens"].as_u64() {
+                    let read = more["cache_read_input_tokens"]
+                        .as_u64()
+                        .unwrap_or(usage.cache_read);
+                    let write = more["cache_creation_input_tokens"]
+                        .as_u64()
+                        .unwrap_or(usage.cache_write);
+                    usage.input = input + read + write;
+                    usage.cache_read = read;
+                    usage.cache_write = write;
                 }
             }
             "message_stop" => {
@@ -796,10 +801,7 @@ pub fn openai_response(answer: &Value) -> Result<Response, ModelError> {
     Ok(Response {
         content,
         stop: openai_stop(choice["finish_reason"].as_str()),
-        usage: Usage {
-            input: answer["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
-            output: answer["usage"]["completion_tokens"].as_u64().unwrap_or(0),
-        },
+        usage: openai_usage(&answer["usage"]),
         model: answer["model"].as_str().unwrap_or_default().to_string(),
     })
 }
@@ -855,8 +857,7 @@ pub fn openai_stream<R: Read>(
             model = chunk["model"].as_str().unwrap_or_default().to_string();
         }
         if chunk["usage"].is_object() {
-            usage.input = chunk["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
-            usage.output = chunk["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+            usage = openai_usage(&chunk["usage"]);
         }
         for choice in chunk["choices"].as_array().into_iter().flatten() {
             if choice["index"].as_u64().unwrap_or(0) != 0 {
@@ -1184,9 +1185,40 @@ fn gemini_call_id(call: &Value, at: usize) -> String {
 fn gemini_usage(meta: &Value) -> Usage {
     let count = |name: &str| meta[name].as_u64().unwrap_or(0);
     Usage {
+        // The prompt's tokens, those of the cached content among them.
         input: count("promptTokenCount"),
         // Its thinking is paid for as output.
         output: count("candidatesTokenCount") + count("thoughtsTokenCount"),
+        cache_read: count("cachedContentTokenCount"),
+        cache_write: 0,
+    }
+}
+
+/// What Anthropic's `usage` counts: its `input_tokens` leave out the
+/// tokens read from the cache and those written to it, which are input
+/// all the same.
+fn anthropic_usage(usage: &Value) -> Usage {
+    let count = |name: &str| usage[name].as_u64().unwrap_or(0);
+    let cache_read = count("cache_read_input_tokens");
+    let cache_write = count("cache_creation_input_tokens");
+    Usage {
+        input: count("input_tokens") + cache_read + cache_write,
+        output: count("output_tokens"),
+        cache_read,
+        cache_write,
+    }
+}
+
+/// What a Chat Completions `usage` counts: the prompt's tokens, those read
+/// from the cache among them.
+fn openai_usage(usage: &Value) -> Usage {
+    Usage {
+        input: usage["prompt_tokens"].as_u64().unwrap_or(0),
+        output: usage["completion_tokens"].as_u64().unwrap_or(0),
+        cache_read: usage["prompt_tokens_details"]["cached_tokens"]
+            .as_u64()
+            .unwrap_or(0),
+        cache_write: 0,
     }
 }
 
@@ -1644,8 +1676,13 @@ pub fn responses_response(answer: &Value) -> Result<Response, ModelError> {
         content,
         stop,
         usage: Usage {
+            // Its input's tokens, those read from the cache among them.
             input: answer["usage"]["input_tokens"].as_u64().unwrap_or(0),
             output: answer["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            cache_read: answer["usage"]["input_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .unwrap_or(0),
+            cache_write: 0,
         },
         model: answer["model"].as_str().unwrap_or_default().to_string(),
     })

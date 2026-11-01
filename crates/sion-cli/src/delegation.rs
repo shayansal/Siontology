@@ -545,6 +545,13 @@ fn work(
             "its token budget ran out; it said: {}",
             text.trim_end_matches('.')
         ),
+        Some(sion_agent::Ended::Unverified { text, .. }) => format!(
+            "its answer did not pass its check; its best: {}",
+            text.trim_end_matches('.')
+        ),
+        Some(sion_agent::Ended::CannotComplete { why }) => {
+            format!("it cannot complete the task: {why}")
+        }
         Some(other) => format!("ended: {other:?}"),
         None => "did not run".into(),
     };
@@ -576,10 +583,8 @@ fn work(
         }
     }
     let tainted = saved.state.standing.tainted_until.is_some();
-    let spent = sion_agent::model::Usage {
-        input: saved.state.usage.input + saved.state.delegated.input,
-        output: saved.state.usage.output + saved.state.delegated.output,
-    };
+    let mut spent = saved.state.usage;
+    spent.add(&saved.state.delegated);
     Ok(Report {
         text: format!(
             "subagent {wallet} (agent {}, budget {} USD) worked in session {}: {ended}. Its calls: {}.",

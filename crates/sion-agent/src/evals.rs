@@ -419,6 +419,7 @@ pub fn run_case(
         watch: None,
         steer: None,
         checkpoint: None,
+        verify: None,
     };
     let mut state = State::start(&format!("eval-{}", case.id), &case.task, limits);
     let ended = runtime.run(&mut state);

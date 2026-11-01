@@ -15,6 +15,7 @@ use crate::model::{
 use crate::policy::{Decision, Policy, Standing};
 use crate::quarantine::{self, Held, QUARANTINE_READ};
 use crate::tools::{Dedup, Effect, Outcome, Toolbox, TOOLS_CALL, TOOLS_SEARCH};
+use crate::verify::{self, Attempts, Verdict, CANNOT_COMPLETE};
 
 /// The limits of a session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,9 +54,17 @@ pub struct Limits {
     /// the model says what it did and what remains.
     #[serde(default = "default_reserve_tokens")]
     pub reserve_tokens: u64,
+    /// Checks of the model's answers that may fail before a run with a
+    /// verifier ends unverified ([`Runtime::verify`], [`Ended::Unverified`]).
+    #[serde(default = "default_verify_attempts")]
+    pub verify_attempts: u32,
 }
 
 fn default_stuck_after() -> u32 {
+    3
+}
+
+fn default_verify_attempts() -> u32 {
     3
 }
 
@@ -78,6 +87,7 @@ impl Default for Limits {
             stuck_after: default_stuck_after(),
             budget_tokens: None,
             reserve_tokens: default_reserve_tokens(),
+            verify_attempts: default_verify_attempts(),
         }
     }
 }
@@ -125,6 +135,23 @@ pub enum Ended {
         /// What the model said in its last answer, within the reserve,
         /// if there was room for one.
         text: String,
+    },
+    /// The checks of the model's answers failed, as many as
+    /// [`Limits::verify_attempts`] allows (or the turns ran out after one):
+    /// the run ends with the best answer it gave, not done.
+    Unverified {
+        /// The best answer: the one whose check scored highest, the later
+        /// of two that scored the same.
+        text: String,
+        /// Which answer it was, from 1.
+        attempt: u32,
+        /// The last line of what the last check reported.
+        why: String,
+    },
+    /// The model said that it cannot complete the task ([`CANNOT_COMPLETE`]).
+    CannotComplete {
+        /// Why.
+        why: String,
     },
 }
 
@@ -239,6 +266,19 @@ pub struct State {
     /// or a payment whose input carries one waits for a person.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub outside_values: BTreeSet<String>,
+    /// What the session did that lasts, for the summaries of a long
+    /// conversation ([`lasting`]): its calls that changed something or
+    /// reached outside and did not fail, oldest first, the last
+    /// [`LASTING_KEPT`] of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done: Vec<Done>,
+    /// How many calls of each tool were let go from [`State::done`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub done_before: BTreeMap<String, u64>,
+    /// The checks of the model's answers since the person last spoke
+    /// ([`Runtime::verify`]).
+    #[serde(default, skip_serializing_if = "Attempts::is_empty")]
+    pub attempts: Attempts,
 }
 
 /// The most recent calls a session keeps to tell when it goes round in
@@ -267,6 +307,10 @@ pub struct Step {
     /// A model's tokens: in, and out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<(u64, u64)>,
+    /// Of a model's input, the tokens read from its provider's cache and
+    /// those written to it, if it reported any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached: Option<(u64, u64)>,
     /// A call's key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
@@ -373,6 +417,8 @@ impl State {
                 .turns
                 .min(limits.max_turns.saturating_sub(self.turns_taken)),
         );
+        // What they said now is checked afresh.
+        self.attempts = Attempts::default();
     }
 }
 
@@ -398,6 +444,8 @@ pub enum Seen {
     Running(String),
     /// A call waits for a person's approval.
     Waiting(String),
+    /// The model's answer is being checked ([`Runtime::verify`]).
+    Checking,
 }
 
 /// What the runtime tells a model whose answer was cut off at its token
@@ -434,7 +482,16 @@ pub struct Runtime<'a> {
     /// the state before a journaled call runs, after each note it takes and
     /// after it ends, so that a crash loses no record of what was done.
     pub checkpoint: Option<&'a (dyn Fn(&State) + Sync)>,
+    /// What checks that the task is done, if anything: given the session
+    /// and the model's answer each time the model says it has finished
+    /// ([`crate::verify`]). With it, the model may also say that it cannot
+    /// complete the task ([`CANNOT_COMPLETE`]).
+    pub verify: Option<Check<'a>>,
 }
+
+/// What checks a model's answer ([`Runtime::verify`]): given the session and
+/// the answer, it says whether the task is done.
+pub type Check<'a> = &'a (dyn Fn(&State, &str) -> Verdict + Sync);
 
 impl std::fmt::Debug for Runtime<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -538,9 +595,11 @@ impl RunStart {
 
     /// Tokens used since, the subagents' included.
     fn spent(&self, state: &State) -> u64 {
-        let total = |u: &Usage| u.input + u.output;
-        total(&state.usage).saturating_sub(total(&self.usage))
-            + total(&state.delegated).saturating_sub(total(&self.delegated))
+        state.usage.total().saturating_sub(self.usage.total())
+            + state
+                .delegated
+                .total()
+                .saturating_sub(self.delegated.total())
     }
 }
 
@@ -664,6 +723,7 @@ impl Runtime<'_> {
             start_ms,
             ms: wall_ms().saturating_sub(start_ms),
             tokens: None,
+            cached: None,
             key: key.map(str::to_string),
             effect,
             outcome: Some(outcome.to_string()),
@@ -846,6 +906,7 @@ impl Runtime<'_> {
                     start_ms,
                     ms: wall_ms().saturating_sub(start_ms),
                     tokens: Some((response.usage.input, response.usage.output)),
+                    cached: response.usage.cached(),
                     key: None,
                     effect: None,
                     outcome: None,
@@ -854,8 +915,7 @@ impl Runtime<'_> {
             );
             state.turns_left -= 1;
             state.turns_taken += 1;
-            state.usage.input += response.usage.input;
-            state.usage.output += response.usage.output;
+            state.usage.add(&response.usage);
             // Cut off by a stop while it wrote: what it wrote is kept, and
             // the run stops there.
             if response.stop == Stop::Cut {
@@ -890,7 +950,10 @@ impl Runtime<'_> {
                         state.messages.push(Message::user(CONTINUE));
                         continue;
                     }
-                    _ => return Ended::Done { text },
+                    _ => match self.checked(state, &text) {
+                        Some(ended) => return ended,
+                        None => continue,
+                    },
                 }
             }
             if let Some(ended) = self.run_calls(state, &calls, &start) {
@@ -913,6 +976,36 @@ impl Runtime<'_> {
         let mut index = 0;
         while index < calls.len() {
             let (use_id, name, input) = &calls[index];
+            // The model says it cannot complete the task: the run ends
+            // there, not done, and the turn's later calls are not made.
+            if self.verify.is_some() && name == CANNOT_COMPLETE {
+                let why = input["why"].as_str().unwrap_or_default().trim();
+                let why = if why.is_empty() {
+                    "it gave no reason"
+                } else {
+                    why
+                };
+                results.push(result_block(
+                    use_id,
+                    &Outcome::ok("Noted: the run ends here, as not done."),
+                    &mut state.images,
+                ));
+                for (later, _, _) in &calls[index + 1..] {
+                    results.push(result_block(
+                        later,
+                        &Outcome::error("not run: the task was given up in this turn"),
+                        &mut state.images,
+                    ));
+                }
+                state.messages.push(Message {
+                    role: Role::User,
+                    content: results,
+                });
+                keep_last_images(state);
+                return Some(Ended::CannotComplete {
+                    why: why.to_string(),
+                });
+            }
             self.reconcile(state, name, input);
             // The calls of a batching tool that follow this one in the turn,
             // if they too may run, run with it: each passed the policy by
@@ -1089,12 +1182,61 @@ impl Runtime<'_> {
         })
     }
 
+    /// The model said it is done: without a verifier, the run is done.
+    /// With one, its answer is checked: passed, the run is done; failed,
+    /// the model is told what the check reported and goes on (`None`),
+    /// unless that was the last check allowed, or the turns are out, and
+    /// the run ends unverified with the best answer.
+    fn checked(&self, state: &mut State, text: &str) -> Option<Ended> {
+        let Some(check) = self.verify else {
+            return Some(Ended::Done {
+                text: text.to_string(),
+            });
+        };
+        self.seen(&Seen::Checking);
+        let start_ms = wall_ms();
+        let verdict = check(state, text);
+        let step = self.call_step(
+            state,
+            verify::CHECK,
+            None,
+            None,
+            if verdict.passed { "ok" } else { "error" },
+            start_ms,
+        );
+        self.step(state, step);
+        state.attempts.record(text, verdict.clone());
+        if verdict.passed {
+            return Some(Ended::Done {
+                text: text.to_string(),
+            });
+        }
+        let checked = state.attempts.checked;
+        if checked >= self.limits.verify_attempts || state.turns_left == 0 {
+            let best = state.attempts.best.clone()?;
+            return Some(Ended::Unverified {
+                text: best.text,
+                attempt: best.number,
+                why: verify::last_line(&verdict.report),
+            });
+        }
+        state.messages.push(Message::user(verify::failed(
+            &verdict,
+            checked,
+            self.limits.verify_attempts,
+        )));
+        None
+    }
+
     /// The tools the model is shown: the toolbox's, and in quarantine the
     /// reader.
     fn shown(&self) -> Vec<ToolSpec> {
         let mut shown = self.tools.shown();
         if self.policy.quarantine {
             shown.push(quarantine::spec());
+        }
+        if self.verify.is_some() {
+            shown.push(verify::spec());
         }
         shown
     }
@@ -1160,8 +1302,7 @@ impl Runtime<'_> {
             Ok(response) => response,
             Err(error) => return Outcome::error(format!("the reader could not answer: {error}")),
         };
-        state.usage.input += response.usage.input;
-        state.usage.output += response.usage.output;
+        state.usage.add(&response.usage);
         self.step(
             state,
             Step {
@@ -1170,6 +1311,7 @@ impl Runtime<'_> {
                 start_ms,
                 ms: wall_ms().saturating_sub(start_ms),
                 tokens: Some((response.usage.input, response.usage.output)),
+                cached: response.usage.cached(),
                 key: None,
                 effect: None,
                 outcome: Some("reader".into()),
@@ -1269,6 +1411,7 @@ impl Runtime<'_> {
                         start_ms,
                         ms: wall_ms().saturating_sub(start_ms),
                         tokens: Some((response.usage.input, response.usage.output)),
+                        cached: response.usage.cached(),
                         key: None,
                         effect: None,
                         outcome: None,
@@ -1276,8 +1419,7 @@ impl Runtime<'_> {
                     },
                 );
                 state.turns_taken += 1;
-                state.usage.input += response.usage.input;
-                state.usage.output += response.usage.output;
+                state.usage.add(&response.usage);
                 // Its words only: a call it asks for is not made.
                 let content: Vec<Block> = response
                     .content
@@ -1720,11 +1862,23 @@ impl Runtime<'_> {
     fn finish(&self, state: &mut State, ready: &Ready, outcome: &Outcome) {
         let now = (self.now)();
         if let Some(spent) = outcome.spent {
-            state.delegated.input += spent.input;
-            state.delegated.output += spent.output;
+            state.delegated.add(&spent);
         }
         if outcome.untrusted {
             state.standing.taint(&self.policy, now);
+        }
+        // What lasts is kept apart from the conversation, so that no
+        // summary of it loses it.
+        if ready.effect >= Effect::Write && !outcome.is_error {
+            state.done.push(Done {
+                tool: ready.tool.clone(),
+                input: shorten(&ready.input.to_string(), 160),
+                unknown: !outcome.certain,
+            });
+            if state.done.len() > LASTING_KEPT {
+                let gone = state.done.remove(0);
+                *state.done_before.entry(gone.tool).or_default() += 1;
+            }
         }
         if let (Some((skill, rules)), false) = (&outcome.pre_approval, outcome.is_error) {
             state
@@ -1751,17 +1905,113 @@ impl Runtime<'_> {
         }
     }
 
-    /// Replaces the middle of a long conversation with a summary of it,
+    /// Keeps a long conversation within the limits: past
+    /// [`Limits::compact_chars`], the results of calls long past are cut
+    /// first ([`mask_old_results`]); still past it, or past
+    /// [`Limits::compact_messages`], the middle is replaced by a summary,
     /// keeping the task and the latest messages.
     fn compact(&self, state: &mut State) {
-        let chars: usize = state.messages.iter().map(Message::chars).sum();
+        let chars = |state: &State| -> usize { state.messages.iter().map(Message::chars).sum() };
+        if chars(state) > self.limits.compact_chars
+            && mask_old_results(state, self.limits.keep_last) > 0
+        {
+            state.compactions += 1;
+        }
         if state.messages.len() <= self.limits.compact_messages
-            && chars <= self.limits.compact_chars
+            && chars(state) <= self.limits.compact_chars
         {
             return;
         }
         compact_now(state, self.limits.keep_last);
     }
+}
+
+/// The longest result of a call long past that is kept whole when a
+/// conversation is cut down ([`mask_old_results`]), in bytes.
+pub const MASK_OVER: usize = 400;
+
+/// What a result cut from a conversation begins with.
+pub const MASKED: &str = "[Cut to save context:";
+
+/// Cuts the results of the calls before the last `keep_last` messages that
+/// are longer than [`MASK_OVER`]: the calls stay, and each result becomes a
+/// line saying what it was and how long. The call can be made again: one
+/// the journal recorded is answered from it, as it was. How many results
+/// were cut.
+pub fn mask_old_results(state: &mut State, keep_last: usize) -> usize {
+    let until = state.messages.len().saturating_sub(keep_last);
+    // Which tool each call was, to name what a result was of.
+    let mut tools: BTreeMap<String, String> = BTreeMap::new();
+    let mut cut = 0;
+    for message in &mut state.messages[..until] {
+        for block in &mut message.content {
+            match block {
+                Block::ToolUse { id, name, .. } => {
+                    tools.insert(id.clone(), name.clone());
+                }
+                Block::ToolResult { id, content, .. }
+                    if content.len() > MASK_OVER && !content.starts_with(MASKED) =>
+                {
+                    let tool = tools.get(id.as_str()).map_or("a call", String::as_str);
+                    *content = format!(
+                        "{MASKED} the result of {tool}, {} characters. Make the call again if \
+                         you need it.]",
+                        content.chars().count()
+                    );
+                    cut += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    cut
+}
+
+/// The most calls a session keeps of what it did that lasts
+/// ([`State::done`]): the last ones, the others counted by tool.
+pub const LASTING_KEPT: usize = 40;
+
+/// A call the session made that lasts ([`State::done`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Done {
+    /// Its tool.
+    pub tool: String,
+    /// Its input, shortened.
+    pub input: String,
+    /// Whether its outcome is unknown: it may or may not have taken effect.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unknown: bool,
+}
+
+/// What the session has done that lasts, as a summary begins: its calls
+/// that changed something or reached outside and did not fail, oldest
+/// first, those let go counted by tool. Empty if there are none.
+pub fn lasting(state: &State) -> String {
+    if state.done.is_empty() && state.done_before.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["[What this session has done that lasts, oldest first:]".to_string()];
+    if !state.done_before.is_empty() {
+        let counted: Vec<String> = state
+            .done_before
+            .iter()
+            .map(|(tool, n)| format!("{n} {tool}"))
+            .collect();
+        lines.push(format!("- before these, calls of: {}", counted.join(", ")));
+    }
+    for done in &state.done {
+        lines.push(format!(
+            "- {} {}{}",
+            done.tool,
+            done.input,
+            if done.unknown {
+                " (whether it took effect is unknown)"
+            } else {
+                ""
+            }
+        ));
+    }
+    lines.join("\n")
 }
 
 /// Compacts `state`'s conversation now, whatever its size: everything but
@@ -1780,7 +2030,12 @@ pub fn compact_now(state: &mut State, keep_last: usize) -> bool {
     if tail <= 1 || tail >= len {
         return false;
     }
-    let summary = summarize(&state.messages[1..tail]);
+    // What lasts first, kept apart from the conversation, so that no
+    // summary of a summary loses it; then what the compacted messages said.
+    let summary = match lasting(state) {
+        lasted if lasted.is_empty() => summarize(&state.messages[1..tail]),
+        lasted => format!("{lasted}\n{}", summarize(&state.messages[1..tail])),
+    };
     let mut messages = vec![state.messages[0].clone()];
     messages.push(Message {
         role: Role::Assistant,

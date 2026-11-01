@@ -1088,6 +1088,8 @@ Options:
           Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
+      --verify <COMMAND>
+          Check the task each time the agent says it is done: run this command with /bin/sh in its sandbox, in its workspace (it needs --shell). An exit status of 0 passes. A failed check is shown to the agent, which goes on; after three, the run ends unverified, with its best answer (the one whose check printed the highest last line `score: <0 to 1>`, if any). The agent may also say that it cannot complete the task
   -h, --help
           Print help
 ```

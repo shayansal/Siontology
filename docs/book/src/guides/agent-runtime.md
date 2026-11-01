@@ -118,6 +118,34 @@ busy, and the next `--model` is asked. Other providers' subscriptions are
 not offered: Anthropic, for one, does not let other apps sign in to
 Claude.ai plans.
 
+## What a model is sent
+
+Each model call is sent the tools, the system prompt and the conversation
+so far, and the start of that stays the same from call to call, so that a
+provider's cache of it holds (with Anthropic's models, prompt caching is
+asked for). For that, a session's system prompt keeps what the agent knew
+of itself, its core memory and the skills it has, as it was when the
+session began, or at the first run after its conversation was compacted:
+what it records or learns meanwhile is in the conversation. What a chat
+asks (`/system`) comes after it, so that changing that leaves the start
+as it was. The input tokens a provider read from its cache, or wrote to
+it, count as the input they are, in a run's budget as in `/usage`, which
+tells them apart, as a trace does
+(`gen_ai.usage.cache_read.input_tokens` and
+`gen_ai.usage.cache_write.input_tokens`, on a model call's span).
+
+A conversation is kept within 120,000 characters and 36 messages. Past
+the characters, the results of calls before the last 12 messages that
+are longer than 400 characters are cut first: the calls stay, and each
+such result becomes a line saying what it was and how long, since the
+call can be made again (one the journal recorded is answered from it).
+If that is not enough, or past the messages, the middle is replaced by a
+summary, never separating a call from its result. A summary begins with
+what the session did that lasts: its last 40 calls that changed something
+or reached outside (the files it wrote, the commands it ran, the payments
+it made, the messages it sent), earlier ones counted by tool, kept apart
+from the conversation so that no summary of a summary loses them.
+
 ## Autonomy
 
 `--autonomy` sets what runs without asking. Each level allows everything
@@ -612,6 +640,56 @@ evaluation set, improved by evolving variants, and released again only
 once others have verified the better version: see
 [Skills that get better](skill-improvement.md).
 
+## Checked before it is done
+
+A model that says it has finished may not have. With `--verify <command>`
+(and a shell, `--shell`), each time the model says it is done the command
+runs with /bin/sh in the agent's sandbox, in its workspace, and an exit
+status of 0 passes. A check that fails is shown to the model, the end of
+what the command printed, and the run goes on:
+
+```text
+$ sion agent run agent-7 266036a8…32fe --task 'Write add.sh, which prints the sum of its two arguments.' --model script:verify.json --workspace work --shell --verify '[ "$(sh add.sh 2 3)" = 5 ] || { echo "sh add.sh 2 3 printed $(sh add.sh 2 3), not 5"; exit 1; }' --autonomy L3
+session d076e6774d2e5abd for agent 266036a8
+  → write_file {"content":"echo $(($1 - $2))\n","path":"add.sh"}
+  ← wrote 18 bytes to add.sh
+agent: add.sh is written: it prints the sum of its two arguments.
+  ✗ The check of your answer failed, attempt 1 of 3. It reported:
+    exit status 1
+    --- stdout
+    sh add.sh 2 3 printed -1, not 5
+    Fix what it reports and finish again, or, if the task cannot be done, say so with cannot_complete.]
+  → write_file {"content":"echo $(($1 + $2))\n","path":"add.sh"}
+  ← wrote 18 bytes to add.sh
+agent: Fixed: add.sh subtracted. It adds its two arguments now.
+session d076e6774d2e5abd: done, and its check passed at attempt 2
+```
+
+After three failed checks (`verify_attempts`), the run ends unverified,
+with the best of the answers the model gave: the one whose check printed
+the highest last line `score: <0 to 1>`, for a check that passes by
+degrees, or the later of two that scored the same. The model is also
+given `cannot_complete`, to say that the task cannot be done and why: the
+run then ends there, as not done, rather than with an answer made to look
+finished:
+
+```text
+$ sion agent run agent-7 266036a8…32fe --task 'Make the integration tests pass.' --model script:cannot.json --workspace work2 --shell --verify 'sh tests/integration.sh' --autonomy L3
+session 9e7ffee20a4ae380 for agent 266036a8
+  → shell {"command":"psql -h db.internal -c 'select 1'"}
+  ← exit status 2
+    --- stderr
+    psql: error: could not translate host name "db.internal" to address: Temporary failure in name resolution
+  → cannot_complete {"why":"the integration tests need the Postgres server db.internal, and commands here have no network"}
+  ← Noted: the run ends here, as not done.
+session 9e7ffee20a4ae380: the agent cannot complete the task: the integration tests need the Postgres server db.internal, and commands here have no network
+```
+
+The check runs where the agent works, so the agent can change what it
+reads or runs (a test, a script): a check that passed shows that the
+command exited with status 0, not that the work is right
+(`agent:verifier`).
+
 ## Safety nets
 
 - **No accidental repeats.** A call that changed something is recorded
@@ -638,8 +716,8 @@ once others have verified the better version: see
   `--done <what it did>`, or `--not-done` so that it may be made again.
 - **Bounded runs.** 12 model turns, 4 more after each turn in which a tool
   call succeeded, at most 32. A call that failed twice with the same input
-  is blocked. Long conversations are compacted: the middle is replaced by
-  a summary, never separating a call from its result.
+  is blocked. Long conversations are cut down
+  ([What a model is sent](#what-a-model-is-sent)).
 - **Going round in circles.** When a call gives the same result three
   times in a row, or two calls take turns with the same results for three
   rounds, the model is told so with the last result; two more, and the run

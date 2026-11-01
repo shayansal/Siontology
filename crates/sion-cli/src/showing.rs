@@ -349,7 +349,7 @@ impl Worker {
 
     fn apply(&mut self, seen: Seen) {
         match seen {
-            Seen::Began(_) | Seen::Asking => {}
+            Seen::Began(_) | Seen::Asking | Seen::Checking => {}
             Seen::Text(text) => {
                 self.spoken.add(&text);
                 self.status = None;

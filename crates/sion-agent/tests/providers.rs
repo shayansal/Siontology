@@ -1094,3 +1094,93 @@ fn the_responses_api_is_streamed_unstored_and_its_token_renewed_when_refused() {
     limited.base = base;
     assert!(matches!(streamed(&limited).1, Err(ModelError::Busy(_))));
 }
+
+#[test]
+fn every_provider_counts_the_input_its_cache_gave_and_took() {
+    use sion_agent::providers::{
+        anthropic_response, gemini_response, openai_response, responses_response,
+    };
+    // Anthropic counts what the cache gave and took apart from its
+    // input_tokens: input all the same.
+    let anthropic = anthropic_response(&json!({
+        "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": "Hi."}], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 20, "cache_read_input_tokens": 3000,
+            "cache_creation_input_tokens": 500, "output_tokens": 7}
+    }))
+    .unwrap();
+    let u = anthropic.usage;
+    assert_eq!(
+        (u.input, u.cache_read, u.cache_write, u.output),
+        (3520, 3000, 500, 7)
+    );
+    assert_eq!(u.total(), 3527);
+    // OpenAI's prompt tokens hold those read from the cache.
+    let openai = openai_response(&json!({
+        "model": "gpt-test",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi."},
+            "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 2048, "completion_tokens": 9,
+            "prompt_tokens_details": {"cached_tokens": 1920}}
+    }))
+    .unwrap();
+    let u = openai.usage;
+    assert_eq!(
+        (u.input, u.cache_read, u.cache_write, u.output),
+        (2048, 1920, 0, 9)
+    );
+    let responses = responses_response(&json!({
+        "model": "gpt-test", "status": "completed",
+        "output": [{"type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": "Hi."}]}],
+        "usage": {"input_tokens": 2048, "output_tokens": 9,
+            "input_tokens_details": {"cached_tokens": 1024}}
+    }))
+    .unwrap();
+    assert_eq!(
+        (responses.usage.input, responses.usage.cache_read),
+        (2048, 1024)
+    );
+    let gemini = gemini_response(&json!({
+        "candidates": [{"content": {"role": "model", "parts": [{"text": "Hi."}]},
+            "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 4000, "cachedContentTokenCount": 3500,
+            "candidatesTokenCount": 5},
+        "modelVersion": "gemini-3-pro-preview"
+    }))
+    .unwrap();
+    let u = gemini.usage;
+    assert_eq!((u.input, u.cache_read, u.output), (4000, 3500, 5));
+    // Streamed, Anthropic's counts come at the start, and the output's,
+    // cumulative, at the end.
+    let sse = events(&[
+        (
+            "message_start",
+            json!({"type": "message_start", "message": {"id": "msg_2", "model": "claude-opus-5-5",
+                "content": [], "usage": {"input_tokens": 10, "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 0, "output_tokens": 1}}}),
+        ),
+        (
+            "content_block_start",
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ),
+        (
+            "content_block_delta",
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi."}}),
+        ),
+        (
+            "content_block_stop",
+            json!({"type": "content_block_stop", "index": 0}),
+        ),
+        (
+            "message_delta",
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 4}}),
+        ),
+        ("message_stop", json!({"type": "message_stop"})),
+    ]);
+    let mut stream =
+        sion_agent::mcp_http::Events::new(std::io::Cursor::new(sse.into_bytes()), 1 << 16);
+    let streamed = sion_agent::providers::anthropic_stream(&mut stream, &mut |_| true).unwrap();
+    let u = streamed.usage;
+    assert_eq!((u.input, u.cache_read, u.output), (910, 900, 4));
+}

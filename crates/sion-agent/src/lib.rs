@@ -80,6 +80,7 @@ pub mod session;
 pub mod skills;
 pub mod tools;
 pub mod trace;
+pub mod verify;
 
 pub use model::{
     Block, Delta, Message, Model, ModelError, Picture, Request, Response, Role, Stop, ToolSpec,

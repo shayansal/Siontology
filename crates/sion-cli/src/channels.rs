@@ -587,14 +587,26 @@ pub fn converse_with(
             return Ok(reply(
                 current,
                 format!(
-                    "This session: {} turns, {} input and {} output tokens{}, {} messages{}{}.",
+                    "This session: {} turns, {} input and {} output tokens{}{}, {} messages{}{}.",
                     state.turns_taken,
                     state.usage.input,
                     state.usage.output,
+                    // Of the input, what the provider's cache gave and took.
+                    match state.usage.cached() {
+                        None => String::new(),
+                        Some((read, 0)) => format!(" ({read} of the input read from the cache)"),
+                        Some((0, written)) => {
+                            format!(" ({written} of the input written to the cache)")
+                        }
+                        Some((read, written)) => format!(
+                            " ({read} of the input read from the cache, {written} written to it)"
+                        ),
+                    },
                     match state.delegated {
                         sion_agent::model::Usage {
                             input: 0,
                             output: 0,
+                            ..
                         } => String::new(),
                         delegated => format!(
                             " (and its subagents {} and {})",

@@ -382,6 +382,15 @@ pub enum AgentCommand {
         /// to a schema, and the session is not tainted by values.
         #[arg(long)]
         quarantine: bool,
+        /// Check the task each time the agent says it is done: run this
+        /// command with /bin/sh in its sandbox, in its workspace (it needs
+        /// --shell). An exit status of 0 passes. A failed check is shown to
+        /// the agent, which goes on; after three, the run ends unverified,
+        /// with its best answer (the one whose check printed the highest
+        /// last line `score: <0 to 1>`, if any). The agent may also say that
+        /// it cannot complete the task.
+        #[arg(long, value_name = "COMMAND")]
+        verify: Option<String>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -743,6 +752,7 @@ pub fn run(
             no_skill_approvals,
             budget_tokens,
             quarantine,
+            verify,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shell = shell.sandbox()?;
@@ -798,6 +808,7 @@ pub fn run(
                     storage,
                     screen,
                     budget_tokens,
+                    verify,
                     ..crate::runtime::Equipment::default()
                 },
             )?;
@@ -979,6 +990,12 @@ pub fn run(
                                     format!("waiting on {tool}")
                                 }
                                 Some(sion_agent::Ended::Stuck { .. }) => "stuck".to_string(),
+                                Some(sion_agent::Ended::Unverified { .. }) => {
+                                    "unverified".to_string()
+                                }
+                                Some(sion_agent::Ended::CannotComplete { .. }) => {
+                                    "cannot complete".to_string()
+                                }
                                 Some(sion_agent::Ended::OutOfBudget { .. }) => {
                                     "out of budget".to_string()
                                 }

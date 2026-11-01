@@ -30,7 +30,12 @@ pub fn chat_line(state: &State, system: &str, ended: Option<&Ended>) -> String {
             "turns": state.turns_taken,
             "tool_calls": calls,
             "compactions": state.compactions,
-            "usage": {"input_tokens": state.usage.input, "output_tokens": state.usage.output},
+            "usage": {
+                "input_tokens": state.usage.input,
+                "output_tokens": state.usage.output,
+                "cache_read_input_tokens": state.usage.cache_read,
+                "cache_write_input_tokens": state.usage.cache_write,
+            },
             "journal": state.journal.entries().len(),
         }
     })
@@ -88,6 +93,23 @@ pub fn otel(state: &State, agent: &str, ended: Option<&Ended>) -> Value {
             if let Some((input, output)) = step.tokens {
                 attributes.push(attribute("gen_ai.usage.input_tokens", json!(input)));
                 attributes.push(attribute("gen_ai.usage.output_tokens", json!(output)));
+            }
+            // Of the input, what the provider's cache gave and took, when
+            // it said: as the GenAI conventions name them, on the call's
+            // span only.
+            if let Some((read, write)) = step.cached {
+                if read > 0 {
+                    attributes.push(attribute(
+                        "gen_ai.usage.cache_read.input_tokens",
+                        json!(read),
+                    ));
+                }
+                if write > 0 {
+                    attributes.push(attribute(
+                        "gen_ai.usage.cache_write.input_tokens",
+                        json!(write),
+                    ));
+                }
             }
             format!("chat {}", step.name)
         } else {
@@ -170,6 +192,7 @@ mod tests {
             start_ms: 1_000,
             ms: 20,
             tokens: Some((10, 5)),
+            cached: Some((6, 0)),
             key: None,
             effect: None,
             outcome: None,
@@ -181,6 +204,7 @@ mod tests {
             start_ms: 1_030,
             ms: 7,
             tokens: None,
+            cached: None,
             key: Some("k1".into()),
             effect: Some(crate::tools::Effect::Spend),
             outcome: Some("unknown".into()),
@@ -192,6 +216,15 @@ mod tests {
         assert_eq!(spans.as_array().unwrap().len(), 3);
         assert_eq!(spans[0]["name"], "invoke_agent lead");
         assert_eq!(spans[1]["name"], "chat claude-x");
+        // What the cache gave is on the call's span; nothing was written.
+        let chat = spans[1]["attributes"].as_array().unwrap();
+        assert!(
+            chat.contains(&json!({"key": "gen_ai.usage.cache_read.input_tokens",
+            "value": {"intValue": "6"}}))
+        );
+        assert!(!chat
+            .iter()
+            .any(|a| a["key"] == "gen_ai.usage.cache_write.input_tokens"));
         assert_eq!(spans[1]["parentSpanId"], spans[0]["spanId"]);
         assert_eq!(spans[1]["startTimeUnixNano"], "1000000000");
         assert_eq!(spans[1]["endTimeUnixNano"], "1020000000");

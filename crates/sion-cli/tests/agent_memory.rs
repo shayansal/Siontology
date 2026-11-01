@@ -115,8 +115,11 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
     let on_ledger = sion_cli::memory::committed(ledger.as_ref(), &log).unwrap();
     assert_eq!(on_ledger.size, 3, "{text}");
 
-    // The next session sees the preference and the skill in its prompt.
-    let prompt = saved.system_prompt();
+    // The next session sees the preference and the skill in its prompt;
+    // this one's prompt keeps what the agent knew when it began.
+    let mut saved = saved;
+    assert!(!saved.system_prompt().contains("invoices paid on Fridays"));
+    let prompt = saved.known_now();
     assert!(
         prompt.contains("(preference) user prefers \"invoices paid on Fridays\""),
         "{prompt}"

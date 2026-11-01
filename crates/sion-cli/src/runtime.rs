@@ -595,6 +595,16 @@ pub struct Saved {
     /// The system prompt of the last run, as the model saw it.
     #[serde(default)]
     pub prompt: String,
+    /// The command that checks its task when it says it is done, run with
+    /// /bin/sh in its sandbox, in its workspace (`--verify`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
+    /// What the agent knew of itself (its core memory and the skills it
+    /// has) when the session began, or when its conversation was last
+    /// compacted: kept as it was in the system prompt, so that a
+    /// provider's cache of the prompt holds from run to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known: Option<Known>,
     /// The conversation and everything the runtime keeps.
     pub state: State,
     /// How the last run ended.
@@ -661,6 +671,17 @@ pub struct Saved {
     /// Whether it has Home Assistant's tools.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub home_assistant: bool,
+}
+
+/// What an agent knew of itself, as a session's system prompt keeps it
+/// ([`Saved::known`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Known {
+    /// Its core memory and the catalog of its skills, as the prompt says
+    /// them.
+    pub text: String,
+    /// How many times the conversation had been compacted then.
+    pub compactions: u32,
 }
 
 /// Who watches a run as it goes ([`Hooks::watch`]).
@@ -1259,6 +1280,17 @@ impl Saved {
                 eprintln!("session {}: not kept on disk: {e}", state.id);
             }
         };
+        // The operator's check of the task, run in the agent's sandbox, in
+        // its workspace, each time the model says it is done.
+        let check = match (&self.verify, &self.shell, &self.workspace) {
+            (Some(command), Some(sandbox), Some(root)) => {
+                Some((command.clone(), sandbox.clone(), root.clone()))
+            }
+            _ => None,
+        };
+        let verifier = check.map(|(command, sandbox, root)| {
+            move |_: &State, _: &str| run_check(&sandbox, &root, &command)
+        });
         let runtime = Runtime {
             models: models.iter().map(|m| m.as_ref()).collect(),
             tools: &tools,
@@ -1270,6 +1302,9 @@ impl Saved {
             watch: hooks.watch,
             steer: hooks.steer,
             checkpoint: Some(&checkpoint),
+            verify: verifier
+                .as_ref()
+                .map(|v| v as sion_agent::session::Check<'_>),
         };
         let from = self.state.messages.len();
         let waiting = self.decided.take().or_else(|| self.state.pending.clone());
@@ -1313,6 +1348,7 @@ impl Saved {
                 watch: None,
                 steer: None,
                 checkpoint: None,
+                verify: None,
                 ..runtime
             };
             reflecting.run(&mut self.state);
@@ -1401,25 +1437,46 @@ impl Saved {
         Ok(lines)
     }
 
-    /// The system prompt of the next run: the session's own, then what the
-    /// agent knows of itself: its core memory and the skills it has.
-    pub fn system_prompt(&self) -> String {
-        let mut system = self.system.clone();
-        if let Some(asked) = self.chat_instructions.as_deref().map(str::trim) {
-            if !asked.is_empty() {
-                system = format!("{system}\n\nWhat the chat you answer in asks of you:\n{asked}");
-            }
-        }
+    /// What the agent knows of itself now: its core memory and the skills
+    /// it has, as a system prompt says them.
+    pub fn known_now(&self) -> String {
+        let mut known = Vec::new();
         if let Some(log) = &self.memory {
             let core = crate::agent_memory::core(log);
             if !core.is_empty() {
-                system = format!("{system}\n\n{}", core.trim_end());
+                known.push(core.trim_end().to_string());
             }
         }
         if let Some(root) = &self.skills {
             let catalog = sion_agent::skills::catalog(&sion_agent::skills::list(root));
             if !catalog.is_empty() {
-                system = format!("{system}\n\n{}", catalog.trim_end());
+                known.push(catalog.trim_end().to_string());
+            }
+        }
+        known.join("\n\n")
+    }
+
+    /// The system prompt of the next run: the session's own; then what the
+    /// agent knew of itself when the session began, or when its
+    /// conversation was last compacted ([`Saved::known`]), which a run
+    /// takes again now if neither is so; then what the chat asks, so that
+    /// a change to it leaves the start of the prompt as it was. What the
+    /// agent records or learns meanwhile is in the conversation.
+    pub fn system_prompt(&mut self) -> String {
+        let compactions = self.state.compactions;
+        if self.known.as_ref().map(|k| k.compactions) != Some(compactions) {
+            self.known = Some(Known {
+                text: self.known_now(),
+                compactions,
+            });
+        }
+        let mut system = self.system.clone();
+        if let Some(known) = self.known.as_ref().filter(|k| !k.text.is_empty()) {
+            system = format!("{system}\n\n{}", known.text);
+        }
+        if let Some(asked) = self.chat_instructions.as_deref().map(str::trim) {
+            if !asked.is_empty() {
+                system = format!("{system}\n\nWhat the chat you answer in asks of you:\n{asked}");
             }
         }
         system
@@ -1534,6 +1591,7 @@ impl Saved {
             watch: None,
             steer: None,
             checkpoint: None,
+            verify: None,
         };
         let pending = self.state.pending.clone();
         match reply {
@@ -1550,6 +1608,29 @@ impl Saved {
     }
 }
 
+/// Runs the operator's check `command` with /bin/sh in `sandbox`, in the
+/// workspace at `root`: it passes if it exits with status 0, and its score
+/// is the last line of what it printed, `score: <0 to 1>`, if there is one.
+pub fn run_check(
+    sandbox: &sion_agent::sandbox::Sandbox,
+    root: &Path,
+    command: &str,
+) -> sion_agent::verify::Verdict {
+    use sion_agent::sandbox::{Mount, WORKSPACE};
+    match sandbox.run(&[Mount::workspace(root)], WORKSPACE, command) {
+        Ok(run) => sion_agent::verify::Verdict {
+            passed: run.succeeded(),
+            score: sion_agent::verify::score_of(&run.stdout),
+            report: run.render(),
+        },
+        Err(e) => sion_agent::verify::Verdict {
+            passed: false,
+            score: None,
+            report: format!("the check could not run: {e}"),
+        },
+    }
+}
+
 /// The most lines of a tool's result a transcript shows.
 pub const SHOWN_LINES: usize = 12;
 
@@ -1562,6 +1643,18 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
             match block {
                 Block::Text { text } if message.role == Role::Assistant => {
                     lines.push(format!("agent: {}", text.trim()))
+                }
+                // The runtime's note of a failed check, not the person's
+                // words: what the check reported, up to a screenful.
+                Block::Text { text } if text.starts_with(sion_agent::verify::FAILED) => {
+                    let mut shown = text.trim_start_matches('[').lines();
+                    lines.push(format!("  ✗ {}", shown.next().unwrap_or_default()));
+                    for line in shown.by_ref().take(SHOWN_LINES - 1) {
+                        lines.push(format!("    {line}").trim_end().to_string());
+                    }
+                    if shown.next().is_some() {
+                        lines.push("    …".to_string());
+                    }
                 }
                 Block::Text { text } => lines.push(format!("you: {}", text.trim())),
                 Block::Image { image } => {
@@ -1606,7 +1699,18 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
 fn ending(ended: &Ended, state: &State) -> String {
     let id = &state.id;
     match ended {
-        Ended::Done { .. } => format!("session {id}: done"),
+        Ended::Done { .. } => match state.attempts.checked {
+            0 => format!("session {id}: done"),
+            1 => format!("session {id}: done, and its check passed"),
+            n => format!("session {id}: done, and its check passed at attempt {n}"),
+        },
+        Ended::Unverified { attempt, why, .. } => format!(
+            "session {id}: not done: its check failed {} times (last: {why}); its best answer was attempt {attempt}; `sion agent continue {id} --say <more>` to go on",
+            state.attempts.checked
+        ),
+        Ended::CannotComplete { why } => {
+            format!("session {id}: the agent cannot complete the task: {why}")
+        }
         Ended::NeedsApproval {
             key,
             tool,
@@ -1904,6 +2008,8 @@ pub struct Equipment {
     /// Tokens each of its runs may use, its subagents' included, if they
     /// have a budget ([`Limits::budget_tokens`]).
     pub budget_tokens: Option<u64>,
+    /// The command that checks its task ([`Saved::verify`]).
+    pub verify: Option<String>,
 }
 
 /// The default directory of an agent's skills.
@@ -1968,6 +2074,7 @@ pub fn start_watched(
         image_model,
         home_assistant,
         budget_tokens,
+        verify,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -1983,6 +2090,12 @@ pub fn start_watched(
         }
     }
     screen.check(workspace.as_deref())?;
+    if verify.is_some() && shell.is_none() {
+        return Err(CliError::Usage(
+            "a check runs in the agent's sandbox, in its workspace: give --shell with --verify"
+                .into(),
+        ));
+    }
     if let Some(sandbox) = &shell {
         let root = workspace.as_ref().ok_or_else(|| {
             CliError::Usage("a shell needs a workspace to work in: give --workspace".into())
@@ -2033,6 +2146,8 @@ pub fn start_watched(
         memory,
         skills: Some(skills),
         prompt: String::new(),
+        verify,
+        known: None,
         state: State::start_with(&new_id(), task, pictures, &limits),
         ended: None,
         decided: None,

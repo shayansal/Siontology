@@ -114,6 +114,9 @@ impl Profile {
             image_model: self.image_model.clone(),
             home_assistant: self.home_assistant,
             budget_tokens: self.budget_tokens,
+            // A check is given to a run (`sion agent run --verify`), not to
+            // a profile's sessions.
+            verify: None,
         }
     }
 
