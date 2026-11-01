@@ -454,7 +454,15 @@ fn run_arm(
     match arm {
         Arm::Single => {
             let session = session(
-                case, system, &case.task, None, false, false, models, budget, limits,
+                case,
+                system,
+                &case.task,
+                None,
+                false,
+                crate::tools::Held::default(),
+                models,
+                budget,
+                limits,
             )?;
             let calls = calls_of(&session.state);
             Ok(Run {
@@ -473,7 +481,15 @@ fn run_arm(
             let mut first_ended = None;
             for sample in 1..=*samples {
                 let ran = session(
-                    case, system, &case.task, None, false, false, models, share, limits,
+                    case,
+                    system,
+                    &case.task,
+                    None,
+                    false,
+                    crate::tools::Held::default(),
+                    models,
+                    share,
+                    limits,
                 )?;
                 calls.extend(calls_of(&ran.state));
                 steps.extend(
@@ -554,7 +570,7 @@ pub fn trial(
         &case.task,
         None,
         false,
-        false,
+        crate::tools::Held::default(),
         models,
         budget_tokens,
         limits,
@@ -604,7 +620,7 @@ fn session(
     prompt: &str,
     only: Option<&BTreeSet<String>>,
     read_only: bool,
-    outside: bool,
+    held: crate::tools::Held,
     models: Models<'_>,
     budget: u64,
     limits: &Limits,
@@ -640,8 +656,11 @@ fn session(
         verify: None,
     };
     let mut state = State::start(&format!("compare-{}", case.id), prompt, &limits);
-    if outside {
+    if held.tainted {
         state.standing.taint(&policy, 0);
+    }
+    if held.confidential {
+        state.standing.hold_confidential();
     }
     let ended = runtime.run(&mut state);
     let tokens = state.usage.total();
@@ -672,7 +691,7 @@ impl Executor for Fixtures<'_> {
         *self.share.lock().unwrap_or_else(|e| e.into_inner()) = left / size.max(1) as u64;
     }
 
-    fn run(&self, node: &Node, prompt: &str, outside: bool) -> Result<Answer, String> {
+    fn run(&self, node: &Node, prompt: &str, held: crate::tools::Held) -> Result<Answer, String> {
         let share = *self.share.lock().unwrap_or_else(|e| e.into_inner());
         if share == 0 {
             return Err("the budget is spent".into());
@@ -683,7 +702,7 @@ impl Executor for Fixtures<'_> {
             prompt,
             node.tools.as_ref(),
             node.read_only,
-            outside,
+            held,
             self.models,
             share,
             self.limits,
@@ -709,6 +728,7 @@ impl Executor for Fixtures<'_> {
                 session: None,
                 tokens: ran.tokens,
                 outside: ran.state.standing.tainted_until.is_some(),
+                confidential: ran.state.standing.confidential,
             }),
             other => Err(format!(
                 "its session ended without an answer: {}",

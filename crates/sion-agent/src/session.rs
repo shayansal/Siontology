@@ -214,6 +214,30 @@ pub struct Decided {
     /// Why it was declined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The deciding person's wallet's signature over the decision, if they
+    /// signed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<DecisionSignature>,
+}
+
+/// A wallet's signature over a decision: over the session, the call's key,
+/// the digest of its input and what was decided, as the CLI encodes them
+/// (Borsh, then a domain-tagged hash). The keys and signatures are kept
+/// encoded, so that this crate needs none of their cryptography.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionSignature {
+    /// The wallet that signed, as it was named.
+    pub wallet: String,
+    /// The account its keys are (hex).
+    pub account: String,
+    /// The call's key, all of it.
+    pub key: String,
+    /// The digest of the call's input (hex).
+    pub input: String,
+    /// The account's authorization policy, Borsh-encoded (hex).
+    pub policy: String,
+    /// The signatures, Borsh-encoded (hex).
+    pub authorization: String,
 }
 
 /// Everything a session needs to stop and resume. It serialises.
@@ -357,13 +381,14 @@ impl State {
     /// Whether a person may allow more than the call that waits: the same
     /// call again, or the calls a rule matches, for the rest of the session
     /// (`--always`). Not for a payment, which is approved one at a time;
-    /// not while the session is tainted at `now`, since an allowance would
-    /// not hold; and not for a call whose argument comes from content held
-    /// in quarantine, which a person approves each time it is used.
+    /// not while the session is tainted at `now`, nor once it holds
+    /// confidential content, since an allowance would not hold; and not for
+    /// a call whose argument comes from content held in quarantine, which a
+    /// person approves each time it is used.
     pub fn may_allow_more(&self, now: u64) -> bool {
         self.pending.as_ref().is_some_and(|pending| {
             pending.effect.is_some_and(|effect| effect < Effect::Spend)
-                && !self.standing.tainted(now)
+                && self.standing.open(now)
                 && quarantine::carried(&pending.input, &self.outside_values).is_none()
         })
     }
@@ -556,6 +581,9 @@ struct Ready {
 /// An outcome as the model sees it: a pre-approved call's says so, and so
 /// does a call made again after its first outcome was lost.
 fn marked(ready: &Ready, mut outcome: Outcome) -> Outcome {
+    if let Some(labelled) = crate::imitation::label(&outcome.content) {
+        outcome.content = labelled;
+    }
     if let Some(by) = &ready.pre_approved {
         outcome.content = format!("[run without asking: {by}]\n{}", outcome.content);
     }
@@ -1034,14 +1062,14 @@ impl Runtime<'_> {
                         .collect();
                     self.seen(&Seen::Running(group[0].1.tool.clone()));
                     let start_ms = wall_ms();
-                    let tainted = state.standing.tainted((self.now)());
+                    let held = state.standing.held((self.now)());
                     for (_, ready) in &group {
                         self.begin(state, ready);
                     }
                     self.save(state);
                     // Subagents work within what is left of the budget.
                     let left = self.left(state, start);
-                    let mut outcomes = tool.call_batch_budgeted(&inputs, tainted, left);
+                    let mut outcomes = tool.call_batch_budgeted(&inputs, held, left);
                     outcomes.resize_with(group.len(), || {
                         Outcome::uncertain("the tool gave no outcome for this call")
                     });
@@ -1475,6 +1503,14 @@ impl Runtime<'_> {
                         .into(),
                 )
             }
+            // Nor once the session holds confidential content.
+            _ if state.standing.confidential => {
+                return Err(
+                    "the session holds confidential content, so nothing is allowed for the \
+                     rest of it: approve this call once"
+                        .into(),
+                )
+            }
             // Nor would an allowance for an argument read from content held
             // in quarantine: a person approves each call that uses one.
             _ if quarantine::carried(&pending.input, &state.outside_values).is_some() => {
@@ -1516,6 +1552,7 @@ impl Runtime<'_> {
             at: now,
             allowed: allowance.as_ref().map(|a| a.describe()),
             why: None,
+            signature: None,
         });
         if let Some(allowance) = allowance {
             state.standing.allowed.push(allowance);
@@ -1547,6 +1584,7 @@ impl Runtime<'_> {
                     at: (self.now)(),
                     allowed: None,
                     why: Some(why.to_string()),
+                    signature: None,
                 });
                 true
             }
@@ -1645,7 +1683,7 @@ impl Runtime<'_> {
             Checked::Ready(ready) => {
                 let tool = self.tools.get(&ready.tool).expect("checked");
                 self.seen(&Seen::Running(ready.tool.clone()));
-                let tainted = state.standing.tainted((self.now)());
+                let held = state.standing.held((self.now)());
                 let written = self.begin(state, &ready);
                 if written {
                     self.save(state);
@@ -1653,7 +1691,7 @@ impl Runtime<'_> {
                 let outcome = if tool.batches() {
                     // A batching tool's call is a batch of one, within what
                     // is left of the budget (subagents at work).
-                    tool.call_batch_budgeted(&[(&ready.input, ready.key.as_str())], tainted, left)
+                    tool.call_batch_budgeted(&[(&ready.input, ready.key.as_str())], held, left)
                         .pop()
                         .unwrap_or_else(|| {
                             Outcome::uncertain("the tool gave no outcome for this call")
@@ -1663,7 +1701,7 @@ impl Runtime<'_> {
                         state.journal.note(&ready.key, text);
                         self.save(state);
                     };
-                    tool.call_noting(&ready.input, &ready.key, tainted, &mut note)
+                    tool.call_noting(&ready.input, &ready.key, held.tainted, &mut note)
                 };
                 let outcome = marked(&ready, outcome);
                 let outcome = self.hold(state, &ready.tool, outcome);
@@ -1814,7 +1852,7 @@ impl Runtime<'_> {
                 // refused, and spending is never pre-approved: a person
                 // approves each payment, or the operator's autonomy level
                 // does.
-                let open = effect < Effect::Spend && !state.standing.tainted(now);
+                let open = effect < Effect::Spend && state.standing.open(now);
                 let by_skill = state
                     .standing
                     .pre_approving(name, input)
@@ -1866,6 +1904,9 @@ impl Runtime<'_> {
         }
         if outcome.untrusted {
             state.standing.taint(&self.policy, now);
+        }
+        if outcome.confidential {
+            state.standing.hold_confidential();
         }
         // What lasts is kept apart from the conversation, so that no
         // summary of it loses it.

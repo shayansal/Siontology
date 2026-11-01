@@ -295,6 +295,8 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         budget_tokens: None,
         quarantine: false,
         shared_memory: Vec::new(),
+        confidential: false,
+        confidential_files: Vec::new(),
     };
     sion_cli::profiles::save_all(
         &[("lead".to_string(), profile.clone())]

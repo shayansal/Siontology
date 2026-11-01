@@ -402,6 +402,21 @@ pub enum AgentCommand {
         /// write (`sion memory dream --into`). Repeat for more.
         #[arg(long = "shared-memory", value_name = "LOG")]
         shared_memory: Vec<String>,
+        /// The task is confidential: the session holds confidential content
+        /// from the start, so its external calls and spending wait for a
+        /// person, and nothing allowed before runs them unasked.
+        #[arg(long)]
+        confidential: bool,
+        /// A path of the workspace whose content is confidential: a file, a
+        /// directory with a closing `/`, or a prefix ending in `*`. What
+        /// read_file reads from it holds the session as --confidential does.
+        /// Repeat for more.
+        #[arg(
+            long = "confidential-file",
+            value_name = "PATH",
+            requires = "workspace"
+        )]
+        confidential_files: Vec<String>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -428,6 +443,17 @@ pub enum AgentCommand {
         /// Tell it something more and let it go on.
         #[arg(long)]
         say: Option<String>,
+        /// With --approve or --decline: sign the decision with this wallet's
+        /// keys (one made on this machine, `sion keys new`), so that it can be
+        /// checked later who decided (`sion agent decisions`).
+        #[arg(long, value_name = "WALLET")]
+        sign: Option<String>,
+    },
+    /// The decisions a session records: what was approved or declined, by
+    /// whom, when, and whether a wallet signed it and its signature holds.
+    Decisions {
+        /// The session (its id, or a unique prefix of it).
+        session: String,
     },
     /// Evolve a profile's instructions (what follows the fixed system
     /// prompt) against an evaluation set: a mutator proposes variants for
@@ -785,6 +811,8 @@ pub fn run(
             verify,
             verify_files,
             shared_memory,
+            confidential,
+            confidential_files,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shared_memory = shared_memory
@@ -847,6 +875,8 @@ pub fn run(
                     verify,
                     verify_files,
                     shared_memory,
+                    confidential,
+                    confidential_files,
                     ..crate::runtime::Equipment::default()
                 },
             )?;
@@ -863,7 +893,13 @@ pub fn run(
             request,
             decline,
             say,
+            sign,
         } => {
+            if sign.is_some() && !approve && decline.is_none() {
+                return Err(CliError::Usage(
+                    "--sign goes with --approve or --decline".into(),
+                ));
+            }
             if request.is_some() && !approve && decline.is_none() {
                 return Err(CliError::Usage(
                     "--request goes with --approve or --decline".into(),
@@ -889,10 +925,18 @@ pub fn run(
                 reply,
                 crate::runtime::Hooks {
                     who: Some(&who),
+                    sign: sign.as_deref(),
                     ..crate::runtime::Hooks::default()
                 },
             )?;
             for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        AgentCommand::Decisions { session } => {
+            let saved = crate::runtime::Saved::load(&session)?;
+            for line in crate::runtime::decision_lines(&saved) {
                 println!("{line}");
             }
             Ok(())

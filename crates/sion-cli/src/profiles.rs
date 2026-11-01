@@ -87,6 +87,12 @@ pub struct Profile {
     /// Curated logs its sessions keep in mind, read-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared_memory: Vec<ObjectId>,
+    /// Whether its sessions hold confidential content from the start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confidential: bool,
+    /// The paths of its workspace whose content is confidential.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confidential_files: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -133,6 +139,8 @@ impl Profile {
             verify_files: None,
             shared_memory: self.shared_memory.clone(),
             read_only: false,
+            confidential: self.confidential,
+            confidential_files: self.confidential_files.clone(),
         }
     }
 
@@ -350,6 +358,19 @@ pub enum ProfileCommand {
         /// unique prefix of it). Repeat for more.
         #[arg(long = "shared-memory", value_name = "LOG")]
         shared_memory: Vec<String>,
+        /// Its sessions hold confidential content from the start: their
+        /// external calls and spending wait for a person.
+        #[arg(long)]
+        confidential: bool,
+        /// A path of its workspace whose content is confidential (a file, a
+        /// directory with a closing `/`, or a prefix ending in `*`). Repeat
+        /// for more.
+        #[arg(
+            long = "confidential-file",
+            value_name = "PATH",
+            requires = "workspace"
+        )]
+        confidential_files: Vec<String>,
     },
     /// The profiles on this machine.
     List,
@@ -427,6 +448,8 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             budget_tokens,
             quarantine,
             shared_memory,
+            confidential,
+            confidential_files,
         } => {
             let shell = shell.sandbox()?;
             let shared_memory = shared_memory
@@ -491,6 +514,8 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 budget_tokens,
                 quarantine,
                 shared_memory,
+                confidential,
+                confidential_files,
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()

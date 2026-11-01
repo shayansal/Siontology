@@ -10,6 +10,28 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Confidential content, signed decisions, imitated notes, attacks tried
+
+- **Confidentiality label**: a session holds confidential content once
+  it is told so (`--confidential`), once `read_file` reads a path named
+  with `--confidential-file` (profiles take both), or once a subagent's
+  report or a graph node's input comes from a session that held some;
+  from then on its external calls and spending wait for a person, at any
+  autonomy level, and allowances and skills' pre-approvals do not hold.
+- **Signed decisions**: `sion agent continue --approve|--decline --sign
+  <wallet>` signs the decision with a key made on this machine, over the
+  session, the call's key and input digest and the decision as recorded;
+  `sion agent decisions <session>` checks each signature.
+- **Imitated notes**: the runtime's own bracketed notes in a tool's
+  result or a graph node's input are marked as not the runtime's before
+  the model sees them.
+- **Attacks tried**: a test runs nine prompt-injection attacks on a
+  scripted model that obeys everything it reads and checks what holds
+  and what gets through (two do, as built); the runtime guide shows the
+  table.
+- Trust atoms `agent:confidential-label`, `agent:signed-decisions`,
+  `agent:imitated-notes` and `agent:attack-tests`.
+
 ### Graphs: votes, quorums, replays, and runs that go on after a person
 
 - **`copies`** runs a node side by side, each copy told which attempt it

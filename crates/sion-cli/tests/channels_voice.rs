@@ -88,6 +88,8 @@ fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile)
         budget_tokens: None,
         quarantine: false,
         shared_memory: Vec::new(),
+        confidential: false,
+        confidential_files: Vec::new(),
     };
     (home, devnet, ledger, profile)
 }

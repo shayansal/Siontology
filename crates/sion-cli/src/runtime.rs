@@ -672,6 +672,10 @@ pub struct Saved {
     /// Whether it may use only the tools that read (a graph's researcher).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// The paths of its workspace whose content is confidential
+    /// ([`sion_agent::builtin::confidential_path`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confidential_files: Vec<String>,
     /// The files of its workspace it shared in its last run
     /// (`share_file`), to go with its reply: their paths in the workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -719,6 +723,13 @@ pub struct Hooks<'a> {
     /// outside. It taints the session, as content from outside that a tool
     /// returns does.
     pub outside: bool,
+    /// Whether what the run answers may carry confidential content: a
+    /// subagent's task, or a graph node's input, from a session that held
+    /// some. The session holds it too.
+    pub confidential: bool,
+    /// The wallet whose keys sign the decision the run carries
+    /// (`sion agent continue --sign`), if one is to.
+    pub sign: Option<&'a str>,
 }
 
 impl std::fmt::Debug for Hooks<'_> {
@@ -729,6 +740,8 @@ impl std::fmt::Debug for Hooks<'_> {
             .field("steer", &self.steer.is_some())
             .field("who", &self.who)
             .field("outside", &self.outside)
+            .field("confidential", &self.confidential)
+            .field("sign", &self.sign)
             .finish()
     }
 }
@@ -955,7 +968,10 @@ pub fn resume_watched(
     let mut saved = Saved::load(id)?;
     match reply {
         Some(decision @ (Reply::Approve(_) | Reply::Decline { .. })) => {
-            saved.decide_as(&decision, hooks.who.unwrap_or_default())?
+            saved.decide_as(&decision, hooks.who.unwrap_or_default())?;
+            if let Some(wallet) = hooks.sign {
+                saved.sign_decision(wallet)?;
+            }
         }
         Some(Reply::Say(more)) => {
             if saved.state.pending.is_some() {
@@ -965,6 +981,7 @@ pub fn resume_watched(
             }
             saved.state.tell(&more, &saved.limits);
             saved.from_outside(hooks.outside);
+            saved.hold_confidential(hooks.confidential);
         }
         Some(Reply::Show(more, pictures)) => {
             if saved.state.pending.is_some() {
@@ -974,6 +991,7 @@ pub fn resume_watched(
             }
             saved.state.tell_with(&more, &pictures, &saved.limits);
             saved.from_outside(hooks.outside);
+            saved.hold_confidential(hooks.confidential);
         }
         None => {}
     }
@@ -1124,7 +1142,7 @@ impl Saved {
             check_workspace(root)?;
             check_apart(root, self.skills.as_deref())?;
             std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
-            for tool in sion_agent::builtin::workspace(root) {
+            for tool in sion_agent::builtin::workspace_holding(root, &self.confidential_files) {
                 tools.add_boxed(tool);
             }
         }
@@ -1584,6 +1602,65 @@ impl Saved {
         }
     }
 
+    /// Takes the session as holding confidential content, if
+    /// `confidential`: from now on its external calls and spending wait for
+    /// a person.
+    pub fn hold_confidential(&mut self, confidential: bool) {
+        if confidential {
+            self.state.standing.hold_confidential();
+        }
+    }
+
+    /// Signs the decision just made with the keys of `wallet`, a wallet with
+    /// a key of its own on this machine: over the session, the call's key
+    /// and the digest of its input, and the decision as it is recorded
+    /// ([`decision_digest`]). [`decision_lines`] checks it later.
+    pub fn sign_decision(&mut self, wallet: &str) -> Result<(), CliError> {
+        if crate::session::keyless_alias(wallet).is_some() {
+            return Err(CliError::Usage(format!(
+                "{wallet} is a keyless subagent: it has no key to sign with"
+            )));
+        }
+        if !wallet_dir().join(format!("{wallet}.seed")).exists() {
+            return Err(CliError::Usage(format!(
+                "wallet {wallet} has no key of its own on this machine, only the devnet name \
+                 anyone can derive keys from: make one (sion keys new {wallet}) to sign with"
+            )));
+        }
+        let pending = self
+            .decided
+            .clone()
+            .ok_or_else(|| CliError::Usage("no decision was just made to sign".into()))?;
+        let session = self.state.id.clone();
+        let decided = self
+            .state
+            .decisions
+            .last_mut()
+            .filter(|d| pending.key.starts_with(&d.request))
+            .ok_or_else(|| CliError::Usage("the decision just made is not recorded".into()))?;
+        let signer = crate::session::wallet_for(wallet);
+        let input = input_digest(&pending.input);
+        let digest = decision_digest(&session, decided, &pending.key, &input);
+        let authorization = signer
+            .keys
+            .authorize(DECISION_DOMAIN, &digest.0)
+            .map_err(|e| CliError::Usage(format!("signing the decision: {e}")))?;
+        let encoded = |bytes: Result<Vec<u8>, std::io::Error>| {
+            bytes
+                .map(hex::encode)
+                .map_err(|e| CliError::Usage(format!("encoding the signature: {e}")))
+        };
+        decided.signature = Some(sion_agent::session::DecisionSignature {
+            wallet: wallet.to_string(),
+            account: signer.id.as_hash().to_hex(),
+            key: pending.key.clone(),
+            input: input.to_hex(),
+            policy: encoded(borsh::to_vec(&signer.policy))?,
+            authorization: encoded(borsh::to_vec(&authorization))?,
+        });
+        Ok(())
+    }
+
     /// Approves or declines the call waiting for a person as `reply` says
     /// ([`Reply::Approve`] or [`Reply::Decline`]), as `by`: who the channel
     /// says decided. A request the reply names must be the one waiting.
@@ -1639,6 +1716,163 @@ impl Saved {
         self.decided = pending;
         Ok(())
     }
+}
+
+/// The domain a wallet signs a decision in.
+pub const DECISION_DOMAIN: &str = "sion/agent/decision";
+
+/// What a signed decision covers: the session, the call (its key, its tool
+/// and the digest of its input), and what was decided, by whom and when.
+#[derive(borsh::BorshSerialize)]
+struct DecisionBody {
+    session: String,
+    key: String,
+    input: [u8; 32],
+    tool: String,
+    approved: bool,
+    by: String,
+    at: u64,
+    allowed: Option<String>,
+    why: Option<String>,
+}
+
+/// The digest a decision is signed over ([`DecisionBody`], Borsh-encoded,
+/// with a domain tag).
+pub fn decision_digest(
+    session: &str,
+    decided: &sion_agent::session::Decided,
+    key: &str,
+    input: &Hash32,
+) -> Hash32 {
+    let body = DecisionBody {
+        session: session.to_string(),
+        key: key.to_string(),
+        input: input.0,
+        tool: decided.tool.clone(),
+        approved: decided.approved,
+        by: decided.by.clone(),
+        at: decided.at,
+        allowed: decided.allowed.clone(),
+        why: decided.why.clone(),
+    };
+    sion_core::hash::hash_domain(
+        "sion-agent/decision/v1",
+        &borsh::to_vec(&body).unwrap_or_default(),
+    )
+}
+
+/// The digest of a call's input, as a signed decision names it.
+pub fn input_digest(input: &Value) -> Hash32 {
+    sion_core::hash::hash_domain(
+        "sion-agent/decision/input",
+        &serde_json::to_vec(input).unwrap_or_default(),
+    )
+}
+
+/// Whether `decided`'s signature holds, if it has one: its account is its
+/// keys', those keys signed the decision as it is recorded, it names the
+/// call it was given for, and that call is in the session.
+pub fn checked_signature(
+    saved: &Saved,
+    decided: &sion_agent::session::Decided,
+) -> Option<Result<String, String>> {
+    let signature = decided.signature.as_ref()?;
+    let decoded = |text: &str, what: &str| {
+        hex::decode(text).map_err(|e| format!("its {what} is not hex: {e}"))
+    };
+    Some((|| {
+        let policy: sion_crypto::policy::AuthPolicy =
+            borsh::from_slice(&decoded(&signature.policy, "policy")?)
+                .map_err(|e| format!("its policy does not decode: {e}"))?;
+        let authorization: sion_crypto::policy::Authorization =
+            borsh::from_slice(&decoded(&signature.authorization, "authorization")?)
+                .map_err(|e| format!("its authorization does not decode: {e}"))?;
+        if policy.account_id().as_hash().to_hex() != signature.account {
+            return Err("the account it names is not its keys'".into());
+        }
+        if !signature.key.starts_with(&decided.request) {
+            return Err("it names another call than the one decided".into());
+        }
+        let input = Hash32::from_hex(&signature.input)
+            .map_err(|e| format!("its input digest is not one: {e}"))?;
+        let digest = decision_digest(&saved.state.id, decided, &signature.key, &input);
+        policy
+            .verify(DECISION_DOMAIN, &digest.0, &authorization)
+            .map_err(|e| {
+                format!("the signature does not hold for the decision as recorded: {e}")
+            })?;
+        let in_session = saved
+            .state
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|block| {
+                matches!(block, sion_agent::model::Block::ToolUse { input: called, .. }
+                if input_digest(called) == input)
+            });
+        let who = format!(
+            "signed by wallet {} (account {})",
+            signature.wallet,
+            &signature.account[..signature.account.len().min(8)]
+        );
+        Ok(if in_session {
+            format!("{who}: the signature holds, over the call in the session")
+        } else {
+            format!(
+                "{who}: the signature holds; the call it names is no longer in the session to \
+                 compare (compacted)"
+            )
+        })
+    })())
+}
+
+/// The decisions a session records, a line each: what was decided, by
+/// whom, when, and whether it was signed and the signature holds.
+pub fn decision_lines(saved: &Saved) -> Vec<String> {
+    if saved.state.decisions.is_empty() {
+        return vec![format!("session {} records no decision", saved.state.id)];
+    }
+    saved
+        .state
+        .decisions
+        .iter()
+        .map(|decided| {
+            let signed = match checked_signature(saved, decided) {
+                None => "unsigned".to_string(),
+                Some(Ok(how)) => how,
+                Some(Err(why)) => format!("its signature does not hold: {why}"),
+            };
+            format!(
+                "request {} ({}): {} at {}; {signed}",
+                decided.request,
+                decided.tool,
+                decision_words(decided),
+                utc(decided.at)
+            )
+        })
+        .collect()
+}
+
+/// `seconds` since 1970 as a time in UTC: `2026-11-01 21:40:05 UTC`.
+pub fn utc(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let rest = seconds % 86_400;
+    // Civil from days (proleptic Gregorian), after Howard Hinnant.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    )
 }
 
 /// Where a check's own files are, inside the sandbox it runs in
@@ -2089,6 +2323,12 @@ pub struct Equipment {
     pub only_tools: Option<std::collections::BTreeSet<String>>,
     /// Whether it may use only the tools that read ([`Saved::read_only`]).
     pub read_only: bool,
+    /// Whether it holds confidential content from the start (its task is
+    /// confidential): its external calls and spending wait for a person.
+    pub confidential: bool,
+    /// The paths of its workspace whose content is confidential
+    /// ([`Saved::confidential_files`]).
+    pub confidential_files: Vec<String>,
     /// What makes pictures for it ([`Saved::image_model`]).
     pub image_model: Option<String>,
     /// Whether it has Home Assistant's tools ([`Saved::home_assistant`]).
@@ -2170,6 +2410,8 @@ pub fn start_watched(
         verify_files,
         shared_memory,
         read_only,
+        confidential,
+        confidential_files,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
@@ -2271,11 +2513,13 @@ pub fn start_watched(
         chat_instructions,
         only_tools,
         read_only,
+        confidential_files,
         shared: Vec::new(),
         image_model,
         home_assistant,
     };
     saved.from_outside(hooks.outside);
+    saved.hold_confidential(hooks.confidential || confidential);
     let lines = saved.run_watched(ledger, hooks)?;
     Ok((saved, lines))
 }
@@ -2283,6 +2527,13 @@ pub fn start_watched(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn times_read_in_utc() {
+        assert_eq!(utc(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(utc(951_782_400), "2000-02-29 00:00:00 UTC");
+        assert_eq!(utc(1_793_569_205), "2026-11-01 21:40:05 UTC");
+    }
     use sion_agent::Message;
 
     fn said(role: Role, text: &str) -> Message {

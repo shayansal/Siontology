@@ -1984,6 +1984,8 @@ mod tests {
             budget_tokens: None,
             quarantine: false,
             shared_memory: Vec::new(),
+            confidential: false,
+            confidential_files: Vec::new(),
         };
         let sent = json!({"text": "Look at these.", "files": [
             {"name": "plan.png", "base64": "iVBORw0KGgoAAA=="},

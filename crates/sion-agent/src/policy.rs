@@ -141,6 +141,11 @@ pub struct Standing {
     /// approved one ([`crate::session::Scope`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed: Vec<Allowance>,
+    /// Whether the session holds confidential content: from then on, for
+    /// the rest of it, its external calls and spending wait for a person,
+    /// and nothing a skill or a person allowed before runs them unasked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confidential: bool,
 }
 
 /// Calls a person allowed for the rest of a session when they approved
@@ -203,6 +208,27 @@ impl Standing {
         self.tainted_until.is_some_and(|until| now < until)
     }
 
+    /// Marks the session as holding confidential content
+    /// ([`Standing::confidential`]): it does for the rest of it.
+    pub fn hold_confidential(&mut self) {
+        self.confidential = true;
+    }
+
+    /// What the session holds at `now` that its calls carry on.
+    pub fn held(&self, now: u64) -> crate::tools::Held {
+        crate::tools::Held {
+            tainted: self.tainted(now),
+            confidential: self.confidential,
+        }
+    }
+
+    /// Whether what a skill or a person allowed runs calls unasked at
+    /// `now`: not while the session is tainted, nor once it holds
+    /// confidential content.
+    pub fn open(&self, now: u64) -> bool {
+        !self.tainted(now) && !self.confidential
+    }
+
     /// The allowance a person gave that covers calling `tool` with
     /// `input`, if one does.
     pub fn allowing(&self, tool: &str, input: &serde_json::Value) -> Option<&Allowance> {
@@ -252,6 +278,17 @@ impl Policy {
                     .into(),
             );
         }
+        if decision == Decision::Run
+            && effect >= Effect::External
+            && !contained
+            && standing.confidential
+        {
+            decision = Decision::Ask(
+                "the session holds confidential content; its external calls and spending need \
+                 approval"
+                    .into(),
+            );
+        }
         if matches!(decision, Decision::Ask(_))
             && standing
                 .approvals
@@ -267,6 +304,50 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confidential_content_holds_external_calls_and_spending_for_a_person() {
+        let policy = Policy {
+            autonomy: Autonomy::L6,
+            contained: BTreeSet::from(["browser".to_string()]),
+            ..Policy::default()
+        };
+        let mut standing = Standing::default();
+        let decide = |standing: &Standing, tool: &str, effect: Effect| {
+            policy.decide(standing, tool, effect, "k", 10)
+        };
+        assert_eq!(
+            decide(&standing, "fetch_url", Effect::External),
+            Decision::Run
+        );
+        standing.hold_confidential();
+        assert!(standing.held(10).confidential && !standing.open(10));
+        assert_eq!(decide(&standing, "read_file", Effect::Read), Decision::Run);
+        assert_eq!(
+            decide(&standing, "write_file", Effect::Write),
+            Decision::Run
+        );
+        for (tool, effect) in [
+            ("fetch_url", Effect::External),
+            ("ledger_pay", Effect::Spend),
+        ] {
+            let Decision::Ask(why) = decide(&standing, tool, effect) else {
+                panic!("{tool} ran");
+            };
+            assert!(why.contains("confidential content"), "{why}");
+        }
+        // A tool that reaches only where the operator named is not held,
+        // and an approval of the call itself still runs it.
+        assert_eq!(
+            decide(&standing, "browser", Effect::External),
+            Decision::Run
+        );
+        standing.approve(&policy, "k", 10);
+        assert_eq!(
+            decide(&standing, "fetch_url", Effect::External),
+            Decision::Run
+        );
+    }
 
     #[test]
     fn the_ladder_widens_one_effect_at_a_time() {

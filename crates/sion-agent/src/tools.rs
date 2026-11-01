@@ -57,6 +57,11 @@ pub struct Outcome {
     /// Whether the content came from outside the agent's trust (a web page,
     /// another agent's message). It taints the session.
     pub untrusted: bool,
+    /// Whether the content is confidential (a file the operator named, a
+    /// report from a session that held such content): the session holds it
+    /// from then on, and its external calls and spending wait for a person.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confidential: bool,
     /// The calls a skill pre-approves now that it was read: the skill's
     /// name and its `allowed-tools` rules (see [`crate::permissions`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +79,19 @@ pub struct Outcome {
 /// A picture a tool returned: as a person sends one.
 pub use crate::model::Picture;
 
+/// What a session holds that its calls carry on to what they start (the
+/// subagents a tool spawns): content from outside, and confidential
+/// content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Held {
+    /// The session read content from outside (it is tainted).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tainted: bool,
+    /// The session holds confidential content.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confidential: bool,
+}
+
 impl Outcome {
     /// A success.
     pub fn ok(content: impl Into<String>) -> Outcome {
@@ -82,6 +100,7 @@ impl Outcome {
             is_error: false,
             certain: true,
             untrusted: false,
+            confidential: false,
             pre_approval: None,
             pictures: Vec::new(),
             spent: None,
@@ -95,6 +114,7 @@ impl Outcome {
             is_error: true,
             certain: true,
             untrusted: false,
+            confidential: false,
             pre_approval: None,
             pictures: Vec::new(),
             spent: None,
@@ -108,6 +128,7 @@ impl Outcome {
             is_error: true,
             certain: false,
             untrusted: false,
+            confidential: false,
             pre_approval: None,
             pictures: Vec::new(),
             spent: None,
@@ -127,6 +148,12 @@ impl Outcome {
     /// Marks the content as untrusted.
     pub fn from_outside(mut self) -> Outcome {
         self.untrusted = true;
+        self
+    }
+
+    /// Marks the content as confidential ([`Outcome::confidential`]).
+    pub fn held_confidential(mut self) -> Outcome {
+        self.confidential = true;
         self
     }
 
@@ -204,19 +231,20 @@ pub trait Tool: Send + Sync {
             .collect()
     }
 
-    /// [`Tool::call_batch`] (or [`Tool::call_batch_tainted`]) within a run
-    /// that has `budget` tokens left, if it has a budget: a tool whose calls
-    /// run models of their own (subagents) keeps them within it, and says
-    /// what they used ([`Outcome::spent`]). By default the budget is not
-    /// the tool's concern.
+    /// [`Tool::call_batch`] (or [`Tool::call_batch_tainted`], for a
+    /// session that `held` tainted) within a run that has `budget` tokens
+    /// left, if it has a budget: a tool whose calls run models of their own
+    /// (subagents) keeps them within it, says what they used
+    /// ([`Outcome::spent`]), and starts them holding what the session holds.
+    /// By default the budget is not the tool's concern.
     fn call_batch_budgeted(
         &self,
         calls: &[(&Value, &str)],
-        tainted: bool,
+        held: Held,
         budget: Option<u64>,
     ) -> Vec<Outcome> {
         let _ = budget;
-        if tainted {
+        if held.tainted {
             self.call_batch_tainted(calls)
         } else {
             self.call_batch(calls)

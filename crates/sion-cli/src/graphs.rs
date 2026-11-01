@@ -117,7 +117,7 @@ impl std::fmt::Debug for Sessions<'_> {
 }
 
 impl Executor for Sessions<'_> {
-    fn run(&self, node: &Node, prompt: &str, outside: bool) -> Result<Answer, String> {
+    fn run(&self, node: &Node, prompt: &str, held: sion_agent::Held) -> Result<Answer, String> {
         let profile = self.profile;
         let mut models = profile.models.clone();
         if let Some(model) = &node.model {
@@ -141,7 +141,8 @@ impl Executor for Sessions<'_> {
                 ..profile.equipment()
             },
             crate::runtime::Hooks {
-                outside,
+                outside: held.tainted,
+                confidential: held.confidential,
                 ..crate::runtime::Hooks::default()
             },
         )
@@ -161,8 +162,10 @@ fn answer_of(saved: &crate::runtime::Saved) -> Result<Answer, String> {
             json: None,
             session: Some(saved.state.id.clone()),
             tokens: used.total(),
-            // What it says may be steered by what it read from outside.
+            // What it says may be steered by what it read from outside, and
+            // may carry what it held confidential.
             outside: saved.state.standing.tainted_until.is_some(),
+            confidential: saved.state.standing.confidential,
         }),
         Some(Ended::NeedsApproval { tool, .. }) => Err(format!(
             "session {} waits for a person's approval of {tool}",

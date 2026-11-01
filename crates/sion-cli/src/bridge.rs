@@ -1445,6 +1445,8 @@ impl Bridge<'_> {
             steer: steering.then_some(&steer as &(dyn Fn() -> Vec<String> + Sync)),
             who: Some(&who),
             outside: false,
+            confidential: false,
+            sign: None,
         };
         let answer = crate::channels::converse_with(
             self.ledger.clone(),

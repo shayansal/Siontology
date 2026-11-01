@@ -66,6 +66,7 @@ pub mod encoding;
 pub mod evals;
 pub mod evolve;
 pub mod graph;
+pub mod imitation;
 pub mod journal;
 pub mod judge;
 pub mod mcp;
@@ -92,4 +93,4 @@ pub use model::{
 };
 pub use policy::{Autonomy, Decision, Policy, Standing};
 pub use session::{Ended, Limits, Runtime, Seen, State};
-pub use tools::{Dedup, Effect, Outcome, Tool, Toolbox};
+pub use tools::{Dedup, Effect, Held, Outcome, Tool, Toolbox};

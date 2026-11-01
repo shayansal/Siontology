@@ -1601,14 +1601,14 @@ impl sion_agent::Tool for Delegates {
     }
 
     fn call(&self, input: &Value, key: &str) -> Outcome {
-        self.call_batch_budgeted(&[(input, key)], false, None)
+        self.call_batch_budgeted(&[(input, key)], sion_agent::Held::default(), None)
             .remove(0)
     }
 
     fn call_batch_budgeted(
         &self,
         calls: &[(&Value, &str)],
-        _tainted: bool,
+        _held: sion_agent::Held,
         budget: Option<u64>,
     ) -> Vec<Outcome> {
         self.0.lock().unwrap().push(budget);

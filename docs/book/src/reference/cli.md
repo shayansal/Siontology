@@ -710,6 +710,7 @@ Commands:
   materialize    Materialize members of a cohort: their charters and allotments, at their lineage ids, with proofs of their leaves. The cohort parent's wallet signs, and signs for them afterwards
   run            Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
   continue       Continue a session: approve or decline the call it waits on, or tell it more
+  decisions      The decisions a session records: what was approved or declined, by whom, when, and whether a wallet signed it and its signature holds
   evolve         Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
   sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
@@ -1096,11 +1097,30 @@ Options:
           The check's own files (its tests, say): a directory apart from the workspace, shown to the check alone, read-only at /check, while it runs. The agent's commands neither see nor change it
       --shared-memory <LOG>
           A curated log to keep in mind, read-only, besides the agent's own memory (its id, or a unique prefix of it): one that only dreams write (`sion memory dream --into`). Repeat for more
+      --confidential
+          The task is confidential: the session holds confidential content from the start, so its external calls and spending wait for a person, and nothing allowed before runs them unasked
+      --confidential-file <PATH>
+          A path of the workspace whose content is confidential: a file, a directory with a closing `/`, or a prefix ending in `*`. What read_file reads from it holds the session as --confidential does. Repeat for more
   -h, --help
           Print help
 ```
 
 See [Agents at work](../guides/agent-runtime.md), [Commands, scripts and MCP servers](../guides/agent-tools.md) for `--shell`, `--mcp` and `--storage`, and [A browser and a desktop](../guides/agent-browser.md) for `--browser`, `--login` and `--computer`.
+
+## `sion agent decisions`
+
+```text
+The decisions a session records: what was approved or declined, by whom, when, and whether a wallet signed it and its signature holds
+
+Usage: sion agent decisions [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
 
 ## `sion agent continue`
 
@@ -1119,6 +1139,7 @@ Options:
       --request <ID>       The request decided (as the session shows it): refused if it is not the call waiting
       --decline <DECLINE>  Decline the call it waits on, saying why
       --say <SAY>          Tell it something more and let it go on
+      --sign <WALLET>      With --approve or --decline: sign the decision with this wallet's keys (one made on this machine, `sion keys new`), so that it can be checked later who decided (`sion agent decisions`)
   -h, --help               Print help
 ```
 
@@ -1340,6 +1361,10 @@ Options:
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --shared-memory <LOG>
           A curated log its sessions keep in mind, read-only (its id, or a unique prefix of it). Repeat for more
+      --confidential
+          Its sessions hold confidential content from the start: their external calls and spending wait for a person
+      --confidential-file <PATH>
+          A path of its workspace whose content is confidential (a file, a directory with a closing `/`, or a prefix ending in `*`). Repeat for more
   -h, --help
           Print help
 ```

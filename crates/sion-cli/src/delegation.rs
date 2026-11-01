@@ -190,25 +190,30 @@ impl Tool for SpawnTool {
     }
 
     fn call_batch(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
-        self.call_batch_budgeted(calls, false, None)
+        self.call_batch_budgeted(calls, sion_agent::Held::default(), None)
     }
 
     fn call_batch_tainted(&self, calls: &[(&Value, &str)]) -> Vec<Outcome> {
-        self.call_batch_budgeted(calls, true, None)
+        let held = sion_agent::Held {
+            tainted: true,
+            confidential: false,
+        };
+        self.call_batch_budgeted(calls, held, None)
     }
 
     /// The subagents of a session that read content from outside start
-    /// tainted, since the tasks it writes them may carry what it read; in a
-    /// run with a budget, they share what is left of it, and what they used
-    /// is counted in it.
+    /// tainted, since the tasks it writes them may carry what it read, and
+    /// those of a session that holds confidential content start holding it;
+    /// in a run with a budget, they share what is left of it, and what they
+    /// used is counted in it.
     fn call_batch_budgeted(
         &self,
         calls: &[(&Value, &str)],
-        tainted: bool,
+        held: sion_agent::Held,
         budget: Option<u64>,
     ) -> Vec<Outcome> {
         let inputs = calls.iter().map(|(input, _)| *input).collect();
-        spawn_all(&self.0, inputs, tainted, budget)
+        spawn_all(&self.0, inputs, held, budget)
             .into_iter()
             .map(|result| match result {
                 Ok(report) => {
@@ -217,9 +222,15 @@ impl Tool for SpawnTool {
                         ..Outcome::ok(report.text)
                     };
                     // What a subagent that read content from outside reports
-                    // may carry it: it taints this session too.
-                    if report.tainted {
+                    // may carry it: it taints this session too. So with what
+                    // it held confidential.
+                    let outcome = if report.tainted {
                         outcome.from_outside()
+                    } else {
+                        outcome
+                    };
+                    if report.confidential {
+                        outcome.held_confidential()
                     } else {
                         outcome
                     }
@@ -235,6 +246,7 @@ impl Tool for SpawnTool {
 struct Report {
     text: String,
     tainted: bool,
+    confidential: bool,
     spent: sion_agent::model::Usage,
 }
 
@@ -420,13 +432,13 @@ fn launch(delegation: &Delegation, orders: &[&Order]) -> Result<Vec<Launched>, S
     Ok(launched)
 }
 
-/// Spawns the subagents `inputs` ask for and runs them at once, tainted
-/// from the start if `tainted`, each with an even share of `budget` tokens
-/// if there is one, and returns each one's report.
+/// Spawns the subagents `inputs` ask for and runs them at once, holding
+/// from the start what the parent `held`, each with an even share of
+/// `budget` tokens if there is one, and returns each one's report.
 fn spawn_all(
     delegation: &Delegation,
     inputs: Vec<&Value>,
-    tainted: bool,
+    held: sion_agent::Held,
     budget: Option<u64>,
 ) -> Vec<Result<Report, String>> {
     let checked = orders(delegation, &inputs);
@@ -455,7 +467,7 @@ fn spawn_all(
             .iter()
             .zip(&launched)
             .map(|(order, launched)| {
-                scope.spawn(move || work(delegation, order, launched, tainted, share))
+                scope.spawn(move || work(delegation, order, launched, held, share))
             })
             .collect();
         handles
@@ -495,14 +507,14 @@ fn spawn_all(
         .collect()
 }
 
-/// Runs a launched subagent's task in a session of its own, tainted from
-/// the start if `tainted`, within `budget` tokens if there is one, and
-/// reports how it went.
+/// Runs a launched subagent's task in a session of its own, holding from
+/// the start what its parent `held`, within `budget` tokens if there is
+/// one, and reports how it went.
 fn work(
     delegation: &Delegation,
     order: &Order,
     launched: &Launched,
-    tainted: bool,
+    held: sion_agent::Held,
     budget: Option<u64>,
 ) -> Result<Report, String> {
     let acting = &delegation.acting;
@@ -525,7 +537,8 @@ fn work(
             ..Equipment::default()
         },
         crate::runtime::Hooks {
-            outside: tainted,
+            outside: held.tainted,
+            confidential: held.confidential,
             ..crate::runtime::Hooks::default()
         },
     )
@@ -591,6 +604,7 @@ fn work(
         }
     }
     let tainted = saved.state.standing.tainted_until.is_some();
+    let confidential = saved.state.standing.confidential;
     let mut spent = saved.state.usage;
     spent.add(&saved.state.delegated);
     Ok(Report {
@@ -606,6 +620,7 @@ fn work(
             }
         ),
         tainted,
+        confidential,
         spent,
     })
 }

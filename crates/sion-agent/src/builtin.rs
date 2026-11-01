@@ -69,10 +69,32 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 /// Reads a text file in the workspace.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ReadFile {
     /// The workspace.
     pub root: PathBuf,
+    /// The paths whose content is confidential ([`confidential_path`]):
+    /// what is read from them holds the session's external calls and
+    /// spending for a person.
+    pub confidential: Vec<String>,
+}
+
+/// Whether `relative` (a path in the workspace, `/` between its parts) is
+/// one that `patterns` name: a path itself, everything under a directory
+/// written with a closing `/`, or every path that begins as one ending in
+/// `*` does.
+pub fn confidential_path(patterns: &[String], relative: &str) -> bool {
+    let relative = relative.trim_start_matches("./");
+    patterns.iter().any(|pattern| {
+        let pattern = pattern.trim_start_matches("./");
+        if let Some(prefix) = pattern.strip_suffix('*') {
+            relative.starts_with(prefix)
+        } else if pattern.ends_with('/') {
+            relative.starts_with(pattern)
+        } else {
+            relative == pattern || relative.starts_with(&format!("{pattern}/"))
+        }
+    })
 }
 
 impl Tool for ReadFile {
@@ -114,8 +136,22 @@ impl Tool for ReadFile {
             Err(e) => return Outcome::error(format!("{relative}: {e}")),
             Ok(_) => {}
         }
+        // Named as the file is: the path it resolves to in the workspace,
+        // so that no other spelling of it, and no link to it, reads it
+        // unmarked.
+        let named = std::fs::canonicalize(&self.root)
+            .ok()
+            .zip(std::fs::canonicalize(&path).ok())
+            .and_then(|(root, real)| {
+                real.strip_prefix(&root)
+                    .ok()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+            })
+            .unwrap_or_else(|| relative.to_string());
+        let held = confidential_path(&self.confidential, &named);
         match std::fs::read(&path) {
             Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) if held => Outcome::ok(text).held_confidential(),
                 Ok(text) => Outcome::ok(text),
                 Err(_) => Outcome::error(format!("{relative} is not UTF-8 text")),
             },
@@ -378,9 +414,16 @@ impl Tool for Shell {
 
 /// The workspace tools for `root`: read, write and list.
 pub fn workspace(root: &Path) -> Vec<Box<dyn Tool>> {
+    workspace_holding(root, &[])
+}
+
+/// [`workspace`], what is read from the paths `confidential` names held as
+/// confidential ([`confidential_path`]).
+pub fn workspace_holding(root: &Path, confidential: &[String]) -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(ReadFile {
             root: root.to_path_buf(),
+            confidential: confidential.to_vec(),
         }),
         Box::new(WriteFile {
             root: root.to_path_buf(),
@@ -395,6 +438,48 @@ pub fn workspace(root: &Path) -> Vec<Box<dyn Tool>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn what_is_read_from_a_confidential_path_is_held() {
+        let patterns = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let named = patterns(&["private/", "keys.env", "drafts/q*"]);
+        for path in [
+            "private/salaries.csv",
+            "./private/a/b",
+            "keys.env",
+            "drafts/q3.md",
+        ] {
+            assert!(confidential_path(&named, path), "{path}");
+        }
+        for path in [
+            "privateer.md",
+            "keys.env.example",
+            "drafts/r1.md",
+            "public/keys.env",
+        ] {
+            assert!(!confidential_path(&named, path), "{path}");
+        }
+        assert!(confidential_path(&patterns(&["private"]), "private/x"));
+        let root = temp("confidential");
+        std::fs::create_dir_all(root.join("private")).unwrap();
+        std::fs::write(root.join("private/pay.csv"), "alice,100\n").unwrap();
+        std::fs::write(root.join("notes.md"), "hello\n").unwrap();
+        let read = ReadFile {
+            root: root.clone(),
+            confidential: named,
+        };
+        let held = |path: &str| read.call(&json!({"path": path}), "k").confidential;
+        assert!(held("private/pay.csv"));
+        // Another spelling of the same file is held too, and a link to it.
+        assert!(held("./private/pay.csv"));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("private/pay.csv"), root.join("pay.csv")).unwrap();
+            assert!(held("pay.csv"));
+        }
+        assert!(!held("notes.md"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("sion-agent-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -406,7 +491,10 @@ mod tests {
     fn files_stay_inside_the_workspace() {
         let root = temp("files");
         let write = WriteFile { root: root.clone() };
-        let read = ReadFile { root: root.clone() };
+        let read = ReadFile {
+            root: root.clone(),
+            ..ReadFile::default()
+        };
         let list = ListFiles { root: root.clone() };
         assert!(
             !write
@@ -447,7 +535,10 @@ mod tests {
             .arg(root.join("pipe"))
             .status();
         if made.is_ok_and(|s| s.success()) {
-            let read = ReadFile { root: root.clone() };
+            let read = ReadFile {
+                root: root.clone(),
+                ..ReadFile::default()
+            };
             let outcome = read.call(&json!({"path": "pipe"}), "k");
             assert!(outcome.is_error && outcome.content.contains("not a regular file"));
         }
