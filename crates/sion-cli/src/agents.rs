@@ -377,6 +377,11 @@ pub enum AgentCommand {
         /// a last answer, without tools, of what it did and what remains.
         #[arg(long, value_name = "TOKENS")]
         budget_tokens: Option<u64>,
+        /// Hold what tools return from outside out of the conversation: the
+        /// agent reads it through a reader without tools, its answers held
+        /// to a schema, and the session is not tainted by values.
+        #[arg(long)]
+        quarantine: bool,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -388,8 +393,9 @@ pub enum AgentCommand {
         approve: bool,
         /// With --approve: allow the same call again for the rest of the
         /// session, or, given a rule such as `shell(git status:*)`, the
-        /// calls of its tool that the rule matches. Never a payment, and
-        /// never while the session is tainted.
+        /// calls of its tool that the rule matches. Never a payment, never
+        /// while the session is tainted, and never for a call whose
+        /// argument comes from content held in quarantine.
         #[arg(long, requires = "approve", num_args = 0..=1, default_missing_value = "", value_name = "RULE")]
         always: Option<String>,
         /// The request decided (as the session shows it): refused if it is
@@ -736,6 +742,7 @@ pub fn run(
             screen,
             no_skill_approvals,
             budget_tokens,
+            quarantine,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shell = shell.sandbox()?;
@@ -758,6 +765,7 @@ pub fn run(
             let policy = sion_agent::Policy {
                 autonomy: autonomy.parse().map_err(CliError::Usage)?,
                 skill_approvals: !no_skill_approvals,
+                quarantine,
                 ..sion_agent::Policy::default()
             };
             let system = system

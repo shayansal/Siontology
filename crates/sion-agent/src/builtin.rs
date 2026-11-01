@@ -326,6 +326,11 @@ impl Tool for Shell {
         false
     }
 
+    /// The model acts on what its commands print: it is not held.
+    fn quarantinable(&self) -> bool {
+        false
+    }
+
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         let command = input["command"].as_str().unwrap_or_default();
         if command.trim().is_empty() {

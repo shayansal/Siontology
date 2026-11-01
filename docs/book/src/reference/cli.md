@@ -1086,6 +1086,8 @@ Options:
           Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
       --budget-tokens <TOKENS>
           Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
+      --quarantine
+          Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
   -h, --help
           Print help
 ```
@@ -1105,7 +1107,7 @@ Arguments:
 Options:
       --approve            Approve the call it waits on
       --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --always [<RULE>]    With --approve: allow the same call again for the rest of the session, or, given a rule such as `shell(git status:*)`, the calls of its tool that the rule matches. Never a payment, and never while the session is tainted
+      --always [<RULE>]    With --approve: allow the same call again for the rest of the session, or, given a rule such as `shell(git status:*)`, the calls of its tool that the rule matches. Never a payment, never while the session is tainted, and never for a call whose argument comes from content held in quarantine
       --request <ID>       The request decided (as the session shows it): refused if it is not the call waiting
       --decline <DECLINE>  Decline the call it waits on, saying why
       --say <SAY>          Tell it something more and let it go on
@@ -1309,6 +1311,8 @@ Options:
           Give it Home Assistant's devices as tools (HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN): their states read, a service called as an external call
       --budget-tokens <TOKENS>
           Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
+      --quarantine
+          Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
   -h, --help
           Print help
 ```

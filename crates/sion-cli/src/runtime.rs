@@ -1613,13 +1613,13 @@ fn ending(ended: &Ended, state: &State) -> String {
             input,
             reason,
         } => {
-            // A payment is approved on its own, and a tainted session
-            // allows nothing for the rest of it: `--always` is not offered.
-            let always = match state.pending.as_ref().and_then(|p| p.effect) {
-                Some(effect) if effect < Effect::Spend && !state.standing.tainted(now()) => {
-                    " (`--always` for the same call again this session)"
-                }
-                _ => "",
+            // A payment, a call in a tainted session and one whose argument
+            // comes from quarantine are approved on their own: `--always`
+            // is not offered.
+            let always = if state.may_allow_more(now()) {
+                " (`--always` for the same call again this session)"
+            } else {
+                ""
             };
             format!(
                 "session {id}: waiting for you: {tool} {input} ({reason}; request {}). Answer with `sion agent continue {id} --approve`{always} or `--decline <why>`.",

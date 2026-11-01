@@ -133,7 +133,8 @@ takes verifiers too, whose attestations count, as in
 
 A profile keeps how to run an agent under a name: the wallet, the agent,
 the models, the autonomy, and optionally its memory, skills, workspace,
-the web, delegation and a token budget for each run (`--budget-tokens`).
+the web, delegation, a token budget for each run (`--budget-tokens`) and
+quarantine (`--quarantine`).
 Schedules and channels start sessions from a profile:
 
 ```text
@@ -219,7 +220,8 @@ gateway, a token made for approvals. The session keeps each decision with
 who made it, as the channel names them (`slack:U07`, `http:token
 3046d92e`, `cli:<user>` on the command line), and the run shows it:
 `(approved by slack:U07)`. What `/approve always` allows is never a
-payment, which is approved on its own; it is not given while the session
+payment, which is approved on its own, nor a call whose argument comes
+from content held in quarantine; it is not given while the session
 has read content from outside, nor holds then; and it never goes past
 what the autonomy level refuses, as for [a skill's
 pre-approvals](skill-permissions.md).

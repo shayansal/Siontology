@@ -71,6 +71,7 @@ pub mod oauth;
 pub mod permissions;
 pub mod policy;
 pub mod providers;
+pub mod quarantine;
 pub mod sandbox;
 pub mod schedule;
 pub mod scripted;

@@ -223,6 +223,14 @@ pub trait Tool: Send + Sync {
         }
     }
 
+    /// Whether what it returns from outside may be held in quarantine
+    /// ([`crate::quarantine`]): by default, yes. A tool whose results the
+    /// model acts on (a browser's page, whose elements it clicks) says no,
+    /// and its results taint the session as before.
+    fn quarantinable(&self) -> bool {
+        true
+    }
+
     /// How the tool keeps a call's effect from happening twice
     /// ([`Dedup`]): by default, nothing does.
     fn dedup(&self) -> Dedup {

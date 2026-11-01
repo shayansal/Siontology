@@ -617,6 +617,11 @@ impl Tool for Computer {
         false
     }
 
+    /// The model acts on the screen it is shown: it is not held.
+    fn quarantinable(&self) -> bool {
+        false
+    }
+
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         let mut guard = self.desktop.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {

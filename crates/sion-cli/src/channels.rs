@@ -952,16 +952,12 @@ pub fn converse_with(
                     waiting.tool,
                     waiting.input,
                     waiting.request(),
-                    // A payment is approved on its own, and a tainted session
-                    // allows nothing for the rest of it.
-                    match waiting.effect {
-                        Some(effect)
-                            if effect < sion_agent::Effect::Spend
-                                && !saved.state.standing.tainted(crate::schedules::now()) =>
-                        {
-                            ", /approve always for the same call again in this session"
-                        }
-                        _ => "",
+                    // A payment, a call in a tainted session and one whose
+                    // argument comes from quarantine are approved on their own.
+                    if saved.state.may_allow_more(crate::schedules::now()) {
+                        ", /approve always for the same call again in this session"
+                    } else {
+                        ""
                     }
                 ),
             ));
@@ -1974,6 +1970,7 @@ mod tests {
             image_model: None,
             home_assistant: false,
             budget_tokens: None,
+            quarantine: false,
         };
         let sent = json!({"text": "Look at these.", "files": [
             {"name": "plan.png", "base64": "iVBORw0KGgoAAA=="},

@@ -147,6 +147,80 @@ exception: it acts on their pages as the level allows, while the
 session's other external calls, and all spending, still wait ([A browser
 and a desktop](agent-browser.md#where-it-acts-on-its-own)).
 
+### Quarantine
+
+A tainted session asks before every external call, since what it read may
+steer the model. `--quarantine` (on `sion agent run` and on profiles)
+keeps what tools return from outside out of the conversation instead: the
+model is told what was held, under a handle, and asks questions of it with
+`quarantine_read`, giving a JSON schema for the answer. A separate call of
+the model, given no tools and told that the content is data, reads it and
+answers; the runtime checks the answer against the schema before the
+model sees it. Here the reader is the scripted model too, so the answer
+it gives is the script's, not a reading of the page:
+
+```text
+$ sion agent run agent-7 9dea3a0f…1e98 --task 'What is tiny_http's latest version, and its license? Then look at its sources.' --model script:held.json --web --quarantine --autonomy L5
+session 97ec1566b9b1912b for agent 9dea3a0f
+  → fetch_url {"url":"https://docs.rs/crate/tiny_http/latest"}
+  ← [Held in quarantine as q1: 41726 characters from fetch_url, content from outside. Read what you need from it with quarantine_read: the handle, a question, and a JSON schema for the answer.]
+  → quarantine_read {"handle":"q1","question":"What is the latest version of tiny_http, and what is its license?","schema":{"properties":{"license":{"enum":["MIT","Apache-2.0","MIT OR Apache-2.0","another"],"type":"string"},"version":{"format":"version","type":"string"}},"required":["version","license"],"type":"object"}}
+  ← [read from q1 without tools]
+    {"license":"MIT OR Apache-2.0","version":"0.12.0"}
+  → fetch_url {"url":"https://docs.rs/crate/tiny_http/latest/source/Cargo.toml"}
+  ← [Held in quarantine as q2: 48582 characters from fetch_url, content from outside. Read what you need from it with quarantine_read: the handle, a question, and a JSON schema for the answer.]
+  → fetch_url {"url":"https://docs.rs/crate/tiny_http/0.12.0/source/"}
+  ← waiting for a person's approval
+session 97ec1566b9b1912b: waiting for you: fetch_url {"url":"https://docs.rs/crate/tiny_http/0.12.0/source/"} (an argument comes from content held in quarantine (0.12.0); request d70d438b). Answer with `sion agent continue 97ec1566b9b1912b --approve` or `--decline <why>`.
+```
+
+An answer made of booleans, numbers, strings from an enum the model gave,
+and strings of a strict format (a date, a time, an email address, a URL,
+a UUID, hex digits, a version) cannot carry instructions, so the session
+is not tainted, and its next fetch ran as L5 allows. A free string can
+(`{"type": "string", "maxLength": 200}`), so an answer with one taints
+the session, as reading the content would have. The strings an answer
+gives are labelled as from outside, so the fetch whose address carries
+`0.12.0` waited: an external call or a payment whose input carries one
+waits for a person, whatever the level, a skill or an allowance says,
+since its argument came from content no one checked, and a person
+approves each such call on its own (`--always` is not offered). Without
+`--quarantine`, the first page taints the session and the next fetch
+waits, whatever it carries:
+
+```text
+$ sion agent run agent-7 9dea3a0f…1e98 --task 'What is tiny_http's latest version? Then look at its sources.' --model script:open.json --web --autonomy L5
+session 923af375a850d5cf for agent 9dea3a0f
+  → fetch_url {"url":"https://docs.rs/crate/tiny_http/latest"}
+  ← <!DOCTYPE html>
+    <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="generator" content="docs.rs 0.0.0 (ca50bb9ce3590453e5c5a422d0cdc34eeef12c58 2026-10-27 )"><link rel="canonical" href="https://docs.rs/crate/tiny_http/latest" /><link rel="stylesheet" href="/-/static/vendored.css?0-0-0-ca50bb9ce3590453e5c5a422d0cdc34eeef12c58-2026-10-27" media="all" />
+            <link rel="stylesheet" href="/-/static/style.css?0-0-0-ca50bb9ce3590453e5c5a422d0cdc34eeef12c58-2026-10-27" media="all" />
+            <link rel="stylesheet" href="/-/static/font-awesome.css?0-0-0-ca50bb9ce3590453e5c5a422d0cdc34eeef12c58-2026-10-27" media="all" />
+
+            <link rel="search" href="/-/static/opensearch.xml" type="application/opensearchdescription+xml" title="Docs.rs" />
+
+            <title>tiny_http 0.12.0 - Docs.rs</title><script nonce="PlT0lFZkRwK7zSFa9gnddwKH20d9db+CfQqQcDulWWiUyJhr">(function() {
+    …
+  → fetch_url {"url":"https://docs.rs/crate/tiny_http/latest/source/Cargo.toml"}
+  ← waiting for a person's approval
+session 923af375a850d5cf: waiting for you: fetch_url {"url":"https://docs.rs/crate/tiny_http/latest/source/Cargo.toml"} (the session has read content from outside; external calls and spending need approval until the taint expires; request 2aea6228). Answer with `sion agent continue 923af375a850d5cf --approve` or `--decline <why>`.
+```
+
+What a quarantined read stops, and what it does not
+(`agent:quarantine`): the content cannot instruct the model, whose
+conversation never holds it, and an answer kept to values cannot either.
+But an answer is what the content made the reader say: a number or an
+enum's value can be wrong because the page lied. A string is matched
+in an argument as it was given, so an argument the model writes from one
+in another form (spelled differently, or a part shorter than four
+characters) is not caught. And a browser, a desktop and the shell are not
+held, since the model acts on what they show: their results taint the
+session as before.
+
 ## Approvals
 
 At L5 the payment waits. The session is saved, and the command returns:
@@ -218,8 +292,10 @@ session 7e977e07449b5888: done
 
 What a person allows has the limits of a skill's pre-approval: it never
 covers a payment, which is approved on its own (`--always` on one is
-refused); it cannot be given while the session has read content from
-outside, and one given before does not hold until the taint expires; and
+refused), nor a call whose argument comes from content held in
+[quarantine](#quarantine); it cannot be given while the session has read
+content from outside, and one given before does not hold until the taint
+expires; and
 it never goes past what the autonomy level refuses
 (`agent:session-allowance`). On a channel, `/approve always [rule]` does
 the same, `/allowed` lists what the session may do without asking, and

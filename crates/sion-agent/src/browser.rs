@@ -1183,6 +1183,11 @@ impl Tool for BrowserTool {
         false
     }
 
+    /// The model acts on the page it is shown: it is not held.
+    fn quarantinable(&self) -> bool {
+        false
+    }
+
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         let reference = input["ref"].as_str().unwrap_or_default();
         let result = self.shared.with(|browser| -> Result<Outcome, String> {

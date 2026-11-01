@@ -369,6 +369,7 @@ fn profile(home: &Path, name: &str, agent: ObjectId, scripts: &[Value]) -> Profi
         image_model: None,
         home_assistant: false,
         budget_tokens: None,
+        quarantine: false,
     }
 }
 

@@ -96,6 +96,7 @@ fn profile(
         image_model: None,
         home_assistant: false,
         budget_tokens: None,
+        quarantine: false,
     }
 }
 

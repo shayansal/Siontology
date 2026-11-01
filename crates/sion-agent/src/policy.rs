@@ -102,6 +102,10 @@ pub struct Policy {
     /// them for approval. Spending is held whatever the tool.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub contained: BTreeSet<String>,
+    /// Whether content from outside is held out of the conversation and
+    /// read through a reader without tools ([`crate::quarantine`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quarantine: bool,
 }
 
 fn yes() -> bool {
@@ -117,6 +121,7 @@ impl Default for Policy {
             taint_ttl: 24 * 3600,
             skill_approvals: true,
             contained: BTreeSet::new(),
+            quarantine: false,
         }
     }
 }

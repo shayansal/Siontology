@@ -2,7 +2,7 @@
 //! the policy, and stops when the work is done, the turns run out, or a
 //! person must decide.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,9 +10,10 @@ use serde_json::{json, Value};
 use crate::journal::{key, Entry, Journal, Prior};
 use crate::model::{
     image_digest, images_of, Block, Delta, Image, Message, Model, ModelError, Picture, Request,
-    Response, Role, Stop, Usage,
+    Response, Role, Stop, ToolSpec, Usage,
 };
 use crate::policy::{Decision, Policy, Standing};
+use crate::quarantine::{self, Held, QUARANTINE_READ};
 use crate::tools::{Dedup, Effect, Outcome, Toolbox, TOOLS_CALL, TOOLS_SEARCH};
 
 /// The limits of a session.
@@ -230,6 +231,14 @@ pub struct State {
     /// Tokens the calls' own models used (subagents at work).
     #[serde(default)]
     pub delegated: Usage,
+    /// What tools returned from outside and was held out of the
+    /// conversation, in quarantine ([`crate::quarantine`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<Held>,
+    /// The strings read from content held in quarantine: an external call
+    /// or a payment whose input carries one waits for a person.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub outside_values: BTreeSet<String>,
 }
 
 /// The most recent calls a session keeps to tell when it goes round in
@@ -299,6 +308,20 @@ impl State {
         };
         state.show(pictures);
         state
+    }
+
+    /// Whether a person may allow more than the call that waits: the same
+    /// call again, or the calls a rule matches, for the rest of the session
+    /// (`--always`). Not for a payment, which is approved one at a time;
+    /// not while the session is tainted at `now`, since an allowance would
+    /// not hold; and not for a call whose argument comes from content held
+    /// in quarantine, which a person approves each time it is used.
+    pub fn may_allow_more(&self, now: u64) -> bool {
+        self.pending.as_ref().is_some_and(|pending| {
+            pending.effect.is_some_and(|effect| effect < Effect::Spend)
+                && !self.standing.tainted(now)
+                && quarantine::carried(&pending.input, &self.outside_values).is_none()
+        })
     }
 
     /// Adds `pictures` to the person's last message, their bytes kept
@@ -931,6 +954,7 @@ impl Runtime<'_> {
                     });
                     for ((at, ready), outcome) in group.iter().zip(outcomes) {
                         let outcome = marked(ready, outcome);
+                        let outcome = self.hold(state, &ready.tool, outcome);
                         self.finish(state, ready, &outcome);
                         let step = self.call_step(
                             state,
@@ -1065,12 +1089,151 @@ impl Runtime<'_> {
         })
     }
 
+    /// The tools the model is shown: the toolbox's, and in quarantine the
+    /// reader.
+    fn shown(&self) -> Vec<ToolSpec> {
+        let mut shown = self.tools.shown();
+        if self.policy.quarantine {
+            shown.push(quarantine::spec());
+        }
+        shown
+    }
+
+    /// In quarantine, what a tool returned from outside is held out of the
+    /// conversation, and the model is told how to read it; the session is
+    /// not tainted by it. A tool whose results the model acts on, an error,
+    /// and pictures are not held.
+    fn hold(&self, state: &mut State, tool: &str, mut outcome: Outcome) -> Outcome {
+        let holds = self.tools.get(tool).is_some_and(|t| t.quarantinable());
+        if !self.policy.quarantine
+            || !holds
+            || !outcome.untrusted
+            || outcome.is_error
+            || !outcome.pictures.is_empty()
+        {
+            return outcome;
+        }
+        let held = Held {
+            handle: format!("q{}", state.held.len() + 1),
+            tool: tool.to_string(),
+            content: std::mem::take(&mut outcome.content),
+            at: (self.now)(),
+        };
+        outcome.content = quarantine::placeholder(&held);
+        outcome.untrusted = false;
+        state.held.push(held);
+        outcome
+    }
+
+    /// Answers [`QUARANTINE_READ`]: a reader without tools reads the content
+    /// held, and its answer, held to the schema, is what the model sees. An
+    /// answer with free text taints the session; the strings it gives are
+    /// labelled as from outside ([`State::outside_values`]).
+    fn read_held(&self, state: &mut State, input: &Value, left: Option<u64>) -> Outcome {
+        let handle = input["handle"].as_str().unwrap_or_default().trim();
+        let question = input["question"].as_str().unwrap_or_default().trim();
+        let schema = &input["schema"];
+        let Some(held) = state.held.iter().find(|h| h.handle == handle).cloned() else {
+            return Outcome::error(format!("nothing is held as {handle:?}"));
+        };
+        if question.is_empty() {
+            return Outcome::error("ask the reader a question");
+        }
+        let carries = match quarantine::check_schema(schema) {
+            Ok(carries) => carries,
+            Err(why) => return Outcome::error(format!("not a schema the reader answers: {why}")),
+        };
+        let request = quarantine::request(&held, question, schema);
+        let need = (request.system.len()
+            + request.messages.iter().map(Message::chars).sum::<usize>()) as u64
+            / 3
+            + u64::from(request.max_tokens);
+        if let Some(left) = left.filter(|left| need > *left) {
+            return Outcome::error(format!(
+                "not read: it takes about {need} tokens, and {left} are left of the run's budget"
+            ));
+        }
+        let start_ms = wall_ms();
+        let tainted = state.standing.tainted((self.now)());
+        let answered = self.ask_reader(state, &request);
+        let response = match answered {
+            Ok(response) => response,
+            Err(error) => return Outcome::error(format!("the reader could not answer: {error}")),
+        };
+        state.usage.input += response.usage.input;
+        state.usage.output += response.usage.output;
+        self.step(
+            state,
+            Step {
+                kind: "model".into(),
+                name: response.model.clone(),
+                start_ms,
+                ms: wall_ms().saturating_sub(start_ms),
+                tokens: Some((response.usage.input, response.usage.output)),
+                key: None,
+                effect: None,
+                outcome: Some("reader".into()),
+                tainted,
+            },
+        );
+        let text = Message {
+            role: Role::Assistant,
+            content: response.content,
+        }
+        .text();
+        let answer = match quarantine::answer_of(&text)
+            .and_then(|answer| quarantine::validate(&answer, schema).map(|()| answer))
+        {
+            Ok(answer) => answer,
+            Err(why) => {
+                return Outcome::error(format!(
+                    "the reader's answer does not keep to the schema, so it is not shown: {why}"
+                ))
+            }
+        };
+        state
+            .outside_values
+            .extend(quarantine::labels(&answer, schema));
+        let free = carries == quarantine::Carries::Text && quarantine::has_text(&answer, schema);
+        if free {
+            state.standing.taint(&self.policy, (self.now)());
+            Outcome::ok(format!(
+                "[read from {handle} without tools; its free text is content from outside]\n{answer}"
+            ))
+        } else {
+            Outcome::ok(format!("[read from {handle} without tools]\n{answer}"))
+        }
+    }
+
+    /// The reader's model call: the session's models in turn, as a run asks
+    /// them, without tools and unwatched (what it writes is not the
+    /// agent's reply).
+    fn ask_reader(&self, state: &mut State, request: &Request) -> Result<Response, ModelError> {
+        let now = (self.now)();
+        let mut last = ModelError::Refused("no model is configured".into());
+        for (index, model) in self.models.iter().enumerate() {
+            if state.cooling.get(&index).is_some_and(|until| now < *until) {
+                continue;
+            }
+            match model.complete(request) {
+                Ok(response) => return Ok(response),
+                Err(error) if error.transient() => {
+                    state
+                        .cooling
+                        .insert(index, now.saturating_add(self.limits.cooldown));
+                    last = error;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last)
+    }
+
     /// Tokens the next model call may cost at most: what it is sent, as an
     /// estimate (a token for every three bytes, which counts English text
     /// high), and the most it may answer.
     fn request_tokens(&self, state: &State, max_tokens: u32) -> u64 {
         let tools: usize = self
-            .tools
             .shown()
             .iter()
             .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
@@ -1170,6 +1333,15 @@ impl Runtime<'_> {
                         .into(),
                 )
             }
+            // Nor would an allowance for an argument read from content held
+            // in quarantine: a person approves each call that uses one.
+            _ if quarantine::carried(&pending.input, &state.outside_values).is_some() => {
+                return Err(
+                    "an argument comes from content held in quarantine, so each call \
+                     that uses it is approved on its own: approve this call once"
+                        .into(),
+                )
+            }
             Scope::Call => Some(crate::policy::Allowance {
                 tool: inner.to_string(),
                 input: Some(inner_input.into_owned()),
@@ -1249,7 +1421,7 @@ impl Runtime<'_> {
         let request = Request {
             system: self.system.clone(),
             messages: state.messages.clone(),
-            tools: self.tools.shown(),
+            tools: self.shown(),
             max_tokens,
             images: state.images.clone(),
         };
@@ -1298,6 +1470,9 @@ impl Runtime<'_> {
     }
 
     fn call(&self, state: &mut State, name: &str, input: &Value, left: Option<u64>) -> Called {
+        if name == QUARANTINE_READ && self.policy.quarantine {
+            return Called::Ran(self.read_held(state, input, left));
+        }
         self.reconcile(state, name, input);
         let start_ms = wall_ms();
         match self.check(state, name, input) {
@@ -1349,6 +1524,7 @@ impl Runtime<'_> {
                     tool.call_noting(&ready.input, &ready.key, tainted, &mut note)
                 };
                 let outcome = marked(&ready, outcome);
+                let outcome = self.hold(state, &ready.tool, outcome);
                 self.finish(state, &ready, &outcome);
                 let step = self.call_step(
                     state,
@@ -1397,6 +1573,11 @@ impl Runtime<'_> {
             let query = input["query"].as_str().unwrap_or_default();
             let found = self.tools.search(query);
             return Checked::Answered(Outcome::ok(json!(found).to_string()));
+        }
+        if name == QUARANTINE_READ {
+            return Checked::Answered(Outcome::error(
+                "nothing is held in quarantine: this session does not hold content from outside",
+            ));
         }
         if name == TOOLS_CALL {
             let inner = input["name"].as_str().unwrap_or_default().to_string();
@@ -1449,10 +1630,37 @@ impl Runtime<'_> {
         // A call can do at most what its tool declares.
         let effect = tool.effect_of(input).min(tool.effect());
         let mut pre_approved = None;
-        match self
+        let decision = self
             .policy
-            .decide(&state.standing, name, effect, &call_key, now)
-        {
+            .decide(&state.standing, name, effect, &call_key, now);
+        // An external call or a payment whose input carries what was read
+        // from content held in quarantine waits for a person, whatever the
+        // level, a skill or an allowance says, unless they approved it.
+        let approved = state
+            .standing
+            .approvals
+            .get(&call_key)
+            .is_some_and(|until| now < *until);
+        if effect >= Effect::External && !approved && !matches!(decision, Decision::Deny(_)) {
+            if let Some(value) = quarantine::carried(input, &state.outside_values) {
+                let shown: String = value.chars().take(40).collect();
+                return Checked::Wait {
+                    key: call_key,
+                    tool: name.to_string(),
+                    input: input.clone(),
+                    reason: format!(
+                        "an argument comes from content held in quarantine ({shown}{})",
+                        if value.chars().count() > 40 {
+                            "…"
+                        } else {
+                            ""
+                        }
+                    ),
+                    effect,
+                };
+            }
+        }
+        match decision {
             Decision::Deny(reason) => {
                 return Checked::Answered(Outcome::error(format!("refused by policy: {reason}")))
             }
@@ -1595,8 +1803,6 @@ fn is_results(message: &Message) -> bool {
         .any(|b| matches!(b, Block::ToolResult { .. }))
 }
 
-/// The block that gives the model `outcome`: its pictures by their
-/// digests, their bytes kept in `images`.
 /// How a call ended, for its step: `ok`, `error` or `unknown`.
 fn ended_as(outcome: &Outcome) -> &'static str {
     match (outcome.certain, outcome.is_error) {
@@ -1606,6 +1812,8 @@ fn ended_as(outcome: &Outcome) -> &'static str {
     }
 }
 
+/// The block that gives the model `outcome`: its pictures by their
+/// digests, their bytes kept in `images`.
 fn result_block(use_id: &str, outcome: &Outcome, images: &mut BTreeMap<String, String>) -> Block {
     let refs = outcome
         .pictures

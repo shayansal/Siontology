@@ -80,6 +80,10 @@ pub struct Profile {
     /// Tokens each run of its sessions may use, its subagents' included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u64>,
+    /// Whether its sessions hold what tools return from outside in
+    /// quarantine ([`sion_agent::quarantine`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quarantine: bool,
 }
 
 fn yes() -> bool {
@@ -168,6 +172,7 @@ impl Profile {
             Policy {
                 autonomy: self.autonomy,
                 skill_approvals: self.skill_approvals,
+                quarantine: self.quarantine,
                 ..Policy::default()
             },
             crate::runtime::Equipment {
@@ -322,6 +327,11 @@ pub enum ProfileCommand {
         /// a last answer, without tools, of what it did and what remains.
         #[arg(long, value_name = "TOKENS")]
         budget_tokens: Option<u64>,
+        /// Hold what tools return from outside out of the conversation: the
+        /// agent reads it through a reader without tools, its answers held
+        /// to a schema, and the session is not tainted by values.
+        #[arg(long)]
+        quarantine: bool,
     },
     /// The profiles on this machine.
     List,
@@ -397,6 +407,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             image_model,
             home_assistant,
             budget_tokens,
+            quarantine,
         } => {
             let shell = shell.sandbox()?;
             let screen = screen.screen()?;
@@ -455,6 +466,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 },
                 home_assistant,
                 budget_tokens,
+                quarantine,
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()
@@ -596,6 +608,9 @@ pub fn describe(profile: &Profile) -> String {
     }
     if let Some(tokens) = profile.budget_tokens {
         extras.push(format!("a budget of {tokens} tokens a run"));
+    }
+    if profile.quarantine {
+        extras.push("quarantine".to_string());
     }
     format!(
         "profile {}: agent {} as {}, {} at {:?}{}",

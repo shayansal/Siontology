@@ -86,6 +86,7 @@ fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile)
         image_model: None,
         home_assistant: false,
         budget_tokens: None,
+        quarantine: false,
     };
     (home, devnet, ledger, profile)
 }

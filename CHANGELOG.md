@@ -10,6 +10,24 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Content from outside, read in quarantine
+
+- **`--quarantine`** (on `sion agent run` and on profiles): what tools
+  return from outside is held out of the conversation, under a handle. The
+  agent reads it with `quarantine_read`, giving a question and a JSON
+  schema for the answer; a separate model call, given no tools and told
+  that the content is data, answers, and the runtime checks the answer
+  against the schema before the agent sees it.
+- An answer of booleans, numbers, strings from an enum and strings of a
+  strict format (a date, a time, an email address, a URL, a UUID, hex
+  digits, a version) does not taint the session; one with free text does.
+- The strings an answer gives are labelled as from outside: an external
+  call or a payment whose input carries one waits for a person, whatever
+  the level, a skill or an allowance says, and is approved on its own
+  (`--always` is refused) (`agent:quarantine`).
+- A browser's pages, a desktop's screens and the shell's output are not
+  held, since the agent acts on what they show; they taint as before.
+
 ### Decisions that name what they decide; runs held to a token budget and out of circles
 
 - **A waiting call names its request**: the first eight hex digits of its
