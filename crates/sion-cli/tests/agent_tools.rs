@@ -302,6 +302,7 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
         ledger: ledger.clone(),
         wallet: "coder".into(),
         agent,
+        evidence: None,
     };
     std::fs::write(
         work.join("archive.txt"),

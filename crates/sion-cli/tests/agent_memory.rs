@@ -139,6 +139,7 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
             ledger: ledger.clone(),
             wallet: "agent-8".into(),
             agent,
+            evidence: None,
         },
         log,
     };

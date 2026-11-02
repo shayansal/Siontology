@@ -35,6 +35,9 @@ does, and how.
   voice](voice.md): where it is reached.
 - [Profiles and schedules](schedules.md), [subagents and hired
   help](teams.md), and [graphs of agents](graphs.md).
+- [Work it takes on by itself](work.md): what it watches on GitHub and
+  in chats, who may ask it for work, what it takes on unasked, its
+  mandates, and what waits for you.
 
 ## How these pages were made
 

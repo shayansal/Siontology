@@ -141,7 +141,39 @@ impl Profile {
             read_only: false,
             confidential: self.confidential,
             confidential_files: self.confidential_files.clone(),
+            // A work item's session is started by the work runner
+            // ([`Profile::start_work`]).
+            work: None,
+            session: None,
         }
+    }
+
+    /// Starts session `session` (its id, fixed before it runs) on a work
+    /// item ([`crate::work`]): `task` is its assignment, `link` the item it
+    /// reports to.
+    pub fn start_work(
+        &self,
+        ledger: SharedLedger,
+        session: &str,
+        task: &str,
+        link: crate::work::WorkLink,
+        hooks: crate::runtime::Hooks<'_>,
+    ) -> Result<(Saved, Vec<String>), CliError> {
+        crate::runtime::start_watched(
+            ledger,
+            &self.wallet,
+            self.agent,
+            task,
+            &[],
+            self.models.clone(),
+            self.policy(),
+            Equipment {
+                work: Some(link),
+                session: Some(session.to_string()),
+                ..self.equipment()
+            },
+            hooks,
+        )
     }
 
     /// Starts a session on `task`.

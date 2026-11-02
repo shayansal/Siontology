@@ -256,14 +256,14 @@ fn load_at(path: &Path) -> Result<Pairings, CliError> {
 
 /// A lock on a store, held while it lives: a file made only where there
 /// is none, removed when dropped.
-struct Held(PathBuf);
+pub(crate) struct Held(PathBuf);
 
 impl Held {
     /// Waits for the lock at `path`, and takes it. One left by a process
     /// that stopped while holding it is taken over once stale (two
     /// processes taking over the same stale lock at once could both hold
     /// it: a crash and a race together).
-    fn take(path: &Path) -> Result<Held, CliError> {
+    pub(crate) fn take(path: &Path) -> Result<Held, CliError> {
         let failed = |e: std::io::Error| CliError::Usage(format!("{}: {e}", path.display()));
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(failed)?;

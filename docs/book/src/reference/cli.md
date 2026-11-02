@@ -783,6 +783,8 @@ Commands:
   graph          Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, self-consistency, orchestrator, or one of your own), each node a session of its own
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   scheduler      Run scheduled jobs as they fall due
+  work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
+  waiting        Everything that waits for a person: work items' questions, approvals and failures, messages that could not be sent, sessions waiting for approval, and chats waiting to be let in
   serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's POST /v1/chat/completions (a profile as the model) and GET /v1/models, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
   talk           Talk with a profile in the terminal: what you type goes to it, its reply comes as the model writes it; with --voice, heard and spoken
   telegram       Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
@@ -2342,6 +2344,228 @@ Options:
 ```
 
 A run that was missed while the scheduler was not running happens once, late (`agent:local-scheduler`).
+
+## `sion agent work`
+
+```text
+Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
+
+Usage: sion agent work [OPTIONS] <COMMAND>
+
+Commands:
+  rules      Show a profile's rules for work: the mode, the kinds of work its agent may take on by itself, and what it watches; or change them
+  watch      Watch a GitHub repository or a chat for work, and say who may start it there; or stop watching it
+  run        Take work on as it comes: read the watches, run the work in its slots, and send what it says
+  list       The work taken on, and what each item waits for
+  show       One item: its request, its mandate, what reached it, what it reported, and its messages
+  decisions  What became of each trigger, newest last: taken on, ignored, gone to open work, or not weighed; and in observe mode, what would have been taken on
+  answer     Answer an item's question, or tell it what to do, as its operator
+  approve    Approve the call an item's session waits on, or decline it
+  stop       Stop an item: its mandate is withdrawn, on the ledger too
+  retry      Try again: the messages of an item that could not be sent, or an item that failed or is blocked
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Work it takes on by itself](../agent/work.md). A profile's work is kept in `$SION_HOME/agents/work/<profile>`.
+
+## `sion agent work rules`
+
+```text
+Show a profile's rules for work: the mode, the kinds of work its agent may take on by itself, and what it watches; or change them
+
+Usage: sion agent work rules [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --mode <MODE>            off (only what it is asked for), observe (weigh the rest, take none of it on, record what it would have: the default), or auto (take on what a rule covers)
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --rule <ID=INSTRUCTION>  A kind of work it may take on without being asked: `id=instruction`, the instruction saying what it covers and how the work is done
+      --drop <ID>              Drop a rule
+  -h, --help                   Print help
+```
+
+The mode, the rules and the watches have a version, the first 16 hex digits of their digest, which every decision and mandate records.
+
+## `sion agent work watch`
+
+```text
+Watch a GitHub repository or a chat for work, and say who may start it there; or stop watching it
+
+Usage: sion agent work watch [OPTIONS] <PROFILE> <WATCH>
+
+Arguments:
+  <PROFILE>  The agent profile
+  <WATCH>    github:<owner>/<repo>, or <messenger>:<chat> (telegram:-100123, slack:C042)
+
+Options:
+      --allow <NAME>                 Let them ask the agent for work here, as the watch names them (GitHub logins, a messenger's user ids)
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --disallow <NAME>              Take them off the list
+      --bot <NAME>                   A bot whose messages may become work nobody asked for (never a request)
+      --listed-unaddressed <CELL>    What a listed person's message not said to the agent becomes: inferred or ignore (when the watch is added: inferred on GitHub, ignore in a chat)
+      --unlisted-addressed <CELL>    What a message said to the agent by someone not on the list becomes: explicit, inferred or ignore (when added: ignore)
+      --unlisted-unaddressed <CELL>  What a message by someone not on the list, not said to the agent, becomes: inferred or ignore (when added: ignore)
+      --remove                       Stop watching it: the work open there is revoked when it would go on, and its messages not yet sent are dropped
+  -h, --help                         Print help
+```
+
+A new GitHub watch weighs a listed person's messages not said to the agent; a new chat watch ignores them, unless `--listed-unaddressed inferred`.
+
+## `sion agent work run`
+
+```text
+Take work on as it comes: read the watches, run the work in its slots, and send what it says
+
+Usage: sion agent work run [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --once                 Read the watches once, run what that starts until it waits, send what it said, and stop
+      --poll <POLL>          How often to read the watches, in seconds [default: 30]
+      --slots <SLOTS>        How many items may run at once; one more slot is kept for a person's message [default: 2]
+      --assess-with <MODEL>  The model that weighs work nobody asked for (default: the profile's first)
+  -h, --help                 Print help
+```
+
+One runner works for a profile at a time (`runner.pid` in its directory). Its token for GitHub is `GH_TOKEN` or `GITHUB_TOKEN`, else the GitHub CLI's; `SION_GITHUB_API` names another API, `SION_GITHUB_LOGIN` the agent's login. Chats use the bridge's credentials (`agent:work-runner`).
+
+## `sion agent work list`
+
+```text
+The work taken on, and what each item waits for
+
+Usage: sion agent work list [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --all          Ended items too
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent work show`
+
+```text
+One item: its request, its mandate, what reached it, what it reported, and its messages
+
+Usage: sion agent work show [OPTIONS] <PROFILE> <ITEM>
+
+Arguments:
+  <PROFILE>  The agent profile
+  <ITEM>     The item (w1, w2, …)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent work decisions`
+
+```text
+What became of each trigger, newest last: taken on, ignored, gone to open work, or not weighed; and in observe mode, what would have been taken on
+
+Usage: sion agent work decisions [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The agent profile
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --would        Only what observe mode would have taken on
+      --last <LAST>  How many to show [default: 20]
+  -h, --help         Print help
+```
+
+## `sion agent work answer`
+
+```text
+Answer an item's question, or tell it what to do, as its operator
+
+Usage: sion agent work answer [OPTIONS] <PROFILE> <ITEM> <TEXT>
+
+Arguments:
+  <PROFILE>  The agent profile
+  <ITEM>     The item
+  <TEXT>     What to tell it
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent work approve`
+
+```text
+Approve the call an item's session waits on, or decline it
+
+Usage: sion agent work approve [OPTIONS] <PROFILE> <ITEM>
+
+Arguments:
+  <PROFILE>  The agent profile
+  <ITEM>     The item
+
+Options:
+      --decline <WHY>  Decline it instead, saying why
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help           Print help
+```
+
+## `sion agent work stop`
+
+```text
+Stop an item: its mandate is withdrawn, on the ledger too
+
+Usage: sion agent work stop [OPTIONS] <PROFILE> <ITEM>
+
+Arguments:
+  <PROFILE>  The agent profile
+  <ITEM>     The item
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+An item that is running stops before its session's next step; its mandate's withdrawal is issued then.
+
+## `sion agent work retry`
+
+```text
+Try again: the messages of an item that could not be sent, or an item that failed or is blocked
+
+Usage: sion agent work retry [OPTIONS] <PROFILE> <ITEM>
+
+Arguments:
+  <PROFILE>  The agent profile
+  <ITEM>     The item
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent waiting`
+
+```text
+Everything that waits for a person: work items' questions, approvals and failures, messages that could not be sent, sessions waiting for approval, and chats waiting to be let in
+
+Usage: sion agent waiting [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
 
 ## `sion agent serve`
 

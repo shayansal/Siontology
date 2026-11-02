@@ -41,6 +41,9 @@ pub struct Acting {
     pub wallet: String,
     /// The agent (its charter).
     pub agent: ObjectId,
+    /// The claim its payments name as their evidence: the mandate of the
+    /// work they are made for ([`crate::work`]), if they are made for some.
+    pub evidence: Option<sion_core::ids::ClaimId>,
 }
 
 impl std::fmt::Debug for Acting {
@@ -288,7 +291,10 @@ fn pay(acting: &Acting, input: &Value, key: &str, note: &mut dyn FnMut(&str)) ->
         payee,
         amount,
         purpose: format!("{purpose} (agent call {call})"),
-        evidence: None,
+        // A payment made for work names the work's mandate: the ledger
+        // keeps it with the payment and its receipt, and checks it only
+        // above the charter's evidence threshold.
+        evidence: acting.evidence,
     };
     // A keyless agent's payment is signed by its nearest keyed ancestor, in
     // a batch with whatever its siblings send at about the same time.
@@ -330,9 +336,16 @@ fn pay(acting: &Acting, input: &Value, key: &str, note: &mut dyn FnMut(&str)) ->
     match result {
         Ok(view) => match &view.status {
             ExecStatus::Success => Outcome::ok(format!(
-                "Pulse {}: {} Transaction {digest}.",
+                "Pulse {}: {} Transaction {digest}.{}",
                 view.pulse.0,
-                crate::describe::receipt(&names, &view.effects)
+                crate::describe::receipt(&names, &view.effects),
+                match &acting.evidence {
+                    Some(claim) => format!(
+                        " It names claim {} as its evidence: the mandate of your work.",
+                        claim.short()
+                    ),
+                    None => String::new(),
+                }
             )),
             _ => Outcome::error(format!(
                 "refused by the ledger at Pulse {}: {}",
@@ -722,6 +735,11 @@ pub struct Saved {
     /// Whether it has Home Assistant's tools.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub home_assistant: bool,
+    /// The work item it does, if the work runner started it for one
+    /// ([`crate::work`]): its work tools report there, and its payments
+    /// name the item's mandate as their evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::work::WorkLink>,
 }
 
 /// What an agent knew of itself, as a session's system prompt keeps it
@@ -1169,10 +1187,16 @@ impl Saved {
             ledger,
             wallet: self.wallet.clone(),
             agent: self.agent,
+            evidence: self.work.as_ref().and_then(crate::work::WorkLink::evidence),
         };
         let mut tools = Toolbox::new();
         for tool in ledger_tools(&acting) {
             tools.add_boxed(tool);
+        }
+        if let Some(link) = &self.work {
+            for tool in crate::work::tools(link) {
+                tools.add_boxed(tool);
+            }
         }
         if let Some(root) = &self.workspace {
             check_workspace(root)?;
@@ -2378,6 +2402,12 @@ pub struct Equipment {
     pub verify_files: Option<PathBuf>,
     /// Curated logs it keeps in mind ([`Saved::shared_memory`]).
     pub shared_memory: Vec<ObjectId>,
+    /// The work item it does ([`Saved::work`]).
+    pub work: Option<crate::work::WorkLink>,
+    /// The id its session takes, if it is fixed before it runs (a work
+    /// item's, so that a run a restart interrupted goes on in it); else a
+    /// new one.
+    pub session: Option<String>,
 }
 
 /// The default directory of an agent's skills.
@@ -2448,9 +2478,18 @@ pub fn start_watched(
         read_only,
         confidential,
         confidential_files,
+        work,
+        session: session_id,
     } = equipment;
     if models.is_empty() {
         return Err(CliError::Usage("give at least one --model".into()));
+    }
+    // A session given its id starts as a new one: it never takes the place
+    // of one kept.
+    if let Some(id) = &session_id {
+        if sessions_dir().join(format!("{id}.json")).exists() {
+            return Err(CliError::Usage(format!("session {id} exists already")));
+        }
     }
     let skills = skills.unwrap_or_else(|| skills_dir(&agent));
     if let Some(root) = &workspace {
@@ -2530,7 +2569,7 @@ pub fn start_watched(
         verify,
         verify_files,
         known: None,
-        state: State::start_with(&new_id(), task, pictures, &limits),
+        state: State::start_with(&session_id.unwrap_or_else(new_id), task, pictures, &limits),
         ended: None,
         decided: None,
         positions: Vec::new(),
@@ -2553,6 +2592,7 @@ pub fn start_watched(
         shared: Vec::new(),
         image_model,
         home_assistant,
+        work,
     };
     saved.from_outside(hooks.outside);
     saved.hold_confidential(hooks.confidential || confidential);

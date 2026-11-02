@@ -25,7 +25,7 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop, storage deals) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop, storage deals, work it takes on by itself from GitHub and chats under mandates) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -458,6 +458,53 @@ bubblewrap), and the guide's transcripts are of docs.rs. Trust atoms
 `agent:browser`, `agent:browser-hosts`, `agent:browser-logins`,
 `agent:desktop`. Not built: more than one page at a time, downloads and
 uploads; a desktop that outlives its process.
+
+**Work the agent takes on by itself: built (beyond the paper).** `sion
+agent work` gives a profile's agent watches: GitHub repositories (new
+issues and pull requests, and the comments on them, read through the
+REST API) and chats on the messengers a bridge answers
+([Work it takes on by itself](book/src/agent/work.md)). A fixed gate
+decides who may start work: someone on a watch's list who says
+something to the agent (a mention, an assignment, a direct message, a
+reply to it) makes a request; a bot on the watch's bot list, and the
+kinds of message its admission table names, make candidates to weigh;
+anything else starts nothing. A thread (an issue, a chat's thread, a
+direct chat, a group chat outside its threads) has one item open at a
+time, and what is said on it goes to that item (in a group chat outside
+its threads, only what is said to the agent): a listed person's message
+as theirs, anyone else's marked as data. A candidate is weighed by a
+model with no tools against the operator's rules, and taken on only in
+`auto` mode when the model names a rule that covers it; in `observe`
+mode, the default, the runtime records that it would have been. Each
+item has a mandate (who asked, under which version of the rules, by
+which path, under which rules, what it covers) whose digest the agent's
+wallet publishes as a claim (`work.mandate/v1`, a commitment), and which
+the item's payments name as their evidence. Before every run the mandate
+is checked against the rules as they are: one they no longer allow is
+revoked (`work.mandate.revoked/v1`), one a person stops is withdrawn
+(`work.mandate.withdrawn/v1`). The agent reports with `work_report` and
+asks with `work_ask`: the runtime says once that it took the work on,
+sends nothing the agent only notes, and sends its results, one question
+at a time and why it cannot go on, to the conversation the work came
+from, each message with a purpose and within 100 words in a chat or 400
+on an issue. What each item waits for is worked out from its facts, and
+`sion agent waiting` lists everything that waits for a person: work
+items' questions, approvals, failures and messages that could not be
+sent, sessions waiting for approval, chats waiting to be let in. Items
+run in slots (two by default), people's first, and one more is kept for
+a person's request or answer. A message that could not be sent is tried
+eight times, then waits for a person, while the work goes on. Every step
+is stored before it is done; a run a restart interrupted goes on in the
+same session, told so. Tested on a devnet against stand-ins for GitHub's
+API and Telegram's Bot API.
+**Simplified:** the runner polls (every 30 seconds by default); a change
+of the rules reaches open items when they next run, not at once; a
+mandate is evidence the ledger records, not evidence that passes a
+charter's evidence policy (it is not bonded). **Not built:** review
+comments on pull requests' code, CI results, other threads followed for
+context, a rule's own way of reporting, requests beyond a mandate handed
+back to be weighed again. Trust atoms `agent:work-gate`,
+`agent:work-assessment`, `agent:work-messages`, `agent:work-runner`.
 
 ### Data availability
 
@@ -1012,6 +1059,10 @@ the architecture's own:
 | `agent:home-assistant` | Home Assistant's token (`HOME_ASSISTANT_TOKEN`) acts as the user it was made for: calling a service does whatever that user may, in the home itself. Calls are external calls, which autonomy L4 asks a person for; what Home Assistant says (names its users gave) taints a session as a web page does. |
 | `agent:voice` | The services `--hear` and `--speak` name receive the voice notes and the replies spoken; the profile acts on what the transcription says was said, within its autonomy and the agent's charter. A `command:` provider runs as the operator's user, outside any sandbox. |
 | `agent:local-scheduler` | Scheduled jobs run only while `sion agent scheduler` runs on the machine (or a system timer calls it); a missed run happens once, late. |
+| `agent:work-gate` | Who said something on a watch is who the watch says: a GitHub login as GitHub gives it, a chat's user as the messenger names them. Whoever can post as someone on a watch's list can ask the agent for work as them. In a chat, a bot is whoever the watch's bot list names: a messenger that gives no sign of a bot lets another bot pass as a person. The conversation a piece of work came from receives what the agent says about it: on a public repository, everyone. |
+| `agent:work-assessment` | Work nobody asked for is taken on when a model, reading the message and the operator's rules, says a rule covers it: in `auto` mode, a message written to persuade that model can be taken on under a rule. Such work runs as content from outside (its session tainted) and its mandate names the rules; `observe` mode records the model's judgements for the operator to read first. |
+| `agent:work-messages` | What the agent reports goes to the conversation the work came from, as a reply would: the runtime checks each message's length and purpose, and that one question waits at a time, not what it says. A session that holds confidential content is not held back from these messages, as it is from external calls. |
+| `agent:work-runner` | Work happens only while `sion agent work run` runs for its profile (one runner at a time), reading the watches by polling. It reads a messenger's updates itself: a bridge on the same messenger and account would see only part of them. A runner stopped while it worked goes on with the interrupted run in the same session, whose journal holds a payment made then to once; the work tools are not journaled, so a message may be sent twice. |
 | `agent:keyless-signer` | A keyless subagent is contained by the runtime that holds its nearest keyed ancestor's keys: the ledger lets only that ancestor sign for it, and holds it to its own caveats, but a subagent that could make that runtime sign something else as the ancestor would act within the ancestor's caveats, not its own. The runtime signs only for the session's own tool calls. |
 | `agent:sandbox` | Commands an agent runs (its shell, its skills' scripts, MCP servers started in a sandbox) are contained only as far as the kernel's namespaces (bubblewrap) or the container runtime (Docker) hold: an escape gives them the runtime's user. Bubblewrap bounds how long a command runs and the size of each process, not how many processes it starts; Docker bounds those too. A container started by a runtime that is killed runs until its command ends. |
 | `agent:sandbox-network` | With the network allowed, a sandboxed command reaches what that network reaches. Bubblewrap's `host` network is the machine's own, unfiltered: local services and a cloud's metadata address included. The `declared` network gives commands none, and skills' scripts only what their skills declare, through the egress proxy (`agent:declared-hosts`). A Docker network restricts only as its operator set it up: the runtime refuses Docker's `host` and `bridge` networks by name and cannot check the rest. |

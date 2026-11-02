@@ -156,6 +156,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         ledger: ledger.clone(),
         wallet: "agent-7".into(),
         agent,
+        evidence: None,
     });
     use sion_agent::Tool;
     assert_eq!(tool.dedup(), sion_agent::Dedup::Reconciled);

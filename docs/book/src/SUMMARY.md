@@ -31,6 +31,7 @@
   - [Messengers](agent/messengers.md)
   - [Pairing and voice](agent/voice.md)
 - [Profiles and schedules](agent/schedules.md)
+- [Work it takes on by itself](agent/work.md)
 - [Subagents and hired help](agent/teams.md)
 - [Graphs of agents](agent/graphs.md)
 

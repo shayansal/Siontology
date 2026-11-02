@@ -53,6 +53,12 @@
 //! An agent's past is searchable ([`search`]: BM25 over its sessions'
 //! messages), and what it did can be consolidated into notes worth keeping
 //! ([`consolidate`]: a model proposes, gates decide).
+//!
+//! An agent can take work on by itself ([`work`]): events on the repositories
+//! and chats it watches pass a fixed gate, what nobody asked for is weighed
+//! against its operator's rules (and only recorded until the operator lets
+//! it act), every piece of work keeps a mandate that is checked again before
+//! the work goes on, and what it says to people keeps to limits.
 
 pub mod browser;
 pub mod builtin;
@@ -86,6 +92,7 @@ pub mod skills;
 pub mod tools;
 pub mod trace;
 pub mod verify;
+pub mod work;
 
 pub use model::{
     Block, Delta, Message, Model, ModelError, Picture, Request, Response, Role, Stop, ToolSpec,

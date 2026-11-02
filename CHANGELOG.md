@@ -10,6 +10,42 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Work it takes on by itself
+
+- **`sion agent work`**: a profile's agent watches GitHub repositories
+  and chats (`watch <profile> github:<owner>/<repo> --allow <login>`, or
+  `<messenger>:<chat>`) and takes work on there. What someone on the
+  list asks it is taken on at once. What nobody asked for (a bug report
+  not addressed to it, a listed bot's message) passes a fixed gate, is
+  weighed by a model against the operator's rules (`rules <profile>
+  --rule <id>=<instruction>`), and in `observe` mode, the default, is
+  only recorded (`decisions <profile> --would`) until `--mode auto` lets
+  it act. `run <profile>` is the runner; `list`, `show`, `answer`,
+  `approve`, `stop` and `retry` work on its items.
+- **A mandate for every piece of work**: who asked, under which version
+  of the rules, by which path and under which rules. The agent's wallet
+  publishes its digest as a claim (`work.mandate/v1`); the item's
+  payments name that claim as their evidence; before every run it is
+  checked against the rules as they are. A mandate the rules no longer
+  allow is revoked, and one a person stops (`stop` on the thread, or
+  `sion agent work stop`) is withdrawn, each on the ledger.
+- **Attention spent as a cost**: the agent says once that it took the
+  work on, says nothing while it works, and writes again with its
+  result, with one question at a time (`work_ask`, with choices), or
+  with why it cannot go on (`work_report`), in the conversation the work
+  came from: at most 100 words in a chat and 400 on an issue, every
+  message with a stated purpose, the limits held by the runtime.
+- **`sion agent waiting`**: one list of everything that waits for a
+  person, with the command that answers each: work items' questions,
+  approvals and failures, messages that could not be sent, sessions
+  waiting for approval, chats waiting to be let in.
+- **A slot kept for people**: items run in slots (`--slots`, two by
+  default), people's first, and one more is kept for a person's request
+  or answer, so work nobody asked for never keeps anyone waiting.
+- The design of the gate, observe mode, mandates checked again and the
+  kept slot follows DeepSeek's dsh-superagent prototype; here fixed
+  rules route the work, and every item runs as an ordinary session.
+
 ### The website and the book
 
 - **How it compares**: a table on the landing page sets Siontology beside

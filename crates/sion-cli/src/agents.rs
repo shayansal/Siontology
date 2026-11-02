@@ -593,6 +593,16 @@ pub enum AgentCommand {
         #[arg(long, default_value_t = 60)]
         poll: u64,
     },
+    /// Work a profile's agent takes on by itself: the GitHub repositories
+    /// and chats it watches, who may ask it for work there, the kinds of
+    /// work it may take on unasked (recorded only, until you let it act),
+    /// and the runner that does the work.
+    #[command(subcommand)]
+    Work(crate::work::WorkCommand),
+    /// Everything that waits for a person: work items' questions, approvals
+    /// and failures, messages that could not be sent, sessions waiting for
+    /// approval, and chats waiting to be let in.
+    Waiting,
     /// Serve the HTTP channel: POST /v1/profiles/<name>/messages with
     /// {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's
     /// POST /v1/chat/completions (a profile as the model) and GET
@@ -776,10 +786,22 @@ pub enum SessionsCommand {
     },
 }
 
-/// Runs an agent command. `shared` is the same ledger, for the runtime's
-/// tools, which keep it between calls.
+/// `sion agent waiting`: everything that waits for a person, one line
+/// each ([`crate::work::waiting`]).
+fn waiting() -> Result<(), CliError> {
+    let lines = crate::work::waiting()?;
+    if lines.is_empty() {
+        println!("Nothing needs you.");
+    }
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// Runs `command` if it needs no node (pairing, secrets, logins, MCP
-/// servers' settings, schedules, services); gives it back otherwise.
+/// servers' settings, schedules, services, work that needs no ledger);
+/// gives it back otherwise.
 pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<AgentCommand>> {
     Ok(match *command {
         AgentCommand::Secret(command) => crate::secrets::run(command),
@@ -791,10 +813,14 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Service(command) => crate::service::run(command),
+        AgentCommand::Work(command) if !command.needs_ledger() => crate::work::run_local(command),
+        AgentCommand::Waiting => waiting(),
         other => return Err(Box::new(other)),
     })
 }
 
+/// Runs an agent command. `shared` is the same ledger, for the runtime's
+/// tools, which keep it between calls.
 pub fn run(
     session: &mut Session<'_>,
     ledger: &dyn Ledger,
@@ -1185,6 +1211,8 @@ pub fn run(
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)
         }
+        AgentCommand::Work(command) => crate::work::run(shared, command),
+        AgentCommand::Waiting => waiting(),
         AgentCommand::Serve {
             listen,
             token_env,
