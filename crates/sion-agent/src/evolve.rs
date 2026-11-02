@@ -350,8 +350,10 @@ impl Tool for Propose {
         }
     }
 
+    /// It keeps a proposal: calls that only read run side by side, and
+    /// proposals are kept in the order the model gave them.
     fn effect(&self) -> Effect {
-        Effect::Read
+        Effect::Write
     }
 
     fn call(&self, input: &Value, _key: &str) -> Outcome {
@@ -821,8 +823,9 @@ impl Tool for ProposeInstructions {
         }
     }
 
+    /// It keeps a proposal, in the order the model gave it ([`Propose`]).
     fn effect(&self) -> Effect {
-        Effect::Read
+        Effect::Write
     }
 
     fn call(&self, input: &Value, _key: &str) -> Outcome {
