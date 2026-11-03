@@ -1,5 +1,6 @@
 //! Proof stack B: an independent implementation of the Siontology state
-//! transition, written from `docs/spec/state-transition.md` (v1.4) alone.
+//! transition, written from `docs/spec/state-transition.md` alone (first
+//! from v1.4, and kept to each version since, now v1.15).
 //!
 //! The Fold checks every chunk of every Pulse twice, with two independent
 //! implementations of the same specification (N-version programming): the

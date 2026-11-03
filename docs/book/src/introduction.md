@@ -19,7 +19,7 @@ yet. The design it implements is described in the architecture paper
 *Neo-Blockchains: The Fold Architecture* (ColdAI, October 2026).
 
 - Website: [siontology.org](https://siontology.org)
-- Source: [github.com/ColdAI-org/siontology](https://github.com/ColdAI-org/siontology)
+- Source: [github.com/shayansal/Siontology](https://github.com/shayansal/Siontology)
 - Licence: Apache-2.0 OR MIT
 
 > **Status.** Siontology is a devnet-scale reference implementation. Its
@@ -89,7 +89,7 @@ change only at epoch boundaries, by rules the World Proof covers
 ## What exists today
 
 The repository's
-[implementation status](https://github.com/ColdAI-org/siontology/blob/main/docs/implementation-status.md)
+[implementation status](https://github.com/shayansal/Siontology/blob/main/docs/implementation-status.md)
 is the authority on what is built. This table copies the main rows of its
 summary.
 
@@ -109,7 +109,7 @@ summary.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop, storage deals) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, work it takes on by itself from GitHub and chats under mandates, its pull requests' reviews and checks followed, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders and repositories, everything kept running on a server, live voice with a wake word) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |

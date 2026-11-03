@@ -718,8 +718,9 @@ the Pulse's beacon, reveal sealed orders with committee key shares, and
 settle the first submitted clearing whose optimality certificate verifies
 (`sion-lp`, `sion-clearing`): exact rational arithmetic, a linear-time
 certificate check, beacon-derived priorities for canonical tie-breaking,
-and a canonical price band. Sealed double auctions and assignment markets
-are implemented; the market demo clears at one price.
+and a canonical price band. Sealed double auctions are implemented on the
+ledger, and the market demo clears one at one price; assignment markets
+(jobs to slots) exist in `sion-clearing` as a library, not on the ledger.
 
 ### Privacy and compliance
 

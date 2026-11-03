@@ -1,11 +1,12 @@
 //! Forced inclusion: censorship becomes visible instead of silent.
 //!
-//! A user whose intent is being ignored posts it, with its fee, directly to
-//! the data-availability layer. From then on the shard has `k` Pulses to
-//! include it in committed output or to prove it invalid. An overdue intent
-//! is a liveness violation the World Proof cannot paper over: the node
-//! freezes the offending shard in the next World Proof and rotates its
-//! committee, while other shards keep running.
+//! A user whose intent is being ignored posts it, with its fee, straight to
+//! consensus. From then on the shard has `k` Pulses to execute it, or for it
+//! to become unexecutable. An overdue intent is a liveness violation that
+//! every certified header counts: the shard's committee is rotated, while
+//! other shards keep running. The architecture also freezes the shard until
+//! the obligation is met; this implementation does not (see
+//! `docs/implementation-status.md`, censorship resistance).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -153,7 +154,9 @@ impl ForcedInclusionTracker {
         by_shard
     }
 
-    /// Shards that must be frozen and have their committees rotated.
+    /// Shards with overdue intents: those the architecture freezes and whose
+    /// committees it rotates (this implementation only rotates them; see the
+    /// module documentation).
     pub fn shards_to_freeze(&self, pulse: Pulse) -> BTreeSet<ShardId> {
         self.violations(pulse).into_keys().collect()
     }

@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/ColdAI-org/siontology/blob/main/SECURITY.md
+    url: https://github.com/shayansal/Siontology/blob/main/SECURITY.md
     about: Do not open a public issue. Report security problems privately, as SECURITY.md describes.
   - name: Documentation
-    url: https://siontology.org/docs/
+    url: https://github.com/shayansal/Siontology/blob/main/docs/README.md
     about: Guides, concepts and the reference for the CLI, the HTTP API and the MCP server.

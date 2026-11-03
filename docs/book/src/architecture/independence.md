@@ -43,7 +43,7 @@ names them. CI runs it on every push:
 
 ```text
 $ ./scripts/check-independence.sh
-Proof stack B is independent of the reference executor (27 files checked).
+Proof stack B is independent of the reference executor (28 files checked).
 ```
 
 It is a lint, not a proof. Review still matters: a function copied into B

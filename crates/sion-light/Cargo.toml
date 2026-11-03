@@ -1,6 +1,6 @@
 [package]
 name = "sion-light"
-description = "The Siontology light client: committee-signed Pulse headers, state and knowledge proofs, data-availability sampling and World Proof checks"
+description = "The Siontology light client: committee-signed Pulse headers, committees from epoch to epoch, state and knowledge proofs, data-availability sampling"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
