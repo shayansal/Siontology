@@ -2523,3 +2523,274 @@ fn typing_shows_and_replies_come_as_they_are_written() {
     drop(devnet);
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+fn python() -> bool {
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// A terminal no one types at: its input ends when the sender is dropped.
+struct Untyped(std::sync::mpsc::Receiver<()>);
+
+impl std::io::Read for Untyped {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        let _ = self.0.recv();
+        Ok(0)
+    }
+}
+
+/// A script in `dir`, runnable.
+fn runnable(dir: &std::path::Path, name: &str, body: &str) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path.display().to_string()
+}
+
+/// A transcriber that hears the next of `lines` each time, keeping what it
+/// was given as `<dir>/<name>-<n>.wav`.
+fn transcriber(dir: &std::path::Path, name: &str, lines: &[&str]) -> sion_cli::voice::Hearing {
+    let said = dir.join(format!("{name}.said"));
+    std::fs::write(&said, lines.join("\n") + "\n").unwrap();
+    let count = dir.join(format!("{name}.count"));
+    let script = runnable(
+        dir,
+        &format!("{name}.sh"),
+        &format!(
+            "n=$(( $(cat {count} 2>/dev/null || echo 0) + 1 ))\necho $n > {count}\ncp \"$1\" {dir}/{name}-$n.wav\nsed -n \"${{n}}p\" {said}\n",
+            count = count.display(),
+            dir = dir.display(),
+            said = said.display()
+        ),
+    );
+    sion_cli::voice::Hearing::Command(vec![script])
+}
+
+/// How many times the transcriber `name` heard.
+fn times_heard(dir: &std::path::Path, name: &str) -> usize {
+    std::fs::read_to_string(dir.join(format!("{name}.count")))
+        .map(|t| t.trim().parse().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_live_conversation_is_heard_spoken_interrupted_and_woken() {
+    let _environment = one_at_a_time();
+    if !python() {
+        eprintln!("skipped: no python3 for the stand-in microphone");
+        return;
+    }
+    use sion_cli::listening::{Detection, Listening};
+    let (home, devnet, ledger, mut profile) = setup("sion-live-voice");
+    let dir = home.join("live");
+    std::fs::create_dir_all(&dir).unwrap();
+    let microphone = |plan: &[String]| {
+        let mut argv = vec![
+            "python3".to_string(),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_mic.py").to_string(),
+        ];
+        argv.extend(plan.iter().cloned());
+        argv
+    };
+    let plan = |steps: &[&str]| steps.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let speaking = sion_cli::voice::Speaking::Command(vec![
+        "sh".into(),
+        "-c".into(),
+        "printf OggS; cat".into(),
+    ]);
+
+    // Without a wake word: heard when it is said, the reply said a sentence
+    // at a time, and spoken over: silent at once, and what was said goes
+    // next.
+    let script = home.join("live.json");
+    std::fs::write(
+        &script,
+        json!([
+            {"say": "Three meetings today. The first is at nine. The second is at noon. The third is at four.", "pace_ms": 60},
+            {"say": "Moved it to Tuesday."}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    profile.models = vec![format!("script:{}", script.display())];
+    let (played, slow) = (dir.join("played"), dir.join("slow"));
+    // The first sentence takes a while to play, the rest none.
+    let player = runnable(
+        &dir,
+        "play.sh",
+        &format!(
+            "{{ cat \"$1\"; echo; }} >> {played}\nif [ ! -e {slow} ]; then touch {slow}; exec sleep 8; fi\n",
+            played = played.display(),
+            slow = slow.display()
+        ),
+    );
+    let talk = sion_cli::talk::Talk {
+        conversation: "desk".into(),
+        hearing: Some(transcriber(
+            &dir,
+            "desk",
+            &["What is on today?", "Move the noon one to Tuesday."],
+        )),
+        speaking: Some(speaking.clone()),
+        record: Vec::new(),
+        play: vec![player],
+    };
+    let listening = Listening {
+        listen: microphone(&plan(&[
+            "silence:0.5",
+            "tone:1.0",
+            "silence:0.2",
+            &format!("wait:{}", slow.display()),
+            "silence:0.5",
+            "tone:1.0",
+            "silence:0.2",
+            &format!("wait:{}=Moved it", played.display()),
+            "silence:0.5",
+        ])),
+        wake: None,
+        interrupt: true,
+        detection: Detection::default(),
+    };
+    let (_typing, untyped) = std::sync::mpsc::channel::<()>();
+    let mut out = Vec::new();
+    sion_cli::listening::run(
+        ledger.clone(),
+        &profile,
+        &talk,
+        &listening,
+        Box::new(std::io::BufReader::new(Untyped(untyped))),
+        &mut out,
+    )
+    .unwrap();
+    let shown = String::from_utf8(out).unwrap();
+    assert!(
+        shown.contains("you (heard): What is on today?\nagent> Three meetings today."),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("(interrupted)\nyou (heard): Move the noon one to Tuesday.\nagent> Moved it to Tuesday.\n"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("(the microphone stopped)\n"), "{shown}");
+    // Its first sentence was said as soon as it was written; silenced, it
+    // said no more of that reply.
+    assert_eq!(
+        std::fs::read_to_string(&played).unwrap(),
+        "OggSThree meetings today.\nOggSMoved it to Tuesday.\n"
+    );
+    // Each utterance was heard as a WAV file: the second of speech, with a
+    // fifth of a second before and after it.
+    for n in 1..=2 {
+        let heard = std::fs::read(dir.join(format!("desk-{n}.wav"))).unwrap();
+        assert_eq!(&heard[..4], b"RIFF");
+        assert_eq!(heard.len(), 44 + 70 * 640, "utterance {n}");
+    }
+
+    // With a wake word: what is said before it is heard by the wake word's
+    // transcriber alone; woken, by the conversation's; awake for a
+    // follow-up, then asleep again.
+    let script = home.join("kitchen.json");
+    std::fs::write(
+        &script,
+        json!([{"say": "It is sunny."}, {"say": "Rain tomorrow."}]).to_string(),
+    )
+    .unwrap();
+    profile.models = vec![format!("script:{}", script.display())];
+    let played = dir.join("played-kitchen");
+    let player = runnable(
+        &dir,
+        "play-kitchen.sh",
+        &format!("{{ cat \"$1\"; echo; }} >> {}\n", played.display()),
+    );
+    let talk = sion_cli::talk::Talk {
+        conversation: "kitchen".into(),
+        hearing: Some(transcriber(
+            &dir,
+            "kitchen",
+            &["Hey Zion, what's the weather?", "And tomorrow?"],
+        )),
+        speaking: Some(speaking),
+        record: Vec::new(),
+        play: vec![player],
+    };
+    let wake = sion_cli::listening::Wake::parse(
+        "hey sion",
+        transcriber(
+            &dir,
+            "wake",
+            &[
+                "what a lovely day",
+                "Hey Sion, what's the weather?",
+                "turn it up",
+            ],
+        ),
+        4,
+    )
+    .unwrap();
+    let listening = Listening {
+        listen: microphone(&plan(&[
+            "silence:0.5",
+            "tone:0.6",
+            "silence:1.2",
+            "tone:0.8",
+            "silence:0.2",
+            &format!("wait:{}=It is sunny.", played.display()),
+            "silence:0.3",
+            "tone:0.6",
+            "silence:0.2",
+            &format!("wait:{}=Rain tomorrow.", played.display()),
+            "silence:5.0",
+            "tone:0.6",
+            "silence:1.2",
+        ])),
+        wake: Some(wake),
+        interrupt: true,
+        detection: Detection::default(),
+    };
+    let (_typing, untyped) = std::sync::mpsc::channel::<()>();
+    let mut out = Vec::new();
+    sion_cli::listening::run(
+        ledger.clone(),
+        &profile,
+        &talk,
+        &listening,
+        Box::new(std::io::BufReader::new(Untyped(untyped))),
+        &mut out,
+    )
+    .unwrap();
+    let shown = String::from_utf8(out).unwrap();
+    assert!(shown.starts_with("(listening for \"hey sion\""), "{shown}");
+    assert!(
+        shown.contains("(not woken: heard \"what a lovely day\")\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("you (heard): what's the weather?\nagent> It is sunny.\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("you (heard): And tomorrow?\nagent> Rain tomorrow.\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("(not woken: heard \"turn it up\")\n"),
+        "{shown}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&played).unwrap(),
+        "OggSIt is sunny.\nOggSRain tomorrow.\n"
+    );
+    // The conversation's transcriber heard only what was said to it.
+    assert_eq!(
+        (times_heard(&dir, "wake"), times_heard(&dir, "kitchen")),
+        (3, 2)
+    );
+    drop(devnet);
+    std::fs::remove_dir_all(&home).unwrap();
+}

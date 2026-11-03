@@ -32,6 +32,13 @@ use sion_node::{Devnet, DevnetConfig};
 struct Hub {
     issues: Vec<Value>,
     comments: Vec<Value>,
+    /// Review comments on pull requests' code.
+    reviews: Vec<Value>,
+    /// The agent's replies in review threads: the thread's first comment,
+    /// and what.
+    replies: Vec<(u64, String)>,
+    /// The check runs of the pull request's commit.
+    checks: Vec<Value>,
     /// The comments the agent posted: on which issue, and what.
     posted: Vec<(u64, String)>,
     /// The latest time anything was said, as GitHub writes times.
@@ -77,6 +84,7 @@ impl Hub {
 fn serve(hub: Arc<Mutex<Hub>>, done: Arc<std::sync::atomic::AtomicBool>) -> String {
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let base = format!("http://{}", server.server_addr());
+    let here = base.clone();
     std::thread::spawn(move || {
         while !done.load(std::sync::atomic::Ordering::SeqCst) {
             let Ok(Some(mut request)) = server.recv_timeout(std::time::Duration::from_millis(20))
@@ -92,6 +100,27 @@ fn serve(hub: Arc<Mutex<Hub>>, done: Arc<std::sync::atomic::AtomicBool>) -> Stri
             let url = request.url().to_string();
             let path = url.split('?').next().unwrap_or_default().to_string();
             let mut hub = hub.lock().unwrap();
+            // A job's log: the API sends the client to a signed address,
+            // which takes no token.
+            if path == "/repos/acme/app/actions/jobs/77/logs" && authorized {
+                let moved = tiny_http::Response::from_string("")
+                    .with_status_code(302)
+                    .with_header(
+                        format!("Location: {here}/signed/logs/77")
+                            .parse::<tiny_http::Header>()
+                            .unwrap(),
+                    );
+                request.respond(moved).unwrap();
+                continue;
+            }
+            if path == "/signed/logs/77" {
+                assert!(!authorized, "the token does not go to the log's address");
+                let log = "2026-11-03T01:02:03.1234567Z running 1 test\n2026-11-03T01:02:04.1234567Z test login::rename ... FAILED\n2026-11-03T01:02:05.1234567Z ##[error]Process completed with exit code 101.\n";
+                request
+                    .respond(tiny_http::Response::from_string(log))
+                    .unwrap();
+                continue;
+            }
             let (status, answer) = if !authorized {
                 (401, json!({"message": "Bad credentials"}))
             } else {
@@ -100,6 +129,40 @@ fn serve(hub: Arc<Mutex<Hub>>, done: Arc<std::sync::atomic::AtomicBool>) -> Stri
                     ("GET", "/repos/acme/app/issues") => (200, Value::from(hub.issues.clone())),
                     ("GET", "/repos/acme/app/issues/comments") => {
                         (200, Value::from(hub.comments.clone()))
+                    }
+                    ("GET", "/repos/acme/app/pulls/comments") => {
+                        (200, Value::from(hub.reviews.clone()))
+                    }
+                    ("GET", "/repos/acme/app/pulls/20") => (
+                        200,
+                        json!({"number": 20, "title": "Read the renamed cookie", "state": "open",
+                               "user": {"login": "dana"}, "body": "Fixes the login.",
+                               "head": {"label": "dana:cookie", "sha": "abc1234567"},
+                               "base": {"ref": "main"}, "mergeable_state": "clean"}),
+                    ),
+                    ("GET", "/repos/acme/app/pulls/20/files") => (
+                        200,
+                        json!([{"filename": "src/login.rs", "status": "modified", "additions": 2, "deletions": 1,
+                                "patch": "@@ -1,3 +1,4 @@\n-let name = \"sid\";\n+let name = \"session\";\n+let old = \"sid\";"}]),
+                    ),
+                    ("GET", "/repos/acme/app/commits/abc1234567/check-runs") => {
+                        (200, json!({"check_runs": hub.checks.clone()}))
+                    }
+                    ("GET", "/repos/acme/app/commits/abc1234567/status") => {
+                        (200, json!({"statuses": []}))
+                    }
+                    ("GET", "/repos/acme/app/check-runs/77/annotations") => (
+                        200,
+                        json!([{"path": "src/login.rs", "start_line": 3, "annotation_level": "failure",
+                                "message": "assertion failed: signed_in(old_cookie)"}]),
+                    ),
+                    ("POST", "/repos/acme/app/pulls/20/comments/300/replies") => {
+                        let text = serde_json::from_str::<Value>(&body).unwrap()["body"]
+                            .as_str()
+                            .unwrap()
+                            .to_string();
+                        hub.replies.push((300, text));
+                        (201, json!({"id": 301}))
                     }
                     ("GET", other) if other.starts_with("/repos/acme/app/issues/") => {
                         let number: u64 = other.rsplit('/').next().unwrap().parse().unwrap();
@@ -305,7 +368,19 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
             {"when": "work item w5:", "unless": "4242 wrote:\n> november", "say": "I asked which month."},
             {"when": "4242 wrote:\n> november", "call": "work_report",
              "input": {"state": "ready", "summary": "In November I spent 2 USD, on a test account for the login fix."}},
-            {"when": "4242 wrote:\n> november", "say": "Reported."}
+            {"when": "4242 wrote:\n> november", "say": "Reported."},
+            {"when": "work item w6:", "unless": "ended in failure", "call": "github_pull_request", "input": {"number": 20}},
+            {"when": "work item w6:", "unless": "ended in failure", "call": "work_report",
+             "input": {"state": "waiting", "summary": "Waiting for the checks."}},
+            {"when": "work item w6:", "unless": "ended in failure", "say": "I'll look again when the checks end."},
+            {"when": "ended in failure", "call": "github_checks", "input": {"pull": 20}},
+            {"when": "ended in failure", "call": "github_job_log", "input": {"job": 77}},
+            {"when": "ended in failure", "call": "work_report",
+             "input": {"state": "ready", "summary": "The check test fails: login::rename finds no session for the old cookie. Reading both names for a release fixes it."}},
+            {"when": "ended in failure", "say": "Reported."},
+            {"when": "work item w7:", "call": "work_report",
+             "input": {"state": "ready", "summary": "Both names are read for one release, so people signed in before the rename stay signed in."}},
+            {"when": "work item w7:", "say": "Answered."}
         ]),
     );
     let accept = |title: &str| {
@@ -384,6 +459,7 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         poll: 1,
         slots: 1,
         assess_with: Some(assess),
+        listen: None,
     };
     let run = || work::run_work(ledger.clone(), "helper", &options).unwrap();
     // The first round only marks where reading starts: nothing older is
@@ -759,6 +835,127 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         decisions.len(),
         12,
         "the chatter is not recorded: {decisions:#?}"
+    );
+
+    // A pull request dana asks the agent to keep an eye on: it reads the
+    // changes, and waits.
+    work::run_local(work::WorkCommand::Watch {
+        profile: "helper".into(),
+        watch: "github:acme/app".into(),
+        allow: Vec::new(),
+        disallow: Vec::new(),
+        bot: vec!["github-actions[bot]".into()],
+        listed_unaddressed: None,
+        unlisted_addressed: None,
+        unlisted_unaddressed: None,
+        remove: false,
+    })
+    .unwrap();
+    {
+        let mut hub = hub.lock().unwrap();
+        hub.issue(
+            20,
+            "dana",
+            "Read the renamed cookie",
+            "@sion-helper keep an eye on the checks of this one.",
+            start + 60,
+        );
+        hub.issues.last_mut().unwrap()["pull_request"] =
+            json!({"url": "https://api.github.example/repos/acme/app/pulls/20"});
+    }
+    run();
+    let w6 = work::load("helper").unwrap().item("w6").unwrap().clone();
+    assert_eq!(w6.stage(), Stage::Idle, "{w6:#?}");
+    assert!(
+        w6.request.subject.starts_with("Pull request #20"),
+        "{}",
+        w6.request.subject
+    );
+    // Its check fails: GitHub Actions, a bot on the watch's list, says so
+    // in the pull request's thread, and the agent reads why.
+    hub.lock().unwrap().checks.push(json!({
+        "id": 77, "name": "test", "status": "completed", "conclusion": "failure",
+        "head_sha": "abc1234567", "app": {"slug": "github-actions"},
+        "output": {"title": "1 test failed", "summary": "login::rename"},
+        "html_url": "https://github.example/acme/app/runs/77",
+        "completed_at": sion_cli::github::rfc3339(start + 70)
+    }));
+    run();
+    let w6 = work::load("helper").unwrap().item("w6").unwrap().clone();
+    assert_eq!(
+        w6.ended.as_ref().map(|e| e.how),
+        Some(How::Completed),
+        "{w6:#?}"
+    );
+    assert!(!w6.inputs[0].person, "a bot's word, not a person's");
+    let session = sion_cli::runtime::Saved::load(w6.session.as_ref().unwrap()).unwrap();
+    let results: Vec<String> = session
+        .state
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            sion_agent::Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        results
+            .iter()
+            .any(|r| r.contains("--- src/login.rs (modified, +2 −1)")),
+        "{results:#?}"
+    );
+    assert!(
+        results.iter().any(|r| r
+            .contains("- test: failure — 1 test failed (job 77: github_job_log)")
+            && r.contains("src/login.rs:3: failure: assertion failed: signed_in(old_cookie)")),
+        "{results:#?}"
+    );
+    assert!(
+        results
+            .iter()
+            .any(|r| r.starts_with("Errors:\nProcess completed with exit code 101.")),
+        "{results:#?}"
+    );
+    assert!(hub
+        .lock()
+        .unwrap()
+        .posted_on(20)
+        .last()
+        .unwrap()
+        .starts_with("The check test fails"));
+    // A review comment on its code: answered in its review thread.
+    {
+        let mut hub = hub.lock().unwrap();
+        let at = sion_cli::github::rfc3339(start + 80);
+        hub.reviews.push(json!({
+            "id": 300, "body": "@sion-helper why read both names?", "user": {"login": "dana", "type": "User"},
+            "path": "src/login.rs", "line": 2, "diff_hunk": "@@ -1,3 +1,4 @@\n+let old = \"sid\";",
+            "pull_request_url": "https://api.github.example/repos/acme/app/pulls/20",
+            "html_url": "https://github.example/acme/app/pull/20#discussion_r300",
+            "created_at": at, "updated_at": at
+        }));
+        hub.latest = at;
+    }
+    run();
+    let w7 = work::load("helper").unwrap().item("w7").unwrap().clone();
+    assert_eq!(w7.thread, "github:acme/app#20:review:300");
+    assert_eq!(
+        w7.ended.as_ref().map(|e| e.how),
+        Some(How::Completed),
+        "{w7:#?}"
+    );
+    let replies = hub.lock().unwrap().replies.clone();
+    assert_eq!(
+        replies.len(),
+        2,
+        "the acknowledgement and the answer: {replies:#?}"
+    );
+    assert!(
+        replies[1]
+            .1
+            .starts_with("Both names are read for one release"),
+        "{replies:#?}"
     );
     done.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = std::fs::remove_dir_all(&home);

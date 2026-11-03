@@ -371,6 +371,51 @@ process, the node itself reports it as certified, or it is given with
 `--min-pulse` (from another node, say). Whether 1.1.0 still holds is its
 own status, which installing checks under the decision rule as before.
 
+## Importing a skill
+
+A skill published elsewhere, as an Agent Skill (a folder with a
+`SKILL.md`), is imported from a folder or a git repository: `sion skill
+import <folder | github:owner/repo | https://…> --profile <profile>`, with
+`--path` for its folder in the repository and `--ref` for a branch or tag.
+The first run installs nothing. It checks the skill as a bundle is checked
+(its name and description, portable paths, sizes) and reports what it
+holds: its files, the scripts among them and what runs them, the hosts
+they name, the patterns worth a look (a download piped to a shell, an
+encoded payload, reading keys or the environment) and the permissions it
+asks for, with its bundle root. Two things vouch for those exact bytes:
+
+- **your review**: run it again with `--accept <root>`, the root the
+  report gave, after reading the files; or
+- **an audit on a bond**: `--audit <claim>`, an active `skill.audit/v1`
+  claim that names this root. The skill keeps the audit, and is taken out
+  of use when the audit is shown false, as a release is.
+
+Permissions that need consent (a network, secrets) need
+`--accept-permissions` besides. What was imported, from where, at which
+commit and on whose word, is kept with the skill.
+
+## Starter skills
+
+`sion skill starter --profile <profile>` installs the skills that come
+with sion, all of them or those named:
+
+- `web-research`: research a question on the web and answer it with
+  sources;
+- `code-change`: change code in the workspace and show that the change
+  works;
+- `pr-review`: review a pull request and say what should change before
+  it is merged;
+- `ci-fix`: find why a check fails, and fix it;
+- `inbox-triage`: go through new mail, say what needs you, and draft the
+  answers;
+- `scheduling`: find a time for a meeting, and put it in the calendar once
+  it is agreed;
+- `document-brief`: read documents and write a brief of what they say,
+  with where each point comes from.
+
+They are instructions only, with no scripts, in `skills/starter`, and each
+names the tools it works with.
+
 ## What this does not do yet
 
 - The runtime on the agent's machine does the checks: on the bundle when

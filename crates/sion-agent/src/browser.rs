@@ -18,6 +18,17 @@
 //! A login is filled from the operator's credentials ([`Credentials`]),
 //! only into a page whose origin is the credential's, and the model never
 //! sees the secret: it is cut out of everything the tools return.
+//!
+//! The browser keeps up to [`MAX_TABS`] pages open at once, each a tab the
+//! model opens, lists, switches to and closes; a link or a script that
+//! would open a window of its own opens in the tab it is in, so that only
+//! the model opens tabs. With a workspace, what a page downloads goes to
+//! the workspace's `downloads/` (at most [`MAX_DOWNLOAD`] bytes each, and
+//! from outside like everything else the browser brings), and the model
+//! can choose files of the workspace for a page's file field: the files
+//! are copied into the browser's own profile first, since the browser sees
+//! nothing of the workspace. Without one, downloads are refused and
+//! nothing is uploaded.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,6 +52,21 @@ pub const LOAD_SECS: u64 = 30;
 
 /// How deep frames within frames are shown.
 pub const MAX_FRAME_NESTING: usize = 3;
+
+/// The most tabs open at once.
+pub const MAX_TABS: usize = 8;
+
+/// The largest download, in bytes.
+pub const MAX_DOWNLOAD: u64 = 100 << 20;
+
+/// The largest file a page may be given, in bytes.
+pub const MAX_UPLOAD: u64 = 50 << 20;
+
+/// How long a download has to finish.
+pub const DOWNLOAD_SECS: u64 = 120;
+
+/// Where downloads go in the workspace.
+pub const DOWNLOADS: &str = "downloads";
 
 /// What every document runs first, so that the browser keeps one page: a
 /// link or a form aimed at another window, and `window.open`, go to this
@@ -108,6 +134,13 @@ pub struct Config {
     pub egress: crate::egress::Options,
     /// The page's size, in CSS pixels.
     pub size: (u32, u32),
+    /// The workspace: downloads go to its `downloads/`, and files are
+    /// chosen from it. Without one, the browser takes no download and
+    /// chooses no file.
+    pub workspace: Option<PathBuf>,
+    /// The workspace's confidential paths
+    /// ([`crate::builtin::confidential_path`]): never chosen for a page.
+    pub confidential: Vec<String>,
 }
 
 /// Where Chromium or Chrome is on this machine, if it can be found:
@@ -184,11 +217,34 @@ fn running_as_root() -> bool {
     }
 }
 
-/// A running browser with one page.
+/// One page open in the browser.
+#[derive(Clone, Debug)]
+struct Tab {
+    target: String,
+    session: String,
+}
+
+/// A download the browser started.
+#[derive(Clone, Debug)]
+struct Download {
+    guid: String,
+    url: String,
+    name: String,
+    state: String,
+    received: u64,
+}
+
+/// A running browser and its tabs.
 pub struct Browser {
     child: Child,
     cdp: Cdp,
+    /// The current tab's session.
     session: String,
+    tabs: Vec<Tab>,
+    workspace: Option<PathBuf>,
+    confidential: Vec<String>,
+    downloads: Vec<Download>,
+    chosen: u64,
     profile: PathBuf,
     _egress: crate::egress::Egress,
     _forward: Option<crate::egress::Forward>,
@@ -376,6 +432,11 @@ impl Browser {
             refs: BTreeMap::new(),
             filled: Vec::new(),
             size: config.size,
+            tabs: Vec::new(),
+            workspace: config.workspace.clone(),
+            confidential: config.confidential.clone(),
+            downloads: Vec::new(),
+            chosen: 0,
         };
         browser.attach()?;
         Ok(browser)
@@ -391,11 +452,25 @@ impl Browser {
                 Duration::from_secs(30),
             )
             .map_err(|e| format!("the browser did not start: {e}"))?;
-        let _ = self.cdp.send(
-            None,
-            "Browser.setDownloadBehavior",
-            json!({"behavior": "deny"}),
-        );
+        // Downloads go to the profile, named by their ids, and are moved
+        // into the workspace once done; without a workspace, refused (and
+        // said so).
+        let behavior = if self.workspace.is_some() {
+            let dir = self.profile.join("downloads");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            json!({"behavior": "allowAndName", "downloadPath": dir.to_string_lossy(), "eventsEnabled": true})
+        } else {
+            json!({"behavior": "deny", "eventsEnabled": true})
+        };
+        let _ = self.cdp.send(None, "Browser.setDownloadBehavior", behavior);
+        let tab = self.new_tab()?;
+        self.session = tab.session.clone();
+        self.tabs.push(tab);
+        Ok(())
+    }
+
+    /// Opens a blank tab and gets ready to drive it.
+    fn new_tab(&mut self) -> Result<Tab, String> {
         let target = self
             .cdp
             .send(None, "Target.createTarget", json!({"url": "about:blank"}))?;
@@ -405,7 +480,7 @@ impl Browser {
             "Target.attachToTarget",
             json!({"targetId": target_id, "flatten": true}),
         )?;
-        self.session = attached["sessionId"]
+        let session = attached["sessionId"]
             .as_str()
             .ok_or("no session with the page")?
             .to_string();
@@ -416,19 +491,395 @@ impl Browser {
             "DOM.enable",
             "Accessibility.enable",
         ] {
-            self.page(domain, json!({}))?;
+            self.cdp.send(Some(&session), domain, json!({}))?;
         }
-        self.page(
+        self.cdp.send(
+            Some(&session),
             "Emulation.setDeviceMetricsOverride",
             json!({"width": self.size.0, "height": self.size.1, "deviceScaleFactor": 1, "mobile": false}),
         )?;
-        // The browser has one page: what would open another window opens
+        // Only the model opens tabs: what would open another window opens
         // in this one.
-        self.page(
+        self.cdp.send(
+            Some(&session),
             "Page.addScriptToEvaluateOnNewDocument",
             json!({"source": ONE_PAGE}),
         )?;
+        // A file chooser never opens as a dialog: the model chooses files.
+        let _ = self.cdp.send(
+            Some(&session),
+            "Page.setInterceptFileChooserDialog",
+            json!({"enabled": true}),
+        );
+        Ok(Tab {
+            target: target_id,
+            session,
+        })
+    }
+
+    /// Whether `event` is of the current tab.
+    fn mine(&self, event: &Value) -> bool {
+        event["sessionId"].as_str() == Some(self.session.as_str())
+    }
+
+    /// Forgets the events seen so far, but keeps track of downloads.
+    fn forget(&mut self) {
+        self.note_downloads();
+        self.cdp.clear();
+    }
+
+    /// Takes the download events seen so far into the downloads' states.
+    fn note_downloads(&mut self) {
+        let events = self.cdp.take(|e| {
+            e["method"] == "Browser.downloadWillBegin" || e["method"] == "Browser.downloadProgress"
+        });
+        for event in events {
+            if event["method"] == "Browser.downloadWillBegin" {
+                self.begun(&event);
+            } else {
+                self.apply_progress(&event);
+            }
+        }
+    }
+
+    /// Waits for the downloads begun so far to end, at most `wait` in all,
+    /// and says what became of each: moved into the workspace's
+    /// `downloads/`, refused, cancelled or too large.
+    pub fn finish_downloads(&mut self, wait: Duration) -> Vec<String> {
+        let deadline = std::time::Instant::now() + wait;
+        let mut said = Vec::new();
+        loop {
+            self.note_downloads();
+            let mut i = 0;
+            while i < self.downloads.len() {
+                let d = self.downloads[i].clone();
+                let ended = match d.state.as_str() {
+                    "completed" => {
+                        said.push(self.keep_download(&d));
+                        true
+                    }
+                    "canceled" if self.workspace.is_none() => {
+                        said.push(format!(
+                            "the page offered a download ({}, from {}): this browser takes no \
+                             downloads, having no workspace to put them in",
+                            shown_name(&d.name),
+                            d.url
+                        ));
+                        true
+                    }
+                    "canceled" => {
+                        let why = if d.received > MAX_DOWNLOAD {
+                            format!("it was larger than {} MiB", MAX_DOWNLOAD >> 20)
+                        } else {
+                            "it was cancelled".into()
+                        };
+                        said.push(format!(
+                            "the download of {} from {} stopped: {why}",
+                            shown_name(&d.name),
+                            d.url
+                        ));
+                        true
+                    }
+                    _ if d.received > MAX_DOWNLOAD => {
+                        let _ =
+                            self.cdp
+                                .send(None, "Browser.cancelDownload", json!({"guid": d.guid}));
+                        self.downloads[i].state = "inProgress".into();
+                        false
+                    }
+                    _ => false,
+                };
+                if ended {
+                    self.downloads.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+            if self.downloads.is_empty() {
+                return said;
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                for d in &self.downloads {
+                    said.push(format!(
+                        "{} is still downloading from {} ({} bytes so far): it is said when it ends",
+                        shown_name(&d.name),
+                        d.url,
+                        d.received
+                    ));
+                }
+                return said;
+            }
+            if let Some(event) = self.cdp.wait_for(
+                |e| e["method"] == "Browser.downloadProgress",
+                left.min(Duration::from_secs(1)),
+            ) {
+                self.apply_progress(&event);
+            }
+        }
+    }
+
+    fn apply_progress(&mut self, event: &Value) {
+        let p = &event["params"];
+        if let Some(d) = self
+            .downloads
+            .iter_mut()
+            .find(|d| Some(d.guid.as_str()) == p["guid"].as_str())
+        {
+            d.state = p["state"].as_str().unwrap_or("inProgress").to_string();
+            d.received = p["receivedBytes"].as_u64().unwrap_or(d.received);
+            if p["totalBytes"].as_u64().unwrap_or(0) > MAX_DOWNLOAD {
+                d.received = d.received.max(MAX_DOWNLOAD + 1);
+            }
+        }
+    }
+
+    /// Moves a finished download into the workspace's `downloads/`.
+    fn keep_download(&self, d: &Download) -> String {
+        let Some(workspace) = &self.workspace else {
+            return format!(
+                "{} was downloaded, but there is no workspace to keep it",
+                shown_name(&d.name)
+            );
+        };
+        let from = self.profile.join("downloads").join(&d.guid);
+        let size = std::fs::metadata(&from).map(|m| m.len()).unwrap_or(0);
+        if size > MAX_DOWNLOAD {
+            let _ = std::fs::remove_file(&from);
+            return format!(
+                "the download of {} was larger than {} MiB, and was dropped",
+                shown_name(&d.name),
+                MAX_DOWNLOAD >> 20
+            );
+        }
+        // The folder must be the workspace's, not a link out of it.
+        let dir = match crate::builtin::inside(workspace, DOWNLOADS) {
+            Ok(dir) => dir,
+            Err(e) => return format!("{} could not be kept: {e}", shown_name(&d.name)),
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return format!("{} could not be kept: {e}", shown_name(&d.name));
+        }
+        let name = free_name(&dir, &safe_name(&d.name));
+        let to = dir.join(&name);
+        // Renamed, or else copied into a file made new (never through a
+        // link already there).
+        let moved = std::fs::rename(&from, &to).or_else(|_| {
+            let mut source = std::fs::File::open(&from)?;
+            let mut made = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&to)?;
+            std::io::copy(&mut source, &mut made)?;
+            std::fs::remove_file(&from)
+        });
+        match moved {
+            Ok(()) => format!(
+                "downloaded {DOWNLOADS}/{name} ({size} bytes, from {}) into your workspace: it is \
+                 from outside",
+                d.url
+            ),
+            Err(e) => format!("{} could not be kept: {e}", shown_name(&d.name)),
+        }
+    }
+
+    /// The tabs: each one's title and address, and which is current.
+    pub fn tabs(&self) -> Vec<(String, String, bool)> {
+        self.tabs
+            .iter()
+            .map(|tab| {
+                let info = self
+                    .cdp
+                    .send(
+                        None,
+                        "Target.getTargetInfo",
+                        json!({"targetId": tab.target}),
+                    )
+                    .unwrap_or(Value::Null);
+                (
+                    info["targetInfo"]["title"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    info["targetInfo"]["url"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    tab.session == self.session,
+                )
+            })
+            .collect()
+    }
+
+    /// Opens `url` in a new tab, which becomes the current one.
+    pub fn open_tab(&mut self, url: &str) -> Result<Option<u16>, String> {
+        if self.tabs.len() >= MAX_TABS {
+            return Err(format!(
+                "{MAX_TABS} tabs are open, the most there may be: close one first"
+            ));
+        }
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            return Err(format!("{url} is not an http or https URL"));
+        }
+        let tab = self.new_tab()?;
+        self.session = tab.session.clone();
+        self.tabs.push(tab);
+        self.refs.clear();
+        self.open(url)
+    }
+
+    /// Makes tab `n` (counted from 1) the current one.
+    pub fn switch_tab(&mut self, n: usize) -> Result<(), String> {
+        let tab = self
+            .tabs
+            .get(n.wrapping_sub(1))
+            .cloned()
+            .ok_or_else(|| format!("there is no tab {n}: there are {}", self.tabs.len()))?;
+        let _ = self.cdp.send(
+            None,
+            "Target.activateTarget",
+            json!({"targetId": tab.target}),
+        );
+        self.session = tab.session;
+        self.refs.clear();
         Ok(())
+    }
+
+    /// Closes tab `n` (counted from 1); the last one stays open.
+    pub fn close_tab(&mut self, n: usize) -> Result<(), String> {
+        if self.tabs.len() <= 1 {
+            return Err("the last tab stays open: open another page in it instead".into());
+        }
+        let index = n.wrapping_sub(1);
+        let tab = self
+            .tabs
+            .get(index)
+            .cloned()
+            .ok_or_else(|| format!("there is no tab {n}: there are {}", self.tabs.len()))?;
+        self.cdp
+            .send(None, "Target.closeTarget", json!({"targetId": tab.target}))?;
+        self.tabs.remove(index);
+        if tab.session == self.session {
+            let next = self.tabs[index.min(self.tabs.len() - 1)].clone();
+            self.session = next.session;
+            self.refs.clear();
+        }
+        Ok(())
+    }
+
+    /// Chooses `files` (paths in the workspace) for the file field
+    /// `reference`, or for the file chooser that clicking it opens.
+    pub fn choose_files(
+        &mut self,
+        reference: &str,
+        files: &[String],
+    ) -> Result<Vec<String>, String> {
+        let workspace = self
+            .workspace
+            .clone()
+            .ok_or("this browser has no workspace to choose files from")?;
+        if files.is_empty() {
+            return Err("give the files to choose: paths in your workspace".into());
+        }
+        let backend = self.node(reference)?;
+        // The browser sees only its profile: the files are copied there.
+        self.chosen += 1;
+        let dir = self.profile.join("uploads").join(self.chosen.to_string());
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut inside_browser = Vec::new();
+        let mut names = Vec::new();
+        for relative in files {
+            let path = crate::builtin::inside(&workspace, relative)?;
+            if crate::builtin::confidential_in(&self.confidential, &workspace, relative) {
+                return Err(format!(
+                    "{relative} is confidential: it is not given to a page"
+                ));
+            }
+            let meta = std::fs::metadata(&path).map_err(|e| format!("{relative}: {e}"))?;
+            if !meta.is_file() {
+                return Err(format!("{relative} is not a file"));
+            }
+            if meta.len() > MAX_UPLOAD {
+                return Err(format!("{relative} is more than {} MiB", MAX_UPLOAD >> 20));
+            }
+            let name = free_name(
+                &dir,
+                &safe_name(
+                    &path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                ),
+            );
+            let copy = dir.join(&name);
+            std::fs::copy(&path, &copy).map_err(|e| format!("{relative}: {e}"))?;
+            inside_browser.push(copy.to_string_lossy().into_owned());
+            names.push(relative.clone());
+        }
+        let described = self.page("DOM.describeNode", json!({"backendNodeId": backend}))?;
+        let node = &described["node"];
+        let attributes: Vec<&str> = node["attributes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let attribute = |name: &str| {
+            attributes
+                .chunks(2)
+                .find(|pair| pair[0].eq_ignore_ascii_case(name))
+                .map(|pair| pair.get(1).copied().unwrap_or_default())
+        };
+        let is_file_field = node["nodeName"].as_str() == Some("INPUT")
+            && attribute("type").is_some_and(|t| t.eq_ignore_ascii_case("file"));
+        let (target, multiple) = if is_file_field {
+            (backend, attribute("multiple").is_some())
+        } else {
+            // A button that opens a file chooser: click it, and answer the
+            // chooser.
+            self.forget();
+            let (x, y) = self.center(backend)?;
+            for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+                self.page(
+                    "Input.dispatchMouseEvent",
+                    json!({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1}),
+                )?;
+            }
+            let session = self.session.clone();
+            let opened = self
+                .cdp
+                .wait_for(
+                    |e| {
+                        e["method"] == "Page.fileChooserOpened"
+                            && e["sessionId"].as_str() == Some(session.as_str())
+                    },
+                    Duration::from_secs(5),
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "{reference} is not a file field, and clicking it opened no file chooser"
+                    )
+                })?;
+            let chooser = opened["params"]["backendNodeId"]
+                .as_i64()
+                .ok_or("the file chooser named no field")?;
+            (
+                chooser,
+                opened["params"]["mode"].as_str() == Some("selectMultiple"),
+            )
+        };
+        if files.len() > 1 && !multiple {
+            return Err(format!(
+                "the field takes one file, and {} were given",
+                files.len()
+            ));
+        }
+        self.page(
+            "DOM.setFileInputFiles",
+            json!({"files": inside_browser, "backendNodeId": target}),
+        )?;
+        self.settle();
+        Ok(names)
     }
 
     fn page(&self, method: &str, params: Value) -> Result<Value, String> {
@@ -466,8 +917,21 @@ impl Browser {
         if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err(format!("{url} is not an http or https URL"));
         }
-        self.cdp.clear();
+        self.forget();
         let navigated = self.page("Page.navigate", json!({"url": url}))?;
+        if navigated["errorText"].as_str() == Some("net::ERR_ABORTED") {
+            // An address that answers with a file starts a download.
+            if let Some(event) = self.cdp.wait_for(
+                |e| e["method"] == "Browser.downloadWillBegin",
+                Duration::from_secs(3),
+            ) {
+                self.begun(&event);
+            }
+            self.note_downloads();
+            if !self.downloads.is_empty() {
+                return Ok(None);
+            }
+        }
         if let Some(error) = navigated["errorText"].as_str() {
             return Err(match error {
                 "net::ERR_TUNNEL_CONNECTION_FAILED" | "net::ERR_PROXY_CONNECTION_FAILED" => format!(
@@ -480,14 +944,19 @@ impl Browser {
             .as_str()
             .unwrap_or_default()
             .to_string();
+        let session = self.session.clone();
         let _ = self.cdp.wait_for(
-            |e| e["method"] == "Page.loadEventFired",
+            |e| {
+                e["method"] == "Page.loadEventFired"
+                    && e["sessionId"].as_str() == Some(session.as_str())
+            },
             Duration::from_secs(LOAD_SECS),
         );
         let status = self
             .cdp
             .take(|e| {
-                e["method"] == "Network.responseReceived"
+                e["sessionId"].as_str() == Some(session.as_str())
+                    && e["method"] == "Network.responseReceived"
                     && e["params"]["type"] == "Document"
                     && e["params"]["frameId"].as_str() == Some(frame.as_str())
             })
@@ -520,7 +989,7 @@ impl Browser {
         let mut asked = String::new();
         for dialog in self
             .cdp
-            .take(|e| e["method"] == "Page.javascriptDialogOpening")
+            .take(|e| e["method"] == "Page.javascriptDialogOpening" && self.mine(e))
         {
             let kind = dialog["params"]["type"].as_str().unwrap_or("alert");
             let message: String = dialog["params"]["message"]
@@ -766,30 +1235,67 @@ impl Browser {
         Ok((xs, ys))
     }
 
-    fn settle(&self) {
-        // A click or a key may start a navigation: let it load.
-        if self
-            .cdp
-            .wait_for(
-                |e| e["method"] == "Page.frameStartedLoading",
-                Duration::from_millis(600),
-            )
-            .is_some()
-        {
-            let _ = self.cdp.wait_for(
-                |e| {
-                    e["method"] == "Page.loadEventFired"
-                        || e["method"] == "Page.frameStoppedLoading"
-                },
-                Duration::from_secs(LOAD_SECS),
-            );
+    fn settle(&mut self) {
+        // A click or a key may start a navigation: let it load, or become
+        // a download.
+        let download = |e: &Value| e["method"] == "Browser.downloadWillBegin";
+        let started = self.cdp.wait_for(
+            |e| (e["method"] == "Page.frameStartedLoading" && self.mine(e)) || download(e),
+            Duration::from_millis(600),
+        );
+        let Some(started) = started else {
+            return;
+        };
+        if download(&started) {
+            self.begun(&started);
+            return;
         }
+        let ended = self.cdp.wait_for(
+            |e| {
+                ((e["method"] == "Page.loadEventFired"
+                    || e["method"] == "Page.frameStoppedLoading")
+                    && self.mine(e))
+                    || download(e)
+            },
+            Duration::from_secs(LOAD_SECS),
+        );
+        match ended {
+            Some(event) if download(&event) => self.begun(&event),
+            // A navigation that stopped without loading may have become a
+            // download, which the browser says of a moment later.
+            Some(event) if event["method"] == "Page.frameStoppedLoading" => {
+                if let Some(event) = self.cdp.wait_for(download, Duration::from_secs(1)) {
+                    self.begun(&event);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps track of the download a `Browser.downloadWillBegin` event
+    /// announces.
+    fn begun(&mut self, event: &Value) {
+        let p = &event["params"];
+        let guid = p["guid"].as_str().unwrap_or_default().to_string();
+        if guid.is_empty() || self.downloads.iter().any(|d| d.guid == guid) {
+            return;
+        }
+        self.downloads.push(Download {
+            guid,
+            url: p["url"].as_str().unwrap_or_default().to_string(),
+            name: p["suggestedFilename"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            state: "inProgress".into(),
+            received: 0,
+        });
     }
 
     /// Clicks the element `reference`.
     pub fn click(&mut self, reference: &str) -> Result<(), String> {
         let backend = self.node(reference)?;
-        self.cdp.clear();
+        self.forget();
         let (x, y) = self.center(backend)?;
         for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
             self.page(
@@ -818,7 +1324,7 @@ impl Browser {
     /// and presses Enter after if `submit`.
     pub fn type_text(&mut self, reference: &str, text: &str, submit: bool) -> Result<(), String> {
         let backend = self.node(reference)?;
-        self.cdp.clear();
+        self.forget();
         self.focus_and_clear(backend)?;
         self.page("Input.insertText", json!({"text": text}))?;
         if submit {
@@ -918,12 +1424,13 @@ impl Browser {
             return Err("there is no page before this one".into());
         }
         let entry = history["entries"][current - 1]["id"].clone();
-        self.cdp.clear();
+        self.forget();
         self.page("Page.navigateToHistoryEntry", json!({"entryId": entry}))?;
         let _ = self.cdp.wait_for(
             |e| {
-                e["method"] == "Page.loadEventFired"
-                    || e["method"] == "Page.navigatedWithinDocument"
+                (e["method"] == "Page.loadEventFired"
+                    || e["method"] == "Page.navigatedWithinDocument")
+                    && self.mine(e)
             },
             Duration::from_secs(LOAD_SECS),
         );
@@ -938,6 +1445,56 @@ impl Browser {
             .map(str::to_string)
             .ok_or_else(|| "the browser gave no picture".to_string())
     }
+}
+
+/// A download's name as said: the page's, or that it gave none.
+fn shown_name(name: &str) -> String {
+    if name.is_empty() {
+        "a file".into()
+    } else {
+        format!("{name:?}")
+    }
+}
+
+/// A file name that is safe to keep: its last part only, without
+/// characters a shell or another system would read as more, at most 120
+/// characters.
+pub fn safe_name(name: &str) -> String {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let cleaned: String = last
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " ._-()+,=@".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_start_matches('.').to_string();
+    let cleaned: String = cleaned.chars().take(120).collect();
+    if cleaned.is_empty() {
+        "download".into()
+    } else {
+        cleaned
+    }
+}
+
+/// `name`, or `name (2)`, `name (3)`… whichever is not in `dir` yet.
+fn free_name(dir: &Path, name: &str) -> String {
+    // Nothing there, not even a link.
+    let free = |name: &str| std::fs::symlink_metadata(dir.join(name)).is_err();
+    if free(name) {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(at) if at > 0 => (&name[..at], &name[at..]),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|n| format!("{stem} ({n}){ext}"))
+        .find(|candidate| free(candidate))
+        .unwrap_or_else(|| name.to_string())
 }
 
 impl Drop for Browser {
@@ -1035,7 +1592,7 @@ impl Shared {
 
     /// The tools that drive it.
     pub fn tools(&self) -> Vec<Box<dyn Tool>> {
-        let mut tools: Vec<Box<dyn Tool>> = [
+        let mut actions = vec![
             Action::Open,
             Action::Snapshot,
             Action::Click,
@@ -1044,15 +1601,23 @@ impl Shared {
             Action::Scroll,
             Action::Back,
             Action::Screenshot,
-        ]
-        .into_iter()
-        .map(|action| {
-            Box::new(BrowserTool {
-                shared: self.clone(),
-                action,
-            }) as Box<dyn Tool>
-        })
-        .collect();
+            Action::Tabs,
+            Action::TabOpen,
+            Action::TabSwitch,
+            Action::TabClose,
+        ];
+        if self.config.workspace.is_some() {
+            actions.push(Action::Choose);
+        }
+        let mut tools: Vec<Box<dyn Tool>> = actions
+            .into_iter()
+            .map(|action| {
+                Box::new(BrowserTool {
+                    shared: self.clone(),
+                    action,
+                }) as Box<dyn Tool>
+            })
+            .collect();
         if self.credentials.is_some() {
             tools.push(Box::new(BrowserTool {
                 shared: self.clone(),
@@ -1074,6 +1639,11 @@ enum Action {
     Back,
     Screenshot,
     Fill,
+    Tabs,
+    TabOpen,
+    TabSwitch,
+    TabClose,
+    Choose,
 }
 
 /// One action on the shared browser, as a tool.
@@ -1139,6 +1709,40 @@ impl Tool for BrowserTool {
                 "A picture of what the page shows now.",
                 schema(json!({}), &[]),
             ),
+            Action::Tabs => (
+                "browser_tabs",
+                "The tabs open in your browser, numbered, each with its title and address, and \
+                 which one the other browser tools act on.",
+                schema(json!({}), &[]),
+            ),
+            Action::TabOpen => (
+                "browser_tab_open",
+                "Open a web page (http or https) in a new tab, which the other browser tools then \
+                 act on, and return it as its accessibility tree. At most 8 tabs.",
+                schema(json!({"url": {"type": "string"}}), &["url"]),
+            ),
+            Action::TabSwitch => (
+                "browser_tab_switch",
+                "Act on another tab (its number from browser_tabs) from now on, and return its page.",
+                schema(json!({"tab": {"type": "integer", "minimum": 1}}), &["tab"]),
+            ),
+            Action::TabClose => (
+                "browser_tab_close",
+                "Close a tab (its number from browser_tabs); the last one stays open.",
+                schema(json!({"tab": {"type": "integer", "minimum": 1}}), &["tab"]),
+            ),
+            Action::Choose => (
+                "browser_choose_files",
+                "Choose files of your workspace for a file field of the page (or for the file \
+                 chooser a button opens), as a person picks files to upload; the page sends them \
+                 when its form is submitted. Returns the page.",
+                schema(
+                    json!({"ref": {"type": "string", "description": refs},
+                           "paths": {"type": "array", "items": {"type": "string"},
+                                     "description": "Paths in your workspace."}}),
+                    &["ref", "paths"],
+                ),
+            ),
             Action::Fill => (
                 "browser_fill_login",
                 "Fill the user name or the password of one of the operator's logins into a field. \
@@ -1174,7 +1778,9 @@ impl Tool for BrowserTool {
 
     fn effect(&self) -> Effect {
         match self.action {
-            Action::Snapshot | Action::Screenshot => Effect::Read,
+            Action::Snapshot | Action::Screenshot | Action::Tabs | Action::TabSwitch => {
+                Effect::Read
+            }
             _ => Effect::External,
         }
     }
@@ -1192,12 +1798,15 @@ impl Tool for BrowserTool {
         let reference = input["ref"].as_str().unwrap_or_default();
         let result = self.shared.with(|browser| -> Result<Outcome, String> {
             let page = |browser: &mut Browser, note: String| -> Result<Outcome, String> {
+                // What the page downloaded meanwhile is said first.
+                let mut notes: Vec<String> =
+                    browser.finish_downloads(Duration::from_secs(DOWNLOAD_SECS));
+                if !note.is_empty() {
+                    notes.push(note);
+                }
                 let snapshot = browser.snapshot()?;
-                Ok(Outcome::ok(if note.is_empty() {
-                    snapshot
-                } else {
-                    format!("{note}\n{snapshot}")
-                }))
+                notes.push(snapshot);
+                Ok(Outcome::ok(notes.join("\n")))
             };
             match self.action {
                 Action::Open => {
@@ -1238,6 +1847,63 @@ impl Tool for BrowserTool {
                 Action::Back => {
                     browser.back()?;
                     page(browser, String::new())
+                }
+                Action::Tabs => {
+                    let tabs = browser.tabs();
+                    let lines: Vec<String> = tabs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (title, url, current))| {
+                            format!(
+                                "{}. {title:?} {url}{}",
+                                i + 1,
+                                if *current { " (current)" } else { "" }
+                            )
+                        })
+                        .collect();
+                    Ok(Outcome::ok(browser.redact(&lines.join("\n"))))
+                }
+                Action::TabOpen => {
+                    let url = input["url"].as_str().unwrap_or_default();
+                    let status = browser.open_tab(url)?;
+                    let note = format!(
+                        "opened tab {}{}",
+                        browser.tabs.len(),
+                        match status {
+                            Some(status) if status >= 400 => format!(": HTTP {status}"),
+                            _ => String::new(),
+                        }
+                    );
+                    page(browser, note)
+                }
+                Action::TabSwitch => {
+                    let n = input["tab"].as_u64().unwrap_or(0) as usize;
+                    browser.switch_tab(n)?;
+                    page(browser, format!("tab {n} is current"))
+                }
+                Action::TabClose => {
+                    let n = input["tab"].as_u64().unwrap_or(0) as usize;
+                    browser.close_tab(n)?;
+                    let current = browser
+                        .tabs()
+                        .iter()
+                        .position(|(_, _, current)| *current)
+                        .map(|i| i + 1)
+                        .unwrap_or(1);
+                    page(browser, format!("closed tab {n}; tab {current} is current"))
+                }
+                Action::Choose => {
+                    let paths: Vec<String> = input["paths"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str().map(str::to_string))
+                        .collect();
+                    let chosen = browser.choose_files(reference, &paths)?;
+                    page(
+                        browser,
+                        format!("chose {} for {reference}", chosen.join(", ")),
+                    )
                 }
                 Action::Screenshot => {
                     let data = browser.screenshot()?;

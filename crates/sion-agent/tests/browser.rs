@@ -161,6 +161,8 @@ fn a_browser_reads_clicks_types_and_fills_a_login_only_where_it_belongs() {
             upstream: None,
         },
         size: (1024, 768),
+        workspace: None,
+        confidential: Vec::new(),
     };
     let shared = Shared::new(config.clone(), Some(Arc::new(logins)));
     let tools = shared.tools();
@@ -315,6 +317,237 @@ fn a_browser_reads_clicks_types_and_fills_a_login_only_where_it_belongs() {
         "{}",
         page.content
     );
+}
+
+/// A site with a file to download and forms that take files: `/report`
+/// answers with an attachment, `/received` with what a form sent.
+fn files_site() -> u16 {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let port = server.server_addr().to_ip().unwrap().port();
+    std::thread::spawn(move || {
+        for mut request in server.incoming_requests() {
+            let url = request.url().to_string();
+            let html = |body: String| {
+                tiny_http::Response::from_string(body).with_header(
+                    "Content-Type: text/html; charset=utf-8"
+                        .parse::<tiny_http::Header>()
+                        .unwrap(),
+                )
+            };
+            let response = match url.as_str() {
+                "/" => html(
+                    "<html><head><title>Reports</title></head><body><h1>Reports</h1>\
+                     <a href=\"/report\">Get the report</a></body></html>"
+                        .into(),
+                ),
+                "/report" => tiny_http::Response::from_string("month,total\noctober,42\n")
+                    .with_header(
+                        "Content-Type: text/csv"
+                            .parse::<tiny_http::Header>()
+                            .unwrap(),
+                    )
+                    .with_header(
+                        "Content-Disposition: attachment; filename=\"report.csv\""
+                            .parse::<tiny_http::Header>()
+                            .unwrap(),
+                    ),
+                "/upload" => html(
+                    "<html><head><title>Upload</title></head><body>\
+                     <form method=\"post\" action=\"/received\" enctype=\"multipart/form-data\">\
+                     <label>Document <input type=\"file\" name=\"doc\"></label>\
+                     <button type=\"submit\">Send</button></form>\
+                     <button onclick=\"document.getElementById('hidden').click()\">Attach</button>\
+                     <input type=\"file\" id=\"hidden\" style=\"display:none\" \
+                      onchange=\"document.title = 'chose ' + this.files[0].name\">\
+                     </body></html>"
+                        .into(),
+                ),
+                "/received" => {
+                    let mut body = Vec::new();
+                    let _ = request.as_reader().read_to_end(&mut body);
+                    let text = String::from_utf8_lossy(&body);
+                    let name = text
+                        .split("filename=\"")
+                        .nth(1)
+                        .and_then(|rest| rest.split('"').next())
+                        .unwrap_or("nothing")
+                        .to_string();
+                    let content = text
+                        .split("\r\n\r\n")
+                        .nth(1)
+                        .and_then(|rest| rest.split("\r\n--").next())
+                        .unwrap_or_default()
+                        .to_string();
+                    html(format!(
+                        "<html><head><title>Received</title></head><body><h1>Received {name}: {content}</h1></body></html>"
+                    ))
+                }
+                _ => html("not found".into()).with_status_code(404),
+            };
+            let _ = request.respond(response);
+        }
+    });
+    port
+}
+
+#[test]
+fn a_browser_keeps_tabs_downloads_into_the_workspace_and_chooses_files() {
+    let (Some(program), Some(sandbox)) = (browser::find_program(), bubblewrap()) else {
+        eprintln!("skipped: no Chromium, or bubblewrap does not work here");
+        return;
+    };
+    let port = files_site();
+    let origin = format!("http://127.0.0.1:{port}");
+    let workspace = std::env::temp_dir().join(format!("sion-browser-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("notes.txt"), "hello world").unwrap();
+    let config = browser::Config {
+        program,
+        sandbox: Some(sandbox),
+        bridge: Some(vec![env!("CARGO_BIN_EXE_sion-sandbox-bridge").to_string()]),
+        network: ScriptNetwork::Hosts(vec![HostRule::parse(&format!("127.0.0.1:{port}")).unwrap()]),
+        egress: sion_agent::egress::Options {
+            allow_private: true,
+            upstream: None,
+        },
+        size: (1024, 768),
+        workspace: Some(workspace.clone()),
+        confidential: vec!["secret.txt".into()],
+    };
+    let shared = Shared::new(config.clone(), None);
+    let tools = shared.tools();
+
+    // A link to a file downloads it into the workspace.
+    let page = call(&tools, "browser_open", json!({"url": format!("{origin}/")}));
+    assert!(!page.is_error, "{}", page.content);
+    let link = reference(&page.content, &["link", "Get the report"]);
+    let page = call(&tools, "browser_click", json!({"ref": link}));
+    assert!(
+        page.content
+            .contains("downloaded downloads/report.csv (23 bytes, from"),
+        "{}",
+        page.content
+    );
+    assert!(page.untrusted);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("downloads/report.csv")).unwrap(),
+        "month,total\noctober,42\n"
+    );
+    // Opening the file's address downloads it too, under a name of its own.
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("{origin}/report")}),
+    );
+    assert!(!page.is_error, "{}", page.content);
+    assert!(
+        page.content.contains("downloads/report (2).csv"),
+        "{}",
+        page.content
+    );
+
+    // A second tab, current until another is chosen.
+    let page = call(
+        &tools,
+        "browser_tab_open",
+        json!({"url": format!("{origin}/upload")}),
+    );
+    assert!(page.content.starts_with("opened tab 2"), "{}", page.content);
+    let tabs = call(&tools, "browser_tabs", json!({}));
+    assert!(tabs.content.contains("1. \"Reports\""), "{}", tabs.content);
+    assert!(
+        tabs.content.contains("2. \"Upload\"") && tabs.content.ends_with("(current)"),
+        "{}",
+        tabs.content
+    );
+
+    // A file of the workspace, chosen for the form's field and sent.
+    let field = reference(&page.content, &["Document", "[ref="]);
+    let chosen = call(
+        &tools,
+        "browser_choose_files",
+        json!({"ref": field, "paths": ["notes.txt"]}),
+    );
+    assert!(!chosen.is_error, "{}", chosen.content);
+    let send = reference(&chosen.content, &["button", "Send"]);
+    let page = call(&tools, "browser_click", json!({"ref": send}));
+    assert!(
+        page.content.contains("Received notes.txt: hello world"),
+        "{}",
+        page.content
+    );
+    // A path out of the workspace is refused.
+    let page = call(&tools, "browser_back", json!({}));
+    let field = reference(&page.content, &["Document", "[ref="]);
+    let refused = call(
+        &tools,
+        "browser_choose_files",
+        json!({"ref": field, "paths": ["../etc/passwd"]}),
+    );
+    assert!(refused.is_error, "{}", refused.content);
+    // So is a confidential file, however its path is written.
+    std::fs::write(workspace.join("secret.txt"), "the key").unwrap();
+    let refused = call(
+        &tools,
+        "browser_choose_files",
+        json!({"ref": field, "paths": [".//secret.txt"]}),
+    );
+    assert!(
+        refused.is_error && refused.content.contains("is confidential"),
+        "{}",
+        refused.content
+    );
+    // A button that opens a file chooser: the chooser is answered.
+    let attach = reference(&page.content, &["button", "Attach"]);
+    let page = call(
+        &tools,
+        "browser_choose_files",
+        json!({"ref": attach, "paths": ["notes.txt"]}),
+    );
+    assert!(!page.is_error, "{}", page.content);
+    assert!(page.content.contains("chose notes.txt"), "{}", page.content);
+
+    // Back to the first tab, the second closed; the last one stays.
+    let page = call(&tools, "browser_tab_switch", json!({"tab": 1}));
+    assert!(
+        page.content.contains("heading \"Reports\""),
+        "{}",
+        page.content
+    );
+    let closed = call(&tools, "browser_tab_close", json!({"tab": 2}));
+    assert!(
+        closed.content.starts_with("closed tab 2; tab 1 is current"),
+        "{}",
+        closed.content
+    );
+    assert!(call(&tools, "browser_tab_close", json!({"tab": 1})).is_error);
+    drop(tools);
+    drop(shared);
+
+    // Without a workspace: no download is taken, and no file is chosen.
+    let bare = Shared::new(
+        browser::Config {
+            workspace: None,
+            ..config
+        },
+        None,
+    );
+    let tools = bare.tools();
+    assert!(!tools
+        .iter()
+        .any(|t| t.spec().name == "browser_choose_files"));
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("{origin}/report")}),
+    );
+    assert!(
+        page.content.contains("takes no downloads"),
+        "{}",
+        page.content
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
 }
 
 #[test]

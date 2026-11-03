@@ -143,6 +143,14 @@ fn one_person_sets_up_a_chain_and_an_agent_and_talks_with_it() {
     assert_eq!(made.profile.as_deref(), Some("assistant"));
     assert_eq!(made.wallet.as_deref(), Some("ana"));
     assert!(made.agent.is_some() && made.memory.is_some());
+    // A wallet's seed is readable by its owner only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let seed = dir.join("home/wallets/ana.seed");
+        let mode = std::fs::metadata(&seed).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{}", seed.display());
+    }
     assert_eq!(made.chain, None, "setup used a chain it did not make");
     let workspace = dir.join("user/sion-workspace");
     assert!(workspace.is_dir());

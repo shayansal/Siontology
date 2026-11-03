@@ -17,8 +17,10 @@ SLH-DSA key     412112d70e98c1a97c2dffa3b396fc99caae90e6c1fccef6ecedbd5b14eb0333
 ```
 
 - The seed is 32 random bytes from the operating system, stored as 64 hex
-  digits in `$SION_HOME/wallets/<name>.seed` (default `~/.sion/wallets`).
-  `sion keys new` refuses to overwrite an existing file.
+  digits in `$SION_HOME/wallets/<name>.seed` (default `~/.sion/wallets`),
+  readable by its owner only (mode 0600). `sion keys new` refuses to
+  overwrite an existing file. A seed made by an earlier version was
+  readable by others on the machine: `chmod 600 ~/.sion/wallets/*.seed`.
 - Both keys derive from the seed: an ML-DSA-44 key and an SLH-DSA-SHA2-128f
   key. The account's policy requires both signatures.
 - `sion keys show` prints the account identifier and fingerprints of the two

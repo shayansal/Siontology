@@ -1,0 +1,46 @@
+# Your agents on a server, in a container: everything `sion agent up` runs
+# (the chain, the messengers' bridges, the work runner, the scheduler),
+# started again when it stops and at boot.
+#
+#   # the chain first, which setup needs
+#   docker compose -f deploy/compose.yaml run --rm sion agent up add chain -- \
+#     devnet --api 127.0.0.1:8730 --validators 1 --shards 1 --seats 1 \
+#     --idle-round-ms 10000 --report 0 --data-dir /home/sion/.sion/chain
+#   docker compose -f deploy/compose.yaml up -d
+#   # then the agent, and the rest of what runs
+#   docker compose -f deploy/compose.yaml exec sion sion setup --no-service
+#   docker compose -f deploy/compose.yaml exec sion sion agent up init
+#   docker compose -f deploy/compose.yaml restart
+#
+# This file and the Dockerfile are checked for their syntax only: they
+# were not run where they were written, which has no Docker.
+#
+# The home (wallets and their keys, profiles, the chain's state) is the
+# volume `sion-home`: whoever controls this machine controls the agents.
+# Tokens (TELEGRAM_BOT_TOKEN, a model's key) go in `.env` next to this file,
+# or are kept in the home with `sion agent credential add`.
+#
+# The image is built here from the repository, or taken from a release:
+# ghcr.io/<owner>/sion:<version>.
+
+services:
+  sion:
+    build:
+      context: ..
+    image: sion:local
+    # `sion agent up` is process 1: an init passes signals on and reaps.
+    init: true
+    command: ["agent", "up"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - sion-home:/home/sion/.sion
+    # The GitHub webhooks of `sion agent up init --webhooks` (put TLS in
+    # front of them), and nothing else, are reachable from outside.
+    # ports:
+    #   - "8794:8794"
+
+volumes:
+  sion-home:

@@ -339,6 +339,44 @@ pub enum SkillCommand {
         /// The release (its claim id).
         release: String,
     },
+    /// Import an Agent Skill for a profile's agent, from a folder or a git
+    /// repository: it is read and reported on (its files, its scripts, the
+    /// hosts and patterns in them, the permissions it asks for), and
+    /// installed only once --accept names its bundle root after you read
+    /// it, or --audit names an active audit of that root on a bond.
+    Import {
+        /// A folder, github:owner/repo, or a git address (https://…).
+        source: String,
+        /// The profile whose agent gets it.
+        #[arg(long)]
+        profile: String,
+        /// The skill's folder within the repository.
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// The branch or tag to read (default: the repository's own).
+        #[arg(long = "ref", value_name = "REF")]
+        rev: Option<String>,
+        /// Install it: the bundle root the report gave, after reading it.
+        #[arg(long, value_name = "ROOT", conflicts_with = "audit")]
+        accept: Option<String>,
+        /// Install it on an audit: the claim of an active audit of its
+        /// bundle on a bond (needs the node).
+        #[arg(long, value_name = "CLAIM")]
+        audit: Option<String>,
+        /// Grant the permissions it asks for (a network, secrets).
+        #[arg(long)]
+        accept_permissions: bool,
+    },
+    /// Install sion's starter skills for a profile's agent: web-research,
+    /// code-change, pr-review, ci-fix, inbox-triage, scheduling and
+    /// document-brief (all of them, or those named).
+    Starter {
+        /// The profile whose agent gets them.
+        #[arg(long)]
+        profile: String,
+        /// The skills (default: all).
+        names: Vec<String>,
+    },
 }
 
 /// Runs the skill commands that need no node (`pack`, `eval`, `evolve`);
@@ -385,6 +423,35 @@ pub fn run_offline(command: &SkillCommand) -> Option<Result<(), CliError>> {
                 )
                 .map(|(_, _, lines)| print(lines)),
             )
+        }
+        SkillCommand::Import {
+            source,
+            profile,
+            path,
+            rev,
+            accept,
+            audit: None,
+            accept_permissions,
+        } => Some(
+            crate::skill_import::Source::parse(source, rev.clone())
+                .map_err(CliError::Usage)
+                .and_then(|source| {
+                    crate::skill_import::import(
+                        &source,
+                        path.as_deref(),
+                        profile,
+                        accept
+                            .clone()
+                            .map(crate::skill_import::Vouched::Review)
+                            .as_ref(),
+                        *accept_permissions,
+                        None,
+                    )
+                })
+                .map(print),
+        ),
+        SkillCommand::Starter { profile, names } => {
+            Some(crate::skill_import::starter(profile, names).map(print))
         }
         _ => None,
     }
@@ -1207,6 +1274,29 @@ spec {}",
             let attestations = claim_ids(&attestations, "an attestation")?;
             crate::skill_improve::submit(session, ledger, &wallet, task, &dir, &attestations)?;
         }
+        SkillCommand::Import {
+            source,
+            profile,
+            path,
+            rev,
+            audit,
+            accept_permissions,
+            ..
+        } => {
+            let source =
+                crate::skill_import::Source::parse(&source, rev).map_err(CliError::Usage)?;
+            for line in crate::skill_import::import(
+                &source,
+                path.as_deref(),
+                &profile,
+                audit.map(crate::skill_import::Vouched::Audit).as_ref(),
+                accept_permissions,
+                Some(ledger),
+            )? {
+                println!("{line}");
+            }
+        }
+        SkillCommand::Starter { .. } => {}
         SkillCommand::Lineage { release: id } => {
             for line in crate::skill_improve::lineage(ledger, &id)? {
                 println!("{line}");

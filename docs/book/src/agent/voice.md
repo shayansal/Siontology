@@ -114,3 +114,61 @@ stop (`--record`, sox's `rec` by default, stopping after a second and a
 half of silence), transcribed with `--hear`; the reply is spoken with
 `--speak` and played (`--play`: mpv, ffplay, afplay or paplay, the first
 there). Each program is given the audio file's path.
+
+## A live conversation
+
+`sion agent talk <profile> --voice --live` listens all the time, as a call
+does. The microphone is read without pause (`--listen`: sox's `rec`,
+`arecord`, `parec` or `ffmpeg`, the first there, or any program that
+writes raw 16-bit mono samples at 16 kHz to its output), and what you say
+is found in it by its loudness: speech begins after 60 ms louder than
+three times the noise floor, which it follows as the room changes, and
+ends after 800 ms quieter; a fifth of a second before and after is kept,
+an utterance runs to 30 seconds at most, and under 160 ms is a noise, not
+speech. Nothing quieter than `--speech-level` is speech (400, as the root
+mean square of 16-bit samples): lower it if you are not heard, raise it in
+a loud room. Each utterance goes to `--hear` as a WAV file.
+
+The reply is spoken a sentence at a time, as the model writes it: the
+first sentence is being said while the rest is written. Code is shown,
+not read out ("The code is on the screen."), a link is said as its words,
+an address as "the link on the screen", and markdown's marks are dropped.
+
+Speak over it, and it stops: speech twice as loud as would begin an
+utterance, for a quarter of a second (so that a cough or the room does
+not), silences it at once; its run stops before its next step, and what
+you said goes to it next. What it was still writing is not shown or
+said. Typing `/stop` does the same. There is no echo cancellation, so
+this needs headphones: from loudspeakers, its own voice would interrupt
+it. With `--no-interrupt`, the microphone is not listened to while it
+works or speaks.
+
+What you type is taken too: a message, a command (one typed while the
+agent works runs alongside it, as `/status` does), or the answer to a
+question an MCP server asks, which is also said aloud and may be answered
+aloud. The question waits for an answer, spoken or typed, or for the
+input to end.
+
+### A wake word
+
+`--wake "hey sion"` takes only what begins with the phrase (several,
+split by `|`). Up to two words before it are let pass ("okay, hey sion"),
+and a word of three letters or more may be one letter off, as
+transcribers spell a name they hear ("Zion", "Scion"). After it speaks,
+it stays awake for a follow-up for `--awake-secs` (15 by default), and
+so it does after asking you something; while it works or speaks, it is
+interrupted by its name ("hey sion, stop").
+
+To find the phrase, everything said near the microphone is heard. So it
+is heard by a transcriber on this machine (`--wake-hear
+command:<program>`, such as whisper.cpp's, or `--hear` if that is one),
+and only what was said to the agent goes to `--hear`. `--wake-cloud` lets
+a transcriber elsewhere hear it all instead.
+
+Two things here are simplified. Speech is told from silence by its
+loudness alone, not by a model of speech, so a loud room is taken for
+speech, and quiet speech in it is missed. And there is no echo
+cancellation, as above. The tests run the whole conversation with a
+stand-in microphone (silence and a tone, paced as spoken), a stand-in
+transcriber, a scripted model and a player that takes its time, against a
+devnet.

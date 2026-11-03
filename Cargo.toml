@@ -99,6 +99,12 @@ tiny_http = "0.12"
 # QR codes drawn in the terminal (WeChat's sign-in); no image features.
 qrcode = { version = "0.14.1", default-features = false }
 ureq = { version = "2", default-features = false, features = ["json"] }
+# Searching an agent's workspace (`search_files`) and matching paths
+# (`find_files`).
+regex = "1"
+# Reading Word, OpenDocument and PowerPoint files (their ZIP archives'
+# deflated parts) for the documents server.
+miniz_oxide = "0.8"
 
 # Testing
 proptest = "1"

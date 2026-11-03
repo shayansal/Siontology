@@ -784,6 +784,11 @@ pub struct Hooks<'a> {
     /// The wallet whose keys sign the decision the run carries
     /// (`sion agent continue --sign`), if one is to.
     pub sign: Option<&'a str>,
+    /// Who answers what an MCP server asks a person for while the run
+    /// waits on it (elicitation): the person in the chat, or at the
+    /// terminal. Without one, no one is there to ask, and servers are not
+    /// told they may.
+    pub asker: Option<&'a std::sync::Arc<dyn sion_agent::mcp_input::Asker>>,
 }
 
 impl std::fmt::Debug for Hooks<'_> {
@@ -796,6 +801,7 @@ impl std::fmt::Debug for Hooks<'_> {
             .field("outside", &self.outside)
             .field("confidential", &self.confidential)
             .field("sign", &self.sign)
+            .field("asker", &self.asker.is_some())
             .finish()
     }
 }
@@ -1110,6 +1116,28 @@ fn stopped() -> bool {
     kill_switch().exists()
 }
 
+/// How this machine searches the web, if it does: the service
+/// `SION_SEARCH` names (`brave`, `tavily` or `searxng:<url>`), else Brave's
+/// or Tavily's, whichever key is set or kept (`sion agent credential`);
+/// `SION_SEARCH_API` puts the service's API at another address (a
+/// stand-in). Profiles that may fetch from the web may also search it.
+pub fn web_search() -> Result<Option<sion_agent::websearch::WebSearch>, CliError> {
+    use sion_agent::websearch::{Provider, WebSearch};
+    let spec = match crate::credentials::var("SION_SEARCH") {
+        Some(spec) if !spec.trim().is_empty() => spec,
+        _ if crate::credentials::var("BRAVE_SEARCH_API_KEY").is_some() => "brave".into(),
+        _ if crate::credentials::var("TAVILY_API_KEY").is_some() => "tavily".into(),
+        _ => return Ok(None),
+    };
+    let provider = Provider::parse(&spec, crate::credentials::var).map_err(CliError::Usage)?;
+    let base = std::env::var("SION_SEARCH_API")
+        .ok()
+        .filter(|b| !b.trim().is_empty());
+    WebSearch::new(provider, base)
+        .map(Some)
+        .map_err(CliError::Usage)
+}
+
 /// The system prompt an agent starts with.
 pub fn default_system(did: &str) -> String {
     format!(
@@ -1205,6 +1233,9 @@ impl Saved {
             for tool in sion_agent::builtin::workspace_holding(root, &self.confidential_files) {
                 tools.add_boxed(tool);
             }
+            for tool in sion_agent::code::editing(root, &self.confidential_files) {
+                tools.add_boxed(tool);
+            }
         }
         // What it shares goes with its reply.
         let shared: std::sync::Arc<std::sync::Mutex<Vec<String>>> = std::sync::Arc::default();
@@ -1236,6 +1267,9 @@ impl Saved {
                 root: root.clone(),
                 sandbox: sandbox.clone(),
             });
+            for tool in sion_agent::code::checking(root, sandbox) {
+                tools.add_boxed(tool);
+            }
             if let Some(skills) = &self.skills {
                 let mut run = sion_agent::skills::SkillRun::new(
                     skills.clone(),
@@ -1266,6 +1300,13 @@ impl Saved {
         // Servers that cannot start, and tools changed since their review,
         // are left out; the run says which.
         let mut notes = Vec::new();
+        if self.web {
+            match web_search() {
+                Ok(Some(search)) => tools.add(search),
+                Ok(None) => {}
+                Err(e) => notes.push(format!("web search is not offered: {e}")),
+            }
+        }
         for name in &self.mcp {
             let mounted = crate::agent_mcp::get(name)
                 .map_err(|e| e.to_string())
@@ -1274,9 +1315,21 @@ impl Saved {
                         check_workspace(dir).map_err(|e| e.to_string())?;
                         check_apart(dir, self.skills.as_deref()).map_err(|e| e.to_string())?;
                     }
-                    sion_agent::mcp::mount_with(
+                    let responder = sion_agent::mcp_input::Responder {
+                        asker: hooks.asker.cloned(),
+                        sampler: server.sampling.as_ref().map(|limits| {
+                            std::sync::Arc::new(crate::agent_mcp::ModelSampler::new(
+                                limits,
+                                &self.models,
+                            ))
+                                as std::sync::Arc<dyn sion_agent::mcp_input::Sampler>
+                        }),
+                        ..Default::default()
+                    };
+                    sion_agent::mcp::mount_full(
                         &server,
                         crate::agent_mcp::authorizer(&server).map_err(|e| e.to_string())?,
+                        responder,
                     )
                 });
             match mounted {
@@ -1299,6 +1352,7 @@ impl Saved {
                 &self.screen,
                 &self.state.id,
                 self.workspace.as_deref(),
+                &self.confidential_files,
                 self.browser_at.clone(),
             )? {
                 tools.add_boxed(tool);

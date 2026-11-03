@@ -106,7 +106,14 @@ Paper: [Neo-Blockchains: The Fold Architecture](docs/book/src/papers/architectur
   through an agent gateway. They take work on by themselves from the
   GitHub repositories and chats they watch: what people on a list ask
   for, and, once their operator lets them, what a rule covers, each piece
-  of work under a mandate kept on the ledger.
+  of work under a mandate kept on the ledger, following their pull
+  requests' reviews and failed checks. They search the web, change and
+  check code, use a browser with tabs, downloads and uploads, and use MCP
+  servers (resources, prompts and questions to you included) and sion's
+  own for mail, calendars and documents. In the terminal they can be
+  spoken to live, stopped by speaking over them, and woken by a phrase.
+  `sion deploy` puts them on a server of yours, where `sion agent up`
+  keeps them running while your computer is off.
 - **Storage deals.** A client escrows payment to have data kept; the
   provider posts collateral and proves every round, by answering random
   challenges drawn from the beacon, that it can still produce the data,

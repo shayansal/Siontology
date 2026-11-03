@@ -39,8 +39,8 @@ guides show the commands in use.
 | Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent telegram`, `mcp`, `x402 serve`, `x402 fetch` |
-| Skills | `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
+| Skills | `skill import`, `skill starter`, `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
 | Storage | `storage prepare`, `storage post`, `storage deals`, `storage show`, `storage accept`, `storage prove`, `storage settle`, `storage close`, `storage serve` |
@@ -48,7 +48,7 @@ guides show the commands in use.
 | Markets | `market create`, `market order`, `market clear`, `market show` |
 | Payment streams | `stream open`, `stream pay`, `stream jump`, `stream check`, `stream settle`, `stream top-up`, `stream close`, `stream show` |
 | Verification | `tx`, `receipt`, `verify` |
-| Your computer | `setup`, `update`, `agent credential add`, `agent credential list`, `agent credential remove` |
+| Your computer | `setup`, `update`, `deploy`, `agent up`, `agent credential add`, `agent credential list`, `agent credential remove` |
 | Other | `demo`, `bench` |
 
 There is no command yet for registering a validator on a running chain,
@@ -73,6 +73,7 @@ Commands:
   status     Chain status
   setup      Set up Siontology for one person on this machine: a chain of your own (a service of yours), your wallet and your agent's, the agent with a budget and its memory, its model, a profile `sion` talks with, and Telegram if you like. Safe to run again
   update     Replace this sion with the latest release, once its signature and SHA-256 are checked
+  deploy     Put your agents on a server of yours over SSH, so that they work while this computer is off: sion copied there, set up there (or this machine's home copied, with --copy-home), and everything run by one service of yours (sion agent up)
   doctor     What this machine has for Siontology and its agents, and what is missing: the home, the node, sandboxes, the browser and desktop, models', speech services' and messengers' credentials (by name)
   keys       Wallet keys
   balance    An account's balances and coins
@@ -100,7 +101,7 @@ Commands:
   events     Recent events
   verify     Verify a Pulse as a light client
   demo       Run a scripted demo: invoice, agents, swarm, batch, tasks, robots, storage, market, receipts, x402, streams, censorship, light, staking or all
-  mcp        Serve the Model Context Protocol on stdio (for AI agents)
+  mcp        Serve the Model Context Protocol on stdio (for AI agents): the ledger's tools, or a person's mail, calendars or documents
   x402       Sell or buy HTTP resources with x402 (HTTP 402 payments settled on Siontology)
   bench      Measure primitives, execution, proving, clearing and a devnet
   help       Print this message or the help of the given subcommand(s)
@@ -310,6 +311,30 @@ Options:
 
 It installs a release only once its `SHA256SUMS` are signed by the release
 key it was built with and its archive matches them: [Update](../getting-started/your-computer.md#update).
+
+## `sion deploy`
+
+```text
+Put your agents on a server of yours over SSH, so that they work while this computer is off: sion copied there, set up there (or this machine's home copied, with --copy-home), and everything run by one service of yours (sion agent up)
+
+Usage: sion deploy [OPTIONS] <DESTINATION>
+
+Arguments:
+  <DESTINATION>  The server: `user@host`, as SSH reaches it
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --port <PORT>          SSH's port on the server
+      --identity <IDENTITY>  The key SSH signs in with
+      --copy-home            Copy this machine's home (wallets and keys included) instead of running setup on the server
+      --profile <PROFILE>    The profile whose work runner runs there (default: setup's)
+      --webhooks             Take GitHub's webhooks in the work runner there
+      --no-start             Install the service, but do not start it
+      --no-setup             Do not run setup on the server (with no --copy-home: set it up there yourself)
+  -h, --help                 Print help
+```
+
+It needs SSH to the server (`ssh`, or `SION_SSH`), and copies this `sion` only to the same kind of machine (Linux on the same processor); elsewhere, install a release there first. With `--copy-home`, the agents' keys go too: whoever controls the server controls their wallets (`deploy:copied-keys`). See [Run it on a server](../agent/server.md).
 
 ## `sion doctor`
 
@@ -785,6 +810,7 @@ Commands:
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
   waiting        Everything that waits for a person: work items' questions, approvals and failures, messages that could not be sent, sessions waiting for approval, and chats waiting to be let in
+  up             Run everything on the list (the chain, bridges, the work runner, the scheduler) and keep it running, each started again when it stops; or change the list (init, add, remove, list)
   serve          Serve the HTTP channel: POST /v1/profiles/<name>/messages with {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's POST /v1/chat/completions (a profile as the model) and GET /v1/models, with a bearer token: the machine's, or a profile's own (`sion agent profile token add`)
   talk           Talk with a profile in the terminal: what you type goes to it, its reply comes as the model writes it; with --voice, heard and spoken
   telegram       Answer Telegram chats with a profile, by long polling (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server)
@@ -1968,6 +1994,103 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion agent up`
+
+```text
+Run everything on the list (the chain, bridges, the work runner, the scheduler) and keep it running, each started again when it stops; or change the list (init, add, remove, list)
+
+Usage: sion agent up [OPTIONS] [COMMAND]
+
+Commands:
+  init    Fill the list from what `sion setup` made: the chain, the scheduler, Telegram if it was set up, and the work runner of the profile
+  add     Add something to run: a name, and the arguments of `sion` after `--` (e.g. `sion agent up add slack -- agent bridge me --via slack --pairing`)
+  remove  Take something off the list
+  list    What the list holds, and how each one runs
+  rehome  Rewrite the paths a home copied from another machine holds (profiles' workspaces and skills, setup's record), from that machine's home to this one's
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>         The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --for-secs <SECONDS>  Run for this many seconds, then stop everything (for trying it)
+  -h, --help                Print help
+```
+
+What it runs is the list in `$SION_HOME/up.json`; what each said goes to `$SION_HOME/logs/<name>.log`, and `$SION_HOME/up.status.json` says what runs. Each is started again when it stops, after 1 s, then 2, 4… up to a minute, and the pause starts over once it has run steadily for a minute. When `sion agent up` stops, however it stops, what it ran stops too. See [Run it on a server](../agent/server.md).
+
+## `sion agent up init`
+
+```text
+Fill the list from what `sion setup` made: the chain, the scheduler, Telegram if it was set up, and the work runner of the profile
+
+Usage: sion agent up init [OPTIONS]
+
+Options:
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>  The profile whose work runner runs (default: setup's)
+      --webhooks           Take GitHub's webhooks in the work runner (GITHUB_WEBHOOK_SECRET)
+  -h, --help               Print help
+```
+
+The chain (if setup made one here), the scheduler, the work runner for the profile (with `--webhooks`, taking GitHub's webhooks), and a bridge for each messenger setup connected.
+
+## `sion agent up add`
+
+```text
+Add something to run: a name, and the arguments of `sion` after `--` (e.g. `sion agent up add slack -- agent bridge me --via slack --pairing`)
+
+Usage: sion agent up add [OPTIONS] <NAME> -- <ARGS>...
+
+Arguments:
+  <NAME>     Its name: letters, digits, `-` and `_`
+  <ARGS>...  The arguments of `sion`
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent up remove`
+
+```text
+Take something off the list
+
+Usage: sion agent up remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent up list`
+
+```text
+What the list holds, and how each one runs
+
+Usage: sion agent up list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent up rehome`
+
+```text
+Rewrite the paths a home copied from another machine holds (profiles' workspaces and skills, setup's record), from that machine's home to this one's
+
+Usage: sion agent up rehome [OPTIONS] --from <FROM>
+
+Options:
+      --from <FROM>  The home directory on the machine the files came from
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+For a home copied from another machine (`sion deploy --copy-home` runs it): paths that name the other machine's home are rewritten to this one's.
+
 ## `sion agent mcp`
 
 ```text
@@ -1976,13 +2099,16 @@ MCP servers whose tools agents may use: add one (its tools are reviewed and pinn
 Usage: sion agent mcp [OPTIONS] <COMMAND>
 
 Commands:
-  add     Add an MCP server for agents' sessions, and review its tools. The server is started and its tools listed, each with what its calls are taken to do; those offered are pinned by a digest of their definitions, so a tool that changes is not offered until reviewed again
-  list    The MCP servers on this machine, with their reviewed tools
-  review  Review a server's tools again: what changed, what is new and what is gone since its last review. With --accept, its tools are pinned as they are now (a tool keeps the larger of its old effect and what its annotations now say, unless --effect sets one)
-  login   Log in to a server over HTTP that asks for authorization (OAuth): a browser opens where you authorize, and the tokens are kept, encrypted, for its sessions, which renew them while they can
-  logout  Forget a server's authorization (its tokens and registration), revoking its tokens first where its authorization server takes revocations
-  remove  Remove a server, and its authorization as `logout` does
-  help    Print this message or the help of the given subcommand(s)
+  add        Add an MCP server for agents' sessions, and review its tools. The server is started and its tools listed, each with what its calls are taken to do; those offered are pinned by a digest of their definitions, so a tool that changes is not offered until reviewed again
+  list       The MCP servers on this machine, with their reviewed tools
+  review     Review a server's tools again: what changed, what is new and what is gone since its last review. With --accept, its tools are pinned as they are now (a tool keeps the larger of its old effect and what its annotations now say, unless --effect sets one)
+  login      Log in to a server over HTTP that asks for authorization (OAuth): a browser opens where you authorize, and the tokens are kept, encrypted, for its sessions, which renew them while they can
+  logout     Forget a server's authorization (its tokens and registration), revoking its tokens first where its authorization server takes revocations
+  remove     Remove a server, and its authorization as `logout` does
+  sampling   Let a server have the session's model write for it (sampling), within limits: at most --max-tokens a completion and --per-run completions a run, written by --model (default: the session's first). The completions are counted in the run's token budget. With --off, it may not. Sampling is deprecated by protocol 2026-07-28
+  resources  The resources a server offers, and its templates; with --read, what one holds
+  prompts    The prompts a server offers, which people run in chats with `/prompt <server> <prompt> name=value …`
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2041,6 +2167,8 @@ Options:
           The network it reaches in its sandbox: none (the default), host (bubblewrap) or a Docker network you set up [default: none]
       --sandbox-read <DIR>
           A directory it may read in its sandbox. Repeat for more
+      --first-party <SERVER>
+          One of sion's own servers instead of a program: mail (MAIL_…), calendar (CALDAV_…) or documents (the folder --dir names). The program and the variables it needs are filled in
   -h, --help
           Print help
 ```
@@ -2128,6 +2256,62 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
+
+## `sion agent mcp sampling`
+
+```text
+Let a server have the session's model write for it (sampling), within limits: at most --max-tokens a completion and --per-run completions a run, written by --model (default: the session's first). The completions are counted in the run's token budget. With --off, it may not. Sampling is deprecated by protocol 2026-07-28
+
+Usage: sion agent mcp sampling [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The server
+
+Options:
+      --max-tokens <MAX_TOKENS>  The most tokens one completion may write [default: 1000]
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --per-run <PER_RUN>        The most completions in one run of a session [default: 5]
+      --model <MODEL>            The model that writes them
+      --off                      Take sampling away
+  -h, --help                     Print help
+```
+
+Off by default. See [What MCP servers ask for](../agent/tools.md#what-mcp-servers-ask-for).
+
+## `sion agent mcp resources`
+
+```text
+The resources a server offers, and its templates; with --read, what one holds
+
+Usage: sion agent mcp resources [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The server
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --read <URI>   The address of a resource to read
+  -h, --help         Print help
+```
+
+A session reaches a server's resources through two tools, `<server>_resources` and `<server>_read_resource`; what they return is from outside. See [What MCP servers ask for](../agent/tools.md#what-mcp-servers-ask-for).
+
+## `sion agent mcp prompts`
+
+```text
+The prompts a server offers, which people run in chats with `/prompt <server> <prompt> name=value …`
+
+Usage: sion agent mcp prompts [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The server
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [What MCP servers ask for](../agent/tools.md#what-mcp-servers-ask-for).
 
 ## `sion agent graph`
 
@@ -2433,6 +2617,7 @@ Options:
       --poll <POLL>          How often to read the watches, in seconds [default: 30]
       --slots <SLOTS>        How many items may run at once; one more slot is kept for a person's message [default: 2]
       --assess-with <MODEL>  The model that weighs work nobody asked for (default: the profile's first)
+      --listen [<ADDRESS>]   Take GitHub's webhooks here as well (signed with GITHUB_WEBHOOK_SECRET): what they bring is taken at once, and the repositories are still read every --poll seconds for what they miss (127.0.0.1:8794; put it behind TLS for GitHub)
   -h, --help                 Print help
 ```
 
@@ -2604,10 +2789,18 @@ Options:
       --speak <PROVIDER>             What speaks the replies: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, or command:<program>
       --record <COMMAND>             The program that records you, given the file to write (sox's rec by default, stopping after a second and a half of silence)
       --play <COMMAND>               The program that plays a spoken reply, given its file (mpv, ffplay, afplay or paplay, the first there, by default)
+      --live                         Listen all the time instead of at Enter: speech is told from silence by its loudness, the reply is spoken a sentence at a time, and speaking over it stops it (use headphones: there is no echo cancellation)
+      --listen <COMMAND>             The program that gives the microphone's sound: raw 16-bit mono at 16 kHz on its output (sox's rec, arecord, parec or ffmpeg, the first there, by default)
+      --wake <PHRASE>                Take only what begins with this phrase ("hey sion"; several split by |)
+      --wake-hear <PROVIDER>         What hears what is said before the wake word: a transcriber on this machine (command:<program>, such as whisper.cpp's); by default --hear's, if it is one
+      --wake-cloud                   Let a transcriber elsewhere hear what is said before the wake word: everything said near the microphone
+      --awake-secs <AWAKE_SECS>      Seconds it stays awake for a follow-up after it speaks [default: 15]
+      --no-interrupt                 Speaking over the agent does not stop it: the microphone is not listened to while it works or speaks (for loudspeakers)
+      --speech-level <LEVEL>         The quietest speech taken, as the root mean square of its samples (of 32767): lower it if you are not heard, raise it in a loud room [default: 400]
   -h, --help                         Print help
 ```
 
-The conversation is a session as on any channel, its commands included (`/new`, `/status`, `/approve`…). There is no `/stop` while the agent works: Ctrl-C ends the conversation, the session kept. See [In the terminal, and by voice](../agent/voice.md#in-the-terminal-and-by-voice).
+The conversation is a session as on any channel, its commands included (`/new`, `/status`, `/approve`…). Typed, or pressing Enter to speak, there is no `/stop` while the agent works: Ctrl-C ends the conversation, the session kept. With `--live`, it listens all the time: speaking over the agent stops it (as does typing `/stop`), and a command typed while it works runs alongside. See [In the terminal, and by voice](../agent/voice.md#in-the-terminal-and-by-voice) and [A live conversation](../agent/voice.md#a-live-conversation).
 
 ## `sion agent telegram`
 
@@ -3341,6 +3534,8 @@ Commands:
   verify   Verify a version for a bounty, as one of its verifiers: check that it keeps the skill's purpose, run the evaluation set on it yourself, and attest on your bond only if enough cases pass
   submit   Submit a version for a bounty, as its worker, with its attestations, and settle the task
   lineage  A release's lineage: each version back to the first, with what it rests on and the evidence for each step
+  import   Import an Agent Skill for a profile's agent, from a folder or a git repository: it is read and reported on (its files, its scripts, the hosts and patterns in them, the permissions it asks for), and installed only once --accept names its bundle root after you read it, or --audit names an active audit of that root on a bond
+  starter  Install sion's starter skills for a profile's agent: web-research, code-change, pr-review, ci-fix, inbox-triage, scheduling and document-brief (all of them, or those named)
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -3470,6 +3665,47 @@ Options:
 ```
 
 Asks for the decision before signing: a release whose backing does not cover the value at risk is refused without a fee.
+
+## `sion skill import`
+
+```text
+Import an Agent Skill for a profile's agent, from a folder or a git repository: it is read and reported on (its files, its scripts, the hosts and patterns in them, the permissions it asks for), and installed only once --accept names its bundle root after you read it, or --audit names an active audit of that root on a bond
+
+Usage: sion skill import [OPTIONS] --profile <PROFILE> <SOURCE>
+
+Arguments:
+  <SOURCE>  A folder, github:owner/repo, or a git address (https://…)
+
+Options:
+      --node <NODE>         The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>   The profile whose agent gets it
+      --path <PATH>         The skill's folder within the repository
+      --ref <REF>           The branch or tag to read (default: the repository's own)
+      --accept <ROOT>       Install it: the bundle root the report gave, after reading it
+      --audit <CLAIM>       Install it on an audit: the claim of an active audit of its bundle on a bond (needs the node)
+      --accept-permissions  Grant the permissions it asks for (a network, secrets)
+  -h, --help                Print help
+```
+
+Nothing is installed by the first run: it reports, and prints the bundle root to accept. A skill installed on an audit is taken out of use if the audit is shown false. See [Importing a skill](../agent/skills.md#importing-a-skill).
+
+## `sion skill starter`
+
+```text
+Install sion's starter skills for a profile's agent: web-research, code-change, pr-review, ci-fix, inbox-triage, scheduling and document-brief (all of them, or those named)
+
+Usage: sion skill starter [OPTIONS] --profile <PROFILE> [NAMES]...
+
+Arguments:
+  [NAMES]...  The skills (default: all)
+
+Options:
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>  The profile whose agent gets them
+  -h, --help               Print help
+```
+
+See [Starter skills](../agent/skills.md#starter-skills).
 
 ## `sion skill eval`
 
@@ -4194,9 +4430,15 @@ See [Run the demos](../getting-started/demos.md).
 ## `sion mcp`
 
 ```text
-Serve the Model Context Protocol on stdio (for AI agents)
+Serve the Model Context Protocol on stdio (for AI agents): the ledger's tools, or a person's mail, calendars or documents
 
-Usage: sion mcp [OPTIONS]
+Usage: sion mcp [OPTIONS] [COMMAND]
+
+Commands:
+  mail       A person's mailbox over IMAP and SMTP (MAIL_ADDRESS, MAIL_IMAP_URL, MAIL_SMTP_URL, MAIL_PASSWORD or MAIL_TOKEN_COMMAND): search, read, draft, send
+  calendar   A person's calendars over CalDAV (CALDAV_URL, CALDAV_USERNAME and CALDAV_PASSWORD, or CALDAV_TOKEN_COMMAND): list, read, add, remove events
+  documents  A folder of documents: list, read (text, web pages, Word, OpenDocument, PowerPoint, PDF), search, write text and Markdown
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -4204,6 +4446,49 @@ Options:
 ```
 
 See [MCP tools](mcp.md).
+
+## `sion mcp mail`
+
+```text
+A person's mailbox over IMAP and SMTP (MAIL_ADDRESS, MAIL_IMAP_URL, MAIL_SMTP_URL, MAIL_PASSWORD or MAIL_TOKEN_COMMAND): search, read, draft, send
+
+Usage: sion mcp mail [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Over IMAP and SMTP, from `MAIL_ADDRESS`, `MAIL_IMAP_URL`, `MAIL_SMTP_URL` and `MAIL_PASSWORD` or `MAIL_TOKEN_COMMAND` (`MAIL_USERNAME` if it is not the address), from the environment or kept with `sion agent credential add`. Drafts are saved to the mailbox's drafts folder; what is sent carries no `Auto-Submitted` header, as the person's own mail. See [sion's own servers](../agent/tools.md#sions-own-servers-mail-calendars-documents).
+
+## `sion mcp calendar`
+
+```text
+A person's calendars over CalDAV (CALDAV_URL, CALDAV_USERNAME and CALDAV_PASSWORD, or CALDAV_TOKEN_COMMAND): list, read, add, remove events
+
+Usage: sion mcp calendar [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Over CalDAV, from `CALDAV_URL`, `CALDAV_USERNAME`, and `CALDAV_PASSWORD` or `CALDAV_TOKEN_COMMAND`, from the environment or kept with `sion agent credential add`. An event is added only where none has its identifier (`If-None-Match: *`), and removed with `If-Match` when its tag is given, so never one changed since it was read. See [sion's own servers](../agent/tools.md#sions-own-servers-mail-calendars-documents).
+
+## `sion mcp documents`
+
+```text
+A folder of documents: list, read (text, web pages, Word, OpenDocument, PowerPoint, PDF), search, write text and Markdown
+
+Usage: sion mcp documents [OPTIONS] --dir <DIR>
+
+Options:
+      --dir <DIR>    The folder [env: DOCUMENTS_DIR=]
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Reads Markdown, text, HTML, Word (.docx), OpenDocument (.odt), PowerPoint (.pptx) and PDF (with `pdftotext`); writes only Markdown and text, inside the folder. See [sion's own servers](../agent/tools.md#sions-own-servers-mail-calendars-documents).
 
 ## `sion x402`
 

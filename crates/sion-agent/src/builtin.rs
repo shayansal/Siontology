@@ -84,7 +84,13 @@ pub struct ReadFile {
 /// written with a closing `/`, or every path that begins as one ending in
 /// `*` does.
 pub fn confidential_path(patterns: &[String], relative: &str) -> bool {
-    let relative = relative.trim_start_matches("./");
+    // `a/./b` and `a//b` are `a/b`.
+    let relative = relative
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    let relative = relative.as_str();
     patterns.iter().any(|pattern| {
         let pattern = pattern.trim_start_matches("./");
         if let Some(prefix) = pattern.strip_suffix('*') {
@@ -97,15 +103,119 @@ pub fn confidential_path(patterns: &[String], relative: &str) -> bool {
     })
 }
 
+/// Whether the file at `relative` in the workspace `root` is one that
+/// `patterns` name ([`confidential_path`]): as the path is written, or as
+/// the path in the workspace that symbolic links lead it to.
+pub fn confidential_in(patterns: &[String], root: &Path, relative: &str) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    if confidential_path(patterns, relative) {
+        return true;
+    }
+    let Ok(real_root) = root.canonicalize() else {
+        return false;
+    };
+    let path = root.join(relative);
+    // A file not there yet is where its directory leads.
+    let real = path.canonicalize().ok().or_else(|| {
+        let parent = path.parent()?.canonicalize().ok()?;
+        Some(parent.join(path.file_name()?))
+    });
+    real.and_then(|real| {
+        real.strip_prefix(&real_root)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+    })
+    .is_some_and(|real| confidential_path(patterns, &real))
+}
+
+/// Writes `bytes` to `path` through a new file made beside it and renamed
+/// over it: no reader sees half a file, and nothing already beside it (a
+/// symbolic link planted there, say) is written through. A file replaced
+/// keeps its permissions; a symbolic link to a file is written through to
+/// that file, which the caller has checked.
+pub fn write_aside(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let (at, aside) = write_beside(path, bytes)?;
+    std::fs::rename(&aside, &at).inspect_err(|_| {
+        let _ = std::fs::remove_file(&aside);
+    })
+}
+
+/// [`write_aside`]'s first half: `bytes` in a new file beside `path`, with
+/// the permissions of the file there; returns where it goes (the file a
+/// symbolic link leads to, or `path`) and the new file, to be renamed
+/// there.
+pub fn write_beside(path: &Path, bytes: &[u8]) -> std::io::Result<(PathBuf, PathBuf)> {
+    use std::io::Write as _;
+    let path = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => path.canonicalize()?,
+        _ => path.to_path_buf(),
+    };
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let kept = std::fs::metadata(&path)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map(|m| m.permissions());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    for attempt in 0..16u32 {
+        let aside = dir.join(format!(
+            ".{name}.{}-{stamp}-{attempt}.partial",
+            std::process::id()
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&aside)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        let written = file.write_all(bytes);
+        drop(file);
+        let done = written.and_then(|()| match &kept {
+            Some(permissions) => std::fs::set_permissions(&aside, permissions.clone()),
+            None => Ok(()),
+        });
+        if let Err(e) = done {
+            let _ = std::fs::remove_file(&aside);
+            return Err(e);
+        }
+        return Ok((path, aside));
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no file could be made beside it",
+    ))
+}
+
 impl Tool for ReadFile {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read_file".into(),
             description: format!(
-                "Read a text file in your workspace (at most {} KiB). Paths are relative to the workspace.",
-                MAX_READ >> 10
+                "Read a text file in your workspace (at most {} KiB). Paths are relative to the \
+                 workspace. With `offset` (the first line, from 1) and `limit` (how many lines), \
+                 gives those lines of a file of up to {} MiB, each with its number.",
+                MAX_READ >> 10,
+                crate::code::MAX_FILE >> 20
             ),
-            input_schema: schema(json!({"path": {"type": "string"}}), &["path"]),
+            input_schema: schema(
+                json!({
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 1},
+                    "limit": {"type": "integer", "minimum": 1}
+                }),
+                &["path"],
+            ),
         }
     }
 
@@ -128,10 +238,24 @@ impl Tool for ReadFile {
             Ok(path) => path,
             Err(e) => return Outcome::error(e),
         };
+        let ranged = input.get("offset").is_some_and(|v| !v.is_null())
+            || input.get("limit").is_some_and(|v| !v.is_null());
+        let most = if ranged {
+            crate::code::MAX_FILE
+        } else {
+            MAX_READ
+        };
         match std::fs::metadata(&path) {
-            Ok(meta) if meta.len() > MAX_READ => {
+            Ok(meta) if meta.len() > most && !ranged => {
                 return Outcome::error(format!(
-                    "{relative} is {} bytes, more than {MAX_READ}",
+                    "{relative} is {} bytes, more than {MAX_READ}: read it in parts, with offset \
+                     and limit",
+                    meta.len()
+                ))
+            }
+            Ok(meta) if meta.len() > most => {
+                return Outcome::error(format!(
+                    "{relative} is {} bytes, more than {most}",
                     meta.len()
                 ))
             }
@@ -157,9 +281,18 @@ impl Tool for ReadFile {
                     .map(|p| p.to_string_lossy().replace('\\', "/"))
             })
             .unwrap_or_else(|| relative.to_string());
-        let held = confidential_path(&self.confidential, &named);
+        let held = confidential_path(&self.confidential, &named)
+            || confidential_path(&self.confidential, relative);
         match std::fs::read(&path) {
             Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) if ranged => {
+                    let shown = lines_of(&text, input["offset"].as_u64(), input["limit"].as_u64());
+                    if held {
+                        Outcome::ok(shown).held_confidential()
+                    } else {
+                        Outcome::ok(shown)
+                    }
+                }
                 Ok(text) if held => Outcome::ok(text).held_confidential(),
                 Ok(text) => Outcome::ok(text),
                 Err(_) => Outcome::error(format!("{relative} is not UTF-8 text")),
@@ -167,6 +300,36 @@ impl Tool for ReadFile {
             Err(e) => Outcome::error(format!("{relative}: {e}")),
         }
     }
+}
+
+/// The lines of `text` from `offset` (counted from 1), `limit` of them (by
+/// default to the end), each with its number, within [`MAX_READ`] bytes.
+pub fn lines_of(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let first = offset.unwrap_or(1).max(1) as usize;
+    if first > lines.len() {
+        return format!("(the file has {} lines)", lines.len());
+    }
+    let count = limit.map(|l| l.max(1) as usize).unwrap_or(usize::MAX);
+    let mut shown = String::new();
+    let mut last = first - 1;
+    for (i, line) in lines.iter().enumerate().skip(first - 1).take(count) {
+        let numbered = format!("{:>6}  {line}\n", i + 1);
+        if shown.len() + numbered.len() > MAX_READ as usize {
+            shown.push_str(&format!(
+                "[cut at {} KiB: read on from line {}]\n",
+                MAX_READ >> 10,
+                i + 1
+            ));
+            return shown;
+        }
+        shown.push_str(&numbered);
+        last = i + 1;
+    }
+    if last < lines.len() {
+        shown.push_str(&format!("[{} lines in all]\n", lines.len()));
+    }
+    shown
 }
 
 /// Writes a text file in the workspace, replacing it.
@@ -228,11 +391,8 @@ impl Tool for WriteFile {
                 return Outcome::error(format!("{relative}: {e}"));
             }
         }
-        // Write a sibling and rename, so a reader never sees half a file.
-        let partial = path.with_extension("partial");
-        let written =
-            std::fs::write(&partial, content).and_then(|()| std::fs::rename(&partial, &path));
-        match written {
+        // Written beside it and renamed, so a reader never sees half a file.
+        match write_aside(&path, content.as_bytes()) {
             Ok(()) => Outcome::ok(format!("wrote {} bytes to {relative}", content.len())),
             Err(e) => Outcome::error(format!("{relative}: {e}")),
         }
@@ -466,6 +626,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_confidential_file_is_known_however_its_path_is_written() {
+        let named = vec!["secrets/".to_string()];
+        let root = temp("confidential-in");
+        std::fs::create_dir_all(root.join("secrets")).unwrap();
+        std::fs::write(root.join("secrets/key.pem"), "k").unwrap();
+        for path in ["secrets/./key.pem", "secrets//key.pem", "./secrets/key.pem"] {
+            assert!(confidential_in(&named, &root, path), "{path}");
+        }
+        #[cfg(unix)]
+        {
+            // Through a link in the workspace, to a file there or not yet.
+            std::os::unix::fs::symlink(root.join("secrets"), root.join("notes")).unwrap();
+            assert!(confidential_in(&named, &root, "notes/key.pem"));
+            assert!(confidential_in(&named, &root, "notes/new.pem"));
+        }
+        assert!(!confidential_in(&named, &root, "public.txt"));
+        assert!(!confidential_in(&[], &root, "secrets/key.pem"));
+    }
+
+    #[test]
+    fn writes_go_through_no_link_planted_beside_them() {
+        let root = temp("write-aside");
+        let outside = temp("write-aside-outside").join("bashrc");
+        std::fs::write(&outside, "kept").unwrap();
+        let file = root.join("README.md");
+        std::fs::write(&file, "old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            // The names a write once went through, planted.
+            std::os::unix::fs::symlink(&outside, root.join("README.md.partial")).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("README.partial")).unwrap();
+        }
+        write_aside(&file, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "kept");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::symlink_metadata(&file).unwrap();
+            assert!(meta.is_file(), "a file, not a link");
+            assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+            // A link to a file in the workspace is written through, and
+            // stays a link.
+            std::os::unix::fs::symlink(&file, root.join("readme")).unwrap();
+            write_aside(&root.join("readme"), b"through").unwrap();
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "through");
+            assert!(std::fs::symlink_metadata(root.join("readme"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+        let left: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".README"))
+            .collect();
+        assert!(left.is_empty(), "nothing left beside it");
+    }
+
+    #[test]
     fn what_is_read_from_a_confidential_path_is_held() {
         let patterns = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let named = patterns(&["private/", "keys.env", "drafts/q*"]);
@@ -512,6 +734,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn parts_of_a_file_are_read_numbered() {
+        let root = temp("ranges");
+        let text: String = (1..=10).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(root.join("a.txt"), &text).unwrap();
+        let read = ReadFile {
+            root: root.clone(),
+            confidential: vec![],
+        };
+        let part = read.call(&json!({"path": "a.txt", "offset": 3, "limit": 2}), "k");
+        assert_eq!(
+            part.content,
+            "     3  line 3\n     4  line 4\n[10 lines in all]\n"
+        );
+        let whole = read.call(&json!({"path": "a.txt"}), "k");
+        assert_eq!(whole.content, text);
+        assert_eq!(lines_of(&text, Some(20), None), "(the file has 10 lines)");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

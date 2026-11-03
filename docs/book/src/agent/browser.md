@@ -170,6 +170,19 @@ approved, or is refused. A server (`sion agent serve`, a bridge, a
 gateway's host, the scheduler) keeps a session's browser open while the
 session waits for an approval.
 
+### Tabs, downloads and files
+
+A session's browser keeps up to eight tabs: `browser_tabs` lists them,
+`browser_tab_open` opens one (at an address, or blank),
+`browser_tab_switch` brings one forward and `browser_tab_close` closes
+one. With a workspace, what a page
+downloads is kept in the workspace's `downloads` folder, 100 MiB at most
+and two minutes each, under the name the site gave (made safe), and
+`browser_choose_files` gives a page's file field files from the
+workspace, 50 MiB at most: a file chosen goes to that page's site, so it
+is an action as the autonomy level allows any other. Without a workspace,
+the browser takes no downloads.
+
 ## Logins
 
 Your logins are kept encrypted on this machine, beside the secrets and
@@ -260,8 +273,15 @@ covers.
 
 ## What this does not do yet
 
-- The browser has one page at a time, and does not download or upload
-  files.
+- A download is kept whole or not at all: one larger than 100 MiB, or
+  longer than two minutes, is cancelled. Its size is checked as its
+  progress is read, while the browser is in use, so a download that runs
+  on between the agent's steps can pass the bound on disk before it is
+  stopped and dropped.
+- A page keeps to its tab by a script the browser runs in it first, which
+  turns links, forms and `window.open` aimed at another window to the tab
+  itself; a page that opens a window some other way opens one the session
+  does not see, or act in.
 - A desktop lives as long as the process that runs its session: a session
   continued by a process of its own gets a new one, with none of the
   programs it had started.

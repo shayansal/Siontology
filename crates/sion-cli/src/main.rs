@@ -164,6 +164,11 @@ enum Command {
     /// Replace this sion with the latest release, once its signature and
     /// SHA-256 are checked.
     Update(sion_cli::update::UpdateArgs),
+    /// Put your agents on a server of yours over SSH, so that they work
+    /// while this computer is off: sion copied there, set up there (or
+    /// this machine's home copied, with --copy-home), and everything run
+    /// by one service of yours (sion agent up).
+    Deploy(sion_cli::deploy::DeployArgs),
     /// What this machine has for Siontology and its agents, and what is
     /// missing: the home, the node, sandboxes, the browser and desktop,
     /// models', speech services' and messengers' credentials (by name).
@@ -361,8 +366,13 @@ enum Command {
         #[arg(long)]
         local: bool,
     },
-    /// Serve the Model Context Protocol on stdio (for AI agents).
-    Mcp,
+    /// Serve the Model Context Protocol on stdio (for AI agents): the
+    /// ledger's tools, or a person's mail, calendars or documents.
+    Mcp {
+        /// Serve this instead of the ledger.
+        #[command(subcommand)]
+        server: Option<McpServe>,
+    },
     /// Sell or buy HTTP resources with x402 (HTTP 402 payments settled on Siontology).
     #[command(subcommand)]
     X402(X402Command),
@@ -849,6 +859,12 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Doctor => return sion_cli::doctor::run(&cli.node),
         Command::Setup(args) => return sion_cli::setup::run(&cli.node, args),
         Command::Update(args) => return sion_cli::update::run(args),
+        Command::Deploy(args) => {
+            for line in sion_cli::deploy::deploy(args)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
         Command::Devnet(args) => return run_devnet(args),
         Command::Genesis(args) => return sion_cli::network::genesis(args).map(|_| ()),
         Command::Node(args) => return sion_cli::network::run_node(args),
@@ -929,6 +945,28 @@ fn run(cli: Cli) -> Result<(), CliError> {
         }
         return Ok(());
     }
+    // The first-party MCP servers need no node.
+    if let Command::Mcp {
+        server: Some(server),
+    } = &cli.command
+    {
+        return match server {
+            McpServe::Mail => {
+                let mut mail = sion_cli::email::MailServer::from_env().map_err(CliError::Usage)?;
+                sion_cli::mcp_serve::serve(&mut mail)
+            }
+            McpServe::Calendar => {
+                let mut calendars =
+                    sion_cli::calendar::Calendars::from_env().map_err(CliError::Usage)?;
+                sion_cli::mcp_serve::serve(&mut calendars)
+            }
+            McpServe::Documents { dir } => {
+                let mut documents =
+                    sion_cli::documents::Documents::at(dir).map_err(CliError::Usage)?;
+                sion_cli::mcp_serve::serve(&mut documents)
+            }
+        };
+    }
     // Packing, evaluating and evolving a skill need no node.
     if let Command::Skill(command) = &cli.command {
         if let Some(result) = sion_cli::skills::run_offline(command) {
@@ -937,7 +975,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
     }
     let http = HttpLedger::new(&cli.node);
     let ledger: &dyn Ledger = &http;
-    if let Command::Mcp = &cli.command {
+    if let Command::Mcp { .. } = &cli.command {
         return mcp::serve(ledger);
     }
     let mut session = Session::open(ledger)?;
@@ -950,10 +988,11 @@ fn run(cli: Cli) -> Result<(), CliError> {
         | Command::Node(_)
         | Command::Gateway(_)
         | Command::Keys(_)
-        | Command::Mcp
+        | Command::Mcp { .. }
         | Command::Doctor
         | Command::Setup(_)
         | Command::Update(_)
+        | Command::Deploy(_)
         | Command::Bench { .. } => {
             unreachable!("handled above")
         }
@@ -1776,6 +1815,26 @@ fn rand_nonce() -> u64 {
     rand_core::OsRng.next_u64()
 }
 
+/// `sion mcp <server>`: the first-party MCP servers.
+#[derive(Debug, Subcommand)]
+enum McpServe {
+    /// A person's mailbox over IMAP and SMTP (MAIL_ADDRESS, MAIL_IMAP_URL,
+    /// MAIL_SMTP_URL, MAIL_PASSWORD or MAIL_TOKEN_COMMAND): search, read,
+    /// draft, send.
+    Mail,
+    /// A person's calendars over CalDAV (CALDAV_URL, CALDAV_USERNAME and
+    /// CALDAV_PASSWORD, or CALDAV_TOKEN_COMMAND): list, read, add, remove
+    /// events.
+    Calendar,
+    /// A folder of documents: list, read (text, web pages, Word,
+    /// OpenDocument, PowerPoint, PDF), search, write text and Markdown.
+    Documents {
+        /// The folder.
+        #[arg(long, env = "DOCUMENTS_DIR")]
+        dir: std::path::PathBuf,
+    },
+}
+
 fn main() -> ExitCode {
     // Inside a skill's sandbox, this program is the bridge to the egress
     // proxy (`sion_agent::egress`): not a command people run.
@@ -1784,6 +1843,8 @@ fn main() -> ExitCode {
         let status = sion_agent::egress::bridge_cli(args);
         return ExitCode::from(u8::try_from(status).unwrap_or(125));
     }
+    // Run by `sion agent up`: stop when it stops.
+    sion_cli::up::watch_supervisor();
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

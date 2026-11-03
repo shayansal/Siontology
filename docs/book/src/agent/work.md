@@ -335,6 +335,23 @@ The runner reads a messenger's updates itself: do not run a bridge on
 the same messenger and account at the same time, or each sees only part
 of what is said.
 
+## Pull requests: reviews and checks
+
+An item for a pull request follows its review and its checks. A comment
+on the pull request's code (a review comment) reaches the item as a
+follow-up, and the agent's answer goes in that comment's thread. A check
+that fails on the pull request's head commit (a GitHub Actions job, or
+any app's check run) reaches it from the check's app
+(`github-actions[bot]`), when the watch lists that bot (`--bot`): its
+name, its conclusion, the commit and what it said, weighed as any bot's
+words, never a request. Four tools let the agent read more:
+`github_pull_request` (its description, its branches, and each changed
+file with its patch),
+`github_review_comments` (the comments on its code, by thread),
+`github_checks` (the checks on a commit, and a failed one's annotations)
+and `github_job_log` (the end of a job's log, read from the address
+GitHub signs for it, without the token).
+
 ## Running it
 
 `sion agent work run <profile>` reads the watches every 30 seconds
@@ -356,14 +373,20 @@ again finds the work where it was: a run it interrupted goes on in the
 same session, told so, and that session's journal keeps a payment it made
 from being made again. A message may then be sent twice.
 
+With `--listen`, the runner also takes GitHub's webhooks
+(`127.0.0.1:8794` unless another address is given; put a proxy with TLS
+in front of it), each checked against its `X-Hub-Signature-256` with
+`GITHUB_WEBHOOK_SECRET` and taken at once; the watches are still read
+every `--poll` seconds, for what the webhooks miss, and an event is taken
+once however it comes.
+
 The other commands: `answer` (tell an item something, as its operator),
 `approve` (or `--decline <why>`), `retry`, and `show`.
 
 ## What this does not do yet
 
-- Review comments on a pull request's code, and CI results, are not
-  read, nor other threads an item could follow for context.
-- The runner polls; it does not take GitHub's webhooks.
+- Other threads an item could follow for context are not read (a linked
+  issue, a discussion).
 - A change of the rules reaches open work when it would next run, not at
   once.
 - A rule cannot change how its work reports (a rule for work done

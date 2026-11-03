@@ -299,6 +299,9 @@ pub struct Http {
     pub modern: bool,
     /// The session the server forgot, if it said so (`404`).
     pub expired: bool,
+    /// What answers an earlier server's requests within a stream.
+    pub responder: Option<crate::mcp_input::Responder>,
+    wait: Duration,
 }
 
 impl std::fmt::Debug for Http {
@@ -434,7 +437,21 @@ impl Http {
             version: None,
             modern: true,
             expired: false,
+            responder: None,
+            wait,
         })
+    }
+
+    /// Lets one answer's stream stay open `longer` than requests may take,
+    /// for an earlier server whose requests a person answers meanwhile.
+    pub fn allow_waiting(&mut self, longer: Duration) {
+        if let Ok(client) = sion_http::Client::new(sion_http::Options {
+            allow_private: true,
+            timeout: self.wait + longer + Duration::from_secs(5),
+            ..sion_http::Options::default()
+        }) {
+            self.client = client;
+        }
     }
 
     fn base_headers(&self, authorization: &Option<String>) -> Vec<(String, String)> {
@@ -570,7 +587,10 @@ impl Http {
             match (message.get("method"), message.get("id")) {
                 // A request of an earlier-era server: answered at once.
                 (Some(method), Some(their)) => {
-                    let answer = answer_to(method.as_str().unwrap_or_default(), their);
+                    let answer = match &self.responder {
+                        Some(responder) => responder.respond(&self.server, &message),
+                        None => answer_to(method.as_str().unwrap_or_default(), their),
+                    };
                     let _ = self.post(&answer, None, &[]);
                 }
                 (Some(_), None) => {}

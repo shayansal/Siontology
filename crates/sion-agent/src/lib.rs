@@ -63,6 +63,7 @@
 pub mod browser;
 pub mod builtin;
 pub mod cdp;
+pub mod code;
 pub mod compare;
 pub mod consolidate;
 pub mod desktop;
@@ -77,6 +78,7 @@ pub mod journal;
 pub mod judge;
 pub mod mcp;
 pub mod mcp_http;
+pub mod mcp_input;
 pub mod model;
 pub mod oauth;
 pub mod permissions;
@@ -92,6 +94,7 @@ pub mod skills;
 pub mod tools;
 pub mod trace;
 pub mod verify;
+pub mod websearch;
 pub mod work;
 
 pub use model::{

@@ -512,6 +512,37 @@ struct Live {
     stopped: AtomicBool,
     /// A message interrupted the run ([`Busy::Interrupt`]).
     interrupted: AtomicBool,
+    /// Where the reply to a question the run asks the chat goes
+    /// ([`ChatAsker`]), while it waits for one.
+    question: Mutex<Option<std::sync::mpsc::Sender<String>>>,
+}
+
+/// How long a person has to answer what an MCP server asks them through
+/// the chat, in seconds.
+pub const ASK_SECS: u64 = 600;
+
+/// Asks the chat a turn answers, for an MCP server that wants a person's
+/// input: the question is said in the chat, and the next message there
+/// from someone who may decide is the reply, within [`ASK_SECS`].
+struct ChatAsker {
+    live: Arc<Live>,
+    asides: Mutex<Sender<Aside>>,
+    message: Incoming,
+}
+
+impl sion_agent::mcp_input::Asker for ChatAsker {
+    fn ask(&self, question: &str) -> Option<String> {
+        let (replied, reply) = std::sync::mpsc::channel();
+        *lock(&self.live.question) = Some(replied);
+        let _ = lock(&self.asides).send(Aside::Say(self.message.clone(), question.to_string()));
+        let answer = reply.recv_timeout(Duration::from_secs(ASK_SECS)).ok();
+        *lock(&self.live.question) = None;
+        answer
+    }
+
+    fn tell(&self, text: &str) {
+        let _ = lock(&self.asides).send(Aside::Say(self.message.clone(), text.to_string()));
+    }
 }
 
 /// What reaches the dispatcher.
@@ -1033,6 +1064,19 @@ impl Bridge<'_> {
             canned,
             private: false,
         };
+        // The reply to what the run asked the chat goes to it, and is
+        // answered with the turn.
+        if let Some(live) = chat.live.clone() {
+            if command.is_empty() && waiting.canned.is_none() && self.may_decide(&waiting.message) {
+                let replied = lock(&live.question).take();
+                if let Some(replied) = replied {
+                    println!("  (the reply to what the agent asked)");
+                    let _ = replied.send(waiting.message.text.clone());
+                    lock(&live.told).push(waiting);
+                    return;
+                }
+            }
+        }
         let busy = self.options.busy;
         match chat.live.clone() {
             Some(live)
@@ -1330,7 +1374,7 @@ impl Bridge<'_> {
         &self,
         key: String,
         turn: Vec<Waiting>,
-        live: &Live,
+        live: &Arc<Live>,
         notice: bool,
         asides: &Sender<Aside>,
     ) -> Finished {
@@ -1439,6 +1483,11 @@ impl Bridge<'_> {
         let steering = options.busy == Busy::Steer;
         // Who decides, if the turn decides: as the messenger names them.
         let who = format!("{}:{}", self.messenger.name(), last.from);
+        let asker: Arc<dyn sion_agent::mcp_input::Asker> = Arc::new(ChatAsker {
+            live: live.clone(),
+            asides: Mutex::new(asides.clone()),
+            message: last.clone(),
+        });
         let hooks = Hooks {
             watch: Some(&watch),
             stop: Some(&stop),
@@ -1447,6 +1496,7 @@ impl Bridge<'_> {
             outside: false,
             confidential: false,
             sign: None,
+            asker: Some(&asker),
         };
         let answer = crate::channels::converse_with(
             self.ledger.clone(),

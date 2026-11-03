@@ -226,6 +226,7 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
             tools: BTreeMap::new(),
             timeout_secs: 30,
             protocol: None,
+            sampling: None,
         };
         let (_, _, server) = sion_cli::agent_mcp::review(server, &[], &BTreeMap::new()).unwrap();
         assert_eq!(server.tools.len(), 4);

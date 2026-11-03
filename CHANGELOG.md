@@ -10,6 +10,48 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### What agents reach, and where they run
+
+- **Web search**: `web_search`, through Brave Search, Tavily or a SearXNG
+  instance of your own (`SION_SEARCH`, `BRAVE_SEARCH_API_KEY`,
+  `TAVILY_API_KEY`), for sessions with `--web`; its results taint the
+  session.
+- **Tools to change code**: `edit_file` (a quoted stretch replaced, with
+  the nearest lines shown when it is not found), `apply_patch` (unified
+  diffs and `*** Begin Patch`, all or nothing), `find_files`,
+  `search_files`, `read_file` by line ranges; with a shell, `diagnostics`
+  and `run_tests` run the project's checker and tests in the sandbox.
+- **The browser** keeps tabs, downloads into the workspace and chooses
+  files from it for a page's file field.
+- **MCP**: servers' resources and prompts (`sion agent mcp resources`,
+  `prompts`; `/prompts` and `/prompt` in chats and at the terminal), a
+  person's input asked in the conversation (forms and addresses; a form
+  asking for a secret is declined), and sampling within limits the
+  operator sets (`sion agent mcp sampling`), in both protocol eras.
+- **sion's own MCP servers** for mail (IMAP and SMTP), calendars
+  (CalDAV) and a folder of documents (Word, OpenDocument, PowerPoint, PDF,
+  HTML, text): `sion mcp mail|calendar|documents`, added with `sion agent
+  mcp add <name> --first-party …`.
+- **Pull requests followed**: review comments on their code reach the
+  work item and are answered in their threads; failed checks reach it from
+  the check's app; tools read a pull request, its review comments, its
+  checks and a job's log; `sion agent work run --listen` takes GitHub's
+  webhooks, signed with `GITHUB_WEBHOOK_SECRET`.
+- **Skills from anywhere**: `sion skill import` reads an Agent Skill from a
+  folder or a git repository, reports what it holds, and installs it only
+  on your review of its bundle root or an audit of it on a bond; `sion
+  skill starter` installs seven starter skills.
+- **On a server**: `sion agent up` runs the chain, the bridges, the work
+  runner and the scheduler in one process and starts each again when it
+  stops; `sion deploy user@host` puts sion and your agents on a server
+  over SSH and runs them as a service there; `deploy/compose.yaml` and a
+  container image built by the release workflow.
+- **Live voice**: `sion agent talk --voice --live` listens all the time,
+  speaks the reply a sentence at a time as it is written, and stops when
+  spoken over; `--wake "hey sion"` takes only what begins with the phrase,
+  heard first on this machine. Simplified: speech is found by loudness,
+  and there is no echo cancellation.
+
 ### Work it takes on by itself
 
 - **`sion agent work`**: a profile's agent watches GitHub repositories

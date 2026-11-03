@@ -9,8 +9,15 @@
 //! token's (`GET /user`), or `SION_GITHUB_LOGIN` for a token that has
 //! none (an app's).
 //!
-//! Comments on a pull request's conversation are read; review comments on
-//! its code are not, yet.
+//! Comments on a pull request's conversation are read, and review
+//! comments on its code: each review thread (a comment on a line and the
+//! replies to it) is a thread of its own, `<number>:review:<first
+//! comment>`, answered with a reply in that thread. A pull request that
+//! has work open on it is read for failed checks too ([`Repo::failed_checks`]):
+//! a failure is said by the check's app (`github-actions[bot]`), a bot, so
+//! it counts only where the watch lists that bot. Webhooks bring the same
+//! triggers as they happen ([`crate::github_hooks`]); the tools a work
+//! session has on its repository are in [`crate::github_tools`].
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
@@ -84,12 +91,28 @@ pub enum Unsent {
     Failed(String),
 }
 
+/// What one read of a repository found, and where each listing got to.
+#[derive(Debug, Default)]
+pub struct Polled {
+    /// What was said, oldest first.
+    pub triggers: Vec<Trigger>,
+    /// Where the issues and pull requests got to.
+    pub issues: Position,
+    /// Where the comments on conversations got to.
+    pub comments: Position,
+    /// Where the review comments on code got to.
+    pub reviews: Position,
+    /// What could not be read, which the rest did not wait for (review
+    /// comments a token may not read).
+    pub notes: Vec<String>,
+}
+
 /// A repository the agent watches.
 #[derive(Debug)]
 pub struct Repo {
-    client: sion_http::Client,
-    api: String,
-    token: String,
+    pub(crate) client: sion_http::Client,
+    pub(crate) api: String,
+    pub(crate) token: String,
     /// `owner/name`.
     pub repo: String,
     /// The agent's own login.
@@ -130,6 +153,20 @@ impl Repo {
     /// The repository `repo` (`owner/name`), with the token and the API the
     /// environment names.
     pub fn open(repo: &str) -> Result<Repo, String> {
+        let mut opened = Repo::connect(repo)?;
+        opened.login = match env("SION_GITHUB_LOGIN") {
+            Some(login) => login,
+            None => opened.get("/user")?["login"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or("GitHub did not say whose the token is: set SION_GITHUB_LOGIN")?,
+        };
+        Ok(opened)
+    }
+
+    /// The repository `repo`, as [`Repo::open`] opens it but without
+    /// asking whose the token is: for reading, not watching.
+    pub fn connect(repo: &str) -> Result<Repo, String> {
         if !valid_repo(repo) {
             return Err(format!("{repo:?} is not a repository: owner/name"));
         }
@@ -147,24 +184,16 @@ impl Repo {
             .unwrap_or_else(|| API.to_string())
             .trim_end_matches('/')
             .to_string();
-        let mut opened = Repo {
+        Ok(Repo {
             client,
             api,
             token,
             repo: repo.to_string(),
             login: String::new(),
-        };
-        opened.login = match env("SION_GITHUB_LOGIN") {
-            Some(login) => login,
-            None => opened.get("/user")?["login"]
-                .as_str()
-                .map(str::to_string)
-                .ok_or("GitHub did not say whose the token is: set SION_GITHUB_LOGIN")?,
-        };
-        Ok(opened)
+        })
     }
 
-    fn headers(&self) -> [(String, String); 3] {
+    pub(crate) fn headers(&self) -> [(String, String); 3] {
         [
             ("Authorization".into(), format!("Bearer {}", self.token)),
             ("Accept".into(), "application/vnd.github+json".into()),
@@ -172,11 +201,11 @@ impl Repo {
         ]
     }
 
-    fn hide(&self, text: String) -> String {
+    pub(crate) fn hide(&self, text: String) -> String {
         text.replace(&self.token, "<token>")
     }
 
-    fn get(&self, path: &str) -> Result<Value, String> {
+    pub(crate) fn get(&self, path: &str) -> Result<Value, String> {
         let headers = self.headers();
         let headers: Vec<(&str, &str)> = headers
             .iter()
@@ -254,20 +283,28 @@ impl Repo {
         ))
     }
 
-    /// What was said on the repository since `issues` and `comments` (the
-    /// first time, with nothing read yet, nothing older is taken and
-    /// reading starts now): the issues and pull requests opened, and the
-    /// comments made, by others than the agent, oldest first; and where
+    /// What was said on the repository since `issues`, `comments` and
+    /// `reviews` (the first time, with nothing read yet, nothing older is
+    /// taken and reading starts now): the issues and pull requests opened,
+    /// the comments made on their conversations and the review comments on
+    /// their code, by others than the agent, oldest first; and where
     /// reading got to.
     pub fn poll(
         &self,
         watch: &str,
         issues: &Position,
         comments: &Position,
+        reviews: &Position,
         now: u64,
-    ) -> Result<(Vec<Trigger>, Position, Position), String> {
+    ) -> Result<Polled, String> {
         if issues.read.is_empty() || comments.read.is_empty() {
-            return Ok((Vec::new(), Position::start(now), Position::start(now)));
+            return Ok(Polled {
+                triggers: Vec::new(),
+                issues: Position::start(now),
+                comments: Position::start(now),
+                reviews: Position::start(now),
+                notes: Vec::new(),
+            });
         }
         let mut triggers = Vec::new();
         let mut known: BTreeMap<String, Value> = BTreeMap::new();
@@ -285,42 +322,7 @@ impl Repo {
             if created < issues.new_from.as_str() {
                 continue;
             }
-            let by = issue["user"]["login"].as_str().unwrap_or_default();
-            if by.is_empty() || by.eq_ignore_ascii_case(&self.login) {
-                continue;
-            }
-            let title = issue["title"].as_str().unwrap_or_default();
-            let body = issue["body"].as_str().unwrap_or_default();
-            let assigned = issue["assignees"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|a| a["login"].as_str() == Some(self.login.as_str()));
-            let addressed = if assigned || names(title, &self.login) || names(body, &self.login) {
-                Addressed::Mention
-            } else {
-                Addressed::No
-            };
-            triggers.push(Trigger {
-                id: format!("{watch}/issue/{number}"),
-                watch: watch.to_string(),
-                place: Place {
-                    chat: self.repo.clone(),
-                    thread: number.clone(),
-                },
-                actor: by.to_string(),
-                bot: is_bot(&issue["user"]),
-                addressed,
-                text: if body.trim().is_empty() {
-                    title.to_string()
-                } else {
-                    body.to_string()
-                },
-                at: parse_time(created).unwrap_or(now),
-                url: issue["html_url"].as_str().map(str::to_string),
-                subject: subject(issue),
-                ..Trigger::default()
-            });
+            triggers.extend(issue_trigger(&self.repo, watch, &self.login, issue, now));
         }
         let (said, comments_to) = self.changed(
             &format!(
@@ -334,71 +336,119 @@ impl Repo {
             if created < comments.new_from.as_str() {
                 continue;
             }
-            let by = comment["user"]["login"].as_str().unwrap_or_default();
-            if by.is_empty() || by.eq_ignore_ascii_case(&self.login) {
-                continue;
-            }
-            let Some(number) = comment["issue_url"]
-                .as_str()
-                .and_then(|url| url.rsplit('/').next())
-                .filter(|n| n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty())
-                .map(str::to_string)
-            else {
+            let Some(number) = number_at_end(comment["issue_url"].as_str()) else {
                 continue;
             };
             if !known.contains_key(&number) {
                 let issue = self.get(&format!("/repos/{}/issues/{number}", self.repo))?;
                 known.insert(number.clone(), issue);
             }
-            let issue = &known[&number];
-            let body = comment["body"].as_str().unwrap_or_default();
-            triggers.push(Trigger {
-                id: format!(
-                    "{watch}/comment/{}",
-                    comment["id"].as_u64().unwrap_or_default()
-                ),
-                watch: watch.to_string(),
-                place: Place {
-                    chat: self.repo.clone(),
-                    thread: number,
-                },
-                actor: by.to_string(),
-                bot: is_bot(&comment["user"]),
-                addressed: if names(body, &self.login) {
-                    Addressed::Mention
-                } else {
-                    Addressed::No
-                },
-                text: body.to_string(),
-                at: parse_time(created).unwrap_or(now),
-                url: comment["html_url"].as_str().map(str::to_string),
-                subject: subject(issue),
-                context: issue["body"].as_str().unwrap_or_default().to_string(),
-                context_by: issue["user"]["login"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                chat_wide: false,
-            });
+            triggers.extend(comment_trigger(
+                &self.repo,
+                watch,
+                &self.login,
+                comment,
+                &known[&number],
+                now,
+            ));
+        }
+        // Review comments on code: read from where they were, or from now
+        // if they never were (a watch kept from before they were read).
+        let reviews = if reviews.read.is_empty() {
+            Position::start(now)
+        } else {
+            reviews.clone()
+        };
+        let mut notes = Vec::new();
+        let (reviewed, reviews_to) = match self.changed(
+            &format!(
+                "/repos/{}/pulls/comments?sort=updated&direction=asc",
+                self.repo
+            ),
+            &reviews,
+        ) {
+            Ok(read) => read,
+            Err(e) => {
+                notes.push(format!("review comments could not be read: {e}"));
+                (Vec::new(), reviews.clone())
+            }
+        };
+        for comment in &reviewed {
+            let created = comment["created_at"].as_str().unwrap_or_default();
+            if created < reviews.new_from.as_str() {
+                continue;
+            }
+            let Some(number) = number_at_end(comment["pull_request_url"].as_str()) else {
+                continue;
+            };
+            if !known.contains_key(&number) {
+                let issue = self.get(&format!("/repos/{}/issues/{number}", self.repo))?;
+                known.insert(number.clone(), issue);
+            }
+            triggers.extend(review_comment_trigger(
+                &self.repo,
+                watch,
+                &self.login,
+                comment,
+                &known[&number],
+                now,
+            ));
         }
         triggers.sort_by_key(|t| t.at);
-        Ok((triggers, issues_to, comments_to))
+        Ok(Polled {
+            triggers,
+            issues: issues_to,
+            comments: comments_to,
+            reviews: reviews_to,
+            notes,
+        })
     }
 
-    /// Posts `text` as a comment on issue (or pull request) `number`.
-    pub fn comment(&self, number: &str, text: &str) -> Result<(), Unsent> {
+    /// The checks that failed on pull request `number`'s latest commit, as
+    /// triggers in its thread, said by each check's app.
+    pub fn failed_checks(
+        &self,
+        watch: &str,
+        number: &str,
+        now: u64,
+    ) -> Result<Vec<Trigger>, String> {
+        let pull = self.get(&format!("/repos/{}/pulls/{number}", self.repo))?;
+        let Some(sha) = pull["head"]["sha"].as_str() else {
+            return Ok(Vec::new());
+        };
+        let runs = self.get(&format!(
+            "/repos/{}/commits/{sha}/check-runs?filter=latest&per_page=100",
+            self.repo
+        ))?;
+        let numbers = [number.parse::<u64>().unwrap_or(0)];
+        Ok(runs["check_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|run| check_triggers(&self.repo, watch, run, &numbers, now))
+            .collect())
+    }
+
+    /// Posts `text` as a comment on issue (or pull request) `thread`, or,
+    /// for a review thread (`<number>:review:<comment>`), as a reply in it.
+    pub fn comment(&self, thread: &str, text: &str) -> Result<(), Unsent> {
         let headers = self.headers();
         let headers: Vec<(&str, &str)> = headers
             .iter()
             .map(|(n, v)| (n.as_str(), v.as_str()))
             .collect();
         let body = json!({ "body": text }).to_string();
-        match self.client.post_json(
-            &format!("{}/repos/{}/issues/{number}/comments", self.api, self.repo),
-            &headers,
-            body.as_bytes(),
-            MAX_BYTES,
-        ) {
+        let path = match thread.split_once(":review:") {
+            Some((number, root)) => format!(
+                "{}/repos/{}/pulls/{number}/comments/{root}/replies",
+                self.api, self.repo
+            ),
+            None => format!("{}/repos/{}/issues/{thread}/comments", self.api, self.repo),
+        };
+        match self
+            .client
+            .post_json(&path, &headers, body.as_bytes(), MAX_BYTES)
+        {
             Ok(_) => Ok(()),
             Err(sion_http::HttpError::Status { status, body })
                 if status == 404 || status == 410 =>
@@ -413,9 +463,234 @@ impl Repo {
     }
 }
 
+/// The number at the end of a URL (`…/issues/12`), if there is one.
+fn number_at_end(url: Option<&str>) -> Option<String> {
+    url.and_then(|url| url.rsplit('/').next())
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .map(str::to_string)
+}
+
+/// The trigger for an issue or pull request opened by someone other than
+/// `login`.
+pub(crate) fn issue_trigger(
+    repo: &str,
+    watch: &str,
+    login: &str,
+    issue: &Value,
+    now: u64,
+) -> Option<Trigger> {
+    let number = issue["number"].as_u64().unwrap_or(0).to_string();
+    let by = issue["user"]["login"].as_str().unwrap_or_default();
+    if by.is_empty() || by.eq_ignore_ascii_case(login) {
+        return None;
+    }
+    let title = issue["title"].as_str().unwrap_or_default();
+    let body = issue["body"].as_str().unwrap_or_default();
+    let assigned = issue["assignees"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|a| a["login"].as_str() == Some(login));
+    let addressed = if assigned || names(title, login) || names(body, login) {
+        Addressed::Mention
+    } else {
+        Addressed::No
+    };
+    Some(Trigger {
+        id: format!("{watch}/issue/{number}"),
+        watch: watch.to_string(),
+        place: Place {
+            chat: repo.to_string(),
+            thread: number,
+        },
+        actor: by.to_string(),
+        bot: is_bot(&issue["user"]),
+        addressed,
+        text: if body.trim().is_empty() {
+            title.to_string()
+        } else {
+            body.to_string()
+        },
+        at: parse_time(issue["created_at"].as_str().unwrap_or_default()).unwrap_or(now),
+        url: issue["html_url"].as_str().map(str::to_string),
+        subject: subject(issue),
+        ..Trigger::default()
+    })
+}
+
+/// The trigger for a comment on `issue`'s conversation, by someone other
+/// than `login`.
+pub(crate) fn comment_trigger(
+    repo: &str,
+    watch: &str,
+    login: &str,
+    comment: &Value,
+    issue: &Value,
+    now: u64,
+) -> Option<Trigger> {
+    let by = comment["user"]["login"].as_str().unwrap_or_default();
+    if by.is_empty() || by.eq_ignore_ascii_case(login) {
+        return None;
+    }
+    let number = issue["number"].as_u64()?.to_string();
+    let body = comment["body"].as_str().unwrap_or_default();
+    Some(Trigger {
+        id: format!(
+            "{watch}/comment/{}",
+            comment["id"].as_u64().unwrap_or_default()
+        ),
+        watch: watch.to_string(),
+        place: Place {
+            chat: repo.to_string(),
+            thread: number,
+        },
+        actor: by.to_string(),
+        bot: is_bot(&comment["user"]),
+        addressed: if names(body, login) {
+            Addressed::Mention
+        } else {
+            Addressed::No
+        },
+        text: body.to_string(),
+        at: parse_time(comment["created_at"].as_str().unwrap_or_default()).unwrap_or(now),
+        url: comment["html_url"].as_str().map(str::to_string),
+        subject: subject(issue),
+        context: issue["body"].as_str().unwrap_or_default().to_string(),
+        context_by: issue["user"]["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        chat_wide: false,
+    })
+}
+
+/// The most characters of a diff hunk a review comment's trigger carries.
+const MAX_HUNK: usize = 1_500;
+
+/// The trigger for a review comment on a pull request's code, by someone
+/// other than `login`: in the thread of the review comments it replies to.
+pub(crate) fn review_comment_trigger(
+    repo: &str,
+    watch: &str,
+    login: &str,
+    comment: &Value,
+    pull: &Value,
+    now: u64,
+) -> Option<Trigger> {
+    let by = comment["user"]["login"].as_str().unwrap_or_default();
+    if by.is_empty() || by.eq_ignore_ascii_case(login) {
+        return None;
+    }
+    let number = pull["number"]
+        .as_u64()
+        .map(|n| n.to_string())
+        .or_else(|| number_at_end(comment["pull_request_url"].as_str()))?;
+    let id = comment["id"].as_u64()?;
+    let root = comment["in_reply_to_id"].as_u64().unwrap_or(id);
+    let body = comment["body"].as_str().unwrap_or_default();
+    let path = comment["path"].as_str().unwrap_or_default();
+    let line = comment["line"]
+        .as_u64()
+        .or(comment["original_line"].as_u64())
+        .map(|l| format!(", line {l}"))
+        .unwrap_or_default();
+    let hunk: String = comment["diff_hunk"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_HUNK)
+        .collect();
+    Some(Trigger {
+        id: format!("{watch}/review-comment/{id}"),
+        watch: watch.to_string(),
+        place: Place {
+            chat: repo.to_string(),
+            thread: format!("{number}:review:{root}"),
+        },
+        actor: by.to_string(),
+        bot: is_bot(&comment["user"]),
+        addressed: if names(body, login) {
+            Addressed::Mention
+        } else {
+            Addressed::No
+        },
+        text: body.to_string(),
+        at: parse_time(comment["created_at"].as_str().unwrap_or_default()).unwrap_or(now),
+        url: comment["html_url"].as_str().map(str::to_string),
+        subject: format!("{} (a review comment on {path}{line})", subject(pull)),
+        context: format!("On {path}{line}:\n{hunk}"),
+        context_by: String::new(),
+        chat_wide: false,
+    })
+}
+
+/// Whether a check run that ended so failed.
+fn failed(conclusion: &str) -> bool {
+    matches!(conclusion, "failure" | "timed_out")
+}
+
+/// The triggers for a check run that failed, one in the thread of each
+/// pull request `numbers` names, said by the check's app.
+pub(crate) fn check_triggers(
+    repo: &str,
+    watch: &str,
+    run: &Value,
+    numbers: &[u64],
+    now: u64,
+) -> Vec<Trigger> {
+    let conclusion = run["conclusion"].as_str().unwrap_or_default();
+    if run["status"].as_str() != Some("completed") || !failed(conclusion) {
+        return Vec::new();
+    }
+    let id = run["id"].as_u64().unwrap_or_default();
+    let app = run["app"]["slug"].as_str().unwrap_or("checks");
+    let name = run["name"].as_str().unwrap_or("a check");
+    let sha: String = run["head_sha"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .take(7)
+        .collect();
+    let title = run["output"]["title"].as_str().unwrap_or_default();
+    let summary: String = run["output"]["summary"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .take(600)
+        .collect();
+    let mut text = format!("The check \"{name}\" ended in {conclusion} on {sha}");
+    if !title.is_empty() {
+        text.push_str(&format!(": {title}"));
+    }
+    if !summary.trim().is_empty() {
+        text.push_str(&format!("\n{}", summary.trim()));
+    }
+    let at = parse_time(run["completed_at"].as_str().unwrap_or_default()).unwrap_or(now);
+    numbers
+        .iter()
+        .filter(|n| **n > 0)
+        .map(|number| Trigger {
+            id: format!("{watch}/check/{id}/{number}"),
+            watch: watch.to_string(),
+            place: Place {
+                chat: repo.to_string(),
+                thread: number.to_string(),
+            },
+            actor: format!("{app}[bot]"),
+            bot: true,
+            addressed: Addressed::No,
+            text: text.clone(),
+            at,
+            url: run["html_url"].as_str().map(str::to_string),
+            subject: format!("Pull request #{number}"),
+            ..Trigger::default()
+        })
+        .collect()
+}
+
 /// What a trigger says its thread is: `Issue #12: title`, or `Pull request
 /// #13: title`.
-fn subject(issue: &Value) -> String {
+pub(crate) fn subject(issue: &Value) -> String {
     let kind = if issue.get("pull_request").is_some_and(|p| !p.is_null()) {
         "Pull request"
     } else {
@@ -469,7 +744,13 @@ pub fn parse_time(text: &str) -> Option<u64> {
     let (year, month, day) = (date.next()??, date.next()??, date.next()??);
     let mut time = time.split(':').map(|p| p.parse::<i64>().ok());
     let (hour, minute, second) = (time.next()??, time.next()??, time.next()??);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=9999).contains(&year)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
         return None;
     }
     // Days from civil (proleptic Gregorian), after Howard Hinnant.
@@ -493,6 +774,8 @@ mod tests {
         let at = 1_793_616_000; // 2026-11-02 10:40:00 UTC
         assert_eq!(rfc3339(at), "2026-11-02T10:40:00Z");
         assert_eq!(parse_time("2026-11-02T10:40:00Z"), Some(at));
+        assert_eq!(parse_time("99999999999999999-01-01T00:00:00Z"), None);
+        assert_eq!(parse_time("2026-11-02T25:00:00Z"), None);
         assert_eq!(parse_time("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(
             parse_time("2024-02-29T23:59:59Z").map(rfc3339),

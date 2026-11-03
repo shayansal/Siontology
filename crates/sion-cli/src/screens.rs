@@ -287,6 +287,7 @@ pub fn tools(
     screen: &Screen,
     session: &str,
     workspace: Option<&Path>,
+    confidential: &[String],
     restore: Option<Restore>,
 ) -> Result<Vec<Box<dyn Tool>>, CliError> {
     screen.check(workspace)?;
@@ -322,6 +323,8 @@ pub fn tools(
                     network: network.clone(),
                     egress: egress.clone(),
                     size: (1280, 800),
+                    workspace: workspace.map(Path::to_path_buf),
+                    confidential: confidential.to_vec(),
                 },
                 credentials,
             )

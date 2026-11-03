@@ -338,6 +338,7 @@ pub const COMMANDS: &str = "/new: start over, in a new session
 /model: the models; /model <number>: choose one
 /system: what this chat asks of the agent; /system <text>, /system off
 /tools: the tools it may use here; /tools <name> …, /tools all
+/prompts: the prompts of its MCP servers; /prompt <server> <prompt> name=value …: run one
 /whoami: who you are here, and what you may do
 /help: these commands";
 
@@ -537,6 +538,26 @@ pub fn converse_with(
         }
         "/status" if running(key) => {
             return Ok(reply(current, "Working on it: /stop stops it.".into()))
+        }
+        "/prompts" => return Ok(reply(current, crate::agent_mcp::prompts_text(&profile.mcp))),
+        // A prompt of an MCP server's, said as the person's message: its
+        // words are the server's, so the session takes them as from
+        // outside.
+        "/prompt" => {
+            return match crate::agent_mcp::prompt_text(&profile.mcp, rest, hooks.asker) {
+                Ok(said) => converse_with(
+                    ledger,
+                    profile,
+                    key,
+                    &said,
+                    pictures,
+                    crate::runtime::Hooks {
+                        outside: true,
+                        ..hooks
+                    },
+                ),
+                Err(why) => Ok(reply(current, why)),
+            }
         }
         _ => {}
     }
@@ -1164,6 +1185,22 @@ pub fn converse_events(
     tell: &(dyn Fn(&str, Value) + Sync),
     who: Option<&str>,
 ) -> Result<Answer, CliError> {
+    converse_events_asking(ledger, profile, key, text, pictures, tell, who, None)
+}
+
+/// [`converse_events`], what an MCP server asks a person for while it
+/// works asked of `asker`.
+#[allow(clippy::too_many_arguments)]
+pub fn converse_events_asking(
+    ledger: SharedLedger,
+    profile: &Profile,
+    key: &str,
+    text: &str,
+    pictures: &[sion_agent::Picture],
+    tell: &(dyn Fn(&str, Value) + Sync),
+    who: Option<&str>,
+    asker: Option<&std::sync::Arc<dyn sion_agent::mcp_input::Asker>>,
+) -> Result<Answer, CliError> {
     let growing = Mutex::new(Growing::default());
     let watch = |seen: &sion_agent::Seen| {
         use sion_agent::Seen;
@@ -1192,6 +1229,7 @@ pub fn converse_events(
         pictures,
         crate::runtime::Hooks {
             who,
+            asker,
             ..crate::runtime::Hooks::watched(&watch)
         },
     )?;

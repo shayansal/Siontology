@@ -20,6 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -95,7 +96,8 @@ fn usage(e: impl std::fmt::Display) -> CliError {
     CliError::Usage(e.to_string())
 }
 
-fn now() -> u64 {
+/// Seconds since the Unix epoch.
+pub fn now() -> u64 {
     crate::schedules::now()
 }
 
@@ -113,6 +115,10 @@ pub struct WorkLink {
     pub mandate_claim: Option<String>,
     /// The most words a message to the item's conversation holds.
     pub words: usize,
+    /// The GitHub repository the item came from, if it did: its session
+    /// can read the repository's pull requests, reviews and checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<String>,
 }
 
 impl WorkLink {
@@ -315,10 +321,14 @@ pub fn decisions(profile: &str) -> Result<Vec<Decision>, CliError> {
 /// `work_ask`. What they send goes to the conversation the work came
 /// from, within its limit, as the agent's reply would.
 pub fn tools(link: &WorkLink) -> Vec<Box<dyn Tool>> {
-    vec![
+    let mut tools: Vec<Box<dyn Tool>> = vec![
         Box::new(ReportTool { link: link.clone() }),
         Box::new(AskTool { link: link.clone() }),
-    ]
+    ];
+    if let Some(repo) = &link.github {
+        tools.extend(crate::github_tools::tools(repo));
+    }
+    tools
 }
 
 /// `work_report`.
@@ -774,19 +784,57 @@ fn poll(
     for watch in rules.admission.keys() {
         match watch_of(watch) {
             Ok(Watch::GitHub(repo)) => {
-                let (issues, comments) = (format!("{watch}#issues"), format!("{watch}#comments"));
+                let (issues, comments, reviews) = (
+                    format!("{watch}#issues"),
+                    format!("{watch}#comments"),
+                    format!("{watch}#reviews"),
+                );
                 let position = |key: &str| crate::github::Position::parse(&cursor(key));
-                let polled = sources
-                    .repo(&repo)
-                    .and_then(|r| r.poll(watch, &position(&issues), &position(&comments), at));
+                let polled = sources.repo(&repo).and_then(|r| {
+                    r.poll(
+                        watch,
+                        &position(&issues),
+                        &position(&comments),
+                        &position(&reviews),
+                        at,
+                    )
+                });
                 match polled {
-                    Ok((found, issues_to, comments_to)) => {
-                        triggers.extend(found);
-                        cursors.insert(issues, issues_to.text());
-                        cursors.insert(comments, comments_to.text());
+                    Ok(polled) => {
+                        triggers.extend(polled.triggers);
+                        cursors.insert(issues, polled.issues.text());
+                        cursors.insert(comments, polled.comments.text());
+                        cursors.insert(reviews, polled.reviews.text());
                         sources.note(watch, Ok(()));
+                        sources.note(
+                            &format!("{watch} (reviews)"),
+                            match polled.notes.first() {
+                                Some(note) => Err(note.clone()),
+                                None => Ok(()),
+                            },
+                        );
                     }
                     Err(e) => sources.note(watch, Err(e)),
+                }
+                // The checks of each pull request that has work open on it.
+                let open: Vec<String> = store
+                    .items
+                    .iter()
+                    .filter(|i| i.ended.is_none() && &i.request.watch == watch)
+                    .filter(|i| i.request.subject.starts_with("Pull request"))
+                    .map(|i| i.request.place.thread.clone())
+                    .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                for number in open {
+                    let checked = sources
+                        .repo(&repo)
+                        .and_then(|r| r.failed_checks(watch, &number, at));
+                    match checked {
+                        Ok(found) => triggers.extend(found),
+                        Err(e) => sources.note(&format!("{watch}#{number} checks"), Err(e)),
+                    }
                 }
             }
             Ok(Watch::Chat(..)) => {}
@@ -1186,8 +1234,19 @@ fn intake(
     rules: &WorkRules,
     sources: &mut Sources,
     assess_with: &str,
+    hooked: Vec<Trigger>,
+    polling: bool,
 ) -> Result<usize, CliError> {
-    let (triggers, cursors) = poll(&profile.name, rules, sources)?;
+    let (mut triggers, cursors) = if polling {
+        poll(&profile.name, rules, sources)?
+    } else {
+        (Vec::new(), BTreeMap::new())
+    };
+    // What webhooks brought first, as it happened; what both brought is
+    // taken once, by its id.
+    let mut all = hooked;
+    all.append(&mut triggers);
+    let triggers = all;
     for trigger in &triggers {
         if let Err(e) = take(ledger, profile, rules, trigger, assess_with) {
             eprintln!("{}: {e}", trigger.id);
@@ -1465,6 +1524,10 @@ fn work_on(ledger: SharedLedger, profile: Profile, run: Run) {
         item: id.clone(),
         mandate_claim: run.item.claim.clone(),
         words,
+        github: match watch_of(&run.item.request.watch) {
+            Ok(Watch::GitHub(repo)) => Some(repo),
+            _ => None,
+        },
     };
     // A run that panics ends as a failure, and frees its slot.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1707,6 +1770,9 @@ pub struct RunOptions {
     /// The model that weighs work nobody asked for (by default the
     /// profile's first).
     pub assess_with: Option<String>,
+    /// Where to listen for GitHub's webhooks, if anywhere
+    /// ([`crate::github_hooks`]).
+    pub listen: Option<String>,
 }
 
 /// The runner: reads `profile`'s watches, takes work on, runs it in its
@@ -1728,6 +1794,31 @@ pub fn run_work(ledger: SharedLedger, name: &str, options: &RunOptions) -> Resul
     };
     let mut sources = Sources::default();
     let mut workers: Vec<JoinHandle<()>> = Vec::new();
+    let inbox = match &options.listen {
+        Some(address) => {
+            let secret = crate::credentials::var("GITHUB_WEBHOOK_SECRET").ok_or_else(|| {
+                usage("GitHub's webhooks are checked with GITHUB_WEBHOOK_SECRET: set it, or keep it (sion agent credential set GITHUB_WEBHOOK_SECRET)")
+            })?;
+            let profile_name = name.to_string();
+            let logins = Arc::new(crate::github_hooks::Logins::default());
+            let watched: Arc<crate::github_hooks::Watched> = Arc::new(move |repo: &str| {
+                let watch = format!("github:{repo}");
+                let watched = rules(&profile_name)
+                    .map(|r| r.admission.contains_key(&watch))
+                    .unwrap_or(false);
+                if !watched {
+                    return None;
+                }
+                logins.of(repo).map(|login| (watch, login))
+            });
+            let (inbox, bound) =
+                crate::github_hooks::listen(address, secret, watched).map_err(usage)?;
+            eprintln!("GitHub webhooks: POST http://{bound}/ (signed with GITHUB_WEBHOOK_SECRET)");
+            Some(inbox)
+        }
+        None => None,
+    };
+    let mut polled_at: Option<std::time::Instant> = None;
     let first = rules(name)?;
     if first.admission.is_empty() {
         eprintln!(
@@ -1749,7 +1840,23 @@ pub fn run_work(ledger: SharedLedger, name: &str, options: &RunOptions) -> Resul
     }
     loop {
         let rules = rules(name)?;
-        intake(&ledger, &profile, &rules, &mut sources, &assess_with)?;
+        let hooked = inbox.as_ref().map(|i| i.take()).unwrap_or_default();
+        let polling = options.once
+            || polled_at.map_or(true, |at| {
+                at.elapsed() >= Duration::from_secs(options.poll.max(1))
+            });
+        if polling {
+            polled_at = Some(std::time::Instant::now());
+        }
+        intake(
+            &ledger,
+            &profile,
+            &rules,
+            &mut sources,
+            &assess_with,
+            hooked,
+            polling,
+        )?;
         workers.retain(|w| !w.is_finished());
         start(&ledger, &profile, &rules, slots, &mut workers)?;
         deliver(name, &rules, &mut sources)?;
@@ -1771,9 +1878,16 @@ pub fn run_work(ledger: SharedLedger, name: &str, options: &RunOptions) -> Resul
             return deliver(name, &rules, &mut sources);
         }
         // Wait for the next read, sending what finished runs said as they
-        // finish.
+        // finish; what a webhook brings is taken at once.
         for _ in 0..options.poll.max(1) {
-            std::thread::sleep(Duration::from_secs(1));
+            match &inbox {
+                Some(inbox) => {
+                    if inbox.wait(Duration::from_secs(1)) {
+                        break;
+                    }
+                }
+                None => std::thread::sleep(Duration::from_secs(1)),
+            }
             if workers.iter().any(|w| w.is_finished()) {
                 workers.retain(|w| !w.is_finished());
                 start(&ledger, &profile, &rules, slots, &mut workers)?;
@@ -1975,6 +2089,12 @@ pub enum WorkCommand {
         /// profile's first).
         #[arg(long, value_name = "MODEL")]
         assess_with: Option<String>,
+        /// Take GitHub's webhooks here as well (signed with
+        /// GITHUB_WEBHOOK_SECRET): what they bring is taken at once, and
+        /// the repositories are still read every --poll seconds for what
+        /// they miss (127.0.0.1:8794; put it behind TLS for GitHub).
+        #[arg(long, value_name = "ADDRESS", num_args = 0..=1, default_missing_value = crate::github_hooks::LISTEN)]
+        listen: Option<String>,
     },
     /// The work taken on, and what each item waits for.
     List {
@@ -2504,6 +2624,7 @@ pub fn run(ledger: SharedLedger, command: WorkCommand) -> Result<(), CliError> {
             poll,
             slots,
             assess_with,
+            listen,
         } => run_work(
             ledger,
             &profile,
@@ -2512,6 +2633,7 @@ pub fn run(ledger: SharedLedger, command: WorkCommand) -> Result<(), CliError> {
                 poll,
                 slots,
                 assess_with,
+                listen,
             },
         ),
         WorkCommand::Stop { profile, item } => {
@@ -2580,6 +2702,7 @@ mod tests {
             item: "w1".into(),
             mandate_claim: Some("ab".repeat(32)),
             words: CHAT_WORDS,
+            github: None,
         };
         assert!(link.evidence().is_some());
         assert!(WorkLink {

@@ -2,9 +2,10 @@
 
 An agent at work ([Your agent](index.md)) has the ledger as its
 tools, and files in a workspace. This page adds the rest of what agents
-use: a shell to run commands, the scripts that come with skills, and tools
-from MCP servers (a browser and a desktop have [a page of their
-own](browser.md)). Each runs under the same rules as any other tool: it
+use: a shell to run commands, tools to change code and check it, the
+scripts that come with skills, a search of the web, and tools from MCP
+servers, sion's own among them (a browser and a desktop have [a page of
+their own](browser.md)). Each runs under the same rules as any other tool: it
 declares the most a call can do, the [autonomy level](autonomy.md#autonomy)
 decides what runs and what waits for a person, and what comes from outside
 taints the session.
@@ -125,6 +126,42 @@ error: the workspace ~/.sion/.. and ~/.sion (wallets, sessions, skills) overlap:
 - The sandbox must work: a trivial command runs before the session starts.
 - Subagents get no shell of their parent's.
 
+## Changing code
+
+With a workspace, a session has tools for changing code, besides reading
+and writing whole files:
+
+- `edit_file` replaces a quoted stretch of a file (`old_string` with
+  `new_string`). The stretch must be there exactly once, or every time
+  with `replace_all`; when it is not there, the reply shows the lines
+  nearest to it, so that the next try quotes them as they are. A file's
+  line endings are kept.
+- `apply_patch` applies a unified diff, or a patch in the `*** Begin
+  Patch` form (files added, updated, deleted and moved, each change found
+  by its `@@` anchor), to several files at once. The whole patch is
+  checked against the files, and every new text written beside its file,
+  before any file changes: a patch that does not fit changes nothing. A
+  change is found by its lines, whatever line numbers the patch gives.
+- `find_files` finds files by a glob (`src/**/*.rs`, `*.{ts,tsx}`; a
+  pattern without `/` matches a name at any depth), and `search_files`
+  searches what they hold by a regular expression, with the lines around
+  each match.
+- `read_file` reads a stretch of a file (`offset`, `limit`), its lines
+  numbered.
+
+Version control's, dependencies' and builds' directories (`.git`,
+`node_modules`, `target`…) are passed over. A search that shows a file
+the profile keeps confidential counts as reading it.
+
+With a shell as well, two tools check what was changed, in the shell's
+sandbox, within its time limit: `diagnostics` runs the project's checker
+(`cargo check`, offline when the sandbox has no network; `tsc`; `ruff`,
+or Python's `compileall`; `go vet`) and returns its problems, file and
+line; `run_tests` runs its tests (`cargo test`, `npm test`, `pytest`,
+`go test` or `make test`) and returns how many passed and failed, the
+failures by name, and the end of the output. Which checker and which
+tests is found from the files at the workspace's root.
+
 ## Skills' scripts
 
 With a shell, the agent also gets `skill_run`: it runs a script that comes
@@ -171,6 +208,18 @@ metadata:
   sion-network: api.github.com
   sion-secrets: GITHUB_TOKEN
 ```
+
+## Searching the web
+
+`--web` gives a session `fetch_url`, which reads a public page. With a
+search provider set, it also has `web_search`: Brave Search
+(`BRAVE_SEARCH_API_KEY`), Tavily (`TAVILY_API_KEY`), or a SearXNG instance
+of your own (`SION_SEARCH=searxng:https://search.example.org`).
+`SION_SEARCH=brave` or `tavily` chooses between kept keys, which may be in
+the environment or kept with `sion agent credential add`. A search returns
+up to ten results (five unless more are asked for), each its title,
+address and snippet, from the past day, week, month or year if asked.
+What it returns is from outside: it taints the session, as a page does.
 
 ## Tools from MCP servers
 
@@ -432,6 +481,70 @@ registered with http://127.0.0.1:8812 as client 132df1bd-a415-478d-9ba3-925540d8
 authorized notes at http://127.0.0.1:8812 for notes:read, renewed without you while its refresh token lasts
 ```
 
+### What MCP servers ask for
+
+Besides tools, a server may offer **resources** (what it holds, each at
+an address) and **prompts** (messages a person may begin with), and while
+a call is under way it may ask for a person's **input** (elicitation) or
+for a completion by the session's model (**sampling**). Both protocol
+eras are answered: a server of protocol 2026-07-28 asks by answering the
+call with what it needs, and the call is made again with the answers; an
+earlier one sends requests of its own while the call is open.
+
+- **Resources.** A session with a server's tools also has
+  `<server>_resources`, which lists what the server offers and its
+  templates, and `<server>_read_resource`, which reads one. What they
+  return is from outside, and taints the session. `sion agent mcp
+  resources <server>` shows them to you, and `--read <uri>` one of them.
+- **Prompts.** `sion agent mcp prompts <server>` lists them. In a chat or
+  at the terminal, `/prompts` lists those of the profile's servers, and
+  `/prompt <server> <prompt> name=value …` says one as your message. Its
+  words are the server's, so the session takes them as from outside.
+- **Input.** A server's question is asked in the conversation the
+  session answers: at the terminal, or in the chat, where the next reply
+  of whoever may decide there answers it. The server is named and its
+  message quoted. A form is answered with `name: value` lines (or the
+  value alone, for one field), checked against the form before it is
+  sent, or declined, or cancelled. A form that asks for a password, a key,
+  a token or a card number is declined without asking you: servers must
+  not ask for those. An address a server wants you to open is shown
+  whole, its host apart, and never opened or fetched by sion. In a chat,
+  a question no one answers in ten minutes is cancelled, and `/stop`
+  takes effect once it is answered or cancelled; at the terminal, it
+  waits for your answer, or for the input to end. A session with no one
+  to ask (a schedule, `sion agent run`) tells servers it cannot be asked.
+  A server may ask for at most five things in one round of a call, and
+  in one call of an earlier-era server.
+- **Sampling** is off for every server until `sion agent mcp sampling
+  <server>` allows it: at most `--max-tokens` a completion (1,000) and
+  `--per-run` completions a run (5), written by `--model` or the
+  session's first model, and counted in the run's token budget. The
+  server sees none of the session's conversation. Sampling is deprecated
+  by protocol 2026-07-28, which still has it.
+
+## sion's own servers: mail, calendars, documents
+
+Three MCP servers come with sion. `sion agent mcp add <name> --first-party
+mail` (or `calendar`, or `documents --dir <folder>`) adds one, reviewed as
+any server is; it runs `sion mcp mail` (and so on), which reads its
+settings from the environment or from credentials kept with `sion agent
+credential add`:
+
+| Server | Settings | Tools |
+|---|---|---|
+| `mail`, over IMAP and SMTP | `MAIL_ADDRESS`, `MAIL_IMAP_URL`, `MAIL_SMTP_URL`, and `MAIL_PASSWORD` or `MAIL_TOKEN_COMMAND` | `list_folders`, `search_mail`, `read_mail`, `draft_mail`, `send_mail` |
+| `calendar`, over CalDAV | `CALDAV_URL`, `CALDAV_USERNAME`, and `CALDAV_PASSWORD` or `CALDAV_TOKEN_COMMAND` | `list_calendars`, `list_events`, `create_event`, `delete_event` |
+| `documents`, a folder | `--dir`, or `DOCUMENTS_DIR` | `list_documents`, `read_document`, `search_documents`, `write_document` |
+
+Their tools say what they do, and the review takes it: mail and events
+read are from outside and taint the session, sending mail is external, a
+draft or a new event is a write. A draft goes to the mailbox's drafts
+folder, for you to send. Mail it sends is yours: it carries no
+`Auto-Submitted` header. Documents are read as text from Markdown, plain
+text, HTML, Word (`.docx`), OpenDocument (`.odt`), PowerPoint (`.pptx`)
+and PDF (through `pdftotext`); only Markdown and text are written, and only
+inside the folder.
+
 ## Spawning subagents together
 
 An agent that hands work to subagents (`--delegate`, see [Subagents and hired
@@ -460,11 +573,19 @@ session df7de21c12ac158b: done
 
 ## What this does not do yet
 
-- MCP servers' resources and prompts are not used, and a server that
-  asks the client for more input (elicitation) or for its model's
-  completion (sampling) is refused. A server over HTTP cannot be given a
-  client certificate (mutual TLS), and logging in takes a browser: the
-  device authorization grant is not used.
+- A server's resources are read when asked for; subscriptions to them,
+  and notices that a server's lists changed, are not used. A completion
+  written for a server (sampling) is text: it calls no tools and sees no
+  pictures. A server over HTTP cannot be given a client certificate
+  (mutual TLS), and logging in takes a browser: the device authorization
+  grant is not used.
+- `diagnostics` and `run_tests` know the checkers and test runners named
+  above, by the files at the workspace's root; a project laid out
+  otherwise is checked with the shell.
+- A path is checked, then written: written through no link already
+  beside it, but a process that changes the workspace's directories
+  between the two (one a command left running, say) could still lead a
+  write elsewhere.
 - On the deprecated HTTP+SSE transport, a stream let go is closed at the
   next line its server sends (servers send one every few seconds to keep
   a stream open); one that sends nothing more keeps its connection until

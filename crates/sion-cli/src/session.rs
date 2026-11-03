@@ -153,7 +153,8 @@ pub fn create_wallet(name: &str) -> Result<Wallet, CliError> {
         )));
     }
     let seed = sion_crypto::keys::random_seed();
-    std::fs::write(&path, hex::encode(seed)).map_err(|e| CliError::Usage(e.to_string()))?;
+    // A seed is its wallet's key: readable by its owner only.
+    crate::secrets::write_private(&path, hex::encode(seed).as_bytes())?;
     Ok(Wallet::from_seed(&seed))
 }
 

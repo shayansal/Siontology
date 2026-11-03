@@ -603,6 +603,17 @@ pub enum AgentCommand {
     /// and failures, messages that could not be sent, sessions waiting for
     /// approval, and chats waiting to be let in.
     Waiting,
+    /// Run everything on the list (the chain, bridges, the work runner,
+    /// the scheduler) and keep it running, each started again when it
+    /// stops; or change the list (init, add, remove, list).
+    Up {
+        /// Change or show the list instead of running it.
+        #[command(subcommand)]
+        command: Option<crate::up::UpCommand>,
+        /// Run for this many seconds, then stop everything (for trying it).
+        #[arg(long, value_name = "SECONDS")]
+        for_secs: Option<u64>,
+    },
     /// Serve the HTTP channel: POST /v1/profiles/<name>/messages with
     /// {"text": …, "conversation": …}, GET /v1/sessions/<id>, and OpenAI's
     /// POST /v1/chat/completions (a profile as the model) and GET
@@ -662,6 +673,42 @@ pub enum AgentCommand {
         /// ffplay, afplay or paplay, the first there, by default).
         #[arg(long, value_name = "COMMAND")]
         play: Option<String>,
+        /// Listen all the time instead of at Enter: speech is told from
+        /// silence by its loudness, the reply is spoken a sentence at a
+        /// time, and speaking over it stops it (use headphones: there is no
+        /// echo cancellation).
+        #[arg(long, requires = "voice")]
+        live: bool,
+        /// The program that gives the microphone's sound: raw 16-bit mono
+        /// at 16 kHz on its output (sox's rec, arecord, parec or ffmpeg,
+        /// the first there, by default).
+        #[arg(long, value_name = "COMMAND", requires = "live")]
+        listen: Option<String>,
+        /// Take only what begins with this phrase ("hey sion"; several
+        /// split by |).
+        #[arg(long, value_name = "PHRASE", requires = "live")]
+        wake: Option<String>,
+        /// What hears what is said before the wake word: a transcriber on
+        /// this machine (command:<program>, such as whisper.cpp's); by
+        /// default --hear's, if it is one.
+        #[arg(long, value_name = "PROVIDER", requires = "wake")]
+        wake_hear: Option<String>,
+        /// Let a transcriber elsewhere hear what is said before the wake
+        /// word: everything said near the microphone.
+        #[arg(long, requires = "wake")]
+        wake_cloud: bool,
+        /// Seconds it stays awake for a follow-up after it speaks.
+        #[arg(long, default_value_t = 15, requires = "wake")]
+        awake_secs: u64,
+        /// Speaking over the agent does not stop it: the microphone is not
+        /// listened to while it works or speaks (for loudspeakers).
+        #[arg(long, requires = "live")]
+        no_interrupt: bool,
+        /// The quietest speech taken, as the root mean square of its
+        /// samples (of 32767): lower it if you are not heard, raise it in a
+        /// loud room.
+        #[arg(long, value_name = "LEVEL", default_value_t = 400.0, requires = "live")]
+        speech_level: f64,
     },
     /// Answer Telegram chats with a profile, by long polling
     /// (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server).
@@ -815,6 +862,7 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Work(command) if !command.needs_ledger() => crate::work::run_local(command),
         AgentCommand::Waiting => waiting(),
+        AgentCommand::Up { command, for_secs } => crate::up::command(command, for_secs),
         other => return Err(Box::new(other)),
     })
 }
@@ -1213,6 +1261,7 @@ pub fn run(
         }
         AgentCommand::Work(command) => crate::work::run(shared, command),
         AgentCommand::Waiting => waiting(),
+        AgentCommand::Up { command, for_secs } => crate::up::command(command, for_secs),
         AgentCommand::Serve {
             listen,
             token_env,
@@ -1249,6 +1298,14 @@ pub fn run(
             speak,
             record,
             play,
+            live,
+            listen,
+            wake,
+            wake_hear,
+            wake_cloud,
+            awake_secs,
+            no_interrupt,
+            speech_level,
         } => {
             let profile = crate::profiles::get(&profile)?;
             let usage = CliError::Usage;
@@ -1260,10 +1317,14 @@ pub fn run(
                     .map(crate::voice::Speaking::parse)
                     .transpose()
                     .map_err(usage)?;
-                let record = crate::talk::program(record.as_deref(), &[crate::talk::RECORD])
-                    .ok_or_else(|| {
-                        usage("nothing records you: install sox (rec), or give --record".into())
-                    })?;
+                // Live, the microphone is read as it is: nothing records.
+                let record = match live {
+                    true => Vec::new(),
+                    false => crate::talk::program(record.as_deref(), &[crate::talk::RECORD])
+                        .ok_or_else(|| {
+                            usage("nothing records you: install sox (rec), or give --record".into())
+                        })?,
+                };
                 let play = match &speaking {
                     Some(_) => crate::talk::program(play.as_deref(), crate::talk::PLAYERS)
                         .ok_or_else(|| {
@@ -1286,9 +1347,24 @@ pub fn run(
                 play,
             };
             crate::talk::note_last(&profile.name, &talk.conversation)?;
+            let mut out = std::io::stdout();
+            if live {
+                let listening = crate::listening::Listening::from_flags(
+                    talk.hearing.as_ref(),
+                    listen.as_deref(),
+                    wake.as_deref(),
+                    wake_hear.as_deref(),
+                    wake_cloud,
+                    awake_secs,
+                    !no_interrupt,
+                    speech_level,
+                )
+                .map_err(usage)?;
+                let input = Box::new(std::io::BufReader::new(std::io::stdin()));
+                return crate::listening::run(shared, &profile, &talk, &listening, input, &mut out);
+            }
             let stdin = std::io::stdin();
             let mut input = stdin.lock();
-            let mut out = std::io::stdout();
             crate::talk::run(shared, &profile, &talk, &mut input, &mut out)
         }
         AgentCommand::Telegram {

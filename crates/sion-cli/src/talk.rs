@@ -17,7 +17,6 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::channels::converse_events;
 use crate::error::CliError;
 use crate::profiles::Profile;
 use crate::runtime::SharedLedger;
@@ -74,29 +73,33 @@ pub fn program(text: Option<&str>, defaults: &[&[&str]]) -> Option<Vec<String>> 
     }
 }
 
-/// Runs `argv` with `file` put after its program's first arguments (sox
-/// takes its effects after the file: they follow a `--`).
-fn run_with_file(argv: &[String], file: &std::path::Path) -> Result<(), String> {
+/// The command for `argv` with `file` put after its program's first
+/// arguments (sox takes its effects after the file: they follow a `--`).
+pub(crate) fn with_file(argv: &[String], file: &std::path::Path) -> Command {
     let (before, after) = match argv.iter().position(|a| a == "--") {
         Some(at) => (&argv[..at], &argv[at + 1..]),
         None => (argv, &[][..]),
     };
-    let status = Command::new(&before[0])
-        .args(&before[1..])
-        .arg(file)
-        .args(after)
+    let mut command = Command::new(&before[0]);
+    command.args(&before[1..]).arg(file).args(after);
+    command
+}
+
+/// Runs `argv` with `file` (see [`with_file`]).
+fn run_with_file(argv: &[String], file: &std::path::Path) -> Result<(), String> {
+    let status = with_file(argv, file)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .status()
-        .map_err(|e| format!("{}: {e}", before[0]))?;
+        .map_err(|e| format!("{}: {e}", argv[0]))?;
     if !status.success() {
-        return Err(format!("{} failed ({status})", before[0]));
+        return Err(format!("{} failed ({status})", argv[0]));
     }
     Ok(())
 }
 
 /// A file of its own, under the system's temporary directory.
-fn scratch(extension: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn scratch(extension: &str) -> Result<std::path::PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("sion-talk-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join(format!("{}.{extension}", crate::runtime::new_id())))
@@ -228,6 +231,14 @@ pub fn bare(node: &str, continuing: bool) -> Result<crate::agents::AgentCommand,
         speak: None,
         record: None,
         play: None,
+        live: false,
+        listen: None,
+        wake: None,
+        wake_hear: None,
+        wake_cloud: false,
+        awake_secs: 15,
+        no_interrupt: false,
+        speech_level: 400.0,
     })
 }
 
@@ -284,7 +295,60 @@ pub fn run(
             }
             let _ = out.flush();
         };
-        let answer = converse_events(ledger.clone(), profile, &key, &said, &[], &tell, Some(&who));
+        // What an MCP server asks the person while the agent works is asked
+        // here, at the terminal: the run goes on in a thread of its own,
+        // and its questions come back to this one, which reads the replies.
+        let (questions, asked) = std::sync::mpsc::channel::<Asked>();
+        let asker: std::sync::Arc<dyn sion_agent::mcp_input::Asker> =
+            std::sync::Arc::new(Relayed {
+                questions: Mutex::new(questions),
+            });
+        let answer = std::thread::scope(|scope| {
+            let run = scope.spawn(|| {
+                crate::channels::converse_events_asking(
+                    ledger.clone(),
+                    profile,
+                    &key,
+                    &said,
+                    &[],
+                    &tell,
+                    Some(&who),
+                    Some(&asker),
+                )
+            });
+            loop {
+                match asked.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(Asked::Question(question, reply)) => {
+                        let line = {
+                            let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+                            if *mid_line.lock().unwrap_or_else(|e| e.into_inner()) {
+                                let _ = writeln!(out);
+                            }
+                            let _ = writeln!(out, "{question}");
+                            let _ = write!(out, "you> ");
+                            let _ = out.flush();
+                            let mut line = String::new();
+                            match input.read_line(&mut line) {
+                                Ok(0) | Err(_) => None,
+                                Ok(_) => Some(line.trim_end().to_string()),
+                            }
+                        };
+                        let _ = reply.send(line);
+                    }
+                    Ok(Asked::Told(text)) => {
+                        let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+                        let _ = writeln!(out, "{text}");
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !run.is_finished() => {}
+                    Err(_) => break,
+                }
+                if run.is_finished() {
+                    break;
+                }
+            }
+            run.join()
+                .unwrap_or_else(|_| Err(CliError::Usage("the run stopped unexpectedly".into())))
+        });
         let mut out_now = out.lock().unwrap_or_else(|e| e.into_inner());
         let mid = *mid_line.lock().unwrap_or_else(|e| e.into_inner());
         match answer {
@@ -307,6 +371,38 @@ pub fn run(
                 let _ = writeln!(out_now, "(that did not work: {e})");
             }
         }
+    }
+}
+
+/// What a run asks the terminal: a question and where its reply goes, or
+/// something to say.
+enum Asked {
+    Question(String, std::sync::mpsc::Sender<Option<String>>),
+    Told(String),
+}
+
+/// Asks the person at the terminal, through the thread that reads it.
+struct Relayed {
+    questions: Mutex<std::sync::mpsc::Sender<Asked>>,
+}
+
+impl sion_agent::mcp_input::Asker for Relayed {
+    fn ask(&self, question: &str) -> Option<String> {
+        let (replied, reply) = std::sync::mpsc::channel();
+        self.questions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .send(Asked::Question(question.to_string(), replied))
+            .ok()?;
+        reply.recv().ok().flatten()
+    }
+
+    fn tell(&self, text: &str) {
+        let _ = self
+            .questions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .send(Asked::Told(text.to_string()));
     }
 }
 

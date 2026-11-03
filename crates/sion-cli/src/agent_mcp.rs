@@ -74,8 +74,13 @@ pub enum McpCommand {
         /// A directory it may read in its sandbox. Repeat for more.
         #[arg(long = "sandbox-read", value_name = "DIR")]
         sandbox_read: Vec<PathBuf>,
+        /// One of sion's own servers instead of a program: mail (MAIL_…),
+        /// calendar (CALDAV_…) or documents (the folder --dir names). The
+        /// program and the variables it needs are filled in.
+        #[arg(long, value_name = "SERVER", conflicts_with = "url")]
+        first_party: Option<String>,
         /// The program and its arguments, after `--`.
-        #[arg(last = true, required_unless_present = "url")]
+        #[arg(last = true, required_unless_present_any = ["url", "first_party"])]
         command: Vec<String>,
     },
     /// The MCP servers on this machine, with their reviewed tools.
@@ -120,6 +125,390 @@ pub enum McpCommand {
         /// The server.
         name: String,
     },
+    /// Let a server have the session's model write for it (sampling),
+    /// within limits: at most --max-tokens a completion and --per-run
+    /// completions a run, written by --model (default: the session's
+    /// first). The completions are counted in the run's token budget. With
+    /// --off, it may not. Sampling is deprecated by protocol 2026-07-28.
+    Sampling {
+        /// The server.
+        name: String,
+        /// The most tokens one completion may write.
+        #[arg(long, default_value_t = 1000)]
+        max_tokens: u32,
+        /// The most completions in one run of a session.
+        #[arg(long, default_value_t = 5)]
+        per_run: u32,
+        /// The model that writes them.
+        #[arg(long)]
+        model: Option<String>,
+        /// Take sampling away.
+        #[arg(long)]
+        off: bool,
+    },
+    /// The resources a server offers, and its templates; with --read, what
+    /// one holds.
+    Resources {
+        /// The server.
+        name: String,
+        /// The address of a resource to read.
+        #[arg(long, value_name = "URI")]
+        read: Option<String>,
+    },
+    /// The prompts a server offers, which people run in chats with
+    /// `/prompt <server> <prompt> name=value …`.
+    Prompts {
+        /// The server.
+        name: String,
+    },
+}
+
+/// The variables each of sion's own MCP servers reads.
+pub const FIRST_PARTY: [(&str, &[&str]); 3] = [
+    (
+        "mail",
+        &[
+            "MAIL_ADDRESS",
+            "MAIL_IMAP_URL",
+            "MAIL_SMTP_URL",
+            "MAIL_PASSWORD",
+            "MAIL_TOKEN_COMMAND",
+            "MAIL_USERNAME",
+            "MAIL_NAME",
+            "MAIL_MAILBOX",
+        ],
+    ),
+    (
+        "calendar",
+        &[
+            "CALDAV_URL",
+            "CALDAV_USERNAME",
+            "CALDAV_PASSWORD",
+            "CALDAV_TOKEN_COMMAND",
+        ],
+    ),
+    ("documents", &[]),
+];
+
+/// The variables and the command line of sion's own server `kind`, the
+/// variables `env` names besides: this program, `mcp <kind>`, the home
+/// whose kept credentials it reads, and for documents the folder (its
+/// place in the sandbox, when it runs in one).
+pub fn first_party_server(
+    kind: &str,
+    dir: Option<&std::path::Path>,
+    sandboxed: bool,
+    env: Vec<String>,
+) -> Result<(Vec<String>, Vec<String>), CliError> {
+    let Some((_, names)) = FIRST_PARTY.iter().find(|(k, _)| *k == kind) else {
+        return Err(CliError::Usage(format!(
+            "{kind} is not one of sion's servers: mail, calendar or documents"
+        )));
+    };
+    let program = std::env::current_exe()
+        .map_err(|e| CliError::Usage(format!("where this program is: {e}")))?
+        .to_string_lossy()
+        .into_owned();
+    let mut command = vec![program, "mcp".into(), kind.into()];
+    if kind == "documents" {
+        let dir = dir.ok_or_else(|| {
+            CliError::Usage("the documents server needs its folder: --dir".into())
+        })?;
+        command.push("--dir".into());
+        command.push(if sandboxed {
+            sion_agent::sandbox::WORKSPACE.to_string()
+        } else {
+            crate::runtime::resolved(dir).to_string_lossy().into_owned()
+        });
+    }
+    let mut all: Vec<String> = ["HOME", "SION_HOME"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    all.extend(names.iter().map(|s| s.to_string()));
+    for name in env {
+        if !all.contains(&name) {
+            all.push(name);
+        }
+    }
+    Ok((all, command))
+}
+
+/// A server's model for sampling: the operator's limits, counted for one
+/// run of a session.
+pub struct ModelSampler {
+    limits: mcp::Sampling,
+    models: Vec<String>,
+    used: std::sync::atomic::AtomicU32,
+}
+
+impl std::fmt::Debug for ModelSampler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelSampler")
+            .field("limits", &self.limits)
+            .finish()
+    }
+}
+
+impl ModelSampler {
+    /// Sampling within `limits`, written by their model or else the first
+    /// of `models` that answers.
+    pub fn new(limits: &mcp::Sampling, models: &[String]) -> ModelSampler {
+        ModelSampler {
+            limits: limits.clone(),
+            models: match &limits.model {
+                Some(model) => vec![model.clone()],
+                None => models.to_vec(),
+            },
+            used: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+}
+
+/// The most characters a server's messages may hold, for the operator's
+/// model to write after.
+pub const MAX_SAMPLED: usize = 100_000;
+
+impl sion_agent::mcp_input::Sampler for ModelSampler {
+    fn sample(
+        &self,
+        server: &str,
+        params: &serde_json::Value,
+    ) -> Result<(serde_json::Value, sion_agent::model::Usage), String> {
+        use sion_agent::model::{Block, Message, Request, Role, Stop};
+        if self.used.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= self.limits.per_run {
+            return Err(format!(
+                "{server} has sampled {} times in this run, the most it may",
+                self.limits.per_run
+            ));
+        }
+        let mut messages = Vec::new();
+        for message in params["messages"].as_array().into_iter().flatten() {
+            let role = match message["role"].as_str() {
+                Some("assistant") => Role::Assistant,
+                _ => Role::User,
+            };
+            let parts: Vec<&serde_json::Value> = match &message["content"] {
+                serde_json::Value::Array(items) => items.iter().collect(),
+                item => vec![item],
+            };
+            let text: Vec<String> = parts
+                .iter()
+                .map(|part| match part["type"].as_str() {
+                    Some("text") => part["text"].as_str().unwrap_or_default().to_string(),
+                    _ => "[a picture or sound, left out]".to_string(),
+                })
+                .collect();
+            messages.push(Message {
+                role,
+                content: vec![Block::text(text.join("\n"))],
+            });
+        }
+        if messages.is_empty() {
+            return Err("the server asked for a completion of nothing".into());
+        }
+        // What the operator's model is given to read is bounded too.
+        let given: usize = messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .map(|b| match b {
+                Block::Text { text } => text.chars().count(),
+                _ => 0,
+            })
+            .sum::<usize>()
+            + params["systemPrompt"]
+                .as_str()
+                .map_or(0, |s| s.chars().count());
+        if given > MAX_SAMPLED {
+            return Err(format!(
+                "{server} asked for a completion of {given} characters; at most {MAX_SAMPLED} \
+                 are written for a server"
+            ));
+        }
+        let max_tokens = params["maxTokens"]
+            .as_u64()
+            .map(|n| n.min(u64::from(self.limits.max_tokens)) as u32)
+            .unwrap_or(self.limits.max_tokens)
+            .max(1);
+        let request = Request {
+            system: params["systemPrompt"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            messages,
+            tools: Vec::new(),
+            max_tokens,
+            images: Default::default(),
+        };
+        let mut failed = String::from("no model to write with");
+        for spec in &self.models {
+            let model = match crate::runtime::model(spec, 0) {
+                Ok(model) => model,
+                Err(e) => {
+                    failed = e.to_string();
+                    continue;
+                }
+            };
+            match model.complete(&request) {
+                Ok(response) => {
+                    let text: String = response
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    let stop = match response.stop {
+                        Stop::MaxTokens => "maxTokens",
+                        _ => "endTurn",
+                    };
+                    return Ok((
+                        serde_json::json!({
+                            "role": "assistant",
+                            "content": {"type": "text", "text": text},
+                            "model": response.model,
+                            "stopReason": stop,
+                        }),
+                        response.usage,
+                    ));
+                }
+                Err(e) => failed = e.to_string(),
+            }
+        }
+        Err(format!("the model could not write it: {failed}"))
+    }
+}
+
+/// The prompts of the MCP servers `names`, one line each, for people.
+pub fn prompts_text(names: &[String]) -> String {
+    if names.is_empty() {
+        return "This agent has no MCP servers.".into();
+    }
+    let mut lines = Vec::new();
+    for name in names {
+        let found = get(name).map_err(|e| e.to_string()).and_then(|server| {
+            let auth = authorizer(&server).map_err(|e| e.to_string())?;
+            let mut connection = Connection::start_with(&server, auth)?;
+            if !connection.offers("prompts") {
+                return Ok(Vec::new());
+            }
+            connection.prompts().map_err(|e| e.to_string())
+        });
+        match found {
+            Ok(prompts) => {
+                for prompt in prompts {
+                    let arguments: Vec<String> = prompt["arguments"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|a| {
+                            let n = a["name"].as_str()?;
+                            Some(if a["required"].as_bool().unwrap_or(false) {
+                                format!("{n}=…")
+                            } else {
+                                format!("[{n}=…]")
+                            })
+                        })
+                        .collect();
+                    lines.push(format!(
+                        "/prompt {name} {} {}{}",
+                        prompt["name"].as_str().unwrap_or_default(),
+                        arguments.join(" "),
+                        prompt["description"]
+                            .as_str()
+                            .or(prompt["title"].as_str())
+                            .map(|d| format!(" — {d}"))
+                            .unwrap_or_default()
+                    ));
+                }
+            }
+            Err(e) => lines.push(format!("{name}: its prompts could not be listed ({e})")),
+        }
+    }
+    if lines.is_empty() {
+        "None of this agent's MCP servers offers prompts.".into()
+    } else {
+        shown(&lines.join("\n"))
+    }
+}
+
+/// A server's words as they are shown: its control characters (a
+/// terminal's escape sequences, a carriage return that writes over a line)
+/// as `�`, its lines and tabs kept.
+pub fn shown(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// The message a prompt makes: `rest` is `<server> <prompt> name=value …`,
+/// the server one of `names`. Its text is the server's, said as the
+/// person's request.
+pub fn prompt_text(
+    names: &[String],
+    rest: &str,
+    asker: Option<&Arc<dyn sion_agent::mcp_input::Asker>>,
+) -> Result<String, String> {
+    let mut words = rest.split_whitespace();
+    let (Some(server), Some(prompt)) = (words.next(), words.next()) else {
+        return Err("Say /prompt <server> <prompt> name=value …; /prompts lists them.".into());
+    };
+    if !names.iter().any(|n| n == server) {
+        return Err(format!(
+            "This agent has no MCP server {server}: /prompts lists its prompts."
+        ));
+    }
+    let mut arguments = serde_json::Map::new();
+    for word in words {
+        let Some((key, value)) = word.split_once('=') else {
+            return Err(format!("{word} is not name=value"));
+        };
+        arguments.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+    let config = get(server).map_err(|e| e.to_string())?;
+    let auth = authorizer(&config).map_err(|e| e.to_string())?;
+    let responder = sion_agent::mcp_input::Responder {
+        asker: asker.cloned(),
+        ..Default::default()
+    };
+    let mut connection = Connection::start_full(&config, auth, responder)?;
+    let got = connection
+        .prompt(prompt, &arguments)
+        .map_err(|e| format!("The MCP server {server} gave no prompt {prompt}: {e}"))?;
+    let mut text = format!("(the prompt {prompt} of the MCP server {server})");
+    for message in got["messages"].as_array().into_iter().flatten() {
+        let said = match message["content"]["type"].as_str() {
+            Some("text") => message["content"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            Some("resource") => message["content"]["resource"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            _ => "[a picture or sound, left out]".to_string(),
+        };
+        if message["role"] == "assistant" {
+            text.push_str(&format!("\n(answered before: {said})"));
+        } else {
+            text.push_str(&format!("\n{said}"));
+        }
+    }
+    if text.len() > crate::channels::MAX_MESSAGE {
+        return Err("The prompt is longer than a message may be.".into());
+    }
+    Ok(text)
 }
 
 /// How a server over HTTP is authorized with OAuth.
@@ -394,8 +783,20 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
             sandbox,
             sandbox_network,
             sandbox_read,
+            first_party,
             command,
         } => {
+            let (env, command) = match first_party.as_deref() {
+                None => (env, command),
+                Some(kind) => {
+                    if !command.is_empty() {
+                        return Err(CliError::Usage(
+                            "give either --first-party or a command after --, not both".into(),
+                        ));
+                    }
+                    first_party_server(kind, dir.as_deref(), sandbox.is_some(), env)?
+                }
+            };
             if !mcp::valid_name(&name) {
                 return Err(CliError::Usage(format!(
                     "{name:?} is not a server name: 1 to 32 lowercase letters, digits and hyphens"
@@ -468,6 +869,7 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
                 tools: BTreeMap::new(),
                 timeout_secs: timeout.max(1),
                 protocol: None,
+                sampling: None,
             };
             // A server over HTTP that asks for authorization is logged in
             // to first, if it has not been.
@@ -633,6 +1035,101 @@ pub fn run(command: McpCommand) -> Result<(), CliError> {
             }
             println!("removed MCP server {name}");
         }
+        McpCommand::Sampling {
+            name,
+            max_tokens,
+            per_run,
+            model,
+            off,
+        } => {
+            let mut servers = all()?;
+            let server = servers
+                .get_mut(&name)
+                .ok_or_else(|| CliError::Usage(format!("no MCP server {name}")))?;
+            if off {
+                server.sampling = None;
+                save_all(&servers)?;
+                println!("MCP server {name} may not sample");
+            } else {
+                if let Some(spec) = &model {
+                    crate::runtime::model(spec, 0)?;
+                }
+                server.sampling = Some(mcp::Sampling {
+                    max_tokens: max_tokens.max(1),
+                    per_run,
+                    model: model.clone(),
+                });
+                save_all(&servers)?;
+                println!(
+                    "MCP server {name} may sample: at most {} tokens a completion, {per_run} a run, by {}",
+                    max_tokens.max(1),
+                    model.as_deref().unwrap_or("the session's model")
+                );
+            }
+        }
+        McpCommand::Resources { name, read } => {
+            let server = get(&name)?;
+            let mut connection =
+                Connection::start_with(&server, authorizer(&server)?).map_err(CliError::Usage)?;
+            if !connection.offers("resources") {
+                println!("MCP server {name} offers no resources");
+                return Ok(());
+            }
+            match read {
+                Some(uri) => {
+                    let result = connection
+                        .read_resource(&uri)
+                        .map_err(|e| CliError::Usage(e.to_string()))?;
+                    println!("{}", shown(&mcp::render_contents(&result)));
+                }
+                None => {
+                    let (resources, templates) = connection
+                        .resources()
+                        .map_err(|e| CliError::Usage(e.to_string()))?;
+                    for r in resources {
+                        println!(
+                            "{}",
+                            shown(&format!(
+                                "{} {}",
+                                r["uri"].as_str().unwrap_or_default(),
+                                r["title"]
+                                    .as_str()
+                                    .or(r["name"].as_str())
+                                    .unwrap_or_default()
+                            ))
+                        );
+                    }
+                    for t in templates {
+                        println!(
+                            "{}",
+                            shown(&format!(
+                                "{} {} (a template)",
+                                t["uriTemplate"].as_str().unwrap_or_default(),
+                                t["name"].as_str().unwrap_or_default()
+                            ))
+                        );
+                    }
+                }
+            }
+        }
+        McpCommand::Prompts { name } => {
+            get(&name)?;
+            println!("{}", prompts_text(&[name]));
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_servers_words_are_shown_without_control_characters() {
+        assert_eq!(
+            shown("ok\r\u{1b}[2Kfaked\n\tline"),
+            "ok\u{FFFD}\u{FFFD}[2Kfaked\n\tline"
+        );
+        assert_eq!(shown("plain"), "plain");
+    }
 }

@@ -25,7 +25,7 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop, storage deals, work it takes on by itself from GitHub and chats under mandates) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, work it takes on by itself from GitHub and chats under mandates, its pull requests' reviews and checks followed, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders and repositories, everything kept running on a server, live voice with a wake word) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -384,7 +384,16 @@ seal's sender checked; trust atoms `agent:wecom-callbacks`,
 (0.3 and 1.0), with an agent card for each profile it publishes, and a
 profile may have Home Assistant's entities and services as tools
 (`agent:home-assistant`). `sion agent talk` is a conversation in the
-terminal, by voice with `--voice`.
+terminal, by voice with `--voice`; with `--live` it listens all the time,
+speaks the reply a sentence at a time as it is written, and stops when
+spoken over, and `--wake` takes only what begins with a wake phrase,
+heard first by a transcriber on the machine. **Simplified:** speech is
+told from silence by its loudness (an energy detector against a noise
+floor it follows), not by a model of speech, and there is no echo
+cancellation (headphones, or `--no-interrupt`). Tested end to end on a
+devnet with a stand-in microphone (silence and a tone, paced as spoken),
+stand-in transcribers, a scripted model and a slow player; no microphone
+or loudspeaker was used. Trust atom `agent:live-voice`.
 Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, Deepgram, ElevenLabs, or a command) and answered
 aloud (OpenAI, ElevenLabs, Deepgram, or a command): a voice note on Telegram, a voice message on
@@ -432,9 +441,27 @@ atoms: `agent:skill-pre-approval`, `agent:declared-hosts`,
 `agent:secret-store`. MCP over HTTP is tested against the official MCP
 Python SDK (2.3) with its OAuth authorization server, and against a
 stand-in for each era of the transport; trust atoms `agent:mcp-remote`
-and `agent:mcp-oauth`. Not built: MCP resources, prompts, sampling and
-elicitation; client certificates (mutual TLS) for servers over HTTP; the
-device authorization grant
+and `agent:mcp-oauth`. MCP resources, prompts, a person's input
+(elicitation: forms and addresses to open) and sampling are answered in
+both protocol eras (2026-07-28's input-required results, and an earlier
+server's own requests during a call), tested against a stand-in server in
+each era and end to end at the terminal on a devnet
+(`crates/sion-cli/tests/agent_reach.rs`); sampling is off for every
+server until the operator allows it, within limits counted in the run's
+budget. Trust atoms `agent:mcp-input`, `agent:mcp-sampling`. sion's own
+MCP servers (`sion mcp mail`, `calendar`, `documents`) are tested against
+stand-ins for IMAP, SMTP and CalDAV, and, for documents, as the real
+binary mounted in a session (`pdftotext` reading a PDF made for the
+test); trust atom `agent:own-mcp-servers`. `web_search` asks Brave, Tavily
+or a SearXNG instance, tested against a stand-in for each and end to end
+through the SearXNG one; trust atom `agent:web-search`. The code tools
+(`edit_file`, `apply_patch`, `find_files`, `search_files`, `read_file`'s
+ranges) are tested in their crate and end to end; `diagnostics` and
+`run_tests` are tested on samples of each checker's and test runner's
+output, and were not run in a sandbox in the tests. Not built: resource
+subscriptions and notices that a server's lists changed; client
+certificates (mutual TLS) for servers over HTTP; the device authorization
+grant
 ([Reliable, self-improving agents](book/src/research/agents.md)).
 A browser and a desktop
 ([A browser and a desktop](book/src/agent/browser.md)):
@@ -456,8 +483,10 @@ conversation. The browser and the desktop run for real in the tests
 (Chromium in bubblewrap against two sites on this machine; Xvfb in
 bubblewrap), and the guide's transcripts are of docs.rs. Trust atoms
 `agent:browser`, `agent:browser-hosts`, `agent:browser-logins`,
-`agent:desktop`. Not built: more than one page at a time, downloads and
-uploads; a desktop that outlives its process.
+`agent:desktop`. Tabs (up to eight), downloads into the workspace and
+files chosen for a page's file field from it run for real in the tests
+too (Chromium in bubblewrap against a site on this machine); trust atom
+`agent:browser-files`. Not built: a desktop that outlives its process.
 
 **Work the agent takes on by itself: built (beyond the paper).** `sion
 agent work` gives a profile's agent watches: GitHub repositories (new
@@ -497,12 +526,22 @@ eight times, then waits for a person, while the work goes on. Every step
 is stored before it is done; a run a restart interrupted goes on in the
 same session, told so. Tested on a devnet against stand-ins for GitHub's
 API and Telegram's Bot API.
-**Simplified:** the runner polls (every 30 seconds by default); a change
-of the rules reaches open items when they next run, not at once; a
+A pull request's item follows its review comments (answered in their
+threads) and the checks that fail on its head (from the check's app, when
+the watch lists that bot), with tools to read the pull request, its
+review comments, its checks and a job's log; with `--listen`, the runner
+takes GitHub's webhooks, checked against their signatures, as well as
+polling. Tested on a devnet against a stand-in for GitHub's API (a pull
+request's review thread and a failed check, end to end); the webhook
+listener is tested on its own (signatures, events, deliveries taken
+once). Trust atom `agent:github-webhooks`.
+**Simplified:** the runner polls (every 30 seconds by default) unless it
+takes webhooks too; a change of the rules reaches open items when they
+next run, not at once; a
 mandate is evidence the ledger records, not evidence that passes a
-charter's evidence policy (it is not bonded). **Not built:** review
-comments on pull requests' code, CI results, other threads followed for
-context, a rule's own way of reporting, requests beyond a mandate handed
+charter's evidence policy (it is not bonded). **Not built:** other
+threads followed for context, a rule's own way of reporting, requests
+beyond a mandate handed
 back to be weighed again. Trust atoms `agent:work-gate`,
 `agent:work-assessment`, `agent:work-messages`, `agent:work-runner`.
 
@@ -792,7 +831,16 @@ a release served on this machine), and the release workflow builds Linux
 and macOS archives on tags and signs them; it has not run, and the release
 key does not exist yet. A devnet validator with nothing to order can wait
 between rounds (`--idle-round-ms`): one at rest used 98.8% of a core
-unpaced and 5.7% at 10-second rounds, measured on 2 cores. **Not built:**
+unpaced and 5.7% at 10-second rounds, measured on 2 cores. `sion agent up` runs a list of commands
+and starts each again when it stops, its pause doubling to a minute, and
+what it runs stops however it stops (tested for real); `sion deploy`
+puts sion and an agent (or this machine's home, `--copy-home`) on a
+server over SSH and runs `sion agent up` there as a user service (tested
+against a stand-in for SSH on this machine: no server, and no service
+manager, was reached). Trust atom `deploy:copied-keys`. The compose file
+(`deploy/compose.yaml`) is checked for its syntax only, and the release
+workflow's image job (`ghcr.io/<owner>/sion`, amd64 and arm64) has not
+run. **Not built:**
 the release key and a release, and code signing (macOS binaries are not
 notarized). The `Dockerfile`, the Homebrew formula
 (`packaging/homebrew/sion.rb`, building the head) and the Nix flake are
@@ -1104,6 +1152,15 @@ the architecture's own:
 | `agent:desktop` | A desktop's programs are contained as its sandbox contains them, their address space unbounded under bubblewrap; the X server they share lets each read the others' windows and send them input. A Docker desktop reaches what its Docker network reaches. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
+| `agent:web-search` | A search's results are the provider's (Brave, Tavily, or the operator's SearXNG): it sees every query, and what it returns is taken as from outside, never as instructions. |
+| `agent:mcp-input` | What an MCP server asks a person is asked in the conversation its session answers, and the next reply there of whoever may decide answers it; a form that asks for a secret is declined, but a server may still ask for one in words, and an address it gives may lead anywhere: the person opens it. |
+| `agent:mcp-sampling` | A server allowed to sample has the operator's model write what it asks, within the limits set, at the operator's cost; it sees none of the session's conversation, but what it asks is the server's. |
+| `agent:own-mcp-servers` | sion's mail, calendar and documents servers act with the credentials they are given, as their owner: mail sent is the person's own, and an event added is in their calendar. What the mail and calendar servers read is from outside; documents are read as a workspace's files are, not as from outside, so a document someone else wrote is trusted as the person's own. The calendar's login goes only to the server `CALDAV_URL` names. |
+| `agent:browser-files` | What a page downloads is kept in the workspace as from outside; a file chosen for a page's field goes to that page's site, whoever runs it. |
+| `agent:github-webhooks` | A webhook is taken as GitHub's when it carries GitHub's signature with the operator's secret; the listener speaks plain HTTP, and TLS is the operator's proxy's. A delivery copied on its way could be sent again, and is taken once by its event's id. |
+| `agent:skill-import-review` | A skill imported from a folder or a repository is installed on the operator's reading of its files, or on an audit of its root; the patterns the report names are a guide to that reading, not a scan that finds all that a skill could do. |
+| `agent:live-voice` | A live conversation takes what is loud enough near the microphone as the person's speech: without a wake word, what anyone says there goes to the transcriber and to the agent as the person's words; with `--wake-cloud`, everything said there goes to the transcriber's provider. |
+| `deploy:copied-keys` | `sion deploy --copy-home` copies the agents' wallets and their keys to the server: whoever controls the server controls them. |
 
 ## Light-client trust
 

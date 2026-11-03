@@ -14,6 +14,8 @@ name = "sion"
 path = "src/main.rs"
 
 [dependencies]
+regex.workspace = true
+miniz_oxide.workspace = true
 sion-core.workspace = true
 sion-crypto.workspace = true
 sion-assurance.workspace = true

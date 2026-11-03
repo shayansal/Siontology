@@ -12,6 +12,7 @@ homepage.workspace = true
 [dependencies]
 sion-core.workspace = true
 sion-http.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

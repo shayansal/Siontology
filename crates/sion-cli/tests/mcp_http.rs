@@ -655,6 +655,7 @@ fn server(stand: &Stand) -> Server {
         tools: BTreeMap::new(),
         timeout_secs: 20,
         protocol: None,
+        sampling: None,
     }
 }
 

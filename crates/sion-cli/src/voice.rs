@@ -260,8 +260,17 @@ impl Hearing {
         }
     }
 
-    /// What `audio` says.
+    /// What `audio` says: an error if nothing was heard in it.
     pub fn transcribe(&self, audio: &Audio) -> Result<String, String> {
+        let text = self.hear(audio)?;
+        if text.is_empty() {
+            return Err("nothing was heard in the voice note".into());
+        }
+        Ok(text)
+    }
+
+    /// What `audio` says, which may be nothing.
+    pub fn hear(&self, audio: &Audio) -> Result<String, String> {
         if audio.bytes.len() > MAX_HEARD {
             return Err(format!(
                 "the voice note is longer than {} MB",
@@ -392,11 +401,7 @@ impl Hearing {
                 String::from_utf8_lossy(&output.stdout).into_owned()
             }
         };
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return Err("nothing was heard in the voice note".into());
-        }
-        Ok(text)
+        Ok(text.trim().to_string())
     }
 }
 
