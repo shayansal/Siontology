@@ -345,7 +345,9 @@ pub enum SkillCommand {
     /// installed only once --accept names its bundle root after you read
     /// it, or --audit names an active audit of that root on a bond.
     Import {
-        /// A folder, github:owner/repo, or a git address (https://…).
+        /// A folder, github:owner/repo, a git address (https://…),
+        /// clawhub:owner/slug[@version], skills.sh:owner/repo/skill, or a
+        /// site's skill (well-known:example.org#name).
         source: String,
         /// The profile whose agent gets it.
         #[arg(long)]
@@ -366,7 +368,37 @@ pub enum SkillCommand {
         /// Grant the permissions it asks for (a network, secrets).
         #[arg(long)]
         accept_permissions: bool,
+        /// Install it despite the findings the report says hold it back,
+        /// once you have read them.
+        #[arg(long)]
+        accept_risks: bool,
+        /// A host its scripts may reach, declared for it in its metadata
+        /// (repeat for more; needs --accept-permissions).
+        #[arg(long = "grant-network", value_name = "HOST")]
+        grant_network: Vec<String>,
+        /// A secret its scripts receive as an environment variable,
+        /// declared for it (repeat for more; keep it with sion agent secret
+        /// add; needs --accept-permissions).
+        #[arg(long = "grant-secret", value_name = "NAME")]
+        grant_secret: Vec<String>,
     },
+    /// Search a registry for skills to import: ClawHub (OpenClaw's) or
+    /// skills.sh. What a registry says of a skill is shown, not relied on.
+    Search {
+        /// What to look for.
+        query: String,
+        /// The registry: clawhub or skills.sh.
+        #[arg(long, default_value = "clawhub")]
+        registry: String,
+        /// How many to list.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Teach a task by doing it once in a browser window: what you do is
+    /// recorded (never a password, a secret field or a login's user name;
+    /// at most 10 minutes) and written down as a draft skill for the
+    /// agent's browser, to read and then install with `sion skill import`.
+    Teach(crate::teach::TeachArgs),
     /// Install sion's starter skills for a profile's agent: web-research,
     /// code-change, pr-review, ci-fix, inbox-triage, scheduling and
     /// document-brief (all of them, or those named).
@@ -432,6 +464,9 @@ pub fn run_offline(command: &SkillCommand) -> Option<Result<(), CliError>> {
             accept,
             audit: None,
             accept_permissions,
+            accept_risks,
+            grant_network,
+            grant_secret,
         } => Some(
             crate::skill_import::Source::parse(source, rev.clone())
                 .map_err(CliError::Usage)
@@ -444,15 +479,35 @@ pub fn run_offline(command: &SkillCommand) -> Option<Result<(), CliError>> {
                             .clone()
                             .map(crate::skill_import::Vouched::Review)
                             .as_ref(),
-                        *accept_permissions,
+                        &crate::skill_import::Consent {
+                            network: grant_network.clone(),
+                            secrets: grant_secret.clone(),
+                            permissions: *accept_permissions,
+                            risks: *accept_risks,
+                        },
                         None,
                     )
                 })
                 .map(print),
         ),
+        SkillCommand::Search {
+            query,
+            registry,
+            limit,
+        } => Some(
+            crate::skill_registries::search(registry, query, *limit).map(|found| {
+                if found.is_empty() {
+                    println!("{registry} has nothing for {query:?}");
+                }
+                for skill in found {
+                    println!("{}", skill.line());
+                }
+            }),
+        ),
         SkillCommand::Starter { profile, names } => {
             Some(crate::skill_import::starter(profile, names).map(print))
         }
+        SkillCommand::Teach(args) => Some(crate::teach::run(args)),
         _ => None,
     }
 }
@@ -1281,6 +1336,9 @@ spec {}",
             rev,
             audit,
             accept_permissions,
+            accept_risks,
+            grant_network,
+            grant_secret,
             ..
         } => {
             let source =
@@ -1290,13 +1348,18 @@ spec {}",
                 path.as_deref(),
                 &profile,
                 audit.map(crate::skill_import::Vouched::Audit).as_ref(),
-                accept_permissions,
+                &crate::skill_import::Consent {
+                    network: grant_network,
+                    secrets: grant_secret,
+                    permissions: accept_permissions,
+                    risks: accept_risks,
+                },
                 Some(ledger),
             )? {
                 println!("{line}");
             }
         }
-        SkillCommand::Starter { .. } => {}
+        SkillCommand::Starter { .. } | SkillCommand::Search { .. } | SkillCommand::Teach(_) => {}
         SkillCommand::Lineage { release: id } => {
             for line in crate::skill_improve::lineage(ledger, &id)? {
                 println!("{line}");

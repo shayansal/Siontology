@@ -12,12 +12,17 @@
 //! awake for a follow-up for a while after it speaks, and is then
 //! interrupted by its name ("hey sion, stop").
 //!
-//! Simplified, and named so in the implementation status: speech is told
-//! from silence by loudness alone (an energy detector over 20 ms frames,
-//! against a noise floor it follows), not by a model of speech; and there
-//! is no echo cancellation, so the agent's own voice from loudspeakers can
-//! interrupt it: use headphones, or `--no-interrupt` (the microphone is
-//! then not listened to while the agent works or speaks).
+//! Speech is told from other sound by RNNoise's network (`--detector
+//! model`, [`crate::sound::SpeechModel`]) together with its loudness, or
+//! by its loudness alone (`--detector loudness`: an energy detector over
+//! 20 ms frames, against a noise floor it follows). While the agent speaks
+//! through loudspeakers, its own voice is taken out of what the microphone
+//! hears ([`crate::sound::Canceller`]): the reply is asked of the speech
+//! service as raw samples and played through a program that reads them on
+//! its standard input (`--play-raw`: aplay, paplay, sox's play or ffplay),
+//! at the pace it is spoken, so that what the loudspeaker was given is
+//! known. `--no-echo-cancel` plays files as before; then use headphones,
+//! or `--no-interrupt`.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Read, Write};
@@ -41,13 +46,13 @@ use crate::voice::{Audio, Hearing, Speaking};
 pub const RATE: u32 = 16_000;
 
 /// The microphone's mode: listened to as usual.
-const LISTENING: u8 = 0;
+pub(crate) const LISTENING: u8 = 0;
 /// The agent works or speaks: what is said must be louder, and longer, to
 /// interrupt it.
-const OVER: u8 = 1;
+pub(crate) const OVER: u8 = 1;
 /// The agent works or speaks, and is not to be interrupted: not listened
 /// to.
-const DEAF: u8 = 2;
+pub(crate) const DEAF: u8 = 2;
 
 /// The programs tried for the microphone, in order, when none is named:
 /// each writes raw 16-bit mono samples at 16 kHz to its standard output.
@@ -110,6 +115,49 @@ pub fn microphones() -> Vec<&'static [&'static str]> {
     ]
 }
 
+/// The programs tried, in order, to play raw 16-bit mono samples at 16 kHz
+/// read on their standard input, when echo is cancelled.
+pub const RAW_PLAYERS: &[&[&str]] = &[
+    &[
+        "aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "16000", "-c", "1",
+    ],
+    &[
+        "paplay",
+        "--raw",
+        "--format=s16le",
+        "--rate=16000",
+        "--channels=1",
+    ],
+    &[
+        "play",
+        "-q",
+        "-t",
+        "raw",
+        "-r",
+        "16000",
+        "-e",
+        "signed-integer",
+        "-b",
+        "16",
+        "-c",
+        "1",
+        "-",
+    ],
+    &[
+        "ffplay",
+        "-nodisp",
+        "-autoexit",
+        "-loglevel",
+        "quiet",
+        "-f",
+        "s16le",
+        "-ar",
+        "16000",
+        "-i",
+        "-",
+    ],
+];
+
 /// How speech is told from silence. Levels are root mean squares of 16-bit
 /// samples (of 32768).
 #[derive(Clone, Debug, PartialEq)]
@@ -137,6 +185,10 @@ pub struct Detection {
     pub over_factor: f64,
     /// and for how many frames in a row.
     pub over_frames: usize,
+    /// Whether RNNoise's network says which frames are speech, their
+    /// loudness only keeping out what is near silence (and, over the
+    /// agent, what is not loud enough to interrupt it).
+    pub model: bool,
 }
 
 impl Default for Detection {
@@ -153,9 +205,16 @@ impl Default for Detection {
             over_floor: 3.0,
             over_factor: 2.0,
             over_frames: 12,
+            model: true,
         }
     }
 }
+
+/// How likely a frame must be speech, by the model, to begin an utterance
+/// (noise that starts suddenly scores up to about 0.8 while the network
+/// settles; speech, above 0.9), and to go on with one.
+const MODEL_BEGINS: f32 = 0.85;
+const MODEL_GOES_ON: f32 = 0.5;
 
 /// The root mean square of `samples`.
 pub fn level(samples: &[i16]) -> f64 {
@@ -198,12 +257,15 @@ pub struct Detector {
     frames: usize,
     /// The level speech goes on above.
     keep_above: f64,
+    /// The model of speech, if it is asked.
+    model: Option<crate::sound::SpeechModel>,
 }
 
 impl Detector {
     /// A detector that tells speech by `detection`.
     pub fn new(detection: Detection) -> Detector {
         Detector {
+            model: detection.model.then(crate::sound::SpeechModel::new),
             detection,
             floor: None,
             before: VecDeque::new(),
@@ -241,6 +303,7 @@ impl Detector {
     /// Takes the next frame, heard `over` the agent if it works or speaks.
     pub fn frame(&mut self, frame: &[i16], over: bool) -> Sound {
         let level = level(frame);
+        let speech = self.model.as_mut().map(|model| model.probability(frame));
         if !self.speaking {
             let threshold = self.threshold(over);
             let needed = if over {
@@ -248,7 +311,14 @@ impl Detector {
             } else {
                 self.detection.start
             };
-            if level >= threshold {
+            let loud = match speech {
+                // Over the agent, it must still be loud enough to interrupt
+                // it; else only not near silence.
+                Some(p) if over => p >= MODEL_BEGINS && level >= threshold,
+                Some(p) => p >= MODEL_BEGINS && level >= self.detection.level / 2.0,
+                None => level >= threshold,
+            };
+            if loud {
                 self.loud_run += 1;
             } else {
                 self.loud_run = 0;
@@ -271,7 +341,13 @@ impl Detector {
         }
         self.speech.extend_from_slice(frame);
         self.frames += 1;
-        if level >= self.keep_above {
+        let going = match speech {
+            // A hum the model hears as a voice does not keep an utterance
+            // going once it is near silence.
+            Some(p) => p >= MODEL_GOES_ON && level >= self.keep_above / 2.0,
+            None => level >= self.keep_above,
+        };
+        if going {
             self.quiet_run = 0;
             self.loud += 1;
         } else {
@@ -1142,6 +1218,9 @@ pub struct Listening {
     pub interrupt: bool,
     /// How speech is told from silence.
     pub detection: Detection,
+    /// With echo cancelled: the program that plays raw samples at 16 kHz
+    /// on its standard input.
+    pub play_raw: Option<Vec<String>>,
 }
 
 /// Where a transcriber that is not on this machine sends what it hears.
@@ -1169,7 +1248,23 @@ impl Listening {
         awake_secs: u64,
         interrupt: bool,
         speech_level: f64,
+        detector: &str,
+        echo_cancel: Option<Option<&str>>,
     ) -> Result<Listening, String> {
+        let model = match detector {
+            "model" => true,
+            "loudness" => false,
+            other => return Err(format!("--detector is model or loudness, not {other}")),
+        };
+        let play_raw = match echo_cancel {
+            None => None,
+            Some(named) => Some(crate::talk::program(named, RAW_PLAYERS).ok_or_else(|| {
+                "cancelling the loudspeaker's echo plays raw samples: install alsa-utils \
+                 (aplay), pulseaudio-utils (paplay), sox or ffmpeg, give --play-raw, or \
+                 --no-echo-cancel (then use headphones)"
+                    .to_string()
+            })?),
+        };
         if !(1.0..=32_767.0).contains(&speech_level) {
             return Err(format!(
                 "--speech-level is a level of 1 to 32767 (the default is {})",
@@ -1205,8 +1300,10 @@ impl Listening {
             interrupt,
             detection: Detection {
                 level: speech_level,
+                model,
                 ..Detection::default()
             },
+            play_raw,
         })
     }
 }
@@ -1214,7 +1311,13 @@ impl Listening {
 /// Reads the microphone's sound a frame at a time, and tells the
 /// conversation the utterances found in it (and, over the agent, when
 /// speech begins).
-fn capture(mut sound: impl Read, detection: Detection, mode: &AtomicU8, events: &Sender<Event>) {
+pub(crate) fn capture(
+    mut sound: impl Read,
+    detection: Detection,
+    mode: &AtomicU8,
+    events: &Sender<Event>,
+    mut canceller: Option<crate::sound::Canceller>,
+) {
     let size = detection.frame;
     let mut detector = Detector::new(detection);
     let mut bytes = vec![0u8; size * 2];
@@ -1222,6 +1325,11 @@ fn capture(mut sound: impl Read, detection: Detection, mode: &AtomicU8, events: 
     while sound.read_exact(&mut bytes).is_ok() {
         for (sample, pair) in frame.iter_mut().zip(bytes.chunks_exact(2)) {
             *sample = i16::from_le_bytes([pair[0], pair[1]]);
+        }
+        // The loudspeaker's echo taken out first, every frame, so that the
+        // canceller keeps the microphone's count.
+        if let Some(canceller) = canceller.as_mut() {
+            frame = canceller.frame(&frame);
         }
         let heard = match mode.load(Ordering::SeqCst) {
             DEAF => {
@@ -1292,12 +1400,126 @@ fn microphone_ended(microphone: &mut Child, said: Option<JoinHandle<String>>) ->
 }
 
 /// What the voice plays, and what it was at when it began.
-struct Playing {
-    epoch: AtomicU64,
-    child: Mutex<Option<Child>>,
+pub(crate) struct Playing {
+    pub(crate) epoch: AtomicU64,
+    pub(crate) child: Mutex<Option<Child>>,
+    /// The raw player's input, while it runs.
+    pub(crate) input: Mutex<Option<std::process::ChildStdin>>,
 }
 
+/// A piece of raw samples handed to the player: 20 ms.
+pub(crate) const PIECE: usize = (crate::sound::RATE / 50) as usize;
+
+/// Pieces handed on ahead of their time, so that the player never runs
+/// dry: 100 ms.
+pub(crate) const AHEAD: usize = 5;
+
 impl Playing {
+    /// A voice that plays nothing yet.
+    pub(crate) fn new() -> Playing {
+        Playing {
+            epoch: AtomicU64::new(0),
+            child: Mutex::new(None),
+            input: Mutex::new(None),
+        }
+    }
+
+    /// Waits until `until`, or until the voice is silenced since `epoch`:
+    /// whether it was not.
+    pub(crate) fn wait(&self, until: Instant, epoch: u64) -> bool {
+        loop {
+            if self.epoch.load(Ordering::SeqCst) != epoch {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= until {
+                return true;
+            }
+            std::thread::sleep((until - now).min(Duration::from_millis(10)));
+        }
+    }
+
+    /// Plays raw `samples` (at 16 kHz) through `play`, a piece every 20
+    /// ms, each told to `far` as it is handed on, unless the voice was
+    /// silenced since `epoch`; silencing it kills the player, and the next
+    /// sentence starts another.
+    pub(crate) fn play_raw(
+        &self,
+        play: &[String],
+        samples: &[i16],
+        epoch: u64,
+        far: &crate::sound::FarLine,
+    ) -> Result<(), String> {
+        let started = Instant::now();
+        let pieces: Vec<&[i16]> = samples.chunks(PIECE).collect();
+        let at = |n: usize| started + Duration::from_millis(20 * n as u64);
+        for (i, piece) in pieces.iter().enumerate() {
+            if i >= AHEAD && !self.wait(at(i - AHEAD), epoch) {
+                return Ok(());
+            }
+            if !self.hand_on(play, piece, epoch, far)? {
+                return Ok(());
+            }
+        }
+        // Until what was handed on has been heard.
+        self.wait(at(pieces.len()), epoch);
+        Ok(())
+    }
+
+    /// Hands `piece` to the raw player `play`, started if it does not run,
+    /// and tells `far`: false if the voice was silenced since `epoch`.
+    pub(crate) fn hand_on(
+        &self,
+        play: &[String],
+        piece: &[i16],
+        epoch: u64,
+        far: &crate::sound::FarLine,
+    ) -> Result<bool, String> {
+        {
+            let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+            if self.epoch.load(Ordering::SeqCst) != epoch {
+                return Ok(false);
+            }
+            let running = matches!(child.as_mut().map(Child::try_wait), Some(Ok(None)));
+            if !running {
+                let mut started = std::process::Command::new(&play[0])
+                    .args(&play[1..])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("{}: {e}", play[0]))?;
+                *self.input.lock().unwrap_or_else(|e| e.into_inner()) = started.stdin.take();
+                *child = Some(started);
+            }
+        }
+        let bytes: Vec<u8> = piece.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let written = self
+            .input
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .map(|input| input.write_all(&bytes).and_then(|()| input.flush()));
+        match written {
+            Some(Ok(())) => {
+                far.played(piece);
+                Ok(true)
+            }
+            _ if self.epoch.load(Ordering::SeqCst) != epoch => Ok(false),
+            _ => Err(format!("{} stopped taking sound", play[0])),
+        }
+    }
+
+    /// Silences it: what it plays stops, and what it had still to play is
+    /// dropped.
+    pub(crate) fn hush(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(child) = child.as_mut() {
+            let _ = child.kill();
+        }
+    }
+
     /// Plays `file` with `play`, unless the voice was silenced since
     /// `epoch`; silencing it kills the player.
     fn play(&self, play: &[String], file: &Path, epoch: u64) -> Result<(), String> {
@@ -1340,6 +1562,12 @@ impl Playing {
     }
 }
 
+/// A sentence's audio, ready to play: a file, or raw samples.
+enum Spoken {
+    File(PathBuf),
+    Samples(Vec<i16>),
+}
+
 /// Speaks a sentence at a time: one thread makes each sentence's audio
 /// while another plays the one before; silencing it stops the player and
 /// drops what it had still to say.
@@ -1349,37 +1577,53 @@ struct Voice {
 }
 
 impl Voice {
-    fn start(speaking: Speaking, play: Vec<String>, events: Sender<Event>) -> Voice {
-        let playing = Arc::new(Playing {
-            epoch: AtomicU64::new(0),
-            child: Mutex::new(None),
-        });
+    /// The voice: playing files with `play`, or, with `raw`, raw samples
+    /// through its program, told to its line as they are handed on.
+    fn start(
+        speaking: Speaking,
+        play: Vec<String>,
+        events: Sender<Event>,
+        raw: Option<(Vec<String>, Arc<crate::sound::FarLine>)>,
+    ) -> Voice {
+        let playing = Arc::new(Playing::new());
         let (lines, said) = channel::<(u64, String)>();
-        let (ready, to_play) = channel::<(u64, Result<PathBuf, String>)>();
+        let (ready, to_play) = channel::<(u64, Result<Spoken, String>)>();
         let made = playing.clone();
+        let samples = raw.is_some();
         std::thread::spawn(move || {
             for (epoch, text) in said {
                 if made.epoch.load(Ordering::SeqCst) != epoch {
                     continue;
                 }
-                let file = speaking.speak(&text).and_then(|audio| {
-                    let extension = audio.name.rsplit('.').next().unwrap_or("audio").to_string();
-                    let file = crate::talk::scratch(&extension)?;
-                    std::fs::write(&file, &audio.bytes).map_err(|e| e.to_string())?;
-                    Ok(file)
-                });
-                if ready.send((epoch, file)).is_err() {
+                let spoken = if samples {
+                    speaking.speak_samples(&text).map(Spoken::Samples)
+                } else {
+                    speaking.speak(&text).and_then(|audio| {
+                        let extension =
+                            audio.name.rsplit('.').next().unwrap_or("audio").to_string();
+                        let file = crate::talk::scratch(&extension)?;
+                        std::fs::write(&file, &audio.bytes).map_err(|e| e.to_string())?;
+                        Ok(Spoken::File(file))
+                    })
+                };
+                if ready.send((epoch, spoken)).is_err() {
                     break;
                 }
             }
         });
         let player = playing.clone();
         std::thread::spawn(move || {
-            for (epoch, file) in to_play {
-                let played = file.and_then(|file| {
-                    let played = player.play(&play, &file, epoch);
-                    let _ = std::fs::remove_file(&file);
-                    played
+            for (epoch, spoken) in to_play {
+                let played = spoken.and_then(|spoken| match (spoken, &raw) {
+                    (Spoken::Samples(samples), Some((program, far))) => {
+                        player.play_raw(program, &samples, epoch, far)
+                    }
+                    (Spoken::Samples(_), None) => Ok(()),
+                    (Spoken::File(file), _) => {
+                        let played = player.play(&play, &file, epoch);
+                        let _ = std::fs::remove_file(&file);
+                        played
+                    }
                 });
                 if player.epoch.load(Ordering::SeqCst) != epoch {
                     continue;
@@ -1402,11 +1646,7 @@ impl Voice {
     }
 
     fn hush(&self) {
-        self.playing.epoch.fetch_add(1, Ordering::SeqCst);
-        let mut child = self.playing.child.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(child) = child.as_mut() {
-            let _ = child.kill();
-        }
+        self.playing.hush();
     }
 }
 
@@ -1490,11 +1730,18 @@ pub fn run(
             "nothing gives the microphone's sound: give --listen".into(),
         ));
     };
-    if talk.speaking.is_some() && talk.play.is_empty() {
+    if talk.speaking.is_some() && talk.play.is_empty() && listening.play_raw.is_none() {
         return Err(CliError::Usage(
             "nothing plays the replies: give --play".into(),
         ));
     }
+    // With a voice through loudspeakers, its echo is taken out of what the
+    // microphone hears.
+    let far = listening
+        .play_raw
+        .as_ref()
+        .filter(|_| talk.speaking.is_some())
+        .map(|_| crate::sound::FarLine::new());
     let key = format!("terminal:{}:{}", profile.name, talk.conversation);
     let who = crate::runtime::local_person("talk");
     let (events, inbox) = channel::<Event>();
@@ -1515,7 +1762,8 @@ pub fn run(
     let mode = Arc::new(AtomicU8::new(LISTENING));
     {
         let (mode, events, detection) = (mode.clone(), events.clone(), listening.detection.clone());
-        std::thread::spawn(move || capture(sound, detection, &mode, &events));
+        let canceller = far.clone().map(crate::sound::Canceller::new);
+        std::thread::spawn(move || capture(sound, detection, &mode, &events, canceller));
     }
     // What is typed.
     {
@@ -1557,10 +1805,10 @@ pub fn run(
         });
     }
     // What speaks.
-    let voice = talk
-        .speaking
-        .clone()
-        .map(|speaking| Voice::start(speaking, talk.play.clone(), events.clone()));
+    let voice = talk.speaking.clone().map(|speaking| {
+        let raw = listening.play_raw.clone().zip(far.clone());
+        Voice::start(speaking, talk.play.clone(), events.clone(), raw)
+    });
 
     let mut state = State::new(
         listening.wake.as_ref().map(|w| w.awake_secs),
@@ -1697,7 +1945,11 @@ mod tests {
 
     #[test]
     fn speech_is_told_from_silence_by_its_loudness() {
-        let mut detector = Detector::new(Detection::default());
+        let loudness = Detection {
+            model: false,
+            ..Detection::default()
+        };
+        let mut detector = Detector::new(loudness.clone());
         let mut sound = quiet(25);
         sound.extend(tone(50, 8000.0));
         sound.extend(quiet(60));
@@ -1723,7 +1975,7 @@ mod tests {
         // kept.
         let mut detector = Detector::new(Detection {
             most: 100,
-            ..Detection::default()
+            ..loudness
         });
         assert_eq!(
             detect(&mut detector, &tone(250, 8000.0), false).1,
@@ -1734,19 +1986,131 @@ mod tests {
     }
 
     #[test]
+    fn raw_samples_are_played_at_their_pace_and_told_to_the_echo_line() {
+        let dir = std::env::temp_dir().join(format!("sion-raw-play-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let heard = dir.join("heard.raw");
+        let play = vec![
+            "sh".to_string(),
+            "-c".into(),
+            format!("cat >> {}", heard.display()),
+        ];
+        let playing = Playing {
+            epoch: AtomicU64::new(0),
+            child: Mutex::new(None),
+            input: Mutex::new(None),
+        };
+        let far = crate::sound::FarLine::new();
+        // Half a second, played in about half a second.
+        let samples: Vec<i16> = (0..8_000).map(|i| (i % 400) as i16).collect();
+        let started = Instant::now();
+        playing.play_raw(&play, &samples, 0, &far).unwrap();
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(400), "{took:?}");
+        // The player runs on for the next sentence; what it was handed is
+        // what it heard.
+        let child = playing.child.lock().unwrap().take();
+        drop(playing.input.lock().unwrap().take());
+        let _ = child.map(|mut c| c.wait());
+        let bytes = std::fs::read(&heard).unwrap();
+        assert_eq!(crate::sound::samples_of(&bytes), samples);
+        // Silenced: it stops at once.
+        let started = Instant::now();
+        let long: Vec<i16> = vec![100; 16_000 * 5];
+        std::thread::scope(|scope| {
+            scope.spawn(|| playing.play_raw(&play, &long, 0, &far));
+            std::thread::sleep(Duration::from_millis(300));
+            playing.epoch.fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_model_takes_speech_and_leaves_noise_that_is_as_loud() {
+        // Random hiss, faint or loud.
+        let mut state = 99u64;
+        let mut hiss = |frames: usize, amplitude: i32| -> Vec<Vec<i16>> {
+            (0..frames)
+                .map(|_| {
+                    (0..320)
+                        .map(|_| {
+                            state = state
+                                .wrapping_mul(6364136223846793005)
+                                .wrapping_add(1442695040888963407);
+                            ((state >> 40) as i32 % (2 * amplitude) - amplitude) as i16
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        // "Can you hear me now?", said by espeak-ng, in a quiet room; then
+        // a burst of hiss as loud, which loudness alone takes for speech.
+        let said = crate::sound::samples_of(include_bytes!("../tests/fixtures/spoken-16k.raw"));
+        let mut sound = hiss(25, 30);
+        sound.extend(said.chunks_exact(320).map(<[i16]>::to_vec));
+        sound.extend(hiss(60, 30));
+        sound.extend(hiss(50, 3000));
+        sound.extend(hiss(60, 30));
+        let (_, heard) = detect(&mut Detector::new(Detection::default()), &sound, false);
+        assert_eq!(heard.len(), 1, "{heard:?}");
+        let loudness = Detection {
+            model: false,
+            ..Detection::default()
+        };
+        let (_, loud) = detect(&mut Detector::new(loudness), &sound, false);
+        assert_eq!(loud.len(), 2, "{loud:?}");
+        assert!(Listening::from_flags(
+            None,
+            Some("cat"),
+            None,
+            None,
+            false,
+            15,
+            true,
+            400.0,
+            "both",
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
     fn a_wake_word_is_heard_on_this_machine_unless_the_person_says_otherwise() {
         let cloud = Hearing::parse("openai:whisper-1").unwrap();
         let listen = Some("cat /dev/zero");
-        let made = Listening::from_flags(Some(&cloud), listen, None, None, false, 15, true, 250.0)
-            .unwrap();
+        let made = Listening::from_flags(
+            Some(&cloud),
+            listen,
+            None,
+            None,
+            false,
+            15,
+            true,
+            250.0,
+            "model",
+            None,
+        )
+        .unwrap();
         assert_eq!(made.listen, vec!["cat", "/dev/zero"]);
         assert_eq!(
             (made.wake, made.interrupt, made.detection.level),
             (None, true, 250.0)
         );
-        assert!(
-            Listening::from_flags(Some(&cloud), listen, None, None, false, 15, true, 0.0).is_err()
-        );
+        assert!(Listening::from_flags(
+            Some(&cloud),
+            listen,
+            None,
+            None,
+            false,
+            15,
+            true,
+            0.0,
+            "model",
+            None
+        )
+        .is_err());
         let refused = Listening::from_flags(
             Some(&cloud),
             listen,
@@ -1756,6 +2120,8 @@ mod tests {
             15,
             true,
             400.0,
+            "model",
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1771,6 +2137,8 @@ mod tests {
             20,
             false,
             400.0,
+            "model",
+            None,
         )
         .unwrap();
         let wake = here.wake.unwrap();
@@ -1788,6 +2156,8 @@ mod tests {
             15,
             true,
             400.0,
+            "model",
+            None,
         )
         .unwrap()
         .wake

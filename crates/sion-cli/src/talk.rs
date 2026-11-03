@@ -239,6 +239,10 @@ pub fn bare(node: &str, continuing: bool) -> Result<crate::agents::AgentCommand,
         awake_secs: 15,
         no_interrupt: false,
         speech_level: 400.0,
+        detector: "model".into(),
+        no_echo_cancel: false,
+        play_raw: None,
+        realtime: None,
     })
 }
 

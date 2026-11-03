@@ -78,12 +78,79 @@ pub enum Source {
         /// A branch or tag.
         rev: Option<String>,
     },
+    /// A skill on ClawHub: `clawhub:owner/slug`, at a version or its
+    /// latest ([`crate::skill_registries`]).
+    ClawHub {
+        /// Whose it is.
+        owner: Option<String>,
+        /// Its name on ClawHub.
+        slug: String,
+        /// The version.
+        version: Option<String>,
+    },
+    /// A skill a site publishes at `/.well-known/agent-skills/`: its
+    /// index and the skill's name there.
+    WellKnown {
+        /// The index's address.
+        index: String,
+        /// The skill.
+        name: String,
+    },
+    /// A skill skills.sh lists: `skills.sh:owner/repo/skill`, read from
+    /// its GitHub repository.
+    SkillsSh {
+        /// `owner/repo`.
+        repo: String,
+        /// The skill.
+        skill: String,
+    },
 }
 
 impl Source {
-    /// The source `text` names: a folder, `github:owner/repo`, or a git
-    /// address (`https://…`, `git@…`, ending `.git` or on a known host).
+    /// The source `text` names: a folder, `github:owner/repo`, a git
+    /// address (`https://…`, `git@…`), `clawhub:owner/slug[@version]`,
+    /// `skills.sh:owner/repo/skill`, or a site's skill
+    /// (`well-known:example.org#name`, or an index's address with
+    /// `#name`).
     pub fn parse(text: &str, rev: Option<String>) -> Result<Source, String> {
+        if let Some(reference) = text.strip_prefix("clawhub:") {
+            let (owner, slug, version) = crate::skill_registries::clawhub_ref(reference)?;
+            return Ok(Source::ClawHub {
+                owner,
+                slug,
+                version,
+            });
+        }
+        if let Some(id) = text.strip_prefix("skills.sh:") {
+            let parts: Vec<&str> = id.split('/').collect();
+            match parts.as_slice() {
+                [owner, repo, skill]
+                    if crate::github::valid_repo(&format!("{owner}/{repo}"))
+                        && sion_agent::skills::valid_name(skill) =>
+                {
+                    return Ok(Source::SkillsSh {
+                        repo: format!("{owner}/{repo}"),
+                        skill: skill.to_string(),
+                    })
+                }
+                _ => return Err(format!("{text}: skills.sh:owner/repo/skill")),
+            }
+        }
+        let well_known = text
+            .strip_prefix("well-known:")
+            .or_else(|| text.contains("/.well-known/agent-skills/").then_some(text));
+        if let Some(site) = well_known {
+            let (index, name) = site
+                .split_once('#')
+                .ok_or_else(|| format!("{text}: name the skill after #"))?;
+            if !sion_agent::skills::valid_name(name) {
+                return Err(format!("{text}: {name:?} is not a skill's name"));
+            }
+            return Ok(Source::WellKnown {
+                index: crate::skill_registries::index_url(index).map_err(|e| e.to_string())?,
+                name: name.to_string(),
+            });
+        }
         if let Some(repo) = text.strip_prefix("github:") {
             if !crate::github::valid_repo(repo) {
                 return Err(format!("{text}: github:owner/repo"));
@@ -133,38 +200,261 @@ pub struct Read {
     pub report: Vec<String>,
     /// The permissions it asks for, and whether they need consent.
     pub permissions: (Vec<String>, bool),
+    /// The findings that hold an install back until the operator accepts
+    /// the risk (`--accept-risks`), one line each.
+    pub held: Vec<String>,
 }
 
-/// What is worth a look in a script or instructions: a pattern and why.
-const PATTERNS: [(&str, &str); 9] = [
+/// What a skill's files are checked for: a pattern, what it may mean, and
+/// whether it holds an install back until the operator accepts the risk
+/// (`--accept-risks`). Most are what the skills that stole credentials and
+/// wallets from agents' machines in 2026 did (fake prerequisites run by a
+/// shell, encoded payloads, paste sites, password-protected archives,
+/// persistence, edits to an agent's memory files) or said to the model.
+const FINDINGS: [(&str, &str, bool); 24] = [
     (
-        r"(curl|wget)[^\n|]*\|\s*(sudo\s+)?(ba|z)?sh",
+        r"(curl|wget)[^\n|]*\|\s*(sudo\s+)?(ba|z|da)?sh\b",
         "a download run by a shell",
+        true,
     ),
     (
-        r"base64\s+(-d|--decode)|frombase64string|b64decode",
+        r"(ba|z)?sh\s+<\(\s*(curl|wget)",
+        "a download run by a shell",
+        true,
+    ),
+    (
+        r"(?i)\biex\b|invoke-expression|downloadstring\(",
+        "a download run by PowerShell",
+        true,
+    ),
+    (
+        r"base64\s+(-d|--decode|-D)[^\n]*\|\s*(sudo\s+)?(ba|z)?sh",
+        "something encoded, decoded and run",
+        true,
+    ),
+    (
+        r"(?i)base64\s+(-d|--decode)|frombase64string|b64decode|atob\(",
         "something encoded, decoded to be run or used",
+        false,
     ),
-    (r"\beval\b|\bexec\(", "code built and run at run time"),
     (
-        r"\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|\.git-credentials",
+        r"(?i)unzip\s+-P\s|7z\s+x[^\n]*\s-p|(archive|zip)[^\n]{0,40}password",
+        "a password-protected archive, which scanners cannot open",
+        true,
+    ),
+    (
+        r"(?i)\b(glot\.io|rentry\.(co|org)|pastebin\.com|paste\.ee|hastebin\.com|termbin\.com|ghostbin)\b",
+        "a paste site, whose content can change after a review",
+        true,
+    ),
+    (
+        r"https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}",
+        "an address given as a bare IP",
+        true,
+    ),
+    (
+        r"(?i)api\.telegram\.org/bot|discord(app)?\.com/api/webhooks|hooks\.slack\.com/services|webhook\.site|requestbin|pipedream\.net|ngrok(-free)?\.(io|app)|trycloudflare\.com",
+        "an endpoint data can be sent out to",
+        true,
+    ),
+    (
+        r"\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|\.git-credentials|\.config/gcloud|\.kube/config|\.docker/config\.json",
         "reading keys or credentials",
+        true,
+    ),
+    (
+        r"(?i)\.openclaw/|\.clawdbot/|\.hermes/\.env|\.sion/|auth-profiles\.json",
+        "reading an agent's own keys or settings",
+        true,
+    ),
+    (
+        r"(?i)security\s+(find|dump)-(generic|internet)-password|dump-keychain|login data|cookies\.sqlite|wallet\.dat",
+        "reading a keychain, a browser's saved logins or a wallet",
+        true,
+    ),
+    (
+        r"(?i)osascript[^\n]*(password|display dialog)",
+        "a dialog asking for a password",
+        true,
+    ),
+    (
+        r"(?i)\b(seed phrase|recovery phrase|mnemonic|private key)\b",
+        "talk of seed phrases or private keys",
+        false,
+    ),
+    (
+        r"(?i)\bcrontab\b|systemctl\s+(--user\s+)?enable|launchctl\s+(load|bootstrap)|LaunchAgents|authorized_keys",
+        "something that starts by itself later, or lets someone in",
+        true,
+    ),
+    (
+        r"(?i)(write|append|add|edit|modify|update|overwrite|change)[^\n]{0,40}\b(SOUL|MEMORY|IDENTITY|HEARTBEAT|USER)\.md\b",
+        "changing an agent's memory or persona files",
+        true,
+    ),
+    (
+        r"(?i)(disable|turn off|bypass|skip|switch off)[^\n]{0,30}\b(approvals?|sandbox|confirmations?|safety|guardrails?)\b|--dangerously|--yolo\b",
+        "turning an agent's safeguards off",
+        true,
+    ),
+    (
+        r"(?i)(ignore|disregard) (all |any |your )?(previous|prior|above|earlier) (instructions|rules|guidelines)",
+        "words aimed at the model",
+        true,
+    ),
+    (
+        r"(?i)(do not|don't|never) (tell|inform|show) the user|without (telling|asking|informing) the user",
+        "keeping something from the person",
+        true,
+    ),
+    (
+        r"(?i)<!--[^>]{0,300}\b(ignore|instructions?|assistant|system prompt|you must|execute)\b",
+        "instructions hidden in a comment",
+        true,
+    ),
+    (
+        r"rm\s+-rf\s+(/|~|\$HOME)",
+        "removing a home or the system",
+        true,
+    ),
+    (
+        r"(?i)\b(nc|ncat|socat)\s+-|/dev/tcp/",
+        "a raw network connection",
+        true,
+    ),
+    (
+        r"\beval\b|\bexec\(",
+        "code built and run at run time",
+        false,
     ),
     (
         r"(?i)\b(printenv|env\b\s*\||os\.environ|process\.env)",
         "reading the environment",
-    ),
-    (r"rm\s+-rf\s+(/|~|\$HOME)", "removing a home or the system"),
-    (r"(?i)\b(nc|ncat|socat)\s+-", "a raw network connection"),
-    (
-        r"(?i)crontab|systemctl\s+enable|launchctl\s+load",
-        "something that starts by itself later",
-    ),
-    (
-        r"(?i)ignore (all |your )?(previous|prior) instructions",
-        "words aimed at the model",
+        false,
     ),
 ];
+
+/// Characters a person reading a file does not see: zero-width ones,
+/// those that reorder text, and Unicode's tag characters.
+fn hidden(c: char) -> bool {
+    matches!(c as u32, 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x2069 | 0xE0000..=0xE007F)
+}
+
+/// What a file is, if it is no text a person can review: a program or an
+/// archive.
+fn opaque(path: &str, content: &[u8]) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    let program = [
+        &b"\x7fELF"[..],
+        b"MZ",
+        &[0xCF, 0xFA, 0xED, 0xFE],
+        &[0xCE, 0xFA, 0xED, 0xFE],
+        &[0xCA, 0xFE, 0xBA, 0xBE],
+        b"\0asm",
+    ];
+    let archive = [&b"PK\x03\x04"[..], &[0x1F, 0x8B], b"7z\xBC\xAF", b"Rar!"];
+    if program.iter().any(|m| content.starts_with(m))
+        || [
+            ".exe", ".dll", ".so", ".dylib", ".pyc", ".pyo", ".pyd", ".dmg", ".pkg", ".msi",
+            ".jar", ".class", ".wasm",
+        ]
+        .iter()
+        .any(|x| lower.ends_with(x))
+    {
+        return Some("a program, not text: no one can review it");
+    }
+    if archive.iter().any(|m| content.starts_with(m))
+        || [".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".xz", ".bz2"]
+            .iter()
+            .any(|x| lower.ends_with(x))
+    {
+        return Some("an archive inside the skill: no one can review what it holds");
+    }
+    None
+}
+
+/// Something worth a look in a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    /// The file.
+    pub path: String,
+    /// The line, from 1, if it is on one.
+    pub at: Option<usize>,
+    /// What it may mean.
+    pub why: &'static str,
+    /// Whether it holds an install back until the risk is accepted.
+    pub holds: bool,
+}
+
+impl Found {
+    /// `path:line: why`.
+    pub fn line(&self) -> String {
+        match self.at {
+            Some(at) => format!("{}:{at}: {}", self.path, self.why),
+            None => format!("{}: {}", self.path, self.why),
+        }
+    }
+}
+
+fn compiled() -> &'static [(regex::Regex, &'static str, bool)] {
+    static COMPILED: std::sync::OnceLock<Vec<(regex::Regex, &'static str, bool)>> =
+        std::sync::OnceLock::new();
+    COMPILED.get_or_init(|| {
+        FINDINGS
+            .iter()
+            .map(|(p, why, holds)| (regex::Regex::new(p).expect("a valid pattern"), *why, *holds))
+            .collect()
+    })
+}
+
+/// What is worth a look in the file `path` holding `content`: the
+/// patterns of [`FINDINGS`], characters a reader cannot see, long encoded
+/// strings, a file far too large, or a program or an archive. Text an
+/// agent imports from elsewhere is checked the same way
+/// ([`crate::agent_import`]).
+pub fn scan(path: &str, content: &[u8]) -> Vec<Found> {
+    let mut found = Vec::new();
+    let mut note = |at: Option<usize>, why: &'static str, holds: bool| {
+        found.push(Found {
+            path: path.to_string(),
+            at,
+            why,
+            holds,
+        })
+    };
+    if let Some(why) = opaque(path, content) {
+        note(None, why, true);
+        return found;
+    }
+    if content.len() > 1 << 20 {
+        note(
+            None,
+            "a file far larger than a skill needs (scanners pass over such files)",
+            false,
+        );
+    }
+    let text = String::from_utf8_lossy(content);
+    let line_of = |at: usize| text[..at].matches('\n').count() + 1;
+    for (pattern, why, holds) in compiled() {
+        if let Some(hit) = pattern.find(&text) {
+            note(Some(line_of(hit.start())), why, *holds);
+        }
+    }
+    if let Some((at, _)) = text.char_indices().find(|(_, c)| hidden(*c)) {
+        note(
+            Some(line_of(at)),
+            "characters a person reading it cannot see",
+            true,
+        );
+    }
+    static ENCODED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let encoded = ENCODED
+        .get_or_init(|| regex::Regex::new(r"[A-Za-z0-9+/=]{400,}").expect("a valid pattern"));
+    if let Some(hit) = encoded.find(&text) {
+        note(Some(line_of(hit.start())), "a long encoded string", false);
+    }
+    found
+}
 
 /// Reads the skill at `dir` (from `from`, at `commit`) and reports on it.
 pub fn read(dir: &Path, from: &str, commit: Option<String>) -> Result<Read, CliError> {
@@ -201,11 +491,8 @@ pub fn read(dir: &Path, from: &str, commit: Option<String>) -> Result<Read, CliE
     ];
     let host =
         regex::Regex::new(r"https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})").expect("a valid pattern");
-    let patterns: Vec<(regex::Regex, &str)> = PATTERNS
-        .iter()
-        .map(|(p, why)| (regex::Regex::new(p).expect("a valid pattern"), *why))
-        .collect();
     let mut looks = Vec::new();
+    let mut held = Vec::new();
     for (path, content) in &files {
         let runnable = sion_agent::skills::runnable(path, content);
         report.push(format!(
@@ -220,13 +507,18 @@ pub fn read(dir: &Path, from: &str, commit: Option<String>) -> Result<Read, CliE
             .collect();
         hosts.sort();
         hosts.dedup();
-        if !hosts.is_empty() && (runnable || path == "SKILL.md") {
+        if !hosts.is_empty() && (runnable || path == "SKILL.md") && opaque(path, content).is_none()
+        {
             report.push(format!("    names {}", hosts.join(", ")));
         }
-        for (pattern, why) in &patterns {
-            if let Some(found) = pattern.find(&text) {
-                let line = text[..found.start()].matches('\n').count() + 1;
-                looks.push(format!("  {path}:{line}: {why}"));
+        for found in scan(path, content) {
+            looks.push(format!(
+                "  {}{}",
+                found.line(),
+                if found.holds { " (holds it back)" } else { "" }
+            ));
+            if found.holds {
+                held.push(found.line());
             }
         }
     }
@@ -260,6 +552,7 @@ pub fn read(dir: &Path, from: &str, commit: Option<String>) -> Result<Read, CliE
         from: from.to_string(),
         report,
         permissions: (asked, permissions.needs_consent()),
+        held,
     })
 }
 
@@ -331,19 +624,33 @@ pub enum Vouched {
     Audit(String),
 }
 
+/// What the operator gives an import beyond vouching for it: permissions
+/// granted to the skill, and consent to what needs it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Consent {
+    /// Hosts its scripts may reach, declared for it (`sion-network`).
+    pub network: Vec<String>,
+    /// Secrets its scripts receive, declared for it (`sion-secrets`).
+    pub secrets: Vec<String>,
+    /// The permissions it asks for, accepted where they need consent.
+    pub permissions: bool,
+    /// The findings that hold it back, accepted.
+    pub risks: bool,
+}
+
 /// Imports the skill at `source` (`path` in it) for `profile`: reads and
 /// reports on it, and installs it only if `vouched` names its exact
-/// bundle, the permissions it asks for accepted where they need consent.
+/// bundle, with what `consent` grants and accepts.
 pub fn import(
     source: &Source,
     path: Option<&Path>,
     profile: &str,
     vouched: Option<&Vouched>,
-    accept_permissions: bool,
+    consent: &Consent,
     ledger: Option<&dyn crate::ledger::Ledger>,
 ) -> Result<Vec<String>, CliError> {
     let skills = skills_of(profile)?;
-    let mut lines = import_into(source, path, &skills, vouched, accept_permissions, ledger)?;
+    let mut lines = import_into(source, path, &skills, vouched, consent, ledger)?;
     if let Some(last) = lines.last_mut() {
         if last.starts_with("installed skill ") {
             *last = last.replacen(
@@ -356,30 +663,171 @@ pub fn import(
     Ok(lines)
 }
 
+/// Copies the folder `from` into a new one of its own, files only.
+fn copy_folder(from: &Path) -> Result<PathBuf, CliError> {
+    let to = std::env::temp_dir().join(format!("sion-skill-import-{}", crate::runtime::new_id()));
+    let mut stack = vec![(from.to_path_buf(), to.clone())];
+    while let Some((dir, into)) = stack.pop() {
+        std::fs::create_dir_all(&into).map_err(|e| CliError::Usage(e.to_string()))?;
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| CliError::Usage(e.to_string()))?
+            .flatten()
+        {
+            let kind = entry
+                .file_type()
+                .map_err(|e| CliError::Usage(e.to_string()))?;
+            if kind.is_dir() && entry.file_name() != ".git" {
+                stack.push((entry.path(), into.join(entry.file_name())));
+            } else if kind.is_file() {
+                std::fs::copy(entry.path(), into.join(entry.file_name()))
+                    .map_err(|e| CliError::Usage(e.to_string()))?;
+            }
+        }
+    }
+    Ok(to)
+}
+
+/// A shallow clone of `url` at `commit`, in a directory of its own, git's
+/// own files removed.
+fn clone_at(url: &str, commit: &str) -> Result<PathBuf, CliError> {
+    let dir = std::env::temp_dir().join(format!("sion-skill-import-{}", crate::runtime::new_id()));
+    std::fs::create_dir_all(&dir).map_err(|e| CliError::Usage(e.to_string()))?;
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .status()
+            .map_err(|e| CliError::Usage(format!("git, to fetch {url}: {e}")))
+    };
+    let ok = git(&["init", "-q"])?.success()
+        && git(&["fetch", "-q", "--depth", "1", "--", url, commit])?.success()
+        && git(&["checkout", "-q", "FETCH_HEAD"])?.success();
+    if !ok {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(CliError::Usage(format!(
+            "{url} could not be fetched at commit {commit}"
+        )));
+    }
+    std::fs::remove_dir_all(dir.join(".git")).map_err(|e| CliError::Usage(e.to_string()))?;
+    Ok(dir)
+}
+
 /// [`import`], into the skills directory `skills`.
 pub fn import_into(
     source: &Source,
     path: Option<&Path>,
     skills: &Path,
     vouched: Option<&Vouched>,
-    accept_permissions: bool,
+    consent: &Consent,
     ledger: Option<&dyn crate::ledger::Ledger>,
 ) -> Result<Vec<String>, CliError> {
-    let (dir, from, commit, cleanup) = match source {
+    use crate::skill_registries::{self as registries, Got};
+    // Where the skill is read from, what is said of where, the commit, the
+    // folder to remove after, what the registry said and what to keep of
+    // it. `--path` is for a folder or a repository.
+    let mut registry_lines = Vec::new();
+    let mut registry_kept = Value::Null;
+    let (base, from, commit, cleanup) = match source {
         Source::Folder(dir) => (dir.clone(), dir.display().to_string(), None, None),
         Source::Git { url, rev } => {
             let (clone, commit) = clone(url, rev.as_deref())?;
             (clone.clone(), url.clone(), Some(commit), Some(clone))
         }
-    };
-    let dir = match path {
-        Some(sub) => {
-            let inside = sion_agent::builtin::inside(&dir, &sub.to_string_lossy())
-                .map_err(CliError::Usage)?;
-            inside
+        Source::ClawHub {
+            owner,
+            slug,
+            version,
+        } => match registries::fetch_clawhub(owner.as_deref(), slug, version.as_deref())? {
+            Got::Files(fetched) => {
+                registry_lines = fetched.lines;
+                registry_kept = fetched.kept;
+                (fetched.dir.clone(), fetched.from, None, Some(fetched.dir))
+            }
+            Got::Repository {
+                url,
+                commit,
+                path: within,
+                lines,
+            } => {
+                registry_lines = lines;
+                let clone = clone_at(&url, &commit)?;
+                let dir = if within.is_empty() {
+                    clone.clone()
+                } else {
+                    sion_agent::builtin::inside(&clone, &within).map_err(CliError::Usage)?
+                };
+                registry_kept = json!({"registry": "clawhub", "slug": slug, "repository": url});
+                (dir, format!("{url} ({within})"), Some(commit), Some(clone))
+            }
+        },
+        Source::WellKnown { index, name } => match registries::fetch_well_known(index, name)? {
+            Got::Files(fetched) => {
+                registry_lines = fetched.lines;
+                registry_kept = fetched.kept;
+                (fetched.dir.clone(), fetched.from, None, Some(fetched.dir))
+            }
+            Got::Repository { .. } => {
+                return Err(CliError::Usage(format!("{index}: not a skill's files")))
+            }
+        },
+        Source::SkillsSh { repo, skill } => {
+            let url = format!("https://github.com/{repo}.git");
+            let (clone, commit) = clone(&url, None)?;
+            let Some(dir) = registries::find_in(&clone, skill) else {
+                let _ = std::fs::remove_dir_all(&clone);
+                return Err(CliError::Usage(format!(
+                    "github.com/{repo} has no skill {skill}"
+                )));
+            };
+            registry_kept = json!({"registry": "skills.sh", "repository": repo, "skill": skill});
+            (
+                dir,
+                format!("skills.sh:{repo}/{skill}"),
+                Some(commit),
+                Some(clone),
+            )
         }
-        None => dir,
     };
+    let fixed = matches!(source, Source::Folder(_) | Source::Git { .. });
+    if path.is_some() && !fixed {
+        if let Some(clone) = &cleanup {
+            let _ = std::fs::remove_dir_all(clone);
+        }
+        return Err(CliError::Usage(
+            "--path is for a folder or a repository; a registry names its skill's own".into(),
+        ));
+    }
+    let dir = match path {
+        Some(sub) => sion_agent::builtin::inside(&base, &sub.to_string_lossy()).map_err(|e| {
+            if let Some(clone) = &cleanup {
+                let _ = std::fs::remove_dir_all(clone);
+            }
+            CliError::Usage(e)
+        })?,
+        None => base,
+    };
+    // Grants are written into a copy: a folder of the operator's is never
+    // changed.
+    let granted = !consent.network.is_empty() || !consent.secrets.is_empty();
+    let (dir, copied) = if granted {
+        let copy = copy_folder(&dir)?;
+        let skill_md = copy.join("SKILL.md");
+        let text = std::fs::read_to_string(&skill_md)
+            .map_err(|e| CliError::Usage(format!("SKILL.md: {e}")))?;
+        let changed = registries::grant(&text, &consent.network, &consent.secrets)
+            .map_err(CliError::Usage)?;
+        std::fs::write(&skill_md, changed).map_err(|e| CliError::Usage(e.to_string()))?;
+        (copy.clone(), Some(copy))
+    } else {
+        (dir, None)
+    };
+    let needs = std::fs::read_to_string(dir.join("SKILL.md"))
+        .map(|text| registries::openclaw_needs(&text))
+        .unwrap_or_default();
     let read = read(
         &dir,
         &format!(
@@ -389,16 +837,51 @@ pub fn import_into(
         ),
         commit,
     );
-    if let Some(clone) = cleanup {
-        let _ = std::fs::remove_dir_all(clone);
+    for folder in cleanup.iter().chain(copied.iter()) {
+        let _ = std::fs::remove_dir_all(folder);
     }
     let read = read?;
     let mut lines = read.report.clone();
+    let at = lines.len().min(2);
+    for (offset, line) in registry_lines.into_iter().enumerate() {
+        lines.insert(at + offset, line);
+    }
+    lines.extend(needs.0.iter().cloned());
+    if granted {
+        lines.push(format!(
+            "granted by you, written into its metadata:{}{}",
+            if consent.network.is_empty() {
+                String::new()
+            } else {
+                format!(" hosts {}", consent.network.join(" "))
+            },
+            if consent.secrets.is_empty() {
+                String::new()
+            } else {
+                format!(" secrets {}", consent.secrets.join(" "))
+            }
+        ));
+    } else if !needs.1.is_empty() {
+        lines.push(format!(
+            "to give its scripts those variables, keep them as secrets (sion agent secret add) and import with {}",
+            needs
+                .1
+                .iter()
+                .map(|v| format!("--grant-secret {v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
     let root = read.root.to_hex();
+    let risks = if read.held.is_empty() {
+        ""
+    } else {
+        " --accept-risks"
+    };
     let accepted_by = match vouched {
         None => {
             lines.push(format!(
-                "not installed: read the files above, then import again with --accept {root} (or --audit <claim> for an audit of this root on a bond)"
+                "not installed: read the files above, then import again with --accept {root}{risks} (or --audit <claim> for an audit of this root on a bond)"
             ));
             return Ok(lines);
         }
@@ -447,7 +930,17 @@ pub fn import_into(
             json!({"audit": claim})
         }
     };
-    if read.permissions.1 && !accept_permissions {
+    if !read.held.is_empty() && !consent.risks {
+        return Err(CliError::Verification(format!(
+            "not installed: {} finding{} above hold{} skill {} back ({}); if you have read them and trust it, import again with --accept-risks",
+            read.held.len(),
+            if read.held.len() == 1 { "" } else { "s" },
+            if read.held.len() == 1 { "s" } else { "" },
+            read.name,
+            read.held.join("; ")
+        )));
+    }
+    if read.permissions.1 && !consent.permissions {
         return Err(CliError::Usage(format!(
             "not installed: skill {} asks for the permissions above; to grant them, import again with --accept-permissions",
             read.name
@@ -460,6 +953,12 @@ pub fn import_into(
         "bundle": root,
         "at": crate::work::now(),
     });
+    if !registry_kept.is_null() {
+        kept["source"] = registry_kept;
+    }
+    if !read.held.is_empty() {
+        kept["risks_accepted"] = json!(read.held);
+    }
     if let Value::Object(fields) = &mut kept {
         if let Value::Object(by) = accepted_by.clone() {
             fields.extend(by.clone());
@@ -577,7 +1076,15 @@ mod tests {
         let skills = base.join("skills");
         let path = Path::new("skills/notes");
         // Read and reported on; not installed.
-        let report = import_into(&source, Some(path), &skills, None, false, None).unwrap();
+        let report = import_into(
+            &source,
+            Some(path),
+            &skills,
+            None,
+            &Consent::default(),
+            None,
+        )
+        .unwrap();
         let root = report
             .iter()
             .find_map(|l| l.strip_prefix("bundle root "))
@@ -597,14 +1104,22 @@ mod tests {
         assert!(!skills.join("notes").exists());
         // A root that is not its own: refused.
         let wrong = Vouched::Review("00".repeat(32));
-        assert!(import_into(&source, Some(path), &skills, Some(&wrong), false, None).is_err());
+        assert!(import_into(
+            &source,
+            Some(path),
+            &skills,
+            Some(&wrong),
+            &Consent::default(),
+            None
+        )
+        .is_err());
         // Its own root: installed, with where it came from.
         let done = import_into(
             &source,
             Some(path),
             &skills,
             Some(&Vouched::Review(root.clone())),
-            false,
+            &Consent::default(),
             None,
         )
         .unwrap();
@@ -627,7 +1142,7 @@ mod tests {
             Some(Path::new("../..")),
             &skills,
             None,
-            false,
+            &Consent::default(),
             None
         )
         .is_err());
@@ -662,8 +1177,28 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        let first = root_of(import_into(&whole_source, None, &skills, None, false, None).unwrap());
-        let again = root_of(import_into(&whole_source, None, &skills, None, false, None).unwrap());
+        let first = root_of(
+            import_into(
+                &whole_source,
+                None,
+                &skills,
+                None,
+                &Consent::default(),
+                None,
+            )
+            .unwrap(),
+        );
+        let again = root_of(
+            import_into(
+                &whole_source,
+                None,
+                &skills,
+                None,
+                &Consent::default(),
+                None,
+            )
+            .unwrap(),
+        );
         assert_eq!(first, again);
         let _ = std::fs::remove_dir_all(&base);
     }

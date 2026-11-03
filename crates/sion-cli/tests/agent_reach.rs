@@ -310,6 +310,8 @@ fn an_agent_searches_edits_and_answers_what_mcp_servers_ask() {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        routes: Vec::new(),
+        sorter: None,
     };
     let typed = "/prompts\n/prompt fake review topic=rust\nGreet someone for me.\nAna\nRead today's note and write me a haiku.\n";
     let mut out = Vec::new();

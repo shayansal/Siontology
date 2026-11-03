@@ -69,6 +69,25 @@ impl Cdp {
         reader: impl Read + Send + 'static,
         timeout: Duration,
     ) -> Cdp {
+        Cdp::start(writer, reader, timeout, true)
+    }
+
+    /// [`Cdp::new`] for a browser a person uses: the dialogs its pages open
+    /// are left for the person to answer.
+    pub fn for_person(
+        writer: impl Write + Send + 'static,
+        reader: impl Read + Send + 'static,
+        timeout: Duration,
+    ) -> Cdp {
+        Cdp::start(writer, reader, timeout, false)
+    }
+
+    fn start(
+        writer: impl Write + Send + 'static,
+        reader: impl Read + Send + 'static,
+        timeout: Duration,
+        dismiss_dialogs: bool,
+    ) -> Cdp {
         let pending: Pending = Arc::new(Mutex::new(BTreeMap::new()));
         let events = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
         let writer: Writer = Arc::new(Mutex::new(Box::new(writer)));
@@ -101,7 +120,7 @@ impl Cdp {
                         }
                     }
                     None => {
-                        if message["method"] == "Page.javascriptDialogOpening" {
+                        if dismiss_dialogs && message["method"] == "Page.javascriptDialogOpening" {
                             let leaving = message["params"]["type"] == "beforeunload";
                             let mut answer = json!({
                                 "id": ids.fetch_add(1, Ordering::SeqCst) + 1,

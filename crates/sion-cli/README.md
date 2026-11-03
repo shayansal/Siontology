@@ -24,7 +24,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `sion task` | `tasks.rs` |
 | `sion stake` | `stake.rs` |
 | `sion memory` (`open`, `remember`, `commit`, `recall`, `show`, `consolidate`, `dream`, `archive`, `restore`) | `memory.rs`, `consolidate.rs`, `archive.rs`, `recall.rs` |
-| `sion skill` | `skills.rs` (releases, audits, install, bounties), `skill_improve.rs` (eval, evolve), `skill_import.rs` (import, starter) |
+| `sion skill` | `skills.rs` (releases, audits, install, bounties), `skill_improve.rs` (eval, evolve), `skill_import.rs` (import, starter), `skill_registries.rs` (search, ClawHub, skills.sh, well-known indexes), `teach.rs` (teach) |
 | `sion storage` | `storage.rs` |
 | `sion demo` | `demos.rs` |
 | `sion bench` | `bench.rs` |
@@ -42,6 +42,10 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `judge`, `evolve` | `agents.rs` over `sion_agent::judge` and `sion_agent::evolve`; `skill_improve.rs` |
 | `sessions` (and `sessions search`) | `agents.rs`, `recall.rs` |
 | `profile` | `profiles.rs` |
+| `routes` | `model_routes.rs` |
+| `import` | `agent_import.rs` |
+| `x-mentions` | `x_mentions.rs`, over `x_api.rs` |
+| `meeting` | `meeting.rs` |
 | `secret`, `credential`, `login` | `secrets.rs`, `credentials.rs`, `logins.rs` |
 | `chatgpt`, `weixin`, `pairing` | `chatgpt.rs`, `weixin.rs`, `pairing.rs` |
 | `mcp` (add, list, review, login, logout, remove) | `agent_mcp.rs`, `mcp_auth.rs` |
@@ -50,7 +54,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `work`, `waiting` | `work.rs` (with `github.rs`, `github_hooks.rs`, `github_tools.rs`); `waiting` in `agents.rs` |
 | `up`, `service` | `up.rs`, `service.rs` |
 | `serve` | `channels.rs`, with `openai_api.rs` and `a2a.rs` |
-| `talk` | `talk.rs`, `voice.rs`, `listening.rs` |
+| `talk` | `talk.rs`, `voice.rs`, `listening.rs`, `sound.rs`, `realtime.rs` |
 | `telegram`, `bridge` | `channels.rs`, `messengers.rs`, `bridge.rs` and one module per messenger |
 | `gateway`, `host` | `gateway.rs` |
 
@@ -61,13 +65,13 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | Ledger client and sessions | `ledger`, `session`, `describe`, `verify`, `error` | The `Ledger` trait (a node over HTTP or an in-process devnet); wallets and building, submitting and waiting for transactions; sentences for transactions and receipts; light-client verification of a Pulse. |
 | Ledger commands | `agents`, `cohorts`, `batcher`, `tasks`, `stake`, `stream`, `storage`, `memory`, `x402`, `bench`, `demos` | One module per family of commands, as in the tables. |
 | Runtime glue | `runtime`, `channels`, `bridge`, `profiles`, `delegation`, `agent_memory`, `agent_storage`, `screens`, `files` | `runtime` gives a run the ledger as tools and keeps sessions; `channels` is the HTTP channel and approvals; `bridge` carries messenger chats into sessions; `delegation` lets an agent spawn subagents from a session. |
-| Messengers | `messengers`, `live`, `webhooks`, `drafts`, `showing`, `pairing`, `jwt`, and `dingtalk`, `feishu`, `google_chat`, `imessage`, `irc`, `mattermost`, `nextcloud`, `nostr`, `ntfy`, `qq`, `simplex`, `synology`, `teams`, `wecom`, `weixin`, `x_dm`, `zalo`, `phone`, `email` | The `Messenger` interface and one module per service; WebSocket and webhook intake; typing indicators and replies as they are written. |
+| Messengers | `messengers`, `live`, `webhooks`, `drafts`, `showing`, `pairing`, `jwt`, and `dingtalk`, `feishu`, `google_chat`, `imessage`, `irc`, `mattermost`, `nextcloud`, `nostr`, `ntfy`, `qq`, `simplex`, `synology`, `teams`, `wecom`, `weixin`, `x_api`, `x_dm`, `x_mentions`, `zalo`, `phone`, `email` | The `Messenger` interface and one module per service; WebSocket and webhook intake; typing indicators and replies as they are written; X's mentions answered with their sources, and its posts searched. |
 | MCP and the first-party servers | `mcp`, `mcp_serve`, `email`, `calendar`, `documents`, `agent_mcp`, `mcp_auth`, `home_assistant` | The ledger's MCP server; a shared server loop for the mail (IMAP and SMTP), calendar (CalDAV) and documents servers; configuration and OAuth login for MCP servers an agent uses. |
-| Voice | `voice`, `talk`, `listening` | Voice notes heard and answered aloud; a terminal conversation; a conversation that listens all the time, with a wake phrase. |
+| Voice | `voice`, `talk`, `listening`, `sound`, `realtime`, `meeting` | Voice notes heard and answered aloud; a terminal conversation; a conversation that listens all the time, with a wake phrase, a model of speech and echo cancellation; one through a realtime speech model that asks the agent; meeting notes by phone or on the machine. |
 | Work and GitHub | `work`, `github`, `github_hooks`, `github_tools` | The work runner, GitHub as a watch, its webhooks, and the tools a work session reads a repository with. |
-| Skills | `skills`, `skill_improve`, `skill_import` | Releases, audits and installation; evaluation, evolution and bounties; import from folders and repositories. |
+| Skills | `skills`, `skill_improve`, `skill_import`, `skill_registries`, `teach` | Releases, audits and installation; evaluation, evolution and bounties; import from folders, repositories and registries; skills taught by doing a task in a browser. |
 | Running on a server | `up`, `deploy`, `service`, `gateway` | One process that keeps a list running; sion copied to a server over SSH; systemd and launchd units; routing channels across machines. |
-| Setup and update | `setup`, `doctor`, `update`, `credentials`, `secrets`, `logins`, `chatgpt` | One-person setup, a check of the machine, signed self-update, sealed credentials. |
+| Setup and update | `setup`, `doctor`, `update`, `credentials`, `secrets`, `logins`, `chatgpt`, `agent_import`, `model_routes` | One-person setup, a check of the machine, signed self-update, sealed credentials; OpenClaw and Hermes agents imported; a model chosen for each task. |
 | Interop | `a2a`, `openai_api` | Agent2Agent cards and tasks; an OpenAI-compatible endpoint. |
 
 ## Main types and functions
@@ -85,7 +89,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 
 ## How it fits
 
-Depends on: `sion-core`, `sion-crypto`, `sion-assurance`, `sion-clearing`, `sion-consensus`, `sion-exec`, `sion-da`, `sion-light`, `sion-prover`, `sion-spec`, `sion-node`, `sion-memory`, `sion-http` and `sion-agent`; `sion-net` for tests only. Outside dependencies include `clap`, `ureq`, `tiny_http`, `chacha20poly1305`, `k256` and `qrcode`. Used by: `sion-app-core`. The crate holds no consensus or state-machine rules; it builds transactions and asks nodes. The messenger modules reach services over their own APIs, which tests replace with stand-ins.
+Depends on: `sion-core`, `sion-crypto`, `sion-assurance`, `sion-clearing`, `sion-consensus`, `sion-exec`, `sion-da`, `sion-light`, `sion-prover`, `sion-spec`, `sion-node`, `sion-memory`, `sion-http` and `sion-agent`; `sion-net` for tests only. Outside dependencies include `clap`, `ureq`, `tiny_http`, `chacha20poly1305`, `k256`, `qrcode` and `nnnoiseless` (RNNoise's network, for telling speech from other sound). Used by: `sion-app-core`. The crate holds no consensus or state-machine rules; it builds transactions and asks nodes. The messenger modules reach services over their own APIs, which tests replace with stand-ins.
 
 ## Tests
 

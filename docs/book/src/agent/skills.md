@@ -374,15 +374,59 @@ own status, which installing checks under the decision rule as before.
 ## Importing a skill
 
 A skill published elsewhere, as an Agent Skill (a folder with a
-`SKILL.md`), is imported from a folder or a git repository: `sion skill
-import <folder | github:owner/repo | https://…> --profile <profile>`, with
-`--path` for its folder in the repository and `--ref` for a branch or tag.
-The first run installs nothing. It checks the skill as a bundle is checked
-(its name and description, portable paths, sizes) and reports what it
+`SKILL.md`), is imported with `sion skill import <source> --profile
+<profile>`. The source is one of:
+
+| Source | What is read |
+|---|---|
+| a folder | the folder; `--path` for the skill's folder in it |
+| `github:owner/repo`, `https://…` | a git repository at `--ref` (its default branch if none); `--path` for the skill's folder |
+| `clawhub:owner/slug[@version]` | a skill on ClawHub, OpenClaw's registry, at a version or its latest |
+| `well-known:example.org#name` | a skill a site publishes at `/.well-known/agent-skills/index.json` (the Agent Skills discovery format, v0.2), or that index's address with `#name` |
+| `skills.sh:owner/repo/skill` | a skill skills.sh lists, read from its GitHub repository |
+
+`sion skill search <query>` lists what ClawHub has (`--registry
+skills.sh` for skills.sh's index), with what the registry says of each.
+
+The first run installs nothing. It reads the skill and reports what it
 holds: its files, the scripts among them and what runs them, the hosts
-they name, the patterns worth a look (a download piped to a shell, an
-encoded payload, reading keys or the environment) and the permissions it
-asks for, with its bundle root. Two things vouch for those exact bytes:
+they name, the permissions it asks for, its bundle root, and what is
+worth a look in it. A registry's word comes first, and it is reported,
+never relied on:
+
+- **ClawHub.** The version's verdicts, each scanner on its own
+  (VirusTotal, SkillSpector, ClawHub's own model review), since the
+  overall status can say clean while one scanner says suspicious, and
+  its moderators' flags. A version ClawHub blocks as malware, or that any
+  scanner calls malicious, is refused. Every file in the archive must be
+  one the version's manifest lists, with the SHA-256 it lists; one it
+  does not list, or that differs, and the skill is refused. A skill
+  ClawHub keeps on GitHub is read from there, at the commit ClawHub
+  names.
+- **A site's index** names a SHA-256 digest for each skill, and the
+  artifact must match it before it is unpacked. An index in the older
+  layout, which names no digests, is refused.
+
+Archives are unpacked by name into a folder of their own: no path out of
+it, no links, within the sizes an import allows (8 MiB, 200 files).
+
+Then the files are checked for what the skills that stole credentials
+and crypto wallets from agents' machines through ClawHub in 2026 did, and
+for words aimed at the model: a download run by a shell, an encoded
+payload decoded and run, a password-protected archive, a paste site
+whose content can change after a review, an address given as a bare IP,
+endpoints data can be sent out to, reading keys, credentials, an agent's
+own settings, a keychain, a browser's saved logins or a wallet, a dialog
+asking for a password, something that starts by itself later, changes to
+an agent's memory or persona files, turning an agent's safeguards off,
+instructions to ignore earlier ones or to keep something from you,
+instructions hidden in a comment, characters a reader cannot see, and a
+program or an archive inside the skill, which no one can review. The
+worst of these hold the install back, marked "(holds it back)", until
+you accept the risk with `--accept-risks`; the rest are named for your
+reading. None of this is a scan that finds all a skill could do.
+
+Two things vouch for a skill's exact bytes:
 
 - **your review**: run it again with `--accept <root>`, the root the
   report gave, after reading the files; or
@@ -390,9 +434,72 @@ asks for, with its bundle root. Two things vouch for those exact bytes:
   claim that names this root. The skill keeps the audit, and is taken out
   of use when the audit is shown false, as a release is.
 
-Permissions that need consent (a network, secrets) need
-`--accept-permissions` besides. What was imported, from where, at which
-commit and on whose word, is kept with the skill.
+A skill's scripts get no network and no secrets unless it declares them
+([What a skill may do](skill-permissions.md)). OpenClaw's skills declare
+what they need in their own metadata (`metadata.openclaw`: the commands
+they run, the environment variables they read, what they ask to have
+installed), which the report shows, with whether the commands are on this
+machine; sion installs nothing for a skill. `--grant-network <host>` and
+`--grant-secret <name>` declare hosts and secrets for the skill you
+import, written into its metadata (`sion-network`, `sion-secrets`), which
+changes its root: import once with them to see the new root. Permissions
+that need consent (a network, secrets) need `--accept-permissions`
+besides. What was imported, from where, at which commit or version, on
+whose word, and the risks you accepted, is kept with the skill.
+
+## Teaching a task
+
+`sion skill teach <name> --start <address>` opens a browser window and
+records you doing a task once, for at most ten minutes (`--minutes`):
+close the window, or press Enter at the terminal, when you are done. Each
+step shows in the terminal as it is recorded:
+
+```text
+$ sion skill teach export-invoices --start https://shop.example/login \
+    --describe "Export an order's invoices from the shop" --profile me
+Recording for at most 10 minutes: do the task in the browser window, then close it, or press Enter here.
+  opened "Sign in" (https://shop.example/login)
+  filled a user name into the textbox "Email" (not recorded)
+  filled a password into the textbox "Password" (not recorded)
+  pressed Enter
+  arrived at "Orders" (https://shop.example/orders)
+  typed "A-1042" into the searchbox "Order number"
+  clicked the button "Export"
+  the page asked "Export 2 invoices?" (confirm): OK
+  downloaded invoices.csv
+```
+
+What is recorded: the pages you open, the elements you click by their
+role and name (as the agent's snapshot names them), what you type into a
+field once you leave it or press Enter, the options you choose, the names
+of the files you pick, the questions pages ask and your answers, the files
+that download, and the tabs that open. What is not: passwords and any
+field that looks secret (one-time codes, card numbers), a login form's
+user name, keystrokes one by one, the pointer's path, and what pages
+show. Addresses lose their user names and passwords, the values of
+parameters that look like tokens, codes, keys or signatures, and
+fragments that hold values. The browser has a profile of its own for the
+recording, removed after it, so nothing of your own browser's is in it.
+
+The recording becomes a draft, `$SION_HOME/agents/taught/<name>/SKILL.md`
+(`--out` puts it elsewhere), the recording itself kept beside the folder
+so that it is not installed with the skill. The draft says each step for
+the agent's browser tools ("Type \"A-1042\" into the searchbox \"Order
+number\", and press Enter."), has it fill the sign-in from a login you
+saved (`sion agent login add`, `browser_fill_login`), says which hosts the
+profile's browser must reach, and lists the values you typed, so that you
+can make the ones that change the task's own. `--write-with <model>` has a
+model rewrite the draft from the recording: the task described, the
+values that change turned into what the task gives, the steps kept as they
+were; the draft it started from is kept as `<name>.plain.md`.
+
+Read the draft before you install it: it holds what the pages called
+their elements, which is the pages' own text. Then install it like any
+other folder, through the audit: `sion skill import
+$SION_HOME/agents/taught/<name> --profile me`, and `--accept` the root it
+reports. Teaching needs a display (on Linux, `DISPLAY` or
+`WAYLAND_DISPLAY`) and runs as an ordinary user, since Chromium's own
+sandbox does not start as root.
 
 ## Starter skills
 

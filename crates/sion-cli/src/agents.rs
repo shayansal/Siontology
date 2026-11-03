@@ -584,6 +584,30 @@ pub enum AgentCommand {
     /// channel.
     #[command(subcommand)]
     Schedule(crate::schedules::ScheduleCommand),
+    /// Bring an OpenClaw or Hermes Agent over to a profile: its persona
+    /// and memories into the profile's instructions, its jobs as
+    /// schedules, and with --models, --keys and --bridges its models, its
+    /// model keys and its chats; its skills listed, to import through the
+    /// audit. Shows the plan; --apply does it.
+    Import(crate::agent_import::ImportArgs),
+    /// Routes that choose a profile's models for each task: pictures, work
+    /// items and long tasks by rule, other tasks sorted by a model among
+    /// routes that say what they are for; what each route was given, and
+    /// its models compared on a set of tasks.
+    #[command(subcommand)]
+    Routes(crate::model_routes::RoutesCommand),
+    /// Answer the posts on X that mention your account, in their threads:
+    /// each answer from the posts it replies to or quotes and the web
+    /// search's results for its words, citing them, with their addresses
+    /// in its last post; an answer that rests on nothing it was given is
+    /// not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and
+    /// users.read.
+    XMentions(crate::x_mentions::MentionArgs),
+    /// Take a meeting's notes: dial in by phone through Twilio (its number
+    /// and keys) or hear it here (the microphone, and what this machine
+    /// plays), the transcript written as it goes, and the profile's agent
+    /// writing up the decisions, the action items and what is still open.
+    Meeting(crate::meeting::MeetingArgs),
     /// Run scheduled jobs as they fall due.
     Scheduler {
         /// Run the jobs due now, then stop.
@@ -654,8 +678,9 @@ pub enum AgentCommand {
         #[arg(long, default_value = "default")]
         conversation: String,
         /// Speak instead of typing: press Enter and speak; heard with
-        /// --hear, answered aloud with --speak if given.
-        #[arg(long, requires = "hear")]
+        /// --hear, answered aloud with --speak if given (or, live, through
+        /// --realtime).
+        #[arg(long)]
         voice: bool,
         /// What hears you: openai:<model>, groq:<model>, deepgram:<model>,
         /// elevenlabs:<model>, or command:<program>.
@@ -674,9 +699,9 @@ pub enum AgentCommand {
         #[arg(long, value_name = "COMMAND")]
         play: Option<String>,
         /// Listen all the time instead of at Enter: speech is told from
-        /// silence by its loudness, the reply is spoken a sentence at a
-        /// time, and speaking over it stops it (use headphones: there is no
-        /// echo cancellation).
+        /// other sound by a model of it, the reply is spoken a sentence at
+        /// a time, its echo from the loudspeakers taken out of what the
+        /// microphone hears, and speaking over it stops it.
         #[arg(long, requires = "voice")]
         live: bool,
         /// The program that gives the microphone's sound: raw 16-bit mono
@@ -709,6 +734,24 @@ pub enum AgentCommand {
         /// loud room.
         #[arg(long, value_name = "LEVEL", default_value_t = 400.0, requires = "live")]
         speech_level: f64,
+        /// How speech is told from other sound: model (RNNoise's network,
+        /// with its loudness) or loudness (alone).
+        #[arg(long, default_value = "model", value_name = "HOW", requires = "live")]
+        detector: String,
+        /// Do not take the reply's echo out of what the microphone hears:
+        /// replies are played as files (use headphones, or --no-interrupt).
+        #[arg(long, requires = "live")]
+        no_echo_cancel: bool,
+        /// With the echo cancelled, the program that plays raw 16-bit mono
+        /// samples at 16 kHz read on its standard input (aplay, paplay,
+        /// sox's play or ffplay, the first there, by default).
+        #[arg(long, value_name = "COMMAND", requires = "live")]
+        play_raw: Option<String>,
+        /// Hear and speak through a realtime speech model instead
+        /// (openai:<model>[:<voice>], such as openai:gpt-realtime): faster;
+        /// it does nothing itself, and asks the agent for all but small talk.
+        #[arg(long, value_name = "MODEL", requires = "live", conflicts_with_all = ["hear", "speak"])]
+        realtime: Option<String>,
     },
     /// Answer Telegram chats with a profile, by long polling
     /// (TELEGRAM_BOT_TOKEN; TELEGRAM_API_BASE for another server).
@@ -859,6 +902,8 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Weixin(command) => crate::weixin::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
+        AgentCommand::Routes(command) => crate::model_routes::run(command),
+        AgentCommand::Import(args) => crate::agent_import::run(args),
         AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Work(command) if !command.needs_ledger() => crate::work::run_local(command),
         AgentCommand::Waiting => waiting(),
@@ -1255,6 +1300,10 @@ pub fn run(
         AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
+        AgentCommand::Routes(command) => crate::model_routes::run(command),
+        AgentCommand::Import(args) => crate::agent_import::run(args),
+        AgentCommand::XMentions(args) => crate::x_mentions::run(shared, args),
+        AgentCommand::Meeting(args) => crate::meeting::run(shared, args),
         AgentCommand::Scheduler { once, poll } => {
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)
@@ -1306,8 +1355,51 @@ pub fn run(
             awake_secs,
             no_interrupt,
             speech_level,
+            detector,
+            no_echo_cancel,
+            play_raw,
+            realtime,
         } => {
             let profile = crate::profiles::get(&profile)?;
+            if voice && hear.is_none() && realtime.is_none() {
+                return Err(CliError::Usage(
+                    "--voice needs --hear (or, with --live, --realtime)".into(),
+                ));
+            }
+            // Live with a voice, its echo is cancelled: its replies are raw
+            // samples, played by a program of their own.
+            let echo_cancel = live && (speak.is_some() || realtime.is_some()) && !no_echo_cancel;
+            if let Some(spec) = &realtime {
+                let realtime = crate::realtime::Realtime::parse(spec).map_err(CliError::Usage)?;
+                if !echo_cancel {
+                    return Err(CliError::Usage(
+                        "a realtime model's voice is played as raw samples, its echo cancelled: leave out --no-echo-cancel".into(),
+                    ));
+                }
+                let listening = crate::listening::Listening::from_flags(
+                    None,
+                    listen.as_deref(),
+                    None,
+                    None,
+                    false,
+                    awake_secs,
+                    !no_interrupt,
+                    speech_level,
+                    &detector,
+                    Some(play_raw.as_deref()),
+                )
+                .map_err(CliError::Usage)?;
+                let talk = crate::talk::Talk {
+                    conversation,
+                    ..Default::default()
+                };
+                crate::talk::note_last(&profile.name, &talk.conversation)?;
+                let input = Box::new(std::io::BufReader::new(std::io::stdin()));
+                let mut out = std::io::stdout();
+                return crate::realtime::run(
+                    shared, &profile, &talk, &listening, &realtime, input, &mut out,
+                );
+            }
             let usage = CliError::Usage;
             let (hearing, speaking, record, play) = if voice {
                 let hearing = crate::voice::Hearing::parse(hear.as_deref().unwrap_or_default())
@@ -1326,6 +1418,10 @@ pub fn run(
                         })?,
                 };
                 let play = match &speaking {
+                    Some(_) if echo_cancel => {
+                        crate::talk::program(play.as_deref(), crate::talk::PLAYERS)
+                            .unwrap_or_default()
+                    }
                     Some(_) => crate::talk::program(play.as_deref(), crate::talk::PLAYERS)
                         .ok_or_else(|| {
                             usage(
@@ -1358,6 +1454,8 @@ pub fn run(
                     awake_secs,
                     !no_interrupt,
                     speech_level,
+                    &detector,
+                    echo_cancel.then_some(play_raw.as_deref()),
                 )
                 .map_err(usage)?;
                 let input = Box::new(std::io::BufReader::new(std::io::stdin()));

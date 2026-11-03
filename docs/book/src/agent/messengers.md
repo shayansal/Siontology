@@ -636,6 +636,59 @@ whoever wrote. `X_ACCESS_TOKEN` is a user's OAuth 2.0 token with
 confidential app) it is renewed when X refuses it. The first poll takes
 the bridge's place: what was written before it started is not answered.
 
+### Mentions on X
+
+`sion agent x-mentions <profile>` answers the posts that mention the
+account, in reply to each, once a minute (`--poll`). X lets an
+account's automated replies go only to posts that mention or quote it, so
+a mention is answered once, in its own thread, and no one else is. The
+token needs `tweet.read`, `tweet.write` and `users.read` (`dm.read` and
+`dm.write` too if the same token serves `--via x`); the tokens a renewal
+gives are kept sealed on this machine, since X ends the refresh token
+each renewal uses.
+
+An answer rests on what was read for it, not on what the model
+remembers. Before the session starts, the runner gathers the sources:
+the post the mention replies to or quotes, and, with a search service set
+up (`web_search`'s Brave, Tavily or SearXNG), its results for the
+mention's own words, the first two pages of them read (`--read`). The
+session is given them numbered, as data, and asked to answer from them
+in at most 600 characters, citing each claim, like `[1]`. Its answer is
+posted only if every number it cites is a source it was given, it names
+no address it was not given, and it cites at least one source
+(`--sources optional` lets an answer with none through). The reply ends
+with the sources it cites and their addresses:
+
+```text
+It closes at noon today [1], for roadworks [2].
+
+Sources: [1] https://x.com/cy/status/90 [2] https://city.example/notices
+```
+
+What a stranger writes is public input, so the session it starts is
+tainted from the start, and it answers with the profile's models,
+instructions and skills only: none of its memory, workspace, shell, MCP
+servers or web tools, nothing a mention could draw out of it into a
+public reply. A profile marked confidential is refused.
+
+A post is at most 280 weighted characters (an address counts 23), and X
+bills a post with an address far more than one without, so a longer
+answer is split at its sentences into up to `--max-posts` posts (3),
+chained, with all the addresses in the last. `--per-day` (50) and
+`--per-person` (5) bound how many mentions are answered each UTC day.
+Someone who writes `stop` is not answered again until they write `start`;
+the account's own posts, retweets and protected accounts' posts are
+passed over. `--from @ana,@bo` answers only those people, and
+`--dry-run` prints the replies without posting them. The first run
+answers nothing: it starts from the newest mention. What it keeps (its
+place, who said stop, the day's counts, the replies posted) is in
+`agents/x-mentions/<profile>.json`.
+
+A profile that may read the web also gets `x_search`, recent posts
+(the last seven days) searched through the same token, X's operators
+(`from:`, `lang:`, `-is:retweet`) included, when `X_ACCESS_TOKEN` is set.
+X bills each post read; what posts say comes back as from outside.
+
 `--via synology-chat` answers a Synology Chat chatbot: Synology Chat
 posts what people write to the bot to `--listen` (the bot's outgoing
 URL), each request carrying the bot's token (`SYNOLOGY_CHAT_TOKEN`), and

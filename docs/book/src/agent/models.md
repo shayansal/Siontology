@@ -1,7 +1,8 @@
 # Models
 
 Which model an agent thinks with, how the runtime falls back from one to
-the next, and what each is sent.
+the next, how a profile chooses models for each task, and what each is
+sent.
 
 Outputs on this page are from real runs on a local devnet, long
 identifiers shortened with `…`. The model is a **scripted** one, which
@@ -59,6 +60,53 @@ sign-in; a plan's usage limit, reported partway, counts as the model being
 busy, and the next `--model` is asked. Other providers' subscriptions are
 not offered: Anthropic, for one, does not let other apps sign in to
 Claude.ai plans.
+
+## A model for each task
+
+A profile can send each task to the models that suit it, by routes. A
+route names its models, and either says in words what tasks it is for
+(`--about`) or what sends a task to it without asking anyone (`--when`):
+pictures, a work item the agent took on
+([Work it takes on](work.md)), or a long task (past 40,000 characters,
+unless `--longer-than` says otherwise).
+
+```text
+sion agent routes set lead code --model anthropic:claude-opus-5-5 --about "Writing, fixing or reviewing code"
+sion agent routes set lead eyes --model gemini:gemini-3-pro-preview --when pictures
+sion agent routes set lead chat --model anthropic:claude-haiku-5-5 --about "Quick questions and small talk"
+sion agent routes sorter lead anthropic:claude-haiku-5-5
+```
+
+When a session starts (a chat's first message, a scheduled job, a work
+item), its task goes to the first route whose `--when` holds. Otherwise a
+model, the sorter (`sion agent routes sorter`, else the profile's first
+model), is asked which route's `--about` fits. The sorter is shown the
+task as data to sort, never to follow; it has no tools, it is asked for a
+route's name or none, and an answer that names no route, or several,
+counts as none, so the worst a task written to steer it can do is pick
+another of your routes. A task no route takes runs on the profile's own
+models. The chosen route's models come first and the profile's after
+them, as fallbacks; a model a chat chose with `/model` comes first of
+all. A session keeps the models its first task chose, and the next
+session is routed again. `sion agent routes test lead "Fix the failing
+test in parser.rs"` says which route a task would take and why, and runs
+nothing.
+
+Each routed session is noted in `$SION_HOME/agents/routes/<profile>.jsonl`:
+its route, why, the model first in line, how its first run ended and the
+tokens it used. `sion agent routes show lead` adds them up by route and
+by model.
+
+A route's models are put in order by measurement, not by the sorter.
+`sion agent routes eval lead code --set fixes.json` runs each of the
+route's models as one agent on the same set of tasks (cases as an
+[evaluation set](skill-improvement.md) has them), each case `--runs`
+times on `--budget-tokens` a case, and reports their pass rates with 95%
+Wilson intervals. A model whose pass rate beats the route's first model's
+by Newcombe's 95% interval, its lower end above zero, earns first place
+in the route: the bar a graph of agents clears to earn a profile's
+traffic ([Graphs of agents](graphs.md)). Nothing else moves a model
+forward.
 
 ## What a model is sent
 

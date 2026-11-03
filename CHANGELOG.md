@@ -10,6 +10,49 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Coming over, teaching, and talking
+
+- **A model for each task**: `sion agent routes` gives a profile routes
+  that choose its models for each task: pictures, work items and long
+  tasks by rule, other tasks sorted by a small model among routes that say
+  what they are for; what each route was given is logged, and its models
+  are compared on a set of tasks (`routes eval`).
+- **Skills from registries**: `sion skill search` lists ClawHub's and
+  skills.sh's skills, and `sion skill import` reads one from ClawHub
+  (`clawhub:owner/slug[@version]`), skills.sh or a site's well-known index,
+  checked against the digests the registry lists, with the registry's
+  verdicts shown, audited for 24 patterns (credential paths, persistence,
+  words aimed at the model, hidden characters, programs and archives),
+  the worst holding an install back until `--accept-risks`; hosts and
+  secrets granted with `--grant-network` and `--grant-secret`.
+- **Coming from OpenClaw or Hermes**: `sion agent import` brings an
+  OpenClaw or Hermes Agent over to a profile: its persona and memories
+  into the profile's instructions, its jobs as schedules, and with
+  `--models`, `--keys` and `--bridges` its models, model keys and chats;
+  a plan is shown first, `--apply` does it.
+- **Teach a task**: `sion skill teach` records you doing a task once in a
+  browser window (never a password, a secret field or a login's user
+  name; at most ten minutes) and writes it down as a draft skill for the
+  agent's browser, installed through the import's audit;
+  `--write-with <model>` has a model generalize it.
+- **X beyond direct messages**: `sion agent x-mentions` answers the posts
+  that mention the account, in their threads, from the posts they reply
+  to and the web search's results for their words, citing them, with
+  their addresses in the last post; an answer that rests on nothing it was
+  given is not posted. `x_search` searches recent posts. X's rotating
+  refresh tokens are kept sealed across restarts.
+- **Better live voice**: speech is told from other sound by RNNoise's
+  network (`--detector`); the reply's echo from loudspeakers is taken out
+  of what the microphone hears (raw samples played at their pace, the
+  delay found by correlation, a 64 ms adaptive filter; `--no-echo-cancel`,
+  `--play-raw`); `--realtime openai:<model>` talks through a realtime
+  speech model whose one tool asks the agent.
+- **Meeting notes**: `sion agent meeting` dials in to a meeting through
+  Twilio (its keys pressed, its transcription posted back, signed) or
+  hears it on this machine (the microphone, and what it plays), writes
+  the transcript as it goes, and has the profile's agent write the notes:
+  decisions, action items, open questions.
+
 ### What agents reach, and where they run
 
 - **Web search**: `web_search`, through Brave Search, Tavily or a SearXNG

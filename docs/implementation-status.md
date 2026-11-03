@@ -25,7 +25,7 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, work it takes on by itself from GitHub and chats under mandates, its pull requests' reviews and checks followed, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders and repositories, everything kept running on a server, live voice with a wake word) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, work it takes on by itself from GitHub and chats under mandates, its pull requests' reviews and checks followed, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders, repositories and registries (ClawHub, skills.sh, a site's well-known index) through the audit, a model chosen for each task, OpenClaw and Hermes agents imported, tasks taught by doing them once in a browser, X's mentions answered with their sources and its posts searched, everything kept running on a server, live voice with a wake word, a model of speech, echo cancellation and a realtime model that asks the agent, meeting notes by phone or on the machine) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -168,7 +168,11 @@ language model as an agent: the Anthropic Messages API (version
 the machine or its network), Google's Gemini API natively, OpenAI's
 Responses API, the Responses API on a ChatGPT plan signed in on the
 machine (`sion agent chatgpt login`), or a scripted model; fallback with
-a 30-second cooldown; tools that declare an effect (read, write, external,
+a 30-second cooldown; a profile's routes choosing its models for each
+task (pictures, work items and long tasks by rule, other tasks sorted by
+a model shown the task as data and allowed only to name a route, a
+model moved first in a route only by beating its first on a set of tasks
+by Newcombe's 95% interval), tested with scripted models; tools that declare an effect (read, write, external,
 spend); autonomy levels L0 to L6 with approvals that expire after 15
 minutes, each waiting call named by a request id that a decision may give
 and is checked against, each decision kept with who made it, and
@@ -387,13 +391,28 @@ profile may have Home Assistant's entities and services as tools
 terminal, by voice with `--voice`; with `--live` it listens all the time,
 speaks the reply a sentence at a time as it is written, and stops when
 spoken over, and `--wake` takes only what begins with a wake phrase,
-heard first by a transcriber on the machine. **Simplified:** speech is
-told from silence by its loudness (an energy detector against a noise
-floor it follows), not by a model of speech, and there is no echo
-cancellation (headphones, or `--no-interrupt`). Tested end to end on a
-devnet with a stand-in microphone (silence and a tone, paced as spoken),
-stand-in transcribers, a scripted model and a slow player; no microphone
-or loudspeaker was used. Trust atom `agent:live-voice`.
+heard first by a transcriber on the machine. Speech is told from other
+sound by RNNoise's network (`nnnoiseless`) with a loudness floor, or by
+loudness alone (`--detector loudness`); the reply's echo from
+loudspeakers is cancelled: raw samples played at their pace and kept on
+the microphone's count, the delay found by correlation and the room's
+echo learned by a 64 ms NLMS filter, which stops learning in double talk,
+with what is left quietened while only the loudspeaker sounds.
+`--realtime openai:<model>` hears and speaks through OpenAI's Realtime
+API, whose one tool, `ask_agent`, goes to the profile's agent; utterances
+are found and sent from the machine, its own turn detection off.
+`sion agent meeting` takes a meeting's notes, dialled in through Twilio
+(its keys pressed, its transcription posted back, signed) or heard on the
+machine (the microphone, and what it plays as the echo reference), the
+notes written by the profile's agent in a tainted session. Tested end to
+end on a devnet with stand-in microphones (silence and a tone, paced as
+spoken), stand-in transcribers, a scripted model, a slow player, and
+stand-ins for the Realtime API and for Twilio; the model of speech on a
+sentence spoken by espeak-ng and on noise; the echo canceller on a room
+made up (at least 20 dB quieter once learned, a voice over it within 3
+dB). No microphone or loudspeaker was used, and neither the Realtime API
+nor Twilio was reached. Trust atoms `agent:live-voice`,
+`agent:realtime-voice`, `agent:meeting-notes`.
 Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, Deepgram, ElevenLabs, or a command) and answered
 aloud (OpenAI, ElevenLabs, Deepgram, or a command): a voice note on Telegram, a voice message on
@@ -438,7 +457,72 @@ before anything is signed and installs it only with
 when case is ignored, so that on macOS or Windows no file takes another's
 place. The filtering runs in bubblewrap for real in the tests. Trust
 atoms: `agent:skill-pre-approval`, `agent:declared-hosts`,
-`agent:secret-store`. MCP over HTTP is tested against the official MCP
+`agent:secret-store`. Skills are imported
+([Importing a skill](book/src/agent/skills.md#importing-a-skill)) from a
+folder, a git repository, ClawHub (`clawhub:owner/slug`), a site's
+`/.well-known/agent-skills/` index (v0.2) or skills.sh's index of GitHub
+repositories, and searched for on ClawHub and skills.sh: every file
+checked against the SHA-256 the registry lists for it, ClawHub's scanners
+reported one by one and a version any of them calls malicious refused, an
+index without digests refused, archives unpacked with no path out of the
+skill and no links; the files checked for what the 2026 campaigns against
+ClawHub did (downloads run by a shell, paste sites, encoded payloads,
+credential, keychain and wallet paths, persistence, edits to an agent's
+memory files, words aimed at the model, characters a reader cannot see,
+programs and archives), the worst holding an install back until the
+operator accepts the risk (`--accept-risks`); installed only on the
+operator's review of its bundle root or an audit on a bond, with hosts
+and secrets the operator grants written into its metadata. Tested against
+stand-ins for ClawHub and a site, and run once against ClawHub itself (a
+search, and a skill read, checked against its listed digests and
+reported on, not installed); trust atom `agent:skill-import-review`.
+An OpenClaw or Hermes Agent is brought over to a profile
+([Coming from OpenClaw or Hermes](book/src/agent/import.md); `sion agent
+import`, a plan first): its persona and memory files into one block of the
+profile's instructions, marked as another agent's notes and checked as a
+skill's files are, the worst findings holding it back until the operator
+accepts them; its jobs as schedules, cron moved to UTC with the zone's
+offset today; with `--models`, `--keys` and `--bridges`, its models, its
+model keys (sealed) and a bridge service for each chat it was in
+(Telegram, Discord, Slack, Matrix, Mattermost), installed and not started;
+its skills listed for the audit. OpenClaw's JSON5 config, Hermes's YAML
+and both `.env` files are read by readers of sion's own, tested on homes
+laid out as OpenClaw 2026.10 and Hermes Agent 0.22 lay them out; neither
+program was run. Not imported: conversations, OAuth logins, OpenClaw's
+pairing lists and jobs kept only in its database (it exports the jobs),
+WhatsApp, Signal and iMessage logins, per-chat settings. Trust atom
+`agent:imported-agent`.
+A task is taught by doing it once in a browser window (`sion skill
+teach`, [Teaching a task](book/src/agent/skills.md#teaching-a-task)):
+Chromium with a profile of its own, driven over its DevTools pipe, a
+recorder in an isolated world of every frame saying what the person does
+(trusted events only), and the recording, at most ten minutes, written
+down as a draft `SKILL.md` for the browser tools, installed through the
+import's audit. Passwords, fields that look secret and a login's user
+name are never sent from the page; addresses lose their secret-looking
+parameters. Tested with Chromium for real, headless and in a window on
+Xvfb, played by a program through the protocol's input events on a site
+served on the machine (`crates/sion-agent/tests/teach.rs`); and `sion
+skill teach` run once end to end in a window on Xvfb as an ordinary user,
+typed into with xdotool and ended by closing the window (not part of the
+test suite). A person did not use it. Not recorded: drags, hovers, scrolling, keyboard shortcuts
+other than Enter and Escape, canvas and plugin content; frames of other
+sites are recorded as their own targets, untested. Trust atom
+`agent:taught-skills`.
+Mentions on X are answered in their threads (`sion agent x-mentions`,
+[Mentions on X](book/src/agent/messengers.md#mentions-on-x)): the
+sources gathered by the runner before the session (the post replied to
+or quoted, and the web search's results for the mention's words), the
+session tainted and without memory, workspace or tools that reach
+outside, and an answer posted only if it cites what it was given and
+names no address it was not; split into chained posts within X's
+weighted count, the addresses in the last. `x_search` searches recent
+posts. Tested against stand-ins for X's API and a SearXNG instance with
+the scripted model on a devnet (`crates/sion-cli/tests/x_mentions.rs`);
+X's API itself was not reached. Not built: answering quotes that do not
+mention the account, pages of more than 100 new mentions between polls,
+media in replies. Trust atom `agent:x-mentions`.
+MCP over HTTP is tested against the official MCP
 Python SDK (2.3) with its OAuth authorization server, and against a
 stand-in for each era of the transport; trust atoms `agent:mcp-remote`
 and `agent:mcp-oauth`. MCP resources, prompts, a person's input
@@ -1159,8 +1243,13 @@ the architecture's own:
 | `agent:own-mcp-servers` | sion's mail, calendar and documents servers act with the credentials they are given, as their owner: mail sent is the person's own, and an event added is in their calendar. What the mail and calendar servers read is from outside; documents are read as a workspace's files are, not as from outside, so a document someone else wrote is trusted as the person's own. The calendar's login goes only to the server `CALDAV_URL` names. |
 | `agent:browser-files` | What a page downloads is kept in the workspace as from outside; a file chosen for a page's field goes to that page's site, whoever runs it. |
 | `agent:github-webhooks` | A webhook is taken as GitHub's when it carries GitHub's signature with the operator's secret; the listener speaks plain HTTP, and TLS is the operator's proxy's. A delivery copied on its way could be sent again, and is taken once by its event's id. |
-| `agent:skill-import-review` | A skill imported from a folder or a repository is installed on the operator's reading of its files, or on an audit of its root; the patterns the report names are a guide to that reading, not a scan that finds all that a skill could do. |
-| `agent:live-voice` | A live conversation takes what is loud enough near the microphone as the person's speech: without a wake word, what anyone says there goes to the transcriber and to the agent as the person's words; with `--wake-cloud`, everything said there goes to the transcriber's provider. |
+| `agent:imported-agent` | What an import brings over from OpenClaw or Hermes Agent into a profile's instructions is that agent's own files, which it may have written from what it read; the plan shows them and names the patterns worth a look, and the block tells the model they are another agent's notes, but once applied they reach every session's prompt as the operator's instructions do. |
+| `agent:taught-skills` | A taught draft names elements by what the pages called them and keeps the values the person typed outside secret fields; whether a field is secret is judged from its type, autocomplete and name, so a secret typed into a field that looks ordinary is recorded. The draft reaches an agent only through the import's audit and the operator's acceptance. |
+| `agent:x-mentions` | An answer to a mention is checked for citing the sources it was given and naming no other address, not for saying what they say: a model can cite a source for a claim it does not make, and a search's results are whatever the service ranks for words a stranger chose. The reply is posted as the account's own. |
+| `agent:skill-import-review` | A skill imported from a folder, a repository or a registry is installed on the operator's reading of its files, or on an audit of its root; the patterns the report names, and a registry's verdicts, are a guide to that reading, not a scan that finds all that a skill could do; a registry's digests show that the files are the ones it lists, not that they are safe. |
+| `agent:live-voice` | A live conversation takes what its model of speech (or its loudness) finds near the microphone as the person's speech: without a wake word, what anyone says there goes to the transcriber and to the agent as the person's words; with `--wake-cloud`, everything said there goes to the transcriber's provider. The echo canceller takes out what the loudspeaker was given, not other sound: a voice from another device is speech. |
+| `agent:realtime-voice` | Through a realtime model, what the agent is asked is the realtime model's account of what the person said, and what the person hears is its account of the agent's answer: it is told to pass both on faithfully and to answer nothing itself, which a model may not do. It sees the conversation's utterances and the agent's answers. |
+| `agent:meeting-notes` | A meeting's transcript is what Twilio's transcription or the transcriber heard, which may mishear and does not say who spoke (by phone, all is `meeting`; here, `me` and `others`); the notes are the agent's reading of it. Dialling in joins the meeting as a caller, whom its other participants may not be told about: say so, as the law where they are may require. |
 | `deploy:copied-keys` | `sion deploy --copy-home` copies the agents' wallets and their keys to the server: whoever controls the server controls them. |
 
 ## Light-client trust

@@ -91,6 +91,7 @@ pub mod scripted;
 pub mod search;
 pub mod session;
 pub mod skills;
+pub mod teach;
 pub mod tools;
 pub mod trace;
 pub mod verify;

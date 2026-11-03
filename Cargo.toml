@@ -52,6 +52,10 @@ sion-app-core = { path = "crates/sion-app-core" }
 sion-http = { path = "crates/sion-http" }
 sion-agent = { path = "crates/sion-agent" }
 
+# Telling speech from silence in live voice: RNNoise's network, in Rust
+# (BSD-3-Clause), without its command-line tool.
+nnnoiseless = { version = "0.5", default-features = false }
+
 # Hashing, encoding, errors
 sha3 = "0.10"
 borsh = { version = "1", features = ["derive"] }

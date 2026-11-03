@@ -90,6 +90,8 @@ fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile)
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        routes: Vec::new(),
+        sorter: None,
     };
     (home, devnet, ledger, profile)
 }
@@ -2655,7 +2657,12 @@ fn a_live_conversation_is_heard_spoken_interrupted_and_woken() {
         ])),
         wake: None,
         interrupt: true,
-        detection: Detection::default(),
+        // The stand-in microphone's speech is a tone: told by its loudness.
+        detection: Detection {
+            model: false,
+            ..Detection::default()
+        },
+        play_raw: None,
     };
     let (_typing, untyped) = std::sync::mpsc::channel::<()>();
     let mut out = Vec::new();
@@ -2751,7 +2758,12 @@ fn a_live_conversation_is_heard_spoken_interrupted_and_woken() {
         ])),
         wake: Some(wake),
         interrupt: true,
-        detection: Detection::default(),
+        // The stand-in microphone's speech is a tone: told by its loudness.
+        detection: Detection {
+            model: false,
+            ..Detection::default()
+        },
+        play_raw: None,
     };
     let (_typing, untyped) = std::sync::mpsc::channel::<()>();
     let mut out = Vec::new();

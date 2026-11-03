@@ -807,6 +807,10 @@ Commands:
   mcp            MCP servers whose tools agents may use: add one (its tools are reviewed and pinned), list them, review one again, remove one
   graph          Graphs of agents: a profile's agent run as the nodes of a small graph (fan-out, work-check, draft-review, self-consistency, orchestrator, or one of your own), each node a session of its own
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
+  import         Bring an OpenClaw or Hermes Agent over to a profile: its persona and memories into the profile's instructions, its jobs as schedules, and with --models, --keys and --bridges its models, its model keys and its chats; its skills listed, to import through the audit. Shows the plan; --apply does it
+  routes         Routes that choose a profile's models for each task: pictures, work items and long tasks by rule, other tasks sorted by a model among routes that say what they are for; what each route was given, and its models compared on a set of tasks
+  x-mentions     Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
+  meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
   waiting        Everything that waits for a person: work items' questions, approvals and failures, messages that could not be sent, sessions waiting for approval, and chats waiting to be let in
@@ -2513,6 +2517,239 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion agent import`
+
+```text
+Bring an OpenClaw or Hermes Agent over to a profile: its persona and memories into the profile's instructions, its jobs as schedules, and with --models, --keys and --bridges its models, its model keys and its chats; its skills listed, to import through the audit. Shows the plan; --apply does it
+
+Usage: sion agent import [OPTIONS] --profile <PROFILE> <FROM>
+
+Arguments:
+  <FROM>  What to import from: openclaw or hermes
+
+Options:
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>  The profile that receives it
+      --home <DIR>         Its home (default: ~/.openclaw, or OPENCLAW_STATE_DIR; ~/.hermes, or HERMES_HOME; a Hermes profile's own folder for one of its profiles)
+      --agent <AGENT>      OpenClaw's agent to import (default: the only one, or main)
+      --jobs <FILE>        OpenClaw's jobs, as `openclaw automations list --all --json` prints them
+      --apply              Do it; without this, the plan is shown and nothing changes
+      --models             With --apply: give the profile the models the import names
+      --keys               With --apply: keep the model keys it found on this machine, sealed
+      --bridges            With --apply: install a service for each chat bridge it found, not started, its credentials in the service's own environment file
+      --accept-risks       With --apply: bring it over despite the findings the plan says hold it back, once you have read them
+  -h, --help               Print help
+```
+
+See [Coming from OpenClaw or Hermes](../agent/import.md).
+
+## `sion agent routes`
+
+```text
+Routes that choose a profile's models for each task: pictures, work items and long tasks by rule, other tasks sorted by a model among routes that say what they are for; what each route was given, and its models compared on a set of tasks
+
+Usage: sion agent routes [OPTIONS] <COMMAND>
+
+Commands:
+  set     Give a profile a route, or change one: tasks of one kind go to its models first
+  remove  Remove a route from a profile
+  sorter  The model that sorts a profile's tasks among its routes (default: its first model); `default` to go back to that
+  show    A profile's routes, and what each was given: sessions, how their first runs ended, tokens, by the model first in line
+  test    Which route a task would take, and why (the sorter is asked; nothing runs)
+  eval    Compare a route's models on a set of tasks, each as one agent on the same cases and budget: a model whose pass rate beats the route's first by Newcombe's 95% interval earns first place in the route
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [A model for each task](../agent/models.md#a-model-for-each-task).
+
+## `sion agent routes set`
+
+```text
+Give a profile a route, or change one: tasks of one kind go to its models first
+
+Usage: sion agent routes set [OPTIONS] --model <MODEL> <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>
+          The profile
+
+  <NAME>
+          The route's name (lowercase letters, digits and hyphens)
+
+Options:
+      --model <MODEL>
+          Its models, in order of preference (repeat for more)
+
+      --node <NODE>
+          The node's API
+          
+          [env: SION_NODE=]
+          [default: http://127.0.0.1:8730]
+
+      --about <ABOUT>
+          The tasks it is for, in words: the sorter reads this
+          
+          [default: ""]
+
+      --when <WHEN>
+          What sends a task to it without asking the sorter (repeat for more)
+
+          Possible values:
+          - pictures: The task carries pictures
+          - work:     The task is a work item the agent took on ([`crate::work`])
+          - long:     The task is longer than the route's `longer_than` characters ([`LONG_CHARS`] by default)
+
+      --longer-than <LONGER_THAN>
+          With --when long: the characters past which a task is long (default 40000)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `sion agent routes remove`
+
+```text
+Remove a route from a profile
+
+Usage: sion agent routes remove [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The route
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent routes sorter`
+
+```text
+The model that sorts a profile's tasks among its routes (default: its first model); `default` to go back to that
+
+Usage: sion agent routes sorter [OPTIONS] <PROFILE> <MODEL>
+
+Arguments:
+  <PROFILE>  The profile
+  <MODEL>    The model, or `default`
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent routes show`
+
+```text
+A profile's routes, and what each was given: sessions, how their first runs ended, tokens, by the model first in line
+
+Usage: sion agent routes show [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --last <LAST>  How many of the latest decisions to list [default: 10]
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent routes test`
+
+```text
+Which route a task would take, and why (the sorter is asked; nothing runs)
+
+Usage: sion agent routes test [OPTIONS] <PROFILE> <TASK>
+
+Arguments:
+  <PROFILE>  The profile
+  <TASK>     The task, in words
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --pictures <PICTURES>  How many pictures the task would carry [default: 0]
+      --work                 The task as a work item
+  -h, --help                 Print help
+```
+
+## `sion agent routes eval`
+
+```text
+Compare a route's models on a set of tasks, each as one agent on the same cases and budget: a model whose pass rate beats the route's first by Newcombe's 95% interval earns first place in the route
+
+Usage: sion agent routes eval [OPTIONS] --set <FILE> <PROFILE> <ROUTE>
+
+Arguments:
+  <PROFILE>  The profile
+  <ROUTE>    The route
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --set <FILE>                     The set of tasks: a JSON file of cases, as an evaluation set's
+      --runs <RUNS>                    How many times each case is run by each model [default: 5]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each model may use on a case [default: 30000]
+  -h, --help                           Print help
+```
+
+## `sion agent x-mentions`
+
+```text
+Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
+
+Usage: sion agent x-mentions [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile whose agent answers
+
+Options:
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --once                     Poll once, then stop
+      --poll <POLL>              Seconds between polls [default: 60]
+      --per-day <PER_DAY>        Mentions answered in a UTC day, at most [default: 50]
+      --per-person <PER_PERSON>  One person's mentions answered in a UTC day, at most [default: 5]
+      --max-posts <MAX_POSTS>    Posts in a reply, at most [default: 3]
+      --sources <SOURCES>        required: an answer is posted only if it cites a source it was given; optional: one with none is posted too [default: required]
+      --read <READ>              How many of the search's first results are read as pages [default: 2]
+      --from <FROM>              Answer only these people (ids or usernames, comma-separated)
+      --dry-run                  Show the replies it would post, and post none
+  -h, --help                     Print help
+```
+
+See [Mentions on X](../agent/messengers.md#mentions-on-x).
+
+## `sion agent meeting`
+
+```text
+Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
+
+Usage: sion agent meeting [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile whose agent writes the notes
+
+Options:
+      --dial <NUMBER>        Dial in to the meeting by phone, through Twilio: its dial-in number (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_NUMBER to call from)
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --digits <KEYS>        The keys pressed once the call is answered: the meeting id and passcode, w waiting half a second (wwww123456#ww987#)
+      --listen-at <ADDRESS>  Where Twilio's transcriptions are taken (behind --public-url) [default: 0.0.0.0:8790]
+      --public-url <URL>     The public address of --listen-at, which Twilio posts to (https://…)
+      --language <LANGUAGE>  The language spoken (en-US by default) [default: en-US]
+      --here                 Hear the meeting on this machine: its microphone, and with --monitor what it plays
+      --hear <PROVIDER>      What hears what is said here: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model> or command:<program>
+      --listen <COMMAND>     The program that gives the microphone's sound (raw 16-bit mono at 16 kHz), as for a live conversation
+      --monitor [<COMMAND>]  Hear what this machine plays too: the meeting app's sound, from PulseAudio's or PipeWire's monitor (parec), or the program given
+      --minutes <MINUTES>    The longest the meeting is heard, in minutes [default: 120]
+      --title <TITLE>        What the meeting is: in the notes' file name and title [default: meeting]
+      --deliver <CHANNEL>    Where the notes are sent too, as a schedule's are (telegram:<chat>, file:<path>, …)
+  -h, --help                 Print help
+```
+
+See [Meeting notes](../agent/voice.md#meeting-notes).
+
 ## `sion agent scheduler`
 
 ```text
@@ -2784,12 +3021,12 @@ Arguments:
 Options:
       --conversation <CONVERSATION>  The conversation: each is a session of its own [default: default]
       --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --voice                        Speak instead of typing: press Enter and speak; heard with --hear, answered aloud with --speak if given
+      --voice                        Speak instead of typing: press Enter and speak; heard with --hear, answered aloud with --speak if given (or, live, through --realtime)
       --hear <PROVIDER>              What hears you: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, or command:<program>
       --speak <PROVIDER>             What speaks the replies: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, or command:<program>
       --record <COMMAND>             The program that records you, given the file to write (sox's rec by default, stopping after a second and a half of silence)
       --play <COMMAND>               The program that plays a spoken reply, given its file (mpv, ffplay, afplay or paplay, the first there, by default)
-      --live                         Listen all the time instead of at Enter: speech is told from silence by its loudness, the reply is spoken a sentence at a time, and speaking over it stops it (use headphones: there is no echo cancellation)
+      --live                         Listen all the time instead of at Enter: speech is told from other sound by a model of it, the reply is spoken a sentence at a time, its echo from the loudspeakers taken out of what the microphone hears, and speaking over it stops it
       --listen <COMMAND>             The program that gives the microphone's sound: raw 16-bit mono at 16 kHz on its output (sox's rec, arecord, parec or ffmpeg, the first there, by default)
       --wake <PHRASE>                Take only what begins with this phrase ("hey sion"; several split by |)
       --wake-hear <PROVIDER>         What hears what is said before the wake word: a transcriber on this machine (command:<program>, such as whisper.cpp's); by default --hear's, if it is one
@@ -2797,6 +3034,10 @@ Options:
       --awake-secs <AWAKE_SECS>      Seconds it stays awake for a follow-up after it speaks [default: 15]
       --no-interrupt                 Speaking over the agent does not stop it: the microphone is not listened to while it works or speaks (for loudspeakers)
       --speech-level <LEVEL>         The quietest speech taken, as the root mean square of its samples (of 32767): lower it if you are not heard, raise it in a loud room [default: 400]
+      --detector <HOW>               How speech is told from other sound: model (RNNoise's network, with its loudness) or loudness (alone) [default: model]
+      --no-echo-cancel               Do not take the reply's echo out of what the microphone hears: replies are played as files (use headphones, or --no-interrupt)
+      --play-raw <COMMAND>           With the echo cancelled, the program that plays raw 16-bit mono samples at 16 kHz read on its standard input (aplay, paplay, sox's play or ffplay, the first there, by default)
+      --realtime <MODEL>             Hear and speak through a realtime speech model instead (openai:<model>[:<voice>], such as openai:gpt-realtime): faster; it does nothing itself, and asks the agent for all but small talk
   -h, --help                         Print help
 ```
 
@@ -2819,7 +3060,7 @@ Options:
 
       --node <NODE>
           The node's API
-
+          
           [env: SION_NODE=]
           [default: http://127.0.0.1:8730]
 
@@ -2848,7 +3089,7 @@ Options:
           - progress: The text as the model writes it, and the tool the agent runs
           - partial:  The text as the model writes it
           - off:      The reply once it is done
-
+          
           [default: progress]
 
       --no-typing
@@ -2862,17 +3103,17 @@ Options:
           - queue:     Answered once the agent is done, one at a time
           - collect:   Answered once the agent is done, all of them together
           - interrupt: Stops the agent, which then takes it up
-
+          
           [default: steer]
 
       --debounce <MS>
           Milliseconds a chat's messages are gathered before the agent takes them up, so that a burst of them is one turn
-
+          
           [default: 500]
 
       --parallel <N>
           How many chats are answered at once
-
+          
           [default: 4]
 
       --no-reactions
@@ -2901,7 +3142,7 @@ Arguments:
 Options:
       --node <NODE>
           The node's API
-
+          
           [env: SION_NODE=]
           [default: http://127.0.0.1:8730]
 
@@ -2919,7 +3160,7 @@ Options:
 
       --listen <LISTEN>
           Where whatsapp, line, sms, teams, google-chat, feishu, nextcloud-talk, wecom, qq, synology-chat and phone send their webhooks (expose it to them behind TLS)
-
+          
           [default: 127.0.0.1:8797]
 
       --pairing
@@ -2941,7 +3182,7 @@ Options:
           - progress: The text as the model writes it, and the tool the agent runs
           - partial:  The text as the model writes it
           - off:      The reply once it is done
-
+          
           [default: progress]
 
       --no-typing
@@ -2955,17 +3196,17 @@ Options:
           - queue:     Answered once the agent is done, one at a time
           - collect:   Answered once the agent is done, all of them together
           - interrupt: Stops the agent, which then takes it up
-
+          
           [default: steer]
 
       --debounce <MS>
           Milliseconds a chat's messages are gathered before the agent takes them up, so that a burst of them is one turn
-
+          
           [default: 500]
 
       --parallel <N>
           How many chats are answered at once
-
+          
           [default: 4]
 
       --no-reactions
@@ -3535,6 +3776,8 @@ Commands:
   submit   Submit a version for a bounty, as its worker, with its attestations, and settle the task
   lineage  A release's lineage: each version back to the first, with what it rests on and the evidence for each step
   import   Import an Agent Skill for a profile's agent, from a folder or a git repository: it is read and reported on (its files, its scripts, the hosts and patterns in them, the permissions it asks for), and installed only once --accept names its bundle root after you read it, or --audit names an active audit of that root on a bond
+  search   Search a registry for skills to import: ClawHub (OpenClaw's) or skills.sh. What a registry says of a skill is shown, not relied on
+  teach    Teach a task by doing it once in a browser window: what you do is recorded (never a password, a secret field or a login's user name; at most 10 minutes) and written down as a draft skill for the agent's browser, to read and then install with `sion skill import`
   starter  Install sion's starter skills for a profile's agent: web-research, code-change, pr-review, ci-fix, inbox-triage, scheduling and document-brief (all of them, or those named)
   help     Print this message or the help of the given subcommand(s)
 
@@ -3674,20 +3917,66 @@ Import an Agent Skill for a profile's agent, from a folder or a git repository: 
 Usage: sion skill import [OPTIONS] --profile <PROFILE> <SOURCE>
 
 Arguments:
-  <SOURCE>  A folder, github:owner/repo, or a git address (https://…)
+  <SOURCE>  A folder, github:owner/repo, a git address (https://…), clawhub:owner/slug[@version], skills.sh:owner/repo/skill, or a site's skill (well-known:example.org#name)
 
 Options:
-      --node <NODE>         The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --profile <PROFILE>   The profile whose agent gets it
-      --path <PATH>         The skill's folder within the repository
-      --ref <REF>           The branch or tag to read (default: the repository's own)
-      --accept <ROOT>       Install it: the bundle root the report gave, after reading it
-      --audit <CLAIM>       Install it on an audit: the claim of an active audit of its bundle on a bond (needs the node)
-      --accept-permissions  Grant the permissions it asks for (a network, secrets)
-  -h, --help                Print help
+      --node <NODE>           The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>     The profile whose agent gets it
+      --path <PATH>           The skill's folder within the repository
+      --ref <REF>             The branch or tag to read (default: the repository's own)
+      --accept <ROOT>         Install it: the bundle root the report gave, after reading it
+      --audit <CLAIM>         Install it on an audit: the claim of an active audit of its bundle on a bond (needs the node)
+      --accept-permissions    Grant the permissions it asks for (a network, secrets)
+      --accept-risks          Install it despite the findings the report says hold it back, once you have read them
+      --grant-network <HOST>  A host its scripts may reach, declared for it in its metadata (repeat for more; needs --accept-permissions)
+      --grant-secret <NAME>   A secret its scripts receive as an environment variable, declared for it (repeat for more; keep it with sion agent secret add; needs --accept-permissions)
+  -h, --help                  Print help
 ```
 
 Nothing is installed by the first run: it reports, and prints the bundle root to accept. A skill installed on an audit is taken out of use if the audit is shown false. See [Importing a skill](../agent/skills.md#importing-a-skill).
+
+## `sion skill search`
+
+```text
+Search a registry for skills to import: ClawHub (OpenClaw's) or skills.sh. What a registry says of a skill is shown, not relied on
+
+Usage: sion skill search [OPTIONS] <QUERY>
+
+Arguments:
+  <QUERY>  What to look for
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --registry <REGISTRY>  The registry: clawhub or skills.sh [default: clawhub]
+      --limit <LIMIT>        How many to list [default: 10]
+  -h, --help                 Print help
+```
+
+See [Importing a skill](../agent/skills.md#importing-a-skill).
+
+## `sion skill teach`
+
+```text
+Teach a task by doing it once in a browser window: what you do is recorded (never a password, a secret field or a login's user name; at most 10 minutes) and written down as a draft skill for the agent's browser, to read and then install with `sion skill import`
+
+Usage: sion skill teach [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The skill's name: lowercase letters, digits and hyphens
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --start <START>        The page the browser opens first
+      --describe <DESCRIBE>  What the task is, in a sentence: how an agent knows when to use the skill
+      --minutes <MINUTES>    How long the recording may last, in minutes (at most 10) [default: 10]
+      --out <OUT>            Where the skill's folder goes (default: $SION_HOME/agents/taught/<name>)
+      --force                Replace a draft of that name
+      --write-with <MODEL>   A model that rewrites the draft from the recording (anthropic:<model>, openai:<model>, …)
+      --profile <PROFILE>    The profile the skill is for: named in how to install it
+  -h, --help                 Print help
+```
+
+See [Teaching a task](../agent/skills.md#teaching-a-task).
 
 ## `sion skill starter`
 

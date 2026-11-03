@@ -424,6 +424,8 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        routes: Vec::new(),
+        sorter: None,
     };
     sion_cli::profiles::save_all(&[("helper".to_string(), profile)].into_iter().collect()).unwrap();
 

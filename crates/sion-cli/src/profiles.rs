@@ -93,6 +93,14 @@ pub struct Profile {
     /// The paths of its workspace whose content is confidential.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub confidential_files: Vec<String>,
+    /// Routes that choose its models for each task
+    /// ([`crate::model_routes`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<crate::model_routes::ModelRoute>,
+    /// The model that sorts its tasks among its routes (default: its first
+    /// model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sorter: Option<String>,
 }
 
 fn yes() -> bool {
@@ -159,13 +167,21 @@ impl Profile {
         link: crate::work::WorkLink,
         hooks: crate::runtime::Hooks<'_>,
     ) -> Result<(Saved, Vec<String>), CliError> {
-        crate::runtime::start_watched(
+        let choice = crate::model_routes::choose_for(
+            self,
+            &crate::model_routes::Task {
+                text: task,
+                pictures: 0,
+                work: true,
+            },
+        );
+        let started = crate::runtime::start_watched(
             ledger,
             &self.wallet,
             self.agent,
             task,
             &[],
-            self.models.clone(),
+            choice.models.clone(),
             self.policy(),
             Equipment {
                 work: Some(link),
@@ -173,7 +189,11 @@ impl Profile {
                 ..self.equipment()
             },
             hooks,
-        )
+        );
+        if let Ok((saved, _)) = &started {
+            crate::model_routes::note(self, &choice, &choice.models, saved);
+        }
+        started
     }
 
     /// Starts a session on `task`.
@@ -212,7 +232,17 @@ impl Profile {
         hooks: crate::runtime::Hooks<'_>,
         settings: &crate::channels::ChatSettings,
     ) -> Result<(Saved, Vec<String>), CliError> {
-        let mut models = self.models.clone();
+        // The models its routes choose for the task, a chat's own choice
+        // ahead of them.
+        let choice = crate::model_routes::choose_for(
+            self,
+            &crate::model_routes::Task {
+                text: task,
+                pictures: pictures.len(),
+                work: false,
+            },
+        );
+        let mut models = choice.models.clone();
         if let Some(at) = settings
             .model
             .as_ref()
@@ -221,13 +251,13 @@ impl Profile {
             let chosen = models.remove(at);
             models.insert(0, chosen);
         }
-        crate::runtime::start_watched(
+        let started = crate::runtime::start_watched(
             ledger,
             &self.wallet,
             self.agent,
             task,
             pictures,
-            models,
+            models.clone(),
             self.policy(),
             crate::runtime::Equipment {
                 chat_instructions: settings.instructions.clone(),
@@ -235,7 +265,11 @@ impl Profile {
                 ..self.equipment()
             },
             hooks,
-        )
+        );
+        if let Ok((saved, _)) = &started {
+            crate::model_routes::note(self, &choice, &models, saved);
+        }
+        started
     }
 }
 
@@ -511,6 +545,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             let agent = ObjectId::from_hash(hex_id(&agent, "the agent")?);
             // The agent must exist.
             crate::agents::identity(ledger, agent)?;
+            let kept = all()?.remove(&name);
             let profile = Profile {
                 name: name.clone(),
                 wallet,
@@ -548,6 +583,9 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 shared_memory,
                 confidential,
                 confidential_files,
+                // A profile added again under its name keeps its routes.
+                routes: kept.as_ref().map(|k| k.routes.clone()).unwrap_or_default(),
+                sorter: kept.and_then(|k| k.sorter),
             };
             if let Some(other) = crate::channels::tokens()?
                 .iter()
@@ -692,6 +730,10 @@ pub fn describe(profile: &Profile) -> String {
     }
     if profile.quarantine {
         extras.push("quarantine".to_string());
+    }
+    if !profile.routes.is_empty() {
+        let names: Vec<&str> = profile.routes.iter().map(|r| r.name.as_str()).collect();
+        extras.push(format!("routes {}", names.join(", ")));
     }
     format!(
         "profile {}: agent {} as {}, {} at {:?}{}",

@@ -489,8 +489,50 @@ impl Speaking {
 
     /// `text`, spoken.
     pub fn speak(&self, text: &str) -> Result<Audio, String> {
+        let (bytes, declared) = self.fetch(text, false)?;
+        if bytes.is_empty() {
+            return Err("the speech service gave no audio".into());
+        }
+        let media_type = match Audio::sniff(&bytes) {
+            "application/octet-stream" => {
+                declared.unwrap_or_else(|| "application/octet-stream".into())
+            }
+            sniffed => sniffed.to_string(),
+        };
+        if !matches!(media_type.as_str(), "audio/ogg" | "audio/mpeg") {
+            return Err(format!(
+                "the speech service gave {media_type}, not Ogg Opus or MP3"
+            ));
+        }
+        Ok(Audio::new(&media_type, bytes))
+    }
+
+    /// `text`, spoken as raw samples at 16 kHz: what a loudspeaker whose
+    /// echo is cancelled plays. The services are asked for them (OpenAI's
+    /// at 24 kHz, brought down); a program's audio is decoded with ffmpeg.
+    pub fn speak_samples(&self, text: &str) -> Result<Vec<i16>, String> {
+        let (bytes, _) = self.fetch(text, true)?;
+        if bytes.is_empty() {
+            return Err("the speech service gave no audio".into());
+        }
+        let rate = crate::sound::RATE;
+        Ok(match self {
+            Speaking::Api { .. } => {
+                crate::sound::Resampler::once(24_000, rate, &crate::sound::samples_of(&bytes))
+            }
+            Speaking::ElevenLabs { .. } | Speaking::Deepgram { .. } => {
+                crate::sound::samples_of(&bytes)
+            }
+            Speaking::Command(_) => decoded(&bytes, rate)?,
+        })
+    }
+
+    /// The service's answer for `text`: raw samples if `raw` (16-bit at
+    /// 24 kHz from OpenAI, 16 kHz from the others), else Ogg Opus or MP3;
+    /// and the media type it declared.
+    fn fetch(&self, text: &str, raw: bool) -> Result<(Vec<u8>, Option<String>), String> {
         let text: String = text.chars().take(MAX_SPOKEN).collect();
-        let (bytes, declared) = match self {
+        Ok(match self {
             Speaking::Api {
                 base,
                 key,
@@ -509,7 +551,8 @@ impl Speaking {
                     headers.push(("Authorization", auth.as_str()));
                 }
                 let url = format!("{}/audio/speech", base.trim_end_matches('/'));
-                let body = json!({"model": model, "voice": voice, "input": text, "response_format": "opus"});
+                let format = if raw { "pcm" } else { "opus" };
+                let body = json!({"model": model, "voice": voice, "input": text, "response_format": format});
                 fetch_audio(&url, &headers, &body)?
             }
             Speaking::ElevenLabs { base, voice, model } => {
@@ -520,8 +563,9 @@ impl Speaking {
                     ("xi-api-key", key.as_str()),
                 ];
                 let url = format!(
-                    "{}/v1/text-to-speech/{voice}?output_format=mp3_44100_128",
-                    base.trim_end_matches('/')
+                    "{}/v1/text-to-speech/{voice}?output_format={}",
+                    base.trim_end_matches('/'),
+                    if raw { "pcm_16000" } else { "mp3_44100_128" }
                 );
                 let body = json!({"text": text, "model_id": model});
                 fetch_audio(&url, &headers, &body)?
@@ -534,9 +578,14 @@ impl Speaking {
                     ("Authorization", auth.as_str()),
                 ];
                 let url = format!(
-                    "{}/v1/speak?model={}&encoding=mp3",
+                    "{}/v1/speak?model={}&{}",
                     base.trim_end_matches('/'),
-                    crate::webhooks::encode_form(&[("m", model)]).trim_start_matches("m=")
+                    crate::webhooks::encode_form(&[("m", model)]).trim_start_matches("m="),
+                    if raw {
+                        "encoding=linear16&sample_rate=16000&container=none"
+                    } else {
+                        "encoding=mp3"
+                    }
                 );
                 fetch_audio(&url, &headers, &json!({"text": text}))
                     .map_err(|e| e.replace(&key, "<key>"))?
@@ -560,23 +609,45 @@ impl Speaking {
                 }
                 (output.stdout, None)
             }
-        };
-        if bytes.is_empty() {
-            return Err("the speech service gave no audio".into());
-        }
-        let media_type = match Audio::sniff(&bytes) {
-            "application/octet-stream" => {
-                declared.unwrap_or_else(|| "application/octet-stream".into())
-            }
-            sniffed => sniffed.to_string(),
-        };
-        if !matches!(media_type.as_str(), "audio/ogg" | "audio/mpeg") {
-            return Err(format!(
-                "the speech service gave {media_type}, not Ogg Opus or MP3"
-            ));
-        }
-        Ok(Audio::new(&media_type, bytes))
+        })
     }
+}
+
+/// Ogg Opus or MP3 as raw 16-bit mono samples at `rate`, decoded by ffmpeg.
+fn decoded(bytes: &[u8], rate: u32) -> Result<Vec<i16>, String> {
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+        ])
+        .arg(rate.to_string())
+        .arg("pipe:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("decoding the spoken audio needs ffmpeg: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("no pipe to ffmpeg")?;
+    let input = bytes.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let _ = writer.join();
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(format!(
+            "ffmpeg could not decode the spoken audio ({})",
+            output.status
+        ));
+    }
+    Ok(crate::sound::samples_of(&output.stdout))
 }
 
 /// POSTs `body` and reads the audio back, with its declared media type.

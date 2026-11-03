@@ -226,13 +226,15 @@ What it does:
 
 | | | Read |
 |---|---|---|
-| Talk with it | In the terminal, typed, by push-to-talk, or live (it speaks as it writes, stops when you talk over it, and can wait for a wake word); on 28 messaging services, with voice notes; over HTTP, OpenAI's chat API and A2A | [Channels](docs/book/src/agent/channels.md), [Voice](docs/book/src/agent/voice.md) |
+| Talk with it | In the terminal, typed, by push-to-talk, or live (it speaks as it writes, takes its own voice out of what the microphone hears, stops when you talk over it, can wait for a wake word, or talk through a realtime speech model that asks the agent); on 28 messaging services, with voice notes; X's mentions, answered with their sources; over HTTP, OpenAI's chat API and A2A; and it takes meetings' notes, by phone or on your machine | [Channels](docs/book/src/agent/channels.md), [Voice](docs/book/src/agent/voice.md), [Messengers](docs/book/src/agent/messengers.md) |
 | Its tools | Files and code (edit, patch, search, check, test), a shell in a sandbox, web search, a browser with tabs, downloads and uploads, a desktop of its own, MCP servers with their resources, prompts and questions to you, and sion's own servers for mail, calendars and documents | [Tools](docs/book/src/agent/tools.md), [Browser](docs/book/src/agent/browser.md) |
 | What it does alone | Autonomy levels from L0 to L6, approvals, taint from what comes from outside, quarantine, confidential files | [Autonomy](docs/book/src/agent/autonomy.md) |
 | Memory | A memory log whose head the ledger keeps, search over past sessions, consolidation and dreaming | [Memory](docs/book/src/agent/memory.md) |
-| Skills | Its own; others', installed on bonds and audits or imported from a folder or a repository after review; skills that get better through evaluation that others verify | [Skills](docs/book/src/agent/skills.md), [Improvement](docs/book/src/agent/skill-improvement.md) |
+| Skills | Its own; taught by doing a task once in a browser; others', installed on bonds and audits or imported from a folder, a repository, ClawHub or skills.sh after an audit of their files; skills that get better through evaluation that others verify | [Skills](docs/book/src/agent/skills.md), [Improvement](docs/book/src/agent/skill-improvement.md) |
 | Helpers | Subagents with budgets carved from its own, other agents hired through Task Charters, graphs of agents | [Teams](docs/book/src/agent/teams.md), [Graphs](docs/book/src/agent/graphs.md) |
 | Work it takes on | It watches GitHub repositories and chats, a fixed gate decides what it may take on, every piece of work has a mandate on the ledger, and it follows its pull requests' reviews and failed checks | [Work](docs/book/src/agent/work.md) |
+| Models | Claude, OpenAI, Gemini, your ChatGPT plan or a local model, and a model for each kind of task, chosen by rule or by a small model and compared on your own tasks | [Models](docs/book/src/agent/models.md) |
+| Coming from OpenClaw or Hermes | Its persona, memories, jobs, models, keys and chats brought over to a profile, a plan shown first | [Import](docs/book/src/agent/import.md) |
 | Where it runs | Your computer, or a server of yours: `sion deploy` puts it there, `sion agent up` keeps it running | [Run it on a server](docs/book/src/agent/server.md) |
 
 ## What exists today

@@ -121,13 +121,20 @@ there). Each program is given the audio file's path.
 does. The microphone is read without pause (`--listen`: sox's `rec`,
 `arecord`, `parec` or `ffmpeg`, the first there, or any program that
 writes raw 16-bit mono samples at 16 kHz to its output), and what you say
-is found in it by its loudness: speech begins after 60 ms louder than
-three times the noise floor, which it follows as the room changes, and
-ends after 800 ms quieter; a fifth of a second before and after is kept,
-an utterance runs to 30 seconds at most, and under 160 ms is a noise, not
-speech. Nothing quieter than `--speech-level` is speech (400, as the root
-mean square of 16-bit samples): lower it if you are not heard, raise it in
-a loud room. Each utterance goes to `--hear` as a WAV file.
+is found in it by a model of speech: RNNoise's network, which scores each
+10 ms of sound for how likely it is to be a voice. Speech begins after 60
+ms the model is sure of (a score of 0.85: noise that starts suddenly
+scores up to about 0.8 while the network settles, speech above 0.9) and
+that is not near silence (half of `--speech-level`), and ends after 800
+ms the model doubts or that are near silence; a fifth of a second before
+and after is kept, an utterance runs to 30 seconds at most, and under 160
+ms is a noise, not speech. The model takes a steady tone or music for a
+voice. `--detector loudness` tells speech by its loudness alone instead:
+speech begins after 60 ms louder than three times the noise floor, which
+it follows as the room changes, and ends after 800 ms quieter. Nothing
+quieter than `--speech-level` is speech (400, as the root mean square of
+16-bit samples): lower it if you are not heard, raise it in a loud room.
+Each utterance goes to `--hear` as a WAV file.
 
 The reply is spoken a sentence at a time, as the model writes it: the
 first sentence is being said while the rest is written. Code is shown,
@@ -138,10 +145,32 @@ Speak over it, and it stops: speech twice as loud as would begin an
 utterance, for a quarter of a second (so that a cough or the room does
 not), silences it at once; its run stops before its next step, and what
 you said goes to it next. What it was still writing is not shown or
-said. Typing `/stop` does the same. There is no echo cancellation, so
-this needs headphones: from loudspeakers, its own voice would interrupt
-it. With `--no-interrupt`, the microphone is not listened to while it
-works or speaks.
+said. Typing `/stop` does the same. With `--no-interrupt`, the microphone
+is not listened to while it works or speaks.
+
+### Its own voice, from loudspeakers
+
+From loudspeakers, the agent's voice reaches the microphone too, and would
+interrupt it. So its echo is taken out of what the microphone hears. The
+reply is asked of the speech service as raw samples (OpenAI's at 24 kHz,
+brought down to 16; ElevenLabs' and Deepgram's at 16; a `command:`
+speaker's audio decoded by ffmpeg) and played through a program that
+reads them on its standard input (`--play-raw`: `aplay`, `paplay`, sox's
+`play` or `ffplay`, the first there), a piece every 20 ms, so that what
+the loudspeaker was given is known, on the microphone's own count of
+samples. The sound reaches the microphone later by the player's, the
+device's and the room's delays: the delay is found by correlating the two
+(at 4 kHz, over half a second, up to half a second late), and the room's
+echo is then learned by an adaptive filter, 64 ms long (normalized least
+mean squares), and taken away. While you speak over it, the filter does
+not learn (what is left is much louder than it leaves of the echo); while
+only the loudspeaker sounds, what is left of the echo is quietened four
+times more. In the tests, with a room made up (a delay of 119 ms and an
+echo that decays over 12 ms), the echo is at least 20 dB quieter once
+learned, and a voice over it comes through within 3 dB. A real room with
+its reverberation longer than 64 ms, or a loudspeaker that distorts,
+leaves more. `--no-echo-cancel` plays files as before; then use
+headphones.
 
 What you type is taken too: a message, a command (one typed while the
 agent works runs alongside it, as `/status` does), or the answer to a
@@ -165,10 +194,74 @@ command:<program>`, such as whisper.cpp's, or `--hear` if that is one),
 and only what was said to the agent goes to `--hear`. `--wake-cloud` lets
 a transcriber elsewhere hear it all instead.
 
-Two things here are simplified. Speech is told from silence by its
-loudness alone, not by a model of speech, so a loud room is taken for
-speech, and quiet speech in it is missed. And there is no echo
-cancellation, as above. The tests run the whole conversation with a
-stand-in microphone (silence and a tone, paced as spoken), a stand-in
-transcriber, a scripted model and a player that takes its time, against a
-devnet.
+The tests run the whole conversation with a stand-in microphone (silence
+and a tone, paced as spoken), a stand-in transcriber, a scripted model and
+a player that takes its time, against a devnet; the model of speech on a
+sentence spoken by espeak-ng and on noise, and the echo canceller on a
+room made up, as above.
+
+### Through a realtime speech model
+
+`sion agent talk <profile> --voice --live --realtime
+openai:<model>[:<voice>]` (`openai:gpt-realtime`, the voice `marin` by
+default) hears and speaks through a model made for it, over a WebSocket
+(OpenAI's Realtime API, or the one at `OPENAI_BASE_URL`), which answers
+faster than hearing, thinking and speaking one after the other. It does
+nothing itself: its one tool is `ask_agent`, and what you want goes to the
+profile's agent, in the conversation's session, under its charter, its
+approvals and its budget; the realtime model says the agent's answer. It
+is told not to answer from what it knows and not to make answers up, and
+it cannot approve anything: approvals are typed (`/approve`, `/deny`).
+
+Utterances are found on this machine as above (the model of speech, the
+echo taken out), and only they are sent, each as it ends; the realtime
+model's own turn detection is off. Your words are transcribed for the
+screen (`you (heard): …`), its words shown as it says them. Speak over it
+and it stops: what it played is cut, its response cancelled, and it is
+told how much of it you heard. Its audio comes at 24 kHz and is played at
+16, through the raw player. Tested against a stand-in for the Realtime API
+and a scripted model, on a devnet; the Realtime API itself was not
+reached.
+
+## Meeting notes
+
+`sion agent meeting <profile>` takes a meeting's notes: the meeting is
+heard and transcribed as it goes, the transcript written to
+`$SION_HOME/agents/meetings/<when>-<title>.md` line by line, and at its
+end the profile's agent writes the notes (a summary, the decisions, the
+action items with who does them and by when as said, what is still open),
+added to the file and sent to `--deliver` if given (a channel, as a
+schedule's). What was said in a meeting is other people's: the session
+that writes the notes is tainted, and reaches nothing outside without a
+person.
+
+By phone, `--dial <number> --digits <keys>`: Twilio calls the meeting's
+dial-in number from `TWILIO_NUMBER` (`TWILIO_ACCOUNT_SID`,
+`TWILIO_AUTH_TOKEN`), keys in the meeting id and passcode (`w` waits half
+a second: `wwww123456#ww987#`), and transcribes the meeting as it speaks
+(`<Start><Transcription>`, `--language`), each finished sentence posted to
+`--listen-at` (port 8790), which Twilio reaches at `--public-url`. The call
+says nothing; it ends with the meeting, at `--minutes` (120), or when you
+press Enter. A transcription is taken only at an address with a token made
+for the meeting, and only with Twilio's signature when it carries one.
+
+Here, `--here --hear <provider>`: this machine's microphone, and with
+`--monitor` what it plays (the meeting app's sound, from PulseAudio's or
+PipeWire's monitor through `parec`, or the program given), each cut into
+utterances by the model of speech and transcribed, as `me` and `others`.
+What the loudspeakers play is the echo the microphone's sound loses, so
+the others are not heard twice.
+
+```text
+$ sion agent meeting lead --dial +15559990000 --digits 'wwww123456#' \
+    --public-url https://bot.example.org --title "Release sync" --deliver telegram:12345
+(calling +15559990000; the transcript follows as it is said; Enter ends it)
+[00:00:41] meeting: Shall we ship it?
+[00:00:47] meeting: Ann will ship it on Friday.
+(the call ended: completed)
+(writing the notes of 2 lines)
+```
+
+Tested against a stand-in for Twilio's API posting signed transcriptions,
+and here with stand-in microphones and a stand-in transcriber, on a
+devnet; Twilio itself was not reached.

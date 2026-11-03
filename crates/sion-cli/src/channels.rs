@@ -2024,6 +2024,8 @@ mod tests {
             shared_memory: Vec::new(),
             confidential: false,
             confidential_files: Vec::new(),
+            routes: Vec::new(),
+            sorter: None,
         };
         let sent = json!({"text": "Look at these.", "files": [
             {"name": "plan.png", "base64": "iVBORw0KGgoAAA=="},

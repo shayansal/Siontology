@@ -1306,6 +1306,10 @@ impl Saved {
                 Ok(None) => {}
                 Err(e) => notes.push(format!("web search is not offered: {e}")),
             }
+            // Recent posts on X, with a token for X's API in the environment.
+            if let Some(search) = crate::x_mentions::XSearch::from_env() {
+                tools.add(search);
+            }
         }
         for name in &self.mcp {
             let mounted = crate::agent_mcp::get(name)
