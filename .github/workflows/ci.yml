@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -37,7 +37,7 @@ jobs:
     env:
       MDBOOK_VERSION: "0.4.40"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: The generated pages match their sources
         run: python3 site/src/build_site.py --check
       - name: Install mdBook
