@@ -58,11 +58,14 @@ const TLDS: &str = "com|net|org|edu|gov|mil|int|info|biz|name|pro|aero|coop|muse
 /// What X would turn into a link in a post: an address with a scheme (in
 /// any case), one starting `www.`, or a bare domain with a known ending,
 /// with what follows it.
-fn link_pattern() -> regex::Regex {
-    regex::Regex::new(&format!(
-        r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"]+|\bwww\.[^\s<>"]+|\b(?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+(?:{TLDS})\b(?:[/?#][^\s<>"]*)?"#
-    ))
-    .expect("a valid pattern")
+fn link_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(&format!(
+            r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"]+|\bwww\.[^\s<>"]+|\b(?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+(?:{TLDS})\b(?:[/?#][^\s<>"]*)?"#
+        ))
+        .expect("a valid pattern")
+    })
 }
 
 /// A link without the punctuation that ends the sentence it is in.
@@ -616,11 +619,17 @@ pub fn post_reply(
 
 /// The mentions since `cursor` (the newest page, without one), page after
 /// page: their posts, the posts they include, and the newest mention's id.
-fn mentions(
-    api: &XApi,
-    me: &str,
-    cursor: Option<&str>,
-) -> Result<(Vec<Post>, BTreeMap<String, Post>, Option<String>), CliError> {
+/// The mentions a poll read.
+struct Mentions {
+    /// Oldest first.
+    posts: Vec<Post>,
+    /// The posts they reply to or quote, by id.
+    included: BTreeMap<String, Post>,
+    /// The newest mention's id.
+    newest: Option<String>,
+}
+
+fn mentions(api: &XApi, me: &str, cursor: Option<&str>) -> Result<Mentions, CliError> {
     let base = format!(
         "/2/users/{me}/mentions?max_results=100&tweet.fields={POST_FIELDS}&expansions=author_id,referenced_tweets.id,referenced_tweets.id.author_id&user.fields=username,protected"
     );
@@ -655,7 +664,11 @@ fn mentions(
         }
     }
     posts.sort_by_key(|p| p.id.parse::<u128>().unwrap_or(0));
-    Ok((posts, included, newest))
+    Ok(Mentions {
+        posts,
+        included,
+        newest,
+    })
 }
 
 /// One poll: answers the mentions since the last, as `settings` say, with
@@ -686,7 +699,11 @@ pub fn poll_once(
         }
     };
     let (me, my_name) = api.me().map_err(CliError::Connection)?;
-    let (posts, included, newest) = mentions(api, &me, kept.cursor.as_deref())?;
+    let Mentions {
+        posts,
+        included,
+        newest,
+    } = mentions(api, &me, kept.cursor.as_deref())?;
     if kept.cursor.is_none() && !settings.dry_run {
         kept.cursor = Some(newest.unwrap_or_else(|| "1".into()));
         save(&kept)?;
