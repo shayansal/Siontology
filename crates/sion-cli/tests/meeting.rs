@@ -298,6 +298,12 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
     .unwrap();
     let (codes, twiml, to, from) = poster.join().unwrap();
     assert_eq!(codes, vec![200, 200, 200, 403, 200]);
+    // The call hung up, however it ended.
+    let hung_up = sent_to(&placed, "POST", "/2010-04-01/Accounts/AC1/Calls/CA1.json");
+    assert_eq!(
+        common::form(&hung_up[0].body),
+        vec![("Status".to_string(), "completed".to_string())]
+    );
     assert!(
         twiml.starts_with("<Response><Play digits=\"wwww123456#\"/><Start><Transcription"),
         "{twiml}"

@@ -46,8 +46,29 @@ use crate::error::CliError;
 use crate::x_api::{XApi, XError};
 
 /// The fields asked of a post.
-const POST_FIELDS: &str =
-    "id,text,author_id,conversation_id,created_at,in_reply_to_user_id,referenced_tweets,note_tweet";
+const POST_FIELDS: &str = "id,text,author_id,conversation_id,created_at,in_reply_to_user_id,referenced_tweets,note_tweet,entities";
+
+/// The pages of mentions read in one poll, at most: 500 mentions.
+const MOST_PAGES: usize = 5;
+
+/// The top-level domains a bare address is taken to end with, as X links
+/// it: the common generic ones and every country's.
+const TLDS: &str = "com|net|org|edu|gov|mil|int|info|biz|name|pro|aero|coop|museum|mobi|asia|tel|travel|jobs|xyz|top|site|online|store|shop|tech|app|dev|page|blog|cloud|link|live|news|world|today|space|website|club|art|design|email|link|click|fun|lol|wtf|xxx|porn|bet|casino|crypto|nft|eth|zip|mov|ly|io|ai|co|me|tv|cc|gg|sh|so|to|fm|am|im|is|it|in|us|uk|eu|ac|ad|ae|af|ag|al|ao|aq|ar|as|at|au|aw|ax|az|ba|bb|bd|be|bf|bg|bh|bi|bj|bm|bn|bo|br|bs|bt|bw|by|bz|ca|cd|cf|cg|ch|ci|ck|cl|cm|cn|cr|cu|cv|cw|cx|cy|cz|de|dj|dk|dm|do|dz|ec|ee|eg|er|es|et|fi|fj|fk|fo|fr|ga|gb|gd|ge|gf|gh|gi|gl|gm|gn|gp|gq|gr|gs|gt|gu|gw|gy|hk|hm|hn|hr|ht|hu|id|ie|il|iq|ir|je|jm|jo|jp|ke|kg|kh|ki|km|kn|kp|kr|kw|ky|kz|la|lb|lc|li|lk|lr|ls|lt|lu|lv|ma|mc|md|mg|mh|mk|ml|mm|mn|mo|mp|mq|mr|ms|mt|mu|mv|mw|mx|my|mz|na|nc|ne|nf|ng|ni|nl|no|np|nr|nu|nz|om|pa|pe|pf|pg|ph|pk|pl|pm|pn|pr|ps|pt|pw|py|qa|re|ro|rs|ru|rw|sa|sb|sc|sd|se|sg|si|sk|sl|sm|sn|sr|ss|st|su|sv|sx|sy|sz|tc|td|tf|tg|th|tj|tk|tl|tm|tn|tr|tt|tw|tz|ua|ug|uy|uz|va|vc|ve|vg|vi|vn|vu|wf|ws|ye|yt|za|zm|zw";
+
+/// What X would turn into a link in a post: an address with a scheme (in
+/// any case), one starting `www.`, or a bare domain with a known ending,
+/// with what follows it.
+fn link_pattern() -> regex::Regex {
+    regex::Regex::new(&format!(
+        r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"]+|\bwww\.[^\s<>"]+|\b(?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+(?:{TLDS})\b(?:[/?#][^\s<>"]*)?"#
+    ))
+    .expect("a valid pattern")
+}
+
+/// A link without the punctuation that ends the sentence it is in.
+fn trimmed(link: &str) -> &str {
+    link.trim_end_matches(['.', ',', ')', ']', ';', ':', '!', '?', '\'', '"'])
+}
 
 /// The most weighted characters of a post.
 pub const POST_ROOM: usize = 280;
@@ -78,6 +99,8 @@ pub struct Post {
     pub quoted: Option<String>,
     /// Whether it is a retweet.
     pub retweet: bool,
+    /// The ids of the accounts it mentions, as X gives them.
+    pub mentioned: Vec<String>,
 }
 
 impl Post {
@@ -146,6 +169,12 @@ pub fn posts_of(answer: &Value) -> (Vec<Post>, BTreeMap<String, Post>) {
             replied_to: of("replied_to"),
             quoted: of("quoted"),
             retweet: of("retweeted").is_some(),
+            mentioned: p["entities"]["mentions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| m["id"].as_str().map(String::from))
+                .collect(),
         })
     };
     let posts = answer["data"]
@@ -271,12 +300,13 @@ pub fn task_for(post: &Post, sources: &[Source], required: bool) -> String {
 }
 
 fn normal(url: &str) -> String {
-    url.trim_end_matches(['.', ',', ')', ']', ';', ':', '!', '?'])
-        .split('#')
-        .next()
+    let url = trimmed(url).to_ascii_lowercase();
+    let url = url.split('#').next().unwrap_or_default();
+    let url = url.split_once("://").map_or(url, |(_, rest)| rest);
+    url.strip_prefix("www.")
         .unwrap_or(url)
         .trim_end_matches('/')
-        .to_ascii_lowercase()
+        .to_string()
 }
 
 /// `answer` as it may be posted: what it says, and the sources it cites
@@ -289,9 +319,7 @@ pub fn check(
     required: bool,
 ) -> Result<(String, Vec<usize>), String> {
     let marker = regex::Regex::new(r"\[(\d{1,3})\]").expect("a valid pattern");
-    // An address, without the punctuation that ends its sentence.
-    let link = regex::Regex::new(r#"https?://[^\s<>()\[\]]*[^\s<>()\[\].,;:!?'"]"#)
-        .expect("a valid pattern");
+    let link = link_pattern();
     let mut cited = BTreeSet::new();
     for found in marker.captures_iter(answer) {
         let n: usize = found[1].parse().unwrap_or(0);
@@ -300,41 +328,45 @@ pub fn check(
         }
         cited.insert(n);
     }
+    // Every link X would make of it, with a scheme or without, must be a
+    // source it was given.
     let given: BTreeSet<String> = sources.iter().map(|s| normal(&s.url)).collect();
     for found in link.find_iter(answer) {
         if !given.contains(&normal(found.as_str())) {
             return Err(format!(
                 "it names {}, an address it was not given",
-                found.as_str()
+                trimmed(found.as_str())
             ));
         }
     }
     if required && cited.is_empty() {
         return Err("it cites no source".into());
     }
-    // What it says: without addresses (the sources line gives them) and
-    // without a sources line of its own.
+    // What it says: without addresses (the sources line gives them),
+    // without a sources line of its own, and without an @ before a name,
+    // so that it mentions no one.
     let body = answer
         .lines()
         .take_while(|l| !l.trim_start().to_ascii_lowercase().starts_with("sources"))
         .collect::<Vec<_>>()
         .join("\n");
     let body = link.replace_all(&body, "").to_string();
-    let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let named =
+        regex::Regex::new(r"(^|[^A-Za-z0-9_])[@＠]+([A-Za-z0-9_])").expect("a valid pattern");
+    let mut body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    while named.is_match(&body) {
+        body = named.replace_all(&body, "$1$2").to_string();
+    }
     Ok((body, cited.into_iter().collect()))
 }
 
 /// The weight X gives `text`: a link 23, the characters of its first
 /// ranges 1, others 2 (twitter-text's counting).
 pub fn weighted(text: &str) -> usize {
-    let link = regex::Regex::new(r"https?://[^\s]+").expect("a valid pattern");
-    let mut weight = 0;
-    let mut rest = text.to_string();
-    for found in link.find_iter(text) {
-        weight += LINK_WEIGHT;
-        rest = rest.replacen(found.as_str(), "", 1);
-    }
-    weight
+    let link = link_pattern();
+    let links = link.find_iter(text).count();
+    let rest = link.replace_all(text, "");
+    links * LINK_WEIGHT
         + rest
             .chars()
             .map(|c| match c as u32 {
@@ -342,6 +374,24 @@ pub fn weighted(text: &str) -> usize {
                 _ => 2,
             })
             .sum::<usize>()
+}
+
+/// `word` cut into pieces of at most [`POST_ROOM`] weighted characters.
+fn hard_split(word: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut piece = String::new();
+    for c in word.chars() {
+        piece.push(c);
+        if weighted(&piece) > POST_ROOM {
+            piece.pop();
+            pieces.push(std::mem::take(&mut piece));
+            piece.push(c);
+        }
+    }
+    if !piece.is_empty() {
+        pieces.push(piece);
+    }
+    pieces
 }
 
 /// The posts of a reply: `body` in as few posts as it fits, its sentences
@@ -373,7 +423,12 @@ pub fn compose(
     let chars: Vec<char> = body.chars().collect();
     for (i, c) in chars.iter().enumerate() {
         current.push(*c);
-        if matches!(c, '.' | '!' | '?') && chars.get(i + 1).map_or(true, |n| n.is_whitespace()) {
+        let ends = match c {
+            '.' | '!' | '?' => chars.get(i + 1).map_or(true, |n| n.is_whitespace()),
+            '。' | '！' | '？' | '．' => true,
+            _ => false,
+        };
+        if ends {
             pieces.push(current.trim().to_string());
             current.clear();
         }
@@ -388,15 +443,22 @@ pub fn compose(
             continue;
         }
         let mut part = String::new();
-        for word in piece.split_whitespace() {
+        let words = piece.split_whitespace().flat_map(|word| {
+            if weighted(word) > POST_ROOM {
+                hard_split(word)
+            } else {
+                vec![word.to_string()]
+            }
+        });
+        for word in words {
             let next = if part.is_empty() {
-                word.to_string()
+                word.clone()
             } else {
                 format!("{part} {word}")
             };
             if weighted(&next) > POST_ROOM && !part.is_empty() {
                 fitting.push(std::mem::take(&mut part));
-                part = word.to_string();
+                part = word;
             } else {
                 part = next;
             }
@@ -430,6 +492,12 @@ pub fn compose(
     if posts.len() > most {
         return Err(format!("it needs {} posts, more than {most}", posts.len()));
     }
+    if let Some(long) = posts.iter().find(|p| weighted(p) > POST_ROOM) {
+        return Err(format!(
+            "a post would be {} characters long, more than X takes",
+            weighted(long)
+        ));
+    }
     Ok(posts)
 }
 
@@ -448,10 +516,11 @@ pub struct Kept {
     /// The UTC day the counts are for.
     #[serde(default)]
     pub day: String,
-    /// Mentions answered that day.
+    /// Mentions taken on that day: a session run for each, whether it
+    /// ended in a reply or not.
     #[serde(default)]
-    pub answered: u32,
-    /// Mentions answered that day, by person.
+    pub taken: u32,
+    /// Mentions taken on that day, by person.
     #[serde(default)]
     pub by_person: BTreeMap<String, u32>,
     /// Replies posted: the mention, the posts.
@@ -508,49 +577,91 @@ fn today() -> String {
         .to_string()
 }
 
-/// The profile as it answers in public: its models, instructions and
-/// skills, and none of its memory, workspace or tools that reach outside,
-/// since what it says is posted for anyone to read and what it is asked is
-/// a stranger's.
-pub fn answering(profile: &crate::profiles::Profile) -> crate::profiles::Profile {
-    let mut public = profile.clone();
-    public.memory = None;
-    public.shared_memory.clear();
-    public.workspace = None;
-    public.confidential_files.clear();
-    public.web = false;
-    public.delegate = false;
-    public.shell = None;
-    public.mcp.clear();
-    public.storage = false;
-    public.home_assistant = false;
-    public.screen = Default::default();
-    public.image_model = None;
-    public.reflect = false;
-    public
-}
-
-/// Posts `posts` as a reply to `mention`, each after the one before; the
-/// ids posted.
-pub fn post_reply(api: &XApi, mention: &str, posts: &[String]) -> Result<Vec<String>, XError> {
+/// Posts `posts` as a reply to `mention`, each after the one before, the
+/// accounts in `leave_out` not addressed: the ids posted, and why it
+/// stopped if it did before the last.
+pub fn post_reply(
+    api: &XApi,
+    mention: &str,
+    posts: &[String],
+    leave_out: &[String],
+) -> (Vec<String>, Option<XError>) {
     let mut ids: Vec<String> = Vec::new();
     for text in posts {
         let to = ids.last().cloned().unwrap_or_else(|| mention.to_string());
-        let answer = api.call(
+        let mut reply = json!({"in_reply_to_tweet_id": to});
+        if !leave_out.is_empty() {
+            reply["exclude_reply_user_ids"] = json!(leave_out);
+        }
+        let answer = match api.call(
             "POST",
             "/2/tweets",
-            Some(&json!({"text": text, "reply": {"in_reply_to_tweet_id": to}})),
-        )?;
-        let id = answer["data"]["id"]
-            .as_str()
-            .ok_or_else(|| XError::Other("X did not say what it posted".into()))?;
-        ids.push(id.to_string());
+            Some(&json!({"text": text, "reply": reply})),
+        ) {
+            Ok(answer) => answer,
+            Err(e) => return (ids, Some(e)),
+        };
+        match answer["data"]["id"].as_str() {
+            Some(id) => ids.push(id.to_string()),
+            None => {
+                return (
+                    ids,
+                    Some(XError::Other("X did not say what it posted".into())),
+                )
+            }
+        }
     }
-    Ok(ids)
+    (ids, None)
+}
+
+/// The mentions since `cursor` (the newest page, without one), page after
+/// page: their posts, the posts they include, and the newest mention's id.
+fn mentions(
+    api: &XApi,
+    me: &str,
+    cursor: Option<&str>,
+) -> Result<(Vec<Post>, BTreeMap<String, Post>, Option<String>), CliError> {
+    let base = format!(
+        "/2/users/{me}/mentions?max_results=100&tweet.fields={POST_FIELDS}&expansions=author_id,referenced_tweets.id,referenced_tweets.id.author_id&user.fields=username,protected"
+    );
+    let mut posts = Vec::new();
+    let mut included = BTreeMap::new();
+    let mut newest = None;
+    let mut next: Option<String> = None;
+    for page in 0..MOST_PAGES {
+        let mut path = base.clone();
+        if let Some(cursor) = cursor {
+            path.push_str(&format!("&since_id={cursor}"));
+        }
+        if let Some(token) = &next {
+            path.push_str(&format!(
+                "&pagination_token={}",
+                crate::skill_registries::escape(token)
+            ));
+        }
+        let answer = api
+            .call("GET", &path, None)
+            .map_err(|e| CliError::Connection(e.to_string()))?;
+        if page == 0 {
+            newest = answer["meta"]["newest_id"].as_str().map(String::from);
+        }
+        let (more, with) = posts_of(&answer);
+        posts.extend(more);
+        included.extend(with);
+        next = answer["meta"]["next_token"].as_str().map(String::from);
+        // Without a place to start from, only the newest page is read.
+        if next.is_none() || cursor.is_none() {
+            break;
+        }
+    }
+    posts.sort_by_key(|p| p.id.parse::<u128>().unwrap_or(0));
+    Ok((posts, included, newest))
 }
 
 /// One poll: answers the mentions since the last, as `settings` say, with
-/// `profile`'s agent; returns what happened, a line each.
+/// `profile`'s agent; returns what happened, a line each. What it keeps is
+/// saved as each mention is taken on, before its reply is posted, so that a
+/// mention is answered at most once; a dry run saves nothing.
 pub fn poll_once(
     api: &XApi,
     ledger: crate::runtime::SharedLedger,
@@ -559,37 +670,41 @@ pub fn poll_once(
 ) -> Result<Vec<String>, CliError> {
     let mut kept = load(&profile.name);
     let mut lines = Vec::new();
-    let public = answering(profile);
+    // What it says is posted for anyone to read, and what it is asked is a
+    // stranger's: none of the profile's memory, files or reach, and no
+    // tools at all, since what it answers from is gathered before.
+    let public = profile.without_reach();
+    let no_tools = crate::channels::ChatSettings {
+        tools: Some(BTreeSet::new()),
+        ..Default::default()
+    };
+    let save = |kept: &Kept| -> Result<(), CliError> {
+        if settings.dry_run {
+            Ok(())
+        } else {
+            save(&profile.name, kept)
+        }
+    };
     let (me, my_name) = api.me().map_err(CliError::Connection)?;
-    let mut path = format!(
-        "/2/users/{me}/mentions?max_results=100&tweet.fields={POST_FIELDS}&expansions=author_id,referenced_tweets.id,referenced_tweets.id.author_id&user.fields=username,protected"
-    );
-    if let Some(cursor) = &kept.cursor {
-        path.push_str(&format!("&since_id={cursor}"));
-    }
-    let answer = api
-        .call("GET", &path, None)
-        .map_err(|e| CliError::Connection(e.to_string()))?;
-    let newest = answer["meta"]["newest_id"].as_str().map(String::from);
-    if kept.cursor.is_none() {
+    let (posts, included, newest) = mentions(api, &me, kept.cursor.as_deref())?;
+    if kept.cursor.is_none() && !settings.dry_run {
         kept.cursor = Some(newest.unwrap_or_else(|| "1".into()));
-        save(&profile.name, &kept)?;
+        save(&kept)?;
         lines.push(format!(
             "@{my_name}: starting from the newest mention; nothing older is answered"
         ));
         return Ok(lines);
     }
-    let (mut posts, included) = posts_of(&answer);
-    posts.sort_by_key(|p| p.id.parse::<u128>().unwrap_or(0));
     if let Some(newest) = newest {
         kept.cursor = Some(newest);
     }
     let day = today();
     if kept.day != day {
         kept.day = day;
-        kept.answered = 0;
+        kept.taken = 0;
         kept.by_person.clear();
     }
+    save(&kept)?;
     let search = crate::runtime::web_search().ok().flatten();
     let pages = sion_http::Client::new(sion_http::Options::default()).ok();
     let fetch = |url: &str| -> Option<String> {
@@ -619,11 +734,13 @@ pub fn poll_once(
         match words.trim_matches(|c: char| !c.is_alphanumeric()) {
             "stop" | "unsubscribe" => {
                 kept.stopped.insert(post.author_id.clone());
+                save(&kept)?;
                 lines.push(format!("{who}: asked not to be answered again"));
                 continue;
             }
             "start" => {
                 kept.stopped.remove(&post.author_id);
+                save(&kept)?;
                 lines.push(format!("{who}: may be answered again"));
                 continue;
             }
@@ -638,9 +755,9 @@ pub fn poll_once(
         {
             continue;
         }
-        if kept.answered >= settings.per_day {
+        if kept.taken >= settings.per_day {
             lines.push(format!(
-                "{who}: not answered, {} answered today already",
+                "{who}: not answered, {} taken on today already",
                 settings.per_day
             ));
             continue;
@@ -648,10 +765,16 @@ pub fn poll_once(
         let count = kept.by_person.get(&post.author_id).copied().unwrap_or(0);
         if count >= settings.per_person {
             lines.push(format!(
-                "{who}: not answered, {count} of theirs answered today already"
+                "{who}: not answered, {count} of theirs taken on today already"
             ));
             continue;
         }
+        // Counted before the research and the session, which cost whether
+        // a reply comes of them or not; and kept, so that a stop does not
+        // take it on again.
+        kept.taken += 1;
+        *kept.by_person.entry(post.author_id.clone()).or_default() += 1;
+        save(&kept)?;
         let (sources, notes) = research(&post, &included, search.as_ref(), settings.read, &fetch);
         for note in notes {
             lines.push(format!("{who}: {note}"));
@@ -661,14 +784,7 @@ pub fn poll_once(
             outside: true,
             ..Default::default()
         };
-        let saved = public.start_in(
-            ledger.clone(),
-            &task,
-            &[],
-            hooks,
-            &crate::channels::ChatSettings::default(),
-        );
-        let said = match saved {
+        let said = match public.start_in(ledger.clone(), &task, &[], hooks, &no_tools) {
             Ok((saved, _)) => match &saved.ended {
                 Some(sion_agent::Ended::Done { text }) => text.clone(),
                 other => {
@@ -691,7 +807,7 @@ pub fn poll_once(
         let posts = check(&said, &sources, settings.sources_required).and_then(|(body, cited)| {
             let cited: Vec<(usize, String)> = cited
                 .iter()
-                .map(|n| (*n, sources[n - 1].url.clone()))
+                .filter_map(|n| sources.get(n.wrapping_sub(1)).map(|s| (*n, s.url.clone())))
                 .collect();
             compose(&body, &cited, settings.max_posts)
         });
@@ -712,31 +828,49 @@ pub fn poll_once(
             }
             continue;
         }
-        match post_reply(api, &post.id, &posts) {
-            Ok(ids) => {
-                kept.answered += 1;
-                *kept.by_person.entry(post.author_id.clone()).or_default() += 1;
-                lines.push(format!(
-                    "{who}: answered in {} post{}",
-                    ids.len(),
-                    if ids.len() == 1 { "" } else { "s" }
-                ));
-                kept.replies.push((post.id.clone(), ids));
-                let len = kept.replies.len();
-                if len > 100 {
-                    kept.replies.drain(..len - 100);
-                }
+        // The reply addresses the mention's author only: not everyone the
+        // mention named.
+        let leave_out: Vec<String> = post
+            .mentioned
+            .iter()
+            .filter(|id| **id != post.author_id && **id != me)
+            .cloned()
+            .collect();
+        let (ids, failed) = post_reply(api, &post.id, &posts, &leave_out);
+        if !ids.is_empty() {
+            kept.replies.push((post.id.clone(), ids.clone()));
+            let len = kept.replies.len();
+            if len > 100 {
+                kept.replies.drain(..len - 100);
             }
+            save(&kept)?;
+        }
+        match failed {
+            None => lines.push(format!(
+                "{who}: answered in {} post{}",
+                ids.len(),
+                if ids.len() == 1 { "" } else { "s" }
+            )),
             // A reply X refuses (the author limits replies, the post is
             // gone, the text repeats) is not tried again.
-            Err(XError::Status(403, body)) => lines.push(format!(
-                "{who}: X refused the reply: {}",
+            Some(XError::Status(403, body)) => lines.push(format!(
+                "{who}: X refused the reply{}: {}",
+                if ids.is_empty() {
+                    String::new()
+                } else {
+                    format!(" after {} of {} posts", ids.len(), posts.len())
+                },
                 body.chars().take(200).collect::<String>()
             )),
-            Err(e) => lines.push(format!("{who}: not posted: {e}")),
+            Some(e) if ids.is_empty() => lines.push(format!("{who}: not posted: {e}")),
+            Some(e) => lines.push(format!(
+                "{who}: {} of {} posts posted, then: {e}",
+                ids.len(),
+                posts.len()
+            )),
         }
     }
-    save(&profile.name, &kept)?;
+    save(&kept)?;
     Ok(lines)
 }
 
@@ -963,6 +1097,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body, "As says [1].");
+        // What X would link without a scheme, or in capitals, is caught too.
+        for sneaky in [
+            "See HTTPS://evil.example/x [1].",
+            "See www.evil.example [1].",
+            "See bit.ly/x [1].",
+            "Write to ann@evil.io [1].",
+        ] {
+            assert!(
+                check(sneaky, &sources, true)
+                    .unwrap_err()
+                    .contains("an address it was not given"),
+                "{sneaky}"
+            );
+        }
+        // A given source, however it is written, is let through.
+        assert!(check("As EXAMPLE.ORG/a says [1].", &sources, true).is_ok());
+        // An @ before a name is taken off: the reply mentions no one.
+        let (body, _) = check("Ask @everyone and ＠cy, or mail ann [1].", &sources, true).unwrap();
+        assert_eq!(body, "Ask everyone and cy, or mail ann [1].");
+        // Words with a point in them are not addresses.
+        assert!(check("Node.js 22, e.g. at 9 a.m. [1].", &sources, true).is_ok());
     }
 
     #[test]
@@ -994,6 +1149,18 @@ mod tests {
         assert!(compose(&long.repeat(4), &[], 3)
             .unwrap_err()
             .contains("more than 3"));
+        // Text without spaces, two-weighted, is cut to fit.
+        let cjk = "橋は正午に閉まります。".repeat(20);
+        let posts = compose(&cjk, &[], 3).unwrap();
+        assert!(
+            posts.len() >= 2 && posts.iter().all(|p| weighted(p) <= POST_ROOM),
+            "{posts:?}"
+        );
+        let unbroken = "語".repeat(200);
+        let posts = compose(&unbroken, &[], 3).unwrap();
+        assert!(posts.iter().all(|p| weighted(p) <= POST_ROOM), "{posts:?}");
+        // Every link counts as X counts it.
+        assert_eq!(weighted("see www.example.org now"), 8 + LINK_WEIGHT);
     }
 
     #[test]
@@ -1010,6 +1177,7 @@ mod tests {
             replied_to: Some("10".into()),
             quoted: None,
             retweet: false,
+            mentioned: Vec::new(),
         };
         let included = BTreeMap::from([(
             "10".to_string(),
@@ -1021,6 +1189,7 @@ mod tests {
                 replied_to: None,
                 quoted: None,
                 retweet: false,
+                mentioned: Vec::new(),
             },
         )]);
         let (sources, _) = research(&post, &included, None, 0, &|_| None);

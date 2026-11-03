@@ -8,8 +8,9 @@
 //! (`<Start><Transcription>`), each finished sentence posted to this
 //! machine (`--listen`, reached at `--public-url`). The call says nothing
 //! and ends with the meeting, at `--minutes`, or when Enter is pressed here.
-//! A transcription is taken only at an address with a token made for the
-//! meeting, and only with Twilio's signature when it carries one.
+//! What Twilio posts is taken only at addresses with a token made for the
+//! meeting, and only with Twilio's signature of it; the call is ended
+//! however the meeting ends.
 //!
 //! **Here** (`--here`): this machine's microphone, and with `--monitor`
 //! what it plays (the meeting app's sound, from PulseAudio's or
@@ -215,14 +216,15 @@ pub fn write_up(
         outside: true,
         ..Default::default()
     };
+    // Written from the transcript alone: none of the profile's memory,
+    // files or reach, and no tools, whatever the meeting asked for.
+    let no_tools = crate::channels::ChatSettings {
+        tools: Some(std::collections::BTreeSet::new()),
+        ..Default::default()
+    };
     let (saved, _) = profile
-        .start_in(
-            ledger,
-            &notes_task(title, lines),
-            &[],
-            hooks,
-            &crate::channels::ChatSettings::default(),
-        )
+        .without_reach()
+        .start_in(ledger, &notes_task(title, lines), &[], hooks, &no_tools)
         .map_err(|e| e.to_string())?;
     match &saved.ended {
         Some(sion_agent::Ended::Done { text }) if !text.trim().is_empty() => Ok(text.clone()),
@@ -424,15 +426,19 @@ fn by_phone(
     println!("(calling {number}; the transcript follows as it is said; Enter ends it)");
     let deadline = started + Duration::from_secs(seconds);
     let mut over = false;
-    while !over {
-        if ended.load(Ordering::SeqCst) || Instant::now() >= deadline {
-            let _ = twilio.post(&format!("/Calls/{sid}.json"), &[("Status", "completed")]);
-            break;
-        }
+    while !over && !ended.load(Ordering::SeqCst) && Instant::now() < deadline {
         let Ok(Some(mut request)) = server.recv_timeout(Duration::from_millis(200)) else {
             continue;
         };
         let path = request.url().to_string();
+        // Only the meeting's own addresses are read, and only what Twilio
+        // signed with the account's token is taken.
+        let (transcription, status) = (format!("{base}/transcription"), format!("{base}/status"));
+        if request.method() != &tiny_http::Method::Post || (path != transcription && path != status)
+        {
+            let _ = request.respond(tiny_http::Response::empty(404));
+            continue;
+        }
         let mut body = Vec::new();
         let _ = request.as_reader().take(1 << 20).read_to_end(&mut body);
         let form = crate::webhooks::decode_form(&body);
@@ -440,15 +446,14 @@ fn by_phone(
             .headers()
             .iter()
             .find(|h| h.field.equiv("X-Twilio-Signature"))
-            .map(|h| h.value.as_str().to_string());
-        let signed_well = signature.as_deref().map_or(true, |given| {
-            crate::webhooks::twilio_signature(&twilio.token, &format!("{public}{path}"), &form)
-                == given
-        });
-        let known = path.starts_with(&format!("{base}/"));
-        let code = if !known || !signed_well {
+            .map(|h| h.value.as_str().to_string())
+            .unwrap_or_default();
+        let expected =
+            crate::webhooks::twilio_signature(&twilio.token, &format!("{public}{path}"), &form);
+        let signed_well = sion_http::same_bytes(signature.as_bytes(), expected.as_bytes());
+        let code = if !signed_well {
             403
-        } else if path == format!("{base}/transcription") {
+        } else if path == transcription {
             if let Some(text) = transcribed(&form) {
                 kept.add(Line {
                     at: started.elapsed().as_secs(),
@@ -457,7 +462,7 @@ fn by_phone(
                 });
             }
             200
-        } else if path == format!("{base}/status") {
+        } else {
             let state = form
                 .iter()
                 .find(|(n, _)| n == "CallStatus")
@@ -471,11 +476,12 @@ fn by_phone(
                 over = true;
             }
             200
-        } else {
-            404
         };
         let _ = request.respond(tiny_http::Response::empty(code));
     }
+    // However it ended, the call is ended too: a call already over is told
+    // so, and nothing comes of it.
+    let _ = twilio.post(&format!("/Calls/{sid}.json"), &[("Status", "completed")]);
     Ok(())
 }
 

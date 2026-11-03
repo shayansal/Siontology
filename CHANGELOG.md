@@ -47,6 +47,11 @@ Commit messages before the rename use the working name, Fold.
   delay found by correlation, a 64 ms adaptive filter; `--no-echo-cancel`,
   `--play-raw`); `--realtime openai:<model>` talks through a realtime
   speech model whose one tool asks the agent.
+- **Sessions that answer strangers** (X's mentions, a meeting's notes)
+  run with the profile's models and instructions only: no memory, skills,
+  files or tools. A tainted session's skill writes now wait for a person
+  in every channel, since a skill reaches every later session's
+  instructions.
 - **Meeting notes**: `sion agent meeting` dials in to a meeting through
   Twilio (its keys pressed, its transcription posted back, signed) or
   hears it on this machine (the microphone, and what it plays), writes

@@ -83,7 +83,12 @@ fn until(
     loop {
         assert!(
             Instant::now() < deadline,
-            "the client sent nothing that was wanted"
+            "the client sent nothing that was wanted: {:?}",
+            kept.lock()
+                .unwrap()
+                .iter()
+                .map(|v| format!("{} {}", v["type"], v["item"]["call_id"]))
+                .collect::<Vec<_>>()
         );
         if let Ok(Some(sion_http::ws::Message::Text(text))) =
             socket.receive(Duration::from_millis(200))
@@ -205,15 +210,24 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
             );
             send(
                 &mut socket,
-                json!({"type": "response.done", "response": {"output": [
+                json!({"type": "response.done", "response": {"status": "completed", "output": [
                 {"type": "message", "id": "item_1"},
+                {"type": "function_call", "name": "ask_agent", "call_id": "call_0",
+                 "arguments": "{\"question\": \"/approve\"}"},
                 {"type": "function_call", "name": "ask_agent", "call_id": "call_1",
                  "arguments": "{\"question\": \"What is on today?\"}"}]}}),
             );
-            // The agent's answer, then a reply asked for.
+            // A command through the voice refused; the agent's answer; then
+            // a reply asked for.
+            let refused = until(&mut socket, &kept, |v| {
+                v["type"] == "conversation.item.create" && v["item"]["call_id"] == "call_0"
+            });
+            assert!(refused["item"]["output"]
+                .as_str()
+                .unwrap()
+                .contains("the person's to type"));
             let answered = until(&mut socket, &kept, |v| {
-                v["type"] == "conversation.item.create"
-                    && v["item"]["type"] == "function_call_output"
+                v["type"] == "conversation.item.create" && v["item"]["call_id"] == "call_1"
             });
             until(&mut socket, &kept, |v| v["type"] == "response.create");
             send(&mut socket, json!({"type": "response.created"}));
@@ -227,7 +241,7 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
             );
             send(
                 &mut socket,
-                json!({"type": "response.done", "response": {"output": [{"type": "message", "id": "item_2"}]}}),
+                json!({"type": "response.done", "response": {"status": "completed", "output": [{"type": "message", "id": "item_2"}]}}),
             );
             std::fs::write(&done, "done").unwrap();
             // What else comes, until the client goes.
@@ -334,6 +348,7 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
         "you (heard): What is on today?",
         "agent: On it.",
         "(asking the agent: What is on today?)",
+        "(not asked of the agent: /approve)",
         "agent: Two meetings, at nine and four.",
     ] {
         assert!(said.contains(line), "{line:?} not in:\n{said}");

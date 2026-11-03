@@ -75,23 +75,60 @@ const RECORDER: &str = r#"(() => {
     (el.tagName === 'INPUT' && !NOT_TYPED.test(el.getAttribute('type') || 'text')) ||
     el.tagName === 'TEXTAREA' || el.isContentEditable);
   const SECRET_COMPLETE = /(password|one-time-code|cc-number|cc-csc|cc-exp)/i;
-  const SECRET_NAME = /(pass|pwd|otp|mfa|secret|token|cvv|cvc|ssn|(^|[^a-z])pin([^a-z]|$)|pin.?code|card.?num|security.?code)/i;
+  // What a field's name, id, label, placeholder or description say of it,
+  // its camelCase and separators made into words.
+  const SECRET_WORDS = /\b(pass|password|passwort|passcode|passphrase|mot de passe|contrase(n|ñ)a|pwd|pw|pin|pins|pincode|otp|totp|mfa|2fa|one ?time|verification code|security code|auth code|authentication code|cvv|cvc|csc|card ?number|cc ?num|ssn|social security|secret|token|api ?key|private key|seed phrase|recovery (code|phrase))\b/i;
+  const words = (s) => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.\[\]:]+/g, ' ');
+  const described = (el) => words([el.getAttribute('name'), el.id, el.getAttribute('placeholder'),
+    el.getAttribute('aria-label'), el.getAttribute('title'),
+    el.labels ? [...el.labels].map((l) => l.textContent).join(' ') : ''].join(' '));
   const passwords = new WeakSet();
   const isPassword = (el) => {
-    if (el.tagName !== 'INPUT') return false;
+    if (!el || el.tagName !== 'INPUT') return false;
     if ((el.getAttribute('type') || '').toLowerCase() === 'password') passwords.add(el);
     return passwords.has(el) || /password/i.test(el.getAttribute('autocomplete') || '');
   };
-  const isSecret = (el) => isPassword(el) ||
+  // A field whose characters the page hides as a password's.
+  const masked = (el) => {
+    try {
+      const style = getComputedStyle(el);
+      return (style.webkitTextSecurity || style.getPropertyValue('-webkit-text-security') || 'none') !== 'none';
+    } catch (_) { return false; }
+  };
+  const isSecret = (el) => isPassword(el) || masked(el) ||
     SECRET_COMPLETE.test(el.getAttribute('autocomplete') || '') ||
-    SECRET_NAME.test((el.getAttribute('name') || '') + ' ' + (el.id || ''));
+    SECRET_WORDS.test(described(el));
+  const hasPassword = (scope) => {
+    try { return !!scope && !!scope.querySelector && !!scope.querySelector('input[type=password]'); }
+    catch (_) { return false; }
+  };
   const inLogin = (el) => {
     if (el.tagName !== 'INPUT') return false;
     if (/username/i.test(el.getAttribute('autocomplete') || '')) return true;
-    const scope = el.form || document;
     return /^(text|email|tel)$/i.test(el.getAttribute('type') || 'text') &&
-      !!scope.querySelector('input[type=password]');
+      (hasPassword(el.form) || hasPassword(el.getRootNode()) || hasPassword(document));
   };
+  // Password fields marked as they appear, and before anything shows what
+  // they hold: a field shown as text later is still one.
+  const markAll = (root) => {
+    try { for (const el of root.querySelectorAll('input')) isPassword(el); } catch (_) {}
+  };
+  markAll(document);
+  try {
+    new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === 'attributes' && record.target.tagName === 'INPUT') {
+          if ((record.oldValue || '').toLowerCase() === 'password') passwords.add(record.target);
+          isPassword(record.target);
+        }
+        for (const node of record.addedNodes || []) {
+          if (node.nodeType !== 1) continue;
+          if (node.tagName === 'INPUT') isPassword(node); else markAll(node);
+        }
+      }
+    }).observe(document, {subtree: true, childList: true, attributes: true,
+      attributeFilter: ['type'], attributeOldValue: true});
+  } catch (_) {}
   const ROLES = {A: 'link', BUTTON: 'button', SELECT: 'combobox', TEXTAREA: 'textbox',
     SUMMARY: 'button', OPTION: 'option', IMG: 'image', H1: 'heading', H2: 'heading',
     H3: 'heading', H4: 'heading', H5: 'heading', H6: 'heading', LI: 'listitem', TD: 'cell',
@@ -250,7 +287,7 @@ const RECORDER: &str = r#"(() => {
 
 /// Parameters of an address whose values are not kept, by a part of their
 /// names.
-const SECRET_PARAMETERS: [&str; 17] = [
+const SECRET_PARAMETERS: [&str; 24] = [
     "token",
     "code",
     "key",
@@ -268,6 +305,13 @@ const SECRET_PARAMETERS: [&str; 17] = [
     "jwt",
     "credential",
     "hash",
+    "email",
+    "mail",
+    "user",
+    "login",
+    "hint",
+    "phone",
+    "account",
 ];
 
 static PROFILES: AtomicU64 = AtomicU64::new(0);
@@ -490,13 +534,39 @@ fn running_as_root() -> bool {
     }
 }
 
+/// `text` on one line, at most `most` characters, its email addresses left
+/// out (a page's title or an account menu often holds the person's own).
 fn cut(text: &str, most: usize) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut kept = String::new();
+    for word in flat.split(' ') {
+        if !kept.is_empty() {
+            kept.push(' ');
+        }
+        let core = word.trim_matches(|c: char| !c.is_alphanumeric());
+        let email = core.split_once('@').is_some_and(|(user, host)| {
+            !user.is_empty() && host.contains('.') && !host.starts_with('.') && !host.ends_with('.')
+        });
+        if email {
+            kept.push_str(&word.replace(core, "(an email address)"));
+        } else {
+            kept.push_str(word);
+        }
+    }
+    kept.chars().take(most).collect()
+}
+
+/// Whether a part of an address's path looks like a token: long, of one
+/// piece, with letters and digits mixed (not a page's name).
+fn token_like(segment: &str) -> bool {
+    let tokenish = segment
         .chars()
-        .take(most)
-        .collect()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '=');
+    let digits = segment.chars().any(|c| c.is_ascii_digit());
+    let letters = segment.chars().any(|c| c.is_ascii_alphabetic());
+    tokenish
+        && ((segment.len() >= 32)
+            || (segment.len() >= 16 && digits && letters && !segment.contains('-')))
 }
 
 /// `url` as it is kept: without a user name or password, the values of
@@ -519,7 +589,11 @@ pub fn clean_url(url: &str) -> String {
                 None => (after, ""),
             };
             let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-            format!("{scheme}://{host}{path}")
+            let path: Vec<&str> = path
+                .split('/')
+                .map(|segment| if token_like(segment) { "…" } else { segment })
+                .collect();
+            format!("{scheme}://{host}{}", path.join("/"))
         }
         None => base.to_string(),
     };
@@ -569,6 +643,29 @@ fn ignorable(url: &str) -> bool {
         ]
         .iter()
         .any(|p| url.starts_with(p))
+}
+
+/// Before a password typed in tab `tab` for `origin`: the value typed last
+/// into a text field of that origin, among the steps just before (on the
+/// password's page, or the page before it where a sign-in asks for the
+/// name first), taken as the login's user name and not kept.
+pub fn forget_user_name(steps: &mut [Step], tab: usize, origin: &str) {
+    let before = steps
+        .iter_mut()
+        .rev()
+        .take(8)
+        .filter(|s| s.tab == tab)
+        .map(|s| &mut s.act)
+        .find(|a| matches!(a, Act::Type { origin: o, value: Some(_), .. } if o == origin));
+    if let Some(Act::Type {
+        value, login, role, ..
+    }) = before
+    {
+        if matches!(role.as_str(), "textbox" | "searchbox" | "combobox") {
+            *value = None;
+            *login = true;
+        }
+    }
 }
 
 /// The step the recorder's `payload` says, checked: no secret's value,
@@ -636,18 +733,28 @@ impl Teaching {
                 "Chromium does not start its sandbox as root: teach as an ordinary user".into(),
             );
         }
-        let profile = std::env::temp_dir().join(format!(
-            "sion-teach-{}-{}",
-            std::process::id(),
-            PROFILES.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&profile);
-        std::fs::create_dir_all(&profile).map_err(|e| format!("{}: {e}", profile.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700));
-        }
+        // A folder made now, under a name no one could have guessed: one
+        // already there (another user's, say) is never used.
+        let profile = (0..8)
+            .find_map(|_| {
+                use std::hash::{BuildHasher, Hasher};
+                let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+                hasher.write_u64(PROFILES.fetch_add(1, Ordering::Relaxed));
+                hasher.write_u128(Instant::now().elapsed().as_nanos());
+                let dir = std::env::temp_dir().join(format!(
+                    "sion-teach-{}-{:016x}",
+                    std::process::id(),
+                    hasher.finish()
+                ));
+                let mut builder = std::fs::DirBuilder::new();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    builder.mode(0o700);
+                }
+                builder.create(&dir).ok().map(|()| dir)
+            })
+            .ok_or("no folder could be made for the browser's profile")?;
         let mut args = vec![
             "--remote-debugging-pipe".to_string(),
             format!("--user-data-dir={}", profile.display()),
@@ -816,6 +923,17 @@ impl Teaching {
         if self.steps.len() >= MAX_STEPS {
             self.cut = true;
             return;
+        }
+        // A password: the user name typed just before it, on its page or
+        // the one before (a sign-in asking for one, then the other), is
+        // the login's too, and is not kept.
+        if let Act::Type {
+            password: true,
+            origin,
+            ..
+        } = &act
+        {
+            forget_user_name(&mut self.steps, tab, origin);
         }
         let at_ms = self.ms();
         // A field typed into again: what it ends up holding.
@@ -1013,24 +1131,17 @@ impl Teaching {
             "Page.javascriptDialogClosed" => {
                 if let Some(page) = &here {
                     let tab = page.tab;
-                    if let Some(Act::Dialog {
-                        kind,
-                        accepted,
-                        answer,
-                        ..
-                    }) = self
+                    if let Some(Act::Dialog { accepted, .. }) = self
                         .steps
                         .iter_mut()
                         .rev()
                         .find(|s| s.tab == tab && matches!(s.act, Act::Dialog { .. }))
                         .map(|s| &mut s.act)
                     {
+                        // What was written in a prompt is not kept: it
+                        // may be a code or a password.
                         if accepted.is_none() {
-                            let ok = params["result"] == true;
-                            *accepted = Some(ok);
-                            if ok && kind == "prompt" {
-                                *answer = params["userInput"].as_str().map(|a| cut(a, MAX_TEXT));
-                            }
+                            *accepted = Some(params["result"] == true);
                         }
                     }
                 }
@@ -1422,14 +1533,16 @@ pub fn draft(
                 kind,
                 message,
                 accepted,
-                answer,
+                ..
             } => {
                 dialogs = true;
-                let answered = match (accepted, answer) {
-                    (Some(true), Some(answer)) => format!("it was answered {}", quoted(answer)),
-                    (Some(true), None) => "it was answered OK".into(),
-                    (Some(false), _) => "it was answered Cancel".into(),
-                    (None, _) => "it was not answered".into(),
+                let answered: &str = match accepted {
+                    Some(true) if kind == "prompt" => {
+                        "it was answered (what was written was not recorded)"
+                    }
+                    Some(true) => "it was answered OK",
+                    Some(false) => "it was answered Cancel",
+                    None => "it was not answered",
                 };
                 format!("The page asks {} ({kind}): {answered}.", quoted(message))
             }
@@ -1572,6 +1685,77 @@ mod tests {
                 && ignorable("chrome://newtab/")
                 && !ignorable("https://a.example/")
         );
+    }
+
+    #[test]
+    fn addresses_and_texts_lose_what_identifies_the_person() {
+        assert_eq!(
+            clean_url("https://id.example/signin?login_hint=ann%40x.org&email=ann%40x.org&lang=en"),
+            "https://id.example/signin?login_hint=…&email=…&lang=en"
+        );
+        assert_eq!(
+            clean_url(
+                "https://shop.example/reset/8f14e45fceea167a5a36dedd4bea2543/a1B2c3D4e5F6g7H8"
+            ),
+            "https://shop.example/reset/…/…"
+        );
+        assert_eq!(
+            clean_url("https://shop.example/how-to-export-invoices-in-2026"),
+            "https://shop.example/how-to-export-invoices-in-2026"
+        );
+        assert_eq!(
+            cut("Inbox – ann.lee@gmail.com – Gmail", 100),
+            "Inbox – (an email address) – Gmail"
+        );
+    }
+
+    #[test]
+    fn a_user_name_typed_before_a_password_is_not_kept() {
+        let typed = |name: &str, value: Option<&str>, password: bool| Step {
+            at_ms: 0,
+            tab: 1,
+            act: Act::Type {
+                role: "textbox".into(),
+                name: name.into(),
+                value: value.map(String::from),
+                secret: password,
+                password,
+                login: false,
+                origin: "https://id.example".into(),
+            },
+        };
+        // Asked for the name, then on the next page for the password.
+        let mut steps = vec![
+            typed("Email or phone", Some("ann@x.org"), false),
+            step(
+                1,
+                Act::Click {
+                    role: "button".into(),
+                    name: "Next".into(),
+                    checked: None,
+                },
+            ),
+            step(
+                1,
+                Act::Arrive {
+                    url: "https://id.example/pw".into(),
+                    title: String::new(),
+                },
+            ),
+        ];
+        forget_user_name(&mut steps, 1, "https://id.example");
+        assert!(matches!(
+            &steps[0].act,
+            Act::Type {
+                value: None,
+                login: true,
+                ..
+            }
+        ));
+        // Another origin's field is left as it was.
+        let mut steps = vec![typed("Search", Some("lamps"), false)];
+        forget_user_name(&mut steps, 1, "https://other.example");
+        assert!(matches!(&steps[0].act, Act::Type { value: Some(_), .. }));
     }
 
     #[test]

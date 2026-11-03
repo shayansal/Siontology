@@ -113,7 +113,11 @@ impl Resampler {
             out.push(sum.round().clamp(-32768.0, 32767.0) as i16);
             self.at += self.down;
         }
-        let done = (self.at / self.up).saturating_sub(self.taps - 1);
+        // What no output needs again; brought down by much, the next
+        // output may fall past what has come, and is waited for.
+        let done = (self.at / self.up)
+            .saturating_sub(self.taps - 1)
+            .min(self.history.len());
         if done > 0 {
             self.history.drain(..done);
             self.at -= done * self.up;
@@ -374,6 +378,9 @@ impl Canceller {
     /// loudspeaker's echo.
     pub fn frame(&mut self, mic: &[i16]) -> Vec<i16> {
         let len = mic.len();
+        if len == 0 {
+            return Vec::new();
+        }
         let start = self.position;
         self.position += len as u64;
         self.far.heard(len);
@@ -723,6 +730,19 @@ mod tests {
             "speech in {misheard} of {} frames of noise",
             other.len()
         );
+    }
+
+    #[test]
+    fn odd_frames_and_steep_rates_do_not_break_anything() {
+        let line = FarLine::new();
+        let mut canceller = Canceller::new(line.clone());
+        line.played(&babble(1, 1.0, RATE));
+        canceller.delay = Some(100);
+        assert!(canceller.frame(&[]).is_empty());
+        assert_eq!(canceller.frame(&[5; 7]).len(), 7);
+        let mut steep = Resampler::new(16_000, 500);
+        let out: usize = (0..20).map(|_| steep.process(&[100; 320]).len()).sum();
+        assert!((195..=205).contains(&out), "{out}");
     }
 
     #[test]

@@ -655,9 +655,14 @@ mention's own words, the first two pages of them read (`--read`). The
 session is given them numbered, as data, and asked to answer from them
 in at most 600 characters, citing each claim, like `[1]`. Its answer is
 posted only if every number it cites is a source it was given, it names
-no address it was not given, and it cites at least one source
-(`--sources optional` lets an answer with none through). The reply ends
-with the sources it cites and their addresses:
+no address it was not given (anything X would make a link of: with a
+scheme in any case, from `www.`, or a bare domain), and it cites at least
+one source (`--sources optional` lets an answer with none through). An
+`@` before a name is taken off, so that a reply mentions no one, and it
+addresses only the mention's author, not the others the mention named.
+The check is of what an answer rests on, not of what it says: a model can
+cite a source for a claim the source does not make. The reply ends with
+the sources it cites and their addresses:
 
 ```text
 It closes at noon today [1], for roadworks [2].
@@ -666,23 +671,29 @@ Sources: [1] https://x.com/cy/status/90 [2] https://city.example/notices
 ```
 
 What a stranger writes is public input, so the session it starts is
-tainted from the start, and it answers with the profile's models,
-instructions and skills only: none of its memory, workspace, shell, MCP
-servers or web tools, nothing a mention could draw out of it into a
-public reply. A profile marked confidential is refused.
+tainted from the start, and it answers with the profile's models and
+instructions only: no memory, no skills (not even their names), no
+workspace, and no tools at all, since what it answers from is gathered
+before; nothing a mention could draw out of it into a public reply, or
+steer into what the profile does later. A profile marked confidential is
+refused.
 
 A post is at most 280 weighted characters (an address counts 23), and X
 bills a post with an address far more than one without, so a longer
 answer is split at its sentences into up to `--max-posts` posts (3),
 chained, with all the addresses in the last. `--per-day` (50) and
-`--per-person` (5) bound how many mentions are answered each UTC day.
-Someone who writes `stop` is not answered again until they write `start`;
-the account's own posts, retweets and protected accounts' posts are
-passed over. `--from @ana,@bo` answers only those people, and
-`--dry-run` prints the replies without posting them. The first run
-answers nothing: it starts from the newest mention. What it keeps (its
-place, who said stop, the day's counts, the replies posted) is in
-`agents/x-mentions/<profile>.json`.
+`--per-person` (5) bound how many mentions are taken on each UTC day,
+whether a reply comes of them or not, since each costs a search and a
+session. Someone who writes `stop` is not answered again until they write
+`start`; the account's own posts, retweets and protected accounts' posts
+are passed over. `--from @ana,@bo` answers only those people, and
+`--dry-run` prints the replies without posting them, and keeps nothing.
+The first run answers nothing: it starts from the newest mention. A poll
+reads up to 500 new mentions, a page of 100 at a time. What it keeps (its
+place, the mentions taken on, who said stop, the day's counts, the
+replies posted) is in `agents/x-mentions/<profile>.json`, saved as each
+mention is taken on, before its reply is posted, so that none is answered
+twice.
 
 A profile that may read the web also gets `x_search`, recent posts
 (the last seven days) searched through the same token, X's operators

@@ -18,6 +18,9 @@ const LOGIN: &str = r#"<html><head><title>Sign in</title></head><body>
 <form method="post" action="/orders">
 <label>Email <input id="user" name="user" type="email"></label>
 <label>Password <input id="pass" name="pass" type="password"></label>
+<button id="show" type="button" onclick="document.getElementById('pass').type = 'text'">Show</button>
+<label>PIN <input id="pin" name="userPin" type="text"></label>
+<label>Code <input id="code" name="c" type="text" style="-webkit-text-security: disc"></label>
 <button type="submit">Sign in</button>
 </form></body></html>"#;
 
@@ -185,11 +188,17 @@ fn a_task_shown_in_the_browser_is_written_down_as_a_skill() {
     .unwrap();
     loaded(&mut teaching, "/login");
 
-    // Signing in: the user name and the password typed, then Enter.
+    // Signing in: the password shown as text before it is typed, a PIN
+    // and a code the page masks itself, then Enter.
+    click(&teaching, "#show");
     click(&teaching, "#user");
     type_text(&teaching, EMAIL);
     click(&teaching, "#pass");
     type_text(&teaching, PASSWORD);
+    click(&teaching, "#pin");
+    type_text(&teaching, "4321");
+    click(&teaching, "#code");
+    type_text(&teaching, "778899");
     key(&teaching, "Enter", 13, Some("\r"));
     until(&mut teaching, "arrival at the orders", |steps| {
         steps
@@ -279,9 +288,12 @@ fn a_task_shown_in_the_browser_is_written_down_as_a_skill() {
         seen,
         [
             "open /login",
+            "click button Show None",
             "type textbox Email None secret=false login=true",
             "type textbox Password None secret=true login=false",
-            "press Enter in Password",
+            "type textbox PIN None secret=true login=false",
+            "type textbox Code None secret=true login=false",
+            "press Enter in Code",
             "arrive /orders",
             "type searchbox Order number Some(\"A-1042\") secret=false login=false",
             "press Enter in Order number",
@@ -297,7 +309,9 @@ fn a_task_shown_in_the_browser_is_written_down_as_a_skill() {
         recording.steps
     );
     let kept = serde_json::to_string(&recording).unwrap();
-    assert!(!kept.contains(PASSWORD) && !kept.contains(EMAIL), "{kept}");
+    for secret in [PASSWORD, EMAIL, "4321", "778899"] {
+        assert!(!kept.contains(secret), "{secret} in {kept}");
+    }
     assert!(!recording.cut);
 
     let text = draft(
@@ -311,7 +325,13 @@ fn a_task_shown_in_the_browser_is_written_down_as_a_skill() {
     let origin = format!("http://127.0.0.1:{port}");
     assert!(
         text.contains(&format!(
-            "3. Fill the password of the login saved for {origin} into the textbox \"Password\" (browser_fill_login, part password; it was not recorded), and press Enter. It opens \"Orders\" ({origin}/orders)."
+            "Fill the password of the login saved for {origin} into the textbox \"Password\" (browser_fill_login, part password; it was not recorded)."
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "Type into the textbox \"Code\" the secret the task gives (a code, a card's number: it was not recorded, so stop and ask if the task gives none), and press Enter. It opens \"Orders\" ({origin}/orders)."
         )),
         "{text}"
     );
@@ -329,5 +349,7 @@ fn a_task_shown_in_the_browser_is_written_down_as_a_skill() {
         text.contains("- Your browser must reach 127.0.0.1"),
         "{text}"
     );
-    assert!(!text.contains(PASSWORD) && !text.contains(EMAIL));
+    for secret in [PASSWORD, EMAIL, "4321", "778899"] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
 }

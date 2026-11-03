@@ -211,7 +211,11 @@ nothing itself: its one tool is `ask_agent`, and what you want goes to the
 profile's agent, in the conversation's session, under its charter, its
 approvals and its budget; the realtime model says the agent's answer. It
 is told not to answer from what it knows and not to make answers up, and
-it cannot approve anything: approvals are typed (`/approve`, `/deny`).
+it cannot approve anything: a question it puts that is a command
+(`/approve`, `/system`…) is refused, and approvals are typed. A response
+of its that was cut off (spoken over, cancelled) asks nothing of the
+agent, and its next response is asked for only once the agent has
+answered every call of the last.
 
 Utterances are found on this machine as above (the model of speech, the
 echo taken out), and only they are sent, each as it ends; the realtime
@@ -242,8 +246,10 @@ a second: `wwww123456#ww987#`), and transcribes the meeting as it speaks
 (`<Start><Transcription>`, `--language`), each finished sentence posted to
 `--listen-at` (port 8790), which Twilio reaches at `--public-url`. The call
 says nothing; it ends with the meeting, at `--minutes` (120), or when you
-press Enter. A transcription is taken only at an address with a token made
-for the meeting, and only with Twilio's signature when it carries one.
+press Enter, and is hung up however it ends. What Twilio posts is taken
+only at addresses with a token made for the meeting, and only with
+Twilio's signature of it. The notes are written from the transcript
+alone: the session has none of the profile's memory, files or tools.
 
 Here, `--here --hear <provider>`: this machine's microphone, and with
 `--monitor` what it plays (the meeting app's sound, from PulseAudio's or

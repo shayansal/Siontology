@@ -108,6 +108,33 @@ fn yes() -> bool {
 }
 
 impl Profile {
+    /// The profile as it answers what others wrote, for anyone to read or
+    /// for the operator later (X's mentions, a meeting's notes): its models
+    /// and instructions, and none of its memory, skills (not even their
+    /// names), workspace, browser, shell, MCP servers, web or helpers; its
+    /// sessions are also to be given no tools
+    /// ([`crate::channels::ChatSettings::tools`]).
+    pub fn without_reach(&self) -> Profile {
+        let mut public = self.clone();
+        // A folder that holds no skill, and is never written to: none is
+        // listed in the prompt.
+        public.skills = Some(crate::secrets::dir().join("no-skills"));
+        public.memory = None;
+        public.shared_memory.clear();
+        public.workspace = None;
+        public.confidential_files.clear();
+        public.web = false;
+        public.delegate = false;
+        public.shell = None;
+        public.mcp.clear();
+        public.storage = false;
+        public.home_assistant = false;
+        public.screen = Default::default();
+        public.image_model = None;
+        public.reflect = false;
+        public
+    }
+
     /// The rules its sessions run under.
     pub fn policy(&self) -> Policy {
         Policy {

@@ -500,9 +500,16 @@ recorder in an isolated world of every frame saying what the person does
 down as a draft `SKILL.md` for the browser tools, installed through the
 import's audit. Passwords, fields that look secret and a login's user
 name are never sent from the page; addresses lose their secret-looking
-parameters. Tested with Chromium for real, headless and in a window on
-Xvfb, played by a program through the protocol's input events on a site
-served on the machine (`crates/sion-agent/tests/teach.rs`); and `sion
+parameters. A field counts as secret by its type (as it
+was when the page loaded, so a password shown as text stays one), its
+autocomplete, its masking by the page's style, and what its name, label
+and placeholder say; the user name typed before a password, on its page or
+the one before, is not kept; addresses lose long tokens in their paths
+and parameters that name the person; titles and names lose email
+addresses; a prompt's answer is not kept. Tested with Chromium for real,
+headless and in a window on Xvfb, played by a program through the
+protocol's input events on a site served on the machine
+(`crates/sion-agent/tests/teach.rs`); and `sion
 skill teach` run once end to end in a window on Xvfb as an ordinary user,
 typed into with xdotool and ended by closing the window (not part of the
 test suite). A person did not use it. Not recorded: drags, hovers, scrolling, keyboard shortcuts
@@ -513,10 +520,13 @@ Mentions on X are answered in their threads (`sion agent x-mentions`,
 [Mentions on X](book/src/agent/messengers.md#mentions-on-x)): the
 sources gathered by the runner before the session (the post replied to
 or quoted, and the web search's results for the mention's words), the
-session tainted and without memory, workspace or tools that reach
-outside, and an answer posted only if it cites what it was given and
-names no address it was not; split into chained posts within X's
-weighted count, the addresses in the last. `x_search` searches recent
+session tainted and without memory, skills, workspace or any tool, and an
+answer posted only if it cites what it was given and names no address it
+was not (anything X would link, scheme or none); names unlinked, the
+reply addressed to the author alone; split into chained posts within X's
+weighted count, the addresses in the last; mentions counted as they are
+taken on and kept before replies are posted. A tainted session's skill
+writes wait for a person, in every channel. `x_search` searches recent
 posts. Tested against stand-ins for X's API and a SearXNG instance with
 the scripted model on a devnet (`crates/sion-cli/tests/x_mentions.rs`);
 X's API itself was not reached. Not built: answering quotes that do not
@@ -1244,7 +1254,7 @@ the architecture's own:
 | `agent:browser-files` | What a page downloads is kept in the workspace as from outside; a file chosen for a page's field goes to that page's site, whoever runs it. |
 | `agent:github-webhooks` | A webhook is taken as GitHub's when it carries GitHub's signature with the operator's secret; the listener speaks plain HTTP, and TLS is the operator's proxy's. A delivery copied on its way could be sent again, and is taken once by its event's id. |
 | `agent:imported-agent` | What an import brings over from OpenClaw or Hermes Agent into a profile's instructions is that agent's own files, which it may have written from what it read; the plan shows them and names the patterns worth a look, and the block tells the model they are another agent's notes, but once applied they reach every session's prompt as the operator's instructions do. |
-| `agent:taught-skills` | A taught draft names elements by what the pages called them and keeps the values the person typed outside secret fields; whether a field is secret is judged from its type, autocomplete and name, so a secret typed into a field that looks ordinary is recorded. The draft reaches an agent only through the import's audit and the operator's acceptance. |
+| `agent:taught-skills` | A taught draft names elements by what the pages called them and keeps the values the person typed outside secret fields; whether a field is secret is judged from its type, its masking, its autocomplete and what its name and label say, so a secret typed into a field that looks ordinary in every way is recorded. The draft reaches an agent only through the import's audit and the operator's acceptance. |
 | `agent:x-mentions` | An answer to a mention is checked for citing the sources it was given and naming no other address, not for saying what they say: a model can cite a source for a claim it does not make, and a search's results are whatever the service ranks for words a stranger chose. The reply is posted as the account's own. |
 | `agent:skill-import-review` | A skill imported from a folder, a repository or a registry is installed on the operator's reading of its files, or on an audit of its root; the patterns the report names, and a registry's verdicts, are a guide to that reading, not a scan that finds all that a skill could do; a registry's digests show that the files are the ones it lists, not that they are safe. |
 | `agent:live-voice` | A live conversation takes what its model of speech (or its loudness) finds near the microphone as the person's speech: without a wake word, what anyone says there goes to the transcriber and to the agent as the person's words; with `--wake-cloud`, everything said there goes to the transcriber's provider. The echo canceller takes out what the loudspeaker was given, not other sound: a voice from another device is speech. |

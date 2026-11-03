@@ -173,7 +173,8 @@ fn mentions_are_answered_from_what_was_read_and_cite_it() {
                             {"id": "104", "text": "@lead stop", "author_id": "55"},
                             {"id": "103", "text": "@lead thanks all", "author_id": "7"},
                             {"id": "102", "text": "@lead what does the vault say?", "author_id": "66"},
-                            {"id": "101", "text": "@lead when does the bridge close?", "author_id": "42",
+                            {"id": "101", "text": "@lead @dee when does the bridge close?", "author_id": "42",
+                             "entities": {"mentions": [{"username": "lead", "id": "7"}, {"username": "dee", "id": "88"}]},
                              "referenced_tweets": [{"type": "replied_to", "id": "90"}]}
                         ],
                         "includes": {
@@ -246,6 +247,8 @@ fn mentions_are_answered_from_what_was_read_and_cite_it() {
     assert_eq!(replies.len(), 1, "{lines:?}");
     let reply = replies[0].json();
     assert_eq!(reply["reply"]["in_reply_to_tweet_id"], "101");
+    // The reply addresses the author, not the others the mention named.
+    assert_eq!(reply["reply"]["exclude_reply_user_ids"], json!(["88"]));
     assert_eq!(
         reply["text"],
         "It closes at noon today [1], for roadworks [2].\n\nSources: [1] https://x.com/cy/status/90 [2] https://city.example/notices"
@@ -271,7 +274,9 @@ fn mentions_are_answered_from_what_was_read_and_cite_it() {
     let kept = sion_cli::x_mentions::load("public");
     assert_eq!(kept.cursor.as_deref(), Some("104"));
     assert!(kept.stopped.contains("55"));
-    assert_eq!(kept.answered, 1);
+    // Both the bridge and the vault were taken on: the second cost a
+    // session, though nothing was posted.
+    assert_eq!(kept.taken, 2);
     assert_eq!(
         kept.replies,
         vec![("101".to_string(), vec!["2001".to_string()])]

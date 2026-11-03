@@ -251,6 +251,11 @@ impl Standing {
     }
 }
 
+/// Tools whose writes later sessions read as instructions: in a tainted
+/// session, they wait for a person, since what content from outside steers
+/// them into would steer every session after.
+pub const LASTING: [&str; 1] = ["skill_write"];
+
 impl Policy {
     /// Whether a call of `tool`, with effect `effect` and key `key`, runs at
     /// `now` (seconds).
@@ -275,6 +280,14 @@ impl Policy {
             decision = Decision::Ask(
                 "the session has read content from outside; external calls and spending need \
                  approval until the taint expires"
+                    .into(),
+            );
+        }
+        if decision == Decision::Run && LASTING.contains(&tool) && standing.tainted(now) {
+            decision = Decision::Ask(
+                "the session has read content from outside, and what it writes as a skill \
+                 reaches every later session's instructions: it needs approval until the taint \
+                 expires"
                     .into(),
             );
         }
@@ -304,6 +317,29 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tainted_session_writes_no_skill_without_a_person() {
+        let policy = Policy {
+            autonomy: Autonomy::L6,
+            ..Policy::default()
+        };
+        let mut standing = Standing::default();
+        assert_eq!(
+            policy.decide(&standing, "skill_write", Effect::Write, "k", 10),
+            Decision::Run
+        );
+        standing.taint(&policy, 5);
+        assert!(matches!(
+            policy.decide(&standing, "skill_write", Effect::Write, "k", 10),
+            Decision::Ask(_)
+        ));
+        // Other writes go on as before.
+        assert_eq!(
+            policy.decide(&standing, "write_file", Effect::Write, "k", 10),
+            Decision::Run
+        );
+    }
 
     #[test]
     fn confidential_content_holds_external_calls_and_spending_for_a_person() {

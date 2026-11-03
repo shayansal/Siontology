@@ -474,11 +474,16 @@ role and name (as the agent's snapshot names them), what you type into a
 field once you leave it or press Enter, the options you choose, the names
 of the files you pick, the questions pages ask and your answers, the files
 that download, and the tabs that open. What is not: passwords and any
-field that looks secret (one-time codes, card numbers), a login form's
-user name, keystrokes one by one, the pointer's path, and what pages
-show. Addresses lose their user names and passwords, the values of
-parameters that look like tokens, codes, keys or signatures, and
-fragments that hold values. The browser has a profile of its own for the
+field that looks secret (by its type as the page loaded it, so a password
+shown as text stays one; by the page masking it; or by what its name,
+label or placeholder say: one-time codes, PINs, card numbers), a login
+form's user name (and the name typed on the page before a password's),
+what is written into a page's prompt, keystrokes one by one, the
+pointer's path, and what pages show. Addresses lose their user names and
+passwords, the values of parameters that look like tokens, codes, keys,
+signatures or that name the person (`email=`, `login_hint=`), long tokens
+in their paths, and fragments that hold values; titles and names lose
+email addresses. The browser has a profile of its own for the
 recording, removed after it, so nothing of your own browser's is in it.
 
 The recording becomes a draft, `$SION_HOME/agents/taught/<name>/SKILL.md`
