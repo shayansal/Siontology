@@ -45,7 +45,9 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `routes` | `model_routes.rs` |
 | `import` | `agent_import.rs` |
 | `x-mentions` | `x_mentions.rs`, over `x_api.rs` |
-| `meeting` | `meeting.rs` |
+| `meeting` | `meeting.rs`, `meeting_bot.rs` |
+| `hooks` | `hooks.rs` |
+| `browser` (login, list, remove) | `browser_profiles.rs` |
 | `secret`, `credential`, `login` | `secrets.rs`, `credentials.rs`, `logins.rs` |
 | `chatgpt`, `weixin`, `pairing` | `chatgpt.rs`, `weixin.rs`, `pairing.rs` |
 | `mcp` (add, list, review, login, logout, remove) | `agent_mcp.rs`, `mcp_auth.rs` |
@@ -64,10 +66,10 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 |---|---|---|
 | Ledger client and sessions | `ledger`, `session`, `describe`, `verify`, `error` | The `Ledger` trait (a node over HTTP or an in-process devnet); wallets and building, submitting and waiting for transactions; sentences for transactions and receipts; light-client verification of a Pulse. |
 | Ledger commands | `agents`, `cohorts`, `batcher`, `tasks`, `stake`, `stream`, `storage`, `memory`, `x402`, `bench`, `demos` | One module per family of commands, as in the tables. |
-| Runtime glue | `runtime`, `channels`, `bridge`, `profiles`, `delegation`, `agent_memory`, `agent_storage`, `screens`, `files` | `runtime` gives a run the ledger as tools and keeps sessions; `channels` is the HTTP channel and approvals; `bridge` carries messenger chats into sessions; `delegation` lets an agent spawn subagents from a session. |
+| Runtime glue | `runtime`, `channels`, `bridge`, `profiles`, `delegation`, `worktrees`, `hooks`, `agent_memory`, `agent_storage`, `screens`, `browser_profiles`, `files` | `runtime` gives a run the ledger as tools and keeps sessions; `channels` is the HTTP channel and approvals; `bridge` carries messenger chats into sessions; `delegation` lets an agent spawn subagents from a session. |
 | Messengers | `messengers`, `live`, `webhooks`, `drafts`, `showing`, `pairing`, `jwt`, and `dingtalk`, `feishu`, `google_chat`, `imessage`, `irc`, `mattermost`, `nextcloud`, `nostr`, `ntfy`, `qq`, `simplex`, `synology`, `teams`, `wecom`, `weixin`, `x_api`, `x_dm`, `x_mentions`, `zalo`, `phone`, `email` | The `Messenger` interface and one module per service; WebSocket and webhook intake; typing indicators and replies as they are written; X's mentions answered with their sources, and its posts searched. |
 | MCP and the first-party servers | `mcp`, `mcp_serve`, `email`, `calendar`, `documents`, `agent_mcp`, `mcp_auth`, `home_assistant` | The ledger's MCP server; a shared server loop for the mail (IMAP and SMTP), calendar (CalDAV) and documents servers; configuration and OAuth login for MCP servers an agent uses. |
-| Voice | `voice`, `talk`, `listening`, `sound`, `realtime`, `meeting` | Voice notes heard and answered aloud; a terminal conversation; a conversation that listens all the time, with a wake phrase, a model of speech and echo cancellation; one through a realtime speech model that asks the agent; meeting notes by phone or on the machine. |
+| Voice | `voice`, `talk`, `listening`, `sound`, `realtime`, `meeting`, `meeting_bot` | Voice notes heard and answered aloud, by services or on the machine (whisper.cpp, Piper, a local server); a terminal conversation; a conversation that listens all the time, with a wake phrase, a model of speech, turns told by what was said, and echo cancellation; one through a realtime speech model that asks the agent; meeting notes by phone, on the machine or as a guest by the meeting's link, with speakers told apart if asked. |
 | Work and GitHub | `work`, `github`, `github_hooks`, `github_tools` | The work runner, GitHub as a watch, its webhooks, and the tools a work session reads a repository with. |
 | Skills | `skills`, `skill_improve`, `skill_import`, `skill_registries`, `teach` | Releases, audits and installation; evaluation, evolution and bounties; import from folders, repositories and registries; skills taught by doing a task in a browser. |
 | Running on a server | `up`, `deploy`, `service`, `gateway` | One process that keeps a list running; sion copied to a server over SSH; systemd and launchd units; routing channels across machines. |
@@ -93,7 +95,7 @@ Depends on: `sion-core`, `sion-crypto`, `sion-assurance`, `sion-clearing`, `sion
 
 ## Tests
 
-217 `#[test]` functions (counted with `grep -c "#\[test\]"`): 175 under `src/` and 42 in `tests/`. Most `tests/` files are end-to-end runs on a real in-process devnet with a scripted model: `agent_runtime.rs`, `agent_tools.rs`, `agent_memory.rs`, `agent_recall.rs`, `agent_reach.rs`, `agent_work.rs` and `agent_takes_work.rs` (against a stand-in for GitHub), `skill_supply.rs`, `skill_improve.rs`, `streams.rs`, `memory_archive.rs`, `bridging.rs`, `channels_more.rs`, `channels_across.rs`, `channels_voice.rs` (11 tests, with stand-in microphones and transcribers), `mcp_http.rs` (7), `network.rs` (processes), `always_on.rs` (`sion agent up` and `sion deploy` through a stand-in for SSH), `setup.rs`, `files.rs` and `chatgpt.rs`. No microphone, loudspeaker, messenger or model provider is reached.
+273 `#[test]` functions (counted with `grep -c "#\[test\]"`): 221 under `src/` and 52 in `tests/`. Most `tests/` files are end-to-end runs on a real in-process devnet with a scripted model: `agent_runtime.rs`, `agent_tools.rs`, `agent_memory.rs`, `agent_recall.rs`, `agent_reach.rs`, `agent_work.rs` and `agent_takes_work.rs` (against a stand-in for GitHub), `skill_supply.rs`, `skill_improve.rs`, `streams.rs`, `memory_archive.rs`, `bridging.rs`, `channels_more.rs`, `channels_across.rs`, `channels_voice.rs` (11 tests, with stand-in microphones and transcribers), `agent_worktrees.rs` (subagents in worktrees, programs that call tools and the operator's hooks; skipped where bubblewrap does not work), `meeting.rs` and `meeting_bot.rs` (a guest joining stand-in meeting pages with Chromium, skipped where it is not found), `mcp_http.rs` (7), `network.rs` (processes), `always_on.rs` (`sion agent up` and `sion deploy` through a stand-in for SSH), `setup.rs`, `files.rs` and `chatgpt.rs`. No microphone, loudspeaker, messenger or model provider is reached.
 
 Two tests in `tests/demos.rs` are `#[ignore]`: they run every demo and take minutes (one about a minute), so CI runs them nightly; locally use `cargo test --workspace -- --include-ignored`.
 

@@ -32,10 +32,12 @@ use crate::error::CliError;
 /// The tools of a browser and a desktop that act outside. Held to hosts the
 /// operator named, they act after the session read pages
 /// ([`sion_agent::Policy::contained`]).
-pub const ACTING: [&str; 8] = [
+pub const ACTING: [&str; 10] = [
     "browser_open",
     "browser_click",
+    "browser_click_at",
     "browser_type",
+    "browser_type_focused",
     "browser_press",
     "browser_scroll",
     "browser_back",
@@ -56,6 +58,10 @@ pub struct Screen {
     /// The operator's logins its browser may fill, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub logins: Vec<String>,
+    /// The browser profile a person signed in with that its browser uses,
+    /// by name ([`crate::browser_profiles`]), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Its desktop's sandbox, if it has a desktop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub computer: Option<Sandbox>,
@@ -115,6 +121,13 @@ impl Screen {
                 "a desktop keeps its programs' files in the workspace: give --workspace".into(),
             ));
         }
+        if let Some(name) = &self.profile {
+            if !crate::browser_profiles::dir(name).is_dir() {
+                return Err(CliError::Usage(format!(
+                    "there is no browser profile {name}: sign in first (sion agent browser login {name})"
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -139,6 +152,11 @@ pub struct ScreenArgs {
     /// Repeat for more.
     #[arg(long = "login", value_name = "NAME", requires = "browser")]
     pub logins: Vec<String>,
+    /// A browser profile you signed in with (`sion agent browser login`)
+    /// for its browser to use: your cookies and sessions, so that it acts
+    /// on those sites as you (`agent:signed-in-browser`).
+    #[arg(long = "browser-profile", value_name = "NAME", requires = "browser")]
+    pub browser_profile: Option<String>,
     /// Give it a desktop of its own, seen in screenshots and used with a
     /// pointer and a keyboard (Xvfb, xdotool and ImageMagick): in
     /// bubblewrap (`bwrap`, the default) or `docker:<image>@sha256:<digest>`,
@@ -190,10 +208,14 @@ impl ScreenArgs {
             None => None,
             Some(_) => Some(parse_size(&self.computer_size)?),
         };
+        if let Some(name) = &self.browser_profile {
+            crate::browser_profiles::check_name(name).map_err(CliError::Usage)?;
+        }
         let screen = Screen {
             browser: self.browser,
             hosts: self.browser_hosts,
             logins: self.logins,
+            profile: self.browser_profile,
             computer,
             programs: self
                 .computer_programs
@@ -289,6 +311,7 @@ pub fn tools(
     workspace: Option<&Path>,
     confidential: &[String],
     restore: Option<Restore>,
+    asker: Option<Arc<dyn sion_agent::mcp_input::Asker>>,
 ) -> Result<Vec<Box<dyn Tool>>, CliError> {
     screen.check(workspace)?;
     let network = screen.network()?;
@@ -325,13 +348,17 @@ pub fn tools(
                     size: (1280, 800),
                     workspace: workspace.map(Path::to_path_buf),
                     confidential: confidential.to_vec(),
+                    profile: screen.profile.as_deref().map(crate::browser_profiles::dir),
                 },
                 credentials,
             )
             .restoring(restore);
             entry.browser = Some(shared);
         }
-        tools.extend(entry.browser.as_ref().expect("set above").tools());
+        // The person this run can hand the page to, if any.
+        let shared = entry.browser.take().expect("set above").asking(asker);
+        tools.extend(shared.tools());
+        entry.browser = Some(shared);
     }
     if let Some(sandbox) = &screen.computer {
         if entry.computer.is_none() {

@@ -293,6 +293,10 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
             minutes: 5,
             title: "Release sync".into(),
             deliver: Some(format!("file:{}", notes_sent.display())),
+            diarize: None,
+            keep_recording: false,
+            join: None,
+            name: "Notes (sion)".into(),
         },
     )
     .unwrap();
@@ -369,6 +373,25 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&transcriber, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        // A stand-in for Deepgram, which tells two speakers apart in each
+        // recording.
+        let ffmpeg = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let (deepgram, diarized) = http_stand_in(|_| {
+            (
+                200,
+                json!({"results": {"utterances": [
+                    {"speaker": 0, "start": 0.3, "end": 1.1, "transcript": "The budget holds."},
+                    {"speaker": 1, "start": 1.4, "end": 2.2, "transcript": "Good, thanks."}
+                ]}})
+                .to_string()
+                .into_bytes(),
+            )
+        });
+        std::env::set_var("DEEPGRAM_BASE_URL", &deepgram);
+        std::env::set_var("DEEPGRAM_API_KEY", "dg-meeting");
         sion_cli::meeting::run(
             devnet.clone(),
             MeetingArgs {
@@ -385,6 +408,10 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
                 minutes: 1,
                 title: "Budget".into(),
                 deliver: None,
+                diarize: ffmpeg.then(|| "deepgram:nova-3".to_string()),
+                keep_recording: false,
+                join: None,
+                name: "Notes (sion)".into(),
             },
         )
         .unwrap();
@@ -400,6 +427,33 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
             kept.contains("## Notes\n\nSummary: the budget holds."),
             "{kept}"
         );
+        if ffmpeg {
+            // Each recording heard again, its speakers told apart, and the
+            // recordings removed after.
+            let asked = sent_to(
+                &diarized,
+                "POST",
+                "/v1/listen?model=nova-3&diarize_model=latest&punctuate=true&utterances=true",
+            );
+            assert_eq!(asked.len(), 2, "the microphone's and the monitor's");
+            assert_eq!(asked[0].header("content-type"), Some("audio/mpeg"));
+            assert_eq!(asked[0].header("authorization"), Some("Token dg-meeting"));
+            assert!(kept.contains("## Transcript by speaker"), "{kept}");
+            assert!(
+                kept.contains("] in the room, speaker 1: The budget holds."),
+                "{kept}"
+            );
+            assert!(
+                kept.contains("] on the call, speaker 2: Good, thanks."),
+                "{kept}"
+            );
+            let left: Vec<String> = std::fs::read_dir(&meetings)
+                .unwrap()
+                .map(|e| e.unwrap().path().display().to_string())
+                .filter(|p| p.ends_with(".wav"))
+                .collect();
+            assert!(left.is_empty(), "{left:?}");
+        }
     }
     let _ = std::fs::remove_dir_all(&home);
 }

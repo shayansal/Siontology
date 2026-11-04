@@ -60,6 +60,8 @@ fn runtime<'a>(models: Vec<&'a dyn Model>, tools: &'a Toolbox, autonomy: Autonom
         steer: None,
         checkpoint: None,
         verify: None,
+        code: None,
+        hooks: None,
     }
 }
 
@@ -72,7 +74,7 @@ fn every_result_answers_a_call(state: &State) {
                 Block::ToolResult { id, .. } => {
                     assert!(open.contains(id), "a result without its call: {id}");
                 }
-                Block::Text { .. } | Block::Image { .. } => {}
+                Block::Text { .. } | Block::Image { .. } | Block::Reasoning { .. } => {}
             }
         }
     }
@@ -938,14 +940,14 @@ fn a_person_s_pictures_reach_the_model_with_their_words() {
         anthropic["messages"][0]["content"][1]["source"]["data"],
         "iVBORw0KGgo="
     );
-    let openai = sion_agent::providers::openai_messages("", &second.messages, &second.images);
+    let openai = sion_agent::providers::openai_messages("", &second.messages, &second.images, "");
     assert_eq!(openai[1]["content"][1]["type"], "image_url");
-    let gemini = sion_agent::providers::gemini_body(second);
+    let gemini = sion_agent::providers::gemini_body(second, "");
     assert_eq!(
         gemini["contents"][0]["parts"][1]["inlineData"]["mimeType"],
         "image/png"
     );
-    let responses = sion_agent::providers::responses_body("m", second);
+    let responses = sion_agent::providers::responses_body("m", second, "");
     assert_eq!(responses["input"][0]["content"][1]["type"], "input_image");
 }
 

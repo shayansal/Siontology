@@ -1,6 +1,6 @@
 //! Tools: what a call may do, and the toolbox a session draws from.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -309,6 +309,9 @@ pub trait Tool: Send + Sync {
 #[derive(Default)]
 pub struct Toolbox {
     tools: BTreeMap<String, Box<dyn Tool>>,
+    /// The tools a large toolbox shows only once a search finds them
+    /// ([`Toolbox::add_deferred`]).
+    deferred: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for Toolbox {
@@ -317,9 +320,21 @@ impl std::fmt::Debug for Toolbox {
     }
 }
 
-/// Above this many tools, the model sees two meta-tools instead of all of
-/// them: one to search the toolbox and one to call a tool it found.
+/// Above this many tools, the model is not shown them all: it sees the
+/// tools that are always shown (all but the deferred ones, if they are no
+/// more than this), two meta-tools, one to search the toolbox and one to
+/// call a tool it found, and the tools its searches found and loaded
+/// ([`Toolbox::shown_with`]).
 pub const META_THRESHOLD: usize = 40;
+
+/// The most tools a session's searches keep loaded, the latest found.
+pub const MAX_LOADED: usize = 24;
+
+/// The most tools one search returns, and loads.
+pub const MAX_FOUND: usize = 10;
+
+/// The tools one search returns unless asked for fewer or more.
+pub const FOUND_BY_DEFAULT: usize = 5;
 
 /// The meta-tool that searches the toolbox.
 pub const TOOLS_SEARCH: &str = "tools_search";
@@ -334,12 +349,28 @@ impl Toolbox {
 
     /// Adds a tool, replacing any of the same name.
     pub fn add(&mut self, tool: impl Tool + 'static) {
-        self.tools.insert(tool.spec().name, Box::new(tool));
+        self.add_boxed(Box::new(tool));
     }
 
     /// Adds a boxed tool.
     pub fn add_boxed(&mut self, tool: Box<dyn Tool>) {
-        self.tools.insert(tool.spec().name, tool);
+        let name = tool.spec().name;
+        self.deferred.remove(&name);
+        self.tools.insert(name, tool);
+    }
+
+    /// Adds a tool that a large toolbox shows only once a search finds it
+    /// (an MCP server's, say), so that the tools always shown stay in view.
+    pub fn add_deferred(&mut self, tool: Box<dyn Tool>) {
+        let name = tool.spec().name;
+        self.deferred.insert(name.clone());
+        self.tools.insert(name, tool);
+    }
+
+    /// Whether a large toolbox shows the tool named only once a search
+    /// finds it.
+    pub fn is_deferred(&self, name: &str) -> bool {
+        self.deferred.contains(name)
     }
 
     /// A tool by name.
@@ -355,6 +386,8 @@ impl Toolbox {
     /// Keeps only the tools whose names `keep` keeps.
     pub fn retain(&mut self, keep: impl Fn(&str) -> bool) {
         self.tools.retain(|name, _| keep(name));
+        let tools = &self.tools;
+        self.deferred.retain(|name| tools.contains_key(name));
     }
 
     /// Every tool's spec, sorted by name.
@@ -363,22 +396,63 @@ impl Toolbox {
     }
 
     /// What the model is shown: every tool, or, past [`META_THRESHOLD`],
-    /// the two meta-tools.
+    /// the two meta-tools ([`Toolbox::shown_with`]).
     pub fn shown(&self) -> Vec<ToolSpec> {
+        self.shown_with(&[])
+    }
+
+    /// What the model is shown, with the tools its searches loaded
+    /// (`loaded`, by name): every tool, or, past [`META_THRESHOLD`], the
+    /// tools always shown (all but the deferred ones, if they are no more
+    /// than the threshold; otherwise none), the two meta-tools, then the
+    /// loaded tools, the last [`MAX_LOADED`] of them, in the order they
+    /// were found: so that loading more leaves the start of the list as it
+    /// was, for providers' caches.
+    pub fn shown_with(&self, loaded: &[String]) -> Vec<ToolSpec> {
         if self.tools.len() <= META_THRESHOLD {
             return self.specs();
         }
+        let always: Vec<&Box<dyn Tool>> = self
+            .tools
+            .iter()
+            .filter(|(name, _)| !self.deferred.contains(*name))
+            .map(|(_, tool)| tool)
+            .collect();
+        let mut shown: Vec<ToolSpec> = if always.len() <= META_THRESHOLD {
+            always.iter().map(|tool| tool.spec()).collect()
+        } else {
+            Vec::new()
+        };
+        shown.extend(self.meta_tools());
+        let skip = loaded.len().saturating_sub(MAX_LOADED);
+        for name in &loaded[skip..] {
+            if shown.iter().any(|spec| &spec.name == name) {
+                continue;
+            }
+            if let Some(tool) = self.tools.get(name) {
+                shown.push(tool.spec());
+            }
+        }
+        shown
+    }
+
+    /// The two meta-tools of a large toolbox.
+    fn meta_tools(&self) -> Vec<ToolSpec> {
         vec![
             ToolSpec {
                 name: TOOLS_SEARCH.into(),
                 description: format!(
-                    "Search the {} tools available by words in their names and descriptions; \
-                     returns matching tools with their input schemas.",
+                    "Search the {} tools available by what they do, in words (or by name: \
+                     select:<name>,<name>). The best matches are returned with their input \
+                     schemas and loaded: from then on they may be called directly by name.",
                     self.tools.len()
                 ),
                 input_schema: json!({
                     "type": "object",
-                    "properties": {"query": {"type": "string"}},
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_FOUND}
+                    },
                     "required": ["query"]
                 }),
             },
@@ -396,15 +470,67 @@ impl Toolbox {
         ]
     }
 
-    /// The tools whose name or description contains every word of `query`.
+    /// The tools that best match `query`, at most [`FOUND_BY_DEFAULT`]
+    /// ([`Toolbox::ranked`]).
     pub fn search(&self, query: &str) -> Vec<ToolSpec> {
-        let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
-        self.specs()
+        self.ranked(query, FOUND_BY_DEFAULT)
+    }
+
+    /// The `limit` tools (at most [`MAX_FOUND`]) that best match `query`,
+    /// the best first: a tool named in the query comes before the rest
+    /// (`select:<name>,<name>` names tools and asks for nothing else), and
+    /// the rest are ranked by BM25 over the words of their names (counted
+    /// three times), descriptions and inputs' names and descriptions, with
+    /// camelCase and snake_case split, a plural's `s` taken off and common
+    /// words left out. A tool that shares no word with the query is not
+    /// returned.
+    pub fn ranked(&self, query: &str, limit: usize) -> Vec<ToolSpec> {
+        let limit = limit.clamp(1, MAX_FOUND);
+        let query = query.trim();
+        if let Some(names) = query.strip_prefix("select:") {
+            return names
+                .split(',')
+                .filter_map(|name| self.tools.get(name.trim()))
+                .map(|tool| tool.spec())
+                .take(limit)
+                .collect();
+        }
+        let specs = self.specs();
+        let named: Vec<usize> = query
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter_map(|word| specs.iter().position(|spec| spec.name == word))
+            .collect();
+        let words = search_words(query);
+        let documents: Vec<Vec<String>> = specs.iter().map(searched_words).collect();
+        let count = documents.len() as f64;
+        let average = documents.iter().map(Vec::len).sum::<usize>() as f64 / count.max(1.0);
+        let mut scored: Vec<(f64, usize)> = Vec::new();
+        for (at, document) in documents.iter().enumerate() {
+            let mut score = 0.0;
+            for word in words.iter().collect::<BTreeSet<_>>() {
+                let frequency = document.iter().filter(|w| *w == word).count() as f64;
+                if frequency == 0.0 {
+                    continue;
+                }
+                let holding = documents.iter().filter(|d| d.contains(word)).count() as f64;
+                let rarity = (1.0 + (count - holding + 0.5) / (holding + 0.5)).ln();
+                let length = document.len() as f64 / average.max(1.0);
+                score += rarity * frequency * (BM25_K1 + 1.0)
+                    / (frequency + BM25_K1 * (1.0 - BM25_B + BM25_B * length));
+            }
+            if score > 0.0 && !named.contains(&at) {
+                scored.push((score, at));
+            }
+        }
+        // The best first; of two as good, the one first by name.
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut seen = BTreeSet::new();
+        named
             .into_iter()
-            .filter(|s| {
-                let hay = format!("{} {}", s.name, s.description).to_lowercase();
-                words.iter().all(|w| hay.contains(w))
-            })
+            .chain(scored.into_iter().map(|(_, at)| at))
+            .filter(|at| seen.insert(*at))
+            .take(limit)
+            .map(|at| specs[at].clone())
             .collect()
     }
 
@@ -417,6 +543,75 @@ impl Toolbox {
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
+}
+
+/// BM25's saturation of a word's count, for [`Toolbox::ranked`].
+const BM25_K1: f64 = 1.2;
+
+/// BM25's weight of a document's length, for [`Toolbox::ranked`].
+const BM25_B: f64 = 0.75;
+
+/// Words too common to search by.
+const COMMON_WORDS: [&str; 30] = [
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "for", "from", "i", "in", "into", "is",
+    "it", "its", "me", "my", "of", "on", "or", "that", "the", "this", "to", "use", "with", "you",
+    "your",
+];
+
+/// The words of `text` a search goes by: lowercase, split where it is not
+/// a letter or digit and where camelCase turns, a plural's `s` taken off,
+/// common words and single letters left out.
+pub fn search_words(text: &str) -> Vec<String> {
+    fn end(word: &mut String, words: &mut Vec<String>) {
+        if word.is_empty() {
+            return;
+        }
+        let mut done = std::mem::take(word);
+        if done.len() > 3 && done.ends_with('s') && !done.ends_with("ss") {
+            done.pop();
+        }
+        // A letter alone (the s of an apostrophe's) says nothing.
+        if done.chars().count() > 1 && !COMMON_WORDS.contains(&done.as_str()) {
+            words.push(done);
+        }
+    }
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut lower = false;
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            if c.is_uppercase() && lower {
+                end(&mut word, &mut words);
+            }
+            lower = c.is_lowercase() || c.is_numeric();
+            word.extend(c.to_lowercase());
+        } else {
+            end(&mut word, &mut words);
+            lower = false;
+        }
+    }
+    end(&mut word, &mut words);
+    words
+}
+
+/// What a search of the toolbox reads of a tool: the words of its name,
+/// three times, of its description, and of its inputs' names and
+/// descriptions.
+fn searched_words(spec: &ToolSpec) -> Vec<String> {
+    let name = search_words(&spec.name);
+    let mut words: Vec<String> = name.iter().chain(&name).chain(&name).cloned().collect();
+    words.extend(search_words(&spec.description));
+    for (input, about) in spec.input_schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        words.extend(search_words(input));
+        words.extend(search_words(
+            about["description"].as_str().unwrap_or_default(),
+        ));
+    }
+    words
 }
 
 /// A tool made of a spec, an effect and a function: for tools that need no
@@ -489,6 +684,89 @@ mod tests {
         let found = tools.search("Forecast city");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "weather");
+    }
+
+    #[test]
+    fn a_search_ranks_tools_by_what_they_do() {
+        let mut tools = Toolbox::new();
+        tools.add(tool("gmail_send", "Sends an email message to recipients"));
+        tools.add(tool("gmail_search", "Searches the mailbox for messages"));
+        tools.add(tool(
+            "calendarCreateEvent",
+            "Creates an event in a calendar",
+        ));
+        tools.add(tool("weather", "Today's forecast for a city"));
+        let names = |found: Vec<ToolSpec>| -> Vec<String> {
+            found.into_iter().map(|spec| spec.name).collect()
+        };
+        // Every word need not match; the best come first.
+        assert_eq!(
+            names(tools.ranked("send a message to Ana", 5)),
+            ["gmail_send", "gmail_search"]
+        );
+        // camelCase and plurals are split and made one.
+        assert_eq!(
+            names(tools.ranked("create calendar events", 5)),
+            ["calendarCreateEvent"]
+        );
+        // A tool named comes first; select: asks for those alone.
+        assert_eq!(names(tools.ranked("weather messages", 5))[0], "weather");
+        assert_eq!(
+            names(tools.ranked("select:weather,gmail_send,nothing", 5)),
+            ["weather", "gmail_send"]
+        );
+        assert!(tools.ranked("quantum chromodynamics", 5).is_empty());
+        assert_eq!(tools.ranked("messages", 1).len(), 1, "as many as asked for");
+        assert_eq!(
+            search_words("listOpenPullRequests, the user's"),
+            ["list", "open", "pull", "request", "user"]
+        );
+    }
+
+    #[test]
+    fn a_large_toolbox_keeps_its_own_tools_in_view_and_shows_what_a_search_loaded() {
+        let mut tools = Toolbox::new();
+        for name in ["read_file", "write_file", "shell"] {
+            tools.add(tool(name, "a tool of its own"));
+        }
+        for i in 0..META_THRESHOLD {
+            tools.add_deferred(Box::new(tool(&format!("mcp_{i:02}"), "a server's tool")));
+        }
+        assert!(tools.is_deferred("mcp_07") && !tools.is_deferred("shell"));
+        let names = |shown: Vec<ToolSpec>| -> Vec<String> {
+            shown.into_iter().map(|spec| spec.name).collect()
+        };
+        assert_eq!(
+            names(tools.shown()),
+            ["read_file", "shell", "write_file", TOOLS_SEARCH, TOOLS_CALL]
+        );
+        // What searches loaded comes after, in the order found, the
+        // latest kept; a name that is no tool, or one shown already, is not
+        // shown twice.
+        let loaded: Vec<String> = ["mcp_03", "shell", "gone", "mcp_01"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            names(tools.shown_with(&loaded)),
+            [
+                "read_file",
+                "shell",
+                "write_file",
+                TOOLS_SEARCH,
+                TOOLS_CALL,
+                "mcp_03",
+                "mcp_01"
+            ]
+        );
+        let many: Vec<String> = (0..MAX_LOADED + 3).map(|i| format!("mcp_{i:02}")).collect();
+        let shown = names(tools.shown_with(&many));
+        assert_eq!(shown.len(), 5 + MAX_LOADED);
+        assert!(!shown.contains(&"mcp_00".to_string()) && shown.contains(&"mcp_26".to_string()));
+        // A tool added again as one of its own is shown as one.
+        tools.add(tool("mcp_05", "now its own"));
+        assert!(!tools.is_deferred("mcp_05"));
+        assert!(names(tools.shown()).contains(&"mcp_05".to_string()));
     }
 
     #[test]

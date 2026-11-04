@@ -863,6 +863,9 @@ pub enum Event {
     Played(u64),
     /// A sentence could not be spoken.
     NotSpoken(u64, String),
+    /// The wait for the rest of what the person was saying, held as
+    /// unfinished ([`Do::Wait`]), ended.
+    HoldEnded(u64),
 }
 
 /// What the conversation does next, as [`State`] decides.
@@ -887,6 +890,9 @@ enum Do {
     Hear(Vec<i16>, bool),
     /// Listens to the microphone so.
     Listen(u8),
+    /// Waits as long for the rest of what is held as unfinished, then
+    /// says so ([`Event::HoldEnded`] with the hold's number).
+    Wait(u64, Duration),
     /// Ends the conversation.
     End,
 }
@@ -922,6 +928,15 @@ struct State {
     ending: bool,
     ended: bool,
     mode: u8,
+    /// With turns told by what was said: how long what sounds unfinished
+    /// is held for the rest.
+    hold: Option<Duration>,
+    /// What the person said that sounds unfinished, held for the rest.
+    held: Option<String>,
+    /// The number of the hold under way.
+    held_id: u64,
+    /// The hold under way ran out while an utterance was being heard.
+    hold_ran_out: bool,
 }
 
 impl State {
@@ -944,6 +959,44 @@ impl State {
             ending: false,
             ended: false,
             mode: LISTENING,
+            hold: None,
+            held: None,
+            held_id: 0,
+            hold_ran_out: false,
+        }
+    }
+
+    /// Tells turns by what was said: what sounds unfinished is held as long
+    /// as `hold` for the rest.
+    fn holding(mut self, hold: Option<Duration>) -> State {
+        self.hold = hold;
+        self
+    }
+
+    /// What the person was heard to say: taken, or, if it sounds unfinished
+    /// ([`finished`]) and turns are told by what was said, held for the
+    /// rest, what came before it in front.
+    fn heard(&mut self, text: String, todo: &mut Vec<Do>) {
+        let words = match self.held.take() {
+            Some(held) => format!("{held} {text}"),
+            None => text,
+        };
+        match self.hold {
+            Some(hold) if !finished(&words) => {
+                self.held_id += 1;
+                self.hold_ran_out = false;
+                self.held = Some(words);
+                todo.push(Do::Wait(self.held_id, hold));
+            }
+            _ => self.take(words, todo),
+        }
+    }
+
+    /// Takes what is held, its hold over.
+    fn let_go(&mut self, todo: &mut Vec<Do>) {
+        self.hold_ran_out = false;
+        if let Some(words) = self.held.take() {
+            self.take(words, todo);
         }
     }
 
@@ -962,6 +1015,7 @@ impl State {
             && !self.asked
             && self.pending.is_empty()
             && self.hearing == 0
+            && self.held.is_none()
     }
 
     /// `text` on a line of its own.
@@ -1060,6 +1114,7 @@ impl State {
             }
             Event::Heard(heard) => {
                 self.hearing = self.hearing.saturating_sub(1);
+                let mut said = false;
                 match heard {
                     Err(why) => self.line(&format!("(not heard: {why})"), &mut todo),
                     Ok(Heard::Nothing) => {}
@@ -1077,11 +1132,27 @@ impl State {
                             self.awake(now);
                         }
                         if !text.is_empty() {
+                            said = true;
                             self.line(&format!("you (heard): {text}"), &mut todo);
-                            self.take(text, &mut todo);
+                            self.heard(text, &mut todo);
                         } else if woke {
                             self.line("(awake: listening)", &mut todo);
                         }
+                    }
+                }
+                // A hold that ran out while this was heard, which added
+                // nothing to it, is over.
+                if !said && self.hold_ran_out && self.hearing == 0 {
+                    self.let_go(&mut todo);
+                }
+            }
+            Event::HoldEnded(id) => {
+                if id == self.held_id && self.held.is_some() {
+                    if self.hearing == 0 {
+                        self.let_go(&mut todo);
+                    } else {
+                        // What is being heard may be the rest.
+                        self.hold_ran_out = true;
                     }
                 }
             }
@@ -1198,12 +1269,46 @@ impl State {
             self.mode = mode;
             todo.push(Do::Listen(mode));
         }
+        if self.ending && self.hearing == 0 && self.held.is_some() {
+            self.let_go(&mut todo);
+        }
         if self.ending && !self.ended && self.idle() {
             self.ended = true;
             todo.push(Do::End);
         }
         todo
     }
+}
+
+/// Words that what is said rarely ends on: what ends on one sounds
+/// unfinished, the speaker pausing before the rest.
+const GOES_ON: &[&str] = &[
+    "and", "but", "or", "nor", "so", "because", "cause", "if", "then", "than", "to", "of", "the",
+    "a", "an", "with", "without", "for", "at", "from", "into", "onto", "about", "by", "via", "as",
+    "which", "who", "whose", "where", "whereas", "while", "although", "though", "unless", "until",
+    "since", "whether", "either", "neither", "my", "your", "our", "their", "his", "her", "its",
+    "um", "uh", "er", "erm", "uhm", "hmm", "mm",
+];
+
+/// Whether `said` sounds finished: it asks or exclaims, or ends on
+/// anything but a comma, a dash, an ellipsis or a word that goes on
+/// ([`GOES_ON`]). Transcribers put in the punctuation; a word that goes on
+/// sounds unfinished even with a full stop after it.
+pub fn finished(said: &str) -> bool {
+    let said = said.trim();
+    if said.is_empty() || said.ends_with(['?', '!']) {
+        return true;
+    }
+    if said.ends_with([',', ';', ':', '-', '–', '—', '…']) || said.ends_with("...") {
+        return false;
+    }
+    let last: String = said
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+        .to_lowercase();
+    !GOES_ON.contains(&last.as_str())
 }
 
 /// How a live conversation is had.
@@ -1221,6 +1326,27 @@ pub struct Listening {
     /// With echo cancelled: the program that plays raw samples at 16 kHz
     /// on its standard input.
     pub play_raw: Option<Vec<String>>,
+    /// With turns told by what was said ([`Listening::semantic`]): how
+    /// long what sounds unfinished is held for the rest.
+    pub hold: Option<Duration>,
+}
+
+/// How long what sounds unfinished is held for the rest of it.
+pub const HOLD: Duration = Duration::from_millis(1_500);
+
+/// The quiet frames that end an utterance when turns are told by what was
+/// said: 500 ms, what sounds unfinished being held besides.
+pub const SEMANTIC_END: usize = 25;
+
+impl Listening {
+    /// Turns told by what was said, not by silence alone: an utterance
+    /// ends after a shorter pause, and what sounds unfinished ([`finished`])
+    /// is held for the rest, as long as [`HOLD`].
+    pub fn semantic(mut self) -> Listening {
+        self.hold = Some(HOLD);
+        self.detection.end = SEMANTIC_END;
+        self
+    }
 }
 
 /// Where a transcriber that is not on this machine sends what it hears.
@@ -1229,7 +1355,7 @@ fn elsewhere(hearing: &Hearing) -> String {
         Hearing::Api { base, .. } => base.clone(),
         Hearing::Deepgram { .. } => "Deepgram".into(),
         Hearing::ElevenLabs { .. } => "ElevenLabs".into(),
-        Hearing::Command(_) => "this machine".into(),
+        Hearing::Command(_) | Hearing::Whisper { .. } => "this machine".into(),
     }
 }
 
@@ -1283,11 +1409,11 @@ impl Listening {
                     Some(spec) => Hearing::parse(spec)?,
                     None => hearing.cloned().ok_or("a wake word needs --hear")?,
                 };
-                if !matches!(heard_by, Hearing::Command(_)) && !wake_cloud {
+                if !heard_by.is_local() && !wake_cloud {
                     return Err(format!(
                         "a wake word is found by hearing everything said near the microphone: \
-                         give a transcriber on this machine (--wake-hear command:<program>, such \
-                         as whisper.cpp's), or --wake-cloud to let {} hear it all",
+                         give a transcriber on this machine (--wake-hear whisper:<model file>, \
+                         local:<model> or command:<program>), or --wake-cloud to let {} hear it all",
                         elsewhere(&heard_by)
                     ));
                 }
@@ -1304,6 +1430,7 @@ impl Listening {
                 ..Detection::default()
             },
             play_raw,
+            hold: None,
         })
     }
 }
@@ -1814,7 +1941,8 @@ pub fn run(
         listening.wake.as_ref().map(|w| w.awake_secs),
         listening.interrupt,
         voice.is_some(),
-    );
+    )
+    .holding(listening.hold);
     let mut question: Option<Sender<Option<String>>> = None;
     let mut complaints = complaints;
     let _ = writeln!(
@@ -1890,6 +2018,13 @@ pub fn run(
                     let _ = to_hear.send((speech, asleep));
                 }
                 Do::Listen(m) => mode.store(m, Ordering::SeqCst),
+                Do::Wait(id, hold) => {
+                    let events = events.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(hold);
+                        let _ = events.send(Event::HoldEnded(id));
+                    });
+                }
                 Do::End => break 'conversation,
             }
         }
@@ -1941,6 +2076,91 @@ mod tests {
             }
         }
         (began, ended)
+    }
+
+    #[test]
+    fn what_sounds_unfinished_is_told_from_what_is_done() {
+        for done in [
+            "Book a flight to Paris.",
+            "What time is it?",
+            "Turn it on.",
+            "Thank you",
+            "Stop!",
+            "",
+        ] {
+            assert!(finished(done), "{done:?}");
+        }
+        for going_on in [
+            "Book a flight to",
+            "I want the,",
+            "Send it to Ana and",
+            "Because um...",
+            "Put it in my",
+            "Well, if",
+            "The one with the —",
+        ] {
+            assert!(!finished(going_on), "{going_on:?}");
+        }
+    }
+
+    #[test]
+    fn what_sounds_unfinished_waits_for_the_rest_and_no_longer() {
+        let now = Instant::now();
+        let heard = |text: &str| {
+            Event::Heard(Ok(Heard::Said {
+                text: text.into(),
+                woke: false,
+            }))
+        };
+        let runs = |todo: &[Do]| -> Vec<String> {
+            todo.iter()
+                .filter_map(|d| match d {
+                    Do::Run(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut state = State::new(None, true, false).holding(Some(HOLD));
+        // Unfinished: held, and a wait begun.
+        state.on(Event::Utterance(vec![0; 320]), now);
+        let todo = state.on(heard("Book a flight to"), now);
+        assert!(runs(&todo).is_empty());
+        assert!(todo.contains(&Do::Wait(1, HOLD)));
+        // The rest comes: both, run as one.
+        state.on(Event::Utterance(vec![0; 320]), now);
+        let todo = state.on(heard("Paris, please."), now);
+        assert_eq!(runs(&todo), ["Book a flight to Paris, please."]);
+        // An old wait's end changes nothing.
+        assert!(runs(&state.on(Event::HoldEnded(1), now)).is_empty());
+        state.on(Event::RunEnded(Ok("Booked.".into())), now);
+
+        // Unfinished, and nothing more: run when the wait ends.
+        state.on(Event::Utterance(vec![0; 320]), now);
+        state.on(heard("Send it to Ana and"), now);
+        assert_eq!(
+            runs(&state.on(Event::HoldEnded(2), now)),
+            ["Send it to Ana and"]
+        );
+        state.on(Event::RunEnded(Ok("Sent.".into())), now);
+
+        // A wait that ends while more is heard waits for it; noise adds
+        // nothing, and lets it go.
+        state.on(Event::Utterance(vec![0; 320]), now);
+        state.on(heard("Put it in my"), now);
+        state.on(Event::Utterance(vec![0; 320]), now);
+        assert!(runs(&state.on(Event::HoldEnded(3), now)).is_empty());
+        assert_eq!(
+            runs(&state.on(Event::Heard(Ok(Heard::Nothing)), now)),
+            ["Put it in my"]
+        );
+
+        // Without holding, what is heard is run at once.
+        let mut plain = State::new(None, true, false);
+        plain.on(Event::Utterance(vec![0; 320]), now);
+        assert_eq!(
+            runs(&plain.on(heard("Book a flight to"), now)),
+            ["Book a flight to"]
+        );
     }
 
     #[test]
@@ -2125,7 +2345,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            refused.contains("--wake-hear command:") && refused.contains("api.openai.com"),
+            refused.contains("--wake-hear whisper:")
+                && refused.contains("command:<program>")
+                && refused.contains("api.openai.com"),
             "{refused}"
         );
         let here = Listening::from_flags(

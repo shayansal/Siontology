@@ -45,10 +45,23 @@ audio attached:
 | `--hear deepgram:<model>` | Deepgram's (`nova-3`, say) | `DEEPGRAM_API_KEY` |
 | `--hear elevenlabs:<model>` | ElevenLabs' Scribe (`scribe_v1`, say) | `ELEVENLABS_API_KEY` |
 | `--hear command:<program>` | A program on this machine, given the audio's file, which prints the text | |
+| `--hear whisper:<model file>` | whisper.cpp on this machine (`whisper-cli`, or `SION_WHISPER`), with a ggml model | |
+| `--hear local:<model>` | A transcription server that speaks OpenAI's API (speaches, faster-whisper-server, LocalAI) at `SION_LOCAL_STT_URL`, `http://127.0.0.1:8000/v1` by default | `SION_LOCAL_STT_KEY`, if it asks for one |
 | `--speak openai:<model>:<voice>` | OpenAI's speech (or a compatible server's), as Ogg Opus | `OPENAI_API_KEY` |
 | `--speak elevenlabs:<voice id>[:<model>]` | ElevenLabs, as MP3 | `ELEVENLABS_API_KEY` |
 | `--speak deepgram:<voice model>` | Deepgram's Aura (`aura-2-thalia-en`, say), as MP3 | `DEEPGRAM_API_KEY` |
 | `--speak command:<program>` | A program given the text on its standard input, which writes Ogg Opus or MP3 | |
+| `--speak piper:<model file>` | Piper on this machine (`piper`, or `SION_PIPER`), with an ONNX voice | |
+| `--speak local:<model>:<voice>` | A speech server that speaks OpenAI's API (Kokoro-FastAPI, LocalAI) at `SION_LOCAL_TTS_URL`, `http://127.0.0.1:8880/v1` by default | `SION_LOCAL_TTS_KEY`, if it asks for one |
+
+With `whisper:` and `piper:`, nothing said leaves this machine. whisper.cpp
+is given the audio as 16 kHz mono WAV (ffmpeg makes it so first, unless it
+is), and Piper the text; Piper's raw samples, at the rate its voice's
+`.json` gives (22,050 a second if it gives none), are made Ogg Opus by
+ffmpeg for a voice note, and brought down to 16 kHz for a live
+conversation. A `local:` server is reached at its address, which may be
+on your network rather than this machine; one at an address of this
+machine's counts as here, as below.
 
 Here `TELEGRAM_API_BASE` and `OPENAI_BASE_URL` point the bridge at
 stand-ins for Telegram's and OpenAI's APIs. Telegram's returned a voice
@@ -136,6 +149,18 @@ quieter than `--speech-level` is speech (400, as the root mean square of
 16-bit samples): lower it if you are not heard, raise it in a loud room.
 Each utterance goes to `--hear` as a WAV file.
 
+When what you said is over is told by what you said too (`--turns
+semantic`, the default): an utterance ends after half a second of quiet
+rather than 800 ms, and what sounds unfinished is held for a second and a
+half for the rest, which is taken with it as one message. What asks or
+exclaims sounds finished; what ends on a comma, a dash or an ellipsis, or
+on a word English rarely ends on (`and`, `to`, `the`, `my`, `um`…), does
+not, even with a full stop after it. So "Book a flight to…", a pause,
+"Paris, please." is one request, and "What's the time?" is answered after
+half a second. `--turns silence` ends every utterance after 800 ms of
+quiet, whatever was said. A realtime model's turns ([below](#through-a-realtime-speech-model))
+end on silence.
+
 The reply is spoken a sentence at a time, as the model writes it: the
 first sentence is being said while the rest is written. Code is shown,
 not read out ("The code is on the screen."), a link is said as its words,
@@ -189,16 +214,20 @@ so it does after asking you something; while it works or speaks, it is
 interrupted by its name ("hey sion, stop").
 
 To find the phrase, everything said near the microphone is heard. So it
-is heard by a transcriber on this machine (`--wake-hear
-command:<program>`, such as whisper.cpp's, or `--hear` if that is one),
-and only what was said to the agent goes to `--hear`. `--wake-cloud` lets
-a transcriber elsewhere hear it all instead.
+is heard by a transcriber on this machine (`--wake-hear whisper:<model
+file>`, `local:<model>` with a server at an address of this machine's, or
+`command:<program>`; or `--hear` if that is one), and only what was said
+to the agent goes to `--hear`. `--wake-cloud` lets a transcriber elsewhere
+hear it all instead.
 
 The tests run the whole conversation with a stand-in microphone (silence
 and a tone, paced as spoken), a stand-in transcriber, a scripted model and
 a player that takes its time, against a devnet; the model of speech on a
 sentence spoken by espeak-ng and on noise, and the echo canceller on a
-room made up, as above.
+room made up, as above. What sounds unfinished is tested on the
+conversation's own steps (held, joined to the rest, let go when nothing
+more comes), and whisper.cpp and Piper with stand-ins for their programs
+(whisper.cpp itself, its models and Piper's voices were not run).
 
 ### Through a realtime speech model
 
@@ -251,13 +280,6 @@ only at addresses with a token made for the meeting, and only with
 Twilio's signature of it. The notes are written from the transcript
 alone: the session has none of the profile's memory, files or tools.
 
-Here, `--here --hear <provider>`: this machine's microphone, and with
-`--monitor` what it plays (the meeting app's sound, from PulseAudio's or
-PipeWire's monitor through `parec`, or the program given), each cut into
-utterances by the model of speech and transcribed, as `me` and `others`.
-What the loudspeakers play is the echo the microphone's sound loses, so
-the others are not heard twice.
-
 ```text
 $ sion agent meeting lead --dial +15559990000 --digits 'wwww123456#' \
     --public-url https://bot.example.org --title "Release sync" --deliver telegram:12345
@@ -269,5 +291,59 @@ $ sion agent meeting lead --dial +15559990000 --digits 'wwww123456#' \
 ```
 
 Tested against a stand-in for Twilio's API posting signed transcriptions,
-and here with stand-in microphones and a stand-in transcriber, on a
-devnet; Twilio itself was not reached.
+on a devnet; Twilio itself was not reached.
+
+Here, `--here --hear <provider>` (any of the table's, `whisper:` and
+`local:` included): this machine's microphone, and with `--monitor` what it
+plays (the meeting app's sound, from PulseAudio's or PipeWire's monitor
+through `parec`, or the program given), each cut into utterances by the
+model of speech and transcribed, as `me` and `others`. What the
+loudspeakers play is the echo the microphone's sound loses, so the others
+are not heard twice.
+
+### As a guest, by the meeting's link
+
+`--join <link> --hear <provider>` joins the meeting itself, as a guest
+that listens. Chromium (or `SION_BROWSER`) opens the link headless, with
+a microphone that says nothing and a camera that shows black, and the
+guest takes the steps a person would: it turns its microphone and camera
+off where the page has a button for it, gives its name (`--name`, "Notes
+(sion)" by default), clicks through to the browser's way in ("Continue on
+this browser", "Join from your browser") and asks to join or joins, each
+step said as it is taken. It waits to be let in for five minutes at most;
+a page that says it may not join ("You can't join this call", "Sign in to
+join") ends it with what the page said. Once in, what the meeting plays
+goes to a PulseAudio or PipeWire sink made for it (`pactl`, removed after)
+and is heard from that sink's monitor, as `meeting`. It leaves when the
+meeting ends for it (three looks in a row, five seconds apart, without its
+Leave button), at `--minutes`, or when you press Enter.
+
+Everyone in the meeting sees the guest by its name: say that it takes the
+notes, or ask first. Chromium keeps its own sandbox around the meeting's
+page, so `--join` is refused as root. The steps are found by what the
+buttons and fields are called, as a reader of the screen names them,
+which is how Google Meet, Zoom's web client and Teams name them as far as
+is known; their pages change, and some meetings take only guests who are
+signed in. Tested against stand-in meeting pages served on this machine
+(a lobby that lets the guest in after a moment, and one that refuses it);
+Meet, Zoom and Teams themselves were not reached.
+
+### Who said what
+
+`--diarize <provider>` records what is heard (here, or by the guest) as it
+is transcribed, and at the end has each recording heard again by a
+transcriber that tells speakers apart: `openai:gpt-4o-transcribe-diarize`
+(`OPENAI_API_KEY`), `deepgram:<model>` such as `nova-3` (its utterances,
+by speaker) or `elevenlabs:<model>` such as `scribe_v1` (its words, by
+speaker). Speakers are named `speaker 1`, `speaker 2`… in the order they
+first speak (`in the room, speaker 1` and `on the call, speaker 2` when
+both the microphone and what this machine plays were heard), and the
+transcript by speaker is added to the meeting's file and is what the
+notes are written from. A recording is sent as MP3 at 32 kbit/s (ffmpeg),
+at most 25 MB (about an hour and three quarters); one that is not told
+apart keeps its lines as heard live. The recordings are removed once heard
+again, unless `--keep-recording`.
+
+Tested here with stand-in microphones, a stand-in transcriber and a
+stand-in for a transcriber that tells speakers apart, on a devnet; the
+services that tell speakers apart were not reached.

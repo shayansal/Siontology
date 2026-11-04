@@ -15,7 +15,8 @@ shortened with `…`).
 
 `--browser` gives a session Chromium or Chrome, found on this machine (or
 named by `SION_BROWSER`), with a profile made for the session and removed
-after it: none of your cookies, history or passwords. On Linux it runs in
+after it: none of your cookies, history or passwords, unless you give it
+a profile you signed in with ([below](#signed-in-as-you)). On Linux it runs in
 bubblewrap, which shows it the system's files read-only, its profile, and
 the machine's managed browser policies (an administrator's certificates,
 say), and nothing else of yours. It has no network of its own: every
@@ -92,13 +93,24 @@ The tools:
 | `browser_press` | Presses a key: Enter, Tab, Escape, Backspace, Delete, Space, the arrows, PageUp, PageDown, Home, End | external |
 | `browser_scroll` | Scrolls about a screen, down or up | external |
 | `browser_back` | Goes back a page | external |
-| `browser_screenshot` | A picture of the page | read |
+| `browser_screenshot` | A picture of the page; with `marks`, each element of the last tree that is in view boxed and named on it (`e12`) | read |
+| `browser_click_at` | Clicks at a point of the page as a screenshot shows it, for what has no reference (a canvas, a map), then returns the page | external |
+| `browser_type_focused` | Types into whatever has the focus (after `browser_click_at`, say); with `submit`, presses Enter after | external |
+| `browser_ask_person` | Hands the page to you, for what only you can do ([below](#handed-to-you)) | read |
 | `browser_fill_login` | Fills one of your logins into a field ([below](#logins)) | external |
 
-The browser keeps one page: a link or a form aimed at another window, and
-`window.open`, go to that page. A JavaScript dialog (`alert`, `confirm`)
-is dismissed as it opens, and the next tree says what it asked. Downloads
-are refused.
+Where the tree says too little (a page drawn on a canvas, a control with
+no name), the model looks: a screenshot with marks shows which reference
+is where, at most 80 of them, the marks taken off the page again once the
+picture is taken, and `browser_click_at` acts on a point of the picture,
+in its pixels (inside the page, or refused). A page that draws on a
+canvas, embeds a video or a plugin, or gives nothing to act on says so
+once, the first time its tree is shown.
+
+A link or a form aimed at another window, and `window.open`, go to that
+page in the same tab. A JavaScript dialog (`alert`, `confirm`) is
+dismissed as it opens, and the next tree says what it asked. Downloads are
+taken only with a workspace ([below](#tabs-downloads-and-files)).
 
 ### Where it acts on its own
 
@@ -206,6 +218,64 @@ the browser returns, the address a form sends it to included
 (`agent:browser-logins`). The tests fill a login into a page on this
 machine and check both.
 
+## Signed in as you
+
+`sion agent browser login <name>` opens Chromium in a window of its own,
+with a profile kept for agents in `$SION_HOME/agents/browsers/<name>`,
+readable by you alone: sign in to the sites an agent should reach as you,
+and close the window. `--browser --browser-profile <name>` then gives a
+session's browser that profile instead of a fresh one, on `sion agent
+run` or a profile's settings: its cookies and sessions, so the agent is
+signed in where you are (`agent:signed-in-browser`). One browser uses a
+profile at a time; another session given it is refused until the first
+ends. The profile stays when the browser closes, which is given five
+seconds to write it: what it was signed in to stays, what was downloaded
+into it goes. `sion agent browser list` names the profiles, and `sion
+agent browser remove <name>` removes one, and all it was signed in to.
+
+```text
+$ sion agent browser login shop --url https://shop.example.com/login
+(sign in to what the agent should reach, then close the window: the profile is …/agents/browsers/shop)
+kept browser profile shop: give it to an agent's browser with --browser --browser-profile shop
+$ sion agent run lead … --browser --browser-profile shop --browser-host shop.example.com
+```
+
+The browser stays in its sandbox, reaching only what `--browser-host`
+names through the egress proxy, and what it reads still taints the
+session. But with your sessions in it, it can do on those sites what you
+can: give a profile only to an agent you would give your sign-ins, name
+its hosts, and keep its autonomy where its actions on a page wait for you.
+The profile keeps its passwords and cookies in Chromium's basic store, not
+your desktop's keyring, so they are as safe as the folder. The agent's
+browser runs headless, and a site that notices may ask you to sign in
+again. Signing in needs a display, and is refused as root, where Chromium
+starts no sandbox of its own. The tests sign in on a page served on this
+machine, end the browser, and find the next session's browser still
+signed in.
+
+## Handed to you
+
+Some of a page only you can do: a captcha, a code sent to your phone, a
+sign-in of yours. Where there is a person to ask (the terminal of `sion
+agent talk`, or the chat a bridge answers), the session's browser has
+`browser_ask_person`, and a
+page that shows reCAPTCHA's, hCaptcha's or Cloudflare Turnstile's frame
+says so in its tree, with the advice to hand it over; without a person,
+the tree says that no one is there to solve it. Handing the page over
+starts a page at an address of this machine's, known only by a token
+made for it and answering only to its own name (`127.0.0.1` or
+`localhost` and its port): it shows the browser's page, a picture
+refreshed as you look, and passes your clicks, your typing and a few keys
+(Enter, Tab, Escape, Backspace, the arrows) to the browser. You are asked,
+with its address, to reply when you are done, or with what the agent
+needs (the code you were sent); the agent gets your reply and the page as
+it is then, and what you did before replying is done first. A page handed
+over waits ten minutes for you at most.
+
+The tests hand a page to a stand-in for you, which opens the address,
+looks, clicks into a field and types a code, and replies; the agent finds
+the code typed.
+
 ## A desktop of its own
 
 `--computer` gives a session a desktop: an X server (Xvfb) on a display of
@@ -287,3 +357,9 @@ covers.
   programs it had started.
 - Under bubblewrap, the address space of the browser and of the desktop's
   programs is not bounded: a browser reserves far more than it uses.
+- A page handed to you is at an address of the machine the agent runs on.
+  From another machine (an agent on a server, you on your phone), reach it
+  through a tunnel (`ssh -L <port>:127.0.0.1:<port> <server>`).
+- A captcha is known only by the frame its maker serves it in: one drawn
+  by the page itself is not, and the agent sees it only as the page shows
+  it.

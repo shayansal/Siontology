@@ -162,6 +162,70 @@ line; `run_tests` runs its tests (`cargo test`, `npm test`, `pytest`,
 failures by name, and the end of the output. Which checker and which
 tests is found from the files at the workspace's root.
 
+## Programs that call tools
+
+With a shell, a session may also write a short Python program that calls
+its tools that only read, as functions (`run_code`): a loop over fifty
+files, or a search whose results are filtered before the model sees them,
+is one step, and only what the program prints comes back.
+
+```python
+total = 0
+for path in tools.find_files(pattern="src/**/*.rs").split():
+    text = tools.read_file(path=path)
+    total += text.count("unsafe")
+print("unsafe:", total)
+```
+
+A tool is `tools.<name>(<input as keyword arguments>)` or
+`call("<name>", ...)`; each returns the tool's text, and raises
+`ToolError` when the tool fails. The program runs in the shell's sandbox
+with nothing of the machine in view: no workspace, no network, Python's
+standard library alone. What it reads, it reads through the tools, and
+each call comes back to the runtime over a pipe and is checked and made as
+a call of the model's own would be: its policy, its journal, its taint
+(a page read from code taints the session), quarantine (a page held is a
+placeholder to the program too), the operator's hooks; each is a step of
+the run's trace. A tool that changes something or reaches outside, or
+would wait for a person, is not called from code: the program is told so,
+and the model makes that call itself. A program makes at most 200 calls,
+within the sandbox's time limit, and its output is cut at 24,000
+characters; one that fails comes back with its traceback. `run_code` is
+offered where Python 3 is in the sandbox (bubblewrap's is this machine's;
+a Docker image is taken to have it).
+
+## Hooks around calls
+
+`sion agent hooks` keeps commands of your own that run around your
+agents' tool calls and runs, in `$SION_HOME/agents/hooks.json`:
+
+```text
+sion agent hooks add --event before-tool --tool shell -- /home/me/guard.sh
+sion agent hooks add --event after-tool --tool 'github_*' -- /home/me/log-call.sh
+sion agent hooks list
+sion agent hooks remove 2
+```
+
+| Event | When | What it may do |
+|---|---|---|
+| `before-tool` | Before a call runs, once the policy lets it and any approval is given | Exit 0 lets it run; exit 2 blocks it, and what the hook wrote to its error output (or else its output) is the model's reason. A hook that fails otherwise (another status, no start, out of time) blocks the call too |
+| `after-tool` | After a call ran | What it prints on exit 0 is added to what the model is shown of the call, marked as the hook's |
+| `run-start` | Before a run of a session (each message of a chat) | What it prints on exit 0 is added to the person's latest message, marked as the hook's |
+| `run-end` | After a run, with how it ended | Nothing: it is told |
+
+A hook reads the event as JSON on its standard input (`event`, `session`,
+and, as the event has them, `tool`, `input`, `outcome`, `said` or
+`ended`), with `SION_HOOK_EVENT` and `SION_SESSION` in its environment.
+`--tool` patterns (`*` for any characters) say which tools a tool hook is
+for; without one, every tool. A hook runs as you, outside any sandbox, in
+the session's workspace if it has one, and is stopped after `--timeout`
+seconds (30 by default). Failures of hooks that do not block are written
+to `$SION_HOME/agents/hooks.log`. A hooks file anyone but its owner may
+change is refused, and no session runs until it is fixed. With tool
+hooks, calls that only read run one after another rather than side by
+side, so that each is asked in turn; subagents spawned together still
+work at the same time, each asked first.
+
 ## Skills' scripts
 
 With a shell, the agent also gets `skill_run`: it runs a script that comes
@@ -571,6 +635,29 @@ agent: Three subagents paid bob for their parts.
 session df7de21c12ac158b: done
 ```
 
+### Subagents that change code
+
+An agent whose workspace is the root of a git repository, and which has a
+shell, may give a subagent a worktree (`"worktree": true` in its
+`agent_spawn`): a branch of its own, `sion/<name>` (with a number after it
+if that is taken), checked out in a directory of its own in the system's
+temporary directory, from the repository's HEAD. The subagent works
+there with a shell like its parent's and the tools for changing code, so
+that subagents spawned together change code side by side without touching
+each other's files or their parent's. When it is done, its changes are
+committed on its branch, by `sion subagent <name>`, the worktree is
+removed and the branch kept; the report says what changed (`1 file
+changed, 1 insertion(+)`) and how to look and merge (`git diff
+HEAD...sion/<name>`, `git merge sion/<name>`). A subagent that changed
+nothing leaves no branch.
+
+Git runs on this machine, not in the sandbox, so it never trusts what the
+subagent could change: its worktree's `.git` file is not read after the
+worktree is made (its git directory is named outright), and hooks, the
+file-system monitor and signing are off for its commit. Inside its
+sandbox the subagent's worktree has no repository of its own: `git`
+there finds none, and its commit is made for it.
+
 ## What this does not do yet
 
 - A server's resources are read when asked for; subscriptions to them,
@@ -579,6 +666,11 @@ session df7de21c12ac158b: done
   pictures. A server over HTTP cannot be given a client certificate
   (mutual TLS), and logging in takes a browser: the device authorization
   grant is not used.
+- A program that calls tools (`run_code`) is Python; it reaches no files
+  but through the tools, and calls only those that read.
+- A subagent's worktree is of its parent's workspace's repository only
+  when the workspace is the repository's root, and its branch is merged
+  by its parent, with the shell; a conflict is the parent's to resolve.
 - `diagnostics` and `run_tests` know the checkers and test runners named
   above, by the files at the workspace's root; a project laid out
   otherwise is checked with the shell.

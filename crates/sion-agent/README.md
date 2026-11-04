@@ -35,10 +35,11 @@ About 32,600 lines of Rust under `src/` at the time of writing (`find crates/sio
 
 | Group | Modules | What they hold |
 |---|---|---|
-| Run core | `session`, `policy`, `journal`, `tools`, `verify`, `trace`, `quarantine`, `imitation`, `permissions` | The loop and everything it enforces, as in the table above. |
-| Models and providers | `model`, `providers`, `scripted` | Provider-independent request and response types; the Anthropic Messages API, OpenAI-compatible chat, Google Gemini and OpenAI Responses over `sion-http`; a model that plays a script. |
+| Run core | `session`, `policy`, `journal`, `tools`, `verify`, `trace`, `quarantine`, `imitation`, `permissions` | The loop and everything it enforces, as in the table above; a large toolbox's search (BM25), and what is loaded from it. |
+| Around calls | `code_mode`, `hooks` | Programs in Python that call the session's tools that only read, in the sandbox; the operator's hooks before and after calls, which may block one. |
+| Models and providers | `model`, `providers`, `scripted` | Provider-independent request and response types; the Anthropic Messages API, OpenAI-compatible chat, Google Gemini and OpenAI Responses over `sion-http`, each given back the reasoning it gave and told how hard to think; a model that plays a script. |
 | Tools: builtin | `builtin`, `code` | Workspace files, a shell in the sandbox, web pages; edits, patches, file search and the project's checker and tests. |
-| Tools: web and screens | `websearch`, `browser`, `cdp`, `desktop`, `teach` | Web search services; Chromium driven over the DevTools Protocol; an X desktop seen in screenshots; a person's browser recorded while they do a task once, and written down as a draft skill. |
+| Tools: web and screens | `websearch`, `browser`, `cdp`, `takeover`, `desktop`, `teach` | Web search services; Chromium driven over the DevTools Protocol, with a profile a person signed in with if given, and its page handed to them on a page of this machine's; an X desktop seen in screenshots; a person's browser recorded while they do a task once, and written down as a draft skill. |
 | Tools: sandbox and egress | `sandbox`, `egress`, `encoding` | Bubblewrap or a Docker image pinned by digest; a filtering proxy and an in-sandbox bridge for the hosts a skill's scripts may reach (`bin/sion-sandbox-bridge.rs`); Base64. |
 | MCP | `mcp`, `mcp_http`, `mcp_input`, `oauth` | An MCP client over standard input and output and over HTTP; elicitation and sampling; OAuth 2.1 for servers that ask for it. Tools are offered only while each definition matches the one an operator reviewed. |
 | Skills and their improvement | `skills`, `evals`, `evolve`, `judge` | Skills in the Agent Skills format with a canonical bundle; evaluation sets; reflective evolution of a skill's variants; a step-by-step judge. |
@@ -65,7 +66,7 @@ Depends on: `sion-core` and `sion-http` (workspace crates), plus `regex`, `serde
 
 ## Tests
 
-About 154 unit tests under `src/` and 75 tests under `tests/` (counted with `grep -c "#\[test\]"`; no test is `#[ignore]`). The tests under `tests/` are `session.rs` (44, the loop, approvals, journal, compaction, pause and resume), `providers.rs` (14, against `tiny_http` stand-ins for the APIs), `mcp.rs` (8), `skill_permissions.rs` (5), `browser.rs` (3, skipped where Chromium, Xvfb and bubblewrap are not installed) and `attacks.rs` (1, nine attacks on a scripted model that obeys everything it reads, showing what holds and that two get through, as the status file records).
+About 164 unit tests under `src/` and 93 tests under `tests/` (counted with `grep -c "#\[test\]"`; no test is `#[ignore]`). The tests under `tests/` are `session.rs` (44, the loop, approvals, journal, compaction, pause and resume), `providers.rs` (14, against `tiny_http` stand-ins for the APIs), `reasoning.rs` (11, reasoning kept and given back, and how hard each provider is asked to think, against the same stand-ins), `mcp.rs` (8), `skill_permissions.rs` (5), `code_mode.rs` (4, programs that call tools, and the operator's hooks; skipped where bubblewrap or python3 is not there), `browser.rs` (4, skipped where Chromium, Xvfb and bubblewrap are not installed), `tool_search.rs` (1), `teach.rs` (1) and `attacks.rs` (1, nine attacks on a scripted model that obeys everything it reads, showing what holds and that two get through, as the status file records).
 
 All runs use a scripted model and stand-ins for providers' APIs: the implementation status says the environment these were made in reaches none of them, so a run against a real model is not part of the tests. The sandbox tests run bubblewrap for real, and Docker with `SION_TEST_DOCKER_IMAGE`.
 

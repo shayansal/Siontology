@@ -2663,6 +2663,7 @@ fn a_live_conversation_is_heard_spoken_interrupted_and_woken() {
             ..Detection::default()
         },
         play_raw: None,
+        hold: None,
     };
     let (_typing, untyped) = std::sync::mpsc::channel::<()>();
     let mut out = Vec::new();
@@ -2764,6 +2765,7 @@ fn a_live_conversation_is_heard_spoken_interrupted_and_woken() {
             ..Detection::default()
         },
         play_raw: None,
+        hold: None,
     };
     let (_typing, untyped) = std::sync::mpsc::channel::<()>();
     let mut out = Vec::new();

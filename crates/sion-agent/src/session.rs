@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::code_mode::{self, CodeRunner, Said, MAX_CODE_CALLS, MAX_CODE_OUTPUT, RUN_CODE};
+use crate::hooks::{self, ToolHooks};
 use crate::journal::{key, Entry, Journal, Prior};
 use crate::model::{
     image_digest, images_of, Block, Delta, Image, Message, Model, ModelError, Picture, Request,
@@ -309,6 +311,11 @@ pub struct State {
     /// ([`Runtime::verify`]).
     #[serde(default, skip_serializing_if = "Attempts::is_empty")]
     pub attempts: Attempts,
+    /// The tools of a large toolbox that its searches found and loaded, the
+    /// latest last ([`crate::tools::Toolbox::shown_with`]), at most
+    /// [`crate::tools::MAX_LOADED`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loaded_tools: Vec<String>,
 }
 
 /// The most recent calls a session keeps to tell when it goes round in
@@ -382,6 +389,20 @@ impl State {
         };
         state.show(pictures);
         state
+    }
+
+    /// Loads the tools `found` by a search: each goes last, and only the
+    /// last [`crate::tools::MAX_LOADED`] are kept.
+    pub fn load_tools(&mut self, found: impl IntoIterator<Item = String>) {
+        for name in found {
+            self.loaded_tools.retain(|loaded| loaded != &name);
+            self.loaded_tools.push(name);
+        }
+        let skip = self
+            .loaded_tools
+            .len()
+            .saturating_sub(crate::tools::MAX_LOADED);
+        self.loaded_tools.drain(..skip);
     }
 
     /// Whether a person may allow more than the call that waits: the same
@@ -518,6 +539,13 @@ pub struct Runtime<'a> {
     /// ([`crate::verify`]). With it, the model may also say that it cannot
     /// complete the task ([`CANNOT_COMPLETE`]).
     pub verify: Option<Check<'a>>,
+    /// What runs programs that call tools, if anything: with it, the model
+    /// may write one ([`RUN_CODE`], [`crate::code_mode`]).
+    pub code: Option<&'a dyn CodeRunner>,
+    /// The operator's hooks around tool calls, if any: asked before each
+    /// call runs, which they may block, and after, which they may add a
+    /// note to ([`crate::hooks`]).
+    pub hooks: Option<&'a dyn ToolHooks>,
 }
 
 /// What checks a model's answer ([`Runtime::verify`]): given the session and
@@ -1006,8 +1034,9 @@ impl Runtime<'_> {
         calls: &[(String, String, Value)],
         index: usize,
     ) -> Option<(Vec<(usize, Ready)>, usize)> {
-        // A run told to stop starts nothing more.
-        if (self.stopped)() {
+        // A run told to stop starts nothing more; one with the operator's
+        // hooks asks them of each call in turn.
+        if (self.stopped)() || self.hooks.is_some() {
             return None;
         }
         let mut group: Vec<(usize, Ready)> = Vec::new();
@@ -1159,27 +1188,51 @@ impl Runtime<'_> {
                             _ => break,
                         }
                     }
-                    let inputs: Vec<(&Value, &str)> = group
+                    // The operator's hooks may block some of them; the rest
+                    // run together.
+                    let blocked: Vec<Option<String>> = group
                         .iter()
-                        .map(|(_, r)| (&r.input, r.key.as_str()))
+                        .map(|(_, ready)| self.hook_blocks(state, ready))
                         .collect();
+                    let allowed: Vec<&Ready> = group
+                        .iter()
+                        .zip(&blocked)
+                        .filter(|(_, why)| why.is_none())
+                        .map(|((_, ready), _)| ready)
+                        .collect();
+                    let inputs: Vec<(&Value, &str)> =
+                        allowed.iter().map(|r| (&r.input, r.key.as_str())).collect();
                     self.seen(&Seen::Running(group[0].1.tool.clone()));
                     let start_ms = wall_ms();
                     let held = state.standing.held((self.now)());
-                    for (_, ready) in &group {
+                    for ready in &allowed {
                         self.begin(state, ready);
                     }
                     self.save(state);
                     // Subagents work within what is left of the budget.
                     let left = self.left(state, start);
-                    let mut outcomes = tool.call_batch_budgeted(&inputs, held, left);
-                    outcomes.resize_with(group.len(), || {
+                    let mut outcomes = if inputs.is_empty() {
+                        Vec::new()
+                    } else {
+                        tool.call_batch_budgeted(&inputs, held, left)
+                    };
+                    outcomes.resize_with(inputs.len(), || {
                         Outcome::uncertain("the tool gave no outcome for this call")
                     });
-                    for ((at, ready), outcome) in group.iter().zip(outcomes) {
-                        let outcome = marked(ready, outcome);
-                        let outcome = self.hold(state, &ready.tool, outcome);
-                        self.finish(state, ready, &outcome);
+                    let mut ran = outcomes.into_iter();
+                    for ((at, ready), why) in group.iter().zip(blocked) {
+                        let outcome = match why {
+                            Some(why) => hooks::blocked(&why),
+                            None => {
+                                let outcome = ran.next().unwrap_or_else(|| {
+                                    Outcome::uncertain("the tool gave no outcome for this call")
+                                });
+                                let outcome = marked(ready, outcome);
+                                let outcome = self.hold(state, &ready.tool, outcome);
+                                self.finish(state, ready, &outcome);
+                                self.hook_after(state, ready, outcome)
+                            }
+                        };
                         let step = self.call_step(
                             state,
                             &ready.tool,
@@ -1361,15 +1414,153 @@ impl Runtime<'_> {
 
     /// The tools the model is shown: the toolbox's, and in quarantine the
     /// reader.
-    fn shown(&self) -> Vec<ToolSpec> {
-        let mut shown = self.tools.shown();
+    fn shown(&self, state: &State) -> Vec<ToolSpec> {
+        let mut shown = self.tools.shown_with(&state.loaded_tools);
         if self.policy.quarantine {
             shown.push(quarantine::spec());
         }
         if self.verify.is_some() {
             shown.push(verify::spec());
         }
+        if self.code.is_some() {
+            shown.push(code_mode::spec(&self.callable_from_code()));
+        }
         shown
+    }
+
+    /// The tools a program may call ([`RUN_CODE`]): those that only read,
+    /// by name.
+    fn callable_from_code(&self) -> Vec<String> {
+        self.tools
+            .names()
+            .into_iter()
+            .filter(|name| {
+                self.tools
+                    .get(name)
+                    .is_some_and(|tool| tool.effect() == Effect::Read && !tool.batches())
+            })
+            .collect()
+    }
+
+    /// Runs a program that calls tools ([`RUN_CODE`]): each call it makes is
+    /// made as the model's own would be ([`Runtime::call_from_code`]), and
+    /// what it prints is the result, marked where it imitates the runtime's
+    /// notes.
+    fn run_code(
+        &self,
+        state: &mut State,
+        code: &dyn CodeRunner,
+        input: &Value,
+        left: Option<u64>,
+    ) -> Outcome {
+        let program = input["code"].as_str().unwrap_or_default();
+        if program.trim().is_empty() {
+            return Outcome::error("give the program, as code");
+        }
+        let start_ms = wall_ms();
+        self.seen(&Seen::Running(RUN_CODE.into()));
+        let mut running = match code.start(program) {
+            Ok(running) => running,
+            Err(why) => return Outcome::error(format!("the program could not start: {why}")),
+        };
+        let deadline = std::time::Instant::now() + code.time_limit();
+        let mut calls = 0;
+        let (mut untrusted, mut confidential) = (false, false);
+        let mut outcome = loop {
+            if (self.stopped)() {
+                running.stop();
+                break Outcome::error("stopped: the kill switch is on");
+            }
+            match running.next(deadline) {
+                Said::Call { tool, input } => {
+                    calls += 1;
+                    if calls > MAX_CODE_CALLS {
+                        running.stop();
+                        break Outcome::error(format!(
+                            "stopped: a program makes at most {MAX_CODE_CALLS} calls"
+                        ));
+                    }
+                    let answer = self.call_from_code(state, &tool, &input, left);
+                    untrusted |= answer.untrusted;
+                    confidential |= answer.confidential;
+                    if let Err(why) = running.answer(&answer.content, answer.is_error) {
+                        break Outcome::error(why);
+                    }
+                }
+                Said::Done { output, error } => {
+                    let mut printed: String = output.chars().take(MAX_CODE_OUTPUT).collect();
+                    if output.chars().count() > MAX_CODE_OUTPUT {
+                        printed.push_str("\n[… cut]");
+                    }
+                    if let Some(labelled) = crate::imitation::label(&printed) {
+                        printed = labelled;
+                    }
+                    break match error {
+                        Some(error) => Outcome::error(format!(
+                            "{printed}[the program failed after {calls} calls]\n{error}"
+                        )),
+                        None if printed.trim().is_empty() => Outcome::ok(format!(
+                            "[the program printed nothing; it made {calls} calls]"
+                        )),
+                        None => Outcome::ok(printed),
+                    };
+                }
+                Said::Failed(why) => break Outcome::error(why),
+            }
+        };
+        outcome.untrusted = untrusted;
+        outcome.confidential = confidential;
+        let step = self.call_step(
+            state,
+            RUN_CODE,
+            None,
+            Some(Effect::Read),
+            ended_as(&outcome),
+            start_ms,
+        );
+        self.step(state, step);
+        outcome
+    }
+
+    /// A call a program makes: made as the model's own would be, if its tool
+    /// only reads and would run without a person; otherwise the program is
+    /// told to leave it to the model.
+    fn call_from_code(
+        &self,
+        state: &mut State,
+        tool: &str,
+        input: &Value,
+        left: Option<u64>,
+    ) -> Outcome {
+        if [
+            TOOLS_SEARCH,
+            TOOLS_CALL,
+            RUN_CODE,
+            QUARANTINE_READ,
+            CANNOT_COMPLETE,
+        ]
+        .contains(&tool)
+        {
+            return Outcome::error(format!("{tool} is not called from code"));
+        }
+        match self.tools.get(tool) {
+            None => return Outcome::error(format!("there is no tool named {tool}")),
+            Some(found) if found.effect_of(input) != Effect::Read || found.batches() => {
+                return Outcome::error(format!(
+                    "{tool} does more than read: it is not called from code; call it yourself"
+                ))
+            }
+            Some(_) => {}
+        }
+        if let Checked::Wait { .. } = self.check(state, tool, input) {
+            return Outcome::error(format!(
+                "{tool} would wait for a person here: it is not called from code; call it yourself"
+            ));
+        }
+        match self.call(state, tool, input, left) {
+            Called::Ran(outcome) => outcome,
+            Called::Wait { .. } => Outcome::error(format!("{tool} waits for a person")),
+        }
     }
 
     /// In quarantine, what a tool returned from outside is held out of the
@@ -1504,16 +1695,23 @@ impl Runtime<'_> {
 
     /// Tokens the next model call may cost at most: what it is sent, as an
     /// estimate (a token for every three bytes, which counts English text
-    /// high), and the most it may answer.
+    /// high), and the most it may answer, of any of its models, room to
+    /// think included ([`Model::most_tokens`]).
     fn request_tokens(&self, state: &State, max_tokens: u32) -> u64 {
         let tools: usize = self
-            .shown()
+            .shown(state)
             .iter()
             .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
             .sum();
         let chars =
             self.system.len() + state.messages.iter().map(Message::chars).sum::<usize>() + tools;
-        (chars as u64).div_ceil(3) + u64::from(max_tokens)
+        let most = self
+            .models
+            .iter()
+            .map(|model| model.most_tokens(max_tokens))
+            .max()
+            .unwrap_or(max_tokens);
+        (chars as u64).div_ceil(3) + u64::from(most)
     }
 
     /// The last answer of a run whose budget is spent: within what is
@@ -1704,7 +1902,7 @@ impl Runtime<'_> {
         let request = Request {
             system: self.system.clone(),
             messages: state.messages.clone(),
-            tools: self.shown(),
+            tools: self.shown(state),
             max_tokens,
             images: state.images.clone(),
         };
@@ -1756,10 +1954,25 @@ impl Runtime<'_> {
         if name == QUARANTINE_READ && self.policy.quarantine {
             return Called::Ran(self.read_held(state, input, left));
         }
+        if let (RUN_CODE, Some(code)) = (name, self.code) {
+            return Called::Ran(self.run_code(state, code, input, left));
+        }
         self.reconcile(state, name, input);
         let start_ms = wall_ms();
         match self.check(state, name, input) {
             Checked::Answered(outcome) => {
+                // What a search of a large toolbox found is loaded: shown
+                // from the next call on, to be called by name.
+                if name == TOOLS_SEARCH && !outcome.is_error {
+                    let always: Vec<String> = self
+                        .tools
+                        .shown_with(&[])
+                        .into_iter()
+                        .map(|spec| spec.name)
+                        .collect();
+                    let found = self.found(input).into_iter().map(|spec| spec.name);
+                    state.load_tools(found.filter(|name| !always.contains(name)));
+                }
                 let (inner, _) = Self::inner(name, input);
                 let step = self.call_step(state, inner, None, None, "answered", start_ms);
                 self.step(state, step);
@@ -1785,6 +1998,19 @@ impl Runtime<'_> {
             }
             Checked::Ready(ready) => {
                 let tool = self.tools.get(&ready.tool).expect("checked");
+                if let Some(why) = self.hook_blocks(state, &ready) {
+                    let outcome = hooks::blocked(&why);
+                    let step = self.call_step(
+                        state,
+                        &ready.tool,
+                        Some(&ready.key),
+                        Some(ready.effect),
+                        "blocked",
+                        start_ms,
+                    );
+                    self.step(state, step);
+                    return Called::Ran(outcome);
+                }
                 self.seen(&Seen::Running(ready.tool.clone()));
                 let held = state.standing.held((self.now)());
                 let written = self.begin(state, &ready);
@@ -1809,6 +2035,7 @@ impl Runtime<'_> {
                 let outcome = marked(&ready, outcome);
                 let outcome = self.hold(state, &ready.tool, outcome);
                 self.finish(state, &ready, &outcome);
+                let outcome = self.hook_after(state, &ready, outcome);
                 let step = self.call_step(
                     state,
                     &ready.tool,
@@ -1823,6 +2050,23 @@ impl Runtime<'_> {
                 }
                 Called::Ran(outcome)
             }
+        }
+    }
+
+    /// Why the operator's hooks block `ready`, if they do.
+    fn hook_blocks(&self, state: &State, ready: &Ready) -> Option<String> {
+        self.hooks?.before(&state.id, &ready.tool, &ready.input)
+    }
+
+    /// `outcome` with the note the operator's hooks add after `ready` ran,
+    /// if any.
+    fn hook_after(&self, state: &State, ready: &Ready, outcome: Outcome) -> Outcome {
+        let note = self
+            .hooks
+            .and_then(|hooks| hooks.after(&state.id, &ready.tool, &ready.input, &outcome));
+        match note {
+            Some(note) => hooks::noted(outcome, &note),
+            None => outcome,
         }
     }
 
@@ -1847,20 +2091,42 @@ impl Runtime<'_> {
         true
     }
 
+    /// What a search of the toolbox (`tools_search`) with `input` finds:
+    /// its query's best matches, as many as it asks for.
+    fn found(&self, input: &Value) -> Vec<ToolSpec> {
+        let query = input["query"].as_str().unwrap_or_default();
+        let limit = input["limit"]
+            .as_u64()
+            .map_or(crate::tools::FOUND_BY_DEFAULT, |n| n as usize);
+        self.tools.ranked(query, limit)
+    }
+
     /// Everything that decides whether a call runs, without running it:
     /// the meta-tools, the journal, the policy and the kill switch. It
     /// changes nothing, so a call may be checked again.
     fn check(&self, state: &State, name: &str, input: &Value) -> Checked {
         // The meta-tools of a large toolbox.
         if name == TOOLS_SEARCH {
-            let query = input["query"].as_str().unwrap_or_default();
-            let found = self.tools.search(query);
-            return Checked::Answered(Outcome::ok(json!(found).to_string()));
+            let found = self.found(input);
+            if found.is_empty() {
+                return Checked::Answered(Outcome::ok(
+                    "No tool matches: try other words for what it does, or fewer.",
+                ));
+            }
+            let names: Vec<&str> = found.iter().map(|spec| spec.name.as_str()).collect();
+            return Checked::Answered(Outcome::ok(format!(
+                "Loaded, and callable by name from now on: {}.\n{}",
+                names.join(", "),
+                json!(found)
+            )));
         }
         if name == QUARANTINE_READ {
             return Checked::Answered(Outcome::error(
                 "nothing is held in quarantine: this session does not hold content from outside",
             ));
+        }
+        if name == RUN_CODE && self.code.is_some() {
+            return Checked::Answered(Outcome::error("run_code is called directly, on its own"));
         }
         if name == TOOLS_CALL {
             let inner = input["name"].as_str().unwrap_or_default().to_string();
@@ -2373,6 +2639,8 @@ pub fn summarize(messages: &[Message]) -> String {
                     shorten(content, 200)
                 ),
                 Block::Image { image } => format!("- I was shown a picture ({})", image.media_type),
+                // Kept reasoning is the model's own, and opaque: not summed up.
+                Block::Reasoning { .. } => continue,
             });
         }
     }

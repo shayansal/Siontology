@@ -116,7 +116,7 @@ pub fn message_text(message: &Message) -> String {
             Block::ToolResult { content, .. } => {
                 parts.push(content.chars().take(MAX_RESULT_CHARS).collect())
             }
-            Block::Image { .. } => {}
+            Block::Image { .. } | Block::Reasoning { .. } => {}
         }
     }
     parts.join("\n")

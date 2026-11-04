@@ -34,6 +34,26 @@ pub fn base64_url(bytes: &[u8]) -> String {
     encode(bytes, URL_SAFE, false)
 }
 
+/// The bytes of standard Base64 (`+`, `/`, padding optional), or none if
+/// it is not that.
+pub fn from_base64(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim_end_matches('=');
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut bits = 0u32;
+    let mut held = 0;
+    for c in text.bytes() {
+        let value = STANDARD.iter().position(|&t| t == c)? as u32;
+        bits = (bits << 6) | value;
+        held += 6;
+        if held >= 8 {
+            held -= 8;
+            out.push((bits >> held) as u8);
+            bits &= (1 << held) - 1;
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +74,13 @@ mod tests {
         }
         assert_eq!(base64_url(&[0xfb, 0xff]), "-_8");
         assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
+        for plain in ["", "f", "fo", "foo", "foob", "fooba", "foobar"] {
+            assert_eq!(
+                from_base64(&base64(plain.as_bytes())).unwrap(),
+                plain.as_bytes()
+            );
+        }
+        assert_eq!(from_base64("+/8=").unwrap(), [0xfb, 0xff]);
+        assert!(from_base64("not base64!").is_none());
     }
 }

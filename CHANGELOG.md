@@ -10,6 +10,67 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### The harness, the voice and the browser
+
+- **Reasoning kept across tool calls**: what a model thought is given back
+  to it with the next request, as its provider gave it (Anthropic's signed
+  thinking and redacted thinking, the Responses API's encrypted reasoning
+  items, Gemini's thought signatures on text as on calls, a chat server's
+  reasoning text within the task), and to no other model; a provider that
+  refuses it is asked again without it. How hard a model thinks is written
+  after its name: `anthropic:claude-opus-5-5#high`, `openai:o3#low`,
+  `gemini:gemini-2.5-pro#8000` (an effort, or a budget of tokens), on
+  `--model` and on a route, with the room to think counted in the run's
+  budget. Trust atom `agent:kept-reasoning`.
+- **Tool search**: past 40 tools (several MCP servers', Home
+  Assistant's), a session keeps its own in view and the rest behind
+  `tools_search`, ranked by BM25 over their names, descriptions and
+  inputs; what a search finds is loaded and called by name from the next
+  call on (or at once through `tools_call`).
+- **Programs that call tools**: `run_code` runs a Python program in the
+  shell's sandbox, without network, that calls the session's tools that
+  only read (`tools.read_file(path=…)`), each call checked as the model's
+  own, up to 200 of them; only what it prints comes back. Trust atom
+  `agent:code-mode`.
+- **Hooks**: `sion agent hooks add --event before-tool|after-tool|run-start|run-end`
+  runs a command of yours around calls and runs; one before a call may
+  block it, with the reason given to the model, and one that fails blocks
+  it. Trust atom `agent:hooks`.
+- **Subagents in worktrees**: `agent_spawn` with `worktree` gives a
+  subagent a git worktree of its parent's repository, its work committed
+  on a branch of its own (`sion/<name>`) for the parent to merge. Trust
+  atom `agent:worktrees`.
+- **Turns told by what was said**: a live conversation ends your turn
+  after half a second of quiet, unless what you said sounds unfinished
+  ("Book a flight to…"), which waits a second and a half for the rest
+  (`--turns semantic`, the default; `--turns silence` as before).
+- **Voice on this machine**: `--hear whisper:<model file>` (whisper.cpp),
+  `--speak piper:<model file>` (Piper), and `local:` for a server that
+  speaks OpenAI's API (speaches, Kokoro-FastAPI, LocalAI), on every
+  messenger, in `sion agent talk` and in meetings; any of them can hear a
+  wake word.
+- **Joining a meeting by its link**: `sion agent meeting --join <link>`
+  joins as a guest that listens (Chromium with a silent microphone and a
+  black camera), gives its name (`--name`), asks to join and waits to be
+  let in, and hears the meeting through a PulseAudio sink of its own.
+  Trust atom `agent:meeting-guest`.
+- **Who said what**: `--diarize openai:gpt-4o-transcribe-diarize` (or
+  Deepgram's, or ElevenLabs') records the meeting and has it heard again
+  by a transcriber that tells speakers apart; the notes are written from
+  the transcript by speaker. `--keep-recording` keeps the recordings.
+- **A browser signed in as you**: `sion agent browser login <name>` opens
+  Chromium for you to sign in; `--browser --browser-profile <name>` gives
+  that profile to an agent's browser, one browser at a time, its cookies
+  kept. Trust atom `agent:signed-in-browser`.
+- **The page handed to you**: `browser_ask_person` hands the browser's page
+  to you, on a page of this machine's known by a token, for a captcha, a
+  code sent to you or a sign-in; the agent gets your reply and the page.
+  A page that shows a captcha says so. Trust atom `agent:browser-handover`.
+- **Where the tree says too little**: `browser_screenshot` with `marks`
+  boxes and names the tree's references on the picture;
+  `browser_click_at` clicks at a point of it and `browser_type_focused`
+  types into what has the focus.
+
 ### Coming over, teaching, and talking
 
 - **A model for each task**: `sion agent routes` gives a profile routes

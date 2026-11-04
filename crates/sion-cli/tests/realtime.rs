@@ -287,6 +287,7 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
             "-c".into(),
             format!("cat >> {}", heard.display()),
         ]),
+        hold: None,
     };
     let talk = sion_cli::talk::Talk {
         conversation: "desk".into(),

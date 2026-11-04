@@ -485,6 +485,52 @@ pub fn ledger_tools(acting: &Acting) -> Vec<Box<dyn Tool>> {
     ]
 }
 
+/// Whether programs that call tools can run in `sandbox`: Python 3 is in
+/// its system (bubblewrap shows this machine's), or it is a container,
+/// whose image is taken to have it.
+pub fn python_in(sandbox: &sion_agent::sandbox::Sandbox) -> bool {
+    match sandbox.backend {
+        sion_agent::sandbox::Backend::Docker { .. } => true,
+        sion_agent::sandbox::Backend::Bubblewrap => {
+            ["/usr/local/bin/python3", "/usr/bin/python3", "/bin/python3"]
+                .iter()
+                .any(|path| std::path::Path::new(path).exists())
+                || sandbox
+                    .readable
+                    .iter()
+                    .any(|dir| dir.join("bin").join("python3").exists())
+        }
+    }
+}
+
+/// A model's name without the thinking written after it, and that
+/// thinking ([`sion_agent::model::thinking_of`]), for a model of `kind`: a
+/// scripted model takes none (its file's name is all of it), and OpenAI's
+/// and the chat completions servers take an effort level, not a budget.
+pub fn thinking_of<'a>(
+    kind: &str,
+    rest: &'a str,
+) -> Result<(&'a str, Option<sion_agent::Thinking>), String> {
+    if kind == "script" {
+        return Ok((rest, None));
+    }
+    let (name, thinking) = sion_agent::model::thinking_of(rest)?;
+    if name.is_empty() {
+        return Err(format!("{kind}:{rest} names no model"));
+    }
+    if let (
+        Some(sion_agent::Thinking::Budget(_)),
+        "openai" | "local" | "openai-responses" | "chatgpt",
+    ) = (thinking, kind)
+    {
+        return Err(format!(
+            "{kind} models take how hard to think as an effort level (#low, #medium, #high, \
+             #xhigh), not a budget of tokens"
+        ));
+    }
+    Ok((name, thinking))
+}
+
 /// A model from its description: `anthropic:<model>` (key in
 /// `ANTHROPIC_API_KEY`), `openai:<model>` (base URL in `OPENAI_BASE_URL`,
 /// by default OpenAI's, key in `OPENAI_API_KEY` if set), `gemini:<model>`
@@ -502,12 +548,20 @@ pub fn ledger_tools(acting: &Acting) -> Vec<Box<dyn Tool>> {
 /// or else the one this machine keeps ([`crate::credentials`]). A base URL
 /// on this machine (a model server such as Ollama's,
 /// `http://127.0.0.1:11434/v1`) is reached; other local addresses are not.
+///
+/// How hard a model thinks is written after its name ([`thinking_of`]):
+/// `anthropic:claude-opus-5-5#high`, an effort level (`none`, `minimal`,
+/// `low`, `medium`, `high`, `xhigh`, `max`), or a budget of thinking tokens
+/// for the models that take one (Anthropic's before Claude 4.6, Gemini 2.5:
+/// `gemini:gemini-2.5-flash#4096`). It is given room to think besides its
+/// answer ([`sion_agent::model::most_tokens`]).
 pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
     let (kind, rest) = spec.split_once(':').ok_or_else(|| {
         CliError::Usage(format!(
             "a model is anthropic:<model>, openai:<model>, openai-responses:<model>, chatgpt:<model>, gemini:<model>, local:<model> or script:<file>, not {spec}"
         ))
     })?;
+    let (rest, thinking) = thinking_of(kind, rest).map_err(CliError::Usage)?;
     // A model server on this machine is reached; no other local address.
     let http = |base: Option<&str>| {
         sion_http::Client::new(sion_http::Options {
@@ -529,17 +583,20 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             if let Some(base) = base {
                 provider.base = base;
             }
+            provider.thinking = thinking;
             Ok(Box::new(provider))
         }
         "openai" => {
             let base = env("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into());
             let key = env("OPENAI_API_KEY");
-            Ok(Box::new(sion_agent::providers::OpenAiCompatible::new(
+            let mut provider = sion_agent::providers::OpenAiCompatible::new(
                 http(Some(&base))?,
                 &base,
                 rest,
                 key.as_deref(),
-            )))
+            );
+            provider.thinking = thinking;
+            Ok(Box::new(provider))
         }
         "local" => {
             // The operator's own server: on this machine or its network.
@@ -553,12 +610,10 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             })
             .map_err(|e| CliError::Usage(e.to_string()))?;
             let key = env("SION_LOCAL_MODEL_KEY");
-            Ok(Box::new(sion_agent::providers::OpenAiCompatible::new(
-                client,
-                &base,
-                rest,
-                key.as_deref(),
-            )))
+            let mut provider =
+                sion_agent::providers::OpenAiCompatible::new(client, &base, rest, key.as_deref());
+            provider.thinking = thinking;
+            Ok(Box::new(provider))
         }
         "openai-responses" => {
             let key = env("OPENAI_API_KEY").ok_or_else(|| {
@@ -573,6 +628,7 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             if let Some(base) = base {
                 provider.base = base;
             }
+            provider.thinking = thinking;
             Ok(Box::new(provider))
         }
         "chatgpt" => {
@@ -588,6 +644,7 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
                 sion_agent::providers::Bearer::Token(Box::new(crate::chatgpt::token)),
             );
             provider.base = crate::chatgpt::api();
+            provider.thinking = thinking;
             Ok(Box::new(provider))
         }
         "gemini" => {
@@ -602,6 +659,7 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             if let Some(base) = base {
                 provider.base = base;
             }
+            provider.thinking = thinking;
             Ok(Box::new(provider))
         }
         "script" => {
@@ -1250,7 +1308,7 @@ impl Saved {
         }
         if self.home_assistant {
             for tool in crate::home_assistant::HomeAssistant::from_env()?.tools() {
-                tools.add(tool);
+                tools.add_deferred(Box::new(tool));
             }
         }
         if self.web {
@@ -1292,6 +1350,8 @@ impl Saved {
                 policy: self.policy.clone(),
                 depth: self.depth,
                 adjudicator: self.adjudicator,
+                workspace: self.workspace.clone(),
+                shell: self.shell.clone(),
             };
             for tool in delegation.tools() {
                 tools.add_boxed(tool);
@@ -1338,8 +1398,10 @@ impl Saved {
                 });
             match mounted {
                 Ok(mounted) => {
+                    // A server's tools are shown once a search finds them,
+                    // in a toolbox too large to show whole.
                     for tool in mounted.tools {
-                        tools.add_boxed(tool);
+                        tools.add_deferred(tool);
                     }
                     notes.extend(mounted.notes);
                 }
@@ -1358,6 +1420,7 @@ impl Saved {
                 self.workspace.as_deref(),
                 &self.confidential_files,
                 self.browser_at.clone(),
+                hooks.asker.cloned(),
             )? {
                 tools.add_boxed(tool);
             }
@@ -1454,6 +1517,31 @@ impl Saved {
         let verifier = check.map(|(command, sandbox, root, files)| {
             move |_: &State, _: &str| run_check(&sandbox, &root, &command, files.as_deref())
         });
+        // The operator's hooks: around each call, and each run.
+        let operator = crate::hooks::OperatorHooks::load(self.workspace.as_deref())?;
+        if let Some(note) = self
+            .state
+            .messages
+            .last()
+            .filter(|m| m.role == Role::User)
+            .and_then(|last| operator.run_start(&self.state.id, &last.text()))
+        {
+            if let Some(last) = self.state.messages.last_mut() {
+                last.content
+                    .push(Block::text(format!("[the operator's hook adds] {note}")));
+            }
+        }
+        // Programs that call its tools that read run where its commands do.
+        let code = self
+            .shell
+            .as_ref()
+            .filter(|sandbox| python_in(sandbox))
+            .filter(|_| {
+                self.only_tools
+                    .as_ref()
+                    .map_or(true, |only| only.contains(sion_agent::code_mode::RUN_CODE))
+            })
+            .map(sion_agent::code_mode::SandboxRunner::new);
         let runtime = Runtime {
             models: models.iter().map(|m| m.as_ref()).collect(),
             tools: &tools,
@@ -1468,10 +1556,17 @@ impl Saved {
             verify: verifier
                 .as_ref()
                 .map(|v| v as sion_agent::session::Check<'_>),
+            code: code
+                .as_ref()
+                .map(|runner| runner as &dyn sion_agent::code_mode::CodeRunner),
+            hooks: operator
+                .for_tools()
+                .then_some(&operator as &dyn sion_agent::hooks::ToolHooks),
         };
         let from = self.state.messages.len();
         let waiting = self.decided.take().or_else(|| self.state.pending.clone());
         let ended = runtime.run(&mut self.state);
+        operator.run_end(&self.state.id, &ended);
         self.ended = Some(ended.clone());
         let task_end = self.state.messages.len();
         self.said = words(&self.state.messages[from.min(task_end)..task_end]);
@@ -1820,6 +1915,8 @@ impl Saved {
             steer: None,
             checkpoint: None,
             verify: None,
+            code: None,
+            hooks: None,
         };
         let pending = self.state.pending.clone();
         match reply {
@@ -2060,6 +2157,17 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
                 Block::Text { text } => lines.push(format!("you: {}", text.trim())),
                 Block::Image { image } => {
                     lines.push(format!("you: (a picture, {})", image.media_type))
+                }
+                // What the model thought, where it can be read: a line.
+                Block::Reasoning { data, .. } => {
+                    if let Some(thought) = sion_agent::model::readable_reasoning(data) {
+                        let line = thought.lines().next().unwrap_or_default();
+                        let mut shown: String = line.chars().take(160).collect();
+                        if shown.len() < thought.len() {
+                            shown.push('…');
+                        }
+                        lines.push(format!("  ~ {shown}"));
+                    }
                 }
                 Block::ToolUse { name, input, .. } => lines.push(format!("  → {name} {input}")),
                 Block::ToolResult {
@@ -2726,5 +2834,42 @@ mod tests {
         spoken.end(false);
         assert_eq!(spoken.text(), words(&run));
         assert!(!spoken.is_empty() && Spoken::default().is_empty());
+    }
+
+    #[test]
+    fn how_hard_a_model_thinks_is_written_after_its_name() {
+        use sion_agent::{Effort, Thinking};
+        assert_eq!(
+            thinking_of("anthropic", "claude-opus-5-5#xhigh").unwrap(),
+            ("claude-opus-5-5", Some(Thinking::Effort(Effort::Xhigh)))
+        );
+        assert_eq!(
+            thinking_of("gemini", "gemini-2.5-flash#2048").unwrap(),
+            ("gemini-2.5-flash", Some(Thinking::Budget(2048)))
+        );
+        assert_eq!(
+            thinking_of("local", "qwen3:32b").unwrap(),
+            ("qwen3:32b", None)
+        );
+        // A scripted model's file is named whole.
+        assert_eq!(
+            thinking_of("script", "runs/a#b.json").unwrap(),
+            ("runs/a#b.json", None)
+        );
+        assert!(
+            thinking_of("openai", "gpt-5.5#4096").is_err(),
+            "an effort, not a budget"
+        );
+        assert!(thinking_of("anthropic", "#high").is_err());
+        assert!(thinking_of("anthropic", "claude-opus-5-5#hard").is_err());
+        let model = super::model("anthropic:claude-opus-5-5#high", 0);
+        // Without a key it is not made; with the suffix it is understood.
+        if let Err(CliError::Usage(why)) = &model {
+            assert!(!why.contains("how hard"), "{why}");
+        }
+        assert!(matches!(
+            super::model("chatgpt:gpt-5.5#8000", 0),
+            Err(CliError::Usage(why)) if why.contains("effort level")
+        ));
     }
 }

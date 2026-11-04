@@ -483,7 +483,18 @@ fn anthropic_streams_the_text_and_calls_as_they_come_and_answers_as_whole() {
         "usage": {"input_tokens": 321, "output_tokens": 45}
     }))
     .unwrap();
-    assert_eq!(answer, whole);
+    assert_eq!(
+        answer,
+        sion_agent::model::reasoning_from(whole, &provider.source())
+    );
+    // Its thinking is kept, signed, as its provider's, to be given back.
+    assert_eq!(
+        answer.content[0],
+        sion_agent::Block::Reasoning {
+            from: format!("anthropic {} claude-opus-5-5", provider.base),
+            data: json!({"type": "thinking", "thinking": "The balance first.", "signature": "c2ln"}),
+        }
+    );
     let (headers, body) = seen.recv().unwrap();
     assert_eq!(body["stream"], true);
     assert!(headers
@@ -813,7 +824,7 @@ fn gemini_is_asked_natively_and_its_signatures_go_back_with_its_calls() {
             images: Vec::new(),
         }],
     });
-    let body = gemini_body(&request);
+    let body = gemini_body(&request, "");
     assert_eq!(
         body["systemInstruction"],
         json!({"parts": [{"text": "You keep the books."}]})
@@ -979,7 +990,7 @@ fn keys_are_used_in_turn_and_one_that_is_limited_or_refused_rests() {
 #[test]
 fn the_responses_api_is_streamed_unstored_and_its_token_renewed_when_refused() {
     use sion_agent::providers::{responses_body, Bearer, OpenAiResponses};
-    let body = responses_body("gpt-test", &conversation());
+    let body = responses_body("gpt-test", &conversation(), "");
     assert_eq!(body["instructions"], "You keep the books.");
     assert_eq!(
         (body["store"].clone(), body["stream"].clone()),
@@ -989,7 +1000,7 @@ fn the_responses_api_is_streamed_unstored_and_its_token_renewed_when_refused() {
         body["input"],
         json!([
             {"role": "user", "content": [{"type": "input_text", "text": "What is my balance?"}]},
-            {"role": "assistant", "content": [{"type": "output_text", "text": "Checking."}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Checking."}]},
             {"type": "function_call", "call_id": "toolu_1", "name": "balance", "arguments": "{\"asset\":\"USD\"}"},
             {"type": "function_call_output", "call_id": "toolu_1", "output": "12.5 USD"}
         ])

@@ -39,7 +39,7 @@ guides show the commands in use.
 | Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
 | Skills | `skill import`, `skill starter`, `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
@@ -810,6 +810,8 @@ Commands:
   import         Bring an OpenClaw or Hermes Agent over to a profile: its persona and memories into the profile's instructions, its jobs as schedules, and with --models, --keys and --bridges its models, its model keys and its chats; its skills listed, to import through the audit. Shows the plan; --apply does it
   routes         Routes that choose a profile's models for each task: pictures, work items and long tasks by rule, other tasks sorted by a model among routes that say what they are for; what each route was given, and its models compared on a set of tasks
   x-mentions     Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
+  browser        Browser profiles you sign in with, for agents' browsers to use (--browser-profile): your cookies and sessions, kept here
+  hooks          The operator's hooks: commands of your own run before and after agents' tool calls (a hook before may block one, with a reason the model is given) and before and after their runs
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
@@ -1125,7 +1127,7 @@ Options:
       --task <TASK>
           The task, in words
       --model <MODELS>
-          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>, chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model> (a model server on this machine or its network, SION_LOCAL_MODEL_URL) or script:<file>; several keys, comma-separated, are used in turn, and keys may be kept on this machine (sion agent credential add). Repeat for fallbacks, in order
+          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>, chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model> (a model server on this machine or its network, SION_LOCAL_MODEL_URL) or script:<file>; how hard it thinks may follow a # (anthropic:claude-opus-5-5#high: none, minimal, low, medium, high, xhigh, max, or a budget of tokens); several keys, comma-separated, are used in turn, and keys may be kept on this machine (sion agent credential add). Repeat for fallbacks, in order
       --autonomy <AUTONOMY>
           How much it may do without asking: L0 (nothing) to L6 (spend within its charter). L3 reads and writes its workspace; L5 also fetches from the web and asks before paying [default: L5]
       --workspace <WORKSPACE>
@@ -1164,6 +1166,8 @@ Options:
           A host its browser, and its desktop's programs, may reach (default: any public host); `*` names any public host. Where you name them, it acts on their pages on its own, as its autonomy allows, even after reading them (`agent:browser-hosts`). Repeat for more
       --login <NAME>
           One of your logins its browser may fill (`sion agent login add`): only into a field of the login's origin, and never shown to it. Repeat for more
+      --browser-profile <NAME>
+          A browser profile you signed in with (`sion agent browser login`) for its browser to use: your cookies and sessions, so that it acts on those sites as you (`agent:signed-in-browser`)
       --computer [<SANDBOX>]
           Give it a desktop of its own, seen in screenshots and used with a pointer and a keyboard (Xvfb, xdotool and ImageMagick): in bubblewrap (`bwrap`, the default) or `docker:<image>@sha256:<digest>`, an image with those programs. Needs --workspace
       --computer-program <COMMAND>
@@ -1426,6 +1430,8 @@ Options:
           A host its browser, and its desktop's programs, may reach (default: any public host); `*` names any public host. Where you name them, it acts on their pages on its own, as its autonomy allows, even after reading them (`agent:browser-hosts`). Repeat for more
       --login <NAME>
           One of your logins its browser may fill (`sion agent login add`): only into a field of the login's origin, and never shown to it. Repeat for more
+      --browser-profile <NAME>
+          A browser profile you signed in with (`sion agent browser login`) for its browser to use: your cookies and sessions, so that it acts on those sites as you (`agent:signed-in-browser`)
       --computer [<SANDBOX>]
           Give it a desktop of its own, seen in screenshots and used with a pointer and a keyboard (Xvfb, xdotool and ImageMagick): in bubblewrap (`bwrap`, the default) or `docker:<image>@sha256:<digest>`, an image with those programs. Needs --workspace
       --computer-program <COMMAND>
@@ -1736,6 +1742,69 @@ Usage: sion agent login remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent browser`
+
+```text
+Browser profiles you sign in with, for agents' browsers to use (--browser-profile): your cookies and sessions, kept here
+
+Usage: sion agent browser [OPTIONS] <COMMAND>
+
+Commands:
+  login   Sign in with a browser profile for agents to use: Chromium opens in a window of its own; sign in to what the agent should reach, then close the window
+  list    List the browser profiles
+  remove  Remove a browser profile, and everything it was signed in to here
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Signed in as you](../agent/browser.md#signed-in-as-you).
+
+## `sion agent browser login`
+
+```text
+Sign in with a browser profile for agents to use: Chromium opens in a window of its own; sign in to what the agent should reach, then close the window
+
+Usage: sion agent browser login [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The profile's name (made if new)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --url <URL>    The page to open first [default: about:blank]
+  -h, --help         Print help
+```
+
+## `sion agent browser list`
+
+```text
+List the browser profiles
+
+Usage: sion agent browser list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent browser remove`
+
+```text
+Remove a browser profile, and everything it was signed in to here
+
+Usage: sion agent browser remove [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The profile's name
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2543,6 +2612,92 @@ Options:
 
 See [Coming from OpenClaw or Hermes](../agent/import.md).
 
+## `sion agent hooks`
+
+```text
+The operator's hooks: commands of your own run before and after agents' tool calls (a hook before may block one, with a reason the model is given) and before and after their runs
+
+Usage: sion agent hooks [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add a hook: the command after `--` runs at the event, reading it as JSON on its standard input
+  list    List the hooks, numbered
+  remove  Remove a hook, by its number in the list
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Hooks around calls](../agent/tools.md#hooks-around-calls).
+
+## `sion agent hooks add`
+
+```text
+Add a hook: the command after `--` runs at the event, reading it as JSON on its standard input
+
+Usage: sion agent hooks add [OPTIONS] --event <EVENT> -- <COMMAND>...
+
+Arguments:
+  <COMMAND>...
+          The command and its arguments
+
+Options:
+      --event <EVENT>
+          When it runs
+
+          Possible values:
+          - before-tool: Before a tool call runs: it may block it
+          - after-tool:  After a tool call ran: it may add a note to its result
+          - run-start:   Before a run of a session: it may add a note to the person's message
+          - run-end:     After a run of a session
+
+      --node <NODE>
+          The node's API
+          
+          [env: SION_NODE=]
+          [default: http://127.0.0.1:8730]
+
+      --tool <PATTERN>
+          For tool events, a tool it is for, by a pattern of names (`*` for any characters). Repeat for more; none, every tool
+
+      --timeout <TIMEOUT>
+          Seconds before it is stopped
+          
+          [default: 30]
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `sion agent hooks list`
+
+```text
+List the hooks, numbered
+
+Usage: sion agent hooks list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent hooks remove`
+
+```text
+Remove a hook, by its number in the list
+
+Usage: sion agent hooks remove [OPTIONS] <NUMBER>
+
+Arguments:
+  <NUMBER>  Its number
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
 ## `sion agent routes`
 
 ```text
@@ -2739,12 +2894,16 @@ Options:
       --public-url <URL>     The public address of --listen-at, which Twilio posts to (https://…)
       --language <LANGUAGE>  The language spoken (en-US by default) [default: en-US]
       --here                 Hear the meeting on this machine: its microphone, and with --monitor what it plays
-      --hear <PROVIDER>      What hears what is said here: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model> or command:<program>
+      --join <LINK>          Join the meeting by its link, as a guest that listens: Chromium opens it with a silent microphone and a black camera, gives the guest's name and asks to join, and what the meeting plays is heard through a PulseAudio or PipeWire sink of its own (pactl, parec)
+      --name <NAME>          The guest's name, as the meeting shows it [default: "Notes (sion)"]
+      --hear <PROVIDER>      What hears what is said here, or in a meeting joined by its link: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>
       --listen <COMMAND>     The program that gives the microphone's sound (raw 16-bit mono at 16 kHz), as for a live conversation
       --monitor [<COMMAND>]  Hear what this machine plays too: the meeting app's sound, from PulseAudio's or PipeWire's monitor (parec), or the program given
       --minutes <MINUTES>    The longest the meeting is heard, in minutes [default: 120]
       --title <TITLE>        What the meeting is: in the notes' file name and title [default: meeting]
       --deliver <CHANNEL>    Where the notes are sent too, as a schedule's are (telegram:<chat>, file:<path>, …)
+      --diarize <PROVIDER>   Record what is heard here (or by the guest), and at the end have it heard again by a transcriber that tells speakers apart: openai:<model> (gpt-4o-transcribe-diarize), deepgram:<model> or elevenlabs:<model>. The notes then say who said what
+      --keep-recording       Keep the recordings beside the notes, rather than removing them once they are heard
   -h, --help                 Print help
 ```
 
@@ -3022,19 +3181,20 @@ Options:
       --conversation <CONVERSATION>  The conversation: each is a session of its own [default: default]
       --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --voice                        Speak instead of typing: press Enter and speak; heard with --hear, answered aloud with --speak if given (or, live, through --realtime)
-      --hear <PROVIDER>              What hears you: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, or command:<program>
-      --speak <PROVIDER>             What speaks the replies: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, or command:<program>
+      --hear <PROVIDER>              What hears you: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, command:<program>, or on this machine whisper:<model file> (whisper.cpp) or local:<model> (a server that speaks OpenAI's API, SION_LOCAL_STT_URL)
+      --speak <PROVIDER>             What speaks the replies: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, command:<program>, or on this machine piper:<model file> (Piper) or local:<model>:<voice> (a server that speaks OpenAI's API, SION_LOCAL_TTS_URL)
       --record <COMMAND>             The program that records you, given the file to write (sox's rec by default, stopping after a second and a half of silence)
       --play <COMMAND>               The program that plays a spoken reply, given its file (mpv, ffplay, afplay or paplay, the first there, by default)
       --live                         Listen all the time instead of at Enter: speech is told from other sound by a model of it, the reply is spoken a sentence at a time, its echo from the loudspeakers taken out of what the microphone hears, and speaking over it stops it
       --listen <COMMAND>             The program that gives the microphone's sound: raw 16-bit mono at 16 kHz on its output (sox's rec, arecord, parec or ffmpeg, the first there, by default)
       --wake <PHRASE>                Take only what begins with this phrase ("hey sion"; several split by |)
-      --wake-hear <PROVIDER>         What hears what is said before the wake word: a transcriber on this machine (command:<program>, such as whisper.cpp's); by default --hear's, if it is one
+      --wake-hear <PROVIDER>         What hears what is said before the wake word: a transcriber on this machine (whisper:<model file>, local:<model> at an address of this machine's, or command:<program>); by default --hear's, if it is one
       --wake-cloud                   Let a transcriber elsewhere hear what is said before the wake word: everything said near the microphone
       --awake-secs <AWAKE_SECS>      Seconds it stays awake for a follow-up after it speaks [default: 15]
       --no-interrupt                 Speaking over the agent does not stop it: the microphone is not listened to while it works or speaks (for loudspeakers)
       --speech-level <LEVEL>         The quietest speech taken, as the root mean square of its samples (of 32767): lower it if you are not heard, raise it in a loud room [default: 400]
       --detector <HOW>               How speech is told from other sound: model (RNNoise's network, with its loudness) or loudness (alone) [default: model]
+      --turns <HOW>                  How the end of what you say is told: semantic (after a short pause, unless what was said sounds unfinished, which waits a little for the rest) or silence (after a longer pause, always) [default: semantic]
       --no-echo-cancel               Do not take the reply's echo out of what the microphone hears: replies are played as files (use headphones, or --no-interrupt)
       --play-raw <COMMAND>           With the echo cancelled, the program that plays raw 16-bit mono samples at 16 kHz read on its standard input (aplay, paplay, sox's play or ffplay, the first there, by default)
       --realtime <MODEL>             Hear and speak through a realtime speech model instead (openai:<model>[:<voice>], such as openai:gpt-realtime): faster; it does nothing itself, and asks the agent for all but small talk
@@ -3077,10 +3237,10 @@ Options:
           In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
 
       --hear <PROVIDER>
-          Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
+          Hear voice notes: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, command:<program> (given the audio's file, it prints the text), or on this machine whisper:<model file> or local:<model>
 
       --speak <PROVIDER>
-          Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
+          Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, command:<program> (given the text, it writes Ogg Opus or MP3), or on this machine piper:<model file> or local:<model>:<voice>
 
       --stream <STREAM>
           How a reply shows while the agent writes it, where the messenger can show it: `progress`, the text as the model writes it and the tool the agent runs; `partial`, the text only; `off`, the reply once it is done
@@ -3170,10 +3330,10 @@ Options:
           In the group chats it answers, answer only what mentions it or answers one of its messages (direct messages are always answered)
 
       --hear <PROVIDER>
-          Hear voice notes: openai:<model>, groq:<model>, or command:<program> (given the audio's file, it prints the text)
+          Hear voice notes: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, command:<program> (given the audio's file, it prints the text), or on this machine whisper:<model file> or local:<model>
 
       --speak <PROVIDER>
-          Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], or command:<program> (given the text, it writes Ogg Opus or MP3)
+          Answer voice notes aloud: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, command:<program> (given the text, it writes Ogg Opus or MP3), or on this machine piper:<model file> or local:<model>:<voice>
 
       --stream <STREAM>
           How a reply shows while the agent writes it, where the messenger can show it: `progress`, the text as the model writes it and the tool the agent runs; `partial`, the text only; `off`, the reply once it is done

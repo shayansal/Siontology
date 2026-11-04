@@ -307,7 +307,9 @@ pub enum AgentCommand {
         /// chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent
         /// chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model>
         /// (a model server on this machine or its network,
-        /// SION_LOCAL_MODEL_URL) or script:<file>; several keys,
+        /// SION_LOCAL_MODEL_URL) or script:<file>; how hard it thinks may
+        /// follow a # (anthropic:claude-opus-5-5#high: none, minimal, low,
+        /// medium, high, xhigh, max, or a budget of tokens); several keys,
         /// comma-separated, are used in turn, and keys may be kept on this
         /// machine (sion agent credential add). Repeat for fallbacks, in
         /// order.
@@ -603,6 +605,15 @@ pub enum AgentCommand {
     /// not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and
     /// users.read.
     XMentions(crate::x_mentions::MentionArgs),
+    /// Browser profiles you sign in with, for agents' browsers to use
+    /// (--browser-profile): your cookies and sessions, kept here.
+    #[command(subcommand)]
+    Browser(crate::browser_profiles::BrowserCommand),
+    /// The operator's hooks: commands of your own run before and after
+    /// agents' tool calls (a hook before may block one, with a reason the
+    /// model is given) and before and after their runs.
+    #[command(subcommand)]
+    Hooks(crate::hooks::HooksCommand),
     /// Take a meeting's notes: dial in by phone through Twilio (its number
     /// and keys) or hear it here (the microphone, and what this machine
     /// plays), the transcript written as it goes, and the profile's agent
@@ -683,11 +694,15 @@ pub enum AgentCommand {
         #[arg(long)]
         voice: bool,
         /// What hears you: openai:<model>, groq:<model>, deepgram:<model>,
-        /// elevenlabs:<model>, or command:<program>.
+        /// elevenlabs:<model>, command:<program>, or on this machine
+        /// whisper:<model file> (whisper.cpp) or local:<model> (a server
+        /// that speaks OpenAI's API, SION_LOCAL_STT_URL).
         #[arg(long, value_name = "PROVIDER")]
         hear: Option<String>,
         /// What speaks the replies: openai:<model>:<voice>, elevenlabs:<voice
-        /// id>[:<model>], deepgram:<voice model>, or command:<program>.
+        /// id>[:<model>], deepgram:<voice model>, command:<program>, or on
+        /// this machine piper:<model file> (Piper) or local:<model>:<voice>
+        /// (a server that speaks OpenAI's API, SION_LOCAL_TTS_URL).
         #[arg(long, value_name = "PROVIDER")]
         speak: Option<String>,
         /// The program that records you, given the file to write (sox's rec
@@ -714,8 +729,9 @@ pub enum AgentCommand {
         #[arg(long, value_name = "PHRASE", requires = "live")]
         wake: Option<String>,
         /// What hears what is said before the wake word: a transcriber on
-        /// this machine (command:<program>, such as whisper.cpp's); by
-        /// default --hear's, if it is one.
+        /// this machine (whisper:<model file>, local:<model> at an address
+        /// of this machine's, or command:<program>); by default --hear's,
+        /// if it is one.
         #[arg(long, value_name = "PROVIDER", requires = "wake")]
         wake_hear: Option<String>,
         /// Let a transcriber elsewhere hear what is said before the wake
@@ -738,6 +754,16 @@ pub enum AgentCommand {
         /// with its loudness) or loudness (alone).
         #[arg(long, default_value = "model", value_name = "HOW", requires = "live")]
         detector: String,
+        /// How the end of what you say is told: semantic (after a short
+        /// pause, unless what was said sounds unfinished, which waits a
+        /// little for the rest) or silence (after a longer pause, always).
+        #[arg(
+            long,
+            default_value = "semantic",
+            value_name = "HOW",
+            requires = "live"
+        )]
+        turns: String,
         /// Do not take the reply's echo out of what the microphone hears:
         /// replies are played as files (use headphones, or --no-interrupt).
         #[arg(long, requires = "live")]
@@ -903,6 +929,8 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Routes(command) => crate::model_routes::run(command),
+        AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Browser(command) => crate::browser_profiles::command(command),
         AgentCommand::Import(args) => crate::agent_import::run(args),
         AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Work(command) if !command.needs_ledger() => crate::work::run_local(command),
@@ -1301,6 +1329,8 @@ pub fn run(
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Routes(command) => crate::model_routes::run(command),
+        AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Browser(command) => crate::browser_profiles::command(command),
         AgentCommand::Import(args) => crate::agent_import::run(args),
         AgentCommand::XMentions(args) => crate::x_mentions::run(shared, args),
         AgentCommand::Meeting(args) => crate::meeting::run(shared, args),
@@ -1356,11 +1386,21 @@ pub fn run(
             no_interrupt,
             speech_level,
             detector,
+            turns,
             no_echo_cancel,
             play_raw,
             realtime,
         } => {
             let profile = crate::profiles::get(&profile)?;
+            let semantic = match turns.as_str() {
+                "semantic" => true,
+                "silence" => false,
+                other => {
+                    return Err(CliError::Usage(format!(
+                        "--turns is semantic or silence, not {other}"
+                    )))
+                }
+            };
             if voice && hear.is_none() && realtime.is_none() {
                 return Err(CliError::Usage(
                     "--voice needs --hear (or, with --live, --realtime)".into(),
@@ -1458,6 +1498,11 @@ pub fn run(
                     echo_cancel.then_some(play_raw.as_deref()),
                 )
                 .map_err(usage)?;
+                let listening = if semantic {
+                    listening.semantic()
+                } else {
+                    listening
+                };
                 let input = Box::new(std::io::BufReader::new(std::io::stdin()));
                 return crate::listening::run(shared, &profile, &talk, &listening, input, &mut out);
             }

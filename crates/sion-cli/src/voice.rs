@@ -9,6 +9,8 @@
 //! | `deepgram:<model>` | Deepgram's (`DEEPGRAM_API_KEY`): `nova-3`, say |
 //! | `elevenlabs:<model>` | ElevenLabs' Scribe (`ELEVENLABS_API_KEY`): `scribe_v1`, say |
 //! | `command:<program …>` | A program on this machine, given the audio's file as its last argument, which prints the text |
+//! | `whisper:<model file>` | whisper.cpp on this machine (`whisper-cli`, or `SION_WHISPER`), with a ggml model |
+//! | `local:<model>` | A transcription server on this machine or its network that speaks OpenAI's API (speaches, faster-whisper-server, LocalAI): `SION_LOCAL_STT_URL`, by default `http://127.0.0.1:8000/v1` |
 //!
 //! | `--speak` | What speaks |
 //! |---|---|
@@ -16,6 +18,8 @@
 //! | `elevenlabs:<voice id>[:<model>]` | ElevenLabs (`ELEVENLABS_API_KEY`), as MP3 |
 //! | `deepgram:<voice model>` | Deepgram's Aura (`DEEPGRAM_API_KEY`), as MP3: `aura-2-thalia-en`, say |
 //! | `command:<program …>` | A program given the text on its standard input, which writes Ogg Opus or MP3 to its standard output |
+//! | `piper:<model file>` | Piper on this machine (`piper`, or `SION_PIPER`), with an ONNX voice: raw samples at the voice's rate, made Ogg Opus by ffmpeg for a voice note |
+//! | `local:<model>:<voice>` | A speech server on this machine or its network that speaks OpenAI's API (Kokoro-FastAPI, LocalAI): `SION_LOCAL_TTS_URL`, by default `http://127.0.0.1:8880/v1` |
 //!
 //! What a voice note says is what its sender says: it goes to the agent as
 //! their message, marked as heard, so that a mishearing can be told apart.
@@ -224,9 +228,31 @@ pub enum Hearing {
     /// A program given the audio's file as its last argument, which prints
     /// the text.
     Command(Vec<String>),
+    /// whisper.cpp's command line (`whisper-cli`), with a model.
+    Whisper {
+        /// The program.
+        program: String,
+        /// Its model (a ggml file).
+        model: std::path::PathBuf,
+    },
+}
+
+/// Whether `base` is on this machine.
+fn on_this_machine(base: &str) -> bool {
+    sion_agent::oauth::is_loopback(base)
 }
 
 impl Hearing {
+    /// Whether it hears on this machine: a program here, or a server at an
+    /// address of this machine's.
+    pub fn is_local(&self) -> bool {
+        match self {
+            Hearing::Command(_) | Hearing::Whisper { .. } => true,
+            Hearing::Api { base, .. } => on_this_machine(base),
+            Hearing::Deepgram { .. } | Hearing::ElevenLabs { .. } => false,
+        }
+    }
+
     /// From `openai:<model>`, `groq:<model>`, `deepgram:<model>`,
     /// `elevenlabs:<model>` or `command:<program …>`.
     pub fn parse(spec: &str) -> Result<Hearing, String> {
@@ -254,8 +280,17 @@ impl Hearing {
                 model: rest.to_string(),
             }),
             "command" => Ok(Hearing::Command(command_line(rest)?)),
+            "whisper" if !rest.is_empty() => Ok(Hearing::Whisper {
+                program: env("SION_WHISPER").unwrap_or_else(|| "whisper-cli".into()),
+                model: std::path::PathBuf::from(rest),
+            }),
+            "local" if !rest.is_empty() => Ok(Hearing::Api {
+                base: env("SION_LOCAL_STT_URL").unwrap_or_else(|| LOCAL_STT.into()),
+                key: env("SION_LOCAL_STT_KEY").map(|_| "SION_LOCAL_STT_KEY".to_string()),
+                model: rest.to_string(),
+            }),
             _ => Err(format!(
-                "{spec:?}: give openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model> or command:<program>"
+                "{spec:?}: give openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>"
             )),
         }
     }
@@ -382,6 +417,14 @@ impl Hearing {
                     .ok_or("ElevenLabs gave no text")?
                     .to_string()
             }
+            Hearing::Whisper { program, model } => {
+                let dir =
+                    std::env::temp_dir().join(format!("sion-heard-{}", crate::runtime::new_id()));
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                let heard = whisper(program, model, audio, &dir);
+                let _ = std::fs::remove_dir_all(&dir);
+                heard?
+            }
             Hearing::Command(argv) => {
                 let dir =
                     std::env::temp_dir().join(format!("sion-heard-{}", crate::runtime::new_id()));
@@ -403,6 +446,332 @@ impl Hearing {
         };
         Ok(text.trim().to_string())
     }
+}
+
+/// A stretch of what one speaker said, as a transcriber that tells
+/// speakers apart heard it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Turn {
+    /// Who said it: `speaker 1`, `speaker 2`… in the order they first spoke.
+    pub speaker: String,
+    /// When it began, in seconds from the start of the recording.
+    pub start: f64,
+    /// When it ended.
+    pub end: f64,
+    /// What was said.
+    pub text: String,
+}
+
+/// What hears a recording and tells its speakers apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Diarizing {
+    /// An OpenAI model that does (`gpt-4o-transcribe-diarize`), its answer
+    /// `diarized_json`.
+    OpenAi {
+        /// Its base URL.
+        base: String,
+        /// The model.
+        model: String,
+    },
+    /// Deepgram, its utterances told apart by speaker (`diarize_model`).
+    Deepgram {
+        /// Its base URL.
+        base: String,
+        /// The model (`nova-3`).
+        model: String,
+    },
+    /// ElevenLabs' Scribe, its words told apart by speaker (`diarize`).
+    ElevenLabs {
+        /// Its base URL.
+        base: String,
+        /// The model (`scribe_v1`).
+        model: String,
+    },
+}
+
+/// Speakers named in the order they first speak: `speaker 1`, `speaker 2`…
+#[derive(Default)]
+struct Speakers(Vec<String>);
+
+impl Speakers {
+    fn name(&mut self, given: &str) -> String {
+        let at = match self.0.iter().position(|seen| seen == given) {
+            Some(at) => at,
+            None => {
+                self.0.push(given.to_string());
+                self.0.len() - 1
+            }
+        };
+        format!("speaker {}", at + 1)
+    }
+}
+
+impl Diarizing {
+    /// From `openai:<model>`, `deepgram:<model>` or `elevenlabs:<model>`.
+    pub fn parse(spec: &str) -> Result<Diarizing, String> {
+        let bad = || {
+            format!(
+                "{spec:?}: give openai:<model> (gpt-4o-transcribe-diarize), deepgram:<model> or elevenlabs:<model>"
+            )
+        };
+        let (kind, model) = spec.split_once(':').ok_or_else(bad)?;
+        if model.is_empty() {
+            return Err(bad());
+        }
+        let model = model.to_string();
+        Ok(match kind {
+            "openai" => Diarizing::OpenAi {
+                base: env("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into()),
+                model,
+            },
+            "deepgram" => Diarizing::Deepgram {
+                base: env("DEEPGRAM_BASE_URL").unwrap_or_else(|| "https://api.deepgram.com".into()),
+                model,
+            },
+            "elevenlabs" => Diarizing::ElevenLabs {
+                base: env("ELEVENLABS_API_BASE")
+                    .unwrap_or_else(|| "https://api.elevenlabs.io".into()),
+                model,
+            },
+            _ => return Err(bad()),
+        })
+    }
+
+    /// Who said what in `audio`, in order.
+    pub fn diarize(&self, audio: &Audio) -> Result<Vec<Turn>, String> {
+        if audio.bytes.len() > MAX_HEARD {
+            return Err(format!(
+                "the recording is longer than {} MB",
+                MAX_HEARD >> 20
+            ));
+        }
+        let mut speakers = Speakers::default();
+        let float = |v: &Value| v.as_f64().unwrap_or(0.0);
+        match self {
+            Diarizing::OpenAi { base, model } => {
+                let key =
+                    env("OPENAI_API_KEY").ok_or("set OPENAI_API_KEY to tell speakers apart")?;
+                let (content_type, body) = Form::new()
+                    .text("model", model)
+                    .text("response_format", "diarized_json")
+                    .text("chunking_strategy", "auto")
+                    .file("file", audio)
+                    .finish();
+                let auth = format!("Bearer {key}");
+                let url = format!("{}/audio/transcriptions", base.trim_end_matches('/'));
+                let value = post_for_json(
+                    &url,
+                    &[("Content-Type", &content_type), ("Authorization", &auth)],
+                    &body,
+                    &key,
+                )?;
+                Ok(value["segments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|segment| segment.get("speaker").is_some())
+                    .map(|segment| Turn {
+                        speaker: speakers.name(&segment["speaker"].to_string()),
+                        start: float(&segment["start"]),
+                        end: float(&segment["end"]),
+                        text: segment["text"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string(),
+                    })
+                    .filter(|turn| !turn.text.is_empty())
+                    .collect())
+            }
+            Diarizing::Deepgram { base, model } => {
+                let key =
+                    env("DEEPGRAM_API_KEY").ok_or("set DEEPGRAM_API_KEY to tell speakers apart")?;
+                let auth = format!("Token {key}");
+                let url = format!(
+                    "{}/v1/listen?model={}&diarize_model=latest&punctuate=true&utterances=true",
+                    base.trim_end_matches('/'),
+                    crate::webhooks::encode_form(&[("m", model)]).trim_start_matches("m=")
+                );
+                let value = post_for_json(
+                    &url,
+                    &[
+                        ("Content-Type", &audio.media_type),
+                        ("Authorization", &auth),
+                    ],
+                    &audio.bytes,
+                    &key,
+                )?;
+                Ok(value["results"]["utterances"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|utterance| Turn {
+                        speaker: speakers.name(&utterance["speaker"].to_string()),
+                        start: float(&utterance["start"]),
+                        end: float(&utterance["end"]),
+                        text: utterance["transcript"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string(),
+                    })
+                    .filter(|turn| !turn.text.is_empty())
+                    .collect())
+            }
+            Diarizing::ElevenLabs { base, model } => {
+                let key = env("ELEVENLABS_API_KEY")
+                    .ok_or("set ELEVENLABS_API_KEY to tell speakers apart")?;
+                let (content_type, body) = Form::new()
+                    .text("model_id", model)
+                    .text("diarize", "true")
+                    .file("file", audio)
+                    .finish();
+                let url = format!("{}/v1/speech-to-text", base.trim_end_matches('/'));
+                let value = post_for_json(
+                    &url,
+                    &[("Content-Type", &content_type), ("xi-api-key", &key)],
+                    &body,
+                    &key,
+                )?;
+                // Its words, one turn for each run of one speaker's.
+                let mut turns: Vec<Turn> = Vec::new();
+                for word in value["words"].as_array().into_iter().flatten() {
+                    if word["type"] == "audio_event" {
+                        continue;
+                    }
+                    let text = word["text"].as_str().unwrap_or_default();
+                    let given = word["speaker_id"].as_str().unwrap_or("speaker");
+                    let speaker = speakers.name(given);
+                    match turns.last_mut() {
+                        Some(turn) if turn.speaker == speaker => {
+                            turn.text.push_str(text);
+                            turn.end = float(&word["end"]).max(turn.end);
+                        }
+                        _ if word["type"] == "spacing" => {}
+                        _ => turns.push(Turn {
+                            speaker,
+                            start: float(&word["start"]),
+                            end: float(&word["end"]),
+                            text: text.to_string(),
+                        }),
+                    }
+                }
+                for turn in &mut turns {
+                    turn.text = turn.text.trim().to_string();
+                }
+                turns.retain(|turn| !turn.text.is_empty());
+                Ok(turns)
+            }
+        }
+    }
+}
+
+/// POSTs `body` to `url` and reads JSON back: an error, with `key` kept out
+/// of it, for any status but 200.
+fn post_for_json(
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+    key: &str,
+) -> Result<Value, String> {
+    let response = client()?
+        .send("POST", url, headers, Some(body))
+        .map_err(|e| format!("{url}: {}", e.to_string().replace(key, "<key>")))?;
+    let status = response.status;
+    let bytes = response.read_all(16 << 20).map_err(|e| e.to_string())?;
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if status != 200 {
+        let reason = value["error"]["message"]
+            .as_str()
+            .or_else(|| value["err_msg"].as_str())
+            .or_else(|| value["detail"]["message"].as_str())
+            .or_else(|| value["detail"].as_str())
+            .unwrap_or("no reason given");
+        return Err(format!("{url} answered HTTP {status}: {reason}"));
+    }
+    Ok(value)
+}
+
+/// A recording at `path` (WAV) made small enough to send: MP3 at 32 kbit/s,
+/// mono, by ffmpeg (an hour is about 14 MB).
+pub fn compressed(path: &std::path::Path) -> Result<Audio, String> {
+    let output = Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-i"])
+        .arg(path)
+        .args([
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "32k",
+            "-f",
+            "mp3",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("sending the recording needs ffmpeg: {e}"))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(format!(
+            "ffmpeg could not compress the recording ({})",
+            output.status
+        ));
+    }
+    Ok(Audio::new("audio/mpeg", output.stdout))
+}
+
+/// Where a local transcription server is by default (speaches').
+pub const LOCAL_STT: &str = "http://127.0.0.1:8000/v1";
+
+/// Where a local speech server is by default (Kokoro-FastAPI's).
+pub const LOCAL_TTS: &str = "http://127.0.0.1:8880/v1";
+
+/// What whisper.cpp's `program` hears in `audio` with `model`: the audio
+/// made 16 kHz mono WAV first (by ffmpeg) unless it is that, in `dir`.
+fn whisper(
+    program: &str,
+    model: &std::path::Path,
+    audio: &Audio,
+    dir: &std::path::Path,
+) -> Result<String, String> {
+    let wav = dir.join("heard.wav");
+    if audio.media_type == "audio/wav" {
+        std::fs::write(&wav, &audio.bytes).map_err(|e| e.to_string())?;
+    } else {
+        let given = dir.join(&audio.name);
+        std::fs::write(&given, &audio.bytes).map_err(|e| e.to_string())?;
+        let status = Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-i"])
+            .arg(&given)
+            .args(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
+            .arg(&wav)
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format!("whisper.cpp hears WAV: making it needs ffmpeg: {e}"))?;
+        if !status.success() {
+            return Err(format!("ffmpeg could not make the audio WAV ({status})"));
+        }
+    }
+    let output = Command::new(program)
+        .arg("-m")
+        .arg(model)
+        .arg("-f")
+        .arg(&wav)
+        .args(["-nt", "-np", "-l", "auto"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{program}: {e} (install whisper.cpp, or set SION_WHISPER)"))?;
+    if !output.status.success() {
+        return Err(format!("{program} failed ({})", output.status));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 /// What speaks replies.
@@ -438,6 +807,58 @@ pub enum Speaking {
     /// A program given the text on its standard input, which writes the
     /// audio (Ogg Opus or MP3) to its standard output.
     Command(Vec<String>),
+    /// Piper, with an ONNX voice: raw 16-bit samples at `rate`.
+    Piper {
+        /// The program.
+        program: String,
+        /// The voice's model.
+        model: std::path::PathBuf,
+        /// Its samples a second, as its configuration (`<model>.json`)
+        /// says.
+        rate: u32,
+    },
+}
+
+/// The samples a second of a Piper voice, from its configuration beside it
+/// (`<model>.json`, `audio.sample_rate`): 22,050 if it says none.
+pub fn piper_rate(model: &std::path::Path) -> u32 {
+    let config = std::path::PathBuf::from(format!("{}.json", model.display()));
+    std::fs::read_to_string(config)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|config| config["audio"]["sample_rate"].as_u64())
+        .and_then(|rate| u32::try_from(rate).ok())
+        .filter(|rate| (8_000..=96_000).contains(rate))
+        .unwrap_or(22_050)
+}
+
+/// Raw 16-bit mono samples at `rate` as Ogg Opus, by ffmpeg.
+fn ogg_of(raw: &[u8], rate: u32) -> Result<Vec<u8>, String> {
+    let mut child = Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-f", "s16le", "-ar"])
+        .arg(rate.to_string())
+        .args([
+            "-ac", "1", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("making a voice note of the speech needs ffmpeg: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("no pipe to ffmpeg")?;
+    let input = raw.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let _ = writer.join();
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(format!(
+            "ffmpeg could not make a voice note of the speech ({})",
+            output.status
+        ));
+    }
+    Ok(output.stdout)
 }
 
 impl Speaking {
@@ -483,12 +904,39 @@ impl Speaking {
                 model: rest.to_string(),
             }),
             "command" => Ok(Speaking::Command(command_line(rest)?)),
+            "piper" if !rest.is_empty() => {
+                let model = std::path::PathBuf::from(rest);
+                Ok(Speaking::Piper {
+                    program: env("SION_PIPER").unwrap_or_else(|| "piper".into()),
+                    rate: piper_rate(&model),
+                    model,
+                })
+            }
+            "local" => {
+                let (model, voice) = rest.split_once(':').ok_or_else(bad)?;
+                if model.is_empty() || voice.is_empty() {
+                    return Err(bad());
+                }
+                Ok(Speaking::Api {
+                    base: env("SION_LOCAL_TTS_URL").unwrap_or_else(|| LOCAL_TTS.into()),
+                    key: env("SION_LOCAL_TTS_KEY").map(|_| "SION_LOCAL_TTS_KEY".to_string()),
+                    model: model.to_string(),
+                    voice: voice.to_string(),
+                })
+            }
             _ => Err(bad()),
         }
     }
 
     /// `text`, spoken.
     pub fn speak(&self, text: &str) -> Result<Audio, String> {
+        if let Speaking::Piper { rate, .. } = self {
+            let (raw, _) = self.fetch(text, true)?;
+            if raw.is_empty() {
+                return Err("Piper gave no audio".into());
+            }
+            return Ok(Audio::new("audio/ogg", ogg_of(&raw, *rate)?));
+        }
         let (bytes, declared) = self.fetch(text, false)?;
         if bytes.is_empty() {
             return Err("the speech service gave no audio".into());
@@ -524,6 +972,9 @@ impl Speaking {
                 crate::sound::samples_of(&bytes)
             }
             Speaking::Command(_) => decoded(&bytes, rate)?,
+            Speaking::Piper { rate: voiced, .. } => {
+                crate::sound::Resampler::once(*voiced, rate, &crate::sound::samples_of(&bytes))
+            }
         })
     }
 
@@ -589,6 +1040,27 @@ impl Speaking {
                 );
                 fetch_audio(&url, &headers, &json!({"text": text}))
                     .map_err(|e| e.replace(&key, "<key>"))?
+            }
+            Speaking::Piper { program, model, .. } => {
+                let mut child = Command::new(program)
+                    .arg("--model")
+                    .arg(model)
+                    .arg("--output-raw")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("{program}: {e} (install Piper, or set SION_PIPER)"))?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin
+                        .write_all(text.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                }
+                let output = child.wait_with_output().map_err(|e| e.to_string())?;
+                if !output.status.success() {
+                    return Err(format!("{program} failed ({})", output.status));
+                }
+                (output.stdout, None)
             }
             Speaking::Command(argv) => {
                 let mut child = Command::new(&argv[0])
@@ -718,6 +1190,87 @@ mod tests {
             Audio::new("audio/ogg; codecs=opus", vec![]).name,
             "voice.ogg"
         );
+    }
+
+    #[test]
+    fn whisper_cpp_and_piper_hear_and_speak_here() {
+        let dir =
+            std::env::temp_dir().join(format!("sion-local-voice-{}", crate::runtime::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A stand-in for whisper-cli, which says what it was given; one for
+        // piper, which writes a second of a tone at 22,050 a second.
+        let whisper_cli = dir.join("whisper-cli");
+        std::fs::write(
+            &whisper_cli,
+            "#!/bin/sh\n[ \"$1\" = -m ] || exit 3\nhead -c 4 \"$4\" | grep -q RIFF || exit 4\necho ' booked for'; echo ' Friday.'\n",
+        )
+        .unwrap();
+        let piper = dir.join("piper");
+        std::fs::write(
+            &piper,
+            "#!/bin/sh\ncat >/dev/null\npython3 -c 'import math,struct,sys; sys.stdout.buffer.write(b\"\".join(struct.pack(\"<h\", int(8000*math.sin(i/10))) for i in range(22050)))'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        for program in [&whisper_cli, &piper] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let hearing = Hearing::Whisper {
+            program: whisper_cli.to_string_lossy().into(),
+            model: dir.join("ggml-base.en.bin"),
+        };
+        assert!(hearing.is_local());
+        let wav = Audio::new("audio/wav", crate::listening::wav(&[0; 1600], 16_000));
+        assert_eq!(hearing.hear(&wav).unwrap(), "booked for Friday.");
+        let model = dir.join("en_US-lessac-medium.onnx");
+        std::fs::write(
+            dir.join("en_US-lessac-medium.onnx.json"),
+            r#"{"audio": {"sample_rate": 22050}}"#,
+        )
+        .unwrap();
+        assert_eq!(piper_rate(&model), 22_050);
+        assert_eq!(piper_rate(&dir.join("none.onnx")), 22_050);
+        let speaking = Speaking::Piper {
+            program: piper.to_string_lossy().into(),
+            model,
+            rate: 22_050,
+        };
+        if std::process::Command::new("python3")
+            .arg("-V")
+            .output()
+            .is_ok()
+        {
+            // Live, brought down to 16 kHz: a second of it.
+            let samples = speaking.speak_samples("Booked.").unwrap();
+            assert!(
+                (15_900..=16_100).contains(&samples.len()),
+                "{}",
+                samples.len()
+            );
+            // For a voice note, Ogg Opus.
+            if std::process::Command::new("ffmpeg")
+                .arg("-version")
+                .output()
+                .is_ok()
+            {
+                let note = speaking.speak("Booked.").unwrap();
+                assert_eq!(note.media_type, "audio/ogg");
+                assert!(note.bytes.starts_with(b"OggS"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        // Servers here, by their own names.
+        assert!(
+            matches!(Hearing::parse("local:Systran/faster-whisper-small").unwrap(),
+            Hearing::Api { base, key: None, .. } if base == LOCAL_STT)
+        );
+        assert!(Hearing::parse("local:whisper").unwrap().is_local());
+        assert!(!Hearing::parse("openai:whisper-1").unwrap().is_local());
+        assert!(matches!(Speaking::parse("local:kokoro:af_heart").unwrap(),
+            Speaking::Api { base, voice, .. } if base == LOCAL_TTS && voice == "af_heart"));
+        assert!(Speaking::parse("local:kokoro").is_err());
+        assert!(Hearing::parse("whisper:").is_err());
     }
 
     #[test]

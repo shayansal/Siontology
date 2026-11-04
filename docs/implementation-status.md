@@ -172,7 +172,25 @@ a 30-second cooldown; a profile's routes choosing its models for each
 task (pictures, work items and long tasks by rule, other tasks sorted by
 a model shown the task as data and allowed only to name a route, a
 model moved first in a route only by beating its first on a set of tasks
-by Newcombe's 95% interval), tested with scripted models; tools that declare an effect (read, write, external,
+by Newcombe's 95% interval), tested with scripted models; what each model
+thought kept and given back to it alone (Anthropic's signed thinking, the
+Responses API's encrypted reasoning items, Gemini's signatures on its text
+as on its calls, a chat completions server's reasoning text within the
+task), let go when a provider refuses it, and how hard each model thinks
+written after its name (an effort level, or a budget for the models that
+take one) with room to think counted in a run's budget, tested against
+local stand-ins for each API (trust atom `agent:kept-reasoning`); a
+large toolbox whose own tools stay in view, the rest found by a ranked
+search (BM25) and loaded to be called by name; programs in Python that call
+the session's tools that only read, run in the sandbox with nothing of the
+machine in view, each call checked and made as the model's own would be
+(trust atom `agent:code-mode`); the operator's hooks before and after
+tool calls and runs, a hook before able to block a call, one that fails
+blocking it (trust atom `agent:hooks`); subagents that change code in
+git worktrees of their parent's repository, side by side, their work
+committed on branches of their own by git run so that nothing the
+subagent wrote steers it (trust atom `agent:worktrees`); tools
+that declare an effect (read, write, external,
 spend); autonomy levels L0 to L6 with approvals that expire after 15
 minutes, each waiting call named by a request id that a decision may give
 and is checked against, each decision kept with who made it, and
@@ -402,17 +420,34 @@ with what is left quietened while only the loudspeaker sounds.
 API, whose one tool, `ask_agent`, goes to the profile's agent; utterances
 are found and sent from the machine, its own turn detection off.
 `sion agent meeting` takes a meeting's notes, dialled in through Twilio
-(its keys pressed, its transcription posted back, signed) or heard on the
-machine (the microphone, and what it plays as the echo reference), the
-notes written by the profile's agent in a tainted session. Tested end to
-end on a devnet with stand-in microphones (silence and a tone, paced as
-spoken), stand-in transcribers, a scripted model, a slow player, and
-stand-ins for the Realtime API and for Twilio; the model of speech on a
+(its keys pressed, its transcription posted back, signed), heard on the
+machine (the microphone, and what it plays as the echo reference), or
+joined by its link as a guest that listens (Chromium with a silent
+microphone and a black camera, which names itself, asks to join and
+waits to be let in, the meeting's sound heard from a PulseAudio sink of
+its own), the notes written by the profile's agent in a tainted session;
+with `--diarize`, what was heard is recorded and heard again by a
+transcriber that tells speakers apart (OpenAI's
+`gpt-4o-transcribe-diarize`, Deepgram's or ElevenLabs'), and the notes are
+written from the transcript by speaker. By default a live conversation's
+turn ends after half a second of quiet unless what was said sounds
+unfinished (by its punctuation and its last English word), which is held
+a second and a half for the rest (`--turns semantic`). Hearing and
+speaking can stay on the machine: whisper.cpp (`whisper:`) and Piper
+(`piper:`), or a server that speaks OpenAI's API (`local:`), any of which
+can hear the wake word. Tested end to end on a devnet with stand-in
+microphones (silence and a tone, paced as spoken), stand-in transcribers,
+a scripted model, a slow player, and stand-ins for the Realtime API and
+for Twilio; the meeting guest with Chromium against stand-in meeting
+pages served on the machine (one that lets it in, one that refuses it);
+telling speakers apart with a stand-in for its transcriber; whisper.cpp
+and Piper with stand-ins for their programs; the model of speech on a
 sentence spoken by espeak-ng and on noise; the echo canceller on a room
 made up (at least 20 dB quieter once learned, a voice over it within 3
-dB). No microphone or loudspeaker was used, and neither the Realtime API
-nor Twilio was reached. Trust atoms `agent:live-voice`,
-`agent:realtime-voice`, `agent:meeting-notes`.
+dB). No microphone or loudspeaker was used, and neither the Realtime API,
+Twilio, Google Meet, Zoom, Teams nor a service that tells speakers apart
+was reached. Trust atoms `agent:live-voice`, `agent:realtime-voice`,
+`agent:meeting-notes`, `agent:meeting-guest`.
 Voice notes are heard on every messenger (OpenAI-compatible
 transcription, Groq, Deepgram, ElevenLabs, or a command) and answered
 aloud (OpenAI, ElevenLabs, Deepgram, or a command): a voice note on Telegram, a voice message on
@@ -580,7 +615,24 @@ bubblewrap), and the guide's transcripts are of docs.rs. Trust atoms
 `agent:desktop`. Tabs (up to eight), downloads into the workspace and
 files chosen for a page's file field from it run for real in the tests
 too (Chromium in bubblewrap against a site on this machine); trust atom
-`agent:browser-files`. Not built: a desktop that outlives its process.
+`agent:browser-files`. A browser profile the operator signs in with
+(`sion agent browser login`, a headed Chromium) is kept and given to a
+session's browser by `--browser-profile`, one browser at a time, closed
+gracefully so that its cookies are written; tested in bubblewrap with a
+cookie set on a page on this machine and found by the next session's
+browser (trust atom `agent:signed-in-browser`). Where the tree says too
+little, a screenshot marks the last tree's references on the page, and
+`browser_click_at` and `browser_type_focused` act on a point and on the
+focus. `browser_ask_person` hands the page to the person the session can
+ask: a page served on 127.0.0.1, by a token of 128 bits and answering only
+to its own host name, shows the browser's page and passes the person's
+clicks, text and eight keys to it until they reply; a page that shows
+reCAPTCHA's, hCaptcha's or Turnstile's frame says so, and captchas are
+handed to the person, never solved by the agent or a service. Tested in
+bubblewrap with a stand-in person who opens the page, clicks and types a
+code (trust atom `agent:browser-handover`). Not built: a desktop that
+outlives its process; a hand-over reachable from another machine but by a
+tunnel.
 
 **Work the agent takes on by itself: built (beyond the paper).** `sion
 agent work` gives a profile's agent watches: GitHub repositories (new
@@ -1252,14 +1304,21 @@ the architecture's own:
 | `agent:mcp-sampling` | A server allowed to sample has the operator's model write what it asks, within the limits set, at the operator's cost; it sees none of the session's conversation, but what it asks is the server's. |
 | `agent:own-mcp-servers` | sion's mail, calendar and documents servers act with the credentials they are given, as their owner: mail sent is the person's own, and an event added is in their calendar. What the mail and calendar servers read is from outside; documents are read as a workspace's files are, not as from outside, so a document someone else wrote is trusted as the person's own. The calendar's login goes only to the server `CALDAV_URL` names. |
 | `agent:browser-files` | What a page downloads is kept in the workspace as from outside; a file chosen for a page's field goes to that page's site, whoever runs it. |
+| `agent:signed-in-browser` | A browser given a profile the operator signed in with acts on the sites it is signed in to as the operator: whatever those sessions allow, within the hosts it may reach and the autonomy level, and a site sees what the agent does there as the operator's. The profile's cookies and passwords are kept by Chromium's basic store, under a key Chromium does not keep secret: they are as safe as the profile's folder, readable by the operator's user. One browser uses a profile at a time by a lock that names the process holding it. |
+| `agent:browser-handover` | A page handed to the person is served on 127.0.0.1 to whoever holds its token, which is in the question the person is asked (in the terminal, or in the chat a bridge answers): a process on the machine, or anyone who reads the question, can see the page and act on it until the person replies or ten minutes pass. What the person types goes to the page as typed, and the model sees what the page then shows of it, and the reply. A captcha is told by the address of its frame alone. |
 | `agent:github-webhooks` | A webhook is taken as GitHub's when it carries GitHub's signature with the operator's secret; the listener speaks plain HTTP, and TLS is the operator's proxy's. A delivery copied on its way could be sent again, and is taken once by its event's id. |
 | `agent:imported-agent` | What an import brings over from OpenClaw or Hermes Agent into a profile's instructions is that agent's own files, which it may have written from what it read; the plan shows them and names the patterns worth a look, and the block tells the model they are another agent's notes, but once applied they reach every session's prompt as the operator's instructions do. |
 | `agent:taught-skills` | A taught draft names elements by what the pages called them and keeps the values the person typed outside secret fields; whether a field is secret is judged from its type, its masking, its autocomplete and what its name and label say, so a secret typed into a field that looks ordinary in every way is recorded. The draft reaches an agent only through the import's audit and the operator's acceptance. |
 | `agent:x-mentions` | An answer to a mention is checked for citing the sources it was given and naming no other address, not for saying what they say: a model can cite a source for a claim it does not make, and a search's results are whatever the service ranks for words a stranger chose. The reply is posted as the account's own. |
 | `agent:skill-import-review` | A skill imported from a folder, a repository or a registry is installed on the operator's reading of its files, or on an audit of its root; the patterns the report names, and a registry's verdicts, are a guide to that reading, not a scan that finds all that a skill could do; a registry's digests show that the files are the ones it lists, not that they are safe. |
-| `agent:live-voice` | A live conversation takes what its model of speech (or its loudness) finds near the microphone as the person's speech: without a wake word, what anyone says there goes to the transcriber and to the agent as the person's words; with `--wake-cloud`, everything said there goes to the transcriber's provider. The echo canceller takes out what the loudspeaker was given, not other sound: a voice from another device is speech. |
+| `agent:code-mode` | A program that calls tools runs in the shell's sandbox with no network and nothing of the machine mounted; its calls are limited to tools whose effect is to read, as they declare it. A tool that says it only reads but changes something, or reaches out, does so from code as it would for the model, up to 200 times a program. What the program prints is the model's own reading of what the tools returned. |
+| `agent:hooks` | The operator's hooks run as the operator, unsandboxed, with each call's input (and an after-hook its result) as JSON: they see what the calls they match carry. What an after-hook or a run's start hook prints is shown to the model as the operator's. A before-hook guards only the calls it matches, and only as well as its command checks them. |
+| `agent:worktrees` | A subagent's worktree is a checkout of its parent's repository: it reads all that HEAD holds, and what it commits on its branch is merged only by its parent. Git runs for it on this machine with its git directory named outright and hooks, the file-system monitor and signing off; filters the repository's own configuration names still run on what it wrote, as they would for the operator. |
+| `agent:kept-reasoning` | What a model thought is kept in its session's file as its provider gave it: encrypted where the provider encrypts it (OpenAI's reasoning items, Anthropic's signatures and redacted thinking), and readable where it does not (Anthropic's summaries, a chat completions server's reasoning text). It is given back to whatever answers at the same kind of provider, base URL and model, so a base URL that is a proxy is given it too. Whether it is the model's own, unchanged, is checked by the provider, not here. |
+| `agent:live-voice` | A live conversation takes what its model of speech (or its loudness) finds near the microphone as the person's speech: without a wake word, what anyone says there goes to the transcriber and to the agent as the person's words; with `--wake-cloud`, everything said there goes to the transcriber's provider. The echo canceller takes out what the loudspeaker was given, not other sound: a voice from another device is speech. With turns told by what was said, what sounds unfinished is held a second and a half, and what is heard next within it is taken as its rest, whoever says it. |
 | `agent:realtime-voice` | Through a realtime model, what the agent is asked is the realtime model's account of what the person said, and what the person hears is its account of the agent's answer: it is told to pass both on faithfully and to answer nothing itself, which a model may not do. It sees the conversation's utterances and the agent's answers. |
-| `agent:meeting-notes` | A meeting's transcript is what Twilio's transcription or the transcriber heard, which may mishear and does not say who spoke (by phone, all is `meeting`; here, `me` and `others`); the notes are the agent's reading of it. Dialling in joins the meeting as a caller, whom its other participants may not be told about: say so, as the law where they are may require. |
+| `agent:meeting-notes` | A meeting's transcript is what Twilio's transcription or the transcriber heard, which may mishear and, unless speakers are told apart, does not say who spoke (by phone and as a guest, all is `meeting`; here, `me` and `others`); speakers told apart are the provider's reading of the recording, named in the order they first spoke, not who they are, and that provider hears the whole recording, which stays on the machine until it is heard (or with `--keep-recording`, after). The notes are the agent's reading of the transcript. Dialling in joins the meeting as a caller, whom its other participants may not be told about: say so, as the law where they are may require. |
+| `agent:meeting-guest` | A guest that joins a meeting by its link is shown to everyone in it by the name it is given, and acts on the meeting's page by what its buttons and fields are called: a page that calls a button so is clicked so. Its microphone sends silence and its camera black, as Chromium is told to fake them, and Chromium's own sandbox holds the meeting's page; what the meeting plays is heard as `meeting`, whoever speaks. |
 | `deploy:copied-keys` | `sion deploy --copy-home` copies the agents' wallets and their keys to the server: whoever controls the server controls them. |
 
 ## Light-client trust

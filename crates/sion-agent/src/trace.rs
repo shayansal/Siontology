@@ -23,7 +23,7 @@ pub fn chat_line(state: &State, system: &str, ended: Option<&Ended>) -> String {
     let outcome = ended.map(|e| json!(e)).unwrap_or(Value::Null);
     let calls: usize = state.messages.iter().map(|m| m.tool_uses().count()).sum();
     json!({
-        "messages": openai_messages(system, &state.messages, &state.images),
+        "messages": openai_messages(system, &state.messages, &state.images, ""),
         "metadata": {
             "session": state.id,
             "outcome": outcome,

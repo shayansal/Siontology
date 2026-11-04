@@ -61,6 +61,23 @@ pub struct Delegation {
     pub depth: u32,
     /// The adjudicator of the tasks it posts, if the person named one.
     pub adjudicator: Option<AtomId>,
+    /// Its workspace, if it has one: a subagent may work in a git worktree
+    /// of it ([`crate::worktrees`]).
+    pub workspace: Option<PathBuf>,
+    /// The sandbox its commands run in, if it has a shell: a subagent in a
+    /// worktree runs its commands in one like it.
+    pub shell: Option<sion_agent::sandbox::Sandbox>,
+}
+
+impl Delegation {
+    /// The repository its subagents may work in worktrees of: its
+    /// workspace, if that is the root of a git repository and it has a
+    /// shell.
+    fn repository(&self) -> Option<&std::path::Path> {
+        self.workspace
+            .as_deref()
+            .filter(|dir| self.shell.is_some() && crate::worktrees::is_repo_root(dir))
+    }
 }
 
 impl Delegation {
@@ -153,23 +170,31 @@ struct SpawnTool(Delegation);
 
 impl Tool for SpawnTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "agent_spawn".into(),
-            description: "Hand part of the work to a subagent of your own. It gets a budget \
+        let mut description = "Hand part of the work to a subagent of your own. It gets a budget \
                           carved from yours (it can never spend more than you give it), works on \
                           the task you give it in a session of its own, under the same rules, \
                           and reports back. Give it a short name (lowercase letters, digits, \
                           hyphens), a budget in USD and the task, in full: it sees nothing else. \
                           Subagents you spawn in the same turn work at the same time."
-                .into(),
-            input_schema: schema(
-                json!({
-                    "name": {"type": "string"},
-                    "budget": {"type": "string"},
-                    "task": {"type": "string"}
-                }),
-                &["name", "budget", "task"],
-            ),
+            .to_string();
+        let mut properties = json!({
+            "name": {"type": "string"},
+            "budget": {"type": "string"},
+            "task": {"type": "string"}
+        });
+        if self.0.repository().is_some() {
+            description.push_str(
+                " With worktree, it works on code: in a git worktree of your workspace, on a \
+                 branch of its own (sion/<name>), with a shell and the editing tools, apart from \
+                 you and the others; when it is done its changes are committed on its branch, \
+                 for you to look at (git diff HEAD...sion/<name>) and merge.",
+            );
+            properties["worktree"] = json!({"type": "boolean"});
+        }
+        ToolSpec {
+            name: "agent_spawn".into(),
+            description,
+            input_schema: schema(properties, &["name", "budget", "task"]),
         }
     }
 
@@ -255,6 +280,8 @@ struct Order {
     name: String,
     task: String,
     budget: Amount,
+    /// Whether it works in a git worktree of the parent's workspace.
+    worktree: bool,
 }
 
 /// What each input asks for, checked.
@@ -287,10 +314,19 @@ fn orders(delegation: &Delegation, inputs: &[&Value]) -> Vec<Result<Order, Strin
             if budget == Amount::ZERO {
                 return Err("give the subagent a budget".into());
             }
+            let worktree = input["worktree"].as_bool().unwrap_or(false);
+            if worktree && delegation.repository().is_none() {
+                return Err(
+                    "no worktree: your workspace is not the root of a git repository, or you \
+                     have no shell"
+                        .into(),
+                );
+            }
             Ok(Order {
                 name: name.to_string(),
                 task: task.to_string(),
                 budget,
+                worktree,
             })
         })
         .collect()
@@ -519,7 +555,16 @@ fn work(
 ) -> Result<Report, String> {
     let acting = &delegation.acting;
     let Launched { wallet, child } = launched;
-    let (saved, _) = crate::runtime::start_watched(
+    // A subagent that works on code gets a worktree of its own, a shell
+    // like its parent's and the editing tools that come with a workspace.
+    let worktree = match (order.worktree, delegation.repository()) {
+        (true, Some(repo)) => Some(
+            crate::worktrees::create(repo, &order.name)
+                .map_err(|e| format!("spawned agent {}, but no worktree: {e}", child.short()))?,
+        ),
+        _ => None,
+    };
+    let started = crate::runtime::start_watched(
         acting.ledger.clone(),
         wallet,
         *child,
@@ -528,12 +573,14 @@ fn work(
         delegation.models.clone(),
         delegation.policy.clone(),
         // A subagent gets no workspace, shell or web of its parent's: only
-        // the ledger tools and what its charter allows.
+        // the ledger tools and what its charter allows, and its worktree.
         Equipment {
             depth: delegation.depth + 1,
             subagent_models: delegation.models.clone(),
             adjudicator: delegation.adjudicator,
             budget_tokens: budget,
+            workspace: worktree.as_ref().map(|w| w.dir.clone()),
+            shell: worktree.as_ref().and(delegation.shell.clone()),
             ..Equipment::default()
         },
         crate::runtime::Hooks {
@@ -541,13 +588,41 @@ fn work(
             confidential: held.confidential,
             ..crate::runtime::Hooks::default()
         },
-    )
-    .map_err(|e| {
-        format!(
-            "spawned agent {}, but its session failed: {e}",
-            child.short()
-        )
-    })?;
+    );
+    let (saved, _) = match started {
+        Ok(started) => started,
+        Err(e) => {
+            if let Some(worktree) = &worktree {
+                worktree.remove();
+            }
+            return Err(format!(
+                "spawned agent {}, but its session failed: {e}",
+                child.short()
+            ));
+        }
+    };
+    // What it changed, committed on its branch.
+    let committed = worktree.as_ref().map(|worktree| {
+        let subject: String = order
+            .task
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(72)
+            .collect();
+        match worktree.finish(&subject, &order.name) {
+            Ok(crate::worktrees::Finished {
+                branch: Some(branch),
+                stat,
+            }) => format!(
+                " Its work is on branch {branch} ({stat}): look with `git diff HEAD...{branch}`, \
+                 merge with `git merge {branch}`."
+            ),
+            Ok(_) => " It changed no files.".to_string(),
+            Err(e) => format!(" Its changes could not be committed: {e}."),
+        }
+    });
     let ended = match &saved.ended {
         Some(sion_agent::Ended::Done { text }) => {
             format!("done; it said: {}", text.trim_end_matches('.'))
@@ -609,7 +684,7 @@ fn work(
     spent.add(&saved.state.delegated);
     Ok(Report {
         text: format!(
-            "subagent {wallet} (agent {}, budget {} USD) worked in session {}: {ended}. Its calls: {}.",
+            "subagent {wallet} (agent {}, budget {} USD) worked in session {}: {ended}. Its calls: {}.{}",
             child.short(),
             order.budget,
             saved.state.id,
@@ -617,7 +692,8 @@ fn work(
                 "none".to_string()
             } else {
                 calls.join(", ")
-            }
+            },
+            committed.unwrap_or_default()
         ),
         tainted,
         confidential,

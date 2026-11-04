@@ -654,6 +654,8 @@ fn session(
         steer: None,
         checkpoint: None,
         verify: None,
+        code: None,
+        hooks: None,
     };
     let mut state = State::start(&format!("compare-{}", case.id), prompt, &limits);
     if held.tainted {

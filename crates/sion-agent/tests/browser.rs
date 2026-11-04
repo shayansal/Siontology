@@ -163,6 +163,7 @@ fn a_browser_reads_clicks_types_and_fills_a_login_only_where_it_belongs() {
         size: (1024, 768),
         workspace: None,
         confidential: Vec::new(),
+        profile: None,
     };
     let shared = Shared::new(config.clone(), Some(Arc::new(logins)));
     let tools = shared.tools();
@@ -414,6 +415,7 @@ fn a_browser_keeps_tabs_downloads_into_the_workspace_and_chooses_files() {
         size: (1024, 768),
         workspace: Some(workspace.clone()),
         confidential: vec!["secret.txt".into()],
+        profile: None,
     };
     let shared = Shared::new(config.clone(), None);
     let tools = shared.tools();
@@ -606,4 +608,227 @@ fn a_desktop_is_seen_and_used_with_the_pointer() {
     );
     drop(computer);
     let _ = std::fs::remove_dir_all(&workspace);
+}
+
+/// A page with what the accessibility tree says little of: a board drawn on
+/// a canvas, and a field for a code, each at a place of its own.
+const POINTER: &str = r#"<html><head><title>Pointer</title></head><body style="margin:0">
+<canvas id="board" width="200" height="100" style="position:absolute;left:100px;top:100px;background:#ddd"></canvas>
+<input id="code" aria-label="Code" style="position:absolute;left:100px;top:300px;width:200px;height:30px">
+<p id="out" style="position:absolute;left:100px;top:400px">nothing yet</p>
+<p id="typed" style="position:absolute;left:100px;top:440px">typed nothing</p>
+<script>
+document.getElementById('board').addEventListener('click', e => {
+  document.getElementById('out').textContent = 'clicked the board at ' + e.clientX + ',' + e.clientY;
+});
+document.getElementById('code').addEventListener('input', e => {
+  document.getElementById('typed').textContent = 'typed ' + e.target.value;
+});
+</script></body></html>"#;
+
+fn over_http(port: u16, request: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+    String::from_utf8_lossy(&answer).into_owned()
+}
+
+/// The person a page is handed to: they open the address they are given,
+/// see the page, click into the field, type the code sent to them and
+/// reply. What they were asked, and each answer of the page they used.
+#[derive(Debug, Default)]
+struct Person {
+    asked: std::sync::Mutex<Vec<String>>,
+    answers: std::sync::Mutex<Vec<String>>,
+}
+
+impl sion_agent::mcp_input::Asker for Person {
+    fn ask(&self, question: &str) -> Option<String> {
+        self.asked.lock().unwrap().push(question.to_string());
+        let url = question
+            .split_whitespace()
+            .find(|w| w.starts_with("http://127.0.0.1:"))?;
+        let (port, token) = url
+            .trim_start_matches("http://127.0.0.1:")
+            .split_once('/')?;
+        let port: u16 = port.parse().ok()?;
+        let host = format!("127.0.0.1:{port}");
+        let mut answers = Vec::new();
+        answers.push(over_http(
+            port,
+            &format!("GET /{token} HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        ));
+        answers.push(over_http(
+            port,
+            &format!("GET /{token}/view HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        ));
+        for (path, body) in [("click", "150 315"), ("text", "777111")] {
+            answers.push(over_http(
+                port,
+                &format!(
+                    "POST /{token}/{path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                ),
+            ));
+        }
+        *self.answers.lock().unwrap() = answers;
+        Some("done, the code is in".into())
+    }
+}
+
+#[test]
+fn a_signed_in_profile_is_kept_and_a_page_is_pointed_at_and_handed_to_a_person() {
+    let (Some(program), Some(sandbox)) = (browser::find_program(), bubblewrap()) else {
+        eprintln!("skipped: no Chromium, or bubblewrap does not work here");
+        return;
+    };
+    let port = site(vec![
+        (
+            "/sign-in",
+            "<html><head><title>Sign in</title></head><body><h1>Signed in</h1>\
+             <script>document.cookie = 'session=ana; max-age=3600; path=/'</script></body></html>"
+                .to_string(),
+        ),
+        (
+            "/account",
+            "<html><head><title>Account</title></head><body><h1 id=\"who\">nobody</h1>\
+             <script>document.getElementById('who').textContent = 'cookie: ' + (document.cookie || 'none')</script>\
+             </body></html>"
+                .to_string(),
+        ),
+        ("/pointer", POINTER.to_string()),
+    ]);
+    let origin = format!("http://127.0.0.1:{port}");
+    let profile = std::env::temp_dir().join(format!("sion-browser-kept-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&profile);
+    let config = browser::Config {
+        program,
+        sandbox: Some(sandbox),
+        bridge: Some(vec![env!("CARGO_BIN_EXE_sion-sandbox-bridge").to_string()]),
+        network: ScriptNetwork::Hosts(vec![HostRule::parse(&format!("127.0.0.1:{port}")).unwrap()]),
+        egress: sion_agent::egress::Options {
+            allow_private: true,
+            upstream: None,
+        },
+        size: (1024, 768),
+        workspace: None,
+        confidential: Vec::new(),
+        profile: Some(profile.clone()),
+    };
+
+    // No profile until a person signs in to one; then one browser at a time
+    // uses it, and it stays when the browser closes.
+    let missing = browser::Browser::start(&config).err().unwrap();
+    assert!(missing.contains("sign in to one first"), "{missing}");
+    std::fs::create_dir_all(&profile).unwrap();
+    {
+        let mut first = browser::Browser::start(&config).unwrap();
+        assert!(browser::in_use(&profile));
+        let second = browser::Browser::start(&config).err().unwrap();
+        assert!(second.contains("in use by another session"), "{second}");
+        first.open(&format!("{origin}/sign-in")).unwrap();
+        assert!(first.snapshot().unwrap().contains("Signed in"));
+    }
+    assert!(!browser::in_use(&profile), "let go");
+    assert!(profile.is_dir(), "kept");
+
+    // The next session's browser is signed in: the cookie stayed.
+    let person = Arc::new(Person::default());
+    let asker: Arc<dyn sion_agent::mcp_input::Asker> = person.clone();
+    let shared = Shared::new(config.clone(), None).asking(Some(asker));
+    let tools = shared.tools();
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("{origin}/account")}),
+    );
+    assert!(
+        page.content.contains("cookie: session=ana"),
+        "{}",
+        page.content
+    );
+
+    // What has no reference is clicked where a screenshot shows it, and
+    // typed into once it has the focus.
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("{origin}/pointer")}),
+    );
+    assert!(!page.is_error, "{}", page.content);
+    // A page drawn on a canvas: said once that its tree says little.
+    let hint = "The tree says little of this page";
+    assert!(page.content.contains(hint), "{}", page.content);
+    let again = call(&tools, "browser_snapshot", json!({}));
+    assert!(!again.content.contains(hint), "{}", again.content);
+    let shot = call(&tools, "browser_screenshot", json!({"marks": true}));
+    assert!(!shot.is_error, "{}", shot.content);
+    assert!(
+        shot.content.contains("marked on it") && !shot.content.contains(" 0 elements"),
+        "{}",
+        shot.content
+    );
+    assert!(shot.pictures[0].base64.starts_with("iVBORw0KGgo"), "a PNG");
+    let page = call(&tools, "browser_click_at", json!({"x": 150, "y": 120}));
+    assert!(
+        page.content.contains("clicked the board at 150,120"),
+        "{}",
+        page.content
+    );
+    call(&tools, "browser_click_at", json!({"x": 150, "y": 315}));
+    let page = call(&tools, "browser_type_focused", json!({"text": "4242"}));
+    assert!(page.content.contains("typed 4242"), "{}", page.content);
+    let off = call(&tools, "browser_click_at", json!({"x": 5000, "y": 10}));
+    assert!(
+        off.is_error && off.content.contains("is not on the page"),
+        "{}",
+        off.content
+    );
+
+    // Handed to the person, who sees the page, clicks into the field and
+    // types the code sent to them: their reply, and the page as it is then.
+    let page = call(
+        &tools,
+        "browser_ask_person",
+        json!({"why": "the site sent a code to your phone"}),
+    );
+    assert!(!page.is_error, "{}", page.content);
+    assert!(
+        page.content
+            .contains("the person replied: done, the code is in"),
+        "{}",
+        page.content
+    );
+    assert!(
+        page.content.contains("typed 4242777111"),
+        "{}",
+        page.content
+    );
+    let asked = person.asked.lock().unwrap().clone();
+    assert!(
+        asked[0].contains("the site sent a code to your phone"),
+        "{asked:?}"
+    );
+    let answers = person.answers.lock().unwrap().clone();
+    assert!(answers[0].starts_with("HTTP/1.1 200"), "{}", answers[0]);
+    assert!(
+        answers[1].starts_with("HTTP/1.1 200") && answers[1].contains("image/jpeg"),
+        "{}",
+        answers[1]
+    );
+    assert!(
+        answers[2..].iter().all(|a| a.starts_with("HTTP/1.1 204")),
+        "{answers:?}"
+    );
+    // Without a person there, the page is handed to no one.
+    assert!(!Shared::new(config.clone(), None)
+        .tools()
+        .iter()
+        .any(|t| t.spec().name == "browser_ask_person"));
+    drop(tools);
+    drop(shared);
+    assert!(!browser::in_use(&profile), "let go");
+    let _ = std::fs::remove_dir_all(&profile);
 }

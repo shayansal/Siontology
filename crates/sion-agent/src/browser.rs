@@ -29,6 +29,17 @@
 //! are copied into the browser's own profile first, since the browser sees
 //! nothing of the workspace. Without one, downloads are refused and
 //! nothing is uploaded.
+//!
+//! A browser may instead keep a profile a person signed in with
+//! ([`Config::profile`]): their cookies and sessions, so that the agent acts
+//! on those sites as them. It is kept between sessions, used by one browser
+//! at a time, and never removed by the runtime.
+//!
+//! Where the accessibility tree says too little (a canvas, a map, a page
+//! drawn by its script), the model can see a screenshot with each
+//! reference marked on it (`marks`), click at a point of it and type into
+//! what has the focus. What it cannot do, a person can: a captcha, a code
+//! sent to them, a sign-in with a key ([`hand_over`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +78,9 @@ pub const DOWNLOAD_SECS: u64 = 120;
 
 /// Where downloads go in the workspace.
 pub const DOWNLOADS: &str = "downloads";
+
+/// The file a kept profile holds while a browser uses it.
+pub const IN_USE: &str = ".sion-in-use";
 
 /// What every document runs first, so that the browser keeps one page: a
 /// link or a form aimed at another window, and `window.open`, go to this
@@ -141,6 +155,10 @@ pub struct Config {
     /// The workspace's confidential paths
     /// ([`crate::builtin::confidential_path`]): never chosen for a page.
     pub confidential: Vec<String>,
+    /// A profile a person signed in with, kept between sessions, if the
+    /// browser is to use it rather than one of its own made for the
+    /// session.
+    pub profile: Option<PathBuf>,
 }
 
 /// Where Chromium or Chrome is on this machine, if it can be found:
@@ -246,6 +264,8 @@ pub struct Browser {
     downloads: Vec<Download>,
     chosen: u64,
     profile: PathBuf,
+    /// Whether its profile is kept (a person's, signed in), not removed.
+    kept: bool,
     _egress: crate::egress::Egress,
     _forward: Option<crate::egress::Forward>,
     sandboxed: Option<(crate::sandbox::Sandbox, String)>,
@@ -253,6 +273,8 @@ pub struct Browser {
     refs: BTreeMap<String, Element>,
     filled: Vec<(String, String)>,
     size: (u32, u32),
+    /// The page whose tree was last said to say little of it.
+    hinted: Option<String>,
 }
 
 impl std::fmt::Debug for Browser {
@@ -298,18 +320,38 @@ fn arguments(profile: &Path, proxy: &str, size: (u32, u32), sandboxed: bool) -> 
 impl Browser {
     /// Starts a browser with `config`.
     pub fn start(config: &Config) -> Result<Browser, String> {
-        let profile = std::env::temp_dir().join(format!(
-            "sion-browser-{}-{}",
-            std::process::id(),
-            PROFILES.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&profile);
-        std::fs::create_dir_all(&profile).map_err(|e| format!("{}: {e}", profile.display()))?;
+        let kept = config.profile.is_some();
+        let profile = match &config.profile {
+            Some(profile) => {
+                take_profile(profile)?;
+                profile.clone()
+            }
+            None => {
+                let profile = std::env::temp_dir().join(format!(
+                    "sion-browser-{}-{}",
+                    std::process::id(),
+                    PROFILES.fetch_add(1, Ordering::Relaxed)
+                ));
+                let _ = std::fs::remove_dir_all(&profile);
+                std::fs::create_dir_all(&profile)
+                    .map_err(|e| format!("{}: {e}", profile.display()))?;
+                profile
+            }
+        };
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700));
         }
+        // A kept profile is let go however the start fails.
+        Browser::start_in(config, profile.clone(), kept).inspect_err(|_| {
+            if kept {
+                release_profile(&profile);
+            }
+        })
+    }
+
+    fn start_in(config: &Config, profile: PathBuf, kept: bool) -> Result<Browser, String> {
         let egress = crate::egress::Egress::start(config.network.clone(), config.egress.clone())?;
         let program = config.program.to_string_lossy().into_owned();
         let (child, forward, sandboxed) = match &config.sandbox {
@@ -426,6 +468,7 @@ impl Browser {
             cdp,
             session: String::new(),
             profile,
+            kept,
             _egress: egress,
             _forward: forward,
             sandboxed,
@@ -437,6 +480,7 @@ impl Browser {
             confidential: config.confidential.clone(),
             downloads: Vec::new(),
             chosen: 0,
+            hinted: None,
         };
         browser.attach()?;
         Ok(browser)
@@ -1445,6 +1489,250 @@ impl Browser {
             .map(str::to_string)
             .ok_or_else(|| "the browser gave no picture".to_string())
     }
+
+    /// A picture of what the page shows with each reference of the last
+    /// snapshot that is in view marked on it, a box and its name (`e12`),
+    /// at most [`MAX_MARKS`]: how many were marked, and the picture.
+    pub fn screenshot_marked(&mut self) -> Result<(usize, String), String> {
+        let (width, height) = (f64::from(self.size.0), f64::from(self.size.1));
+        let mut marks = Vec::new();
+        for (reference, element) in &self.refs {
+            if marks.len() >= MAX_MARKS {
+                break;
+            }
+            let Ok(quads) = self.page(
+                "DOM.getContentQuads",
+                json!({"backendNodeId": element.backend}),
+            ) else {
+                continue;
+            };
+            let Some(quad) = quads["quads"][0].as_array().filter(|q| q.len() == 8) else {
+                continue;
+            };
+            let xs: Vec<f64> = (0..4)
+                .map(|i| quad[2 * i].as_f64().unwrap_or(0.0))
+                .collect();
+            let ys: Vec<f64> = (0..4)
+                .map(|i| quad[2 * i + 1].as_f64().unwrap_or(0.0))
+                .collect();
+            let left = xs.iter().copied().fold(f64::MAX, f64::min);
+            let top = ys.iter().copied().fold(f64::MAX, f64::min);
+            let right = xs.iter().copied().fold(f64::MIN, f64::max);
+            let bottom = ys.iter().copied().fold(f64::MIN, f64::max);
+            if right <= 0.0 || bottom <= 0.0 || left >= width || top >= height {
+                continue;
+            }
+            marks.push(json!({"name": reference, "left": left, "top": top,
+                "width": (right - left).max(1.0), "height": (bottom - top).max(1.0)}));
+        }
+        let marked = marks.len();
+        let shown = format!("({MARK})({})", Value::Array(marks));
+        self.page(
+            "Runtime.evaluate",
+            json!({"expression": shown, "returnByValue": true}),
+        )?;
+        let shot = self.screenshot();
+        let _ = self.page(
+            "Runtime.evaluate",
+            json!({"expression": "document.getElementById('sion-marks')?.remove()"}),
+        );
+        Ok((marked, shot?))
+    }
+
+    /// Clicks at the point (`x`, `y`) of the page as it shows, in its CSS
+    /// pixels (a screenshot's).
+    pub fn click_at(&mut self, x: f64, y: f64) -> Result<(), String> {
+        let (width, height) = (f64::from(self.size.0), f64::from(self.size.1));
+        if !(0.0..width).contains(&x) || !(0.0..height).contains(&y) {
+            return Err(format!(
+                "({x}, {y}) is not on the page, which shows {width} by {height}"
+            ));
+        }
+        self.forget();
+        for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+            self.page(
+                "Input.dispatchMouseEvent",
+                json!({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1}),
+            )?;
+        }
+        self.settle();
+        Ok(())
+    }
+
+    /// Types `text` into what has the focus on the page, and presses Enter
+    /// after if `submit`.
+    pub fn type_focused(&mut self, text: &str, submit: bool) -> Result<(), String> {
+        self.forget();
+        self.page("Input.insertText", json!({"text": text}))?;
+        if submit {
+            self.press("Enter")?;
+        }
+        Ok(())
+    }
+
+    /// Whether the last snapshot says little of the page at `url`, said
+    /// once for each page: it drew on a canvas or embedded something the
+    /// tree cannot see into, or the page gave nothing to act on.
+    fn says_little(&mut self, url: &str) -> bool {
+        let drawn = self.refs.values().any(|e| {
+            ["Canvas ", "Embed ", "PluginObject ", "Video "]
+                .iter()
+                .any(|role| e.described.starts_with(role))
+        });
+        let little = (drawn || self.refs.is_empty())
+            && (url.starts_with("http://") || url.starts_with("https://"));
+        if !little || self.hinted.as_deref() == Some(url) {
+            return false;
+        }
+        self.hinted = Some(url.to_string());
+        true
+    }
+
+    /// The captcha the page shows, if it shows one a person must solve:
+    /// reCAPTCHA's, hCaptcha's or Cloudflare's Turnstile, by its frame.
+    pub fn captcha(&self) -> Option<&'static str> {
+        fn gather(tree: &Value, urls: &mut Vec<String>) {
+            if let Some(url) = tree["frame"]["url"].as_str() {
+                urls.push(url.to_string());
+            }
+            for child in tree["childFrames"].as_array().into_iter().flatten() {
+                gather(child, urls);
+            }
+        }
+        let tree = self.page("Page.getFrameTree", json!({})).ok()?;
+        let mut urls = Vec::new();
+        gather(&tree["frameTree"], &mut urls);
+        urls.iter().find_map(|url| captcha_at(url))
+    }
+
+    /// A picture of the page as a person handed it is shown it: JPEG.
+    fn view(&self) -> Option<Vec<u8>> {
+        let shot = self
+            .page(
+                "Page.captureScreenshot",
+                json!({"format": "jpeg", "quality": 70}),
+            )
+            .ok()?;
+        crate::encoding::from_base64(shot["data"].as_str()?)
+    }
+}
+
+/// The captcha a frame at `url` shows, if it is one: by the address its
+/// maker serves it from.
+fn captcha_at(url: &str) -> Option<&'static str> {
+    let host = url
+        .split_once("://")
+        .map_or("", |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    let host = host
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let path = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.find('/').map(|at| &rest[at..]))
+        .unwrap_or("");
+    let under = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    if (under("google.com") || under("recaptcha.net")) && path.starts_with("/recaptcha/") {
+        Some("reCAPTCHA")
+    } else if under("hcaptcha.com") {
+        Some("hCaptcha")
+    } else if host == "challenges.cloudflare.com" {
+        Some("Cloudflare Turnstile")
+    } else {
+        None
+    }
+}
+
+/// What marks a page's references for a screenshot: given the marks, a
+/// layer over the page with a box and a name for each.
+const MARK: &str = r#"(marks) => {
+  const layer = document.createElement('div');
+  layer.id = 'sion-marks';
+  layer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647';
+  for (const m of marks) {
+    const box = document.createElement('div');
+    box.style.cssText = `position:fixed;left:${m.left}px;top:${m.top}px;width:${m.width}px;height:${m.height}px;outline:2px solid #e11`;
+    const label = document.createElement('span');
+    label.textContent = m.name;
+    label.style.cssText = 'position:absolute;left:0;top:-14px;font:bold 11px monospace;background:#e11;color:#fff;padding:0 2px;line-height:14px';
+    box.appendChild(label);
+    layer.appendChild(box);
+  }
+  document.documentElement.appendChild(layer);
+  return true;
+}"#;
+
+/// The most references marked on a screenshot.
+pub const MAX_MARKS: usize = 80;
+
+/// How long a person is given to act on a page handed to them.
+pub const HAND_OVER_SECS: u64 = 600;
+
+/// Hands `browser`'s page to a person, through `asker`, saying `why`: a
+/// page at an address of this machine's, made for the hand-over and known
+/// only by its token, shows what the browser shows and passes their clicks
+/// and keys to it ([`crate::takeover`]), while they are asked to reply when
+/// they are done, or with what the agent needs (a code sent to them).
+/// Their reply, or none after `within`.
+pub fn hand_over(
+    browser: &mut Browser,
+    asker: Arc<dyn crate::mcp_input::Asker>,
+    why: &str,
+    within: Duration,
+) -> Result<Option<String>, String> {
+    let takeover = crate::takeover::Takeover::start(browser.size)?;
+    let question = format!(
+        "The agent hands you its browser: {why}. Open {} on this machine to see the page and act \
+         on it there; reply here when you are done, with anything it needs from you (a code sent \
+         to you, say).",
+        takeover.url
+    );
+    let (replied, reply) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = replied.send(asker.ask(&question));
+    });
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let answer = reply.try_recv().ok();
+        // What they did on the page before they replied is done first.
+        let wait = if answer.is_some() {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(100)
+        };
+        while let Some(asked) = takeover.next(wait) {
+            match asked {
+                crate::takeover::Asked::View(sent) => {
+                    let _ = sent.send(browser.view());
+                }
+                crate::takeover::Asked::Click(x, y) => {
+                    let _ = browser.click_at(x, y);
+                }
+                crate::takeover::Asked::Text(text) => {
+                    let _ = browser.type_focused(&text, false);
+                }
+                crate::takeover::Asked::Key(key) => {
+                    let _ = browser.press(&key);
+                }
+            }
+            if answer.is_none() {
+                break;
+            }
+        }
+        if let Some(answer) = answer {
+            return Ok(answer);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+    }
 }
 
 /// A download's name as said: the page's, or that it gave none.
@@ -1502,6 +1790,17 @@ impl Drop for Browser {
         let _ = self
             .cdp
             .send_waiting(None, "Browser.close", json!({}), Duration::from_secs(3));
+        if self.kept {
+            // A person's profile (their cookies) is written as the browser
+            // closes: it is given the time to.
+            let until = std::time::Instant::now() + Duration::from_secs(KEPT_CLOSE_SECS);
+            while std::time::Instant::now() < until {
+                match self.child.try_wait() {
+                    Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                    _ => break,
+                }
+            }
+        }
         match &self.sandboxed {
             Some((sandbox, name)) => sandbox.stop(&mut self.child, name),
             None => {
@@ -1509,8 +1808,68 @@ impl Drop for Browser {
                 let _ = self.child.wait();
             }
         }
-        let _ = std::fs::remove_dir_all(&self.profile);
+        if self.kept {
+            // A person's profile stays; what was downloaded into it goes.
+            let _ = std::fs::remove_dir_all(self.profile.join("downloads"));
+            let _ = std::fs::remove_file(self.profile.join(IN_USE));
+        } else {
+            let _ = std::fs::remove_dir_all(&self.profile);
+        }
     }
+}
+
+/// How long a browser with a kept profile is given to close by itself.
+const KEPT_CLOSE_SECS: u64 = 5;
+
+/// Whether a browser uses the kept profile at `profile` now: its
+/// [`IN_USE`] names a process that is still running.
+pub fn in_use(profile: &Path) -> bool {
+    std::fs::read_to_string(profile.join(IN_USE))
+        .ok()
+        .and_then(|pid| pid.trim().parse::<u32>().ok())
+        .is_some_and(|pid| {
+            Path::new(&format!("/proc/{pid}")).exists() || !Path::new("/proc").is_dir()
+        })
+}
+
+/// Gives back a kept profile taken with [`take_profile`].
+pub fn release_profile(profile: &Path) {
+    let _ = std::fs::remove_file(profile.join(IN_USE));
+}
+
+/// Takes a kept profile for a browser: one that exists (a person signed in
+/// with it) and that no browser uses now ([`IN_USE`], naming the process
+/// that holds it).
+pub fn take_profile(profile: &Path) -> Result<(), String> {
+    if !profile.is_dir() {
+        return Err(format!(
+            "there is no browser profile at {}: sign in to one first",
+            profile.display()
+        ));
+    }
+    let lock = profile.join(IN_USE);
+    if in_use(profile) {
+        return Err(format!(
+            "the browser profile {} is in use by another session",
+            profile.display()
+        ));
+    }
+    // Its holder, if any, is gone.
+    let _ = std::fs::remove_file(&lock);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            write!(file, "{}", std::process::id())
+        })
+        .map_err(|_| {
+            format!(
+                "the browser profile {} is in use by another session",
+                profile.display()
+            )
+        })
 }
 
 /// The browser a session's tools share, started when first used.
@@ -1520,6 +1879,8 @@ pub struct Shared {
     browser: Arc<Mutex<Option<Browser>>>,
     credentials: Option<Arc<dyn Credentials>>,
     restore: Arc<Mutex<Option<Restore>>>,
+    /// Who the page is handed to, if a person is there to take it.
+    asker: Option<Arc<dyn crate::mcp_input::Asker>>,
 }
 
 /// Where a browser started again goes back to: the page, and the last
@@ -1548,7 +1909,15 @@ impl Shared {
             browser: Arc::new(Mutex::new(None)),
             credentials,
             restore: Arc::new(Mutex::new(None)),
+            asker: None,
         }
+    }
+
+    /// The same browser, whose page can be handed to the person `asker`
+    /// asks (`browser_ask_person`).
+    pub fn asking(mut self, asker: Option<Arc<dyn crate::mcp_input::Asker>>) -> Shared {
+        self.asker = asker;
+        self
     }
 
     /// The same browser, which goes back to `restore` when it starts: a
@@ -1605,9 +1974,14 @@ impl Shared {
             Action::TabOpen,
             Action::TabSwitch,
             Action::TabClose,
+            Action::ClickAt,
+            Action::TypeFocused,
         ];
         if self.config.workspace.is_some() {
             actions.push(Action::Choose);
+        }
+        if self.asker.is_some() {
+            actions.push(Action::AskPerson);
         }
         let mut tools: Vec<Box<dyn Tool>> = actions
             .into_iter()
@@ -1644,6 +2018,9 @@ enum Action {
     TabSwitch,
     TabClose,
     Choose,
+    ClickAt,
+    TypeFocused,
+    AskPerson,
 }
 
 /// One action on the shared browser, as a tool.
@@ -1706,8 +2083,36 @@ impl Tool for BrowserTool {
             ),
             Action::Screenshot => (
                 "browser_screenshot",
-                "A picture of what the page shows now.",
-                schema(json!({}), &[]),
+                "A picture of what the page shows now; with marks, each element of the last \
+                 browser_snapshot that is in view boxed and named on it (e12), to tell what is \
+                 where when the tree says too little.",
+                schema(json!({"marks": {"type": "boolean"}}), &[]),
+            ),
+            Action::ClickAt => (
+                "browser_click_at",
+                "Click at a point of the page as a screenshot shows it (x across, y down, in its \
+                 pixels), for what has no reference: a canvas, a map. Returns the page.",
+                schema(
+                    json!({"x": {"type": "number"}, "y": {"type": "number"}}),
+                    &["x", "y"],
+                ),
+            ),
+            Action::TypeFocused => (
+                "browser_type_focused",
+                "Type text into whatever has the focus on the page (after browser_click_at, \
+                 say); with submit, press Enter after. Returns the page.",
+                schema(
+                    json!({"text": {"type": "string"}, "submit": {"type": "boolean"}}),
+                    &["text"],
+                ),
+            ),
+            Action::AskPerson => (
+                "browser_ask_person",
+                "Hand the page to the person you work for, for what only they can do: a captcha, \
+                 a code sent to them, a sign-in of theirs. Say why. They see the page and act on \
+                 it, and reply when they are done, or with what you need; you get their reply and \
+                 the page as it is then.",
+                schema(json!({"why": {"type": "string"}}), &["why"]),
             ),
             Action::Tabs => (
                 "browser_tabs",
@@ -1778,9 +2183,11 @@ impl Tool for BrowserTool {
 
     fn effect(&self) -> Effect {
         match self.action {
-            Action::Snapshot | Action::Screenshot | Action::Tabs | Action::TabSwitch => {
-                Effect::Read
-            }
+            Action::Snapshot
+            | Action::Screenshot
+            | Action::Tabs
+            | Action::TabSwitch
+            | Action::AskPerson => Effect::Read,
             _ => Effect::External,
         }
     }
@@ -1805,6 +2212,28 @@ impl Tool for BrowserTool {
                     notes.push(note);
                 }
                 let snapshot = browser.snapshot()?;
+                if let Some(captcha) = browser.captcha() {
+                    notes.push(if self.shared.asker.is_some() {
+                        format!(
+                            "The page shows a captcha ({captcha}): hand it to the person \
+                             (browser_ask_person)."
+                        )
+                    } else {
+                        format!(
+                            "The page shows a captcha ({captcha}), and no person is there to \
+                             solve it."
+                        )
+                    });
+                } else if browser
+                    .location()
+                    .is_ok_and(|(url, _, _)| browser.says_little(&url))
+                {
+                    notes.push(
+                        "The tree says little of this page: browser_screenshot with marks shows \
+                         what is where, and browser_click_at acts on a point of it."
+                            .into(),
+                    );
+                }
                 notes.push(snapshot);
                 Ok(Outcome::ok(notes.join("\n")))
             };
@@ -1905,11 +2334,53 @@ impl Tool for BrowserTool {
                         format!("chose {} for {reference}", chosen.join(", ")),
                     )
                 }
+                Action::Screenshot if input["marks"] == true => {
+                    let (marked, data) = browser.screenshot_marked()?;
+                    let (url, title, _) = browser.location()?;
+                    Ok(Outcome::ok(format!(
+                        "a picture of {url} ({title:?}), {marked} elements of the last snapshot \
+                         marked on it"
+                    ))
+                    .with_picture("image/png", data))
+                }
                 Action::Screenshot => {
                     let data = browser.screenshot()?;
                     let (url, title, _) = browser.location()?;
                     Ok(Outcome::ok(format!("a picture of {url} ({title:?})"))
                         .with_picture("image/png", data))
+                }
+                Action::ClickAt => {
+                    let (x, y) = (
+                        input["x"].as_f64().unwrap_or(-1.0),
+                        input["y"].as_f64().unwrap_or(-1.0),
+                    );
+                    browser.click_at(x, y)?;
+                    page(browser, format!("clicked at ({x}, {y})"))
+                }
+                Action::TypeFocused => {
+                    let text = input["text"].as_str().unwrap_or_default();
+                    browser.type_focused(text, input["submit"].as_bool().unwrap_or(false))?;
+                    page(browser, "typed into what has the focus".into())
+                }
+                Action::AskPerson => {
+                    let why = input["why"].as_str().unwrap_or_default().trim();
+                    if why.is_empty() {
+                        return Err("say why you hand the page over".into());
+                    }
+                    let asker = self
+                        .shared
+                        .asker
+                        .clone()
+                        .ok_or("no person is there to hand the page to")?;
+                    let within = Duration::from_secs(HAND_OVER_SECS);
+                    let note = match hand_over(browser, asker, why, within)? {
+                        Some(reply) => format!("the person replied: {reply}"),
+                        None => format!(
+                            "the person did not reply within {} minutes",
+                            HAND_OVER_SECS / 60
+                        ),
+                    };
+                    page(browser, note)
                 }
                 Action::Fill => {
                     let name = input["login"].as_str().unwrap_or_default();
@@ -1946,5 +2417,44 @@ impl Tool for BrowserTool {
             Ok(outcome) => outcome.from_outside(),
             Err(why) => Outcome::error(why).from_outside(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_captcha_is_known_by_where_its_frame_comes_from() {
+        assert_eq!(
+            captcha_at("https://www.google.com/recaptcha/api2/anchor?k=x"),
+            Some("reCAPTCHA")
+        );
+        assert_eq!(
+            captcha_at("https://www.recaptcha.net/recaptcha/enterprise/anchor"),
+            Some("reCAPTCHA")
+        );
+        assert_eq!(
+            captcha_at("https://newassets.hcaptcha.com/captcha/v1/abc/static/hcaptcha.html"),
+            Some("hCaptcha")
+        );
+        assert_eq!(
+            captcha_at(
+                "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile"
+            ),
+            Some("Cloudflare Turnstile")
+        );
+        // Not by a name in its address only.
+        assert_eq!(
+            captcha_at("https://shop.example/recaptcha/google.com"),
+            None
+        );
+        assert_eq!(captcha_at("https://evilgoogle.com/recaptcha/api2"), None);
+        assert_eq!(captcha_at("https://hcaptcha.com.shop.example/"), None);
+        assert_eq!(
+            captcha_at("https://www.google.com/search?q=recaptcha"),
+            None
+        );
+        assert_eq!(captcha_at("about:blank"), None);
     }
 }

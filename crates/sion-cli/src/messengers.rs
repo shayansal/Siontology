@@ -1735,13 +1735,16 @@ pub struct ChannelArgs {
     /// answers one of its messages (direct messages are always answered).
     #[arg(long)]
     pub require_mention: bool,
-    /// Hear voice notes: openai:<model>, groq:<model>, or
-    /// command:<program> (given the audio's file, it prints the text).
+    /// Hear voice notes: openai:<model>, groq:<model>, deepgram:<model>,
+    /// elevenlabs:<model>, command:<program> (given the audio's file, it
+    /// prints the text), or on this machine whisper:<model file> or
+    /// local:<model>.
     #[arg(long, value_name = "PROVIDER")]
     pub hear: Option<String>,
     /// Answer voice notes aloud: openai:<model>:<voice>,
-    /// elevenlabs:<voice id>[:<model>], or command:<program> (given the
-    /// text, it writes Ogg Opus or MP3).
+    /// elevenlabs:<voice id>[:<model>], deepgram:<voice model>,
+    /// command:<program> (given the text, it writes Ogg Opus or MP3), or on
+    /// this machine piper:<model file> or local:<model>:<voice>.
     #[arg(long, value_name = "PROVIDER", requires = "hear")]
     pub speak: Option<String>,
     /// How a reply shows while the agent writes it, where the messenger

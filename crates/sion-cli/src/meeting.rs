@@ -67,9 +67,19 @@ pub struct MeetingArgs {
     /// --monitor what it plays.
     #[arg(long)]
     pub here: bool,
-    /// What hears what is said here: openai:<model>, groq:<model>,
-    /// deepgram:<model>, elevenlabs:<model> or command:<program>.
-    #[arg(long, value_name = "PROVIDER", requires = "here")]
+    /// Join the meeting by its link, as a guest that listens: Chromium
+    /// opens it with a silent microphone and a black camera, gives the guest's
+    /// name and asks to join, and what the meeting plays is heard through
+    /// a PulseAudio or PipeWire sink of its own (pactl, parec).
+    #[arg(long, value_name = "LINK", conflicts_with_all = ["dial", "here"])]
+    pub join: Option<String>,
+    /// The guest's name, as the meeting shows it.
+    #[arg(long, default_value = "Notes (sion)", requires = "join")]
+    pub name: String,
+    /// What hears what is said here, or in a meeting joined by its link:
+    /// openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>,
+    /// whisper:<model file>, local:<model> or command:<program>.
+    #[arg(long, value_name = "PROVIDER")]
     pub hear: Option<String>,
     /// The program that gives the microphone's sound (raw 16-bit mono at
     /// 16 kHz), as for a live conversation.
@@ -89,6 +99,57 @@ pub struct MeetingArgs {
     /// file:<path>, …).
     #[arg(long, value_name = "CHANNEL")]
     pub deliver: Option<String>,
+    /// Record what is heard here (or by the guest), and at the end have it
+    /// heard again by a transcriber that tells speakers apart:
+    /// openai:<model> (gpt-4o-transcribe-diarize), deepgram:<model> or
+    /// elevenlabs:<model>. The notes then say who said what.
+    #[arg(long, value_name = "PROVIDER")]
+    pub diarize: Option<String>,
+    /// Keep the recordings beside the notes, rather than removing them
+    /// once they are heard.
+    #[arg(long, requires = "diarize")]
+    pub keep_recording: bool,
+}
+
+/// A recording written as it is heard: 16-bit mono WAV, its sizes put in
+/// when it is closed.
+struct Recording {
+    file: std::fs::File,
+    samples: u64,
+}
+
+impl Recording {
+    fn create(path: &Path) -> Result<Recording, CliError> {
+        let mut file = std::fs::File::create(path)
+            .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+        file.write_all(&crate::listening::wav(&[], crate::sound::RATE))
+            .map_err(|e| CliError::Usage(e.to_string()))?;
+        Ok(Recording { file, samples: 0 })
+    }
+
+    fn add(&mut self, samples: &[i16]) {
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        if self.file.write_all(&bytes).is_ok() {
+            self.samples += samples.len() as u64;
+        }
+    }
+
+    /// Puts its sizes in its header.
+    fn close(&mut self) {
+        use std::io::{Seek, SeekFrom};
+        let data = u32::try_from(self.samples * 2).unwrap_or(u32::MAX - 36);
+        for (at, value) in [(4u64, data + 36), (40, data)] {
+            if self.file.seek(SeekFrom::Start(at)).is_ok() {
+                let _ = self.file.write_all(&value.to_le_bytes());
+            }
+        }
+        let _ = self.file.flush();
+    }
+}
+
+/// Where the recording of `who` in the meeting kept at `notes` goes.
+fn recording_path(notes: &Path, who: &str) -> PathBuf {
+    notes.with_extension(format!("{who}.wav"))
 }
 
 /// The monitor of what this machine plays, through PulseAudio or PipeWire.
@@ -171,10 +232,12 @@ pub fn file_for(title: &str, started: u64) -> PathBuf {
         .join(format!("{stamp}-{}.md", slug(title)))
 }
 
-/// The transcript, written as it grows.
+/// The transcript, written as it grows, and what was recorded.
 struct Kept {
     path: PathBuf,
     lines: Vec<Line>,
+    /// What was recorded, by whom it is of (`me`, `others`).
+    recordings: Vec<(String, PathBuf)>,
 }
 
 impl Kept {
@@ -193,6 +256,7 @@ impl Kept {
         Ok(Kept {
             path,
             lines: Vec::new(),
+            recordings: Vec::new(),
         })
     }
 
@@ -492,6 +556,14 @@ struct Said {
     at: u64,
 }
 
+/// What hears the meeting, from `--hear`.
+fn hearing_of(args: &MeetingArgs) -> Result<crate::voice::Hearing, CliError> {
+    let spec = args.hear.as_deref().ok_or_else(|| {
+        CliError::Usage("a meeting heard here, or joined by its link, needs --hear".into())
+    })?;
+    crate::voice::Hearing::parse(spec).map_err(CliError::Usage)
+}
+
 /// Hears a meeting here: the microphone, and what this machine plays.
 fn here(
     args: &MeetingArgs,
@@ -500,12 +572,7 @@ fn here(
     ended: &AtomicBool,
 ) -> Result<(), CliError> {
     let usage = CliError::Usage;
-    let hearing = crate::voice::Hearing::parse(
-        args.hear
-            .as_deref()
-            .ok_or_else(|| usage("--here needs --hear".into()))?,
-    )
-    .map_err(usage)?;
+    let hearing = hearing_of(args)?;
     let microphone = crate::talk::program(args.listen.as_deref(), &crate::listening::microphones())
         .ok_or_else(|| {
             usage(
@@ -522,14 +589,113 @@ fn here(
                 .ok_or_else(|| usage(format!("{command}: not a program")))?,
         ),
     };
+    listen_to(
+        args,
+        kept,
+        started,
+        ended,
+        &hearing,
+        Some(microphone),
+        monitor.map(|monitor| (monitor, "others")),
+    )
+}
+
+/// Joins a meeting by its `link` as a guest that listens
+/// ([`crate::meeting_bot`]), and hears what it plays until the meeting ends
+/// for it, or this one does.
+fn joined(
+    args: &MeetingArgs,
+    link: &str,
+    kept: &mut Kept,
+    started: Instant,
+    ended: &AtomicBool,
+) -> Result<(), CliError> {
+    let usage = CliError::Usage;
+    let hearing = hearing_of(args)?;
+    let program = sion_agent::browser::find_program()
+        .ok_or_else(|| usage("no Chromium or Chrome found: set SION_BROWSER".into()))?;
+    let sink = crate::meeting_bot::Sink::make().map_err(usage)?;
+    let bot =
+        crate::meeting_bot::Bot::open(&program, link, Some(&sink.name), true).map_err(usage)?;
+    println!("(joining {link} as {:?})", args.name);
+    if let Err(e) = bot.join(
+        &args.name,
+        Duration::from_secs(crate::meeting_bot::JOIN_SECS),
+        &mut |done| println!("  · {done}"),
+    ) {
+        bot.leave();
+        return Err(usage(e));
+    }
+    println!("(in the meeting)");
+    let heard = std::thread::scope(|scope| {
+        // The meeting ending for the guest ends it here: out of it three
+        // looks in a row, five seconds apart.
+        let watching = scope.spawn(|| {
+            let mut out = 0;
+            while !ended.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_secs(5));
+                out = if bot.in_meeting(&args.name) {
+                    0
+                } else {
+                    out + 1
+                };
+                if out >= 3 && !ended.load(Ordering::SeqCst) {
+                    println!("(the meeting ended for the guest)");
+                    ended.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+        let heard = listen_to(
+            args,
+            kept,
+            started,
+            ended,
+            &hearing,
+            None,
+            Some((sink.monitor(), "meeting")),
+        );
+        ended.store(true, Ordering::SeqCst);
+        let _ = watching.join();
+        heard
+    });
+    bot.leave();
+    drop(sink);
+    heard
+}
+
+/// Hears the `microphone` and the `monitor` (with whom it is of), each cut
+/// into utterances and transcribed by `hearing`, until `ended` or the
+/// meeting's minutes run out.
+fn listen_to(
+    args: &MeetingArgs,
+    kept: &mut Kept,
+    started: Instant,
+    ended: &AtomicBool,
+    hearing: &crate::voice::Hearing,
+    microphone: Option<Vec<String>>,
+    monitor: Option<(Vec<String>, &'static str)>,
+) -> Result<(), CliError> {
+    let usage = CliError::Usage;
     let (said, heard) = channel::<Said>();
     let far = monitor.as_ref().map(|_| crate::sound::FarLine::new());
     let mut children = Vec::new();
+    let mut readers = Vec::new();
+    let recording = args.diarize.is_some();
+    let path = kept.path.clone();
+    let mut recordings = Vec::new();
     let mut start = |argv: &[String],
                      who: &'static str,
                      far_out: Option<Arc<crate::sound::FarLine>>,
                      canceller: Option<crate::sound::Canceller>|
      -> Result<(), CliError> {
+        let record = if recording {
+            let at = recording_path(&path, who);
+            let kept = Arc::new(std::sync::Mutex::new(Recording::create(&at)?));
+            recordings.push((who, at, kept.clone()));
+            Some(kept)
+        } else {
+            None
+        };
         let mut child = std::process::Command::new(&argv[0])
             .args(&argv[1..])
             .stdin(Stdio::null())
@@ -540,26 +706,30 @@ fn here(
         let sound = child.stdout.take().expect("piped");
         children.push(child);
         let said = said.clone();
-        std::thread::spawn(move || hear_source(sound, who, said, far_out, canceller, started));
+        readers.push(std::thread::spawn(move || {
+            hear_source(sound, who, said, far_out, canceller, started, record)
+        }));
         Ok(())
     };
     // What the loudspeakers play is the echo the microphone must lose.
-    start(
-        &microphone,
-        "me",
-        None,
-        far.clone().map(crate::sound::Canceller::new),
-    )?;
-    if let Some(monitor) = &monitor {
-        start(monitor, "others", far.clone(), None)?;
+    if let Some(microphone) = &microphone {
+        start(
+            microphone,
+            "me",
+            None,
+            far.clone().map(crate::sound::Canceller::new),
+        )?;
+    }
+    if let Some((monitor, who)) = &monitor {
+        start(monitor, who, far.clone(), None)?;
     }
     drop(said);
     println!(
-        "(hearing the meeting here{}; the transcript follows as it is said; Enter ends it)",
-        if monitor.is_some() {
-            ", what this machine plays included"
-        } else {
-            ""
+        "(hearing the meeting{}; the transcript follows as it is said; Enter ends it)",
+        match (&microphone, &monitor) {
+            (Some(_), Some(_)) => " here, what this machine plays included",
+            (Some(_), None) => " here",
+            (None, _) => " as the guest hears it",
         }
     );
     let deadline = started + Duration::from_secs(args.minutes.clamp(1, 240) * 60);
@@ -591,6 +761,15 @@ fn here(
         let _ = child.kill();
         let _ = child.wait();
     }
+    for reader in readers {
+        let _ = reader.join();
+    }
+    for (who, at, recording) in recordings {
+        if let Ok(mut recording) = recording.lock() {
+            recording.close();
+        }
+        kept.recordings.push((who.to_string(), at));
+    }
     Ok(())
 }
 
@@ -604,6 +783,7 @@ fn hear_source(
     far: Option<Arc<crate::sound::FarLine>>,
     mut canceller: Option<crate::sound::Canceller>,
     started: Instant,
+    record: Option<Arc<std::sync::Mutex<Recording>>>,
 ) {
     let detection = crate::listening::Detection::default();
     let size = detection.frame;
@@ -616,6 +796,11 @@ fn hear_source(
         }
         if let Some(canceller) = canceller.as_mut() {
             frame = canceller.frame(&frame);
+        }
+        if let Some(record) = &record {
+            if let Ok(mut record) = record.lock() {
+                record.add(&frame);
+            }
         }
         if let crate::listening::Sound::Utterance(speech) = detector.frame(&frame, false) {
             let seconds = speech.len() as u64 / u64::from(crate::sound::RATE);
@@ -637,21 +822,83 @@ pub fn run(ledger: SharedLedger, args: MeetingArgs) -> Result<(), CliError> {
     if let Some(channel) = &args.deliver {
         crate::schedules::check_channel(channel)?;
     }
-    if args.dial.is_none() && !args.here {
+    if args.dial.is_none() && !args.here && args.join.is_none() {
         return Err(CliError::Usage(
-            "hear the meeting by phone (--dial <number>) or here (--here)".into(),
+            "hear the meeting by phone (--dial <number>), here (--here), or join it by its link \
+             (--join <link>)"
+                .into(),
         ));
     }
+    if args.dial.is_some() && (args.hear.is_some() || args.diarize.is_some()) {
+        return Err(CliError::Usage(
+            "by phone, Twilio hears the meeting: --hear and --diarize go with --here or --join"
+                .into(),
+        ));
+    }
+    let diarizing = args
+        .diarize
+        .as_deref()
+        .map(crate::voice::Diarizing::parse)
+        .transpose()
+        .map_err(CliError::Usage)?;
     let started_at = now();
     let mut kept = Kept::start(file_for(&args.title, started_at), &args.title, started_at)?;
     let started = Instant::now();
     let ended = Arc::new(AtomicBool::new(false));
     enter_ends(ended.clone());
-    match &args.dial {
-        Some(number) => by_phone(&args, number, &mut kept, started, &ended)?,
-        None => here(&args, &mut kept, started, &ended)?,
+    match (&args.dial, &args.join) {
+        (Some(number), _) => by_phone(&args, number, &mut kept, started, &ended)?,
+        (None, Some(link)) => joined(&args, link, &mut kept, started, &ended)?,
+        (None, None) => here(&args, &mut kept, started, &ended)?,
     }
-    finish(ledger, &profile, &args, &kept.path, &kept.lines)
+    let lines = match &diarizing {
+        Some(diarizing) => by_speaker(diarizing, &kept, args.keep_recording),
+        None => kept.lines.clone(),
+    };
+    finish(ledger, &profile, &args, &kept.path, &lines)
+}
+
+/// The transcript with who said what told apart: each recording heard
+/// again by `diarizing`, its speakers named in it, in place of what was
+/// heard live from it (kept where hearing it again fails), the lines in
+/// order of time; written to the meeting's file as the transcript by
+/// speaker. The recordings are removed unless `keep` says otherwise.
+fn by_speaker(diarizing: &crate::voice::Diarizing, kept: &Kept, keep: bool) -> Vec<Line> {
+    let mut lines = kept.lines.clone();
+    let both = kept.recordings.len() > 1;
+    for (who, path) in &kept.recordings {
+        println!("(telling the speakers apart in what {who} heard)");
+        let heard = crate::voice::compressed(path).and_then(|audio| diarizing.diarize(&audio));
+        match heard {
+            Ok(turns) if !turns.is_empty() => {
+                lines.retain(|line| &line.who != who);
+                lines.extend(turns.into_iter().map(|turn| Line {
+                    at: turn.start.max(0.0) as u64,
+                    who: match (both, who.as_str()) {
+                        (true, "me") => format!("in the room, {}", turn.speaker),
+                        (true, _) => format!("on the call, {}", turn.speaker),
+                        (false, _) => turn.speaker,
+                    },
+                    text: turn.text,
+                }));
+            }
+            Ok(_) => eprintln!("(no speakers were told apart in what {who} heard)"),
+            Err(e) => eprintln!("(the speakers were not told apart in what {who} heard: {e})"),
+        }
+        if !keep {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    lines.sort_by_key(|line| line.at);
+    if lines != kept.lines {
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&kept.path) {
+            let _ = writeln!(file, "\n## Transcript by speaker\n");
+            for line in &lines {
+                let _ = writeln!(file, "{}  ", line.written());
+            }
+        }
+    }
+    lines
 }
 
 /// Writes the notes of `lines` into the meeting's file, and sends them on.

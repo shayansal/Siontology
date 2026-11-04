@@ -64,6 +64,7 @@ pub mod browser;
 pub mod builtin;
 pub mod cdp;
 pub mod code;
+pub mod code_mode;
 pub mod compare;
 pub mod consolidate;
 pub mod desktop;
@@ -73,6 +74,7 @@ pub mod encoding;
 pub mod evals;
 pub mod evolve;
 pub mod graph;
+pub mod hooks;
 pub mod imitation;
 pub mod journal;
 pub mod judge;
@@ -91,6 +93,7 @@ pub mod scripted;
 pub mod search;
 pub mod session;
 pub mod skills;
+pub mod takeover;
 pub mod teach;
 pub mod tools;
 pub mod trace;
@@ -99,8 +102,8 @@ pub mod websearch;
 pub mod work;
 
 pub use model::{
-    Block, Delta, Message, Model, ModelError, Picture, Request, Response, Role, Stop, ToolSpec,
-    Usage,
+    Block, Delta, Effort, Message, Model, ModelError, Picture, Request, Response, Role, Stop,
+    Thinking, ToolSpec, Usage,
 };
 pub use policy::{Autonomy, Decision, Policy, Standing};
 pub use session::{Ended, Limits, Runtime, Seen, State};

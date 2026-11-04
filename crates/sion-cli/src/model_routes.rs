@@ -123,7 +123,11 @@ impl ModelRoute {
         }
         for spec in &self.models {
             match spec.split_once(':') {
-                Some((kind, rest)) if !kind.is_empty() && !rest.is_empty() => {}
+                Some((kind, rest)) if !kind.is_empty() && !rest.is_empty() => {
+                    // How hard it thinks, if written after it (`#high`).
+                    crate::runtime::thinking_of(kind, rest)
+                        .map_err(|why| format!("{spec:?}: {why}"))?;
+                }
                 _ => {
                     return Err(format!(
                         "{spec:?} is not a model: anthropic:<model>, openai:<model> and the like"
@@ -924,10 +928,16 @@ pub fn run(command: RoutesCommand) -> Result<(), CliError> {
         RoutesCommand::Sorter { profile, model } => {
             let sorter = (model != "default").then_some(model);
             if let Some(spec) = &sorter {
-                if !spec.contains(':') {
-                    return Err(CliError::Usage(format!(
+                match spec.split_once(':') {
+                    Some((kind, rest)) => {
+                        crate::runtime::thinking_of(kind, rest)
+                            .map_err(|why| CliError::Usage(format!("{spec:?}: {why}")))?;
+                    }
+                    None => {
+                        return Err(CliError::Usage(format!(
                         "{spec:?} is not a model: anthropic:<model>, openai:<model> and the like"
-                    )));
+                    )))
+                    }
                 }
             }
             let changed = change(&profile, |p| {

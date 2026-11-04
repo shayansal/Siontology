@@ -124,6 +124,8 @@ impl Attack {
             steer: None,
             checkpoint: None,
             verify: None,
+            code: None,
+            hooks: None,
         };
         let limits = Limits::default();
         let mut state = State::start(

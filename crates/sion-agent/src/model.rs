@@ -54,6 +54,215 @@ pub enum Block {
         /// The picture.
         image: Image,
     },
+    /// What a model thought before it spoke or called a tool, as its
+    /// provider gave it to be given back: Anthropic's thinking blocks with
+    /// their signatures, the encrypted reasoning items of OpenAI's
+    /// Responses API, the signature Gemini puts on its text, the reasoning
+    /// text a chat completions server returns. Kept in the conversation so
+    /// that the model, asked again within a task, goes on from its own
+    /// reasoning rather than working it out anew. Opaque, and given back
+    /// only to the provider and model it came from (`from`): no other
+    /// model is shown it, and it is not part of what the model said
+    /// ([`Message::text`]).
+    Reasoning {
+        /// Where it came from: the provider's kind, base URL and model
+        /// (`anthropic https://api.anthropic.com claude-opus-5-5`).
+        from: String,
+        /// What the provider gave, as it gave it.
+        data: Value,
+    },
+}
+
+/// How hard a model is asked to think before it answers: an effort level,
+/// or, for models that take one, a budget of thinking tokens. Written after
+/// a model's name, `anthropic:claude-opus-5-5#high`, `gemini:gemini-2.5-flash#2048`
+/// ([`Thinking::parse`]); without it, the provider's default applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Thinking {
+    /// An effort level.
+    Effort(Effort),
+    /// At most this many tokens of thinking an answer (Anthropic's models
+    /// before Claude 4.6, Gemini 2.5); none turns thinking off where a
+    /// model allows it.
+    Budget(u32),
+}
+
+/// An effort level, from none to the most a model has: each provider takes
+/// the nearest it has ([`Effort::name`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    /// No thinking, where a model allows it.
+    None,
+    /// As little as a model has.
+    Minimal,
+    /// Low.
+    Low,
+    /// Medium.
+    Medium,
+    /// High.
+    High,
+    /// Higher, for long agentic work.
+    Xhigh,
+    /// The most there is.
+    Max,
+}
+
+impl Effort {
+    /// Its name, as written: `none`, `minimal`, `low`, `medium`, `high`,
+    /// `xhigh`, `max`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Effort::None => "none",
+            Effort::Minimal => "minimal",
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+}
+
+/// The most thinking tokens a budget may name.
+pub const MAX_THINKING_BUDGET: u32 = 60_000;
+
+/// The most tokens one answer of a model that thinks may take in all, its
+/// thinking's room included ([`most_tokens`]): what the providers' models
+/// that think can all write.
+pub const MOST_TOKENS: u32 = 64_000;
+
+/// The most tokens a model may write when it is asked for at most
+/// `max_tokens` and to think as `thinking` says: the room its thinking
+/// needs besides ([`Thinking::room`]), so that thinking does not eat into
+/// the answer, up to [`MOST_TOKENS`] in all.
+pub fn most_tokens(thinking: Option<Thinking>, max_tokens: u32) -> u32 {
+    match thinking {
+        Some(thinking) => {
+            max_tokens.max(max_tokens.saturating_add(thinking.room()).min(MOST_TOKENS))
+        }
+        None => max_tokens,
+    }
+}
+
+impl Thinking {
+    /// A level by its name (`none`, `minimal`, `low`, `medium`, `high`,
+    /// `xhigh`, `max`), or a budget in tokens (`8000`), at most
+    /// [`MAX_THINKING_BUDGET`].
+    pub fn parse(text: &str) -> Result<Thinking, String> {
+        let text = text.trim();
+        let level = match text.to_ascii_lowercase().as_str() {
+            "none" | "off" => Some(Effort::None),
+            "minimal" => Some(Effort::Minimal),
+            "low" => Some(Effort::Low),
+            "medium" => Some(Effort::Medium),
+            "high" => Some(Effort::High),
+            "xhigh" => Some(Effort::Xhigh),
+            "max" => Some(Effort::Max),
+            _ => None,
+        };
+        if let Some(level) = level {
+            return Ok(Thinking::Effort(level));
+        }
+        match text.parse::<u32>() {
+            Ok(tokens) if tokens <= MAX_THINKING_BUDGET => Ok(Thinking::Budget(tokens)),
+            _ => Err(format!(
+                "{text:?} is not how hard to think: none, minimal, low, medium, high, xhigh, max, \
+                 or a budget of at most {MAX_THINKING_BUDGET} tokens"
+            )),
+        }
+    }
+
+    /// As written after a model's name.
+    pub fn name(self) -> String {
+        match self {
+            Thinking::Effort(level) => level.name().to_string(),
+            Thinking::Budget(tokens) => tokens.to_string(),
+        }
+    }
+
+    /// The tokens a model is given to think in, besides what it may answer:
+    /// a budget's own, or about what its level of effort takes.
+    pub fn room(self) -> u32 {
+        match self {
+            Thinking::Budget(tokens) => tokens,
+            Thinking::Effort(level) => match level {
+                Effort::None => 0,
+                Effort::Minimal => 1_024,
+                Effort::Low => 4_096,
+                Effort::Medium => 8_192,
+                Effort::High => 16_384,
+                Effort::Xhigh => 32_768,
+                Effort::Max => 60_000,
+            },
+        }
+    }
+}
+
+/// A model's description without the thinking written after it, and that
+/// thinking: `anthropic:claude-opus-5-5#high` is `anthropic:claude-opus-5-5`
+/// at high effort.
+pub fn thinking_of(spec: &str) -> Result<(&str, Option<Thinking>), String> {
+    match spec.rsplit_once('#') {
+        Some((model, thinking)) => Ok((model, Some(Thinking::parse(thinking)?))),
+        None => Ok((spec, None)),
+    }
+}
+
+/// What can be read of reasoning a provider gave ([`Block::Reasoning`]),
+/// if anything: Anthropic's summarized thinking, a chat completions
+/// server's reasoning text, the summary of OpenAI's reasoning. Encrypted
+/// reasoning reads as nothing.
+pub fn readable_reasoning(data: &Value) -> Option<String> {
+    let text = ["thinking", "reasoning_content", "reasoning"]
+        .iter()
+        .find_map(|name| data[*name].as_str().map(str::to_string))
+        .or_else(|| {
+            let parts: Vec<&str> = data["summary"]
+                .as_array()?
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect();
+            Some(parts.join("\n"))
+        })?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// `messages` without the reasoning kept in them ([`Block::Reasoning`]).
+pub fn without_reasoning(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .map(|message| Message {
+            role: message.role,
+            content: message
+                .content
+                .iter()
+                .filter(|block| !matches!(block, Block::Reasoning { .. }))
+                .cloned()
+                .collect(),
+        })
+        .collect()
+}
+
+/// Whether `messages` keep reasoning that came from `from`.
+pub fn keeps_reasoning(messages: &[Message], from: &str) -> bool {
+    messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|block| matches!(block, Block::Reasoning { from: kept, .. } if kept == from))
+}
+
+/// `response` with its reasoning marked as `from`'s: what a provider gives
+/// back is its own.
+pub fn reasoning_from(mut response: Response, from: &str) -> Response {
+    for block in &mut response.content {
+        if let Block::Reasoning { from: kept, .. } = block {
+            *kept = from.to_string();
+        }
+    }
+    response
 }
 
 /// A picture's bytes, as a person sent it or a tool returned it: its
@@ -230,6 +439,8 @@ impl Message {
                 Block::ToolResult { content, .. } => content.len(),
                 // A picture costs a model what some text would.
                 Block::Image { .. } => PICTURE_CHARS,
+                // Kept reasoning is given back, and counted as it is sent.
+                Block::Reasoning { data, .. } => data.to_string().len(),
             })
             .sum()
     }
@@ -397,7 +608,7 @@ pub fn tell_whole(response: &Response, seen: &mut dyn FnMut(Delta) -> bool) {
             Block::ToolUse { name, .. } => {
                 seen(Delta::Call(name.clone()));
             }
-            Block::ToolResult { .. } | Block::Image { .. } => {}
+            Block::ToolResult { .. } | Block::Image { .. } | Block::Reasoning { .. } => {}
         }
     }
 }
@@ -447,5 +658,11 @@ pub trait Model: Send + Sync {
     /// model that does not replay anything.
     fn position(&self) -> Option<usize> {
         None
+    }
+
+    /// The most tokens it may write when asked for at most `max_tokens`:
+    /// more, for a model given room to think besides ([`most_tokens`]).
+    fn most_tokens(&self, max_tokens: u32) -> u32 {
+        max_tokens
     }
 }

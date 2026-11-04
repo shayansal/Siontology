@@ -22,7 +22,7 @@ request the provider refuses as malformed or unauthorized is not retried.
 | `anthropic:claude-opus-5-5` | The Anthropic Messages API, API version 2026-10-21, with automatic prompt caching; the key in `ANTHROPIC_API_KEY` |
 | `openai:<model>` | Any OpenAI-compatible chat completions API: `OPENAI_BASE_URL` (default `https://api.openai.com/v1`; an address on this machine is reached, other local addresses are not), `OPENAI_API_KEY` if it needs one |
 | `local:<model>` | A model server on this machine or its network that speaks OpenAI's chat completions API (Ollama, LM Studio, llama.cpp's server): `SION_LOCAL_MODEL_URL` (default Ollama's, `http://127.0.0.1:11434/v1`), `SION_LOCAL_MODEL_KEY` if it needs one. Private addresses are reached, and not through a proxy |
-| `gemini:gemini-3-pro-preview` | Google's Gemini API, natively (`generateContent`, streamed): `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_BASE_URL` for another endpoint. Its thinking is not kept; the thought signature it gives with a call goes back with the call, as Gemini 3 requires, and a call another model made goes with the value Google gives for one it did not sign |
+| `gemini:gemini-3-pro-preview` | Google's Gemini API, natively (`generateContent`, streamed): `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_BASE_URL` for another endpoint. The thought signature it gives with a call goes back with the call, as Gemini 3 requires, the one it puts on its text with the text, and a call another model made goes with the value Google gives for one it did not sign |
 | `openai-responses:<model>` | OpenAI's Responses API (`POST /v1/responses`), streamed and not stored: `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
 | `chatgpt:<model>` | The Responses API on the ChatGPT plan of whoever signed in on this machine (`sion agent chatgpt login`, below); `sion agent chatgpt models` lists the plan's models |
 | `script:<file>` | A scripted model, for tests and demos |
@@ -60,6 +60,57 @@ sign-in; a plan's usage limit, reported partway, counts as the model being
 busy, and the next `--model` is asked. Other providers' subscriptions are
 not offered: Anthropic, for one, does not let other apps sign in to
 Claude.ai plans.
+
+## How hard it thinks
+
+How hard a model thinks is written after its name, after a `#`:
+`--model anthropic:claude-opus-5-5#high`. An effort level (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh` or `max`) goes to each
+provider as the nearest it has; a number is a budget of thinking tokens,
+for the models that take one.
+
+| Provider | An effort level | A budget (`#8000`) |
+|---|---|---|
+| `anthropic:` | Adaptive thinking at that effort (`output_config.effort`; `minimal` is `low`); `none` turns thinking off where a model allows it | Thinking on that budget (`budget_tokens`, at least 1,024), for models before Claude 4.6 |
+| `openai-responses:`, `chatgpt:` | `reasoning.effort` (`max` is `xhigh`) | Not taken |
+| `openai:`, `local:` | `reasoning_effort` (`max` is `xhigh`) | Not taken |
+| `gemini:` | `thinkingLevel`, for Gemini 3 and later (`none` is `minimal`; above `high` is `high`) | `thinkingBudget`, for Gemini 2.5 (`#0` turns thinking off where a model allows it) |
+
+Without it, the provider's default applies. A model told how hard to
+think is given room to: its answer may be as long as before, and its
+thinking has room besides, from 1,024 tokens at `minimal` to 60,000 at
+`max`, or its budget, at most 64,000 tokens an answer in all. A run's
+token budget counts that room before each call. A route's models may each
+think as hard as suits the route:
+`sion agent routes set lead code --model anthropic:claude-opus-5-5#xhigh`.
+
+### What it thought
+
+What a model thought before it called a tool or answered is kept in the
+conversation and given back to it, so that a model calling tool after
+tool goes on from its own reasoning rather than working it out again:
+
+- Anthropic's thinking blocks, signed, and redacted ones, as they came;
+- the reasoning items of OpenAI's Responses API, encrypted (nothing is
+  stored with OpenAI, so they are asked for with `include`), given back
+  without their ids, each before what followed it;
+- the signature Gemini puts on its text, with the text, as the one on a
+  call goes with the call;
+- the reasoning text a chat completions server returns
+  (`reasoning_content` or `reasoning`), under the name it came by, within
+  the task it was for, as the servers that think between tool calls ask.
+
+Each is given back only to the provider and model it came from, told by
+its kind, base URL and model: a model the runtime falls back to is not
+shown another's reasoning. Thinking cut off before it was signed is not
+kept. A request that carries kept reasoning and is refused as malformed
+(HTTP 400) is sent once more without it, so reasoning that no longer
+checks (from a key of another organization's, say) is let go rather than
+failing the call; a model of the Responses API that refuses to return its
+reasoning is not asked for it again. Kept reasoning counts toward the
+conversation's characters as it is sent, and a summary leaves it out. A
+transcript shows what can be read of it (Anthropic's summaries, a
+server's reasoning text), a line marked `~`.
 
 ## A model for each task
 
@@ -141,6 +192,20 @@ directory listed), the start of what its last call returned, the 32 most
 recent, so that a model that lost the conversation's middle still knows
 what a file held when it last looked, rather than what it held first.
 That is what the session saw then, not what is so now.
+
+Past 40 tools (an agent with several MCP servers, say), the model is
+not shown them all. It sees its own tools (all but the MCP servers' and
+Home Assistant's, if those are no more than 40), `tools_search` and
+`tools_call`, and the tools its searches found. A search ranks the tools
+by BM25 over the words of their names (counted three times), descriptions
+and inputs (camelCase and snake_case split, plurals made one, common
+words left out); a tool named in the query comes first, and
+`select:<name>,<name>` asks for those alone. Its best matches, five unless
+it asks for up to ten, come back with their input schemas and are loaded:
+from the next call on they are shown after the rest, to be called directly
+by name, the 24 found last kept, and a session kept on disk keeps them.
+Loading more leaves the start of the list as it was, for providers'
+caches.
 
 Calls that only read, made one after another in a turn, each of which
 may run without anyone, run side by side: reading three files takes the

@@ -176,6 +176,7 @@ fn conversation_text(request: &Request) -> String {
                 }
                 Block::ToolResult { content, .. } => text.push_str(&content.to_lowercase()),
                 Block::Image { image } => text.push_str(&image.media_type),
+                Block::Reasoning { .. } => {}
             }
         }
     }
@@ -422,7 +423,7 @@ impl Model for Scripted {
                         return Ok(cut_off(written, answer.usage, answer.model));
                     }
                 }
-                Block::ToolResult { .. } | Block::Image { .. } => {}
+                Block::ToolResult { .. } | Block::Image { .. } | Block::Reasoning { .. } => {}
             }
         }
         Ok(answer)
