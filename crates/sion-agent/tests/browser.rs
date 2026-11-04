@@ -699,6 +699,21 @@ fn a_signed_in_profile_is_kept_and_a_page_is_pointed_at_and_handed_to_a_person()
                 .to_string(),
         ),
         ("/pointer", POINTER.to_string()),
+        (
+            "/check",
+            "<html><head><title>Check</title></head><body><h1>Are you a person?</h1>\
+             <iframe src=\"https://www.google.com/recaptcha/api2/anchor?k=x&size=normal\" width=\"304\" height=\"78\"></iframe>\
+             </body></html>"
+                .to_string(),
+        ),
+        (
+            "/quiet-check",
+            "<html><head><title>Quiet</title></head><body><h1>Shop</h1>\
+             <iframe src=\"https://www.google.com/recaptcha/api2/anchor?k=x&size=invisible\" width=\"256\" height=\"60\"></iframe>\
+             <div style=\"visibility:hidden\"><iframe src=\"https://www.google.com/recaptcha/api2/bframe?k=x\" width=\"400\" height=\"580\"></iframe></div>\
+             </body></html>"
+                .to_string(),
+        ),
     ]);
     let origin = format!("http://127.0.0.1:{port}");
     let profile = std::env::temp_dir().join(format!("sion-browser-kept-{}", std::process::id()));
@@ -787,6 +802,34 @@ fn a_signed_in_profile_is_kept_and_a_page_is_pointed_at_and_handed_to_a_person()
         off.content
     );
 
+    // A page that shows a captcha says so, with the advice to hand it over;
+    // an invisible one, and a challenge out of sight, are not counted.
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("{origin}/check")}),
+    );
+    assert!(
+        page.content.contains(
+            "The page shows a captcha (reCAPTCHA): hand it to the person (browser_ask_person)."
+        ),
+        "{}",
+        page.content
+    );
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("{origin}/quiet-check")}),
+    );
+    assert!(!page.content.contains("captcha"), "{}", page.content);
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("{origin}/pointer")}),
+    );
+    // Back on the board, its field empty again.
+    assert!(page.content.contains("typed nothing"), "{}", page.content);
+
     // Handed to the person, who sees the page, clicks into the field and
     // types the code sent to them: their reply, and the page as it is then.
     let page = call(
@@ -801,11 +844,7 @@ fn a_signed_in_profile_is_kept_and_a_page_is_pointed_at_and_handed_to_a_person()
         "{}",
         page.content
     );
-    assert!(
-        page.content.contains("typed 4242777111"),
-        "{}",
-        page.content
-    );
+    assert!(page.content.contains("typed 777111"), "{}", page.content);
     let asked = person.asked.lock().unwrap().clone();
     assert!(
         asked[0].contains("the site sent a code to your phone"),

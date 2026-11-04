@@ -56,7 +56,8 @@ audio attached:
 
 With `whisper:` and `piper:`, nothing said leaves this machine. whisper.cpp
 is given the audio as 16 kHz mono WAV (ffmpeg makes it so first, unless it
-is), and Piper the text; Piper's raw samples, at the rate its voice's
+is), and what it tags as not speech (`[BLANK_AUDIO]`, `[Music]`) is left
+out; Piper is given the text; Piper's raw samples, at the rate its voice's
 `.json` gives (22,050 a second if it gives none), are made Ogg Opus by
 ffmpeg for a voice note, and brought down to 16 kHz for a live
 conversation. A `local:` server is reached at its address, which may be

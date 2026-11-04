@@ -251,6 +251,13 @@ pub trait Tool: Send + Sync {
         }
     }
 
+    /// Whether a call waits for a person (a page handed to them): such a
+    /// call is not made from a program ([`crate::code_mode`]), whose time
+    /// it would not keep to. By default, no.
+    fn waits_for_person(&self) -> bool {
+        false
+    }
+
     /// Whether what it returns from outside may be held in quarantine
     /// ([`crate::quarantine`]): by default, yes. A tool whose results the
     /// model acts on (a browser's page, whose elements it clicks) says no,

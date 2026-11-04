@@ -765,13 +765,42 @@ fn whisper(
     if !output.status.success() {
         return Err(format!("{program} failed ({})", output.status));
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text
+    Ok(said_by_whisper(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// What whisper.cpp printed, as what was said: its lines joined, without
+/// the tags it gives what is not speech (`[BLANK_AUDIO]`, `[Music]`,
+/// `(silence)`), so that silence is heard as nothing.
+fn said_by_whisper(printed: &str) -> String {
+    let tag = |word: &str| {
+        let inner = word
+            .strip_prefix('[')
+            .and_then(|w| w.strip_suffix(']'))
+            .or_else(|| word.strip_prefix('(').and_then(|w| w.strip_suffix(')')));
+        inner.is_some_and(|inner| {
+            !inner.is_empty()
+                && inner
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '_' || c == ' ' || c == '-')
+        })
+    };
+    printed
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !tag(line))
         .collect::<Vec<_>>()
-        .join(" "))
+        .join(" ")
+}
+
+/// Gives `child` `input` on its standard input from a thread of its own,
+/// so that what it writes meanwhile is read: a program that answers as it
+/// reads is not held up by a full pipe.
+fn feed(child: &mut std::process::Child, input: Vec<u8>) {
+    if let Some(mut stdin) = child.stdin.take() {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
 }
 
 /// What speaks replies.
@@ -1051,11 +1080,7 @@ impl Speaking {
                     .stderr(Stdio::null())
                     .spawn()
                     .map_err(|e| format!("{program}: {e} (install Piper, or set SION_PIPER)"))?;
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin
-                        .write_all(text.as_bytes())
-                        .map_err(|e| e.to_string())?;
-                }
+                feed(&mut child, text.as_bytes().to_vec());
                 let output = child.wait_with_output().map_err(|e| e.to_string())?;
                 if !output.status.success() {
                     return Err(format!("{program} failed ({})", output.status));
@@ -1070,11 +1095,7 @@ impl Speaking {
                     .stderr(Stdio::null())
                     .spawn()
                     .map_err(|e| format!("{}: {e}", argv[0]))?;
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin
-                        .write_all(text.as_bytes())
-                        .map_err(|e| e.to_string())?;
-                }
+                feed(&mut child, text.as_bytes().to_vec());
                 let output = child.wait_with_output().map_err(|e| e.to_string())?;
                 if !output.status.success() {
                     return Err(format!("{} failed ({})", argv[0], output.status));
@@ -1271,6 +1292,14 @@ mod tests {
             Speaking::Api { base, voice, .. } if base == LOCAL_TTS && voice == "af_heart"));
         assert!(Speaking::parse("local:kokoro").is_err());
         assert!(Hearing::parse("whisper:").is_err());
+        // What is not speech is not heard as said.
+        assert_eq!(said_by_whisper(" [BLANK_AUDIO]\n"), "");
+        assert_eq!(said_by_whisper("[Music]\n (silence)\n"), "");
+        assert_eq!(
+            said_by_whisper(" Book it for Friday.\n [BLANK_AUDIO]\n Thanks.\n"),
+            "Book it for Friday. Thanks."
+        );
+        assert_eq!(said_by_whisper("[1] is the answer"), "[1] is the answer");
     }
 
     #[test]

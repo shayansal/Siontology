@@ -1495,8 +1495,16 @@ impl Browser {
     /// at most [`MAX_MARKS`]: how many were marked, and the picture.
     pub fn screenshot_marked(&mut self) -> Result<(usize, String), String> {
         let (width, height) = (f64::from(self.size.0), f64::from(self.size.1));
+        // In the page's order, as the snapshot numbered them (e2 before e10).
+        let mut ordered: Vec<(&String, &Element)> = self.refs.iter().collect();
+        ordered.sort_by_key(|(reference, _)| {
+            reference
+                .trim_start_matches('e')
+                .parse::<u64>()
+                .unwrap_or(u64::MAX)
+        });
         let mut marks = Vec::new();
-        for (reference, element) in &self.refs {
+        for (reference, element) in ordered {
             if marks.len() >= MAX_MARKS {
                 break;
             }
@@ -1525,16 +1533,27 @@ impl Browser {
             marks.push(json!({"name": reference, "left": left, "top": top,
                 "width": (right - left).max(1.0), "height": (bottom - top).max(1.0)}));
         }
+        // The layer is named for this picture alone, so that it is the one
+        // taken off again, whatever the page names its own elements.
+        let mut name = [0u8; 8];
+        sion_http::random(&mut name).map_err(|e| e.to_string())?;
+        let layer = format!(
+            "sion-marks-{}",
+            name.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
         let marked = marks.len();
-        let shown = format!("({MARK})({})", Value::Array(marks));
-        self.page(
+        let shown = format!("({MARK})({}, {})", json!(layer), Value::Array(marks));
+        let drawn = self.page(
             "Runtime.evaluate",
             json!({"expression": shown, "returnByValue": true}),
         )?;
+        if drawn.get("exceptionDetails").is_some() || drawn["result"]["value"] != true {
+            return Err("the marks could not be drawn on this page".into());
+        }
         let shot = self.screenshot();
         let _ = self.page(
             "Runtime.evaluate",
-            json!({"expression": "document.getElementById('sion-marks')?.remove()"}),
+            json!({"expression": format!("document.getElementById({})?.remove()", json!(layer))}),
         );
         Ok((marked, shot?))
     }
@@ -1589,20 +1608,23 @@ impl Browser {
     }
 
     /// The captcha the page shows, if it shows one a person must solve:
-    /// reCAPTCHA's, hCaptcha's or Cloudflare's Turnstile, by its frame.
+    /// reCAPTCHA's, hCaptcha's or Cloudflare's Turnstile, by the address of
+    /// a frame of its maker's that the page shows (a frame kept out of
+    /// sight, as an invisible captcha's is, is not counted). Frames are
+    /// read from the page's documents, its own site's frames included, so
+    /// that a frame of another site, which runs apart, is seen too.
     pub fn captcha(&self) -> Option<&'static str> {
-        fn gather(tree: &Value, urls: &mut Vec<String>) {
-            if let Some(url) = tree["frame"]["url"].as_str() {
-                urls.push(url.to_string());
-            }
-            for child in tree["childFrames"].as_array().into_iter().flatten() {
-                gather(child, urls);
-            }
-        }
-        let tree = self.page("Page.getFrameTree", json!({})).ok()?;
-        let mut urls = Vec::new();
-        gather(&tree["frameTree"], &mut urls);
-        urls.iter().find_map(|url| captcha_at(url))
+        let shown = self
+            .page(
+                "Runtime.evaluate",
+                json!({"expression": SHOWN_FRAMES, "returnByValue": true}),
+            )
+            .ok()?;
+        shown["result"]["value"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .find_map(captcha_at)
     }
 
     /// A picture of the page as a person handed it is shown it: JPEG.
@@ -1617,30 +1639,51 @@ impl Browser {
     }
 }
 
-/// The captcha a frame at `url` shows, if it is one: by the address its
-/// maker serves it from.
+/// The addresses of the frames a page shows, its own site's frames'
+/// included: at least 40 pixels each way, not hidden, not moved far out of
+/// sight.
+const SHOWN_FRAMES: &str = r#"(() => {
+  const seen = [];
+  const visit = (doc, depth) => {
+    if (!doc || depth > 4) return;
+    for (const frame of doc.querySelectorAll('iframe')) {
+      const r = frame.getBoundingClientRect();
+      const style = (doc.defaultView || window).getComputedStyle(frame);
+      const shown = r.width >= 40 && r.height >= 40 && r.top > -1000 && r.left > -1000
+        && style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.05;
+      if (shown && frame.src) seen.push(String(frame.src));
+      let inner = null;
+      try { inner = frame.contentDocument; } catch (e) {}
+      visit(inner, depth + 1);
+    }
+  };
+  visit(document, 0);
+  return seen.slice(0, 200);
+})()"#;
+
+/// The captcha a frame at `url` shows, if it is one a person must solve:
+/// by the address its maker serves it from (`https` only), an invisible
+/// reCAPTCHA's left out.
 fn captcha_at(url: &str) -> Option<&'static str> {
-    let host = url
-        .split_once("://")
-        .map_or("", |(_, rest)| rest)
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
+    let rest = url.strip_prefix("https://")?;
+    let authority_ends = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, after) = rest.split_at(authority_ends);
+    let host = authority
         .rsplit('@')
         .next()
-        .unwrap_or_default();
-    let host = host
+        .unwrap_or_default()
         .split(':')
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let path = url
-        .split_once("://")
-        .and_then(|(_, rest)| rest.find('/').map(|at| &rest[at..]))
-        .unwrap_or("");
+    // The path and what follows it; none if the address goes on with a
+    // query or a fragment.
+    let path = if after.starts_with('/') { after } else { "" };
     let under = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
     if (under("google.com") || under("recaptcha.net")) && path.starts_with("/recaptcha/") {
-        Some("reCAPTCHA")
+        // An invisible one asks nothing of a person until it shows its
+        // challenge, which is a frame of its own.
+        (!path.contains("size=invisible")).then_some("reCAPTCHA")
     } else if under("hcaptcha.com") {
         Some("hCaptcha")
     } else if host == "challenges.cloudflare.com" {
@@ -1652,9 +1695,9 @@ fn captcha_at(url: &str) -> Option<&'static str> {
 
 /// What marks a page's references for a screenshot: given the marks, a
 /// layer over the page with a box and a name for each.
-const MARK: &str = r#"(marks) => {
+const MARK: &str = r#"(id, marks) => {
   const layer = document.createElement('div');
-  layer.id = 'sion-marks';
+  layer.id = id;
   layer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647';
   for (const m of marks) {
     const box = document.createElement('div');
@@ -1672,20 +1715,18 @@ const MARK: &str = r#"(marks) => {
 /// The most references marked on a screenshot.
 pub const MAX_MARKS: usize = 80;
 
-/// How long a person is given to act on a page handed to them.
-pub const HAND_OVER_SECS: u64 = 600;
-
 /// Hands `browser`'s page to a person, through `asker`, saying `why`: a
 /// page at an address of this machine's, made for the hand-over and known
-/// only by its token, shows what the browser shows and passes their clicks
-/// and keys to it ([`crate::takeover`]), while they are asked to reply when
-/// they are done, or with what the agent needs (a code sent to them).
-/// Their reply, or none after `within`.
+/// only by its token, shows what the browser shows and passes their clicks,
+/// keys and scrolling to it ([`crate::takeover`]), while they are asked to
+/// reply when they are done, or with what the agent needs (a code sent to
+/// them). Their reply, or none, as long as the asker waits for one (in a
+/// chat, ten minutes; at a terminal, until they answer): what they did on
+/// the page before replying is done first.
 pub fn hand_over(
     browser: &mut Browser,
     asker: Arc<dyn crate::mcp_input::Asker>,
     why: &str,
-    within: Duration,
 ) -> Result<Option<String>, String> {
     let takeover = crate::takeover::Takeover::start(browser.size)?;
     let question = format!(
@@ -1698,10 +1739,12 @@ pub fn hand_over(
     std::thread::spawn(move || {
         let _ = replied.send(asker.ask(&question));
     });
-    let deadline = std::time::Instant::now() + within;
     loop {
-        let answer = reply.try_recv().ok();
-        // What they did on the page before they replied is done first.
+        let answer = match reply.try_recv() {
+            Ok(answer) => Some(answer),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+        };
         let wait = if answer.is_some() {
             Duration::ZERO
         } else {
@@ -1721,6 +1764,9 @@ pub fn hand_over(
                 crate::takeover::Asked::Key(key) => {
                     let _ = browser.press(&key);
                 }
+                crate::takeover::Asked::Scroll(down) => {
+                    let _ = browser.scroll(down);
+                }
             }
             if answer.is_none() {
                 break;
@@ -1728,9 +1774,6 @@ pub fn hand_over(
         }
         if let Some(answer) = answer {
             return Ok(answer);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Ok(None);
         }
     }
 }
@@ -1809,9 +1852,11 @@ impl Drop for Browser {
             }
         }
         if self.kept {
-            // A person's profile stays; what was downloaded into it goes.
+            // A person's profile stays; what was downloaded into it, and
+            // the copies of files chosen for pages, go.
             let _ = std::fs::remove_dir_all(self.profile.join("downloads"));
-            let _ = std::fs::remove_file(self.profile.join(IN_USE));
+            let _ = std::fs::remove_dir_all(self.profile.join("uploads"));
+            release_profile(&self.profile);
         } else {
             let _ = std::fs::remove_dir_all(&self.profile);
         }
@@ -1821,15 +1866,41 @@ impl Drop for Browser {
 /// How long a browser with a kept profile is given to close by itself.
 const KEPT_CLOSE_SECS: u64 = 5;
 
+/// Whether the process `pid` of this machine runs: by `/proc` where there
+/// is one, else by `kill -0`.
+pub fn process_runs(pid: u32) -> bool {
+    if Path::new("/proc/self").exists() {
+        return Path::new(&format!("/proc/{pid}")).exists();
+    }
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// How long a lock that names no process is taken as being written.
+const LOCK_WRITTEN_SECS: u64 = 60;
+
 /// Whether a browser uses the kept profile at `profile` now: its
-/// [`IN_USE`] names a process that is still running.
+/// [`IN_USE`] names a process that is still running. A lock that cannot
+/// be read, or names no process, is taken as held, unless it is old.
 pub fn in_use(profile: &Path) -> bool {
-    std::fs::read_to_string(profile.join(IN_USE))
-        .ok()
-        .and_then(|pid| pid.trim().parse::<u32>().ok())
-        .is_some_and(|pid| {
-            Path::new(&format!("/proc/{pid}")).exists() || !Path::new("/proc").is_dir()
-        })
+    let lock = profile.join(IN_USE);
+    match std::fs::read_to_string(&lock) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+        Ok(held) => match held.trim().parse::<u32>() {
+            Ok(pid) => process_runs(pid),
+            Err(_) => std::fs::metadata(&lock)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .map_or(true, |age| age < Duration::from_secs(LOCK_WRITTEN_SECS)),
+        },
+    }
 }
 
 /// Gives back a kept profile taken with [`take_profile`].
@@ -1839,7 +1910,9 @@ pub fn release_profile(profile: &Path) {
 
 /// Takes a kept profile for a browser: one that exists (a person signed in
 /// with it) and that no browser uses now ([`IN_USE`], naming the process
-/// that holds it).
+/// that holds it). The lock comes into being whole: written under a name
+/// of its own first, then linked to its name, which fails if another took
+/// it meanwhile.
 pub fn take_profile(profile: &Path) -> Result<(), String> {
     if !profile.is_dir() {
         return Err(format!(
@@ -1847,29 +1920,42 @@ pub fn take_profile(profile: &Path) -> Result<(), String> {
             profile.display()
         ));
     }
-    let lock = profile.join(IN_USE);
-    if in_use(profile) {
-        return Err(format!(
+    let busy = || {
+        format!(
             "the browser profile {} is in use by another session",
             profile.display()
-        ));
+        )
+    };
+    let lock = profile.join(IN_USE);
+    if in_use(profile) {
+        return Err(busy());
     }
     // Its holder, if any, is gone.
     let _ = std::fs::remove_file(&lock);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock)
-        .and_then(|mut file| {
-            use std::io::Write as _;
-            write!(file, "{}", std::process::id())
-        })
-        .map_err(|_| {
-            format!(
-                "the browser profile {} is in use by another session",
-                profile.display()
-            )
-        })
+    let pid = std::process::id();
+    let mut name = [0u8; 8];
+    sion_http::random(&mut name).map_err(|e| e.to_string())?;
+    let written = profile.join(format!(
+        "{IN_USE}.{}",
+        name.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ));
+    std::fs::write(&written, pid.to_string()).map_err(|e| format!("{}: {e}", written.display()))?;
+    let taken = match std::fs::hard_link(&written, &lock) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(busy()),
+        // A file system without links: made new, then written.
+        Err(_) => std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .and_then(|mut file| {
+                use std::io::Write as _;
+                write!(file, "{pid}")
+            })
+            .map_err(|_| busy()),
+    };
+    let _ = std::fs::remove_file(&written);
+    taken
 }
 
 /// The browser a session's tools share, started when first used.
@@ -2201,6 +2287,10 @@ impl Tool for BrowserTool {
         false
     }
 
+    fn waits_for_person(&self) -> bool {
+        self.action == Action::AskPerson
+    }
+
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         let reference = input["ref"].as_str().unwrap_or_default();
         let result = self.shared.with(|browser| -> Result<Outcome, String> {
@@ -2372,13 +2462,9 @@ impl Tool for BrowserTool {
                         .asker
                         .clone()
                         .ok_or("no person is there to hand the page to")?;
-                    let within = Duration::from_secs(HAND_OVER_SECS);
-                    let note = match hand_over(browser, asker, why, within)? {
+                    let note = match hand_over(browser, asker, why)? {
                         Some(reply) => format!("the person replied: {reply}"),
-                        None => format!(
-                            "the person did not reply within {} minutes",
-                            HAND_OVER_SECS / 60
-                        ),
+                        None => "the person did not reply".to_string(),
                     };
                     page(browser, note)
                 }
@@ -2456,5 +2542,32 @@ mod tests {
             None
         );
         assert_eq!(captcha_at("about:blank"), None);
+        // Only an https address of its maker's.
+        assert_eq!(
+            captcha_at("data:text/html,https://www.google.com/recaptcha/api2/anchor"),
+            None
+        );
+        assert_eq!(
+            captcha_at("http://www.google.com/recaptcha/api2/anchor"),
+            None
+        );
+        assert_eq!(
+            captcha_at("https://evil.example/?x=https://www.google.com/recaptcha/"),
+            None
+        );
+        assert_eq!(
+            captcha_at("https://www.google.com@evil.example/recaptcha/api2/anchor"),
+            None
+        );
+        // An invisible reCAPTCHA asks nothing yet; its challenge does.
+        assert_eq!(
+            captcha_at("https://www.google.com/recaptcha/api2/anchor?k=x&size=invisible"),
+            None
+        );
+        assert_eq!(
+            captcha_at("https://www.google.com/recaptcha/api2/bframe?k=x"),
+            Some("reCAPTCHA")
+        );
+        assert_eq!(captcha_at("https://www.google.com?q=/recaptcha/"), None);
     }
 }

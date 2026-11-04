@@ -258,19 +258,22 @@ signed in.
 Some of a page only you can do: a captcha, a code sent to your phone, a
 sign-in of yours. Where there is a person to ask (the terminal of `sion
 agent talk`, or the chat a bridge answers), the session's browser has
-`browser_ask_person`, and a
-page that shows reCAPTCHA's, hCaptcha's or Cloudflare Turnstile's frame
-says so in its tree, with the advice to hand it over; without a person,
-the tree says that no one is there to solve it. Handing the page over
+`browser_ask_person`, and a page that shows a frame of reCAPTCHA's,
+hCaptcha's or Cloudflare Turnstile's (not an invisible one, nor one kept
+out of sight) says so with its tree, with the advice to hand it over;
+without a person, it says that no one is there to solve it. Handing the page over
 starts a page at an address of this machine's, known only by a token
 made for it and answering only to its own name (`127.0.0.1` or
 `localhost` and its port): it shows the browser's page, a picture
-refreshed as you look, and passes your clicks, your typing and a few keys
-(Enter, Tab, Escape, Backspace, the arrows) to the browser. You are asked,
+refreshed as you look, and passes your clicks, your typing, a few keys
+(Enter, Tab, Escape, Backspace, the arrows) and your scrolling to the
+browser; it answers a few requests at a time, each of bounded size and
+time. You are asked,
 with its address, to reply when you are done, or with what the agent
 needs (the code you were sent); the agent gets your reply and the page as
-it is then, and what you did before replying is done first. A page handed
-over waits ten minutes for you at most.
+it is then, and what you did before replying is done first. It waits as
+long as a question does: in a chat, ten minutes; at the terminal, until
+you answer.
 
 The tests hand a page to a stand-in for you, which opens the address,
 looks, clicks into a field and types a code, and replies; the agent finds
@@ -360,6 +363,7 @@ covers.
 - A page handed to you is at an address of the machine the agent runs on.
   From another machine (an agent on a server, you on your phone), reach it
   through a tunnel (`ssh -L <port>:127.0.0.1:<port> <server>`).
-- A captcha is known only by the frame its maker serves it in: one drawn
-  by the page itself is not, and the agent sees it only as the page shows
-  it.
+- A captcha is known only by a frame its maker serves it in, as the
+  page's own documents show it: one the page draws itself, or one inside
+  another site's frame, is not, and the agent sees it only as the page
+  shows it.

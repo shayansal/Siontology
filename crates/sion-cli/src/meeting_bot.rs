@@ -103,6 +103,18 @@ impl std::fmt::Debug for Bot {
     }
 }
 
+impl Drop for Bot {
+    /// Closes the browser, however the guest ends, and removes its profile.
+    fn drop(&mut self) {
+        let _ = self
+            .cdp
+            .send_waiting(None, "Browser.close", json!({}), Duration::from_secs(2));
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.profile);
+    }
+}
+
 /// A WAV of a second of silence: what the guest's microphone says.
 fn silence(dir: &std::path::Path) -> Result<PathBuf, String> {
     let path = dir.join("silence.wav");
@@ -169,8 +181,21 @@ impl Bot {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700));
         }
-        let quiet = silence(&profile)?;
-        let dark = black(&profile)?;
+        // However the start fails, the browser and its profile go.
+        Bot::start(program, link, sink, own_sandbox, &profile).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&profile);
+        })
+    }
+
+    fn start(
+        program: &std::path::Path,
+        link: &str,
+        sink: Option<&str>,
+        own_sandbox: bool,
+        profile: &std::path::Path,
+    ) -> Result<Bot, String> {
+        let quiet = silence(profile)?;
+        let dark = black(profile)?;
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
@@ -212,9 +237,27 @@ impl Bot {
         let mut child = command
             .spawn()
             .map_err(|e| format!("{}: {e}", program.display()))?;
-        let writer = child.stdin.take().ok_or("no pipe to the browser")?;
-        let reader = child.stdout.take().ok_or("no pipe from the browser")?;
-        let cdp = Cdp::for_person(writer, reader, Duration::from_secs(30));
+        let (Some(writer), Some(reader)) = (child.stdin.take(), child.stdout.take()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("no pipe to the browser".into());
+        };
+        // No one is there to answer a page's dialogs: they are dismissed.
+        let cdp = Cdp::new(writer, reader, Duration::from_secs(30));
+        let mut bot = Bot {
+            child,
+            cdp,
+            session: String::new(),
+            profile: profile.to_path_buf(),
+        };
+        // From here, a failure drops the bot, which closes the browser.
+        bot.session = bot.attach(link)?;
+        Ok(bot)
+    }
+
+    /// Opens a page of the browser's own, and `link` in it: its session.
+    fn attach(&self, link: &str) -> Result<String, String> {
+        let cdp = &self.cdp;
         // Once it answers, a page of its own: the one it opened with may
         // not be listed yet.
         cdp.send_waiting(
@@ -247,12 +290,7 @@ impl Bot {
             json!({"permissions": ["audioCapture", "videoCapture"]}),
         );
         cdp.send(Some(&session), "Page.navigate", json!({"url": link}))?;
-        Ok(Bot {
-            child,
-            cdp,
-            session,
-            profile,
-        })
+        Ok(session)
     }
 
     fn evaluate(&self, expression: &str) -> Result<Value, String> {
@@ -336,13 +374,11 @@ impl Bot {
     }
 
     /// Leaves the meeting, and closes its browser.
-    pub fn leave(mut self) {
-        let _ = self.evaluate(LEAVE);
-        std::thread::sleep(Duration::from_millis(500));
-        let _ = self.cdp.send(None, "Browser.close", json!({}));
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.profile);
+    pub fn leave(self) {
+        if !self.session.is_empty() {
+            let _ = self.evaluate(LEAVE);
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 }
 
@@ -355,10 +391,54 @@ pub struct Sink {
     module: String,
 }
 
+/// What the sinks' names begin with, the process that made each after it.
+const SINK_PREFIX: &str = "sion-meeting-";
+
+/// The PulseAudio modules `pactl list short modules` lists in `listed`
+/// that are sinks a process made which no longer runs (one stopped
+/// before it could remove its sink): their numbers.
+fn left_behind(listed: &str, runs: impl Fn(u32) -> bool) -> Vec<String> {
+    listed
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let module = fields.next()?.trim();
+            if fields.next()?.trim() != "module-null-sink" {
+                return None;
+            }
+            let arguments = fields.next().unwrap_or_default();
+            let pid = arguments
+                .split_whitespace()
+                .find_map(|a| a.strip_prefix("sink_name="))?
+                .strip_prefix(SINK_PREFIX)?
+                .parse::<u32>()
+                .ok()?;
+            (!runs(pid)).then(|| module.to_string())
+        })
+        .collect()
+}
+
 impl Sink {
-    /// Makes one.
+    /// Makes one, having removed those that guests before it, stopped
+    /// before they could, left behind.
     pub fn make() -> Result<Sink, String> {
-        let name = format!("sion-meeting-{}", std::process::id());
+        if let Ok(listed) = Command::new("pactl")
+            .args(["list", "short", "modules"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        {
+            let listed = String::from_utf8_lossy(&listed.stdout);
+            for module in left_behind(&listed, sion_agent::browser::process_runs) {
+                let _ = Command::new("pactl")
+                    .args(["unload-module", &module])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        let name = format!("{SINK_PREFIX}{}", std::process::id());
         let output = Command::new("pactl")
             .args(["load-module", "module-null-sink"])
             .arg(format!("sink_name={name}"))
@@ -403,5 +483,20 @@ impl Drop for Sink {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sinks_of_guests_that_stopped_are_found_and_no_others() {
+        let listed = "536870912\tmodule-null-sink\tsink_name=sion-meeting-41 sink_properties=device.description=sion-meeting\t\n\
+                      536870913\tmodule-null-sink\tsink_name=sion-meeting-42 sink_properties=device.description=sion-meeting\t\n\
+                      536870914\tmodule-null-sink\tsink_name=music\t\n\
+                      536870915\tmodule-native-protocol-unix\t\t\n";
+        assert_eq!(left_behind(listed, |pid| pid == 42), ["536870912"]);
+        assert!(left_behind("", |_| false).is_empty());
     }
 }

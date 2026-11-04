@@ -1435,9 +1435,9 @@ impl Runtime<'_> {
             .names()
             .into_iter()
             .filter(|name| {
-                self.tools
-                    .get(name)
-                    .is_some_and(|tool| tool.effect() == Effect::Read && !tool.batches())
+                self.tools.get(name).is_some_and(|tool| {
+                    tool.effect() == Effect::Read && !tool.batches() && !tool.waits_for_person()
+                })
             })
             .collect()
     }
@@ -1545,6 +1545,11 @@ impl Runtime<'_> {
         }
         match self.tools.get(tool) {
             None => return Outcome::error(format!("there is no tool named {tool}")),
+            Some(found) if found.waits_for_person() => {
+                return Outcome::error(format!(
+                    "{tool} waits for a person: it is not called from code; call it yourself"
+                ))
+            }
             Some(found) if found.effect_of(input) != Effect::Read || found.batches() => {
                 return Outcome::error(format!(
                     "{tool} does more than read: it is not called from code; call it yourself"

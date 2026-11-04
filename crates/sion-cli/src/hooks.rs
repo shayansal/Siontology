@@ -282,8 +282,12 @@ pub fn run(hook: &Hook, input: &Value, dir: Option<&Path>) -> Ran {
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
     if let Some(mut stdin) = child.stdin.take() {
-        // A hook that does not read its input is not held up by it.
-        let _ = stdin.write_all(input.to_string().as_bytes());
+        // Written beside the wait, so that a hook that does not read its
+        // input is stopped at its time all the same.
+        let input = input.to_string();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
     }
     let deadline = Instant::now() + Duration::from_secs(hook.timeout_secs);
     let (status, failed) = loop {

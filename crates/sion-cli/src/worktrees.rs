@@ -113,16 +113,30 @@ fn random_name() -> Result<String, String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Where worktrees are made: a directory of this user's in the system's
-/// temporary directory, readable by them alone, away from the
-/// Siontology home and from the repository.
+/// Where worktrees are made: `sion-worktrees` in this user's cache
+/// (`XDG_CACHE_HOME`, or `~/.cache`), readable by them alone, away from the
+/// Siontology home and from the repository, and not in a directory others
+/// share, where another user could have made it first.
 fn worktrees_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("sion-worktrees");
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .ok_or("there is no home to keep worktrees in: set HOME")?;
+    let dir = cache.join("sion-worktrees");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let made = std::fs::symlink_metadata(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if made.file_type().is_symlink() || !made.is_dir() {
+        return Err(format!(
+            "{} is not a directory of its own: remove it",
+            dir.display()
+        ));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let this = dir.join(random_name()?);
     std::fs::create_dir(&this).map_err(|e| format!("{}: {e}", this.display()))?;

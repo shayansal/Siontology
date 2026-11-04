@@ -640,8 +640,9 @@ session df7de21c12ac158b: done
 An agent whose workspace is the root of a git repository, and which has a
 shell, may give a subagent a worktree (`"worktree": true` in its
 `agent_spawn`): a branch of its own, `sion/<name>` (with a number after it
-if that is taken), checked out in a directory of its own in the system's
-temporary directory, from the repository's HEAD. The subagent works
+if that is taken), checked out in a directory of its own in your cache
+(`~/.cache/sion-worktrees`, or under `XDG_CACHE_HOME`), from the
+repository's HEAD. The subagent works
 there with a shell like its parent's and the tools for changing code, so
 that subagents spawned together change code side by side without touching
 each other's files or their parent's. When it is done, its changes are
