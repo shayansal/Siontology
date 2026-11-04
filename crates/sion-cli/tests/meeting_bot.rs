@@ -64,11 +64,6 @@ fn serve() -> (String, Arc<Mutex<Vec<String>>>) {
     (base, told)
 }
 
-fn running_as_root() -> bool {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0)
-}
-
 #[test]
 fn a_guest_gives_its_name_asks_to_join_waits_and_leaves() {
     let Some(program) = sion_agent::browser::find_program() else {
@@ -76,8 +71,10 @@ fn a_guest_gives_its_name_asks_to_join_waits_and_leaves() {
         return;
     };
     let (base, told) = serve();
-    // Chromium's own sandbox does not start as root.
-    let own_sandbox = !running_as_root();
+    // Chromium's own sandbox does not start everywhere (as root, or where
+    // unprivileged user namespaces are restricted, as on Ubuntu's CI
+    // runners): the tests run it without, against pages served here.
+    let own_sandbox = false;
     let bot = Bot::open(
         &program,
         &format!("{base}/meet/abc-defg-hij"),
@@ -123,4 +120,16 @@ fn a_guest_gives_its_name_asks_to_join_waits_and_leaves() {
     );
     bot.leave();
     assert!(Bot::open(&program, "file:///etc/passwd", None, own_sandbox).is_err());
+    // A browser that stops as it starts says so, not that it was slow.
+    let stopped = Bot::open(
+        std::path::Path::new("/bin/false"),
+        &format!("{base}/meet/x"),
+        None,
+        own_sandbox,
+    )
+    .unwrap_err();
+    assert!(
+        stopped.starts_with("the browser stopped as it started"),
+        "{stopped}"
+    );
 }

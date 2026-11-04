@@ -115,6 +115,9 @@ impl Drop for Bot {
     }
 }
 
+/// Where in its profile what the guest's browser says of itself is kept.
+const BROWSER_LOG: &str = "browser.log";
+
 /// A WAV of a second of silence: what the guest's microphone says.
 fn silence(dir: &std::path::Path) -> Result<PathBuf, String> {
     let path = dir.join("silence.wav");
@@ -226,8 +229,12 @@ impl Bot {
             ))
             .arg("about:blank")
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stdout(Stdio::piped());
+        // What it says of itself, kept to say why it did not start.
+        match std::fs::File::create(profile.join(BROWSER_LOG)) {
+            Ok(log) => command.stderr(log),
+            Err(_) => command.stderr(Stdio::null()),
+        };
         if let Some(sink) = sink {
             command.env("PULSE_SINK", sink);
         }
@@ -251,8 +258,44 @@ impl Bot {
             profile: profile.to_path_buf(),
         };
         // From here, a failure drops the bot, which closes the browser.
-        bot.session = bot.attach(link)?;
+        bot.session = bot.attach(link).map_err(|why| bot.why_not_started(why))?;
         Ok(bot)
+    }
+
+    /// `why` the browser could not be reached, with what it said if it
+    /// stopped: Chromium that cannot start its own sandbox (as root, or
+    /// where the system restricts unprivileged user namespaces) ends at
+    /// once.
+    fn why_not_started(&mut self, why: String) -> String {
+        // Its pipe closes as it ends: a moment for it to be seen ended.
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                _ => return why,
+            }
+        };
+        let said = std::fs::read_to_string(self.profile.join(BROWSER_LOG)).unwrap_or_default();
+        let lines: Vec<&str> = said
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let last = lines[lines.len().saturating_sub(3)..].join(" / ");
+        let sandbox = if said.to_lowercase().contains("sandbox") {
+            "; its own sandbox did not start: join as an ordinary user, where unprivileged user \
+             namespaces are allowed or Chrome's sandbox helper is installed"
+        } else {
+            ""
+        };
+        if last.is_empty() {
+            format!("the browser stopped as it started ({status}){sandbox}")
+        } else {
+            format!("the browser stopped as it started ({status}){sandbox}: {last}")
+        }
     }
 
     /// Opens a page of the browser's own, and `link` in it: its session.
