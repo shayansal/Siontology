@@ -217,3 +217,114 @@ fn chain_anchor(session: &mut Session, stream: &ObjectId) -> sion_core::hash::Ha
         .map(|s| s.head)
         .unwrap()
 }
+
+/// The server's HTTP side and the renter's client, against each other over
+/// a loopback address: the renter seals its request, the server opens it,
+/// runs a stand-in agent, takes the payment and seals the reply back.
+#[test]
+fn a_renter_asks_over_http_and_the_enclave_answers_sealed() {
+    use sion_cli::rent_cli;
+
+    let devnet = Arc::new(Devnet::start(DevnetConfig::default()).unwrap());
+    let ledger: &dyn Ledger = devnet.as_ref();
+    let mut session = Session::open(ledger).unwrap();
+    session.fund("owner2", AssetId::usd(), usd(1)).unwrap();
+    session.fund("renter2", AssetId::usd(), usd(50)).unwrap();
+    let owner = session.id("owner2");
+
+    let agent = ObjectId::derive(b"http-rented-agent");
+    let unit = Amount(1_000);
+    let keys = EnclaveKeys::generate();
+    let terms = rentals::terms_digest(
+        &agent,
+        &owner,
+        Amount(3_000),
+        Amount(15_000),
+        ModelAccount::Owner,
+    );
+    let platform = SimulatedPlatform::generate().unwrap();
+    let attestation = platform
+        .attest(keys.binding(&agent, terms, 100_000), [0x7C; 48])
+        .unwrap();
+    let listing = Listing {
+        name: "http-helper".into(),
+        agent,
+        payee: owner,
+        per_1k_input: Amount(3_000),
+        per_1k_output: Amount(15_000),
+        model_account: ModelAccount::Owner,
+        unit,
+        min_deposit: usd(1),
+        description: "answers over http".into(),
+        attestation,
+    };
+
+    // The renter escrows and keeps the chain.
+    let stream = rent_cli::open_stream(&mut session, "renter2", &listing, usd(5), 10_000).unwrap();
+
+    // The server, on a loopback port, serving one request then the
+    // settling one.
+    let desk = StreamDesk::new(wallet_for("owner2"));
+    let server = Arc::new(RentalServer::new(keys, listing.clone(), desk));
+    let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let address = http.server_addr().to_ip().unwrap().to_string();
+    let serving = Arc::clone(&server);
+    let devnet_for_server = Arc::clone(&devnet);
+    let worker = std::thread::spawn(move || {
+        let ledger: &dyn Ledger = devnet_for_server.as_ref();
+        for mut request in http.incoming_requests().take(2) {
+            let mut body = Vec::new();
+            std::io::Read::read_to_end(request.as_reader(), &mut body).unwrap();
+            let sealed: sion_crypto::kem::SealedEnvelope = serde_json::from_slice(&body).unwrap();
+            let now = ledger.pulse().unwrap();
+            let answer = serving.serve(ledger, now, &sealed, |message| {
+                Ok((
+                    format!("answered: {message}"),
+                    Usage {
+                        input: 1_000,
+                        output: 200,
+                        ..Usage::default()
+                    },
+                ))
+            });
+            let response = match answer {
+                Ok(sealed) => tiny_http::Response::from_data(serde_json::to_vec(&sealed).unwrap())
+                    .with_status_code(200),
+                Err(why) => tiny_http::Response::from_string(why.to_string()).with_status_code(402),
+            };
+            request.respond(response).unwrap();
+        }
+    });
+
+    let key = RenterKey::generate();
+    let url = format!("http://{address}{}", rent_cli::PATH);
+    let head = sion_cli::stream::load_stream(ledger, &stream).unwrap().head;
+    let first = Payment {
+        stream,
+        position: 0,
+        value: head,
+    };
+    let reply = rent_cli::ask(&key, &listing, &url, "summarize this", first, None).unwrap();
+    assert_eq!(reply.text, "answered: summarize this");
+    reply
+        .usage
+        .verify(&listing.attestation.binding.signing_public_key)
+        .unwrap();
+    // 1000 input → 3000, 200 output → 3000; 6000 micros, 6 steps.
+    assert_eq!(reply.usage.price, Amount(6_000));
+    assert_eq!(reply.usage.position, 6);
+
+    // Pay what it signed for.
+    let payment = session.streams.pay(&stream, reply.usage.position).unwrap();
+    let settling = rent_cli::ask(&key, &listing, &url, "", payment, None).unwrap();
+    assert_eq!(settling.text, "");
+    assert_eq!(settling.usage.price, Amount(6_000));
+    worker.join().unwrap();
+
+    server
+        .close_out(ledger, std::time::Duration::from_secs(30))
+        .unwrap();
+    let settled = sion_cli::stream::load_stream(ledger, &stream).unwrap();
+    assert_eq!(settled.position, 6);
+    assert_eq!(usd(5).micros() - settled.escrow.micros(), 6_000);
+}

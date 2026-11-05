@@ -141,6 +141,30 @@ pub struct Attestation {
     pub binding: Binding,
 }
 
+impl Attestation {
+    /// The report's bytes, whichever platform gave it.
+    pub fn report_bytes(&self) -> &[u8] {
+        match &self.evidence {
+            Evidence::SevSnp { report, .. } | Evidence::Simulated { report, .. } => report,
+        }
+    }
+
+    /// The measurement of what its enclave was launched with, read from the
+    /// report itself. What it says, not that it is to be trusted: a checker
+    /// names the measurements it trusts ([`Expectation::measurements`]).
+    pub fn measurement(&self) -> Result<[u8; 48], Error> {
+        Report::parse(self.report_bytes()).map(|report| report.measurement())
+    }
+
+    /// The simulated platform's key, if it is a simulated attestation.
+    pub fn simulated_platform(&self) -> Option<&[u8]> {
+        match &self.evidence {
+            Evidence::Simulated { platform_key, .. } => Some(platform_key),
+            Evidence::SevSnp { .. } => None,
+        }
+    }
+}
+
 /// The schema of a claim that publishes an attestation.
 pub const CLAIM_SCHEMA: &str = "enclave.attestation/v1";
 

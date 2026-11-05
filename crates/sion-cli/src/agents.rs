@@ -614,6 +614,10 @@ pub enum AgentCommand {
     /// model is given) and before and after their runs.
     #[command(subcommand)]
     Hooks(crate::hooks::HooksCommand),
+    /// Rent a profile's agent out to other people by the token, in an
+    /// enclave they can check, or rent someone else's.
+    #[command(subcommand)]
+    Rent(crate::rent_cli::RentCommand),
     /// Take a meeting's notes: dial in by phone through Twilio (its number
     /// and keys) or hear it here (the microphone, and what this machine
     /// plays), the transcript written as it goes, and the profile's agent
@@ -1334,6 +1338,7 @@ pub fn run(
         AgentCommand::Import(args) => crate::agent_import::run(args),
         AgentCommand::XMentions(args) => crate::x_mentions::run(shared, args),
         AgentCommand::Meeting(args) => crate::meeting::run(shared, args),
+        AgentCommand::Rent(command) => crate::rent_cli::run(shared, command),
         AgentCommand::Scheduler { once, poll } => {
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)

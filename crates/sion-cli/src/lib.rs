@@ -82,6 +82,7 @@ pub mod profiles;
 pub mod qq;
 pub mod realtime;
 pub mod recall;
+pub mod rent_cli;
 pub mod rentals;
 pub mod reputation;
 pub mod runtime;
