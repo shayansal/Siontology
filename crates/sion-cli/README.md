@@ -48,6 +48,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `meeting` | `meeting.rs`, `meeting_bot.rs` |
 | `hooks` | `hooks.rs` |
 | `browser` (login, list, remove) | `browser_profiles.rs` |
+| `rent` (serve, use, show) | `rent_cli.rs`, `rentals.rs` |
 | `secret`, `credential`, `login` | `secrets.rs`, `credentials.rs`, `logins.rs` |
 | `chatgpt`, `weixin`, `pairing` | `chatgpt.rs`, `weixin.rs`, `pairing.rs` |
 | `mcp` (add, list, review, login, logout, remove) | `agent_mcp.rs`, `mcp_auth.rs` |
@@ -74,6 +75,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | Skills | `skills`, `skill_improve`, `skill_import`, `skill_registries`, `teach` | Releases, audits and installation; evaluation, evolution and bounties; import from folders, repositories and registries; skills taught by doing a task in a browser. |
 | Running on a server | `up`, `deploy`, `service`, `gateway` | One process that keeps a list running; sion copied to a server over SSH; systemd and launchd units; routing channels across machines. |
 | Setup and update | `setup`, `doctor`, `update`, `credentials`, `secrets`, `logins`, `chatgpt`, `agent_import`, `model_routes` | One-person setup, a check of the machine, signed self-update, sealed credentials; OpenClaw and Hermes agents imported; a model chosen for each task. |
+| Renting and records | `rentals`, `rent_cli`, `reputation` | Listing an agent for rent by the token, sealed requests to its enclave, metered tokens it signs, payment by stream; agents' records from the ledger's events, and finding one for a task. |
 | Interop | `a2a`, `openai_api` | Agent2Agent cards and tasks; an OpenAI-compatible endpoint. |
 
 ## Main types and functions

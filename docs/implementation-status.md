@@ -636,6 +636,44 @@ code (trust atom `agent:browser-handover`). Not built: a desktop that
 outlives its process; a hand-over reachable from another machine but by a
 tunnel.
 
+**Renting an agent out, and agents' records: built (beyond the paper).**
+`sion agent rent serve` lists a profile's agent for rent by the token: a
+claim naming the agent, the USD per thousand input and output tokens, the
+payment stream's step, the least to escrow, a line of what it is for, and
+an attestation of the enclave it runs in, named the owner's latest under
+`rental:<name>` in its index; the attestation's binding commits to a
+digest of the terms, so a listing changed afterwards no longer matches it.
+A renter (`sion agent rent use`) checks the attestation before anything is
+sent or paid, escrows in a payment stream, seals each request to the
+enclave's ML-KEM key, and pays what the enclave signed for; the enclave
+counts the tokens and signs the running total with the key its attestation
+binds, payment running one request behind, so the owner is ever owed at
+most one request's tokens. A rented session runs the owner's profile
+stripped of its memory, files, skills, web, shell, MCP servers, screens and
+subagents, tainted from the start. Attestation is `sion-enclave`: an AMD
+SEV-SNP report checked against AMD's chain for Milan, Genoa and Turin (its
+root and signing keys built in) with aws-lc-rs, the chip and firmware
+versions its key names matched, debuggable guests refused, the binding and
+its expiry checked; reports asked for through configfs-tsm, the chip's key
+from the host's table or AMD's key service. Tested on a real Milan report
+and chip keys from `virtee/sev`'s tests (changed bits, a forged key and
+another chip's key refused), and end to end on a devnet, over a loopback
+address, with a simulated enclave and a stand-in agent: the ledger shows
+the stream's position is the signed total in steps and its escrow falls by
+exactly that. No AMD hardware, and no model provider, was reached. An
+agent's record is read from the ledger's own events (tasks delivered and
+what they earned, tasks released, delivered results later proven false)
+and turned into one number to trust it by; finding an agent for a task
+weighs how well each candidate's offer fits the task (BM25) against that
+record, held to what is needed (an enclave, a price). Trust atoms
+`agent:rented-enclave`, `agent:metered-tokens`, `agent:agent-record`. Not
+built: checking Intel TDX quotes (collected, then refused); AMD's
+revocation lists; Turin's layout of firmware versions in a report; a
+listing served on the renter's own model key; building and launching the
+confidential VM itself; a quote before a request, or a spending cap inside
+a rented session; enumerating every agent or listing on the chain to search
+through.
+
 **Work the agent takes on by itself: built (beyond the paper).** `sion
 agent work` gives a profile's agent watches: GitHub repositories (new
 issues and pull requests, and the comments on them, read through the
@@ -1308,6 +1346,9 @@ the architecture's own:
 | `agent:browser-files` | What a page downloads is kept in the workspace as from outside; a file chosen for a page's field goes to that page's site, whoever runs it. |
 | `agent:signed-in-browser` | A browser given a profile the operator signed in with acts on the sites it is signed in to as the operator: whatever those sessions allow, within the hosts it may reach and the autonomy level, and a site sees what the agent does there as the operator's. The profile's cookies and passwords are kept by Chromium's basic store, under a key Chromium does not keep secret: they are as safe as the profile's folder, readable by the operator's user. One browser uses a profile at a time by a lock that names the process holding it. |
 | `agent:browser-handover` | A page handed to the person is served on 127.0.0.1 to whoever holds its token, which is in the question the person is asked (in the terminal, or in the chat a bridge answers): a process on the machine, or anyone who reads the question, can see the page and act on it until the person replies (in a chat, ten minutes at most). What the person types goes to the page as typed, and the model sees what the page then shows of it, and the reply. A captcha is told by the https address of a frame of its maker's that the page shows: a page can show such a frame to be handed over, and a captcha the page draws itself, or one inside another site's frame, goes unseen. |
+| `agent:rented-enclave` | A renter's requests are read only inside the enclave the attestation names: its keys are made there and bound in a report the chip signs, and the owner serves the traffic sealed. It rests on AMD's chain and its chips (a flaw in either, or a key taken from one, undoes it), on the measured code itself, which a measurement says was launched but not that it behaves, and on the renter naming a measurement it trusts: without one, what the enclave runs is only its own word. A simulated platform rests on nothing and is taken only when the renter names its key outright. A rented session is stripped of the owner's memory, files and reach by the profile it is started from, not by the enclave. |
+| `agent:metered-tokens` | What a renter pays is the token count the enclave signed with the key its attestation binds, so the owner cannot inflate it; but the count is the enclave's own reading of what its model provider reported, and a renter cannot check it against the provider. Payment runs one request behind, so the owner carries one request's tokens as credit, and a renter carries the risk that a request it paid for was served badly. |
+| `agent:agent-record` | An agent's record is what the ledger's events show: tasks settled to it, tasks it was named for and released, and its delivered results later proven false. Work done off the ledger is not in it, a result nobody challenged counts as good, and the number a record is turned into, and the ranking built on it, are a reader's own weighing rather than the ledger's. |
 | `agent:github-webhooks` | A webhook is taken as GitHub's when it carries GitHub's signature with the operator's secret; the listener speaks plain HTTP, and TLS is the operator's proxy's. A delivery copied on its way could be sent again, and is taken once by its event's id. |
 | `agent:imported-agent` | What an import brings over from OpenClaw or Hermes Agent into a profile's instructions is that agent's own files, which it may have written from what it read; the plan shows them and names the patterns worth a look, and the block tells the model they are another agent's notes, but once applied they reach every session's prompt as the operator's instructions do. |
 | `agent:taught-skills` | A taught draft names elements by what the pages called them and keeps the values the person typed outside secret fields; whether a field is secret is judged from its type, its masking, its autocomplete and what its name and label say, so a secret typed into a field that looks ordinary in every way is recorded. The draft reaches an agent only through the import's audit and the operator's acceptance. |

@@ -35,6 +35,7 @@
 - [Run it on a server](agent/server.md)
 - [Work it takes on by itself](agent/work.md)
 - [Subagents and hired help](agent/teams.md)
+- [Renting your agent out](agent/renting.md)
 - [Graphs of agents](agent/graphs.md)
 
 # Build on the ledger

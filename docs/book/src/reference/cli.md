@@ -39,7 +39,7 @@ guides show the commands in use.
 | Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent rent serve`, `agent rent use`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
 | Skills | `skill import`, `skill starter`, `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
@@ -812,6 +812,7 @@ Commands:
   x-mentions     Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
   browser        Browser profiles you sign in with, for agents' browsers to use (--browser-profile): your cookies and sessions, kept here
   hooks          The operator's hooks: commands of your own run before and after agents' tool calls (a hook before may block one, with a reason the model is given) and before and after their runs
+  rent           Rent a profile's agent out to other people by the token, in an enclave they can check, or rent someone else's
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
@@ -2875,6 +2876,90 @@ Options:
 ```
 
 See [Mentions on X](../agent/messengers.md#mentions-on-x).
+
+## `sion agent rent`
+
+```text
+Rent a profile's agent out to other people by the token, in an enclave they can check, or rent someone else's
+
+Usage: sion agent rent [OPTIONS] <COMMAND>
+
+Commands:
+  serve  Rent a profile's agent out by the token: attest the enclave it runs in, publish the listing, and serve sealed requests. Renters' sessions get none of this profile's memory, files or reach, and the model runs on your own account, priced into what you charge
+  use    Rent an owner's agent: check its listing's attestation, escrow a deposit in a payment stream, ask it, and pay for the tokens it used
+  show   Show an owner's listing and check its attestation: what it costs, what it runs, and whether its enclave checks out
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Renting your agent out](../agent/renting.md).
+
+## `sion agent rent serve`
+
+```text
+Rent a profile's agent out by the token: attest the enclave it runs in, publish the listing, and serve sealed requests. Renters' sessions get none of this profile's memory, files or reach, and the model runs on your own account, priced into what you charge
+
+Usage: sion agent rent serve [OPTIONS] --name <NAME> --per-1k-input <USD> --per-1k-output <USD> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile whose agent is rented out
+
+Options:
+      --name <NAME>                The listing's name, yours to choose (`rental:<name>` in your index)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --per-1k-input <USD>         USD per thousand input tokens (as a decimal, 0.003)
+      --per-1k-output <USD>        USD per thousand output tokens
+      --unit <USD>                 One step of a renter's payment stream, in USD: prices are rounded up to a whole number of these [default: 0.001]
+      --min-deposit <USD>          The least a renter must escrow to start, in USD [default: 1]
+      --description <DESCRIPTION>  What the agent is for, in a line, which renters search [default: ""]
+      --listen-at <ADDRESS>        Where to listen (127.0.0.1:0 picks a free port) [default: 127.0.0.1:8795]
+      --requests <N>               Serve this many requests, then stop (for trying it out)
+  -h, --help                       Print help
+```
+
+## `sion agent rent use`
+
+```text
+Rent an owner's agent: check its listing's attestation, escrow a deposit in a payment stream, ask it, and pay for the tokens it used
+
+Usage: sion agent rent use [OPTIONS] --at <URL> <OWNER> <NAME> <MESSAGE>
+
+Arguments:
+  <OWNER>    The owner's account (64 hex digits, or a devnet wallet's name)
+  <NAME>     The listing's name
+  <MESSAGE>  What to ask it
+
+Options:
+      --at <URL>                  Where its enclave serves (http://host:port)
+      --node <NODE>               The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>           Your wallet, which pays [default: alice]
+      --deposit <USD>             What to escrow, in USD [default: 1]
+      --pulses <PULSES>           How long the stream stays open, in Pulses [default: 10000]
+      --measurement <HEX>         The measurement of the enclave you trust (48 bytes in hex)
+      --simulated-platform <HEX>  Take a simulated enclave with this platform key (hex)
+  -h, --help                      Print help
+```
+
+## `sion agent rent show`
+
+```text
+Show an owner's listing and check its attestation: what it costs, what it runs, and whether its enclave checks out
+
+Usage: sion agent rent show [OPTIONS] <OWNER> <NAME>
+
+Arguments:
+  <OWNER>  The owner's account (64 hex digits, or a devnet wallet's name)
+  <NAME>   The listing's name
+
+Options:
+      --measurement <HEX>         The measurement of the enclave you trust (48 bytes in hex); without it the attestation's own measurement is shown, unchecked
+      --node <NODE>               The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --simulated-platform <HEX>  Take a simulated enclave with this platform key (hex): for devnets, where there is no SEV-SNP hardware
+  -h, --help                      Print help
+```
 
 ## `sion agent meeting`
 

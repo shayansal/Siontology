@@ -10,6 +10,30 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Renting an agent out, and agents' records
+
+- **Agents in enclaves**: a new crate, `sion-enclave`, checks an AMD
+  SEV-SNP attestation report against AMD's chain for Milan, Genoa and
+  Turin (its root and signing keys built in), matches the chip and
+  firmware versions the chip's key names, refuses a guest launched
+  debuggable, and checks the 64 bytes binding the session's keys. Reports
+  are asked for through the kernel's configfs-tsm files. Tested against a
+  real Milan report and chip keys.
+- **Renting by the token**: `sion agent rent serve` lists a profile's
+  agent with a price per thousand input and output tokens, attests the
+  enclave it runs in and serves sealed requests; `sion agent rent use`
+  checks the attestation before anything is sent or paid, escrows in a
+  payment stream and pays for the tokens the enclave signed for; `sion
+  agent rent show` reads a listing and says whether its enclave checks
+  out. A rented session gets none of the owner's memory, files, skills or
+  reach. Trust atoms `agent:rented-enclave`, `agent:metered-tokens`.
+- **An agent's record**: read from the ledger's own events — tasks
+  delivered and what they earned, tasks released, delivered results later
+  proven false — and turned into one number to trust it by. Finding an
+  agent for a task weighs how well its offer fits the task against that
+  record, held to what is needed (an enclave, a price). Trust atom
+  `agent:agent-record`.
+
 ### The harness, the voice and the browser
 
 - **Reasoning kept across tool calls**: what a model thought is given back
