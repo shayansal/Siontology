@@ -1681,6 +1681,7 @@ dependencies = [
  "sion-core",
  "sion-crypto",
  "sion-da",
+ "sion-enclave",
  "sion-exec",
  "sion-http",
  "sion-light",

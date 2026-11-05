@@ -22,6 +22,7 @@ sion-assurance.workspace = true
 sion-clearing.workspace = true
 sion-consensus.workspace = true
 sion-exec.workspace = true
+sion-enclave.workspace = true
 sion-da.workspace = true
 sion-light.workspace = true
 sion-prover.workspace = true
