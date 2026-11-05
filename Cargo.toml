@@ -19,6 +19,7 @@ members = [
     "crates/sion-app-core",
     "crates/sion-http",
     "crates/sion-agent",
+    "crates/sion-enclave",
 ]
 
 [workspace.package]
@@ -51,6 +52,7 @@ sion-cli = { path = "crates/sion-cli" }
 sion-app-core = { path = "crates/sion-app-core" }
 sion-http = { path = "crates/sion-http" }
 sion-agent = { path = "crates/sion-agent" }
+sion-enclave = { path = "crates/sion-enclave" }
 
 # Telling speech from silence in live voice: RNNoise's network, in Rust
 # (BSD-3-Clause), without its command-line tool.
@@ -96,6 +98,9 @@ quinn = { version = "0.11.9", default-features = false, features = ["runtime-tok
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
 webpki = { package = "rustls-webpki", version = "0.103.16", default-features = false, features = ["aws-lc-rs", "std"] }
 aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+# Reading X.509 certificates (AMD's chain for SEV-SNP attestation) on the
+# der and spki the tree already has; signatures are checked by aws-lc-rs.
+x509-cert = { version = "0.2.5", default-features = false }
 
 # Interfaces
 clap = { version = "4", features = ["derive", "env"] }
