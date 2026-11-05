@@ -30,7 +30,7 @@ use sion_exec::stream::Jump;
 use sion_exec::TxKind;
 
 use crate::error::CliError;
-use crate::ledger::Ledger;
+use crate::ledger::{Ledger, LedgerExt};
 use crate::session::Session;
 use crate::stream::Payment;
 
@@ -203,6 +203,151 @@ impl EnclaveKeys {
             .map_err(|e| CliError::Usage(format!("the reply could not be written: {e}")))?;
         seal(reply_key, REPLY_DOMAIN, &[], &bytes, &mut rand_core::OsRng)
             .map_err(|e| CliError::Usage(format!("the reply could not be sealed: {e}")))
+    }
+}
+
+/// What a stream has run up so far on the server's side.
+#[derive(Clone, Copy, Debug, Default)]
+struct Running {
+    usage: Usage,
+    /// The total USD signed for so far.
+    owed: Amount,
+    /// The stream position `owed` comes to.
+    position: u64,
+    /// The USD the desk has been given a payment for.
+    covered: Amount,
+}
+
+/// The enclave's side of renting: it opens each sealed request, runs the
+/// rented agent, meters the tokens, takes the stream payment that covers
+/// what was signed for before, signs the new total and seals the reply.
+///
+/// Payment is one request behind: a request carries the payment for the
+/// total signed through the request before it (the first owes nothing), so
+/// the owner is ever owed at most one request's tokens, and a renter that
+/// stops paying is served no more. A request with an empty message runs
+/// nothing and only settles what is outstanding, to close the tab.
+pub struct RentalServer {
+    keys: EnclaveKeys,
+    listing: Listing,
+    desk: crate::stream::StreamDesk,
+    running: std::sync::Mutex<std::collections::BTreeMap<ObjectId, Running>>,
+}
+
+impl std::fmt::Debug for RentalServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RentalServer({})", self.listing.name)
+    }
+}
+
+impl RentalServer {
+    /// A server for `listing`, paid into `desk` (the owner's), its requests
+    /// opened and signed with `keys` (whose public parts the listing's
+    /// attestation binds).
+    pub fn new(
+        keys: EnclaveKeys,
+        listing: Listing,
+        desk: crate::stream::StreamDesk,
+    ) -> RentalServer {
+        RentalServer {
+            keys,
+            listing,
+            desk,
+            running: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    /// The listing it serves.
+    pub fn listing(&self) -> &Listing {
+        &self.listing
+    }
+
+    /// The enclave's ML-KEM key, which requests are sealed to.
+    pub fn sealing_key(&self) -> &KemPublicKey {
+        self.keys.sealing.public()
+    }
+
+    /// Serves one sealed request at Pulse `now`, running the agent with
+    /// `run` (given the message, it returns what the agent said and the
+    /// tokens that turn used). Returns the sealed reply, or why the request
+    /// was refused (an unsealed error; a refused payment names the position
+    /// the renter should resynchronize to).
+    pub fn serve(
+        &self,
+        ledger: &dyn Ledger,
+        now: Pulse,
+        sealed: &SealedEnvelope,
+        run: impl FnOnce(&str) -> Result<(String, Usage), CliError>,
+    ) -> Result<SealedEnvelope, CliError> {
+        let request = self.keys.open(sealed)?;
+        let stream = request.payment.stream;
+        let mut running = self.running.lock().expect("running lock");
+        let state = running.entry(stream).or_default();
+        // Take the payment for what was signed before this request.
+        if state.owed.micros() > state.covered.micros() {
+            let delta = Amount(state.owed.micros() - state.covered.micros());
+            self.desk
+                .accept(ledger, now, &request.payment, delta, request.jump.as_ref())
+                .map_err(|refused| {
+                    CliError::Usage(match refused.position {
+                        Some(p) => format!(
+                            "payment refused ({}); resynchronize to position {p}",
+                            refused.reason
+                        ),
+                        None => format!("payment refused: {}", refused.reason),
+                    })
+                })?;
+            state.covered = state.owed;
+        }
+        // An empty message only settles; otherwise run and meter.
+        if !request.message.trim().is_empty() {
+            let (text, turn) = run(&request.message)?;
+            state.usage.add(&turn);
+            state.owed = price_of(&self.listing, &state.usage);
+            state.position = steps_of(state.owed, self.listing.unit);
+            let reply = Reply {
+                text,
+                usage: self.keys.sign_usage(
+                    &stream.to_string(),
+                    &state.usage,
+                    state.owed,
+                    state.position,
+                )?,
+            };
+            return self.keys.seal_reply(&reply, &request.reply_key);
+        }
+        // A settling request: acknowledge the total, nothing run.
+        let reply = Reply {
+            text: String::new(),
+            usage: self.keys.sign_usage(
+                &stream.to_string(),
+                &state.usage,
+                state.owed,
+                state.position,
+            )?,
+        };
+        self.keys.seal_reply(&reply, &request.reply_key)
+    }
+
+    /// Settles the payments taken so far without waiting (the desk sends a
+    /// settlement and goes on); call it from time to time.
+    pub fn settle(&self, ledger: &dyn Ledger, now: Pulse) -> Result<(), CliError> {
+        let config = ledger.chain_config()?;
+        self.desk.refresh(ledger)?;
+        self.desk.settle(ledger, &config, now, true)?;
+        Ok(())
+    }
+
+    /// Settles every payment taken and waits for the settlements to be
+    /// certified, up to `timeout`: what the owner collects when the renting
+    /// is done.
+    pub fn close_out(
+        &self,
+        ledger: &dyn Ledger,
+        timeout: std::time::Duration,
+    ) -> Result<(), CliError> {
+        let config = ledger.chain_config()?;
+        self.desk.close_out(ledger, &config, timeout)
     }
 }
 
