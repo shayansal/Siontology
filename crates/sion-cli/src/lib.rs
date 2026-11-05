@@ -83,6 +83,7 @@ pub mod qq;
 pub mod realtime;
 pub mod recall;
 pub mod rentals;
+pub mod reputation;
 pub mod runtime;
 pub mod schedules;
 pub mod screens;
