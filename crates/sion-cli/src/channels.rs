@@ -1587,6 +1587,16 @@ fn answer_request(ledger: SharedLedger, admin: Option<&str>, mut request: tiny_h
                 &json!({"error": "send {\"text\": …} as JSON"}),
             ),
         }
+    } else if path == "/v1/trust" && method == "GET" {
+        // What the trust layer serves, for an outside agent to discover.
+        respond(request, 200, &crate::trust::describe());
+    } else if let Some(answer) = crate::trust::answer(ledger.as_ref(), &method, &path) {
+        // Public reads of the ledger: an agent's record, a receipt, a
+        // listing. No token, and nothing is taken from the asker.
+        match answer {
+            Ok(value) => respond(request, 200, &value),
+            Err(e) => respond(request, 400, &json!({"error": e.to_string()})),
+        }
     } else if let (Some(id), "GET") = (path.strip_prefix("/v1/sessions/"), method.as_str()) {
         match crate::runtime::Saved::load(id) {
             Ok(saved) => respond(

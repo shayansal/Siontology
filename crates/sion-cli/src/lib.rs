@@ -110,6 +110,7 @@ pub mod talk;
 pub mod tasks;
 pub mod teach;
 pub mod teams;
+pub mod trust;
 pub mod up;
 pub mod update;
 pub mod verify;
