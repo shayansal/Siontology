@@ -34,6 +34,8 @@ struct Guarded {
     step: Step,
     /// The time between the words of its text, streamed.
     pace: Option<Duration>,
+    /// The tokens it says it used, if it says.
+    usage: Option<Usage>,
 }
 
 impl Guarded {
@@ -73,6 +75,10 @@ pub struct ScriptEntry {
     /// Play it only if the conversation so far does not contain this text.
     #[serde(default)]
     pub unless: Option<String>,
+    /// The tokens the step says it used (`{"input": …, "output": …}`), as a
+    /// provider counts them: none if left out.
+    #[serde(default)]
+    pub usage: Option<Usage>,
     /// The step.
     #[serde(flatten)]
     pub step: ScriptStep,
@@ -242,11 +248,12 @@ impl Scripted {
                     model.calls_all(calls.into_iter().map(|c| (c.call, c.input)).collect())
                 }
             };
-            if entry.when.is_some() || entry.unless.is_some() {
+            if entry.when.is_some() || entry.unless.is_some() || entry.usage.is_some() {
                 let mut steps = model.steps.lock().expect("the script's lock");
                 if let Some(last) = steps.back_mut() {
                     last.when = entry.when;
                     last.unless = entry.unless;
+                    last.usage = entry.usage;
                 }
             }
         }
@@ -300,7 +307,20 @@ impl Scripted {
                 unless: None,
                 step: Box::new(f),
                 pace: None,
+                usage: None,
             });
+        self
+    }
+
+    /// The last step added says it used `input` and `output` tokens.
+    pub fn using(self, input: u64, output: u64) -> Scripted {
+        if let Some(last) = self.steps.lock().expect("the script's lock").back_mut() {
+            last.usage = Some(Usage {
+                input,
+                output,
+                ..Usage::default()
+            });
+        }
         self
     }
 
@@ -331,7 +351,12 @@ impl Scripted {
             };
             self.used.fetch_add(1, Ordering::SeqCst);
             if guarded.applies(&text) {
-                return (guarded.step)(request).map(|answer| (answer, guarded.pace));
+                return (guarded.step)(request).map(|mut answer| {
+                    if let Some(usage) = guarded.usage {
+                        answer.usage = usage;
+                    }
+                    (answer, guarded.pace)
+                });
             }
         }
     }
