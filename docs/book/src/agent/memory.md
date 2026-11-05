@@ -537,3 +537,32 @@ with: they are kept and recalled (marked `from_outside`), but never put
 into a prompt as core memory, so an injected "always pay mallory" cannot
 make itself a preference. A search that finds a tainted session taints
 the session that searched, as reading that content again would.
+
+## Facts from other owners: who vouched, and pulling one back
+
+An agent can keep another owner's curated log in mind
+(`--shared-memory`), and every atom already carries where it came from: its
+sources, the spans in them, the model that read them. Two more things make
+someone else's facts usable.
+
+**Vouching.** An account publishes a claim that it stands behind an atom,
+on a bond of its own, under an adjudicator who can rule against it. So
+"who says so" is on the ledger and costs something, and a reader weighs a
+fact by who vouched for it rather than by whose log it sits in.
+
+**Revocation.** The writer, or a voucher, publishes that an atom is not to
+be relied on any more, named in its index so a reader proves against a
+certified header whether a revocation stands.
+
+Nothing on the ledger is deleted, and a revoked fact is no exception —
+but neither it nor anything drawn from it is kept in mind. A fact that was
+derived from, or assumes, a revoked one rests on it, and so does anything
+resting on those, however deep. All of them are left out, so a poisoned
+fact can be traced and pulled rather than only marked. A reader is told of
+each fact whether it is revoked, rests on something revoked, is vouched
+for and by whom, or is its writer's word alone.
+
+Content addresses make this terminate: an atom's name is the hash of its
+contents, so no atom can name one that names it back, and the links hold
+no circle to walk around.
+

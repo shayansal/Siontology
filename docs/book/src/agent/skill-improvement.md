@@ -461,6 +461,31 @@ Every session of the profile now starts with the system prompt, then
 `Your operator's instructions:` and the text above, wherever it runs: on
 the HTTP channel, a messenger, a schedule or a gateway's host.
 
+## Improving the agent, not only a skill
+
+A skill's instructions are not the only thing that can be made better.
+`sion agent improve` tries changes to the agent itself: the words its
+operator gives it, which models a kind of task reaches for, and how it
+works a task (alone, voting, or as a graph). Each change is scored against
+the agent as it is on a set of tasks, and kept only if it clears two bars:
+
+1. It is **better beyond chance** on the tasks tried — Newcombe's 95%
+   interval for the difference in pass rate has its lower end above zero,
+   the same bar a model must clear to earn first place in a route
+   ([Models](models.md)).
+2. It **does not regress** on tasks it never saw: it fails no held-out
+   task the agent already passes.
+
+A change that clears both is recorded with its evidence: what it changed,
+the counts on both sets, and the interval. So every change the agent keeps
+can be read back with the reason it was kept, and a change that only
+looked better on a handful of tasks is turned down and said so. When
+nothing clears the bars, the agent is left as it is.
+
+What this rests on is the task set: a change is only as well tested as the
+tasks it was tried on, and tasks the operator wrote to flatter a change
+would pass it. Nothing here chooses the tasks.
+
 ## What this does not do yet
 
 - Evaluation runs are not proven. A verifier's attestation says the

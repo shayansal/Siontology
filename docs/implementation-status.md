@@ -674,6 +674,38 @@ confidential VM itself; a quote before a request, or a spending cap inside
 a rented session; enumerating every agent or listing on the chain to search
 through.
 
+**Improving the whole agent, shared memory, projects, a speaking guest
+and the trust layer: built (beyond the paper).** Changes to the agent
+itself — the words its operator gives it, the models a kind of task
+reaches for, how it works a task — are scored against the agent as it is
+and kept only when better beyond chance on the tasks tried (Newcombe's 95%
+interval above zero) and regressing on no held-out task it already
+passes; each kept change is recorded with its evidence, and one that only
+looked better is turned down and said so (trust atom
+`agent:measured-improvement`). Memory shared between owners carries who
+vouched for a fact (a claim on the voucher's bond, under an adjudicator)
+and whether it was revoked (a claim named under the atom in the index); a
+revoked fact and everything derived from or assuming it, however deep, are
+left out, the walk ending because content addresses admit no circle
+(`agent:vouched-memory`). A project gives an agent a goal over weeks, a
+budget it may spend, milestones and a check-in that reports what it did
+since the last one; a project paused, ended or out of budget takes no more
+work, and the budget holds whatever it tries to spend
+(`agent:project-budget`). A meeting's guest can be given a voice: a
+PulseAudio sink whose monitor is remapped into a source the browser takes
+as its microphone, and it answers only lines that name it, found anywhere
+in the line (`agent:meeting-voice`). The HTTP channel serves three public
+reads for agents on other frameworks, without a token: an agent's record,
+a transaction's outcome with how to verify its receipt, and a rental
+listing with whether its enclave checks out (`GET /v1/trust` says what it
+serves). All unit-tested; the guest's microphone needs PulseAudio and a
+meeting and was not run, and no change was measured against a real model.
+Not built: choosing the tasks an improvement is measured on (a set written
+to flatter a change would pass it); speaking Google's AP2 or the Agentic
+Commerce Protocol (interop is x402, A2A and MCP); a project that spends
+from its own allotment on the ledger rather than being counted against a
+budget kept here.
+
 **Work the agent takes on by itself: built (beyond the paper).** `sion
 agent work` gives a profile's agent watches: GitHub repositories (new
 issues and pull requests, and the comments on them, read through the
@@ -1349,6 +1381,10 @@ the architecture's own:
 | `agent:rented-enclave` | A renter's requests are read only inside the enclave the attestation names: its keys are made there and bound in a report the chip signs, and the owner serves the traffic sealed. It rests on AMD's chain and its chips (a flaw in either, or a key taken from one, undoes it), on the measured code itself, which a measurement says was launched but not that it behaves, and on the renter naming a measurement it trusts: without one, what the enclave runs is only its own word. A simulated platform rests on nothing and is taken only when the renter names its key outright. A rented session is stripped of the owner's memory, files and reach by the profile it is started from, not by the enclave. |
 | `agent:metered-tokens` | What a renter pays is the token count the enclave signed with the key its attestation binds, so the owner cannot inflate it; but the count is the enclave's own reading of what its model provider reported, and a renter cannot check it against the provider. Payment runs one request behind, so the owner carries one request's tokens as credit, and a renter carries the risk that a request it paid for was served badly. |
 | `agent:agent-record` | An agent's record is what the ledger's events show: tasks settled to it, tasks it was named for and released, and its delivered results later proven false. Work done off the ledger is not in it, a result nobody challenged counts as good, and the number a record is turned into, and the ranking built on it, are a reader's own weighing rather than the ledger's. |
+| `agent:measured-improvement` | A change the agent keeps was better beyond chance on the tasks it was tried on and regressed on no held-out task it already passed. Both bars are only as good as those tasks: a set that does not cover what the agent is used for, or one written to flatter a change, passes it, and nothing here chooses the tasks. The evidence recorded is the counts and the interval, not the runs themselves. |
+| `agent:vouched-memory` | A vouching is a claim on the voucher's bond, so who stands behind a shared fact costs something and can be ruled against; it says the voucher stands behind the fact, not that the fact is true. A revocation rests on the revoker's signature alone. A revoked fact and whatever rests on it are left out by the reader, not removed from any log, and only links the atoms actually carry (derived-from, assumes) are followed: a fact drawn from another without saying so is not pulled with it. |
+| `agent:project-budget` | A project's budget is counted here, in the file that holds the project, not escrowed on the ledger: it bounds what the agent records spending against the project, and the charter and its allotments are what actually bound what it can spend. A project that is ended or out of budget takes no more work through the project, which is not the same as the agent stopping. |
+| `agent:meeting-voice` | A guest given a voice speaks whatever the agent says into the meeting, to everyone in it. It answers any line that names it, wherever the name falls, so a name that is also an ordinary word is answered when anyone happens to say it, and a transcriber's mishearing can both miss a question and invent one. What it says rests on the meeting's own words, which are content from outside. |
 | `agent:github-webhooks` | A webhook is taken as GitHub's when it carries GitHub's signature with the operator's secret; the listener speaks plain HTTP, and TLS is the operator's proxy's. A delivery copied on its way could be sent again, and is taken once by its event's id. |
 | `agent:imported-agent` | What an import brings over from OpenClaw or Hermes Agent into a profile's instructions is that agent's own files, which it may have written from what it read; the plan shows them and names the patterns worth a look, and the block tells the model they are another agent's notes, but once applied they reach every session's prompt as the operator's instructions do. |
 | `agent:taught-skills` | A taught draft names elements by what the pages called them and keeps the values the person typed outside secret fields; whether a field is secret is judged from its type, its masking, its autocomplete and what its name and label say, so a secret typed into a field that looks ordinary in every way is recorded. The draft reaches an agent only through the import's audit and the operator's acceptance. |

@@ -383,6 +383,39 @@ once however it comes.
 The other commands: `answer` (tell an item something, as its operator),
 `approve` (or `--decline <why>`), `retry`, and `show`.
 
+## Projects that run for weeks
+
+A work item is one piece of work, taken on and finished. A project is the
+longer thing: `sion agent project` gives a profile's agent a goal it keeps
+returning to, money it may spend on the way, milestones to work towards,
+and a standing arrangement to tell you where it stands. The agent writes
+to the project's log as it works; a check-in reports what it did since the
+last one — and says so plainly when that is nothing — what is still to do,
+and when the next report is due. Reports go wherever a schedule's do.
+
+A project is somewhere to keep a long task honest, not new permission: the
+agent still acts under its charter, its autonomy level and its budget. A
+project that is paused or stopped, that has run past its end, or that has
+spent its budget takes no more work, and the budget holds whatever the
+agent tries to spend against it. A project's log keeps its newest
+entries, so months of work do not grow without end.
+
+## Its record, for anyone to read
+
+What an agent has done is on the ledger, and an outside agent can ask for
+it without an account: `GET /v1/trust/agents/<account>` on the HTTP
+channel gives what it delivered, what it earned, what it gave back and
+what of its work was later proven false, with a number to trust it by
+([Subagents and hired help](teams.md#an-agents-record-and-finding-one-for-a-task)).
+`GET /v1/trust/receipts/<digest>` gives a transaction's outcome and how to
+verify its receipt as a light client, and
+`GET /v1/trust/listings/<owner>/<name>` an agent offered for rent and
+whether its enclave checks out ([Renting](renting.md)). `GET /v1/trust`
+says what is served. These are reads of public state: no token, nothing
+changed through them, and nothing taken on trust from whoever asks. What
+an answer is worth is in the proof it carries and in the trust atoms it
+names, not in the server's word.
+
 ## What this does not do yet
 
 - Other threads an item could follow for context are not read (a linked

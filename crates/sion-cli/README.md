@@ -49,6 +49,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `hooks` | `hooks.rs` |
 | `browser` (login, list, remove) | `browser_profiles.rs` |
 | `rent` (serve, use, show) | `rent_cli.rs`, `rentals.rs` |
+| `project`, `improve` | `projects.rs`, `self_improve.rs` |
 | `secret`, `credential`, `login` | `secrets.rs`, `credentials.rs`, `logins.rs` |
 | `chatgpt`, `weixin`, `pairing` | `chatgpt.rs`, `weixin.rs`, `pairing.rs` |
 | `mcp` (add, list, review, login, logout, remove) | `agent_mcp.rs`, `mcp_auth.rs` |
@@ -71,11 +72,12 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | Messengers | `messengers`, `live`, `webhooks`, `drafts`, `showing`, `pairing`, `jwt`, and `dingtalk`, `feishu`, `google_chat`, `imessage`, `irc`, `mattermost`, `nextcloud`, `nostr`, `ntfy`, `qq`, `simplex`, `synology`, `teams`, `wecom`, `weixin`, `x_api`, `x_dm`, `x_mentions`, `zalo`, `phone`, `email` | The `Messenger` interface and one module per service; WebSocket and webhook intake; typing indicators and replies as they are written; X's mentions answered with their sources, and its posts searched. |
 | MCP and the first-party servers | `mcp`, `mcp_serve`, `email`, `calendar`, `documents`, `agent_mcp`, `mcp_auth`, `home_assistant` | The ledger's MCP server; a shared server loop for the mail (IMAP and SMTP), calendar (CalDAV) and documents servers; configuration and OAuth login for MCP servers an agent uses. |
 | Voice | `voice`, `talk`, `listening`, `sound`, `realtime`, `meeting`, `meeting_bot` | Voice notes heard and answered aloud, by services or on the machine (whisper.cpp, Piper, a local server); a terminal conversation; a conversation that listens all the time, with a wake phrase, a model of speech, turns told by what was said, and echo cancellation; one through a realtime speech model that asks the agent; meeting notes by phone, on the machine or as a guest by the meeting's link, with speakers told apart if asked. |
+| Long work and improvement | `projects`, `self_improve`, `vouching`, `meeting_voice` | Projects that run for weeks with a goal, a budget and check-ins; changes to the agent kept only when measurably better; who vouched for a shared fact and pulling one back; a meeting guest that speaks when named. |
 | Work and GitHub | `work`, `github`, `github_hooks`, `github_tools` | The work runner, GitHub as a watch, its webhooks, and the tools a work session reads a repository with. |
 | Skills | `skills`, `skill_improve`, `skill_import`, `skill_registries`, `teach` | Releases, audits and installation; evaluation, evolution and bounties; import from folders, repositories and registries; skills taught by doing a task in a browser. |
 | Running on a server | `up`, `deploy`, `service`, `gateway` | One process that keeps a list running; sion copied to a server over SSH; systemd and launchd units; routing channels across machines. |
 | Setup and update | `setup`, `doctor`, `update`, `credentials`, `secrets`, `logins`, `chatgpt`, `agent_import`, `model_routes` | One-person setup, a check of the machine, signed self-update, sealed credentials; OpenClaw and Hermes agents imported; a model chosen for each task. |
-| Renting and records | `rentals`, `rent_cli`, `reputation` | Listing an agent for rent by the token, sealed requests to its enclave, metered tokens it signs, payment by stream; agents' records from the ledger's events, and finding one for a task. |
+| Renting and records | `rentals`, `rent_cli`, `reputation`, `trust` | Listing an agent for rent by the token, sealed requests to its enclave, metered tokens it signs, payment by stream; agents' records from the ledger's events, and finding one for a task. |
 | Interop | `a2a`, `openai_api` | Agent2Agent cards and tasks; an OpenAI-compatible endpoint. |
 
 ## Main types and functions

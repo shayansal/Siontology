@@ -10,6 +10,34 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Improving itself, shared memory, projects and the trust layer
+
+- **Improving the whole agent**: `sion agent improve` tries changes to the
+  agent itself — the words its operator gives it, the models a kind of
+  task reaches for, how it works a task — and keeps one only if it is
+  better beyond chance on the tasks tried (Newcombe's 95% interval) and
+  fails no held-out task the agent already passes. Each kept change is
+  recorded with its evidence. Trust atom `agent:measured-improvement`.
+- **Shared memory with sources**: an account vouches for another owner's
+  memory atom with a claim on its own bond; the writer or a voucher
+  revokes one with a claim named under it in the index. A revoked fact,
+  and everything derived from or assuming it however deep, is left out, so
+  a poisoned fact can be traced and pulled. Trust atom
+  `agent:vouched-memory`.
+- **Projects that run for weeks**: a goal, a budget, milestones and a
+  check-in that reports what the agent did since the last one. A project
+  that is paused, ended or out of budget takes no more work. Trust atom
+  `agent:project-budget`.
+- **A meeting guest that speaks**: given a microphone of its own
+  (PulseAudio), it answers lines that name it, found anywhere in the line
+  and matched as leniently as a wake phrase. Trust atom
+  `agent:meeting-voice`.
+- **The trust layer**: the HTTP channel serves three public reads for
+  agents on other frameworks, without a token — an agent's record, a
+  transaction's outcome with how to verify its receipt, and a rental
+  listing with whether its enclave checks out. `GET /v1/trust` says what
+  it serves.
+
 ### Renting an agent out, and agents' records
 
 - **Agents in enclaves**: a new crate, `sion-enclave`, checks an AMD

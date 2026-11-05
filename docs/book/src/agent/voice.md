@@ -329,6 +329,30 @@ signed in. Tested against stand-in meeting pages served on this machine
 (a lobby that lets the guest in after a moment, and one that refuses it);
 Meet, Zoom and Teams themselves were not reached.
 
+### Speaking when it is spoken to
+
+A guest that only listens says nothing: its microphone plays a second of
+silence. Given a voice, it answers when it is addressed. A microphone of
+its own is made out of PulseAudio parts — a sink nothing listens to, whose
+monitor is remapped into a source the browser takes as its microphone — so
+whatever is played into that sink is what the meeting hears it say.
+
+It speaks only when spoken to. A line of the transcript that names it is
+a question for it, and the name is found anywhere in the line rather than
+only at the start, so "so, Notes, what did Ana commit to?" reaches it as
+readily as "Notes, …". The name is matched as leniently as a wake phrase,
+so a transcriber that spells it a letter off is still understood. A line
+that only names it ("thanks, Notes") is not answered. What it is asked
+goes to the profile's agent in a session with none of the owner's reach,
+tainted as a meeting's words always are, and what the agent says is spoken
+into the meeting and written into the transcript as the guest's own line.
+
+A name that is also an ordinary word will be answered when someone happens
+to say it, so a guest is better given a name of its own. Making the
+microphone and having the browser take it need PulseAudio or PipeWire and
+a meeting: those were not run where these pages were made, and only the
+parts that need no sound card are tested.
+
 ### Who said what
 
 `--diarize <provider>` records what is heard (here, or by the guest) as it
