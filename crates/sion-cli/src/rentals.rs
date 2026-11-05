@@ -20,14 +20,250 @@ use sion_agent::model::Usage;
 use sion_assurance::Formula;
 use sion_core::ids::{AccountId, ClaimId, ObjectId, Pulse};
 use sion_core::Amount;
+use sion_crypto::kem::{seal, KemKeypair, KemPublicKey, SealedEnvelope};
+use sion_crypto::keys::{self, Keypair, PublicKey, Signature};
+use sion_crypto::scheme::Scheme;
 use sion_enclave::Attestation;
 use sion_exec::claim::{claim_id, formulas, ClaimBody, Payload};
 use sion_exec::object::ObjectData;
+use sion_exec::stream::Jump;
 use sion_exec::TxKind;
 
 use crate::error::CliError;
 use crate::ledger::Ledger;
 use crate::session::Session;
+use crate::stream::Payment;
+
+/// The domain a request is sealed in.
+const REQUEST_DOMAIN: &str = "sion/rental/request/v1";
+/// The domain a reply is sealed in.
+const REPLY_DOMAIN: &str = "sion/rental/reply/v1";
+/// The domain the enclave signs its count of usage in.
+const USAGE_DOMAIN: &str = "sion/rental/usage/v1";
+
+/// What a renter sends the enclave, sealed to its ML-KEM key: a message,
+/// the key the reply is sealed back to, and the stream payment that is to
+/// cover the running total of what the session has used.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request {
+    /// What the renter asks.
+    pub message: String,
+    /// The renter's key, which the reply is sealed to.
+    pub reply_key: KemPublicKey,
+    /// The payment covering the total used so far, after this request.
+    pub payment: Payment,
+    /// A jump proving the payment's position, if the stream has
+    /// checkpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump: Option<Jump>,
+}
+
+/// The enclave's signed count of what a session used, which a renter pays
+/// for: the enclave vouches for it, not the owner, so the owner cannot
+/// inflate it. Signed with the key the attestation binds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedUsage {
+    /// The session it is for.
+    pub session: String,
+    /// The tokens used, in total, up to and including this request.
+    pub usage: Usage,
+    /// The USD that comes to, at the listing's prices.
+    pub price: Amount,
+    /// The stream position that price is, in whole steps.
+    pub position: u64,
+    /// The enclave's signature over the above.
+    pub signature: Signature,
+}
+
+/// What the enclave signs for [`SignedUsage`].
+fn usage_message(session: &str, usage: &Usage, price: Amount, position: u64) -> Vec<u8> {
+    borsh::to_vec(&(
+        session.as_bytes(),
+        usage.input,
+        usage.output,
+        price.micros().to_le_bytes(),
+        position,
+    ))
+    .unwrap_or_default()
+}
+
+impl SignedUsage {
+    /// Checks the enclave's signature under the key `signing_key` the
+    /// attestation bound.
+    pub fn verify(&self, signing_key: &[u8]) -> Result<(), CliError> {
+        let key = PublicKey {
+            scheme: self.signature.scheme,
+            bytes: signing_key.to_vec(),
+        };
+        keys::verify(
+            &key,
+            USAGE_DOMAIN,
+            &usage_message(&self.session, &self.usage, self.price, self.position),
+            &self.signature,
+        )
+        .map_err(|e| CliError::Verification(format!("the enclave's count of usage: {e}")))
+    }
+}
+
+/// The enclave's reply, sealed to the renter's reply key: what the agent
+/// said, and the signed count of usage.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    /// What the agent said.
+    pub text: String,
+    /// What the session has used, signed by the enclave.
+    pub usage: SignedUsage,
+}
+
+/// The keys an enclave session holds, made inside it and never leaving:
+/// the ML-KEM key requests are sealed to, and the key it signs usage with.
+/// Their public parts are what an attestation binds ([`binding`]).
+pub struct EnclaveKeys {
+    /// Seals and opens requests.
+    pub sealing: KemKeypair,
+    /// Signs counts of usage.
+    pub signing: Keypair,
+}
+
+impl std::fmt::Debug for EnclaveKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EnclaveKeys({:?})", self.sealing.public())
+    }
+}
+
+impl EnclaveKeys {
+    /// Fresh keys, made here (inside the enclave, in use).
+    pub fn generate() -> EnclaveKeys {
+        let seed = keys::random_seed();
+        EnclaveKeys {
+            sealing: KemKeypair::from_seed(&seed),
+            signing: Keypair::generate(Scheme::MlDsa44),
+        }
+    }
+
+    /// The binding an attestation makes over these keys, for `agent`, the
+    /// listing's `terms`, until `expires_at`.
+    pub fn binding(
+        &self,
+        agent: &ObjectId,
+        terms: [u8; 32],
+        expires_at: u64,
+    ) -> sion_enclave::Binding {
+        sion_enclave::Binding {
+            kem_public_key: self.sealing.public().bytes.clone(),
+            signing_public_key: self.signing.public().bytes.clone(),
+            agent: agent.as_hash().0,
+            terms,
+            expires_at,
+        }
+    }
+
+    /// Opens a request a renter sealed to this enclave.
+    pub fn open(&self, sealed: &SealedEnvelope) -> Result<Request, CliError> {
+        let bytes = self
+            .sealing
+            .open(REQUEST_DOMAIN, &[], sealed)
+            .map_err(|e| CliError::Verification(format!("the sealed request: {e}")))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| CliError::Protocol(format!("the request's contents: {e}")))
+    }
+
+    /// Signs what `session` has used: `usage` tokens, `price` USD, at stream
+    /// `position`.
+    pub fn sign_usage(
+        &self,
+        session: &str,
+        usage: &Usage,
+        price: Amount,
+        position: u64,
+    ) -> Result<SignedUsage, CliError> {
+        let signature = self
+            .signing
+            .sign(
+                USAGE_DOMAIN,
+                &usage_message(session, usage, price, position),
+            )
+            .map_err(|e| CliError::Usage(format!("the count could not be signed: {e}")))?;
+        Ok(SignedUsage {
+            session: session.to_string(),
+            usage: *usage,
+            price,
+            position,
+            signature,
+        })
+    }
+
+    /// Seals `reply` to the renter's `reply_key`.
+    pub fn seal_reply(
+        &self,
+        reply: &Reply,
+        reply_key: &KemPublicKey,
+    ) -> Result<SealedEnvelope, CliError> {
+        let bytes = serde_json::to_vec(reply)
+            .map_err(|e| CliError::Usage(format!("the reply could not be written: {e}")))?;
+        seal(reply_key, REPLY_DOMAIN, &[], &bytes, &mut rand_core::OsRng)
+            .map_err(|e| CliError::Usage(format!("the reply could not be sealed: {e}")))
+    }
+}
+
+/// A renter's key for sealing a request and opening the reply.
+#[derive(Debug)]
+pub struct RenterKey {
+    keypair: KemKeypair,
+}
+
+impl Default for RenterKey {
+    fn default() -> RenterKey {
+        RenterKey::generate()
+    }
+}
+
+impl RenterKey {
+    /// A fresh key.
+    pub fn generate() -> RenterKey {
+        RenterKey {
+            keypair: KemKeypair::from_seed(&keys::random_seed()),
+        }
+    }
+
+    /// The public part, which a reply is sealed to.
+    pub fn public(&self) -> &KemPublicKey {
+        self.keypair.public()
+    }
+
+    /// Seals `request` to the enclave `listing` attests.
+    pub fn seal_request(
+        &self,
+        listing: &Listing,
+        message: &str,
+        payment: Payment,
+        jump: Option<Jump>,
+    ) -> Result<SealedEnvelope, CliError> {
+        let enclave = KemPublicKey {
+            bytes: listing.attestation.binding.kem_public_key.clone(),
+        };
+        let request = Request {
+            message: message.to_string(),
+            reply_key: self.public().clone(),
+            payment,
+            jump,
+        };
+        let bytes = serde_json::to_vec(&request)
+            .map_err(|e| CliError::Usage(format!("the request could not be written: {e}")))?;
+        seal(&enclave, REQUEST_DOMAIN, &[], &bytes, &mut rand_core::OsRng)
+            .map_err(|e| CliError::Usage(format!("the request could not be sealed: {e}")))
+    }
+
+    /// Opens the enclave's sealed reply.
+    pub fn open_reply(&self, sealed: &SealedEnvelope) -> Result<Reply, CliError> {
+        let bytes = self
+            .keypair
+            .open(REPLY_DOMAIN, &[], sealed)
+            .map_err(|e| CliError::Verification(format!("the sealed reply: {e}")))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| CliError::Protocol(format!("the reply's contents: {e}")))
+    }
+}
 
 /// The schema of a listing claim.
 pub const LISTING_SCHEMA: &str = "agent.listing/v1";
@@ -334,5 +570,80 @@ mod tests {
         let back: Listing = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(l, back);
         assert_eq!(index_key("helper"), "rental:helper");
+    }
+
+    fn payment(position: u64) -> Payment {
+        Payment {
+            stream: ObjectId::from_hash(sion_core::hash::hash_domain("test/stream", b"s")),
+            position,
+            value: sion_core::hash::hash_domain("test/value", &position.to_le_bytes()),
+        }
+    }
+
+    #[test]
+    fn a_request_is_sealed_to_the_enclave_and_opened_only_by_it() {
+        let enclave = EnclaveKeys::generate();
+        let listing = {
+            let mut l = listing(3_000, 15_000, 1_000);
+            l.attestation.binding.kem_public_key = enclave.sealing.public().bytes.clone();
+            l
+        };
+        let renter = RenterKey::generate();
+        let sealed = renter
+            .seal_request(&listing, "summarize this", payment(14), None)
+            .unwrap();
+        // The enclave opens it; another enclave's keys cannot.
+        let opened = enclave.open(&sealed).unwrap();
+        assert_eq!(opened.message, "summarize this");
+        assert_eq!(opened.payment.position, 14);
+        assert_eq!(opened.reply_key.bytes, renter.public().bytes);
+        assert!(EnclaveKeys::generate().open(&sealed).is_err());
+    }
+
+    #[test]
+    fn the_enclave_signs_usage_and_the_renter_checks_it_against_the_binding() {
+        let enclave = EnclaveKeys::generate();
+        let used = usage(2_000, 500);
+        let signed = enclave
+            .sign_usage("session-1", &used, Amount(14_000), 14)
+            .unwrap();
+        // Checks under the key the attestation would bind.
+        let key = enclave.signing.public().bytes.clone();
+        assert!(signed.verify(&key).is_ok());
+        // Not under another key, and not if the count is changed.
+        assert!(signed.verify(&[0u8; 1312]).is_err());
+        let mut tampered = signed.clone();
+        tampered.price = Amount(1);
+        assert!(tampered.verify(&key).is_err());
+    }
+
+    #[test]
+    fn a_reply_is_sealed_to_the_renter_and_carries_the_signed_count() {
+        let enclave = EnclaveKeys::generate();
+        let renter = RenterKey::generate();
+        let signed = enclave
+            .sign_usage("session-1", &usage(10, 5), Amount(1_000), 1)
+            .unwrap();
+        let reply = Reply {
+            text: "done".into(),
+            usage: signed,
+        };
+        let sealed = enclave.seal_reply(&reply, renter.public()).unwrap();
+        let opened = renter.open_reply(&sealed).unwrap();
+        assert_eq!(opened.text, "done");
+        assert!(opened.usage.verify(&enclave.signing.public().bytes).is_ok());
+        // Another renter cannot open it.
+        assert!(RenterKey::generate().open_reply(&sealed).is_err());
+    }
+
+    #[test]
+    fn the_binding_carries_the_enclaves_public_keys() {
+        let enclave = EnclaveKeys::generate();
+        let agent = ObjectId::from_hash(sion_core::hash::hash_domain("test/agent", b"a"));
+        let binding = enclave.binding(&agent, [3u8; 32], 9_000);
+        assert_eq!(binding.kem_public_key, enclave.sealing.public().bytes);
+        assert_eq!(binding.signing_public_key, enclave.signing.public().bytes);
+        assert_eq!(binding.agent, agent.as_hash().0);
+        assert_eq!(binding.expires_at, 9_000);
     }
 }
