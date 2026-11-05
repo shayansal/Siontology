@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://siontology.org/docs/agent/commerce/ap2.schema.json",
+  "title": "org.siontology.ap2",
+  "description": "The ACP extension org.siontology.ap2: AP2 v0.2 mandates and receipts on a checkout session. It adds $.CheckoutSession.ap2 (what the merchant offers and answers) and $.CheckoutSessionCompleteRequest.ap2 (what the buyer presents).",
+  "$defs": {
+    "CheckoutSession.ap2": {
+      "type": "object",
+      "required": ["checkout_jwt", "audience", "nonce", "merchant"],
+      "properties": {
+        "checkout_jwt": {"type": "string", "description": "The checkout the merchant signed (ES256), in UCP's shape: what a checkout mandate carries and hashes as checkout_hash."},
+        "audience": {"type": "string", "description": "The aud the closing hop of each mandate must name."},
+        "nonce": {"type": "string", "description": "The nonce the closing hop of each mandate must name; it changes whenever the session is priced again."},
+        "merchant": {"type": "object", "required": ["id", "name"], "description": "The merchant as an AP2 payee: what a payment mandate must name."},
+        "checkout_receipt": {"type": "string", "description": "The merchant's signed checkout receipt (JWT), once a mandate was answered."},
+        "payment_receipt": {"type": "string", "description": "The merchant's signed payment receipt (JWT), once a payment mandate was answered."}
+      }
+    },
+    "CheckoutSessionCompleteRequest.ap2": {
+      "type": "object",
+      "properties": {
+        "checkout_mandate": {"type": "string", "description": "A Delegate SD-JWT chain ending in a closed mandate.checkout.1."},
+        "payment_mandate": {"type": "string", "description": "A Delegate SD-JWT chain ending in a closed mandate.payment.1 for the session's total, to the merchant."}
+      }
+    }
+  }
+}

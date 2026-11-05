@@ -19,11 +19,14 @@
 #![recursion_limit = "256"]
 
 pub mod a2a;
+pub mod acp;
+pub mod acp_cli;
 pub mod agent_import;
 pub mod agent_mcp;
 pub mod agent_memory;
 pub mod agent_storage;
 pub mod agents;
+pub mod ap2;
 pub mod archive;
 pub mod batcher;
 pub mod bench;

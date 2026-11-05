@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://siontology.org/docs/agent/commerce/config.schema.json",
+  "title": "org.siontology.ledger handler config",
+  "description": "The config of the ACP payment handler org.siontology.ledger: where and how a checkout session is paid in USD on a Siontology chain.",
+  "type": "object",
+  "required": ["network", "chain", "asset", "micros_per_cent", "pay_to", "requirements"],
+  "properties": {
+    "network": {"type": "string", "description": "The chain as CAIP-2: sion: and the first 16 bytes of its identity in hex."},
+    "chain": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "The chain's full identity; a buyer compares it with the one it pinned."},
+    "asset": {"const": "USD"},
+    "micros_per_cent": {"const": 10000, "description": "Siontology amounts are micro-USD; ACP's minor unit for USD is the cent."},
+    "pay_to": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "The merchant's account."},
+    "requirements": {
+      "type": "object",
+      "description": "An x402 version 2 payment requirement (scheme exact) for the session's total, with a fresh nonce: what the signed transaction must pay.",
+      "required": ["scheme", "network", "asset", "amount", "payTo", "maxTimeoutSeconds", "extra"],
+      "properties": {
+        "scheme": {"const": "exact"},
+        "network": {"type": "string"},
+        "asset": {"const": "USD"},
+        "amount": {"type": "string", "pattern": "^[0-9]+$", "description": "Micro-USD: the session's total in cents times 10000."},
+        "payTo": {"type": "string"},
+        "maxTimeoutSeconds": {"type": "integer"},
+        "extra": {"type": "object", "description": "chain, decimals, nonce, and purpose (what a charter payment must give)."}
+      }
+    }
+  }
+}

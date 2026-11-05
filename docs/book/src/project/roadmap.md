@@ -57,7 +57,7 @@ simulated:
   committee is replaced.
 - **Personhood**, **confidential amounts** and **compliance by
   zero-knowledge proof**.
-- **Adapters** for AP2, ERC-8004 and C2PA (x402 is built).
+- **Adapters** for ERC-8004 and C2PA (x402, AP2 mandates and ACP checkout are built).
 - **Archival** of published data, and incentives to keep it.
 - **A release** of `sion`, signed with the release key, and the agent run
   against the real model providers and messaging services: it has been

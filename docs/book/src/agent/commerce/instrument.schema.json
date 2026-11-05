@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://siontology.org/docs/agent/commerce/instrument.schema.json",
+  "title": "org.siontology.ledger instrument",
+  "description": "An ACP payment instrument for the handler org.siontology.ledger: a Siontology transaction signed against the handler's requirements and not submitted.",
+  "type": "object",
+  "required": ["handler_id", "type", "credential"],
+  "properties": {
+    "id": {"type": "string"},
+    "handler_id": {"type": "string"},
+    "type": {"const": "sion_transaction"},
+    "credential": {
+      "type": "object",
+      "required": ["type", "transaction"],
+      "properties": {
+        "type": {"const": "signed_transaction"},
+        "transaction": {"type": "string", "pattern": "^[0-9a-f]+$", "description": "The signed transaction's Borsh encoding, in hex: a USD transfer to pay_to of the amount, or an AgentPay under the payer's Agent Charter whose purpose is the requirements' purpose."}
+      }
+    }
+  }
+}

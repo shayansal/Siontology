@@ -10,6 +10,25 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Agentic commerce: ACP checkout and AP2 mandates
+
+- **Selling through ACP**: `sion agent sell serve` serves the Agentic
+  Commerce Protocol's checkout API (API version 2026-04-17) for a catalog
+  of agent work, with ACP's headers, idempotency and errors, and a payment
+  handler of its own, `org.siontology.ledger`: the session's total as an
+  x402 quote, paid with a signed Siontology transaction, the order made
+  only once its receipt verifies. `sion agent buy` buys from such a
+  merchant within a cap, from a wallet or under an Agent Charter. Trust
+  atom `agent:acp-checkout`.
+- **AP2 mandates**: the Agent Payments Protocol v0.2: SD-JWT (RFC 9901)
+  with ES256 and Delegate SD-JWT chains, checkout and payment mandates
+  checked as AP2's merchant and payment side must, every constraint it
+  defines, signed receipts, and issuing and closing mandates for a
+  shopping agent. A merchant takes them through the ACP extension
+  `org.siontology.ap2` and checks them before any money moves. Checked
+  against the encoded tokens of AP2's specification. Trust atom
+  `agent:ap2-mandate`.
+
 ### Improving itself, shared memory, projects and the trust layer
 
 - **Improving the whole agent**: `sion agent improve` tries changes to the

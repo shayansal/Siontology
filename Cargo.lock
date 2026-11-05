@@ -1660,6 +1660,7 @@ dependencies = [
 name = "sion-cli"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "base64",
  "borsh",
  "chacha20 0.9.1",

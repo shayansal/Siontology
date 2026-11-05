@@ -39,7 +39,7 @@ guides show the commands in use.
 | Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent rent serve`, `agent rent use`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent rent serve`, `agent rent use`, `agent sell serve`, `agent buy`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
 | Skills | `skill import`, `skill starter`, `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
@@ -813,6 +813,8 @@ Commands:
   browser        Browser profiles you sign in with, for agents' browsers to use (--browser-profile): your cookies and sessions, kept here
   hooks          The operator's hooks: commands of your own run before and after agents' tool calls (a hook before may block one, with a reason the model is given) and before and after their runs
   rent           Rent a profile's agent out to other people by the token, in an enclave they can check, or rent someone else's
+  sell           Sell an agent's work to other agents through the Agentic Commerce Protocol's checkout, paid in USD on this chain, and take their users' AP2 mandates
+  buy            Buy from a merchant that serves ACP's checkout and takes payment on Siontology: make a checkout session, check its total, pay it
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
@@ -2960,6 +2962,72 @@ Options:
       --simulated-platform <HEX>  Take a simulated enclave with this platform key (hex): for devnets, where there is no SEV-SNP hardware
   -h, --help                      Print help
 ```
+
+## `sion agent sell`
+
+```text
+Sell an agent's work to other agents through the Agentic Commerce Protocol's checkout, paid in USD on this chain, and take their users' AP2 mandates
+
+Usage: sion agent sell [OPTIONS] <COMMAND>
+
+Commands:
+  serve  Serve ACP's checkout API for a catalog (agent work at fixed prices), paid to a wallet in USD on this chain: other agents make a checkout session, pay it with a signed transaction, and get an order
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Selling and buying: ACP and AP2](../agent/commerce.md).
+
+## `sion agent sell serve`
+
+```text
+Serve ACP's checkout API for a catalog (agent work at fixed prices), paid to a wallet in USD on this chain: other agents make a checkout session, pay it with a signed transaction, and get an order
+
+Usage: sion agent sell serve [OPTIONS] --pay-to <PAY_TO> --name <NAME> <CATALOG>
+
+Arguments:
+  <CATALOG>  The catalog: `{"offers": [{"id", "name", "description", "price_usd"}]}`, prices in whole cents
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --pay-to <PAY_TO>      Who is paid: a wallet's name, or an account (64 hex digits)
+      --name <NAME>          The merchant's name, as buyers and their mandates see it
+      --listen-at <ADDRESS>  Where to listen [default: 127.0.0.1:8796]
+      --public-url <URL>     The URL buyers reach it at (its API base and order links); http://<listen-at> if not given
+      --tokens-env <NAME>    The environment variable holding the bearer tokens buyers are given, comma-separated, each at least 16 characters [default: SION_ACP_TOKENS]
+      --chain <HEX>          The chain identity payments are verified against (64 hex digits); the node's word if not given
+      --ap2-trust <FILE>     Take AP2 mandates whose roots these keys signed (a JWK Set file, `{"keys": [{"kid", "kty": "EC", "crv": "P-256", …}]}`)
+      --require-mandate      Complete a session only with an AP2 checkout mandate
+      --requests <N>         Serve this many requests, then stop (for trying it out)
+  -h, --help                 Print help
+```
+
+## `sion agent buy`
+
+```text
+Buy from a merchant that serves ACP's checkout and takes payment on Siontology: make a checkout session, check its total, pay it
+
+Usage: sion agent buy [OPTIONS] --max-usd <USD> <URL> <ITEMS>...
+
+Arguments:
+  <URL>       The merchant's API base URL
+  <ITEMS>...  The offers bought, by id (an id twice buys two)
+
+Options:
+      --node <NODE>       The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>   The wallet that pays (the agent's, with --charter) [default: alice]
+      --charter <ID>      Pay under this Agent Charter, from --allotment
+      --allotment <ID>    The agent's allotment under --charter
+      --max-usd <USD>     The most to pay, in USD
+      --chain <HEX>       The chain identity payments are checked against (64 hex digits)
+      --token-env <NAME>  The environment variable holding the merchant's token [default: SION_ACP_TOKEN]
+  -h, --help              Print help
+```
+
+See [Selling and buying: ACP and AP2](../agent/commerce.md).
 
 ## `sion agent meeting`
 

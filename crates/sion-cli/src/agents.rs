@@ -618,6 +618,38 @@ pub enum AgentCommand {
     /// enclave they can check, or rent someone else's.
     #[command(subcommand)]
     Rent(crate::rent_cli::RentCommand),
+    /// Sell an agent's work to other agents through the Agentic Commerce
+    /// Protocol's checkout, paid in USD on this chain, and take their
+    /// users' AP2 mandates.
+    #[command(subcommand)]
+    Sell(crate::acp_cli::SellCommand),
+    /// Buy from a merchant that serves ACP's checkout and takes payment on
+    /// Siontology: make a checkout session, check its total, pay it.
+    Buy {
+        /// The merchant's API base URL.
+        url: String,
+        /// The offers bought, by id (an id twice buys two).
+        #[arg(required = true)]
+        items: Vec<String>,
+        /// The wallet that pays (the agent's, with --charter).
+        #[arg(long, default_value = "alice")]
+        wallet: String,
+        /// Pay under this Agent Charter, from --allotment.
+        #[arg(long, value_name = "ID")]
+        charter: Option<String>,
+        /// The agent's allotment under --charter.
+        #[arg(long, value_name = "ID")]
+        allotment: Option<String>,
+        /// The most to pay, in USD.
+        #[arg(long, value_name = "USD")]
+        max_usd: String,
+        /// The chain identity payments are checked against (64 hex digits).
+        #[arg(long, value_name = "HEX")]
+        chain: Option<String>,
+        /// The environment variable holding the merchant's token.
+        #[arg(long, default_value = "SION_ACP_TOKEN", value_name = "NAME")]
+        token_env: String,
+    },
     /// Take a meeting's notes: dial in by phone through Twilio (its number
     /// and keys) or hear it here (the microphone, and what this machine
     /// plays), the transcript written as it goes, and the profile's agent
@@ -1339,6 +1371,27 @@ pub fn run(
         AgentCommand::XMentions(args) => crate::x_mentions::run(shared, args),
         AgentCommand::Meeting(args) => crate::meeting::run(shared, args),
         AgentCommand::Rent(command) => crate::rent_cli::run(shared, command),
+        AgentCommand::Sell(command) => crate::acp_cli::sell(shared, command),
+        AgentCommand::Buy {
+            url,
+            items,
+            wallet,
+            charter,
+            allotment,
+            max_usd,
+            chain,
+            token_env,
+        } => crate::acp_cli::buy(
+            shared,
+            &url,
+            &items,
+            &wallet,
+            charter.as_deref(),
+            allotment.as_deref(),
+            &max_usd,
+            chain.as_deref(),
+            &token_env,
+        ),
         AgentCommand::Scheduler { once, poll } => {
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)
@@ -2349,6 +2402,11 @@ pub(crate) fn print_receipt(session: &Session<'_>, view: &sion_node::TxView) {
         view.pulse,
         crate::describe::receipt(&session.names(), &view.effects)
     );
+}
+
+/// An object's id: 64 hex digits.
+pub(crate) fn parse_object(text: &str, what: &str) -> Result<ObjectId, CliError> {
+    parse_id(text, what)
 }
 
 fn parse_id(text: &str, what: &str) -> Result<ObjectId, CliError> {

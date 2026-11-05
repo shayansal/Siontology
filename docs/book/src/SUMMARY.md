@@ -36,6 +36,7 @@
 - [Work it takes on by itself](agent/work.md)
 - [Subagents and hired help](agent/teams.md)
 - [Renting your agent out](agent/renting.md)
+- [Selling and buying: ACP and AP2](agent/commerce.md)
 - [Graphs of agents](agent/graphs.md)
 
 # Build on the ledger
