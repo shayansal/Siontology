@@ -481,17 +481,54 @@ fn close(heard: &str, wanted: &str) -> bool {
 /// sion").
 const LEADING: usize = 2;
 
+/// The phrases `text` names, split by `|` (`"hey sion|ok sion"`), each as
+/// its words.
+pub fn phrases_of(text: &str) -> Result<Vec<Vec<String>>, String> {
+    let phrases: Vec<Vec<String>> = text
+        .split('|')
+        .map(|p| words(p).into_iter().map(|(w, _)| w).collect::<Vec<_>>())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if phrases.is_empty() {
+        return Err("give the phrase: \"hey sion\"".into());
+    }
+    Ok(phrases)
+}
+
+/// What follows one of `phrases` in `heard`, wherever it falls rather than
+/// only at the start: how a meeting's guest knows it was spoken to in the
+/// middle of a sentence ("so, Notes, could you summarize?"). The words are
+/// matched as leniently as a wake phrase's, so a transcriber that spells a
+/// name a letter off is still understood. `None` if no phrase is there, and
+/// an empty string if the phrase ends the line (it was named, but asked
+/// nothing).
+pub fn spoken_to(phrases: &[Vec<String>], heard: &str) -> Option<String> {
+    let said = words(heard);
+    for at in 0..said.len() {
+        for phrase in phrases {
+            let n = phrase.len();
+            if at + n <= said.len()
+                && phrase
+                    .iter()
+                    .zip(&said[at..at + n])
+                    .all(|(wanted, (word, _))| close(word, wanted))
+            {
+                return Some(rest_after(heard, said[at + n - 1].1));
+            }
+            // Its words run together ("heysion").
+            if n > 1 && close(&said[at].0, &phrase.concat()) {
+                return Some(rest_after(heard, said[at].1));
+            }
+        }
+    }
+    None
+}
+
 impl Wake {
     /// Phrases split by `|` (`"hey sion|ok sion"`), heard by `hearing`.
     pub fn parse(phrases: &str, hearing: Hearing, awake_secs: u64) -> Result<Wake, String> {
-        let phrases: Vec<Vec<String>> = phrases
-            .split('|')
-            .map(|p| words(p).into_iter().map(|(w, _)| w).collect::<Vec<_>>())
-            .filter(|p| !p.is_empty())
-            .collect();
-        if phrases.is_empty() {
-            return Err("give the wake phrase: --wake \"hey sion\"".into());
-        }
+        let phrases = phrases_of(phrases)
+            .map_err(|_| "give the wake phrase: --wake \"hey sion\"".to_string())?;
         Ok(Wake {
             phrases,
             hearing,

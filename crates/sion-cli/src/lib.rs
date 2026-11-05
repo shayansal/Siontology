@@ -68,6 +68,7 @@ pub mod mcp_auth;
 pub mod mcp_serve;
 pub mod meeting;
 pub mod meeting_bot;
+pub mod meeting_voice;
 pub mod memory;
 pub mod messengers;
 pub mod model_routes;
