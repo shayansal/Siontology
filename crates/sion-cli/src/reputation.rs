@@ -355,7 +355,7 @@ mod tests {
         let task = |seed: &[u8]| ObjectId::from_hash(sion_core::hash::hash_domain("t", seed));
         let result = ClaimId::from_hash(sion_core::hash::hash_domain("r", b"1"));
         let _ = Pulse(0);
-        let events = vec![
+        let events = [
             // Two tasks named for coder.
             Event::TaskPosted {
                 task: task(b"1"),
@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(record.failed, 1);
         // A task cancelled with the refund going to the worker itself is
         // not a release.
-        let events = vec![
+        let events = [
             Event::TaskPosted {
                 task: task(b"3"),
                 poster: account(b"lab"),
