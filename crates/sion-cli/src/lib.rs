@@ -79,6 +79,7 @@ pub mod openai_api;
 pub mod pairing;
 pub mod phone;
 pub mod profiles;
+pub mod projects;
 pub mod qq;
 pub mod realtime;
 pub mod recall;
