@@ -89,6 +89,7 @@ pub mod runtime;
 pub mod schedules;
 pub mod screens;
 pub mod secrets;
+pub mod self_improve;
 pub mod service;
 pub mod session;
 pub mod setup;
