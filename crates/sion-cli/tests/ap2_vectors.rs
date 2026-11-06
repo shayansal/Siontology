@@ -6,7 +6,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::{json, Value};
-use sion_cli::ap2::{self, Expect, Payment, PublicKey, Refusal, SigningKey, Token, Trust};
+use sion_cli::ap2::{self, Expect, Paid, Payment, PublicKey, Refusal, SigningKey, Token, Trust};
 
 fn vector(name: &str) -> String {
     std::fs::read_to_string(format!(
@@ -348,56 +348,68 @@ fn a_payment_mandate_approves_one_amount_to_one_payee_for_one_checkout() {
         .unwrap();
         ap2::chain(&[open, &closing])
     };
-    let payment = |amount: u64, spent: Option<u64>| Payment {
-        checkout_hash: &checkout.checkout_hash,
-        payee: &s.merchant,
-        amount,
-        currency: "usd",
-        checkout_open: &checkout.open,
-        spent_before: spent,
-    };
-    let check = |chain: &str, amount: u64, spent: Option<u64>| {
-        ap2::verify_payment(chain, &s.trust(), expect(), &payment(amount, spent))
+    let check = |chain: &str, amount: u64, history: Option<&[Paid]>| {
+        ap2::verify_payment(
+            chain,
+            &s.trust(),
+            expect(),
+            &Payment {
+                checkout_hash: &checkout.checkout_hash,
+                payee: &s.merchant,
+                amount,
+                currency: "usd",
+                checkout_open: &checkout.open,
+                history,
+                now: NOW,
+            },
+        )
     };
     let reference = Token::parse(&open_checkout).unwrap().sd_hash().unwrap();
     let constraints = json!([
         {"type": "payment.amount_range", "currency": "USD", "min": 100, "max": 5000},
         {"type": "payment.allowed_payees", "allowed": [{"id": "m-1"}]},
-        {"type": "payment.allowed_payment_instruments", "allowed": [{"type": "sion_transaction"}]},
+        {"type": "payment.allowed_payment_instruments", "allowed": [{"id": "pi-1"}]},
         {"type": "payment.reference", "conditional_transaction_id": reference},
         {"type": "payment.execution_date", "not_before": "2027-01-01", "not_after": "2027-01-31T23:59:59Z"},
-        {"type": "payment.budget", "currency": "USD", "max": 6000},
+        // A budget is in major units, as AP2's example and SDK have it.
+        {"type": "payment.budget", "currency": "USD", "max": 60.00},
     ]);
     let mandate = open(constraints.clone());
-    let approved = check(&closed(&mandate, 1999), 1999, Some(0)).unwrap();
+    let none: &[Paid] = &[];
+    let approved = check(&closed(&mandate, 1999), 1999, Some(none)).unwrap();
     assert_eq!(
         approved.open,
         Some(Token::parse(&mandate).unwrap().sd_hash().unwrap())
     );
     // The amount it approves, and no other.
     assert!(matches!(
-        check(&closed(&mandate, 1999), 2000, Some(0)),
+        check(&closed(&mandate, 1999), 2000, Some(none)),
         Err(Refusal::InvalidMandate(_))
     ));
     // Over the range.
     assert!(matches!(
-        check(&closed(&mandate, 9999), 9999, Some(0)),
+        check(&closed(&mandate, 9999), 9999, Some(none)),
         Err(Refusal::InvalidMandate(_))
     ));
-    // Over the budget, with what was spent before.
+    // Over the budget, with what was paid before: 45.00 and 19.99 is more
+    // than 60.00; 40.00 and 19.99 is not.
+    let day = 24 * 3600;
+    let before = [Paid {
+        at: NOW - day,
+        amount: 4500,
+    }];
     assert!(matches!(
-        check(&closed(&mandate, 1999), 1999, Some(4500)),
+        check(&closed(&mandate, 1999), 1999, Some(&before)),
         Err(Refusal::InvalidMandate(_))
     ));
+    let before = [Paid {
+        at: NOW - day,
+        amount: 4000,
+    }];
+    assert!(check(&closed(&mandate, 1999), 1999, Some(&before)).is_ok());
     // A budget without a history is not taken on trust.
     assert!(matches!(
         check(&closed(&mandate, 1999), 1999, None),
-        Err(Refusal::UnresolvedConstraint(_))
-    ));
-    // Recurrence is not tracked here, so it is unresolved.
-    let recurring = open(json!([{"type": "payment.agent_recurrence", "frequency": "MONTHLY"}]));
-    assert!(matches!(
-        check(&closed(&recurring, 1999), 1999, Some(0)),
         Err(Refusal::UnresolvedConstraint(_))
     ));
     // Another payee is not paid.
@@ -407,17 +419,190 @@ fn a_payment_mandate_approves_one_amount_to_one_payee_for_one_checkout() {
         &s.trust(),
         expect(),
         &Payment {
+            checkout_hash: &checkout.checkout_hash,
             payee: &elsewhere,
-            ..payment(1999, Some(0))
+            amount: 1999,
+            currency: "usd",
+            checkout_open: &checkout.open,
+            history: Some(none),
+            now: NOW,
         },
     );
     assert!(matches!(to_other, Err(Refusal::InvalidMandate(_))));
     // Outside its dates.
     let january = open(json!([{"type": "payment.execution_date", "not_after": "2026-12-31"}]));
     assert!(matches!(
-        check(&closed(&january, 1999), 1999, Some(0)),
+        check(&closed(&january, 1999), 1999, Some(none)),
         Err(Refusal::InvalidMandate(_))
     ));
+}
+
+#[test]
+fn a_recurring_payment_mandate_is_used_as_often_as_it_says() {
+    let s = setting();
+    let open_checkout = s.open_checkout(json!([]));
+    let checkout = s.verify(&s.closed_checkout(&open_checkout, "n-1")).unwrap();
+    let open = |constraints: Value| {
+        ap2::issue(
+            &json!({
+                "vct": ap2::PAYMENT_OPEN,
+                "constraints": constraints,
+                "cnf": {"jwk": s.agent.public().jwk()},
+                "exp": NOW + 400 * 24 * 3600,
+            }),
+            &s.provider,
+            "p",
+        )
+    };
+    let closed = |open: &str| {
+        let closing = ap2::close(
+            open,
+            &json!({
+                "vct": ap2::PAYMENT,
+                "transaction_id": checkout.checkout_hash,
+                "payee": s.merchant,
+                "payment_amount": {"amount": 999, "currency": "USD"},
+                "payment_instrument": {"id": "pi-1", "type": "sion_transaction"},
+            }),
+            &s.agent,
+            "m-1",
+            "n-1",
+            NOW,
+        )
+        .unwrap();
+        ap2::chain(&[open, &closing])
+    };
+    let at = |now: u64, history: Option<&[Paid]>, chain: &str| {
+        ap2::verify_payment(
+            chain,
+            &s.trust(),
+            Expect {
+                audience: "m-1",
+                nonce: "n-1",
+                now: NOW,
+            },
+            &Payment {
+                checkout_hash: &checkout.checkout_hash,
+                payee: &s.merchant,
+                amount: 999,
+                currency: "USD",
+                checkout_open: &checkout.open,
+                history,
+                now,
+            },
+        )
+    };
+    // Recurring, bounded per payment and in all.
+    let recurring = |recurrence: Value| {
+        closed(&open(json!([
+            recurrence,
+            {"type": "payment.amount_range", "currency": "USD", "max": 1000},
+            {"type": "payment.budget", "currency": "USD", "max": 100},
+        ])))
+    };
+    let monthly = recurring(
+        json!({"type": "payment.agent_recurrence", "frequency": "MONTHLY", "max_occurrences": 3}),
+    );
+    let day = 24 * 3600;
+    let none: &[Paid] = &[];
+    // The first payment, and one a calendar month after the last.
+    assert!(at(NOW, Some(none), &monthly).is_ok());
+    let once = [Paid {
+        at: NOW - 31 * day,
+        amount: 999,
+    }];
+    assert!(at(NOW, Some(&once), &monthly).is_ok());
+    // Not sooner than a month after the last.
+    let lately = [Paid {
+        at: NOW - 10 * day,
+        amount: 999,
+    }];
+    assert!(matches!(
+        at(NOW, Some(&lately), &monthly),
+        Err(Refusal::InvalidMandate(_))
+    ));
+    // Not more often than it says, however long ago.
+    let thrice = [
+        Paid {
+            at: NOW - 100 * day,
+            amount: 999,
+        },
+        Paid {
+            at: NOW - 70 * day,
+            amount: 999,
+        },
+        Paid {
+            at: NOW - 40 * day,
+            amount: 999,
+        },
+    ];
+    let said = at(NOW, Some(&thrice), &monthly).unwrap_err();
+    assert!(said.to_string().contains("allows 3 payments"), "{said}");
+    // Recurrence is not taken on trust: without a history, or with a
+    // frequency not known here, it is unresolved.
+    assert!(matches!(
+        at(NOW, None, &monthly),
+        Err(Refusal::UnresolvedConstraint(_))
+    ));
+    let fortnightly =
+        recurring(json!({"type": "payment.agent_recurrence", "frequency": "FORTNIGHTLY"}));
+    assert!(matches!(
+        at(NOW, Some(none), &fortnightly),
+        Err(Refusal::UnresolvedConstraint(_))
+    ));
+    // Weekly, and on demand.
+    let weekly = recurring(json!({"type": "payment.agent_recurrence", "frequency": "WEEKLY"}));
+    let last = [Paid {
+        at: NOW - 6 * day,
+        amount: 999,
+    }];
+    assert!(at(NOW, Some(&last), &weekly).is_err());
+    assert!(at(NOW + day, Some(&last), &weekly).is_ok());
+    let any_time = recurring(json!({"type": "payment.agent_recurrence", "frequency": "ON_DEMAND"}));
+    assert!(at(NOW, Some(&last), &any_time).is_ok());
+    // Recurring without a bound per payment, or in all, is not taken.
+    let unbounded = closed(&open(json!([
+        {"type": "payment.agent_recurrence", "frequency": "ON_DEMAND"},
+        {"type": "payment.budget", "currency": "USD", "max": 100},
+    ])));
+    let said = at(NOW, Some(none), &unbounded).unwrap_err();
+    assert!(
+        said.to_string().contains("requires payment.amount_range"),
+        "{said}"
+    );
+}
+
+#[test]
+fn recurrence_counts_calendar_months_and_budgets_count_exactly() {
+    // 2027-01-31 plus a month is the end of February; plus a quarter is the
+    // end of April; a year after a leap day is the 28th of February.
+    let jan31 = ap2::seconds_of("2027-01-31T12:00:00Z").unwrap() as u64;
+    assert_eq!(
+        ap2::next_allowed(jan31, "MONTHLY"),
+        Some(ap2::seconds_of("2027-02-28T12:00:00Z").unwrap() as u64)
+    );
+    assert_eq!(
+        ap2::next_allowed(jan31, "QUARTERLY"),
+        Some(ap2::seconds_of("2027-04-30T12:00:00Z").unwrap() as u64)
+    );
+    let leap = ap2::seconds_of("2028-02-29T00:00:00Z").unwrap() as u64;
+    assert_eq!(
+        ap2::next_allowed(leap, "ANNUALLY"),
+        Some(ap2::seconds_of("2029-02-28T00:00:00Z").unwrap() as u64)
+    );
+    assert_eq!(ap2::next_allowed(jan31, "DAILY"), Some(jan31 + 24 * 3600));
+    assert_eq!(
+        ap2::next_allowed(jan31, "BIWEEKLY"),
+        Some(jan31 + 14 * 24 * 3600)
+    );
+    assert_eq!(ap2::next_allowed(jan31, "HOURLY"), None);
+    // Major units to minor, exactly: no float is involved.
+    assert_eq!(ap2::minor_units(&json!("1000.00"), "USD"), Some(100_000));
+    assert_eq!(ap2::minor_units(&json!(19.99), "USD"), Some(1999));
+    assert_eq!(ap2::minor_units(&json!(500), "JPY"), Some(500));
+    assert_eq!(ap2::minor_units(&json!("0.001"), "USD"), None);
+    assert_eq!(ap2::minor_units(&json!("1.5"), "JPY"), None);
+    assert_eq!(ap2::minor_units(&json!("-1"), "USD"), None);
 }
 
 #[test]
@@ -447,4 +632,117 @@ fn a_receipt_names_the_mandate_it_answers() {
     let (_, claims) = ap2::verify_jws(&error, &key.public()).unwrap();
     assert_eq!(claims["status"], "Error");
     assert_eq!(claims["error"], "unresolved_constraint");
+}
+
+fn x5c_vector(name: &str) -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/tests/vectors/x5c/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
+fn pem(der: &[u8]) -> String {
+    use base64::engine::general_purpose::STANDARD;
+    let body = STANDARD.encode(der);
+    let lines: Vec<&str> = body
+        .as_bytes()
+        .chunks(64)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        lines.join("\n")
+    )
+}
+
+#[test]
+fn a_root_mandate_is_trusted_through_its_certificate_chain() {
+    // Test certificates (made for these tests, valid 2025 to 2125): a P-384
+    // root, a P-256 intermediate, a P-256 leaf whose key signs the root
+    // mandate; a rogue root; an intermediate that is not a CA; an expired
+    // leaf; an RSA root.
+    let s = setting();
+    let root = x5c_vector("root.der");
+    let inter = x5c_vector("inter.der");
+    let leaf = x5c_vector("leaf.der");
+    let leaf_key = SigningKey::from_pkcs8(&x5c_vector("leaf.p8")).unwrap();
+    let open_by = |key: &SigningKey, chain: &[Vec<u8>]| {
+        ap2::issue_x5c(
+            &json!({
+                "vct": ap2::CHECKOUT_OPEN,
+                "constraints": [],
+                "cnf": {"jwk": s.agent.public().jwk()},
+                "iat": NOW - 10,
+                "exp": NOW + 3600,
+            }),
+            key,
+            chain,
+        )
+    };
+    let verify = |open: &str, trust: &Trust| {
+        ap2::verify_checkout(
+            &s.closed_checkout(open, "n-1"),
+            trust,
+            expect(),
+            &s.checkout_jwt,
+            &s.merchant_key.public(),
+        )
+    };
+    let trust = Trust::new().with_root(root.clone());
+
+    // Leaf, then intermediate, to the trusted root (left out, as RFC 5280
+    // allows), or with the root sent too.
+    let open = open_by(&leaf_key, &[leaf.clone(), inter.clone()]);
+    assert!(verify(&open, &trust).is_ok());
+    let with_root = open_by(&leaf_key, &[leaf.clone(), inter.clone(), root.clone()]);
+    assert!(verify(&with_root, &trust).is_ok());
+    // The same root, trusted from PEM.
+    let from_pem = Trust::new().with_roots_pem(&pem(&root)).unwrap();
+    assert!(verify(&open, &from_pem).is_ok());
+
+    // A chain to a root not trusted is refused, and keys trusted by kid do
+    // not stand for roots.
+    let rogue = Trust::new().with_root(x5c_vector("rogue-root.der"));
+    assert!(matches!(
+        verify(&open, &rogue),
+        Err(Refusal::InvalidCredential(_))
+    ));
+    assert!(verify(&open, &s.trust()).is_err());
+    // Signed by a key that is not the leaf's.
+    assert!(verify(
+        &open_by(&s.provider, &[leaf.clone(), inter.clone()]),
+        &trust
+    )
+    .is_err());
+    // Without its intermediate.
+    assert!(verify(&open_by(&leaf_key, std::slice::from_ref(&leaf)), &trust).is_err());
+    // In the wrong order.
+    assert!(verify(&open_by(&leaf_key, &[inter.clone(), leaf.clone()]), &trust).is_err());
+    // Through an intermediate that is not a CA.
+    let noca_key = SigningKey::from_pkcs8(&x5c_vector("noca-leaf.p8")).unwrap();
+    let noca = open_by(
+        &noca_key,
+        &[x5c_vector("noca-leaf.der"), x5c_vector("noca-inter.der")],
+    );
+    assert!(verify(&noca, &trust).is_err());
+    // With an expired leaf.
+    let expired_key = SigningKey::from_pkcs8(&x5c_vector("expired-leaf.p8")).unwrap();
+    let expired = open_by(
+        &expired_key,
+        &[x5c_vector("expired-leaf.der"), inter.clone()],
+    );
+    assert!(verify(&expired, &trust).is_err());
+    // A chain that is not certificates.
+    assert!(verify(
+        &open_by(&leaf_key, &[b"not a certificate".to_vec()]),
+        &trust
+    )
+    .is_err());
+
+    // An RSA root signs a P-256 leaf.
+    let rsa = Trust::new().with_root(x5c_vector("rsa-root.der"));
+    let rsa_key = SigningKey::from_pkcs8(&x5c_vector("rsa-leaf.p8")).unwrap();
+    assert!(verify(&open_by(&rsa_key, &[x5c_vector("rsa-leaf.der")]), &rsa).is_ok());
+    assert!(verify(&open_by(&rsa_key, &[x5c_vector("rsa-leaf.der")]), &trust).is_err());
 }

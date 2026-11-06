@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://siontology.org/docs/agent/commerce/card-config.schema.json",
+  "title": "dev.acp.tokenized.card handler config, as Siontology's merchant declares it",
+  "description": "The config of ACP's card handler (version 2026-01-22) on a Siontology merchant: the merchant's id at its PSP, which a delegated card's allowance must name, and what it takes.",
+  "type": "object",
+  "required": ["merchant_id", "accepted_brands", "psp"],
+  "properties": {
+    "merchant_id": {"type": "string", "minLength": 1, "maxLength": 256, "description": "The merchant's id at its PSP: a delegated card's allowance.merchant_id."},
+    "accepted_brands": {"type": "array", "items": {"type": "string"}, "description": "The card brands taken (visa, mastercard, amex, discover, ...)."},
+    "accepted_funding_types": {"type": "array", "items": {"enum": ["credit", "debit", "prepaid"]}},
+    "psp": {"type": "string", "description": "Who charges the token: stripe, or the name of an ACP PSP that redeems its vault tokens."}
+  }
+}

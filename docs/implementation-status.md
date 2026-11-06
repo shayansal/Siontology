@@ -43,7 +43,7 @@ live.
 | Privacy: encrypted payloads, viewing keys, sealed orders | Built |
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
-| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP checkout) |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated) |
 | Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
@@ -992,36 +992,96 @@ requirements, and the close-out. The desk keeps its tabs in memory: a
 server that crashes loses what it had not settled. MCP's
 `sion_fetch_paid` pays with `exact` only.
 
-**Agentic commerce: ACP checkout and AP2 mandates: built (devnet
-scale).** `sion agent sell serve` serves the Agentic Commerce Protocol's
-checkout API at API version 2026-04-17 (`crate::acp`): the discovery
-document, create, update, retrieve, complete and cancel, with ACP's
-required headers, its idempotency rules (replay, conflict, in-flight, 24
-hours, no 5xx kept) and its flat errors. It declares one payment handler of
-its own, `org.siontology.ledger`, whose config is an x402 quote for the
-session's total; completing the session settles the signed transaction the
-instrument carries through the x402 facilitator, and the order is made
-only after its receipt verifies against the pinned chain
-(`agent:acp-checkout`). `sion agent buy` is the buyer: it checks the
-session's total against its cap and the chain against the pinned one, and
-pays from a wallet or under an Agent Charter. AP2 v0.2 (of 2026-04-28) is
-in `crate::ap2`: SD-JWT (RFC 9901) with ES256 and the Delegate SD-JWT
-chain, the merchant's and the payment side's verification, every
-constraint AP2 defines (an unknown one fails), signed receipts, and the
-shopping agent's issuing and closing of mandates. The merchant takes AP2
-through an ACP extension of its own, `org.siontology.ap2`: each session
-carries a checkout JWT the merchant signed, a mandate is checked before any
-money moves, an open checkout mandate makes one order, and receipts are
-returned (`agent:ap2-mandate`). Tested end to end on a devnet
-(`crates/sion-cli/tests/commerce.rs`), and against the encoded tokens of
-AP2's own specification, whose signatures and hash bindings check out
-here (`crates/sion-cli/tests/ap2_vectors.rs`); not tested against another
-implementation of either. Not built: card and wallet handlers (an agent
-that knows only those cannot pay this merchant), ACP's request signing,
-webhooks, delegated payment and authentication, 3-D Secure, the feed and
-cart APIs; AP2's x5c roots, OpenID4VP delegation from a user credential,
-and `payment.agent_recurrence`, which fails as unresolved. Sessions are
-kept in memory.
+**Agentic commerce: ACP and AP2: built (devnet scale).** `crate::acp`
+serves the Agentic Commerce Protocol at API version 2026-04-17.
+`sion agent sell serve` is the merchant: the discovery document; checkout
+(create, update, retrieve, complete, cancel) and carts (create, retrieve,
+replace, cancel); orders in ACP's shape, sent as `order_create` and
+`order_update` webhooks signed with `Merchant-Signature` (HMAC-SHA256 over
+`timestamp.body`), retried with backoff for up to twelve tries and
+delivered in order; and an admin API to list, fulfill and refund orders. A
+ledger refund is a transfer back from the merchant's wallet; a card refund
+goes through the PSP. Every request passes ACP's checks: a bearer token,
+`API-Version`, and idempotency (replay, conflict, in-flight, 24 hours, no
+`5xx` kept). Clients may also be made to sign with `Signature` and
+`Timestamp`, within 300 seconds. ACP does not say what is signed, so two
+profiles are checked: ES256 or Ed25519 over the body's RFC 8785 canonical
+JSON, and HMAC-SHA256 over `timestamp.body` (`agent:acp-signing`).
+
+Two payment handlers are served. `org.siontology.ledger` is an x402 quote
+for the session's total; the order is made only after the signed
+transaction's receipt verifies against the pinned chain
+(`agent:acp-checkout`). `dev.acp.tokenized.card` (2026-01-22) charges a
+card token one of two ways: through Stripe, as a PaymentIntent with a
+shared payment token, built to Stripe's documentation and tested against a
+stand-in, not against Stripe; or through an ACP PSP's vault, redeemed with
+`create_and_process_payment_intent` (the shape of NVIDIA's reference; ACP
+leaves redemption to the PSP). A card payment is the PSP's word
+(`agent:acp-card`). A merchant that asks for 3-D Secure states
+`authentication_metadata`. It charges a card only with an acceptable
+`authentication_result`; without one the session is
+`authentication_required`, and an issuer's demand for authentication is
+answered the same way.
+
+`sion agent commerce psp serve` is a PSP's delegate payment API. It checks
+a card and an allowance as ACP has it: one use, at most the session's
+total, for one merchant, until it expires. Card data is kept only in
+memory, encrypted with a key made for the process, and the CVC goes once
+the card is authorized. Its acquirer is simulated (`SimulatedAcquirer`):
+no card network is reached and no money moves. `sion agent commerce
+three-ds serve` is the Delegate Authentication API (create, authenticate,
+retrieve, the 3DS Method and a challenge) with a simulated issuer
+(`SimulatedAcs`), whose results say so in `cardholder_info`. Real 3-D
+Secure needs an EMVCo-certified 3DS server, which is not built.
+`sion agent commerce feeds serve` is an agent's Feed API, and `sion agent
+sell feed` publishes a catalog to one or writes ACP's offline snapshot.
+`sion agent buy` pays on the ledger or by card: it delegates the card,
+authenticates it with 3-D Secure when asked, and signs its requests if
+given a key. It answers a challenge only from the simulated issuer.
+
+A merchant's state is kept in a file (mode 0600, replaced atomically):
+sessions, carts, orders, idempotency keys, AP2 payment history and the
+webhook outbox. A restart takes the quotes back. A ledger payment that was
+settling is finished from its verified receipt, or let go if the ledger
+refused it or never saw it within five minutes. A card payment that was
+interrupted is payable again under the same charge key. The Feed API keeps
+its feeds. The PSP and the 3-D Secure provider keep nothing across a
+restart, so no card data is ever written.
+
+AP2 v0.2 (of 2026-04-28) is in `crate::ap2`: SD-JWT (RFC 9901) with ES256
+and the Delegate SD-JWT chain, the merchant's and the payment side's
+checks, every constraint AP2 defines (an unknown one fails), signed
+receipts, and issuing and closing mandates. A root mandate names its key by
+`kid` or by an `x5c` certificate chain to a root certificate the merchant
+trusts (DER or PEM). The chain is checked as RFC 5280 has it: validity,
+basic constraints and path length, key usage, unknown critical extensions,
+and ECDSA P-256 and P-384, RSA (2048 to 8192 bits) and Ed25519 signatures.
+Revocation is not checked. `payment.agent_recurrence` is checked against
+the payments the merchant recorded under the same open mandate: calendar
+periods between payments, and `max_occurrences`. As AP2's reference SDK
+requires, a recurring mandate must also carry `payment.amount_range` and
+`payment.budget`. A budget is read in major units, exactly. A completion's
+mandates are counted when they are checked, under one lock, and the count
+is undone if the payment fails. An open checkout mandate makes one order,
+unless the payment mandate with it recurs (`agent:ap2-mandate`). The
+merchant takes AP2 through an ACP extension of its own,
+`org.siontology.ap2`.
+
+Tested end to end on a devnet (`crates/sion-cli/tests/commerce.rs`,
+`commerce_cards.rs`) and against AP2's own specification tokens and test
+certificates (`ap2_vectors.rs`). Checked against outside implementations:
+34 requests and answers from a live run meet ACP's published JSON Schemas
+for 2026-04-17, with the AP2 extension's fields set aside as ACP's
+extension mechanism declares them (`scripts/interop/acp_schemas.py`). RFC
+8785's examples canonicalize as the RFC says, and both HMAC schemes match
+OpenSSL's known answers. Not run to the end: Google's AP2 reference SDK
+(its harness, in both directions, is in `scripts/interop/`, and no result
+is claimed for it), acp-node and Vercel's acp-handler. What reading their
+code and ACP's schemas showed is in [the commerce
+chapter](book/src/agent/commerce.md#interoperability). Not built: OpenID4VP
+delegation from a user credential, wallet handlers other than the ledger,
+ACP's discounts, fulfillment other than digital, and a refund API at the
+PSP (ACP defines none).
 
 **Not built:** adapters for ERC-8004 and C2PA.
 
@@ -1414,8 +1474,10 @@ the architecture's own:
 | `agent:measured-improvement` | A change the agent keeps was better beyond chance on the tasks it was tried on and regressed on no held-out task it already passed. Both bars are only as good as those tasks: a set that does not cover what the agent is used for, or one written to flatter a change, passes it, and nothing here chooses the tasks. The evidence recorded is the counts and the interval, not the runs themselves. |
 | `agent:vouched-memory` | A vouching is a claim on the voucher's bond, so who stands behind a shared fact costs something and can be ruled against; it says the voucher stands behind the fact, not that the fact is true. A revocation rests on the revoker's signature alone. A revoked fact and whatever rests on it are left out by the reader, not removed from any log, and only links the atoms actually carry (derived-from, assumes) are followed: a fact drawn from another without saying so is not pulled with it. |
 | `agent:project-budget` | A project's budget is counted here, in the file that holds the project, not escrowed on the ledger: it bounds what the agent records spending against the project, and the charter and its allotments are what actually bound what it can spend. A project that is ended or out of budget takes no more work through the project, which is not the same as the agent stopping. |
-| `agent:acp-checkout` | An ACP order is made only once the payment for the session's total has executed on the ledger and its receipt verifies against the chain the merchant pinned, so a merchant is not paid in words; what was bought is the merchant's to deliver, and nothing on the ledger says it was. A buyer is bounded by its cap and by its Agent Charter, not by the merchant. The handler is Siontology's own: the ACP specification names it as an extension point, and no other ACP party is known to speak it. The bearer token is the only check of who is asking. |
-| `agent:ap2-mandate` | A mandate is taken as its user's because its root is signed by a key the merchant trusts by `kid`: an agent provider's trusted surface, which AP2 says the agent must not be able to use, and that is the provider's promise, not something checked here. What a closed mandate approves is checked exactly (the checkout this merchant signed, the payee, the amount); what the open mandate's constraints allow is evaluated by this code's reading of AP2 v0.2, a draft, and the budget is counted in memory by the merchant that was paid. |
+| `agent:acp-checkout` | An ACP order paid on the ledger is made only once the payment for the session's total has executed and its receipt verifies against the chain the merchant pinned, so a merchant is not paid in words; what was bought is the merchant's to deliver, and nothing on the ledger says it was. A buyer is bounded by its cap and by its Agent Charter, not by the merchant. The handler is Siontology's own: the ACP specification names handlers as an extension point, and no other ACP party is known to speak it. Who is asking is a bearer token, and a signature only for clients made to sign. Webhooks are signed with a secret the merchant and the platform share, and are delivered at least once: a receiver keeps the `Request-Id`s it has seen. |
+| `agent:acp-card` | A card payment is the PSP's word: the order is made when the PSP says the charge succeeded, and nothing here can check that money moved; a 3-D Secure result is the authentication provider's word, passed to the PSP as it came. The PSP and provider served here simulate the acquirer and the issuer: they move no money and authenticate no one, and say so. A PSP's allowance is checked by that PSP, not by the merchant. |
+| `agent:acp-signing` | ACP names request signatures but not what is signed, so a signature is checked as one of two profiles chosen here (ES256 or Ed25519 over the RFC 8785 canonical body, the timestamp only checked for freshness; or HMAC-SHA256 over `timestamp.body`): another implementation's signatures verify only if it signs the same way. A signature binds the body and, in the HMAC profile, the time; it does not bind the method or the path. |
+| `agent:ap2-mandate` | A mandate is taken as its user's because its root is signed by a key the merchant trusts, by `kid` or through an `x5c` chain to a root certificate it trusts: an agent provider's trusted surface, which AP2 says the agent must not be able to use, and that is the provider's promise, not something checked here; a certificate's revocation is not checked. What a closed mandate approves is checked exactly (the checkout this merchant signed, the payee, the amount); what the open mandate's constraints allow is evaluated by this code's reading of AP2 v0.2, a draft. A budget or a recurrence is counted from the payments this merchant recorded under the mandate, in its state file: payments made elsewhere under the same mandate are not counted, and a lost state file starts the count again. |
 | `agent:meeting-voice` | A guest given a voice speaks whatever the agent says into the meeting, to everyone in it. It answers any line that names it, wherever the name falls, so a name that is also an ordinary word is answered when anyone happens to say it, and a transcriber's mishearing can both miss a question and invent one. What it says rests on the meeting's own words, which are content from outside. |
 | `agent:github-webhooks` | A webhook is taken as GitHub's when it carries GitHub's signature with the operator's secret; the listener speaks plain HTTP, and TLS is the operator's proxy's. A delivery copied on its way could be sent again, and is taken once by its event's id. |
 | `agent:imported-agent` | What an import brings over from OpenClaw or Hermes Agent into a profile's instructions is that agent's own files, which it may have written from what it read; the plan shows them and names the patterns worth a look, and the block tells the model they are another agent's notes, but once applied they reach every session's prompt as the operator's instructions do. |

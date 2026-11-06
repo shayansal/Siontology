@@ -1670,6 +1670,7 @@ dependencies = [
  "k256",
  "miniz_oxide",
  "nnnoiseless",
+ "proptest",
  "qrcode",
  "rand_core 0.6.4",
  "regex",
@@ -1694,6 +1695,7 @@ dependencies = [
  "thiserror",
  "tiny_http",
  "ureq",
+ "x509-cert",
  "zeroize",
 ]
 

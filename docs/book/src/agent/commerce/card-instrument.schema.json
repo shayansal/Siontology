@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://siontology.org/docs/agent/commerce/card-instrument.schema.json",
+  "title": "dev.acp.tokenized.card instrument",
+  "description": "An ACP payment instrument for the card handler: the token the merchant's PSP gave for a delegated card (a vault token, or a Stripe shared payment token), for one checkout.",
+  "type": "object",
+  "required": ["type", "credential"],
+  "properties": {
+    "id": {"type": "string"},
+    "handler_id": {"type": "string"},
+    "type": {"const": "card"},
+    "credential": {
+      "type": "object",
+      "required": ["type", "token"],
+      "properties": {
+        "type": {"const": "spt"},
+        "token": {"type": "string", "minLength": 1, "description": "The PSP's token: vt_... from an ACP PSP's delegate_payment, or spt_... from Stripe."}
+      }
+    }
+  }
+}

@@ -10,6 +10,47 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Agentic commerce: the rest of ACP, and AP2's certificates and recurrence
+
+- **Cards**: the merchant takes ACP's `dev.acp.tokenized.card` handler,
+  charging a delegated card token through Stripe's shared payment tokens
+  (built to Stripe's documentation, tested against a stand-in) or through
+  an ACP PSP. `sion agent commerce psp serve` is a PSP's delegate payment
+  API: a card vaulted for one checkout, its total, one merchant and a
+  short time, kept only in memory and encrypted, its acquirer simulated.
+  Trust atom `agent:acp-card`.
+- **3-D Secure**: a merchant can ask for it (`authentication_metadata`)
+  and charges a card only with an acceptable `authentication_result`.
+  `sion agent commerce three-ds serve` is ACP's Delegate Authentication
+  API, with its 3DS Method and challenge, its issuer simulated. The buyer
+  authenticates when the merchant or the issuer asks.
+- **Request signing**: `Signature` and `Timestamp`, checked per client, as
+  ES256 or Ed25519 over the body's RFC 8785 canonical JSON or as
+  HMAC-SHA256 over `timestamp.body`; `sion agent commerce keygen` makes a
+  key. Trust atom `agent:acp-signing`.
+- **Orders and webhooks**: orders in ACP's shape, sent as `order_create`
+  and `order_update` webhooks signed with `Merchant-Signature`, retried
+  and delivered in order; `sion agent sell orders`, `fulfill` and `refund`
+  through the merchant's admin API, a ledger refund a transfer back to the
+  payer. `sion agent commerce webhooks` receives them.
+- **Carts and feeds**: ACP's cart API on the merchant; the agent-hosted
+  Feed API (`sion agent commerce feeds serve`), and `sion agent sell feed`
+  to publish a catalog to one or write its offline snapshot.
+- **Kept across restarts**: a merchant's sessions, carts, orders,
+  idempotency keys, AP2 history and webhook outbox are kept in a file and
+  taken back, quotes included; a payment left settling is finished from
+  its verified receipt.
+- **AP2**: a root mandate's key from an `x5c` certificate chain to a
+  trusted root (RFC 5280 path checks); `payment.agent_recurrence` against
+  the payments recorded under the same mandate, with calendar periods and
+  `max_occurrences`; budgets in major units, exactly.
+- **Checked against outside work**: 34 requests and answers from a live
+  run meet ACP's published JSON Schemas. The check found four faults here,
+  now fixed; among them, the ledger instrument's credential is now carried
+  as ACP's `token` (the old `transaction` is still taken). Scripts for
+  AP2's reference SDK are in `scripts/interop/`. JSON numbers now parse
+  exactly (`serde_json`'s `float_roundtrip`), which RFC 8785 needs.
+
 ### Agentic commerce: ACP checkout and AP2 mandates
 
 - **Selling through ACP**: `sion agent sell serve` serves the Agentic

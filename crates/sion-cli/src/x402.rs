@@ -325,6 +325,79 @@ impl<'l> Facilitator<'l> {
         network(&self.chain)
     }
 
+    /// The ledger it settles on.
+    pub fn ledger(&self) -> &'l dyn Ledger {
+        self.ledger
+    }
+
+    /// The chain identity receipts are verified against.
+    pub fn chain(&self) -> Hash32 {
+        self.chain
+    }
+
+    /// Takes back a quote this facilitator made before (for `resource`, as
+    /// `requirements` say, until `expires_at` in seconds since 1970): a
+    /// service that kept its quotes across a restart still settles payments
+    /// signed against them. Refused if the quote is for another chain, is
+    /// not an exact USD quote, or has expired.
+    pub fn restore(
+        &self,
+        resource: &str,
+        requirements: &PaymentRequirements,
+        expires_at: u64,
+    ) -> Result<(), CliError> {
+        if requirements.network != self.network()
+            || requirements.extra["chain"].as_str() != Some(self.chain.to_hex().as_str())
+        {
+            return Err(CliError::Usage("the quote is for another chain".into()));
+        }
+        if requirements.scheme != SCHEME_EXACT || requirements.asset != ASSET_USD {
+            return Err(CliError::Usage(
+                "the quote is not an exact USD quote".into(),
+            ));
+        }
+        let nonce = requirements.extra["nonce"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| CliError::Usage("the quote has no nonce".into()))?;
+        if requirements.extra["purpose"].as_str() != Some(purpose(nonce).as_str()) {
+            return Err(CliError::Usage(
+                "the quote's purpose is not its nonce's".into(),
+            ));
+        }
+        let pay_to = parse_account(&requirements.pay_to)?;
+        let amount = requirements
+            .amount
+            .parse::<u128>()
+            .map(Amount)
+            .map_err(|_| CliError::Usage("the quote's amount does not read".into()))?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if expires_at <= now {
+            return Err(CliError::Usage("the quote has expired".into()));
+        }
+        let left = Duration::from_secs(expires_at - now);
+        let mut quotes = self.quotes.lock().expect("quotes lock");
+        let at = Instant::now();
+        quotes.retain(|_, q| q.expires > at);
+        if quotes.len() >= MAX_QUOTES && !quotes.contains_key(nonce) {
+            return Err(CliError::Usage("too many quotes are open".into()));
+        }
+        quotes.insert(
+            nonce.to_string(),
+            Quote {
+                requirements: requirements.clone(),
+                resource: resource.to_string(),
+                pay_to,
+                amount,
+                expires: at + left,
+            },
+        );
+        Ok(())
+    }
+
     /// Quotes `amount` USD for `resource`, payable to `pay_to` within
     /// `valid_for`.
     pub fn quote(

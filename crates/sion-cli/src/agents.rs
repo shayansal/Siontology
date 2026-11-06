@@ -623,33 +623,14 @@ pub enum AgentCommand {
     /// users' AP2 mandates.
     #[command(subcommand)]
     Sell(crate::acp_cli::SellCommand),
-    /// Buy from a merchant that serves ACP's checkout and takes payment on
-    /// Siontology: make a checkout session, check its total, pay it.
-    Buy {
-        /// The merchant's API base URL.
-        url: String,
-        /// The offers bought, by id (an id twice buys two).
-        #[arg(required = true)]
-        items: Vec<String>,
-        /// The wallet that pays (the agent's, with --charter).
-        #[arg(long, default_value = "alice")]
-        wallet: String,
-        /// Pay under this Agent Charter, from --allotment.
-        #[arg(long, value_name = "ID")]
-        charter: Option<String>,
-        /// The agent's allotment under --charter.
-        #[arg(long, value_name = "ID")]
-        allotment: Option<String>,
-        /// The most to pay, in USD.
-        #[arg(long, value_name = "USD")]
-        max_usd: String,
-        /// The chain identity payments are checked against (64 hex digits).
-        #[arg(long, value_name = "HEX")]
-        chain: Option<String>,
-        /// The environment variable holding the merchant's token.
-        #[arg(long, default_value = "SION_ACP_TOKEN", value_name = "NAME")]
-        token_env: String,
-    },
+    /// Buy from a merchant that serves ACP's checkout: make a checkout
+    /// session, check its total, pay it on Siontology or by a card
+    /// delegated to the merchant's PSP (with 3-D Secure if asked).
+    Buy(crate::acp_cli::BuyArgs),
+    /// The services around an ACP checkout: a PSP's delegate payment vault,
+    /// a 3-D Secure provider, an agent's Feed API, a webhook receiver.
+    #[command(subcommand)]
+    Commerce(crate::acp_cli::CommerceCommand),
     /// Take a meeting's notes: dial in by phone through Twilio (its number
     /// and keys) or hear it here (the microphone, and what this machine
     /// plays), the transcript written as it goes, and the profile's agent
@@ -1372,26 +1353,8 @@ pub fn run(
         AgentCommand::Meeting(args) => crate::meeting::run(shared, args),
         AgentCommand::Rent(command) => crate::rent_cli::run(shared, command),
         AgentCommand::Sell(command) => crate::acp_cli::sell(shared, command),
-        AgentCommand::Buy {
-            url,
-            items,
-            wallet,
-            charter,
-            allotment,
-            max_usd,
-            chain,
-            token_env,
-        } => crate::acp_cli::buy(
-            shared,
-            &url,
-            &items,
-            &wallet,
-            charter.as_deref(),
-            allotment.as_deref(),
-            &max_usd,
-            chain.as_deref(),
-            &token_env,
-        ),
+        AgentCommand::Buy(args) => crate::acp_cli::buy(shared, args),
+        AgentCommand::Commerce(command) => crate::acp_cli::commerce(command),
         AgentCommand::Scheduler { once, poll } => {
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)

@@ -11,10 +11,11 @@
     "type": {"const": "sion_transaction"},
     "credential": {
       "type": "object",
-      "required": ["type", "transaction"],
+      "required": ["type", "token"],
       "properties": {
         "type": {"const": "signed_transaction"},
-        "transaction": {"type": "string", "pattern": "^[0-9a-f]+$", "description": "The signed transaction's Borsh encoding, in hex: a USD transfer to pay_to of the amount, or an AgentPay under the payer's Agent Charter whose purpose is the requirements' purpose."}
+        "token": {"type": "string", "pattern": "^[0-9a-f]+$", "description": "The signed transaction's Borsh encoding, in hex: a USD transfer to pay_to of the amount, or an AgentPay under the payer's Agent Charter whose purpose is the requirements' purpose. ACP's instrument requires its credential's token."},
+        "transaction": {"type": "string", "pattern": "^[0-9a-f]+$", "description": "The same, as the handler's first version named it; still taken when token is absent."}
       }
     }
   }

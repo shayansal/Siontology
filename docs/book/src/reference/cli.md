@@ -39,7 +39,7 @@ guides show the commands in use.
 | Network | `devnet`, `node`, `gateway`, `genesis`, `status`, `pulse`, `events`, `forced`, `censor` |
 | Wallets and money | `keys new`, `keys show`, `keys validator`, `keys gateway`, `balance`, `faucet`, `send` |
 | Knowledge | `bond`, `claim issue`, `claim show`, `claim decide`, `accept`, `challenge`, `rule` |
-| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent rent serve`, `agent rent use`, `agent sell serve`, `agent buy`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
+| Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent rent serve`, `agent rent use`, `agent sell serve`, `agent sell orders`, `agent sell fulfill`, `agent sell refund`, `agent sell feed`, `agent buy`, `agent commerce psp`, `agent commerce three-ds`, `agent commerce feeds`, `agent commerce webhooks`, `agent commerce keygen`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
 | Skills | `skill import`, `skill starter`, `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
@@ -814,7 +814,8 @@ Commands:
   hooks          The operator's hooks: commands of your own run before and after agents' tool calls (a hook before may block one, with a reason the model is given) and before and after their runs
   rent           Rent a profile's agent out to other people by the token, in an enclave they can check, or rent someone else's
   sell           Sell an agent's work to other agents through the Agentic Commerce Protocol's checkout, paid in USD on this chain, and take their users' AP2 mandates
-  buy            Buy from a merchant that serves ACP's checkout and takes payment on Siontology: make a checkout session, check its total, pay it
+  buy            Buy from a merchant that serves ACP's checkout: make a checkout session, check its total, pay it on Siontology or by a card delegated to the merchant's PSP (with 3-D Secure if asked)
+  commerce       The services around an ACP checkout: a PSP's delegate payment vault, a 3-D Secure provider, an agent's Feed API, a webhook receiver
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
@@ -2971,8 +2972,12 @@ Sell an agent's work to other agents through the Agentic Commerce Protocol's che
 Usage: sion agent sell [OPTIONS] <COMMAND>
 
 Commands:
-  serve  Serve ACP's checkout API for a catalog (agent work at fixed prices), paid to a wallet in USD on this chain: other agents make a checkout session, pay it with a signed transaction, and get an order
-  help   Print this message or the help of the given subcommand(s)
+  serve    Serve ACP's checkout and cart API for a catalog (agent work at fixed prices), paid to a wallet in USD on this chain or by card: other agents make a checkout session, pay it, and get an order. Sessions, carts and orders are kept across restarts
+  orders   List the orders a merchant made (its admin API)
+  fulfill  Mark an order delivered: the buyer's platform is told by webhook
+  refund   Refund an order, all of it or some cents of it: back to the payer on the ledger, or at the PSP for a card
+  feed     Publish a catalog as an ACP product feed: to an agent's Feed API, or as the offline snapshot (`metadata.json`, `products.jsonl`)
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2984,7 +2989,7 @@ See [Selling and buying: ACP and AP2](../agent/commerce.md).
 ## `sion agent sell serve`
 
 ```text
-Serve ACP's checkout API for a catalog (agent work at fixed prices), paid to a wallet in USD on this chain: other agents make a checkout session, pay it with a signed transaction, and get an order
+Serve ACP's checkout and cart API for a catalog (agent work at fixed prices), paid to a wallet in USD on this chain or by card: other agents make a checkout session, pay it, and get an order. Sessions, carts and orders are kept across restarts
 
 Usage: sion agent sell serve [OPTIONS] --pay-to <PAY_TO> --name <NAME> <CATALOG>
 
@@ -2992,23 +2997,114 @@ Arguments:
   <CATALOG>  The catalog: `{"offers": [{"id", "name", "description", "price_usd"}]}`, prices in whole cents
 
 Options:
-      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --pay-to <PAY_TO>      Who is paid: a wallet's name, or an account (64 hex digits)
-      --name <NAME>          The merchant's name, as buyers and their mandates see it
-      --listen-at <ADDRESS>  Where to listen [default: 127.0.0.1:8796]
-      --public-url <URL>     The URL buyers reach it at (its API base and order links); http://<listen-at> if not given
-      --tokens-env <NAME>    The environment variable holding the bearer tokens buyers are given, comma-separated, each at least 16 characters [default: SION_ACP_TOKENS]
-      --chain <HEX>          The chain identity payments are verified against (64 hex digits); the node's word if not given
-      --ap2-trust <FILE>     Take AP2 mandates whose roots these keys signed (a JWK Set file, `{"keys": [{"kid", "kty": "EC", "crv": "P-256", …}]}`)
-      --require-mandate      Complete a session only with an AP2 checkout mandate
-      --requests <N>         Serve this many requests, then stop (for trying it out)
-  -h, --help                 Print help
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --pay-to <PAY_TO>            Who is paid on the ledger: a wallet's name, or an account (64 hex digits)
+      --name <NAME>                The merchant's name, as buyers and their mandates see it
+      --listen-at <ADDRESS>        Where to listen [default: 127.0.0.1:8796]
+      --public-url <URL>           The URL buyers reach it at (its API base and order links); http://<listen-at> if not given
+      --tokens-env <NAME>          The environment variable holding the buyers' bearer tokens, comma-separated, each `name=token` or a bare token, at least 16 characters [default: SION_ACP_TOKENS]
+      --client-keys <FILE>         The buyers' request-signing keys: `{"<buyer's name>": <JWK>}` (EC P-256 for ES256, OKP Ed25519, or oct for HMAC-SHA256)
+      --require-signatures         Refuse a request from a buyer with a key that is not signed
+      --chain <HEX>                The chain identity payments are verified against (64 hex digits), which the node must serve; the node's word if not given
+      --state <FILE>               Where the merchant's state is kept (sessions, carts, orders, keys, the webhook outbox); `acp-merchant-state.json` in the configuration directory if not given
+      --ap2-trust <FILE>           Take AP2 mandates whose roots these keys signed (a JWK Set file, `{"keys": [{"kid", "kty": "EC", "crv": "P-256", …}]}`)
+      --ap2-roots <FILE>           Take AP2 mandates whose roots carry a certificate chain (`x5c`) to one of these certificates (PEM)
+      --require-mandate            Complete a session only with an AP2 checkout mandate
+      --webhook-url <URL>          Send order webhooks here (the agent platform's `/agentic_checkout/webhooks/order_events`)
+      --webhook-secret-env <NAME>  The environment variable holding the webhook signing secret [default: SION_ACP_WEBHOOK_SECRET]
+      --admin-token-env <NAME>     The environment variable holding the admin token (fulfill, refund, list orders); no admin API without it [default: SION_ACP_ADMIN_TOKEN]
+      --refunds-from <WALLET>      Refund ledger payments from this wallet (the payee's)
+      --card-psp <URL>             Take cards delegated to this ACP PSP (its base URL)
+      --card-psp-token-env <NAME>  The environment variable holding this merchant's token at the PSP [default: SION_ACP_PSP_TOKEN]
+      --stripe-key-env <NAME>      Take Stripe shared payment tokens, charged with the secret key in this environment variable
+      --card-merchant-id <ID>      The merchant's id at its PSP (delegated cards are scoped to it)
+      --card-brands <CARD_BRANDS>  The card brands taken [default: visa,mastercard,amex,discover]
+      --three-ds <FILE>            Ask for 3-D Secure on card payments: ACP's `AuthenticationMetadata` (acquirer details, directory server, flow preference) as JSON
+      --requests <N>               Serve this many requests, then stop (for trying it out)
+  -h, --help                       Print help
+```
+
+## `sion agent sell orders`
+
+```text
+List the orders a merchant made (its admin API)
+
+Usage: sion agent sell orders [OPTIONS] <URL>
+
+Arguments:
+  <URL>  The merchant's API base URL
+
+Options:
+      --admin-token-env <NAME>  The environment variable holding the merchant's admin token [default: SION_ACP_ADMIN_TOKEN]
+      --node <NODE>             The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help                    Print help
+```
+
+## `sion agent sell fulfill`
+
+```text
+Mark an order delivered: the buyer's platform is told by webhook
+
+Usage: sion agent sell fulfill [OPTIONS] <URL> <ORDER>
+
+Arguments:
+  <URL>    The merchant's API base URL
+  <ORDER>  The order's id
+
+Options:
+      --access-url <URL>        Where the buyer gets what was bought
+      --node <NODE>             The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --license-key <KEY>       A license key, if what was bought has one
+      --description <TEXT>      What was delivered, in a few words
+      --admin-token-env <NAME>  The environment variable holding the merchant's admin token [default: SION_ACP_ADMIN_TOKEN]
+  -h, --help                    Print help
+```
+
+## `sion agent sell refund`
+
+```text
+Refund an order, all of it or some cents of it: back to the payer on the ledger, or at the PSP for a card
+
+Usage: sion agent sell refund [OPTIONS] <URL> <ORDER>
+
+Arguments:
+  <URL>    The merchant's API base URL
+  <ORDER>  The order's id
+
+Options:
+      --cents <CENTS>           How much, in cents (what is left of the order if not given)
+      --node <NODE>             The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --reason <TEXT>           Why
+      --admin-token-env <NAME>  The environment variable holding the merchant's admin token [default: SION_ACP_ADMIN_TOKEN]
+  -h, --help                    Print help
+```
+
+## `sion agent sell feed`
+
+```text
+Publish a catalog as an ACP product feed: to an agent's Feed API, or as the offline snapshot (`metadata.json`, `products.jsonl`)
+
+Usage: sion agent sell feed [OPTIONS] --name <NAME> --public-url <URL> <CATALOG>
+
+Arguments:
+  <CATALOG>  The catalog, as `sell serve` takes it
+
+Options:
+      --name <NAME>       The merchant's name, as the feed shows the seller
+      --node <NODE>       The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --public-url <URL>  The merchant's storefront (its checkout API's base URL)
+      --to <URL>          The agent's Feed API to publish to
+      --token-env <NAME>  The environment variable holding the token the agent gave [default: SION_ACP_FEED_TOKEN]
+      --feed <ID>         The feed to fill (made if not given)
+      --country <CODE>    The country the feed is for (ISO 3166-1 alpha-2)
+      --export <DIR>      Write the offline snapshot to this directory instead
+  -h, --help              Print help
 ```
 
 ## `sion agent buy`
 
 ```text
-Buy from a merchant that serves ACP's checkout and takes payment on Siontology: make a checkout session, check its total, pay it
+Buy from a merchant that serves ACP's checkout: make a checkout session, check its total, pay it on Siontology or by a card delegated to the merchant's PSP (with 3-D Secure if asked)
 
 Usage: sion agent buy [OPTIONS] --max-usd <USD> <URL> <ITEMS>...
 
@@ -3017,17 +3113,132 @@ Arguments:
   <ITEMS>...  The offers bought, by id (an id twice buys two)
 
 Options:
-      --node <NODE>       The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
-      --wallet <WALLET>   The wallet that pays (the agent's, with --charter) [default: alice]
-      --charter <ID>      Pay under this Agent Charter, from --allotment
-      --allotment <ID>    The agent's allotment under --charter
-      --max-usd <USD>     The most to pay, in USD
-      --chain <HEX>       The chain identity payments are checked against (64 hex digits)
-      --token-env <NAME>  The environment variable holding the merchant's token [default: SION_ACP_TOKEN]
-  -h, --help              Print help
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>            The wallet that pays (the agent's, with --charter) [default: alice]
+      --charter <ID>               Pay under this Agent Charter, from --allotment
+      --allotment <ID>             The agent's allotment under --charter
+      --max-usd <USD>              The most to pay, in USD
+      --chain <HEX>                The chain identity payments are checked against (64 hex digits), which the node must serve; the node's word if not given
+      --token-env <NAME>           The environment variable holding the merchant's token [default: SION_ACP_TOKEN]
+      --sign-key <FILE>            Sign requests with this key (PKCS#8, PEM or DER: P-256 for ES256, or Ed25519)
+      --sign-secret-env <NAME>     Sign requests with HMAC-SHA256, the secret in this environment variable
+      --card <FILE>                Pay by card instead: ACP's `PaymentMethodCard` as JSON (it is sent to the PSP, never kept)
+      --psp <URL>                  The PSP the card is delegated to (its base URL)
+      --psp-token-env <NAME>       The environment variable holding the PSP's token [default: SION_PSP_TOKEN]
+      --three-ds <URL>             The 3-D Secure provider, when the merchant or the issuer asks
+      --three-ds-token-env <NAME>  The environment variable holding the 3-D Secure provider's token [default: SION_3DS_TOKEN]
+      --notification-url <URL>     Where the issuer posts back [default: https://localhost/3ds/notify]
+      --simulated-otp <CODE>       Answer a simulated issuer's challenge with this code (devnets only: a real issuer's challenge is the buyer's to answer)
+  -h, --help                       Print help
 ```
 
 See [Selling and buying: ACP and AP2](../agent/commerce.md).
+
+## `sion agent commerce`
+
+```text
+The services around an ACP checkout: a PSP's delegate payment vault, a 3-D Secure provider, an agent's Feed API, a webhook receiver
+
+Usage: sion agent commerce [OPTIONS] <COMMAND>
+
+Commands:
+  psp       Serve a PSP's delegate payment API: agents vault a card for one checkout, merchants redeem the token once. Its acquirer is simulated: no card network is reached and no money moves
+  three-ds  Serve ACP's Delegate Authentication API (3-D Secure). Its issuer is simulated: for devnets and tests, its results say so
+  feeds     Serve an agent's Feed API: merchants publish their products to it
+  webhooks  Receive a merchant's order webhooks: each verified event is printed, one JSON line each
+  keygen    Make a request-signing key: written to a file (PKCS#8, readable only by its owner), its public JWK printed for the services to be given
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [Selling and buying: ACP and AP2](../agent/commerce.md).
+
+## `sion agent commerce psp`
+
+```text
+Serve a PSP's delegate payment API: agents vault a card for one checkout, merchants redeem the token once. Its acquirer is simulated: no card network is reached and no money moves
+
+Usage: sion agent commerce psp [OPTIONS]
+
+Options:
+      --listen-at <ADDRESS>   Where to listen [default: 127.0.0.1:8797]
+      --node <NODE>           The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --public-url <URL>      The URL it is reached at
+      --agents-env <NAME>     The environment variable holding the agents' tokens [default: SION_PSP_AGENT_TOKENS]
+      --merchants-env <NAME>  The environment variable holding the merchants' tokens, each `merchant_id=token` [default: SION_PSP_MERCHANT_TOKENS]
+      --client-keys <FILE>    The agents' request-signing keys (`{"<name>": <JWK>}`)
+      --require-signatures    Refuse an agent's request with a key that is not signed
+      --requests <N>          Serve this many requests, then stop
+  -h, --help                  Print help
+```
+
+## `sion agent commerce three-ds`
+
+```text
+Serve ACP's Delegate Authentication API (3-D Secure). Its issuer is simulated: for devnets and tests, its results say so
+
+Usage: sion agent commerce three-ds [OPTIONS]
+
+Options:
+      --listen-at <ADDRESS>  Where to listen [default: 127.0.0.1:8798]
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --public-url <URL>     The URL it is reached at (its issuer pages are under it)
+      --tokens-env <NAME>    The environment variable holding the agents' tokens [default: SION_3DS_TOKENS]
+      --client-keys <FILE>   The agents' request-signing keys (`{"<name>": <JWK>}`)
+      --require-signatures   Refuse an agent's request with a key that is not signed
+      --requests <N>         Serve this many requests, then stop
+  -h, --help                 Print help
+```
+
+## `sion agent commerce feeds`
+
+```text
+Serve an agent's Feed API: merchants publish their products to it
+
+Usage: sion agent commerce feeds [OPTIONS]
+
+Options:
+      --listen-at <ADDRESS>  Where to listen [default: 127.0.0.1:8799]
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --tokens-env <NAME>    The environment variable holding the merchants' tokens [default: SION_ACP_FEED_TOKENS]
+      --state <FILE>         Where the feeds are kept; `acp-feeds.json` in the configuration directory if not given
+      --requests <N>         Serve this many requests, then stop
+  -h, --help                 Print help
+```
+
+## `sion agent commerce webhooks`
+
+```text
+Receive a merchant's order webhooks: each verified event is printed, one JSON line each
+
+Usage: sion agent commerce webhooks [OPTIONS]
+
+Options:
+      --listen-at <ADDRESS>  Where to listen [default: 127.0.0.1:8800]
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --secret-env <NAME>    The environment variable holding the signing secret [default: SION_ACP_WEBHOOK_SECRET]
+      --requests <N>         Serve this many requests, then stop
+  -h, --help                 Print help
+```
+
+## `sion agent commerce keygen`
+
+```text
+Make a request-signing key: written to a file (PKCS#8, readable only by its owner), its public JWK printed for the services to be given
+
+Usage: sion agent commerce keygen [OPTIONS] <OUT>
+
+Arguments:
+  <OUT>  Where to write it
+
+Options:
+      --ed25519      Ed25519 instead of ECDSA P-256 (ES256)
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
 
 ## `sion agent meeting`
 

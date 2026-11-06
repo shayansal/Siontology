@@ -30,19 +30,23 @@
 //! - [`verify_checkout`] and [`verify_payment`]: the merchant's and the
 //!   payment side's checks of AP2 §Verification, with every constraint
 //!   AP2 defines evaluated, and an unknown one failing, as AP2 requires
-//!   (`unresolved_constraint`). Two need a history of earlier payments
-//!   under the same open mandate: `payment.budget` is evaluated against
-//!   what the caller says was spent; `payment.agent_recurrence` is not
-//!   evaluated here and fails as unresolved.
+//!   (`unresolved_constraint`). Two need the payments made before under the
+//!   same open mandate ([`Paid`]), which the caller keeps: `payment.budget`
+//!   (its `max` in major units, as AP2's example and reference SDK read
+//!   it) and `payment.agent_recurrence` (how many, and how far apart).
 //! - [`receipt`]: a signed checkout or payment receipt, whose `reference`
 //!   is the hash of the mandate it answers.
 //! - [`issue`], [`close`] and [`chain`]: the shopping agent's side, to make
 //!   mandates (and to test the checks above against something real).
 //!
-//! What is not: an `x5c` certificate chain as the root's key (a root is
-//! trusted by `kid` only), a KB-JWT at the end of a token (AP2's flow uses
-//! none), OpenID4VP delegation from a wallet's user credential, and any
-//! digest algorithm but `sha-256`, `sha-384` and `sha-512`.
+//! A root is trusted by `kid` ([`Trust::with`]) or by an `x5c` certificate
+//! chain to a trusted root certificate ([`Trust::with_root`], [`x5c`]).
+//! Merchants, payees, instruments and PISPs are matched as AP2's reference
+//! SDK matches them (a merchant by `id`, or by `name` and `website`).
+//!
+//! What is not: a KB-JWT at the end of a token (AP2's flow uses none),
+//! OpenID4VP delegation from a wallet's user credential, and any digest
+//! algorithm but `sha-256`, `sha-384` and `sha-512`.
 //!
 //! [RFC 9901]: https://datatracker.ietf.org/doc/rfc9901/
 
@@ -55,7 +59,10 @@ use aws_lc_rs::signature::{
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+
+pub mod x5c;
 
 /// A closed checkout mandate's type.
 pub const CHECKOUT: &str = "mandate.checkout.1";
@@ -211,7 +218,8 @@ impl SigningKey {
         PublicKey { x, y }
     }
 
-    fn sign(&self, message: &[u8]) -> Vec<u8> {
+    /// An ES256 signature (r ‖ s, 64 bytes) over `message`.
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         self.key
             .sign(&SystemRandom::new(), message)
             .expect("ES256 signs")
@@ -511,6 +519,8 @@ fn resolve(
 #[derive(Clone, Debug, Default)]
 pub struct Trust {
     keys: BTreeMap<String, PublicKey>,
+    /// Root certificates (DER) an `x5c` chain may lead to.
+    roots: Vec<Vec<u8>>,
 }
 
 impl Trust {
@@ -537,14 +547,27 @@ impl Trust {
         Ok(trust)
     }
 
-    /// How many keys it trusts.
+    /// Also trusts the root certificate `der`: a root hop whose `x5c` chain
+    /// leads to it is signed by the chain's first key ([`x5c::key_of`]).
+    pub fn with_root(mut self, der: Vec<u8>) -> Trust {
+        self.roots.push(der);
+        self
+    }
+
+    /// Also trusts every root certificate in `pem`.
+    pub fn with_roots_pem(mut self, pem: &str) -> Result<Trust, Refusal> {
+        self.roots.extend(x5c::pem_certificates(pem)?);
+        Ok(self)
+    }
+
+    /// How many keys and root certificates it trusts.
     pub fn len(&self) -> usize {
-        self.keys.len()
+        self.keys.len() + self.roots.len()
     }
 
     /// Whether it trusts none.
     pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
+        self.keys.is_empty() && self.roots.is_empty()
     }
 }
 
@@ -647,17 +670,18 @@ pub fn verify_chain(text: &str, trust: &Trust, expect: Expect<'_>) -> Result<Ver
         let last = index + 1 == tokens.len();
         let (header, _) = read_jws(&token.jwt)?;
         let key = if index == 0 {
-            if header.get("x5c").is_some() && header.get("kid").is_none() {
-                return Err(bad("a root is trusted by kid here, not by an x5c chain"));
+            if let Some(x5c) = header.get("x5c") {
+                x5c::key_of(x5c, &trust.roots, expect.now)?
+            } else {
+                let kid = header["kid"]
+                    .as_str()
+                    .ok_or_else(|| bad("the root names its key (kid) or its certificates (x5c)"))?;
+                trust
+                    .keys
+                    .get(kid)
+                    .cloned()
+                    .ok_or_else(|| bad(format!("the root's key {kid:?} is not trusted")))?
             }
-            let kid = header["kid"]
-                .as_str()
-                .ok_or_else(|| bad("the root names its key (kid)"))?;
-            trust
-                .keys
-                .get(kid)
-                .cloned()
-                .ok_or_else(|| bad(format!("the root's key {kid:?} is not trusted")))?
         } else {
             let typ = header["typ"].as_str().unwrap_or_default();
             if !TYP_TERMINAL.contains(&typ) && !TYP_INTERMEDIATE.contains(&typ) {
@@ -756,6 +780,43 @@ fn names(allowed: &Value, actual: &Value) -> bool {
     }
 }
 
+/// Whether `allowed` is the merchant `actual` is, as AP2's reference SDK
+/// matches them: by `id` when both have one, otherwise by `name` and
+/// `website`, both given and the same.
+pub fn same_merchant(allowed: &Value, actual: &Value) -> bool {
+    fn text<'v>(party: &'v Value, field: &str) -> Option<&'v str> {
+        party[field].as_str().filter(|s| !s.is_empty())
+    }
+    match (text(allowed, "id"), text(actual, "id")) {
+        (Some(a), Some(b)) => a == b,
+        _ => {
+            text(allowed, "name").is_some()
+                && text(allowed, "name") == text(actual, "name")
+                && text(allowed, "website").is_some()
+                && text(allowed, "website") == text(actual, "website")
+        }
+    }
+}
+
+/// Whether `allowed` is the instrument `actual` is: by `id` when the allowed
+/// entry has one (as the reference SDK matches), else by every field it
+/// names.
+fn same_instrument(allowed: &Value, actual: &Value) -> bool {
+    match allowed["id"].as_str() {
+        Some(id) => actual["id"].as_str() == Some(id),
+        None => names(allowed, actual),
+    }
+}
+
+/// Whether `allowed` is the PISP `actual` is: its domain, legal and brand
+/// names all the same, as the reference SDK matches them.
+fn same_pisp(allowed: &Value, actual: &Value) -> bool {
+    allowed.is_object()
+        && ["domain_name", "legal_name", "brand_name"]
+            .iter()
+            .all(|field| allowed.get(*field) == actual.get(*field))
+}
+
 // ----- Checkout -----------------------------------------------------------
 
 /// A checkout mandate that approves a checkout.
@@ -848,7 +909,10 @@ fn checkout_constraint(constraint: &Value, checkout: &Value) -> Result<(), Refus
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-            if allowed.iter().any(|a| names(a, &checkout["merchant"])) {
+            if allowed
+                .iter()
+                .any(|a| same_merchant(a, &checkout["merchant"]))
+            {
                 Ok(())
             } else {
                 Err(Refusal::InvalidMandate(
@@ -956,10 +1020,23 @@ pub struct Payment<'a> {
     /// The open checkout mandates the checkout was closed under
     /// ([`CheckoutApproved::open`]).
     pub checkout_open: &'a [String],
-    /// What was paid before under the same open payment mandate, in minor
-    /// units, if the caller keeps that: without it `payment.budget` is
-    /// unresolved.
-    pub spent_before: Option<u64>,
+    /// Every payment made before under the same open payment mandate, if
+    /// the caller keeps them: without them `payment.budget` and
+    /// `payment.agent_recurrence` are unresolved.
+    pub history: Option<&'a [Paid]>,
+    /// When the payment is made, in seconds since 1970: for
+    /// `payment.execution_date` when the mandate names no date, and for
+    /// `payment.agent_recurrence`.
+    pub now: u64,
+}
+
+/// A payment made under an open payment mandate, as its payee keeps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Paid {
+    /// When, in seconds since 1970.
+    pub at: u64,
+    /// How much, in minor units.
+    pub amount: u64,
 }
 
 /// A payment mandate that approves a payment.
@@ -1002,7 +1079,11 @@ pub fn verify_payment(
             "the payment is for another checkout".into(),
         ));
     }
-    if !names(&closed["payee"], payment.payee) || closed["payee"]["id"] != payment.payee["id"] {
+    let payee_id = payment.payee["id"].as_str();
+    let named_otherwise = payee_id.is_some()
+        && closed["payee"]["id"].as_str().is_some()
+        && closed["payee"]["id"].as_str() != payee_id;
+    if !same_merchant(&closed["payee"], payment.payee) || named_otherwise {
         return Err(Refusal::InvalidMandate(
             "the payment is to someone else".into(),
         ));
@@ -1032,7 +1113,18 @@ pub fn verify_payment(
                 )));
             }
         }
-        for constraint in constraints_of(open) {
+        let constraints = constraints_of(open);
+        let has = |kind: &str| constraints.iter().any(|c| c["type"] == kind);
+        // A mandate used again and again is bounded per payment and in all,
+        // as AP2's reference SDK requires.
+        if has("payment.agent_recurrence")
+            && !(has("payment.amount_range") && has("payment.budget"))
+        {
+            return Err(Refusal::InvalidMandate(
+                "payment.agent_recurrence requires payment.amount_range and payment.budget".into(),
+            ));
+        }
+        for constraint in constraints {
             payment_constraint(constraint, &closed, payment)?;
         }
         open_hash = Some(hash.to_string());
@@ -1050,10 +1142,10 @@ fn payment_constraint(
     payment: &Payment<'_>,
 ) -> Result<(), Refusal> {
     let refuse = |why: String| Err(Refusal::InvalidMandate(why));
-    let member = |field: &str, of: &Value| {
+    let member = |field: &str, of: &Value, same: fn(&Value, &Value) -> bool| {
         constraint["allowed"]
             .as_array()
-            .is_some_and(|allowed| allowed.iter().any(|a| names(a, of)))
+            .is_some_and(|allowed| allowed.iter().any(|a| same(a, of)))
             .then_some(())
             .ok_or_else(|| Refusal::InvalidMandate(format!("the {field} is not one allowed")))
     };
@@ -1062,49 +1154,66 @@ fn payment_constraint(
             .is_some_and(|c| c.eq_ignore_ascii_case(payment.currency))
     };
     match constraint["type"].as_str().unwrap_or_default() {
-        "payment.allowed_payees" => member("payee", &closed["payee"]),
-        "payment.allowed_payment_instruments" => {
-            member("payment instrument", &closed["payment_instrument"])
-        }
+        "payment.allowed_payees" => member("payee", &closed["payee"], same_merchant),
+        "payment.allowed_payment_instruments" => member(
+            "payment instrument",
+            &closed["payment_instrument"],
+            same_instrument,
+        ),
         "payment.allowed_pisps" => match closed.get("pisp") {
-            Some(pisp) => member("payment initiation service provider", pisp),
+            Some(pisp) => member("payment initiation service provider", pisp, same_pisp),
             None => refuse("the mandate allows only some PISPs, and names none".into()),
         },
         "payment.amount_range" => {
-            if !same_currency(&constraint["currency"]) {
-                return refuse("the payment is in another currency".into());
+            // Its currency, min and max are each optional, as the reference
+            // SDK reads them; given, each binds.
+            if let Some(currency) = constraint.get("currency").filter(|c| !c.is_null()) {
+                if !same_currency(currency) {
+                    return refuse("the payment is in another currency".into());
+                }
             }
-            let max = constraint["max"].as_u64();
-            let min = constraint["min"].as_u64().unwrap_or(0);
-            match max {
-                Some(max) if (min..=max).contains(&payment.amount) => Ok(()),
-                Some(max) => refuse(format!("{} is outside {min}..={max}", payment.amount)),
-                None => Err(Refusal::UnresolvedConstraint(
-                    "an amount range's max is a whole number of minor units".into(),
-                )),
+            let bound = |name: &str| -> Result<Option<u64>, Refusal> {
+                match constraint.get(name).filter(|v| !v.is_null()) {
+                    None => Ok(None),
+                    Some(v) => v.as_u64().map(Some).ok_or_else(|| {
+                        Refusal::UnresolvedConstraint(format!(
+                            "an amount range's {name} is a whole number of minor units"
+                        ))
+                    }),
+                }
+            };
+            let (min, max) = (bound("min")?, bound("max")?);
+            if let Some(min) = min.filter(|min| payment.amount < *min) {
+                return refuse(format!("{} is below the least, {min}", payment.amount));
             }
+            if let Some(max) = max.filter(|max| payment.amount > *max) {
+                return refuse(format!("{} is above the most, {max}", payment.amount));
+            }
+            Ok(())
         }
         "payment.budget" => {
             if !same_currency(&constraint["currency"]) {
                 return refuse("the payment is in another currency".into());
             }
-            // The schema has `max` as a number; read as minor units, as
-            // `amount_range` is, and only when it is a whole number.
-            let Some(max) = constraint["max"].as_u64() else {
+            // `max` is in major units ("1000.00" USD), as AP2's example and
+            // reference SDK read it, made exact in minor units here.
+            let Some(max) = minor_units(&constraint["max"], payment.currency) else {
                 return Err(Refusal::UnresolvedConstraint(
-                    "a budget is read here only as whole minor units".into(),
+                    "a budget's max is an amount in major units, to the currency's minor unit"
+                        .into(),
                 ));
             };
-            let Some(spent) = payment.spent_before else {
+            let Some(history) = payment.history else {
                 return Err(Refusal::UnresolvedConstraint(
-                    "what was spent under this mandate before is not kept here".into(),
+                    "what was paid under this mandate before is not kept here".into(),
                 ));
             };
+            let spent: u64 = history.iter().map(|paid| paid.amount).sum();
             if spent.saturating_add(payment.amount) <= max {
                 Ok(())
             } else {
                 refuse(format!(
-                    "{spent} spent and {} more is over the budget of {max}",
+                    "{spent} paid and {} more is over the budget of {max}",
                     payment.amount
                 ))
             }
@@ -1126,7 +1235,7 @@ fn payment_constraint(
                     .and_then(seconds_of)
                     .ok_or_else(|| bad("execution_date is an ISO 8601 date"))?,
                 // Absent: the payment is made now.
-                None => i64::try_from(payment_now()).unwrap_or(i64::MAX),
+                None => i64::try_from(payment.now).unwrap_or(i64::MAX),
             };
             for (bound, later) in [("not_before", true), ("not_after", false)] {
                 if let Some(text) = constraint.get(bound) {
@@ -1141,20 +1250,159 @@ fn payment_constraint(
             }
             Ok(())
         }
-        "payment.agent_recurrence" => Err(Refusal::UnresolvedConstraint(
-            "recurring payments under one mandate are not tracked here".into(),
-        )),
+        "payment.agent_recurrence" => {
+            let Some(history) = payment.history else {
+                return Err(Refusal::UnresolvedConstraint(
+                    "what was paid under this mandate before is not kept here".into(),
+                ));
+            };
+            let frequency = constraint["frequency"].as_str().unwrap_or_default();
+            if next_allowed(0, frequency).is_none() {
+                return Err(Refusal::UnresolvedConstraint(format!(
+                    "the frequency {frequency:?} is not known here"
+                )));
+            }
+            if let Some(most) = constraint.get("max_occurrences").filter(|v| !v.is_null()) {
+                let most = most.as_u64().ok_or_else(|| {
+                    Refusal::UnresolvedConstraint("max_occurrences is a whole number".into())
+                })?;
+                if history.len() as u64 >= most {
+                    return refuse(format!(
+                        "the mandate allows {most} payments, and {} were made",
+                        history.len()
+                    ));
+                }
+            }
+            if let Some(last) = history.iter().map(|paid| paid.at).max() {
+                let next = next_allowed(last, frequency).unwrap_or(u64::MAX);
+                if payment.now < next {
+                    return refuse(format!(
+                        "a {frequency} mandate was last used at {last}; the next payment may be made from {next}"
+                    ));
+                }
+            }
+            Ok(())
+        }
         other => Err(Refusal::UnresolvedConstraint(format!(
             "the constraint {other:?} is not known here"
         ))),
     }
 }
 
-fn payment_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// When a payment may next be made under a recurring mandate last used at
+/// `last`: the frequency's period after it, months as calendar months (the
+/// same day, or the month's last if it has fewer). None for a frequency AP2
+/// does not define.
+pub fn next_allowed(last: u64, frequency: &str) -> Option<u64> {
+    const DAY: u64 = 86_400;
+    Some(match frequency {
+        "ON_DEMAND" => last,
+        "DAILY" => last + DAY,
+        "WEEKLY" => last + 7 * DAY,
+        "BIWEEKLY" => last + 14 * DAY,
+        "MONTHLY" => add_months(last, 1),
+        "QUARTERLY" => add_months(last, 3),
+        "ANNUALLY" => add_months(last, 12),
+        _ => return None,
+    })
+}
+
+/// `months` calendar months after `at` (seconds since 1970, UTC).
+fn add_months(at: u64, months: u32) -> u64 {
+    let (year, month, day) = civil(at / 86_400);
+    let total = year * 12 + i64::from(month - 1) + i64::from(months);
+    let (year, month) = (total.div_euclid(12), (total.rem_euclid(12) + 1) as u32);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let length = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    let days = days_from_civil(year, month, day.min(length));
+    (days * 86_400) as u64 + at % 86_400
+}
+
+/// The civil date of a day since 1970 (Howard Hinnant's algorithm).
+fn civil(days: u64) -> (i64, u32, u32) {
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
+}
+
+/// Days since 1970 of a civil date.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let (month, day) = (i64::from(month), i64::from(day));
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The digits after the point of a currency's minor unit (ISO 4217): none
+/// for the yen and the others without one, three for the dinars, two for
+/// the rest.
+pub fn minor_digits(currency: &str) -> u32 {
+    match currency.to_ascii_uppercase().as_str() {
+        "BIF" | "CLP" | "DJF" | "GNF" | "ISK" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX"
+        | "UYI" | "VND" | "VUV" | "XAF" | "XOF" | "XPF" => 0,
+        "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
+        _ => 2,
+    }
+}
+
+/// An amount in major units (`1000.00`, or `"19.99"`) as whole minor units
+/// of `currency`, exactly; none if it is negative or not a whole number of
+/// them.
+pub fn minor_units(amount: &Value, currency: &str) -> Option<u64> {
+    let text = match amount {
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.trim().to_string(),
+        _ => return None,
+    };
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((m, e)) => (m.to_string(), e.parse::<i32>().ok()?),
+        None => (text, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((&mantissa, ""));
+    let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !all_digits(whole) || !all_digits(fraction) {
+        return None;
+    }
+    // The value is digits × 10^shift minor units.
+    let shift = i64::from(exponent) - fraction.len() as i64 + i64::from(minor_digits(currency));
+    let digits = format!("{whole}{fraction}");
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Some(0);
+    }
+    if shift >= 0 {
+        if shift > 20 {
+            return None;
+        }
+        format!("{digits}{}", "0".repeat(shift as usize))
+            .parse()
+            .ok()
+    } else {
+        let cut = usize::try_from(-shift).ok()?;
+        if cut >= digits.len() {
+            return None;
+        }
+        let (keep, dropped) = digits.split_at(digits.len() - cut);
+        if dropped.bytes().any(|b| b != b'0') {
+            return None;
+        }
+        keep.parse().ok()
+    }
 }
 
 /// Seconds since 1970 of an RFC 3339 date-time (`2026-04-30T23:59:59Z`,
@@ -1281,6 +1529,21 @@ pub fn issue(mandate: &Value, key: &SigningKey, kid: &str) -> String {
     let (disclosure, digest) = element(mandate);
     let jwt = sign_jws(
         &json!({"typ": "dc+sd-jwt", "kid": kid}),
+        &json!({"delegate_payload": [{"...": digest}], "_sd_alg": "sha-256"}),
+        key,
+    );
+    format!("{jwt}~{disclosure}~")
+}
+
+/// A root mandate as [`issue`] makes it, signed by `key` and naming it by
+/// its certificate chain instead of a `kid`: `x5c` is the chain, DER, the
+/// certificate of `key` first (RFC 7515 §4.1.6, base64 in the header).
+pub fn issue_x5c(mandate: &Value, key: &SigningKey, x5c: &[Vec<u8>]) -> String {
+    use base64::engine::general_purpose::STANDARD;
+    let (disclosure, digest) = element(mandate);
+    let chain: Vec<String> = x5c.iter().map(|der| STANDARD.encode(der)).collect();
+    let jwt = sign_jws(
+        &json!({"typ": "dc+sd-jwt", "x5c": chain}),
         &json!({"delegate_payload": [{"...": digest}], "_sd_alg": "sha-256"}),
         key,
     );

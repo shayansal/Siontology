@@ -24,6 +24,7 @@ sion-consensus.workspace = true
 sion-exec.workspace = true
 sion-enclave.workspace = true
 aws-lc-rs.workspace = true
+x509-cert.workspace = true
 sion-da.workspace = true
 sion-light.workspace = true
 sion-prover.workspace = true
@@ -51,6 +52,7 @@ nnnoiseless.workspace = true
 
 [dev-dependencies]
 sion-net.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

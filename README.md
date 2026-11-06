@@ -264,9 +264,9 @@ implementation adds. In short:
   (`impl:replay-proofs`).
 - **Partly built**: the agent runtime (tested with a scripted model and
   stand-ins); interfaces to other standards (x402 is built, and so are
-  AP2 mandates and ACP's checkout, at devnet scale; ERC-8004 and C2PA are
-  not); the app (the desktop shell is built and run; mobile is
-  configured, not built).
+  AP2 mandates and ACP, at devnet scale, with card payments' acquirer and
+  3-D Secure issuer simulated; ERC-8004 and C2PA are not); the app (the
+  desktop shell is built and run; mobile is configured, not built).
 - **Not built**: personhood claims, a proving market, confidential amounts
   and zero-knowledge compliance, payments to provers and the value-in-flight
   cap.
@@ -300,7 +300,7 @@ implementation adds. In short:
 | Privacy: encrypted payloads, viewing keys, sealed orders | Built |
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
-| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP checkout) |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated) |
 | Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
