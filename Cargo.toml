@@ -107,7 +107,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tiny_http = "0.12"
 # QR codes drawn in the terminal (WeChat's sign-in); no image features.
 qrcode = { version = "0.14.1", default-features = false }
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
 # Searching an agent's workspace (`search_files`) and matching paths
 # (`find_files`).
 regex = "1"
