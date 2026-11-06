@@ -80,7 +80,7 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Randomness (rand_core 0.6 matches the FIPS crates)
 rand_core = { version = "0.6", features = ["getrandom"] }
-rand_chacha = "0.3"
+rand_chacha = "0.9"
 
 # Exact arithmetic
 num-bigint = "0.4"
