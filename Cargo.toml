@@ -65,7 +65,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 hex = "0.4"
-base64 = "0.22"
+base64 = "0.23"
 
 # Post-quantum and symmetric cryptography (pure Rust)
 fips203 = "0.5"
