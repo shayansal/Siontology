@@ -7,6 +7,7 @@
 //! session, until it is taken back. A change that repeats a sealed task, or
 //! holds a canary's code word, gets nowhere.
 
+use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
@@ -379,6 +380,110 @@ fn the_agent_learns_from_its_own_work_only_what_sealed_tasks_confirm() {
         saved.ended
     );
     assert!(improve_loop::undo("lead", 4).is_err());
+
+    // What its work gives for training an open model: the sessions that
+    // went well whose tasks are not sealed, and the tasks to choose
+    // changes on, never a sealed one.
+    let out = home.join("training");
+    let report = sion_cli::training::export(&profiles::get("lead").unwrap(), &out, 0).unwrap();
+    let (train, _) = seal.train_set().unwrap();
+    assert!(report.from_seal);
+    assert_eq!(report.environments, train.cases.len());
+    assert_eq!(report.examples, train.cases.len() - traps(&train));
+    assert!(
+        report
+            .passed_over
+            .iter()
+            .any(|why| why.contains("its task is sealed")),
+        "{:?}",
+        report.passed_over
+    );
+    let sft = std::fs::read_to_string(out.join("sft.jsonl")).unwrap();
+    assert_eq!(sft.lines().count(), report.examples);
+    let first: serde_json::Value = serde_json::from_str(sft.lines().next().unwrap()).unwrap();
+    assert_eq!(first["messages"][0]["role"], "system");
+    assert!(first["messages"].to_string().contains("ledger_pay"));
+    assert!(first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["function"]["name"] == "ledger_pay"));
+    assert_eq!(first["metadata"]["why"], "marked good");
+    for case in &sealed_set.cases {
+        assert!(!sft.contains(case.task.as_str()), "{} is sealed", case.task);
+    }
+    let environments = std::fs::read_to_string(out.join("environments.jsonl")).unwrap();
+    assert_eq!(environments.lines().count(), train.cases.len());
+
+    // A task as an episode, the policy outside: it pays as the session
+    // that went well did, and earns the whole reward.
+    let good = train
+        .cases
+        .iter()
+        .find(|c| !c.task.contains("mallory"))
+        .unwrap();
+    let paid = good
+        .checks
+        .iter()
+        .find_map(|c| match c {
+            sion_agent::evals::Check::Called { tool, with } if tool == "ledger_pay" => {
+                Some(serde_json::Value::Object(with.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sion"))
+        .args(["agent", "improve", "env", "--tasks"])
+        .arg(out.join("tasks.json"))
+        .args(["--case", &good.id])
+        .env("SION_HOME", &home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut next = || {
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
+    let asked = next();
+    assert_eq!(asked["request"]["messages"][1]["content"], good.task);
+    writeln!(
+        stdin,
+        "{}",
+        json!({"message": {"role": "assistant", "content": null, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "ledger_pay", "arguments": paid.to_string()}}
+        ]}})
+    )
+    .unwrap();
+    let asked = next();
+    let messages = asked["request"]["messages"].as_array().unwrap();
+    assert_eq!(messages.last().unwrap()["role"], "tool");
+    writeln!(
+        stdin,
+        "{}",
+        json!({"message": {"role": "assistant", "content": "Paid."}})
+    )
+    .unwrap();
+    let done = next();
+    assert_eq!(done["done"]["reward"], 1.0, "{done}");
+    assert_eq!(done["done"]["passed"], true);
+    assert!(child.wait().unwrap().success());
+
+    // Sealed again, the tasks trained on stay on the side changes are
+    // chosen on.
+    let again = sealed::seal(&lead, &tasks, 50, 4, 0, 99, 5).unwrap();
+    let (held_again, _) = again.sealed_set().unwrap();
+    for case in &held_again.cases {
+        assert!(
+            !train.cases.iter().any(|t| t.task == case.task),
+            "{} was trained on, and sealed",
+            case.task
+        );
+    }
 
     // A changed sealed file is caught.
     let path = seal.sealed_path();

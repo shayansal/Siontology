@@ -822,6 +822,11 @@ pub struct Saved {
     /// The system prompt of the last run, as the model saw it.
     #[serde(default)]
     pub prompt: String,
+    /// The tools of the last run, as the model was first shown them: for
+    /// its trajectory to be read, and trained on, with them
+    /// ([`crate::training`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<sion_agent::ToolSpec>,
     /// The command that checks its task when it says it is done, run with
     /// /bin/sh in its sandbox, in its workspace (`--verify`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1625,6 +1630,7 @@ impl Saved {
         }
         let system = self.system_prompt();
         self.prompt = system.clone();
+        self.tools = tools.shown();
         let turns = self.state.turns_taken as usize;
         let models: Vec<Box<dyn Model>> = self
             .models
@@ -2893,6 +2899,7 @@ pub fn start_watched(
         shared_memory,
         skills: Some(skills),
         prompt: String::new(),
+        tools: Vec::new(),
         verify,
         verify_files,
         known: None,

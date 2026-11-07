@@ -74,6 +74,7 @@ pub mod desktop;
 pub mod dream;
 pub mod egress;
 pub mod encoding;
+pub mod episode;
 pub mod evals;
 pub mod evolve;
 pub mod graph;

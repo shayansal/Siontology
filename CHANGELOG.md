@@ -10,6 +10,27 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### What the agent's work gives for training an open model
+
+- **`sion agent improve export <profile> --out <dir>`** writes the
+  profile's sessions that went well as examples to fine-tune on
+  (`sft.jsonl`, `sft-validation.jsonl`: OpenAI's chat format with tool
+  calls and the tools the model was shown, which sessions now keep), and
+  its tasks as environments to reinforce in (`tasks.json`,
+  `environments.jsonl`). Sessions that did not finish, were compacted,
+  held confidential content or a secret the machine keeps, or whose task
+  is sealed are passed over. Nothing sealed is exported, and a later seal
+  never seals a task exported.
+- **`sion agent improve env --tasks <file> --case <id>`** runs one task as
+  an episode with the policy outside (`sion_agent::episode`): requests in
+  OpenAI's chat format on standard output, the policy's turns on standard
+  input, and the reward last, the share of the task's checks that held.
+
+Tested on a devnet (the export of a sealed profile, an episode driven
+through the binary to the whole reward, a second seal keeping the tasks
+trained on out) and with outside policies that earn all, part and none of
+the reward. No model has been trained on them here.
+
 ### A canvas the agent shows you things on
 
 - **`--canvas`.** A page on this machine, by a token of 128 bits, where

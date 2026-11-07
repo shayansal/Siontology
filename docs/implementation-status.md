@@ -827,7 +827,14 @@ with a real model; an attestation on a bond (it rests on its attester's signatur
 the sealed tasks kept secret from whoever holds the machine's files; a
 reusable holdout beyond the fixed number of confirmations; tasks the agent
 writes for itself; changes found by a challenger that rewrites tasks to
-expose shortcuts; anything that changes a model's weights.
+expose shortcuts; training a model (`sion agent improve export` writes
+the profile's sessions that went well as examples to fine-tune on, in
+OpenAI's chat format with the tools shown, and its tasks as environments,
+`sion agent improve env` running one as an episode with the policy outside
+and the share of its checks that held as its reward, never a sealed task,
+and nothing exported sealed later; tested on a devnet with an episode
+driven over standard input and output, but no model has been trained on
+them).
 
 **Reads for agents on other frameworks: built (beyond the paper).** The
 HTTP channel serves three public reads, without a token: an agent's

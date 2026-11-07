@@ -2877,6 +2877,8 @@ Commands:
   kept      The changes a profile's agent has kept, each with the evidence for keeping it
   mark      Say how one of the agent's sessions went, so that it can be learnt from (`--good` or `--bad`); a session whose check passed needs none
   harvest   Turn the profile's sessions whose outcome is known (marked, or their check passed) into a set of tasks: each task asked again, of stand-ins that answer what its tools answered, checked against what the session did
+  export    Export what the profile's work gives for training an open model on it: its sessions that went well as examples to fine-tune on (sft.jsonl, OpenAI's chat format with tool calls and the tools shown), and its tasks as environments to reinforce in (environments.jsonl, tasks.json: sion agent improve env runs one). Nothing sealed is exported, and nothing exported is sealed later
+  env       Run one task as an episode for reinforcement learning, the policy outside: each request on standard output, in OpenAI's chat format ({"request": {"messages", "tools", "max_tokens"}}), the policy's turn on standard input ({"message": {...}}), and the reward last ({"done": {"reward", "passed", "failures"}}), the share of the task's checks that held
   seal      Seal a set of tasks for the profile: a share held apart to confirm changes on, which no proposer is shown, with canary cases among them and a number of confirmations. With --wallet, the seal's digests are published on the ledger before anything is tried on it
   run       Let the agent improve itself: a proposer model writes changes from the tasks it failed among the seal's tasks to choose on; each is tried there, and kept only when confirmed better on the sealed tasks. With --apply a kept change becomes the profile's; with --wallet each is published on the ledger
   lineage   The changes the agent kept from its own work, with their evidence; with --check, each held to its claim on the ledger
@@ -2966,6 +2968,37 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --out <FILE>   Where to write the set (default: printed)
   -h, --help         Print help
+```
+
+## `sion agent improve export`
+
+```text
+Export what the profile's work gives for training an open model on it: its sessions that went well as examples to fine-tune on (sft.jsonl, OpenAI's chat format with tool calls and the tools shown), and its tasks as environments to reinforce in (environments.jsonl, tasks.json: sion agent improve env runs one). Nothing sealed is exported, and nothing exported is sealed later
+
+Usage: sion agent improve export [OPTIONS] --out <DIR> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <DIR>                The directory to write into
+      --validation <VALIDATION>  The share of examples held apart for validation, in percent [default: 10]
+  -h, --help                     Print help
+```
+
+## `sion agent improve env`
+
+```text
+Run one task as an episode for reinforcement learning, the policy outside: each request on standard output, in OpenAI's chat format ({"request": {"messages", "tools", "max_tokens"}}), the policy's turn on standard input ({"message": {...}}), and the reward last ({"done": {"reward", "passed", "failures"}}), the share of the task's checks that held
+
+Usage: sion agent improve env [OPTIONS] --tasks <FILE> --case <CASE>
+
+Options:
+      --node <NODE>   The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --tasks <FILE>  The tasks (a set, as export or harvest writes it)
+      --case <CASE>   The task's id
+  -h, --help          Print help
 ```
 
 ## `sion agent improve seal`

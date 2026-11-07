@@ -918,11 +918,7 @@ impl OpenAiCompatible {
             &request.images,
             &self.source(),
         );
-        let tools: Vec<Value> = request
-            .tools
-            .iter()
-            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}))
-            .collect();
+        let tools = openai_tools(&request.tools);
         let most = self.most_tokens(request.max_tokens);
         let mut body = json!({"model": self.model, "messages": messages});
         if self.completion_tokens.load(Ordering::Relaxed) {
@@ -938,6 +934,21 @@ impl OpenAiCompatible {
         }
         body
     }
+}
+
+/// Tools as OpenAI's chat completions define them: `{"type": "function",
+/// "function": {name, description, parameters}}`.
+pub fn openai_tools(tools: &[crate::model::ToolSpec]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| {
+            json!({"type": "function", "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema,
+            }})
+        })
+        .collect()
 }
 
 /// A conversation in OpenAI's chat format: the system prompt, then each

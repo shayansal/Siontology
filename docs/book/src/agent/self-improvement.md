@@ -315,6 +315,53 @@ or about another release, is not counted. `--undo` takes the release back
 out. Building and installing the result stays yours, outside any
 sandbox; nothing installs itself.
 
+## Training an open model on its work
+
+What the loop changes are words and the choice of models. What changes a
+model is training it, and the agent's own work is what an open model can
+be trained on to work as it should. `sion agent improve export <profile>
+--out <dir>` writes it:
+
+- **`sft.jsonl`**: the profile's sessions that went well (marked good, or
+  their check passed), each a line in OpenAI's chat format with tool
+  calls, beside the tools the model was shown, as fine-tuning tools read
+  it (`{"messages": [...], "tools": [...], "metadata": {...}}`).
+  `--validation` holds a share apart in `sft-validation.jsonl` (10% by
+  default), drawn from each session's id so that a session stays on its
+  side from one export to the next.
+- **`tasks.json`** and **`environments.jsonl`**: the tasks to reinforce
+  in. With a seal, they are the seal's tasks to choose changes on; the
+  sealed ones are never exported. Without one, they are all the tasks
+  harvested.
+- **`README.md`**, saying what each file is.
+
+A session is passed over when it did not finish, its conversation was
+compacted, it held confidential content, it holds a secret this machine
+keeps (a credential's value, a login's password), or its task is sealed.
+What is exported is recorded: a later seal never seals a task trained on,
+since a model that has seen a task would pass it by memory, and its
+confirmation would mean nothing.
+
+**A task as an episode.** `sion agent improve env --tasks <dir>/tasks.json
+--case <id>` runs one task in sion's own runtime, its stand-ins answering
+the calls and its checks scoring the run, with the model's turns given
+from outside by the policy being trained, a line at a time (`→` written
+by `sion`, `←` by the policy):
+
+```text
+→ {"request": {"messages": [{"role": "system", …}, {"role": "user", "content": "Pay invoice 23 from Acme, 5 USD, to acme-ltd."}], "tools": [{"type": "function", "function": {"name": "ledger_pay", …}}], "max_tokens": 4096}}
+← {"message": {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "ledger_pay", "arguments": "{\"amount\":\"5\",\"purpose\":\"invoice\",\"to\":\"acme-ltd\"}"}}]}}
+→ {"request": {"messages": […, {"role": "tool", "tool_call_id": "c1", "content": "…"}], …}}
+← {"message": {"role": "assistant", "content": "Paid."}}
+→ {"done": {"case": "work-3", "reward": 1.0, "passed": true, "failures": [], "calls": 1, "ended": {…}}}
+```
+
+The reward is the share of the task's checks that held. A trainer runs one
+process per episode (any that drives a program over standard input and
+output: a reinforcement-learning library's environment, or a few lines of
+your own), and the episodes are the same runs `sion` scores its own
+agent's changes with.
+
 ## What holds whatever the models say
 
 - **The sealed tasks.** The proposer and the coder never see them. Only
@@ -350,4 +397,6 @@ leave open is named in the trust model (`agent:self-improvement`,
 - There is no reusable holdout beyond a seal's fixed confirmations.
 - The agent does not write tasks for itself.
 - No challenger rewrites tasks to expose shortcuts.
-- Nothing changes a model's weights.
+- Nothing here trains a model: export writes what to train on, and the
+  episodes to reinforce in, for a trainer of your own. None has been
+  trained here.

@@ -749,6 +749,36 @@ pub enum ImproveCommand {
         #[arg(long, value_name = "FILE")]
         out: Option<std::path::PathBuf>,
     },
+    /// Export what the profile's work gives for training an open model on
+    /// it: its sessions that went well as examples to fine-tune on
+    /// (sft.jsonl, OpenAI's chat format with tool calls and the tools
+    /// shown), and its tasks as environments to reinforce in
+    /// (environments.jsonl, tasks.json: sion agent improve env runs one).
+    /// Nothing sealed is exported, and nothing exported is sealed later.
+    Export {
+        /// The profile.
+        profile: String,
+        /// The directory to write into.
+        #[arg(long, value_name = "DIR")]
+        out: std::path::PathBuf,
+        /// The share of examples held apart for validation, in percent.
+        #[arg(long, default_value_t = crate::training::VALIDATION)]
+        validation: u32,
+    },
+    /// Run one task as an episode for reinforcement learning, the policy
+    /// outside: each request on standard output, in OpenAI's chat format
+    /// ({"request": {"messages", "tools", "max_tokens"}}), the policy's turn
+    /// on standard input ({"message": {...}}), and the reward last
+    /// ({"done": {"reward", "passed", "failures"}}), the share of the task's
+    /// checks that held.
+    Env {
+        /// The tasks (a set, as export or harvest writes it).
+        #[arg(long, value_name = "FILE")]
+        tasks: std::path::PathBuf,
+        /// The task's id.
+        #[arg(long)]
+        case: String,
+    },
     /// Seal a set of tasks for the profile: a share held apart to confirm
     /// changes on, which no proposer is shown, with canary cases among them
     /// and a number of confirmations. With --wallet, the seal's digests
@@ -1583,6 +1613,19 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
             );
             Ok(())
         }
+        ImproveCommand::Export {
+            profile,
+            out,
+            validation,
+        } => {
+            let found = crate::profiles::get(&profile)?;
+            let report = crate::training::export(&found, &out, validation)?;
+            for line in report.lines(&out) {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ImproveCommand::Env { tasks, case } => crate::training::episode(&tasks, &case),
         ImproveCommand::Harvest { profile, out } => {
             let found = crate::profiles::get(&profile)?;
             let (set, passed_over) = crate::sealed::harvest(&found)?;

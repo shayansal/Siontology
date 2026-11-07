@@ -338,7 +338,8 @@ pub fn current(profile: &str) -> Result<Seal, CliError> {
 /// its cases (at least one, and at least one left) sealed, each case's side
 /// drawn from the set's digest, `seed` and its name; `canaries` canary
 /// cases, each with a code word from the system's randomness, added to the
-/// sealed part. The files are written beside the profile and the seal made
+/// sealed part. A task exported for training ([`crate::training`]) is
+/// never sealed. The files are written beside the profile and the seal made
 /// current, its confirmations `budget`. The seal is not yet on any ledger.
 pub fn seal(
     profile: &crate::profiles::Profile,
@@ -377,11 +378,29 @@ pub fn seal(
     }
     let source = sion_agent::evals::digest(tasks);
     let n = set.cases.len();
-    let sealed_n = ((n * share as usize).div_ceil(100)).clamp(1, n - 1);
+    // A task exported for training is never sealed: a model trained on it
+    // would pass it by memory ([`crate::training`]).
+    let trained = crate::training::trained(&profile.name)?;
+    let eligible = set
+        .cases
+        .iter()
+        .filter(|case| !trained.contains(&crate::training::task_digest(&case.task)))
+        .count();
+    if eligible == 0 {
+        return Err(CliError::Usage(
+            "every one of these tasks was exported for training (sion agent improve export): \
+             none can be sealed"
+                .into(),
+        ));
+    }
+    let sealed_n = ((n * share as usize).div_ceil(100))
+        .clamp(1, n - 1)
+        .min(eligible);
     let mut order: Vec<(sion_core::hash::Hash32, usize)> = set
         .cases
         .iter()
         .enumerate()
+        .filter(|(_, case)| !trained.contains(&crate::training::task_digest(&case.task)))
         .map(|(i, case)| {
             (
                 sion_core::hash::hash_parts(

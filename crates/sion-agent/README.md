@@ -62,6 +62,7 @@ About 39,400 lines of Rust under `src/` at the time of writing (`find crates/sio
 - [`canvas::Canvas`](src/canvas.rs): a page the agent shows a person things on, as A2UI messages, and hears their actions from.
 - [`skills`](src/skills.rs), [`evals::EvalSet`](src/evals.rs), [`evolve::evolve`](src/evolve.rs): skills, evaluation sets and improvement against them.
 - [`archive::Archive`](src/archive.rs), [`guard`](src/guard.rs), [`harvest::case_of`](src/harvest.rs), [`remote::serve` and `remote::run_candidate`](src/remote.rs): what the agent improving itself is built from.
+- [`episode::OutsidePolicy`, `episode::run`](src/episode.rs): a task as an episode for reinforcement learning, the policy outside.
 - [`graph`](src/graph.rs) and [`work`](src/work.rs): graphs of agents and self-started work.
 
 ## How it fits

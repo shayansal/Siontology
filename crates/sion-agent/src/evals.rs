@@ -404,15 +404,28 @@ pub fn run_case(
     tools.add(skills::SkillFile {
         root: skills_root.to_path_buf(),
     });
-    for fixture in &case.tools {
-        tools.add(FixtureTool(fixture.clone()));
-    }
     let catalog = skills::catalog(&skills::list(skills_root));
     let system = if catalog.is_empty() {
         system.to_string()
     } else {
         format!("{system}\n\n{}", catalog.trim_end())
     };
+    run_case_with(case, tools, models, &system, limits)
+}
+
+/// Runs one case with `tools` besides its stand-ins, and `system` as it
+/// is: the run, its calls, and the checks that did not hold.
+pub fn run_case_with(
+    case: &Case,
+    mut tools: Toolbox,
+    models: &[&dyn Model],
+    system: &str,
+    limits: &Limits,
+) -> CaseRun {
+    for fixture in &case.tools {
+        tools.add(FixtureTool(fixture.clone()));
+    }
+    let system = system.to_string();
     let runtime = Runtime {
         models: models.to_vec(),
         tools: &tools,
