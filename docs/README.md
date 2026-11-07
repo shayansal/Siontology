@@ -63,6 +63,7 @@ What the agent does and how: runs within limits, models, autonomy, memory, check
 - [Skills from others](book/src/agent/skills.md)
   - [What a skill may do](book/src/agent/skill-permissions.md)
   - [Skills that get better](book/src/agent/skill-improvement.md)
+  - [Improving itself](book/src/agent/self-improvement.md)
 - [Channels](book/src/agent/channels.md)
   - [Messengers](book/src/agent/messengers.md)
   - [Pairing and voice](book/src/agent/voice.md)

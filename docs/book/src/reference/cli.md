@@ -2865,9 +2865,20 @@ Improve the agent itself, keeping only what measurably helps: words added to its
 Usage: sion agent improve [OPTIONS] <COMMAND>
 
 Commands:
-  try   Try changes to a profile's agent on a set of tasks: words added to its instructions, the models a route reaches for, a vote. Each is run against the agent as it is and kept only if it is better beyond chance (Newcombe's 95% interval above zero) and fails no held-out task the agent passes; what is kept is recorded with its evidence
-  kept  The changes a profile's agent has kept, each with the evidence for keeping it
-  help  Print this message or the help of the given subcommand(s)
+  try       Try changes to a profile's agent on a set of tasks: words added to its instructions, the models a route reaches for, a vote. Each is run against the agent as it is and kept only if it is better beyond chance (Newcombe's 95% interval above zero) and fails no held-out task the agent passes; what is kept is recorded with its evidence
+  kept      The changes a profile's agent has kept, each with the evidence for keeping it
+  mark      Say how one of the agent's sessions went, so that it can be learnt from (`--good` or `--bad`); a session whose check passed needs none
+  harvest   Turn the profile's sessions whose outcome is known (marked, or their check passed) into a set of tasks: each task asked again, of stand-ins that answer what its tools answered, checked against what the session did
+  seal      Seal a set of tasks for the profile: a share held apart to confirm changes on, which no proposer is shown, with canary cases among them and a number of confirmations. With --wallet, the seal's digests are published on the ledger before anything is tried on it
+  run       Let the agent improve itself: a proposer model writes changes from the tasks it failed among the seal's tasks to choose on; each is tried there, and kept only when confirmed better on the sealed tasks. With --apply a kept change becomes the profile's; with --wallet each is published on the ledger
+  lineage   The changes the agent kept from its own work, with their evidence; with --check, each held to its claim on the ledger
+  adopt     Make a kept change the profile's
+  undo      Take back the last change made the profile's
+  code      Let the agent change its own code: a coding agent edits a copy of the source, its commands in the sandbox; a change that keeps to the paths it may touch, builds, passes its tests, is better on the seal's tasks to choose on and is confirmed on the sealed tasks, the candidate scored by this harness, becomes a release (published with --wallet). Nothing is installed
+  attest    Rebuild and score a release someone published: the source at its commit with its patch, and as it stood, each built and tested in the sandbox and scored by this harness on the sealed tasks it was confirmed on; publish what you found if it holds up
+  install   Apply a release to a checkout of the source, only if its patch is the one published and verifiers you name attest it (or, with --undo, take it back out). Build and install the result as you build sion
+  improver  Improve the improver: the proposer's instructions and settings, graded by how much the agent improves on tasks it was not shown when the improver writes its changes, over problems (pairs of task sets). The improver proposes its own changes, under its own instructions; one is kept only when the agent improves more with it, beyond chance, on the problems given and then on problems held out, which no proposer is shown. With --show, the improver as it is
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2913,6 +2924,244 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent improve mark`
+
+```text
+Say how one of the agent's sessions went, so that it can be learnt from (`--good` or `--bad`); a session whose check passed needs none
+
+Usage: sion agent improve mark [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+
+Options:
+      --good         It went well
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --bad          It went badly
+      --note <NOTE>  What you say of it [default: ""]
+  -h, --help         Print help
+```
+
+## `sion agent improve harvest`
+
+```text
+Turn the profile's sessions whose outcome is known (marked, or their check passed) into a set of tasks: each task asked again, of stand-ins that answer what its tools answered, checked against what the session did
+
+Usage: sion agent improve harvest [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <FILE>   Where to write the set (default: printed)
+  -h, --help         Print help
+```
+
+## `sion agent improve seal`
+
+```text
+Seal a set of tasks for the profile: a share held apart to confirm changes on, which no proposer is shown, with canary cases among them and a number of confirmations. With --wallet, the seal's digests are published on the ledger before anything is tried on it
+
+Usage: sion agent improve seal [OPTIONS] --tasks <FILE> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --tasks <FILE>                   The tasks (a set, as `sion agent improve harvest` writes)
+      --share <SHARE>                  The share sealed, in percent [default: 30]
+      --confirmations <CONFIRMATIONS>  The confirmations the seal allows; each is held to 5% split among them all [default: 8]
+      --canaries <CANARIES>            Canary cases added to the sealed tasks [default: 2]
+      --seed <SEED>                    A seed mixed into the split (default: drawn)
+      --wallet <WALLET>                Publish the seal as this wallet's claim
+  -h, --help                           Print help
+```
+
+With `--wallet`, the seal's digests are published as a claim (`agent.seal/v1`) before anything is tried on it. See [Improving itself](../agent/self-improvement.md#sealed-before-anything-is-tried).
+
+## `sion agent improve run`
+
+```text
+Let the agent improve itself: a proposer model writes changes from the tasks it failed among the seal's tasks to choose on; each is tried there, and kept only when confirmed better on the sealed tasks. With --apply a kept change becomes the profile's; with --wallet each is published on the ledger
+
+Usage: sion agent improve run [OPTIONS] --proposer <MODEL> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --proposer <MODEL>               The model that proposes changes
+      --rounds <ROUNDS>                Rounds, at most [default: 4]
+      --runs <RUNS>                    How many times each task is run by each variant [default: 4]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+      --total-tokens <TOTAL_TOKENS>    The tokens the whole run may use, its proposer's included (0: no limit but the rounds) [default: 0]
+      --model <MODEL>                  A model the proposer may choose, besides the profile's own (repeat for more)
+      --seed <SEED>                    The seed of the archive's draws (default: drawn)
+      --apply                          Make each kept change the profile's
+      --wallet <WALLET>                Publish each kept change as this wallet's claim
+  -h, --help                           Print help
+```
+
+See [Improving itself](../agent/self-improvement.md#the-loop).
+
+## `sion agent improve lineage`
+
+```text
+The changes the agent kept from its own work, with their evidence; with --check, each held to its claim on the ledger
+
+Usage: sion agent improve lineage [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --check        Check the claims on the ledger
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent improve adopt`
+
+```text
+Make a kept change the profile's
+
+Usage: sion agent improve adopt [OPTIONS] <PROFILE> <STEP>
+
+Arguments:
+  <PROFILE>  The profile
+  <STEP>     The kept change (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent improve undo`
+
+```text
+Take back the last change made the profile's
+
+Usage: sion agent improve undo [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent improve improver`
+
+```text
+Improve the improver: the proposer's instructions and settings, graded by how much the agent improves on tasks it was not shown when the improver writes its changes, over problems (pairs of task sets). The improver proposes its own changes, under its own instructions; one is kept only when the agent improves more with it, beyond chance, on the problems given and then on problems held out, which no proposer is shown. With --show, the improver as it is
+
+Usage: sion agent improve improver [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --show                           Show the profile's improver, and do nothing else
+      --proposer <MODEL>               The model that proposes the agent's changes
+      --meta-proposer <MODEL>          The model the improver proposes its own changes with (default: the proposer)
+      --problem <TRAIN,HELD>           A problem to grade on: `<tasks to choose on>,<held-out tasks>` (repeat)
+      --held-out-problem <TRAIN,HELD>  A problem held out, to confirm changes on (repeat)
+      --rounds <ROUNDS>                Rounds of changes to the improver, at most [default: 2]
+      --agent-rounds <AGENT_ROUNDS>    Rounds of the agent's loop on each problem [default: 2]
+      --runs <RUNS>                    How many times each task is run [default: 2]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+      --confirmations <CONFIRMATIONS>  The confirmations of changes to the improver this allows [default: 4]
+      --seed <SEED>                    The seed of the archives' draws (default: drawn)
+      --apply                          Make a kept change the profile's improver
+  -h, --help                           Print help
+```
+
+See [Improving itself](../agent/self-improvement.md#the-improver-improved).
+
+## `sion agent improve code`
+
+```text
+Let the agent change its own code: a coding agent edits a copy of the source, its commands in the sandbox; a change that keeps to the paths it may touch, builds, passes its tests, is better on the seal's tasks to choose on and is confirmed on the sealed tasks, the candidate scored by this harness, becomes a release (published with --wallet). Nothing is installed
+
+Usage: sion agent improve code [OPTIONS] --source <DIR> --coder <MODEL> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --source <DIR>                   The source: a git checkout, whose last commit is the code as it stands
+      --coder <MODEL>                  The model that changes the code
+      --build <BUILD>                  The build, run with /bin/sh at the source's root in the sandbox [default: "cargo build --offline -p sion-cli"]
+      --test <TEST>                    The tests [default: "cargo test --offline -p sion-agent --lib"]
+      --candidate <CANDIDATE>          The program that runs a case, and its arguments, at the root [default: "target/debug/sion agent case --stdio"]
+      --allow <PATH>                   A path a change may touch (repeat; default: the agent's runtime, crates/sion-agent/src/, apart from what scores or guards it)
+      --max-files <MAX_FILES>          The most files a change may touch [default: 8]
+      --max-lines <MAX_LINES>          The most lines it may add and remove [default: 400]
+      --readable <DIR>                 A directory the sandbox shows read-only, a toolchain's (repeat)
+      --env <NAME=VALUE>               A variable the build and the tests are given: NAME=VALUE (repeat)
+      --build-secs <BUILD_SECS>        Seconds the build and the tests may each take [default: 1800]
+      --rounds <ROUNDS>                Rounds, at most [default: 2]
+      --runs <RUNS>                    How many times each task is run [default: 2]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+      --wallet <WALLET>                Publish each release as this wallet's claim
+  -h, --help                           Print help
+```
+
+See [Improving itself](../agent/self-improvement.md#changing-its-own-code).
+
+## `sion agent improve attest`
+
+```text
+Rebuild and score a release someone published: the source at its commit with its patch, and as it stood, each built and tested in the sandbox and scored by this harness on the sealed tasks it was confirmed on; publish what you found if it holds up
+
+Usage: sion agent improve attest [OPTIONS] --source <DIR> --patch <FILE> --tasks <FILE> --wallet <WALLET> <RELEASE>
+
+Arguments:
+  <RELEASE>  The release's claim
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --source <DIR>                   A checkout of the source holding the release's commit
+      --patch <FILE>                   The release's patch
+      --tasks <FILE>                   The sealed tasks it was confirmed on, as its publisher gives them
+      --wallet <WALLET>                The wallet that attests
+      --readable <DIR>                 A directory the sandbox shows read-only (repeat)
+      --env <NAME=VALUE>               A variable the build and the tests are given (repeat)
+      --allow <PATH>                   A path a change may touch, as the publisher allowed (repeat)
+      --build-secs <BUILD_SECS>        Seconds the build and the tests may each take [default: 1800]
+      --runs <RUNS>                    How many times each task is run [default: 2]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+  -h, --help                           Print help
+```
+
+## `sion agent improve install`
+
+```text
+Apply a release to a checkout of the source, only if its patch is the one published and verifiers you name attest it (or, with --undo, take it back out). Build and install the result as you build sion
+
+Usage: sion agent improve install [OPTIONS] --source <DIR> --patch <FILE> <PROFILE> <RELEASE>
+
+Arguments:
+  <PROFILE>  The profile whose lineage records it
+  <RELEASE>  The release's claim
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --source <DIR>         The checkout
+      --patch <FILE>         The release's patch
+      --attestation <CLAIM>  An attestation's claim (repeat)
+      --verifier <ACCOUNT>   An account, or a wallet's name, whose attestation counts (repeat)
+      --need <NEED>          Attestations needed, by different verifiers [default: 1]
+      --undo                 Take the release back out instead
+  -h, --help                 Print help
 ```
 
 ## `sion agent find`

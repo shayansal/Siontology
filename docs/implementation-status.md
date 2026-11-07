@@ -29,6 +29,7 @@ live.
 | Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
 | Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
 | Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Built (devnet scale; tested with scripted models; the meeting guest's voice wired and tested in units, its microphone and a meeting not run) |
+| Agents: improving itself from its own work — changes it writes, tasks from its sessions sealed on the ledger, the improver improving itself, changes to its own code released and attested (beyond the paper) | Built (devnet scale; tested with scripted models, and for code with a small harness in Python in bubblewrap; not run on this repository's own code, nor with a real model) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -726,12 +727,81 @@ agent from the transcript alone, into the meeting and the transcript
 (`agent:meeting-voice`). What needs no sound card is tested (which lines
 are answered, what is said and written, what the agent is asked); the
 microphone, the browser taking it and a meeting were not run, and no
-change was measured against a real model. Not built: choosing the tasks
-an improvement is measured on (a set written to flatter a change would
-pass it); trying several changes together; a way of working kept as a
-profile's setting; a project that spends from its own allotment on the
-ledger rather than being counted against a budget kept here; proofs of
-the vouchings and revocations a reader finds.
+change was measured against a real model. Not built: trying several
+changes together; a way of working kept as a profile's setting; a project
+that spends from its own allotment on the ledger rather than being counted
+against a budget kept here; proofs of the vouchings and revocations a
+reader finds. (Tasks from the agent's own work, sealed before changes are
+tried, are the next paragraph's.)
+
+**The agent improving itself from its own work: built (beyond the paper),
+tested with scripted models.** ([Improving itself](book/src/agent/self-improvement.md).)
+Its sessions become tasks: `sion agent improve mark` says how one went,
+and `harvest` turns those with a known outcome (marked, or their
+`--verify` check passed) into cases whose stand-ins answer what the
+session's tools answered and whose checks are that a run makes the
+changes a good session made, or none of a bad one's. `seal` splits a set
+by a draw from its digest and a seed, adds canary cases to the sealed part
+(a code word no run is told), and allows a number of confirmations; with
+a wallet its digests are published as a claim before anything is tried.
+`run` lets the agent improve itself: a proposer model, shown the operator's
+words (fixed), what the agent has learned, the models it may run on, the
+tasks it failed among those to choose on and what was tried before —
+never a sealed task — proposes what it should learn and which models to
+run on; each change is gated (size, allowed models, nothing tried twice,
+no run of eight words shared with a sealed task, a canary's code word
+stopping the loop), run once on every task and then in full, screened
+against the agent as it is (Newcombe's 95% interval above zero), and
+confirmed on the sealed tasks at 5% split over the seal's confirmations,
+failing none the agent passes and passing no canary. What it learned is
+kept apart from the operator's words, which the loop never rewrites. The
+variants tried form an archive the next round builds on, drawn by how
+productive each line has been (the Huxley–Gödel Machine's Thompson
+sampling over clades), kept between runs on the same tasks. A kept change
+is recorded with its evidence, published with a wallet as a claim naming
+its seal, made the profile's with `--apply` or `adopt`, and taken back
+with `undo`; `lineage --check` holds each to its claim and to a seal
+issued before it. `improver` improves the improver: its instructions and
+three settings, graded by how much the agent improves on held-out tasks
+when it writes the changes, over problems given; it proposes its own
+changes under its own instructions, and one is kept only when the agent
+improves more with it beyond chance there and on problems held out, at a
+corrected level; the improver kept is the one that proposes next. `code`
+lets the agent change its own code: a coder model edits a copy of the
+source without its `.git`, its commands in the sandbox with no network;
+the harness takes the diff in a fresh clone with git's hooks, filters and
+the user's git settings off, refuses a symbolic link or git settings of
+the copy's own, and holds the patch to the paths it may touch (by default
+the agent's runtime, never what scores or guards it, the build's
+configuration, the CLI, consensus or keys), a size, and no `unsafe`,
+network or new processes in its added lines; the build and tests run in
+the sandbox; the candidate runs each case in the sandbox with the source
+read-only and speaks to the harness over its standard input and output,
+which answers every model and tool call and scores the run itself
+(`sion agent case --stdio` is this runtime's side). A confirmed change is
+a release: the commit, the patch's digest, the commands, the agent and
+the evidence, published as a claim the transaction signs. `attest`
+rebuilds and scores someone else's release on the sealed tasks they hand
+over, and publishes what it found if the release holds up; `install`
+applies a release to a checkout only when its patch is the one published
+and attestations by verifiers its owner names hold, and `--undo` takes it
+out (`agent:self-improvement`, `agent:code-release`). Tested on a devnet:
+sessions marked, harvested and sealed with the seal published; a change
+that changed nothing, one that repeated a sealed task and a model not
+allowed turned down, the lesson kept, published, applied and reaching the
+next session, a canary's code word stopping the loop before it spent a
+confirmation, and undo; the improver's own change kept when the agent
+improved more with it, and undone; a coder's change outside what it may
+touch turned down and the one that helped built, tested, scored through
+the protocol in bubblewrap, released, attested by another account,
+installed only with that attestation and taken out. Not built: running
+this on this repository's own Rust code (the commands default to it, and
+the build, its toolchain mounted read-only, is untried), and with a real
+model; an attestation on a bond (it rests on its attester's signature);
+the sealed tasks kept secret from whoever holds the machine's files; a
+reusable holdout beyond the fixed number of confirmations; tasks the agent
+writes for itself; changes found by a challenger that rewrites tasks to
+expose shortcuts; anything that changes a model's weights.
 
 **Reads for agents on other frameworks: built (beyond the paper).** The
 HTTP channel serves three public reads, without a token: an agent's
@@ -1508,6 +1578,8 @@ the architecture's own:
 | `agent:metered-tokens` | What a renter pays is the token count the enclave signed with the key its attestation binds, so the owner cannot inflate it; but the count is the enclave's own reading of what its model provider reported, and a renter cannot check it against the provider. Payment runs one request behind, so the owner carries one request's tokens as credit, and a renter carries the risk that a request it paid for was served badly. |
 | `agent:agent-record` | An agent's record is what the ledger's events show: tasks settled to it, tasks it was named for and released, and its delivered results later proven false. Work done off the ledger is not in it, a result nobody challenged counts as good, and the number a record is turned into, and the ranking built on it, are a reader's own weighing rather than the ledger's. |
 | `agent:measured-improvement` | A change the agent keeps was better beyond chance on the tasks it was tried on and regressed on no held-out task it already passed. Both bars are only as good as those tasks: a set that does not cover what the agent is used for, or one written to flatter a change, passes it, and nothing here chooses the tasks. The evidence recorded is the counts and the interval, not the runs themselves. |
+| `agent:self-improvement` | A change the loop keeps was better beyond chance on the tasks it was chosen on and then on sealed tasks its proposer was never shown, at 5% split over the seal's confirmations, failing none the agent passed and passing no canary; that is evidence it helps on tasks like those, not that it helps on others, and the bars are only as good as the tasks: harvested cases are a floor under what the agent did (a check that the same payment is made fails a better route), and a set that does not cover what the agent is used for passes a change that hurts elsewhere. The correction covers the number of confirmations, not how earlier answers steered later changes, so a seal's few confirmations leak a little each; the intervals treat repeated runs of a case as independent. The sealed tasks are kept from the proposer by the harness, not hidden from whoever holds this machine's files; the leak check catches a run of eight words shared with a sealed task, not a paraphrase. The improver's own changes are confirmed at a level corrected for the confirmations of one run: runs repeated on the same held-out problems are not corrected for one another. What a proposer writes reaches the agent's prompt only after both bars, and the operator's words and the agent's policy, grants and charter are outside its reach. A seal's or a step's claim is a commitment signed by its issuer, proving when the seal came, not what the tasks say. |
+| `agent:code-release` | A change to the agent's own code is contained by the sandbox that builds, tests and runs it (`agent:sandbox`), with no network; the harness reads the coder's work without running anything the copy holds, but git itself runs on the files, and the paths a patch may touch, its size and the words its added lines may not hold are checked as text, so a harmful change inside the paths allowed passes them. The candidate is scored only by what the harness answered, so it cannot claim a pass, but a build that behaves differently outside the sandbox is not caught. A release's claim is signed by its publisher; an attestation is its attester's signed account of rebuilding and scoring it, not a bond that can be ruled against, and it holds only as far as the attester ran the same sealed tasks on the same models. An attester runs the publisher's build, test and candidate commands, in its own sandbox. Installing holds the patch, read from the patch itself, to the installer's own rules before applying it to a checkout (binary files are refused anywhere); building and running the result is the owner's, outside any sandbox. |
 | `agent:vouched-memory` | A vouching is a claim on the voucher's bond, so who stands behind a shared fact costs something and can be ruled against; it says the voucher stands behind the fact, not that the fact is true. A revocation rests on the revoker's signature alone. A revoked fact and whatever rests on it are left out by the reader, not removed from any log, and only links the atoms actually carry (derived-from, assumes) are followed: a fact drawn from another without saying so is not pulled with it. Only the log's writer's revocation pulls a fact; a voucher's withdraws its own vouching, and a vouching shows only while its claim stands. A reader finds revocations and vouchings in the node's events, unproven: a node that leaves one out keeps a revoked fact in mind or a vouching unshown, and a Pulse with more events than a node answers at once is read only in part. |
 | `agent:project-budget` | A project's budget is counted here, in the file that holds the project, not escrowed on the ledger: it bounds the payments the agent makes in the project's sessions, each counted before it is sent, and the charter and its allotments are what actually bound what it can spend. Payments made in other sessions are not counted against the project (a project's own session has no subagents, tasks or storage deals). The file is changed under a lock file that holds across processes; a lock left by a process that stopped is taken over once stale, and two processes taking it over at once could both hold it. A project that is ended or out of budget takes no more work through the project, which is not the same as the agent stopping. |
 | `agent:acp-checkout` | An ACP order paid on the ledger is made only once the payment for the session's total has executed and its receipt verifies against the chain the merchant pinned, so a merchant is not paid in words; what was bought is the merchant's to deliver, and nothing on the ledger says it was. A buyer is bounded by its cap and by its Agent Charter, not by the merchant. The handler is Siontology's own: the ACP specification names handlers as an extension point, and no other ACP party is known to speak it. Who is asking is a bearer token, and a signature only for clients made to sign. Webhooks are signed with a secret the merchant and the platform share, and are delivered at least once: a receiver keeps the `Request-Id`s it has seen. |

@@ -31,6 +31,11 @@ does, and how.
 - [Skills from others](skills.md), [what a skill may
   do](skill-permissions.md) and [skills that get
   better](skill-improvement.md).
+- [Improving itself](self-improvement.md): changes it writes from its
+  own work, confirmed on tasks sealed on the ledger before they were
+  written; the improver improving itself; changes to its own code built
+  and scored in a sandbox, released, attested by others and installed
+  only by you.
 - [Channels](channels.md), [messengers](messengers.md), and [pairing and
   voice](voice.md): where it is reached.
 - [Profiles and schedules](schedules.md), [subagents and hired

@@ -604,6 +604,15 @@ pub enum AgentCommand {
     /// when better beyond chance and failing no held-out task it passes.
     #[command(subcommand)]
     Improve(crate::self_improve::ImproveCommand),
+    /// Run one case as a candidate that an improvement scores: the case,
+    /// its model's answers and its tools' come from the harness over
+    /// standard input and output (`sion agent improve code`).
+    #[command(hide = true)]
+    Case {
+        /// Speak over standard input and output.
+        #[arg(long)]
+        stdio: bool,
+    },
     /// Find the best agent for a task among those you name: how well each
     /// one's offer fits the task (BM25), weighed against its record on the
     /// ledger, held to what you need (an enclave that checks out, a price).
@@ -961,7 +970,21 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Routes(command) => crate::model_routes::run(command),
-        AgentCommand::Improve(command) => crate::self_improve::run(command),
+        AgentCommand::Improve(command) if !command.needs_ledger() => {
+            crate::self_improve::run(command)
+        }
+        AgentCommand::Case { stdio } => {
+            if !stdio {
+                return Ok(Err(CliError::Usage(
+                    "a case is run over standard input and output: --stdio".into(),
+                )));
+            }
+            sion_agent::remote::run_candidate(
+                std::io::BufReader::new(std::io::stdin()),
+                std::io::stdout(),
+            )
+            .map_err(CliError::Usage)
+        }
         AgentCommand::Project(command) if !command.needs_ledger() => {
             crate::projects::run_local(command)
         }
@@ -1365,7 +1388,10 @@ pub fn run(
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Routes(command) => crate::model_routes::run(command),
-        AgentCommand::Improve(command) => crate::self_improve::run(command),
+        AgentCommand::Improve(command) => crate::self_improve::run_with(session, ledger, command),
+        AgentCommand::Case { .. } => Err(CliError::Usage(
+            "a case is run on its own, without a node".into(),
+        )),
         AgentCommand::Find(args) => crate::reputation::find_command(ledger, args),
         AgentCommand::Project(command) => crate::projects::run(shared, command),
         AgentCommand::Hooks(command) => crate::hooks::command(command),

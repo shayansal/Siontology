@@ -6,7 +6,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 · Status: **Partly built** (the runtime is tested with a scripted model and stand-ins for providers' and services' APIs, see
 [implementation status](../../docs/implementation-status.md)).
 
-About 32,600 lines of Rust under `src/` at the time of writing (`find crates/sion-agent/src -name '*.rs' -print0 | xargs -0 cat | wc -l`).
+About 39,400 lines of Rust under `src/` at the time of writing (`find crates/sion-agent/src -name '*.rs' -print0 | xargs -0 cat | wc -l`).
 
 ## The steps of a run
 
@@ -44,7 +44,8 @@ About 32,600 lines of Rust under `src/` at the time of writing (`find crates/sio
 | MCP | `mcp`, `mcp_http`, `mcp_input`, `oauth` | An MCP client over standard input and output and over HTTP; elicitation and sampling; OAuth 2.1 for servers that ask for it. Tools are offered only while each definition matches the one an operator reviewed. |
 | Skills and their improvement | `skills`, `evals`, `evolve`, `judge` | Skills in the Agent Skills format with a canonical bundle; evaluation sets; reflective evolution of a skill's variants; a step-by-step judge. |
 | Memory over past work | `search`, `consolidate`, `dream` | BM25 search of past sessions; a model proposes notes and gates decide; going over transcripts while idle. |
-| Graphs and comparisons | `graph`, `compare` | Graphs of agents, each node a session; comparing one agent, voting and graphs on the same budget. |
+| Graphs and comparisons | `graph`, `compare` | Graphs of agents, each node a session; comparing one agent, voting and graphs on the same budget; Wilson and Newcombe intervals at any level. |
+| Improving itself | `archive`, `guard`, `harvest`, `remote` | An archive of an agent's variants, the next to build on drawn by Thompson sampling over each line's passes; guards that hold outside an improvement loop (leaks of sealed tasks, canaries, what a patch may touch and add); cases from sessions whose outcome is known; scoring a candidate built from changed code over its standard input and output, every model and tool answer given by the harness. |
 | Schedules and work | `schedule`, `work` | Once, interval and cron times in UTC; work an agent takes on by itself under mandates. |
 
 ## Main types and functions
@@ -58,6 +59,7 @@ About 32,600 lines of Rust under `src/` at the time of writing (`find crates/sio
 - [`Scripted`](src/scripted.rs): a model that plays a list of steps, with `when` and `unless` conditions on the conversation.
 - [`providers::Anthropic`, `OpenAiCompatible`, `Gemini`, `OpenAiResponses`](src/providers.rs): the HTTPS providers.
 - [`skills`](src/skills.rs), [`evals::EvalSet`](src/evals.rs), [`evolve::evolve`](src/evolve.rs): skills, evaluation sets and improvement against them.
+- [`archive::Archive`](src/archive.rs), [`guard`](src/guard.rs), [`harvest::case_of`](src/harvest.rs), [`remote::serve` and `remote::run_candidate`](src/remote.rs): what the agent improving itself is built from.
 - [`graph`](src/graph.rs) and [`work`](src/work.rs): graphs of agents and self-started work.
 
 ## How it fits

@@ -210,12 +210,76 @@ impl ArmResult {
     }
 }
 
+/// The z of a 95% two-sided interval.
+pub const Z95: f64 = 1.959_964;
+
 /// The 95% Wilson score interval for `passed` of `total`.
 pub fn wilson(passed: usize, total: usize) -> (f64, f64) {
+    wilson_with(passed, total, Z95)
+}
+
+/// The z of a two-sided interval that misses with probability `alpha`:
+/// the standard normal quantile at 1 − alpha/2 (Acklam's rational
+/// approximation, good to about 1e-9). `alpha` is kept within
+/// [1e-12, 0.5].
+pub fn z_for(alpha: f64) -> f64 {
+    let alpha = if alpha.is_finite() {
+        alpha.clamp(1e-12, 0.5)
+    } else {
+        0.05
+    };
+    // The upper tail's probability, alpha / 2, is below 0.02425 for any
+    // alpha under 0.0485; Acklam's tail branch then applies.
+    let p = alpha / 2.0;
+    let q_tail = |p: f64| {
+        const C: [f64; 6] = [
+            -7.784_894_002_430_293e-3,
+            -3.223_964_580_411_365e-1,
+            -2.400_758_277_161_838,
+            -2.549_732_539_343_734,
+            4.374_664_141_464_968,
+            2.938_163_982_698_783,
+        ];
+        const D: [f64; 4] = [
+            7.784_695_709_041_462e-3,
+            3.224_671_290_700_398e-1,
+            2.445_134_137_142_996,
+            3.754_408_661_907_416,
+        ];
+        let q = (-2.0 * p.ln()).sqrt();
+        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    };
+    if p < 0.024_25 {
+        return q_tail(p);
+    }
+    // The central branch, for the quantile at 1 - p.
+    const A: [f64; 6] = [
+        -3.969_683_028_665_376e1,
+        2.209_460_984_245_205e2,
+        -2.759_285_104_469_687e2,
+        1.383_577_518_672_69e2,
+        -3.066_479_806_614_716e1,
+        2.506_628_277_459_239,
+    ];
+    const B: [f64; 5] = [
+        -5.447_609_879_822_406e1,
+        1.615_858_368_580_409e2,
+        -1.556_989_798_598_866e2,
+        6.680_131_188_771_972e1,
+        -1.328_068_155_288_572e1,
+    ];
+    let q = (1.0 - p) - 0.5;
+    let r = q * q;
+    (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+        / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+}
+
+/// The Wilson score interval for `passed` of `total` at `z`.
+pub fn wilson_with(passed: usize, total: usize, z: f64) -> (f64, f64) {
     if total == 0 {
         return (0.0, 1.0);
     }
-    let z = 1.959_964;
     let n = total as f64;
     let p = passed as f64 / n;
     let denominator = 1.0 + z * z / n;
@@ -227,10 +291,16 @@ pub fn wilson(passed: usize, total: usize) -> (f64, f64) {
 /// Newcombe's 95% interval (his method 10, from two Wilson intervals) for
 /// the difference of two pass rates, `a`'s minus `b`'s.
 pub fn newcombe(a: (usize, usize), b: (usize, usize)) -> (f64, f64) {
+    newcombe_with(a, b, Z95)
+}
+
+/// Newcombe's interval for `a`'s pass rate minus `b`'s, from two Wilson
+/// intervals at `z` ([`z_for`] gives the z of a level).
+pub fn newcombe_with(a: (usize, usize), b: (usize, usize), z: f64) -> (f64, f64) {
     let rate = |(k, n): (usize, usize)| if n == 0 { 0.0 } else { k as f64 / n as f64 };
     let (pa, pb) = (rate(a), rate(b));
-    let (la, ua) = wilson(a.0, a.1);
-    let (lb, ub) = wilson(b.0, b.1);
+    let (la, ua) = wilson_with(a.0, a.1, z);
+    let (lb, ub) = wilson_with(b.0, b.1, z);
     let d = pa - pb;
     (
         d - ((pa - la).powi(2) + (ub - pb).powi(2)).sqrt(),
@@ -748,6 +818,25 @@ mod tests {
     use super::*;
     use crate::scripted::Scripted;
     use serde_json::json;
+
+    #[test]
+    fn the_z_of_a_level_is_the_normal_quantile() {
+        assert!((z_for(0.05) - Z95).abs() < 1e-5, "{}", z_for(0.05));
+        assert!((z_for(0.01) - 2.575_829).abs() < 1e-5, "{}", z_for(0.01));
+        // 0.05 split over 8 confirmations.
+        assert!(
+            (z_for(0.05 / 8.0) - 2.734_369).abs() < 1e-5,
+            "{}",
+            z_for(0.00625)
+        );
+        assert!((z_for(0.5) - 0.674_490).abs() < 1e-5);
+        assert!(z_for(1e-9) > 6.0);
+        // A stricter level widens Newcombe's interval.
+        let loose = newcombe((30, 40), (18, 40));
+        let strict = newcombe_with((30, 40), (18, 40), z_for(0.05 / 8.0));
+        assert!(strict.0 < loose.0 && strict.1 > loose.1);
+        assert_eq!(newcombe((3, 4), (1, 4)), newcombe_with((3, 4), (1, 4), Z95));
+    }
 
     const SET: &str = r#"{
       "name": "lookups",

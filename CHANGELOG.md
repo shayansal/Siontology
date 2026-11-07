@@ -10,6 +10,61 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### The agent improving itself: its own changes, sealed tasks, the improver, its own code
+
+- **Tasks from its own work.** `sion agent improve mark` says how a
+  session went; `harvest` turns the profile's sessions with a known
+  outcome (marked, or their `--verify` check passed) into cases whose
+  stand-ins answer what the session's tools answered and whose checks are
+  that a run makes the changes a good session made, or none of a bad
+  one's (`sion_agent::harvest`).
+- **Sealed before anything is tried.** `seal` splits a set by a draw from
+  its digest and a seed, adds canary cases to the sealed part, and allows
+  a number of confirmations, each held to 5% split among them all; with
+  `--wallet` the seal's digests are published as a claim
+  (`agent.seal/v1`) first.
+- **Changes it writes.** `run`: a proposer model, shown the tasks the
+  agent failed among those to choose on and never a sealed task, proposes
+  what the agent should learn and which models to run on. Each change is
+  gated (size, allowed models, nothing tried twice, no run of eight words
+  shared with a sealed task, a canary's code word stopping the loop), run
+  once on every task and then in full, screened at 95% against the agent
+  as it is, and confirmed on the sealed tasks at the seal's level with no
+  sealed task lost and no canary passed. Variants form an archive drawn on
+  by Thompson sampling over each line's passes (the Huxley–Gödel
+  Machine's clade metaproductivity), kept between runs
+  (`sion_agent::archive`). What the agent learns is kept apart from its
+  operator's words; `--apply` or `adopt` makes a change the profile's and
+  `undo` takes it back. Kept changes are recorded with their evidence and,
+  with `--wallet`, published as claims (`agent.improvement/v1`) naming
+  their seal; `lineage --check` holds each to its claim and its seal.
+- **The improver improving itself.** `improver` grades the proposer's
+  instructions and settings by how much the agent improves on held-out
+  tasks when it writes the changes, over problems given; it proposes its
+  own changes under its own instructions, and one is kept only when the
+  agent improves more with it beyond chance there and on problems held
+  out, at a corrected level. The improver kept proposes next.
+- **Its own code.** `code`: a coder model edits a copy of the source
+  without its `.git`, its commands in the sandbox with no network; the
+  harness takes the diff in a fresh clone with git's hooks, filters and
+  user settings off, refuses symbolic links and git settings of the
+  copy's own, and holds the patch to the paths it may touch, a size and
+  added lines without `unsafe`, network or new processes
+  (`sion_agent::guard`); build and tests run in the sandbox, and the
+  candidate is scored over its standard input and output by the harness,
+  which answers every model and tool call (`sion_agent::remote`; this
+  runtime's side is `sion agent case --stdio`). A confirmed change is a
+  release (`agent.release/v1`); `attest` lets another account rebuild and
+  score it and publish what it found (`agent.release-attestation/v1`), and
+  `install` applies it to a checkout only with attestations by verifiers
+  you name (`--undo` takes it out).
+- **Statistics.** `sion_agent::compare` gains `z_for`, `wilson_with` and
+  `newcombe_with`: intervals at any level, for corrected confirmations.
+- Trust atoms `agent:self-improvement` and `agent:code-release`. Tested on
+  a devnet with scripted models, and for code with a small harness in
+  Python in bubblewrap; not run on this repository's own code or with a
+  real model.
+
 ### Improving the agent, projects, shared facts, a speaking guest and finding an agent, as commands
 
 The five pieces that were only in the library now have commands, and

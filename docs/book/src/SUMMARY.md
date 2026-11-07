@@ -27,6 +27,7 @@
 - [Skills from others](agent/skills.md)
   - [What a skill may do](agent/skill-permissions.md)
   - [Skills that get better](agent/skill-improvement.md)
+  - [Improving itself](agent/self-improvement.md)
 - [Channels](agent/channels.md)
   - [Messengers](agent/messengers.md)
   - [Pairing and voice](agent/voice.md)

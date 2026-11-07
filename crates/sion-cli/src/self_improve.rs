@@ -408,7 +408,7 @@ pub fn run_tasks(
     runs: u32,
     budget_tokens: u64,
 ) -> Result<sion_agent::compare::ArmResult, CliError> {
-    let mut instructions = profile.instructions.clone().unwrap_or_default();
+    let mut instructions = crate::improve_loop::instructions_of(profile).unwrap_or_default();
     let mut models = profile.models.clone();
     let mut arm = Arm::Single;
     match tweak {
@@ -723,6 +723,314 @@ pub enum ImproveCommand {
         /// The profile.
         profile: String,
     },
+    /// Say how one of the agent's sessions went, so that it can be learnt
+    /// from (`--good` or `--bad`); a session whose check passed needs none.
+    Mark {
+        /// The session (its id, or a unique prefix of it).
+        session: String,
+        /// It went well.
+        #[arg(long, conflicts_with = "bad", required_unless_present = "bad")]
+        good: bool,
+        /// It went badly.
+        #[arg(long)]
+        bad: bool,
+        /// What you say of it.
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// Turn the profile's sessions whose outcome is known (marked, or their
+    /// check passed) into a set of tasks: each task asked again, of
+    /// stand-ins that answer what its tools answered, checked against what
+    /// the session did.
+    Harvest {
+        /// The profile.
+        profile: String,
+        /// Where to write the set (default: printed).
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Seal a set of tasks for the profile: a share held apart to confirm
+    /// changes on, which no proposer is shown, with canary cases among them
+    /// and a number of confirmations. With --wallet, the seal's digests
+    /// are published on the ledger before anything is tried on it.
+    Seal {
+        /// The profile.
+        profile: String,
+        /// The tasks (a set, as `sion agent improve harvest` writes).
+        #[arg(long, value_name = "FILE")]
+        tasks: std::path::PathBuf,
+        /// The share sealed, in percent.
+        #[arg(long, default_value_t = crate::sealed::SHARE)]
+        share: u32,
+        /// The confirmations the seal allows; each is held to 5% split
+        /// among them all.
+        #[arg(long, default_value_t = crate::sealed::BUDGET)]
+        confirmations: u32,
+        /// Canary cases added to the sealed tasks.
+        #[arg(long, default_value_t = crate::sealed::CANARIES)]
+        canaries: usize,
+        /// A seed mixed into the split (default: drawn).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Publish the seal as this wallet's claim.
+        #[arg(long)]
+        wallet: Option<String>,
+    },
+    /// Let the agent improve itself: a proposer model writes changes from
+    /// the tasks it failed among the seal's tasks to choose on; each is
+    /// tried there, and kept only when confirmed better on the sealed
+    /// tasks. With --apply a kept change becomes the profile's; with
+    /// --wallet each is published on the ledger.
+    Run {
+        /// The profile.
+        profile: String,
+        /// The model that proposes changes.
+        #[arg(long, value_name = "MODEL")]
+        proposer: String,
+        /// Rounds, at most.
+        #[arg(long, default_value_t = 4)]
+        rounds: usize,
+        /// How many times each task is run by each variant.
+        #[arg(long, default_value_t = 4)]
+        runs: u32,
+        /// The tokens each run of a task may use.
+        #[arg(long = "budget-tokens", default_value_t = 20_000)]
+        budget_tokens: u64,
+        /// The tokens the whole run may use, its proposer's included (0:
+        /// no limit but the rounds).
+        #[arg(long = "total-tokens", default_value_t = 0)]
+        total_tokens: u64,
+        /// A model the proposer may choose, besides the profile's own
+        /// (repeat for more).
+        #[arg(long = "model", value_name = "MODEL")]
+        models: Vec<String>,
+        /// The seed of the archive's draws (default: drawn).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Make each kept change the profile's.
+        #[arg(long)]
+        apply: bool,
+        /// Publish each kept change as this wallet's claim.
+        #[arg(long)]
+        wallet: Option<String>,
+    },
+    /// The changes the agent kept from its own work, with their evidence;
+    /// with --check, each held to its claim on the ledger.
+    Lineage {
+        /// The profile.
+        profile: String,
+        /// Check the claims on the ledger.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Make a kept change the profile's.
+    Adopt {
+        /// The profile.
+        profile: String,
+        /// The kept change (its id, or a unique prefix of it).
+        step: String,
+    },
+    /// Take back the last change made the profile's.
+    Undo {
+        /// The profile.
+        profile: String,
+    },
+    /// Let the agent change its own code: a coding agent edits a copy of
+    /// the source, its commands in the sandbox; a change that keeps to the
+    /// paths it may touch, builds, passes its tests, is better on the
+    /// seal's tasks to choose on and is confirmed on the sealed tasks, the
+    /// candidate scored by this harness, becomes a release (published with
+    /// --wallet). Nothing is installed.
+    Code {
+        /// The profile.
+        profile: String,
+        /// The source: a git checkout, whose last commit is the code as it
+        /// stands.
+        #[arg(long, value_name = "DIR")]
+        source: std::path::PathBuf,
+        /// The model that changes the code.
+        #[arg(long, value_name = "MODEL")]
+        coder: String,
+        /// The build, run with /bin/sh at the source's root in the sandbox.
+        #[arg(long, default_value = "cargo build --offline -p sion-cli")]
+        build: String,
+        /// The tests.
+        #[arg(long, default_value = "cargo test --offline -p sion-agent --lib")]
+        test: String,
+        /// The program that runs a case, and its arguments, at the root.
+        #[arg(long, default_value = "target/debug/sion agent case --stdio")]
+        candidate: String,
+        /// A path a change may touch (repeat; default: the agent's runtime,
+        /// crates/sion-agent/src/, apart from what scores or guards it).
+        #[arg(long = "allow", value_name = "PATH")]
+        allow: Vec<String>,
+        /// The most files a change may touch.
+        #[arg(long = "max-files", default_value_t = 8)]
+        max_files: usize,
+        /// The most lines it may add and remove.
+        #[arg(long = "max-lines", default_value_t = 400)]
+        max_lines: usize,
+        /// A directory the sandbox shows read-only, a toolchain's (repeat).
+        #[arg(long = "readable", value_name = "DIR")]
+        readable: Vec<std::path::PathBuf>,
+        /// A variable the build and the tests are given: NAME=VALUE
+        /// (repeat).
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Seconds the build and the tests may each take.
+        #[arg(long = "build-secs", default_value_t = 1_800)]
+        build_secs: u64,
+        /// Rounds, at most.
+        #[arg(long, default_value_t = 2)]
+        rounds: usize,
+        /// How many times each task is run.
+        #[arg(long, default_value_t = 2)]
+        runs: u32,
+        /// The tokens each run of a task may use.
+        #[arg(long = "budget-tokens", default_value_t = 20_000)]
+        budget_tokens: u64,
+        /// Publish each release as this wallet's claim.
+        #[arg(long)]
+        wallet: Option<String>,
+    },
+    /// Rebuild and score a release someone published: the source at its
+    /// commit with its patch, and as it stood, each built and tested in
+    /// the sandbox and scored by this harness on the sealed tasks it was
+    /// confirmed on; publish what you found if it holds up.
+    Attest {
+        /// The release's claim.
+        release: String,
+        /// A checkout of the source holding the release's commit.
+        #[arg(long, value_name = "DIR")]
+        source: std::path::PathBuf,
+        /// The release's patch.
+        #[arg(long, value_name = "FILE")]
+        patch: std::path::PathBuf,
+        /// The sealed tasks it was confirmed on, as its publisher gives
+        /// them.
+        #[arg(long, value_name = "FILE")]
+        tasks: std::path::PathBuf,
+        /// The wallet that attests.
+        #[arg(long)]
+        wallet: String,
+        /// A directory the sandbox shows read-only (repeat).
+        #[arg(long = "readable", value_name = "DIR")]
+        readable: Vec<std::path::PathBuf>,
+        /// A variable the build and the tests are given (repeat).
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// A path a change may touch, as the publisher allowed (repeat).
+        #[arg(long = "allow", value_name = "PATH")]
+        allow: Vec<String>,
+        /// Seconds the build and the tests may each take.
+        #[arg(long = "build-secs", default_value_t = 1_800)]
+        build_secs: u64,
+        /// How many times each task is run.
+        #[arg(long, default_value_t = 2)]
+        runs: u32,
+        /// The tokens each run of a task may use.
+        #[arg(long = "budget-tokens", default_value_t = 20_000)]
+        budget_tokens: u64,
+    },
+    /// Apply a release to a checkout of the source, only if its patch is
+    /// the one published and verifiers you name attest it (or, with
+    /// --undo, take it back out). Build and install the result as you
+    /// build sion.
+    Install {
+        /// The profile whose lineage records it.
+        profile: String,
+        /// The release's claim.
+        release: String,
+        /// The checkout.
+        #[arg(long, value_name = "DIR")]
+        source: std::path::PathBuf,
+        /// The release's patch.
+        #[arg(long, value_name = "FILE")]
+        patch: std::path::PathBuf,
+        /// An attestation's claim (repeat).
+        #[arg(long = "attestation", value_name = "CLAIM")]
+        attestations: Vec<String>,
+        /// An account, or a wallet's name, whose attestation counts
+        /// (repeat).
+        #[arg(long = "verifier", value_name = "ACCOUNT")]
+        verifiers: Vec<String>,
+        /// Attestations needed, by different verifiers.
+        #[arg(long, default_value_t = 1)]
+        need: usize,
+        /// A path the patch may touch (repeat; default: the agent's
+        /// runtime, crates/sion-agent/src/, apart from what scores or
+        /// guards it). The patch is held to these whatever its publisher
+        /// and attesters allowed.
+        #[arg(long = "allow", value_name = "PATH")]
+        allow: Vec<String>,
+        /// Take the release back out instead.
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Improve the improver: the proposer's instructions and settings,
+    /// graded by how much the agent improves on tasks it was not shown
+    /// when the improver writes its changes, over problems (pairs of task
+    /// sets). The improver proposes its own changes, under its own
+    /// instructions; one is kept only when the agent improves more with
+    /// it, beyond chance, on the problems given and then on problems held
+    /// out, which no proposer is shown. With --show, the improver as it is.
+    Improver {
+        /// The profile.
+        profile: String,
+        /// Show the profile's improver, and do nothing else.
+        #[arg(long)]
+        show: bool,
+        /// The model that proposes the agent's changes.
+        #[arg(long, value_name = "MODEL", required_unless_present = "show")]
+        proposer: Option<String>,
+        /// The model the improver proposes its own changes with (default:
+        /// the proposer).
+        #[arg(long = "meta-proposer", value_name = "MODEL")]
+        meta_proposer: Option<String>,
+        /// A problem to grade on: `<tasks to choose on>,<held-out tasks>`
+        /// (repeat).
+        #[arg(long = "problem", value_name = "TRAIN,HELD")]
+        problems: Vec<String>,
+        /// A problem held out, to confirm changes on (repeat).
+        #[arg(long = "held-out-problem", value_name = "TRAIN,HELD")]
+        held_out: Vec<String>,
+        /// Rounds of changes to the improver, at most.
+        #[arg(long, default_value_t = 2)]
+        rounds: usize,
+        /// Rounds of the agent's loop on each problem.
+        #[arg(long = "agent-rounds", default_value_t = 2)]
+        agent_rounds: usize,
+        /// How many times each task is run.
+        #[arg(long, default_value_t = 2)]
+        runs: u32,
+        /// The tokens each run of a task may use.
+        #[arg(long = "budget-tokens", default_value_t = 20_000)]
+        budget_tokens: u64,
+        /// The confirmations of changes to the improver this allows.
+        #[arg(long, default_value_t = 4)]
+        confirmations: u32,
+        /// The seed of the archives' draws (default: drawn).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Make a kept change the profile's improver.
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
+impl ImproveCommand {
+    /// Whether it needs a node: publishing or checking on the ledger.
+    pub fn needs_ledger(&self) -> bool {
+        match self {
+            ImproveCommand::Seal { wallet, .. } | ImproveCommand::Run { wallet, .. } => {
+                wallet.is_some()
+            }
+            ImproveCommand::Lineage { check, .. } => *check,
+            ImproveCommand::Code { wallet, .. } => wallet.is_some(),
+            ImproveCommand::Attest { .. } | ImproveCommand::Install { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 /// The changes `sion agent improve try` was given, in the order tried:
@@ -769,9 +1077,742 @@ pub fn proposals(
     Ok(proposals)
 }
 
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+fn drawn() -> u64 {
+    rand_core::RngCore::next_u64(&mut rand_core::OsRng)
+}
+
+/// Runs `sion agent improve …` with a node: publishing a seal or kept
+/// changes, checking a lineage; anything else as [`run`] does.
+pub fn run_with(
+    session: &mut crate::session::Session<'_>,
+    ledger: &dyn crate::ledger::Ledger,
+    command: ImproveCommand,
+) -> Result<(), CliError> {
+    match command {
+        ImproveCommand::Seal {
+            profile,
+            tasks,
+            share,
+            confirmations,
+            canaries,
+            seed,
+            wallet: Some(wallet),
+        } => {
+            seal_command(&profile, &tasks, share, confirmations, canaries, seed)?;
+            let claim = crate::sealed::publish(session, &wallet, &profile)?;
+            println!(
+                "published as claim {}, before anything was tried on it",
+                claim.as_hash().to_hex()
+            );
+            Ok(())
+        }
+        ImproveCommand::Run {
+            profile,
+            proposer,
+            rounds,
+            runs,
+            budget_tokens,
+            total_tokens,
+            models,
+            seed,
+            apply: make_it_so,
+            wallet: Some(wallet),
+        } => {
+            let found = crate::profiles::get(&profile)?;
+            let seal = crate::sealed::current(&profile)?;
+            let mut publish =
+                |step: &mut crate::improve_loop::Step| -> Result<Vec<String>, CliError> {
+                    step.seal_claim = seal.claim.clone();
+                    let subject = format!("agent {} kept a change: {}", found.agent, step.change);
+                    let payload = step.claimed()?;
+                    let claim = crate::sealed::publish_step(
+                        session,
+                        &wallet,
+                        &found.agent,
+                        payload,
+                        subject,
+                    )?;
+                    step.claim = Some(claim.as_hash().to_hex());
+                    Ok(vec![format!(
+                        "published as claim {}",
+                        claim.as_hash().to_hex()
+                    )])
+                };
+            run_loop(
+                &found,
+                &seal,
+                &proposer,
+                crate::improve_loop::Settings {
+                    rounds,
+                    runs,
+                    budget_tokens,
+                    total_tokens,
+                    models,
+                    seed: seed.unwrap_or_else(drawn),
+                },
+                make_it_so,
+                &mut publish,
+            )
+        }
+        ImproveCommand::Code {
+            profile,
+            source,
+            coder,
+            build,
+            test,
+            candidate,
+            allow,
+            max_files,
+            max_lines,
+            readable,
+            env,
+            build_secs,
+            rounds,
+            runs,
+            budget_tokens,
+            wallet: Some(wallet),
+        } => {
+            let found = crate::profiles::get(&profile)?;
+            let settings = code_settings(
+                found.shell.clone(),
+                &found.name,
+                source,
+                build,
+                test,
+                &candidate,
+                allow,
+                max_files,
+                max_lines,
+                readable,
+                &env,
+                build_secs,
+                rounds,
+                runs,
+                budget_tokens,
+            )?;
+            code_command(&found, &settings, &coder, Some((session, wallet.as_str())))
+        }
+        ImproveCommand::Attest {
+            release,
+            source,
+            patch,
+            tasks,
+            wallet,
+            readable,
+            env,
+            allow,
+            build_secs,
+            runs,
+            budget_tokens,
+        } => {
+            let read = |path: &std::path::Path| {
+                std::fs::read(path).map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))
+            };
+            let settings = code_settings(
+                None,
+                "attest",
+                source,
+                String::new(),
+                String::new(),
+                "true",
+                allow,
+                8,
+                400,
+                readable,
+                &env,
+                build_secs,
+                0,
+                runs,
+                budget_tokens,
+            )?;
+            let (_, lines) = crate::code_improve::attest(
+                session,
+                ledger,
+                &wallet,
+                &release,
+                &read(&patch)?,
+                &read(&tasks)?,
+                &settings,
+                now(),
+            )?;
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ImproveCommand::Install {
+            profile,
+            release,
+            source,
+            patch,
+            attestations,
+            verifiers,
+            need,
+            allow,
+            undo,
+        } => {
+            let mut rules = sion_agent::guard::PatchRules::default();
+            if !allow.is_empty() {
+                rules.allowed = allow;
+            }
+            let bytes = std::fs::read(&patch)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", patch.display())))?;
+            let verifiers: Vec<sion_core::ids::AccountId> =
+                verifiers.iter().map(|v| session.id(v)).collect();
+            for line in crate::code_improve::install(
+                ledger,
+                &profile,
+                &release,
+                &source,
+                &bytes,
+                &attestations,
+                &verifiers,
+                need,
+                &rules,
+                undo,
+                now(),
+            )? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ImproveCommand::Lineage {
+            profile,
+            check: true,
+        } => {
+            print_lineage(&profile)?;
+            for line in crate::sealed::check_lineage(ledger, &profile)? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        other => run(other),
+    }
+}
+
+/// How `sion agent improve code` and `attest` change, build and score
+/// code: in `shell`, a profile's own sandbox, if given (bubblewrap
+/// otherwise), never with a network; the copies under `work`.
+#[allow(clippy::too_many_arguments)]
+fn code_settings(
+    shell: Option<sion_agent::sandbox::Sandbox>,
+    work: &str,
+    source: std::path::PathBuf,
+    build: String,
+    test: String,
+    candidate: &str,
+    allow: Vec<String>,
+    max_files: usize,
+    max_lines: usize,
+    readable: Vec<std::path::PathBuf>,
+    env: &[String],
+    build_secs: u64,
+    rounds: usize,
+    runs: u32,
+    budget_tokens: u64,
+) -> Result<crate::code_improve::CodeSettings, CliError> {
+    let mut sandbox = shell.unwrap_or_else(|| {
+        sion_agent::sandbox::Sandbox::new(sion_agent::sandbox::Backend::Bubblewrap)
+    });
+    sandbox.network = sion_agent::sandbox::Network::None;
+    sandbox.readable.extend(readable);
+    sandbox.limits = sion_agent::sandbox::Limits {
+        timeout_secs: build_secs,
+        cpu_seconds: build_secs,
+        memory_mib: 8_192,
+        file_mib: 4_096,
+        processes: 512,
+        ..sion_agent::sandbox::Limits::default()
+    };
+    let mut rules = sion_agent::guard::PatchRules::default();
+    if !allow.is_empty() {
+        rules.allowed = allow;
+    }
+    rules.max_files = max_files;
+    rules.max_lines = max_lines;
+    let env = env
+        .iter()
+        .map(|pair| {
+            pair.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .ok_or_else(|| CliError::Usage(format!("{pair:?}: a variable is NAME=VALUE")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let candidate: Vec<String> = candidate.split_whitespace().map(str::to_string).collect();
+    Ok(crate::code_improve::CodeSettings {
+        source,
+        build,
+        test,
+        candidate,
+        rules,
+        sandbox,
+        env,
+        rounds,
+        runs,
+        budget_tokens,
+        answer_secs: 120,
+        work: crate::model_routes::dir().join("code-work").join(work),
+    })
+}
+
+/// Runs code improvement for `profile` on its seal: each release recorded
+/// beside its lineage and, given a session and wallet, published.
+fn code_command(
+    profile: &crate::profiles::Profile,
+    settings: &crate::code_improve::CodeSettings,
+    coder: &str,
+    mut publishing: Option<(&mut crate::session::Session<'_>, &str)>,
+) -> Result<(), CliError> {
+    let seal = crate::sealed::current(&profile.name)?;
+    let (train, _) = seal.train_set()?;
+    let (sealed, _) = seal.sealed_set()?;
+    let problem = crate::improve_loop::Problem {
+        train: &train,
+        train_digest: crate::code_improve::digest_of(&seal.train)?,
+        sealed: &sealed,
+        sealed_digest: crate::code_improve::digest_of(&seal.sealed)?,
+        z: seal.z(),
+    };
+    let model = crate::runtime::model(coder, 0)?;
+    let name = profile.name.clone();
+    let sealed_now = seal.sealed.clone();
+    let mut spend = || -> Result<(u32, u32), CliError> {
+        let spent = crate::sealed::spend(&name, &sealed_now)?;
+        Ok((spent.used, spent.budget))
+    };
+    let mut kept = |release: &mut crate::code_improve::Release,
+                    patch: &str|
+     -> Result<Vec<String>, CliError> {
+        release.seal_claim = seal.claim.clone();
+        let mut lines = Vec::new();
+        if let Some((session, wallet)) = publishing.as_mut() {
+            let claim = crate::code_improve::publish(session, wallet, release)?;
+            release.claim = Some(claim.as_hash().to_hex());
+            lines.push(format!("published as claim {}", claim.as_hash().to_hex()));
+        }
+        crate::code_improve::record(&name, release, patch)?;
+        lines.push(format!("its patch is {}", release.patch_path().display()));
+        Ok(lines)
+    };
+    let mut sinks = crate::code_improve::CodeSinks {
+        spend: &mut spend,
+        kept: &mut kept,
+        now: &now,
+    };
+    let report =
+        crate::code_improve::improve_code(profile, &problem, model.as_ref(), settings, &mut sinks)?;
+    for line in &report.lines {
+        println!("{line}");
+    }
+    println!("{} tokens used", report.tokens);
+    Ok(())
+}
+
+fn seal_command(
+    profile: &str,
+    tasks: &std::path::Path,
+    share: u32,
+    confirmations: u32,
+    canaries: usize,
+    seed: Option<u64>,
+) -> Result<(), CliError> {
+    let found = crate::profiles::get(profile)?;
+    let bytes =
+        std::fs::read(tasks).map_err(|e| CliError::Usage(format!("{}: {e}", tasks.display())))?;
+    let seal = crate::sealed::seal(
+        &found,
+        &bytes,
+        share,
+        confirmations,
+        canaries,
+        seed.unwrap_or_else(drawn),
+        now(),
+    )?;
+    println!(
+        "sealed {} of {} tasks for profile {profile} (with {} canaries), {} left to choose changes on; {} confirmations allowed",
+        seal.sealed_cases,
+        seal.sealed_cases + seal.train_cases,
+        seal.canaries,
+        seal.train_cases,
+        seal.budget
+    );
+    println!("tasks to choose on: {}", seal.train_path().display());
+    println!(
+        "sealed tasks: {} (no proposer is shown them)",
+        seal.sealed_path().display()
+    );
+    Ok(())
+}
+
+/// Runs the loop on `profile`'s seal, `kept` told of each change it keeps
+/// before it is recorded.
+fn run_loop(
+    profile: &crate::profiles::Profile,
+    seal: &crate::sealed::Seal,
+    proposer: &str,
+    settings: crate::improve_loop::Settings,
+    make_it_so: bool,
+    kept: &mut dyn FnMut(&mut crate::improve_loop::Step) -> Result<Vec<String>, CliError>,
+) -> Result<(), CliError> {
+    let (train, _) = seal.train_set()?;
+    let (sealed, _) = seal.sealed_set()?;
+    let train_digest = sion_core::hash::Hash32::from_hex(&seal.train)
+        .map_err(|e| CliError::Usage(format!("the seal's digest: {e}")))?;
+    let sealed_digest = sion_core::hash::Hash32::from_hex(&seal.sealed)
+        .map_err(|e| CliError::Usage(format!("the seal's digest: {e}")))?;
+    if seal.left() == 0 {
+        return Err(CliError::Usage(format!(
+            "the seal's {} confirmations are spent: seal fresh tasks (sion agent improve seal)",
+            seal.budget
+        )));
+    }
+    let improver = crate::improve_loop::improver(&profile.name)?;
+    let model = crate::runtime::model(proposer, 0)?;
+    let problem = crate::improve_loop::Problem {
+        train: &train,
+        train_digest,
+        sealed: &sealed,
+        sealed_digest,
+        z: seal.z(),
+    };
+    let name = profile.name.clone();
+    let sealed_now = seal.sealed.clone();
+    let seal_claim = seal.claim.clone();
+    let mut spend = || -> Result<(u32, u32), CliError> {
+        let spent = crate::sealed::spend(&name, &sealed_now)?;
+        Ok((spent.used, spent.budget))
+    };
+    let mut record = |step: &mut crate::improve_loop::Step| -> Result<Vec<String>, CliError> {
+        if step.seal_claim.is_none() {
+            step.seal_claim = seal_claim.clone();
+        }
+        let mut lines = kept(step)?;
+        crate::improve_loop::record(&name, step)?;
+        if make_it_so {
+            lines.extend(crate::improve_loop::apply(&name, step, now())?);
+        }
+        Ok(lines)
+    };
+    let stopped = || crate::runtime::kill_switch().exists();
+    let mut sinks = crate::improve_loop::Sinks {
+        spend: &mut spend,
+        kept: &mut record,
+        stopped: &stopped,
+        now: &now,
+    };
+    let archive = crate::improve_loop::archive_for(&profile.name, &seal.train);
+    let report = crate::improve_loop::improve(
+        profile,
+        &problem,
+        model.as_ref(),
+        &improver,
+        &settings,
+        archive,
+        &mut sinks,
+    )?;
+    for line in &report.lines {
+        println!("{line}");
+    }
+    if let Some(archive) = &report.archive {
+        crate::improve_loop::keep_archive(&profile.name, &seal.train, archive)?;
+    }
+    println!("{} tokens used", report.tokens);
+    if !report.kept.is_empty() {
+        println!(
+            "recorded in {}",
+            crate::improve_loop::lineage_path(&profile.name).display()
+        );
+        if !make_it_so {
+            println!("(--apply makes a kept change the profile's; or sion agent improve adopt)");
+        }
+    }
+    Ok(())
+}
+
+fn print_lineage(profile: &str) -> Result<(), CliError> {
+    let steps = crate::improve_loop::lineage(profile)?;
+    for step in &steps {
+        println!(
+            "{} step {}: {} — {}/{} up from {}/{} on the tasks to choose on, {}/{} up from {}/{} on sealed tasks (confirmation {} of {}){}",
+            sion_agent::schedule::rfc3339(step.at),
+            step.id,
+            step.change,
+            step.train_after.passed,
+            step.train_after.total,
+            step.train_before.passed,
+            step.train_before.total,
+            step.sealed_after.passed,
+            step.sealed_after.total,
+            step.sealed_before.passed,
+            step.sealed_before.total,
+            step.confirmation,
+            step.budget,
+            match &step.claim {
+                Some(claim) => format!("; claim {}", &claim[..16.min(claim.len())]),
+                None => String::new(),
+            }
+        );
+    }
+    if steps.is_empty() {
+        println!("profile {profile} has kept no change from its own work yet");
+    }
+    Ok(())
+}
+
 /// Runs `sion agent improve …`.
 pub fn run(command: ImproveCommand) -> Result<(), CliError> {
     match command {
+        ImproveCommand::Mark {
+            session,
+            good,
+            bad,
+            note,
+        } => {
+            let good = good && !bad;
+            let id = crate::sealed::mark(&session, good, &note, now())?;
+            println!(
+                "session {id} marked as having gone {}",
+                if good { "well" } else { "badly" }
+            );
+            Ok(())
+        }
+        ImproveCommand::Harvest { profile, out } => {
+            let found = crate::profiles::get(&profile)?;
+            let (set, passed_over) = crate::sealed::harvest(&found)?;
+            for line in &passed_over {
+                eprintln!("passed over {line}");
+            }
+            let Some(set) = set else {
+                return Err(CliError::Usage(format!(
+                    "no session of profile {profile} has a known outcome yet: mark some (sion agent improve mark), or run them with a check (--verify)"
+                )));
+            };
+            let text = serde_json::to_string_pretty(&set)
+                .map_err(|e| CliError::Usage(format!("the tasks could not be written: {e}")))?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, format!("{text}\n"))
+                        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+                    println!(
+                        "{} tasks from profile {profile}'s sessions, in {}",
+                        set.cases.len(),
+                        path.display()
+                    );
+                }
+                None => println!("{text}"),
+            }
+            Ok(())
+        }
+        ImproveCommand::Seal {
+            profile,
+            tasks,
+            share,
+            confirmations,
+            canaries,
+            seed,
+            wallet: None,
+        } => {
+            seal_command(&profile, &tasks, share, confirmations, canaries, seed)?;
+            println!("(kept on this machine only: with --wallet, its digests are published on the ledger first)");
+            Ok(())
+        }
+        ImproveCommand::Run {
+            profile,
+            proposer,
+            rounds,
+            runs,
+            budget_tokens,
+            total_tokens,
+            models,
+            seed,
+            apply: make_it_so,
+            wallet: None,
+        } => {
+            let found = crate::profiles::get(&profile)?;
+            let seal = crate::sealed::current(&profile)?;
+            run_loop(
+                &found,
+                &seal,
+                &proposer,
+                crate::improve_loop::Settings {
+                    rounds,
+                    runs,
+                    budget_tokens,
+                    total_tokens,
+                    models,
+                    seed: seed.unwrap_or_else(drawn),
+                },
+                make_it_so,
+                &mut |_| Ok(Vec::new()),
+            )
+        }
+        ImproveCommand::Lineage { profile, .. } => print_lineage(&profile),
+        ImproveCommand::Adopt { profile, step } => {
+            let steps = crate::improve_loop::lineage(&profile)?;
+            let found: Vec<_> = steps.iter().filter(|s| s.id.starts_with(&step)).collect();
+            let one = match found.as_slice() {
+                [one] => *one,
+                [] => {
+                    return Err(CliError::Usage(format!(
+                        "profile {profile} kept no step {step}"
+                    )))
+                }
+                _ => return Err(CliError::Usage(format!("{step} names more than one step"))),
+            };
+            for line in crate::improve_loop::apply(&profile, one, now())? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ImproveCommand::Undo { profile } => {
+            for line in crate::improve_loop::undo(&profile, now())? {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ImproveCommand::Improver {
+            profile,
+            show: true,
+            ..
+        } => {
+            let improver = crate::improve_loop::improver(&profile)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&improver)
+                    .map_err(|e| CliError::Usage(e.to_string()))?
+            );
+            Ok(())
+        }
+        ImproveCommand::Improver {
+            profile,
+            show: false,
+            proposer,
+            meta_proposer,
+            problems,
+            held_out,
+            rounds,
+            agent_rounds,
+            runs,
+            budget_tokens,
+            confirmations,
+            seed,
+            apply: make_it_so,
+        } => {
+            let found = crate::profiles::get(&profile)?;
+            let proposer = proposer.ok_or_else(|| CliError::Usage("give --proposer".into()))?;
+            let meta_proposer = meta_proposer.unwrap_or_else(|| proposer.clone());
+            let read =
+                |given: &[String]| -> Result<Vec<crate::improve_loop::MetaProblem>, CliError> {
+                    given
+                        .iter()
+                        .map(|pair| {
+                            let (train, held) = pair.split_once(',').ok_or_else(|| {
+                                CliError::Usage(format!(
+                                    "{pair:?}: a problem is <tasks to choose on>,<held-out tasks>"
+                                ))
+                            })?;
+                            let bytes = |path: &str| {
+                                std::fs::read(path)
+                                    .map_err(|e| CliError::Usage(format!("{path}: {e}")))
+                            };
+                            crate::improve_loop::MetaProblem::read(
+                                pair,
+                                &bytes(train)?,
+                                &bytes(held)?,
+                            )
+                        })
+                        .collect()
+                };
+            let problems = read(&problems)?;
+            let held_out = read(&held_out)?;
+            let make = |spec: &str| -> Result<Box<dyn sion_agent::model::Model>, CliError> {
+                crate::runtime::model(spec, 0)
+            };
+            let inner = || make(&proposer);
+            let meta = || make(&meta_proposer);
+            let settings = crate::improve_loop::MetaSettings {
+                inner: crate::improve_loop::Settings {
+                    rounds: agent_rounds,
+                    runs,
+                    budget_tokens,
+                    total_tokens: 0,
+                    models: Vec::new(),
+                    seed: seed.unwrap_or_else(drawn),
+                },
+                inner_confirmations: 2,
+                rounds,
+                confirmations,
+            };
+            let start = crate::improve_loop::improver(&profile)?;
+            let stopped = || crate::runtime::kill_switch().exists();
+            let mut kept = |step: &crate::improve_loop::ImproverStep| {
+                crate::improve_loop::record_improver(&profile, step, make_it_so, now())
+            };
+            let report = crate::improve_loop::improve_improver(
+                &found, &start, &problems, &held_out, &inner, &meta, &settings, &stopped, &now,
+                &mut kept,
+            )?;
+            for line in &report.lines {
+                println!("{line}");
+            }
+            println!("{} tokens used", report.tokens);
+            if !report.kept.is_empty() && !make_it_so {
+                println!("(--apply makes a kept change the profile's improver)");
+            }
+            Ok(())
+        }
+        ImproveCommand::Code {
+            profile,
+            source,
+            coder,
+            build,
+            test,
+            candidate,
+            allow,
+            max_files,
+            max_lines,
+            readable,
+            env,
+            build_secs,
+            rounds,
+            runs,
+            budget_tokens,
+            wallet: None,
+        } => {
+            let found = crate::profiles::get(&profile)?;
+            let settings = code_settings(
+                found.shell.clone(),
+                &found.name,
+                source,
+                build,
+                test,
+                &candidate,
+                allow,
+                max_files,
+                max_lines,
+                readable,
+                &env,
+                build_secs,
+                rounds,
+                runs,
+                budget_tokens,
+            )?;
+            code_command(&found, &settings, &coder, None)
+        }
+        ImproveCommand::Seal { .. }
+        | ImproveCommand::Run { .. }
+        | ImproveCommand::Code { .. }
+        | ImproveCommand::Attest { .. }
+        | ImproveCommand::Install { .. } => Err(CliError::Usage(
+            "this needs a node: give --node, or leave out --wallet".into(),
+        )),
         ImproveCommand::Try {
             profile,
             tasks,

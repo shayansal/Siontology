@@ -192,7 +192,14 @@ are `sion_cli::acp` (ACP's merchant and buyer, cards, 3-D Secure, feeds,
 webhooks and request signatures) and `sion_cli::ap2` (mandates);
 renting is `sion_cli::rentals`, over `sion_enclave` for attestation, and
 `sion_cli::trust` serves the reads other frameworks check an agent by.
-`sion_cli::self_improve` is `sion agent improve`, `projects` is
+`sion_cli::self_improve` is `sion agent improve`: `improve_loop` is the
+agent improving itself (the proposer, the archive over
+`sion_agent::archive`, screening and confirmation, the improver's own
+improvement), `sealed` the tasks from its sessions
+(`sion_agent::harvest`) and their seal and lineage on the ledger, and
+`code_improve` changes to its own code, built and scored in the sandbox
+over `sion_agent::remote`, held to `sion_agent::guard`, released and
+attested. `projects` is
 `sion agent project` (its sessions' payments held to the project's budget
 in `runtime`'s payment tool), `vouching` is `sion memory vouch` and
 `revoke` and what a session keeps in mind of another owner's log,

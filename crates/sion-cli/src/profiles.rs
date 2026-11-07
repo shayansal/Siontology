@@ -161,7 +161,9 @@ impl Profile {
             shell: self.shell.clone(),
             mcp: self.mcp.clone(),
             storage: self.storage,
-            instructions: self.instructions.clone(),
+            // What its operator tells it, then what it learned from its
+            // own work (`sion agent improve run`).
+            instructions: crate::improve_loop::instructions_of(self),
             screen: self.screen.clone(),
             chat_instructions: None,
             only_tools: None,

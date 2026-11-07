@@ -525,7 +525,10 @@ set's stand-ins, as in an evaluation.
 
 What this rests on is the task set: a change is only as well tested as the
 tasks it was tried on, and tasks the operator wrote to flatter a change
-would pass it. Nothing here chooses the tasks (`agent:measured-improvement`).
+would pass it. Here the operator chooses the tasks and writes the changes
+(`agent:measured-improvement`). For the agent writing its own changes,
+from tasks taken from its own sessions and confirmed on tasks sealed
+before any change is tried, see [Improving itself](self-improvement.md).
 
 ## What this does not do yet
 

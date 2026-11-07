@@ -191,15 +191,24 @@ What is enforced, and where:
 - **Skills that get better**: measured against an evaluation set, evolved,
   and released again on the attestations of verifiers fixed in advance.
   [Skills that get better](docs/book/src/agent/skill-improvement.md)
-- **An agent that gets better**: `sion agent improve` tries changes to the
-  agent itself (words in its instructions, the models a route reaches for,
+- **An agent that gets better**: `sion agent improve try` tries changes
+  you give it (words in its instructions, the models a route reaches for,
   a vote) and keeps one only when it is better beyond chance on a set of
   tasks and fails no held-out task the agent passed, with the evidence.
   [Improving the agent](docs/book/src/agent/skill-improvement.md#improving-the-agent-not-only-a-skill)
+- **An agent that improves itself**: its sessions, marked or checked,
+  become tasks; part of them is sealed on the ledger before anything is
+  tried. `sion agent improve run` lets a model write the agent's changes
+  from the failures it is shown, and keeps one only when it is better
+  beyond chance on the sealed tasks, which nothing that writes changes is
+  shown. The improver improves itself the same way. Changes to the agent's
+  own code are built, tested and scored in a sandbox, released on the
+  ledger, rebuilt and attested by others, and installed only by you.
+  Tested with scripted models. [Improving itself](docs/book/src/agent/self-improvement.md)
 - **Facts shared between owners**: a log another owner curates, kept in
-  mind, each fact vouched for on someone's bond or revoked by its writer or
-  a voucher; a revoked fact, and whatever was drawn from it, leaves the
-  prompt. [Memory](docs/book/src/agent/memory.md#facts-from-other-owners-who-vouched-and-pulling-one-back)
+  mind, each fact vouched for on someone's bond or revoked by its writer (a
+  voucher withdraws only its own vouching); a revoked fact, and whatever
+  was drawn from it, leaves the prompt. [Memory](docs/book/src/agent/memory.md#facts-from-other-owners-who-vouched-and-pulling-one-back)
 - **Models**: Claude, OpenAI, Gemini, your ChatGPT plan or a local model,
   with fallback, their reasoning kept across tool calls, how hard each
   thinks set per model, and a model for each kind of task, chosen by rule
@@ -374,7 +383,11 @@ implementation adds. In short:
   work the agent takes on by itself; renting an agent out and agents'
   records; improving the whole agent, projects, vouched and revoked shared
   memory, and finding an agent for a task (with scripted models; the
-  meeting guest's voice is wired but its microphone was not run).
+  meeting guest's voice is wired but its microphone was not run); the
+  agent improving itself from its own work, the improver improving
+  itself, and changes to its own code released and attested (with
+  scripted models, and for code a small harness in Python; not yet run on
+  this repository's own code).
 - **Partly built**: the agent runtime (tested with scripted models and
   stand-ins for the services it talks to); the adapters for outside protocols
   (x402, ACP and AP2 are built, with card networks simulated; ERC-8004 and
@@ -407,6 +420,7 @@ implementation adds. In short:
 | Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
 | Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
 | Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Built (devnet scale; tested with scripted models; the meeting guest's voice wired and tested in units, its microphone and a meeting not run) |
+| Agents: improving itself from its own work — changes it writes, tasks from its sessions sealed on the ledger, the improver improving itself, changes to its own code released and attested (beyond the paper) | Built (devnet scale; tested with scripted models, and for code with a small harness in Python in bubblewrap; not run on this repository's own code, nor with a real model) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -550,9 +564,9 @@ deterministic consensus simulator with adversarial network phases; a
 scenario for every transaction kind; differential tests between the two
 proof stacks; end-to-end devnet tests with dual post-quantum signatures;
 the agent's runs against scripted models and stand-ins for the services it
-uses; and the demos. At the time of writing the crates hold about 217,000
-lines of Rust under their `src/` folders and 52,000 more in their `tests/`
-folders, with about 1,260 test functions besides the property tests.
+uses; and the demos. At the time of writing the crates hold about 225,000
+lines of Rust under their `src/` folders and 53,000 more in their `tests/`
+folders, with about 1,290 test functions besides the property tests.
 
 ## Security, contributing and licence
 

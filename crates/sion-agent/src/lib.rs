@@ -60,6 +60,7 @@
 //! it act), every piece of work keeps a mandate that is checked again before
 //! the work goes on, and what it says to people keeps to limits.
 
+pub mod archive;
 pub mod browser;
 pub mod builtin;
 pub mod cdp;
@@ -74,6 +75,8 @@ pub mod encoding;
 pub mod evals;
 pub mod evolve;
 pub mod graph;
+pub mod guard;
+pub mod harvest;
 pub mod hooks;
 pub mod imitation;
 pub mod journal;
@@ -87,6 +90,7 @@ pub mod permissions;
 pub mod policy;
 pub mod providers;
 pub mod quarantine;
+pub mod remote;
 pub mod sandbox;
 pub mod schedule;
 pub mod scripted;

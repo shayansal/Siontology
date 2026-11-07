@@ -110,7 +110,7 @@ pub fn revoke_body(about: &About, valid_for: u64) -> Result<ClaimBody, CliError>
 
 /// Publishes `body` as `wallet`'s claim; with `key`, also names it the
 /// latest under that index key.
-fn publish(
+pub(crate) fn publish(
     session: &mut Session<'_>,
     wallet: &str,
     body: ClaimBody,
