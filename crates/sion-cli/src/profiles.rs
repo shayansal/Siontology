@@ -98,6 +98,13 @@ pub struct Profile {
     /// ([`crate::runtime::Saved::summary_model`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_model: Option<String>,
+    /// Whether its sessions go without a plan to keep.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_plan: bool,
+    /// Whether its sessions may finish after changing code without running
+    /// anything since.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_change_check: bool,
     /// Whether its sessions hold what tools return from outside in
     /// quarantine ([`sion_agent::quarantine`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -193,6 +200,8 @@ impl Profile {
             max_tokens: self.max_tokens,
             compact_at: self.compact_at,
             summary_model: self.summary_model.clone(),
+            no_plan: self.no_plan,
+            no_change_check: self.no_change_check,
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
@@ -534,6 +543,12 @@ pub enum ProfileCommand {
         /// model).
         #[arg(long, value_name = "MODEL")]
         summary_model: Option<String>,
+        /// Give it no plan to keep (`plan_update`), nor hold it to one.
+        #[arg(long)]
+        no_plan: bool,
+        /// Let it finish after changing code without running anything since.
+        #[arg(long)]
+        no_change_check: bool,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -636,6 +651,8 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             max_tokens,
             compact_at,
             summary_model,
+            no_plan,
+            no_change_check,
             quarantine,
             shared_memory,
             confidential,
@@ -708,6 +725,8 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 max_tokens,
                 compact_at,
                 summary_model,
+                no_plan,
+                no_change_check,
                 quarantine,
                 shared_memory,
                 confidential,
@@ -874,6 +893,12 @@ pub fn describe(profile: &Profile) -> String {
     }
     if let Some(spec) = &profile.summary_model {
         extras.push(format!("summaries by {spec}"));
+    }
+    if profile.no_plan {
+        extras.push("no plan".to_string());
+    }
+    if profile.no_change_check {
+        extras.push("changes not checked".to_string());
     }
     if profile.quarantine {
         extras.push("quarantine".to_string());

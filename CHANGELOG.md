@@ -10,6 +10,18 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A plan, and finishing what it says
+
+- The agent keeps a plan with `plan_update`: its steps in order, one
+  active at a time, each done only with how it was checked and dropped
+  only with why. Watchers see where it stands, a run's last lines show it
+  and every summary carries it. When the agent says it is done with steps
+  open, it is reminded of them once a run. `--no-plan` turns it off.
+- An agent that changed code and ran nothing since (no shell command,
+  terminal, program, tests or diagnostics) is asked once to check the
+  change before it finishes, unless the run has `--verify`.
+  `--no-change-check` turns it off.
+
 ### Summaries that keep what matters
 
 - When a long conversation is compacted, a model writes the summary:

@@ -231,7 +231,11 @@ result in a row, stopped at the fifth); compaction that cuts the results
 of calls long past first and begins each summary with what the session
 did that lasts and what the person said after the task, word for word,
 the rest written by a model (the mechanical summary when it fails or the
-budget is short; tested with scripted models only); a system prompt that stays the same through a session,
+budget is short; tested with scripted models only); a plan the agent
+keeps (`plan_update`), each step done only with how it was checked, and a
+reminder, once a run, of steps still open, or of code changed and not run
+since, when the agent says it is done (a reminder asks the model; it does
+not make the work right); a system prompt that stays the same through a session,
 for providers' caches, and the tokens read from and written to those
 caches counted; a check of the task, if given, run each time the model
 says it is done, and an end for a task it cannot complete; a kill switch;

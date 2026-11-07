@@ -91,6 +91,7 @@ pub mod mcp_input;
 pub mod model;
 pub mod oauth;
 pub mod permissions;
+pub mod plan;
 pub mod policy;
 pub mod practice;
 pub mod prices;

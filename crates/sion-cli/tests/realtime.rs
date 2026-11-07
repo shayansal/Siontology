@@ -174,6 +174,8 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
         max_tokens: None,
         compact_at: None,
         summary_model: None,
+        no_plan: false,
+        no_change_check: false,
         quarantine: false,
         shared_memory: Vec::new(),
         confidential: false,

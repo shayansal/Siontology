@@ -2556,3 +2556,249 @@ fn a_transcript_for_a_summary_fits_its_budget() {
     assert!(small.chars().count() <= 3_000 + 60, "{}", small.len());
     assert!(small.starts_with("AGENT: word"), "{small}");
 }
+
+#[test]
+fn an_agent_keeps_a_plan_and_is_held_to_it_once_a_run() {
+    let tools = pages();
+    let model = Scripted::new("m")
+        .calls(
+            "plan_update",
+            json!({"steps": [
+                {"step": "Look at page 1", "status": "active"},
+                {"step": "Look at page 2", "status": "pending"}
+            ]}),
+        )
+        .calls("look", json!({"i": 1}))
+        .says("Done.")
+        .calls(
+            "plan_update",
+            json!({"steps": [
+                {"step": "Look at page 1", "status": "done", "checked": "it read page 1"},
+                {"step": "Look at page 2", "status": "dropped", "why": "page 1 had the answer"}
+            ]}),
+        )
+        .says("Done: page 1 had it.");
+    let seen = std::sync::Mutex::new(Vec::new());
+    let watch = |s: &sion_agent::Seen| seen.lock().unwrap().push(s.clone());
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.plan = true;
+    rt.watch = Some(&watch);
+    let mut state = State::start("s-plan", "Find the answer in the pages", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "Done: page 1 had it.".into()
+        }
+    );
+    let requests = model.requests();
+    assert!(requests[0].tools.iter().any(|t| t.name == "plan_update"));
+    // The plan written is shown to the model, and to whoever watches.
+    assert!(matches!(
+        &requests[1].messages[2].content[0],
+        Block::ToolResult { content, is_error: false, .. }
+            if content.starts_with("The plan, 0 of 2 steps done:\n1. [>] Look at page 1")
+    ));
+    assert!(seen.lock().unwrap().contains(&sion_agent::Seen::Planned(
+        "0 of 2 steps done; now: Look at page 1".into()
+    )));
+    // Said to be done with steps open, it was reminded of them.
+    let reminded = requests[3].messages.last().unwrap().text();
+    assert!(
+        reminded.contains("Your plan still has steps open:\n- Look at page 1\n- Look at page 2"),
+        "{reminded}"
+    );
+    assert!(state.plan.open().is_empty());
+    assert_eq!(state.plan.updates, 2);
+
+    // Reminded once a run: said to be done again, it is done.
+    let model = Scripted::new("m")
+        .calls(
+            "plan_update",
+            json!({"steps": [{"step": "Ask which page", "status": "active"}]}),
+        )
+        .says("Which page do you mean?")
+        .says("Which page do you mean, 1 or 2?");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.plan = true;
+    let mut state = State::start("s-ask", "Read the page", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "Which page do you mean, 1 or 2?".into()
+        }
+    );
+    assert!(state.reminded.plan);
+    // The person answers: a new run may remind it again.
+    state.tell("Page 2.", &rt.limits);
+    assert!(!state.reminded.plan);
+
+    // Without a plan to keep, there is no tool, and nothing is held.
+    let model = Scripted::new("m").says("Done.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("s-none", "Hello", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert!(!model.requests()[0]
+        .tools
+        .iter()
+        .any(|t| t.name == "plan_update"));
+}
+
+#[test]
+fn a_plan_that_breaks_its_rules_is_refused_and_a_summary_keeps_the_plan() {
+    let tools = pages();
+    let mut model = Scripted::new("m")
+        .calls(
+            "plan_update",
+            json!({"steps": [{"step": "Look", "status": "done"}]}),
+        )
+        .calls(
+            "plan_update",
+            json!({"steps": [
+                {"step": "Look at the pages", "status": "active"},
+                {"step": "Say what they hold"}
+            ]}),
+        );
+    for i in 0..8 {
+        model = model.calls("look", json!({ "i": i }));
+    }
+    let model = model
+        .calls(
+            "plan_update",
+            json!({"steps": [
+                {"step": "Look at the pages", "status": "done", "checked": "read all eight"},
+                {"step": "Say what they hold", "status": "done", "checked": "said below"}
+            ]}),
+        )
+        .says("They hold pages 0 to 7.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.plan = true;
+    rt.limits.compact_messages = 8;
+    rt.limits.keep_last = 3;
+    let mut state = State::start("s-plan-rules", "Look at the pages", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    // A step done without how it was checked was refused.
+    let refused = &model.requests()[1].messages[2].content[0];
+    assert!(
+        matches!(refused, Block::ToolResult { content, is_error: true, .. } if content.contains("done only with how it was checked")),
+        "{refused:?}"
+    );
+    // The summaries kept the plan as it was when they were written.
+    assert!(state.compactions > 0);
+    let summarized = model
+        .requests()
+        .iter()
+        .any(|r| {
+            r.messages.get(1).is_some_and(|m| {
+                m.text().contains("[The plan, as last written (0 of 2 steps done; now: Look at the pages):]\n1. [>] Look at the pages\n2. [ ] Say what they hold")
+            })
+        });
+    assert!(summarized);
+    assert_eq!(state.plan.open().len(), 0);
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn an_agent_that_changed_code_and_ran_nothing_is_asked_once_to_check_it() {
+    let (edit, _) = counted("edit_file", Effect::Write, |_| Outcome::ok("edited"));
+    let (shell, ran) = counted("shell", Effect::Write, |_| Outcome::ok("test result: ok"));
+    let mut tools = Toolbox::new();
+    tools.add(edit);
+    tools.add(shell);
+    let model = Scripted::new("m")
+        .calls("edit_file", json!({"path": "src/lib.rs"}))
+        .says("Fixed.")
+        .calls("shell", json!({"command": "cargo test"}))
+        .says("Fixed, and the tests pass.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.check_changes = true;
+    let mut state = State::start("s-unchecked", "Fix the bug", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "Fixed, and the tests pass.".into()
+        }
+    );
+    let reminded = model.requests()[2].messages.last().unwrap().text();
+    assert!(
+        reminded.contains("You changed src/lib.rs and have run nothing since"),
+        "{reminded}"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+    assert!(state.unchecked.is_empty());
+
+    // Run after the change, or a change to what is not code: no reminder.
+    for (calls, task) in [
+        (
+            vec![
+                ("edit_file", json!({"path": "src/lib.rs"})),
+                ("shell", json!({"command": "cargo test"})),
+            ],
+            "ran",
+        ),
+        (vec![("edit_file", json!({"path": "README.md"}))], "prose"),
+    ] {
+        let model = calls
+            .into_iter()
+            .fold(Scripted::new("m"), |m, (tool, input)| m.calls(tool, input))
+            .says("Done.");
+        let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+        rt.limits.check_changes = true;
+        let mut state = State::start(task, "Change it", &rt.limits);
+        assert_eq!(
+            rt.run(&mut state),
+            Ended::Done {
+                text: "Done.".into()
+            },
+            "{task}"
+        );
+    }
+
+    // With nothing to run commands with, there is nothing to ask.
+    let (edit, _) = counted("edit_file", Effect::Write, |_| Outcome::ok("edited"));
+    let mut editing = Toolbox::new();
+    editing.add(edit);
+    let model = Scripted::new("m")
+        .calls("edit_file", json!({"path": "src/lib.rs"}))
+        .says("Fixed.");
+    let mut rt = runtime(vec![&model], &editing, Autonomy::L3);
+    rt.limits.check_changes = true;
+    let mut state = State::start("s-no-shell", "Fix the bug", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "Fixed.".into()
+        }
+    );
+}
+
+#[test]
+fn the_files_a_patch_changes_are_known_and_code_is_told_from_prose() {
+    use sion_agent::session::{changed_paths, is_code};
+    let unified =
+        "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1 +1 @@\n-a\n+b\n--- a/gone.py\n+++ /dev/null\n";
+    assert_eq!(
+        changed_paths("apply_patch", &json!({ "patch": unified })),
+        vec!["src/x.rs".to_string()]
+    );
+    let codex = "*** Begin Patch\n*** Update File: app.py\n@@\n-a\n+b\n*** Add File: notes.md\n+hi\n*** End Patch";
+    assert_eq!(
+        changed_paths("apply_patch", &json!({ "patch": codex })),
+        vec!["app.py".to_string(), "notes.md".to_string()]
+    );
+    assert_eq!(
+        changed_paths("write_file", &json!({"path": "a/b.ts", "content": "x"})),
+        vec!["a/b.ts".to_string()]
+    );
+    for code in [
+        "src/main.rs",
+        "app.PY",
+        "Makefile",
+        "build/Dockerfile",
+        "Cargo.toml",
+    ] {
+        assert!(is_code(code), "{code}");
+    }
+    for prose in ["README.md", "notes.txt", "page.html", "LICENSE", "data.csv"] {
+        assert!(!is_code(prose), "{prose}");
+    }
+}

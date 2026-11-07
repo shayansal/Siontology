@@ -1867,6 +1867,16 @@ impl Saved {
         lines.extend(self.shared.iter().map(|path| format!("shared: {path}")));
         lines.push(ending(&ended, &self.state));
         lines.extend(spent(&self.state));
+        if !self.state.plan.is_empty() {
+            lines.push("its plan:".to_string());
+            lines.extend(
+                self.state
+                    .plan
+                    .lines()
+                    .into_iter()
+                    .map(|l| format!("  {l}")),
+            );
+        }
         if !reflection.is_empty() {
             lines.push("asked whether to write down how it did the task, as a skill:".to_string());
             lines.extend(reflection);
@@ -2856,6 +2866,11 @@ pub struct Equipment {
     /// The model that writes a compacted conversation's summary
     /// ([`Saved::summary_model`]).
     pub summary_model: Option<String>,
+    /// Whether it goes without a plan to keep ([`Limits::plan`]).
+    pub no_plan: bool,
+    /// Whether it may finish after changing code without running anything
+    /// since ([`Limits::check_changes`]).
+    pub no_change_check: bool,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
@@ -2939,6 +2954,8 @@ pub fn start_watched(
         max_tokens,
         compact_at,
         summary_model,
+        no_plan,
+        no_change_check,
         verify,
         verify_files,
         shared_memory,
@@ -3017,6 +3034,8 @@ pub fn start_watched(
     let mut limits = Limits {
         budget_tokens,
         budget_micros,
+        plan: !no_plan,
+        check_changes: !no_change_check,
         ..Limits::default()
     };
     if let Some(most) = max_turns {

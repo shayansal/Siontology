@@ -425,6 +425,8 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         max_tokens: None,
         compact_at: None,
         summary_model: None,
+        no_plan: false,
+        no_change_check: false,
         quarantine: false,
         shared_memory: Vec::new(),
         confidential: false,

@@ -93,6 +93,42 @@ another agent is paid for is checked by someone else, with a check its
 task fixed when it was posted
 ([Task Charters from the command line](../guides/tasks.md#9-a-check-fixed-when-the-task-is-posted)).
 
+## Held to its plan
+
+An agent keeps a plan for a task of several steps with `plan_update`: the
+whole plan each time, its steps in order, one active at a time. A step is
+done only with how it was checked (`checked`: the test that passed, the
+output that showed it) and dropped only with why (`why`), and a step open
+in the last plan is not left out of the next without a word. What the
+agent is shown back is the plan, marked:
+
+```text
+The plan, 1 of 3 steps done:
+1. [x] Reproduce the failure (checked: the test failed as reported)
+2. [>] Fix the parser
+3. [ ] Run the whole suite
+```
+
+Whoever watches sees where it stands (`plan: 1 of 3 steps done; now: Fix
+the parser`, as a chat's draft shows it), a run's last lines show the
+plan, and every summary of a compacted conversation carries it as it was
+last written. When the agent says it is done with steps still open, it is
+reminded of them, once a run: to do them, to drop them and say why, or,
+if it is waiting for the person, to say what it needs from them. The
+reminder takes a turn of the run's; a run with none left ends without it.
+`--no-plan` (on `sion agent run` and on profiles) gives the agent no plan
+to keep.
+
+An agent that can run something (a shell, terminals, `run_code`,
+`run_tests`, `diagnostics`), changed code and ran nothing since is asked
+once, when it says it is done, to check the change: its tests, a build,
+running it, or to say why it cannot. Code is what a file's name says is
+code or builds it (`.rs`, `.py`, `.ts`, `Cargo.toml`, a `Makefile` and the
+like), not prose or data (`.md`, `.txt`, `.csv`). With `--verify` the
+check does that, and there is no reminder; `--no-change-check` lets the
+agent finish without one. Neither reminder makes the work right: it asks
+the model once, and what the model does then is the model's.
+
 ## Safety nets
 
 - **No accidental repeats.** A call that changed something is recorded

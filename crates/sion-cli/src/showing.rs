@@ -355,6 +355,11 @@ impl Worker {
                 self.behind = true;
             }
             Seen::Pausing(_) => {}
+            Seen::Planned(plan) if self.progress => {
+                self.status = Some(format!("plan: {plan}"));
+                self.behind = true;
+            }
+            Seen::Planned(_) => {}
             Seen::Text(text) => {
                 self.spoken.add(&text);
                 self.status = None;

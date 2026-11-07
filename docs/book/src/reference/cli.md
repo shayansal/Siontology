@@ -1206,6 +1206,10 @@ Options:
           Compact the conversation once it reaches about this many tokens (by default about 40,000, or 36 messages): the middle is replaced by a summary that keeps, word for word, what the person said after the task
       --summary-model <MODEL>
           The model that writes that summary, or none for a mechanical one (by default the first --model, unless it is a script)
+      --no-plan
+          Give it no plan to keep (`plan_update`). With one, when it says it is done while steps are open, it is asked once to do them or drop them, saying why
+      --no-change-check
+          Let it finish after changing code without running anything since: otherwise, with a shell and no --verify, it is asked once to check the change first
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --verify <COMMAND>
@@ -1492,6 +1496,10 @@ Options:
           Compact a conversation once it reaches about this many tokens (by default about 40,000, or 36 messages): the middle is replaced by a summary
       --summary-model <MODEL>
           The model that writes the summary when a conversation is compacted, or none for a mechanical one (by default the first model)
+      --no-plan
+          Give it no plan to keep (`plan_update`), nor hold it to one
+      --no-change-check
+          Let it finish after changing code without running anything since
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --shared-memory <LOG>

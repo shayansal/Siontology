@@ -14,6 +14,7 @@ use crate::model::{
     image_digest, images_of, Block, Delta, Image, Message, Model, ModelError, Picture, Request,
     Response, Role, Stop, ToolSpec, Usage,
 };
+use crate::plan::{self, Plan, PLAN_UPDATE};
 use crate::policy::{Decision, Policy, Standing};
 use crate::prices::{Cost, Prices, Pricing};
 use crate::quarantine::{self, Held, QUARANTINE_READ};
@@ -75,6 +76,16 @@ pub struct Limits {
     /// ([`Ended::ModelsFailed`]); 0 asks each model once.
     #[serde(default = "default_patience")]
     pub patience: u64,
+    /// Whether the agent keeps a plan ([`PLAN_UPDATE`]) and is held to it:
+    /// when it says it is done with steps still open, it is asked once to
+    /// do them or drop them, saying why.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan: bool,
+    /// Whether an agent that changed code and ran nothing since is asked,
+    /// once, to check the change before it finishes, when it can run
+    /// commands and the run has no check of its own ([`Runtime::verify`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check_changes: bool,
 }
 
 fn default_patience() -> u64 {
@@ -111,6 +122,8 @@ impl Default for Limits {
             reserve_tokens: default_reserve_tokens(),
             verify_attempts: default_verify_attempts(),
             patience: default_patience(),
+            plan: false,
+            check_changes: false,
         }
     }
 }
@@ -351,7 +364,55 @@ pub struct State {
     /// at most [`TOLD_CHARS`] characters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub told: Vec<String>,
+    /// The agent's plan ([`Limits::plan`]).
+    #[serde(default, skip_serializing_if = "Plan::is_empty")]
+    pub plan: Plan,
+    /// The code files changed since a command last ran ([`CODE_TOOLS`]),
+    /// for [`Limits::check_changes`]: the last [`UNCHECKED_KEPT`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchecked: Vec<String>,
+    /// What the agent was reminded of, this run, when it said it was done:
+    /// each reminder is given once, until the person speaks again.
+    #[serde(default, skip_serializing_if = "Reminded::is_empty")]
+    pub reminded: Reminded,
 }
+
+/// What a run reminded the agent of when it said it was done
+/// ([`State::reminded`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reminded {
+    /// That its plan has open steps.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan: bool,
+    /// That it changed code and ran nothing since.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unchecked: bool,
+}
+
+impl Reminded {
+    /// Whether it was reminded of nothing.
+    pub fn is_empty(&self) -> bool {
+        !self.plan && !self.unchecked
+    }
+}
+
+/// The tools that change files of the workspace, whose changes to code are
+/// checked by running something ([`Limits::check_changes`]).
+pub const FILE_TOOLS: [&str; 3] = ["write_file", "edit_file", "apply_patch"];
+
+/// The tools that run commands, programs or the project's own checks:
+/// running one checks the code changed before it, as far as
+/// [`Limits::check_changes`] goes.
+pub const CODE_TOOLS: [&str; 5] = [
+    "shell",
+    crate::terminal::TERMINAL_RUN,
+    RUN_CODE,
+    "run_tests",
+    "diagnostics",
+];
+
+/// The most changed files a session keeps unchecked ([`State::unchecked`]).
+pub const UNCHECKED_KEPT: usize = 20;
 
 /// The most of the person's later messages a session keeps word for word.
 pub const TOLD_KEPT: usize = 24;
@@ -512,6 +573,7 @@ impl State {
     /// Adds a message from the person, to continue a session that ended.
     pub fn tell(&mut self, text: &str, limits: &Limits) {
         self.keep_told(text);
+        self.reminded = Reminded::default();
         // After a run stopped before the model answered, the person speaks
         // again: one message of theirs, so that the conversation still
         // takes turns.
@@ -556,6 +618,8 @@ pub enum Seen {
     /// Every model was busy or unreachable: the run waits this many
     /// seconds before asking again.
     Pausing(u64),
+    /// The agent wrote its plan: where it stands ([`Plan::status`]).
+    Planned(String),
 }
 
 /// What the runtime tells a model whose answer was cut off at its token
@@ -1382,7 +1446,8 @@ impl Runtime<'_> {
             let left = self.left(state, start);
             match self.call(state, name, input, left) {
                 Called::Ran(outcome) => {
-                    progress |= !outcome.is_error;
+                    // Writing a plan is not progress on the task.
+                    progress |= !outcome.is_error && name != PLAN_UPDATE;
                     let (inner, inner_input) = Self::inner(name, input);
                     made.push(Made {
                         key: key(&state.id, inner, &inner_input),
@@ -1489,12 +1554,64 @@ impl Runtime<'_> {
         })
     }
 
+    /// Answers [`PLAN_UPDATE`]: the plan written, and shown to whoever
+    /// watches, or why it was refused.
+    fn update_plan(&self, state: &mut State, input: &Value) -> Outcome {
+        let start_ms = wall_ms();
+        let outcome = match state.plan.update(input) {
+            Ok(shown) => {
+                self.seen(&Seen::Planned(state.plan.status()));
+                Outcome::ok(shown)
+            }
+            Err(why) => Outcome::error(why),
+        };
+        let step = self.call_step(
+            state,
+            PLAN_UPDATE,
+            None,
+            Some(Effect::Read),
+            ended_as(&outcome),
+            start_ms,
+        );
+        self.step(state, step);
+        outcome
+    }
+
+    /// What the agent is reminded of when it says it is done, if anything,
+    /// each once a run: its plan's open steps ([`Limits::plan`]), then code
+    /// it changed and has not run ([`Limits::check_changes`]).
+    fn reminder(&self, state: &mut State) -> Option<String> {
+        if state.turns_left == 0 {
+            return None;
+        }
+        if self.limits.plan && !state.reminded.plan && !state.plan.open().is_empty() {
+            state.reminded.plan = true;
+            return Some(plan::reminder(&state.plan.open()));
+        }
+        let can_run =
+            CODE_TOOLS.iter().any(|tool| self.tools.get(tool).is_some()) || self.code.is_some();
+        if self.limits.check_changes
+            && self.verify.is_none()
+            && can_run
+            && !state.reminded.unchecked
+            && !state.unchecked.is_empty()
+        {
+            state.reminded.unchecked = true;
+            return Some(unchecked_reminder(&state.unchecked));
+        }
+        None
+    }
+
     /// The model said it is done: without a verifier, the run is done.
     /// With one, its answer is checked: passed, the run is done; failed,
     /// the model is told what the check reported and goes on (`None`),
     /// unless that was the last check allowed, or the turns are out, and
     /// the run ends unverified with the best answer.
     fn checked(&self, state: &mut State, text: &str) -> Option<Ended> {
+        if let Some(reminder) = self.reminder(state) {
+            state.messages.push(Message::user(reminder));
+            return None;
+        }
         let Some(check) = self.verify else {
             return Some(Ended::Done {
                 text: text.to_string(),
@@ -1542,6 +1659,9 @@ impl Runtime<'_> {
         if self.policy.quarantine {
             shown.push(quarantine::spec());
         }
+        if self.limits.plan {
+            shown.push(plan::spec());
+        }
         if self.verify.is_some() {
             shown.push(verify::spec());
         }
@@ -1581,6 +1701,8 @@ impl Runtime<'_> {
             return Outcome::error("give the program, as code");
         }
         let start_ms = wall_ms();
+        // A program run checks the code changed before it, as a command does.
+        state.unchecked.clear();
         self.seen(&Seen::Running(RUN_CODE.into()));
         let mut running = match code.start(program) {
             Ok(running) => running,
@@ -1661,6 +1783,7 @@ impl Runtime<'_> {
             RUN_CODE,
             QUARANTINE_READ,
             CANNOT_COMPLETE,
+            PLAN_UPDATE,
         ]
         .contains(&tool)
         {
@@ -2167,6 +2290,9 @@ impl Runtime<'_> {
         if name == QUARANTINE_READ && self.policy.quarantine {
             return Called::Ran(self.read_held(state, input, left));
         }
+        if name == PLAN_UPDATE && self.limits.plan {
+            return Called::Ran(self.update_plan(state, input));
+        }
         if let (RUN_CODE, Some(code)) = (name, self.code) {
             return Called::Ran(self.run_code(state, code, input, left));
         }
@@ -2521,6 +2647,18 @@ impl Runtime<'_> {
                     state.latest.remove(&oldest);
                 }
             }
+        }
+        // Code changed and not yet run, and code run.
+        if CODE_TOOLS.contains(&ready.tool.as_str()) {
+            state.unchecked.clear();
+        } else if FILE_TOOLS.contains(&ready.tool.as_str()) && !outcome.is_error {
+            for path in changed_paths(&ready.tool, &ready.input) {
+                if is_code(&path) && !state.unchecked.contains(&path) {
+                    state.unchecked.push(path);
+                }
+            }
+            let over = state.unchecked.len().saturating_sub(UNCHECKED_KEPT);
+            state.unchecked.drain(..over);
         }
         // What lasts is kept apart from the conversation, so that no
         // summary of it loses it.
@@ -2913,14 +3051,101 @@ pub fn told(state: &State, tail: usize) -> String {
     lines.join("\n")
 }
 
+/// The agent's plan as a summary carries it ([`State::plan`]), if it has
+/// one.
+pub fn planned(state: &State) -> String {
+    if state.plan.is_empty() {
+        return String::new();
+    }
+    format!(
+        "[The plan, as last written ({}):]\n{}",
+        state.plan.status(),
+        state.plan.lines().join("\n")
+    )
+}
+
+/// The files of the workspace a call of `tool` with `input` changed, by
+/// their paths as it gave them: `path` for `write_file` and `edit_file`,
+/// those a patch names for `apply_patch`.
+pub fn changed_paths(tool: &str, input: &Value) -> Vec<String> {
+    if tool != "apply_patch" {
+        return input["path"]
+            .as_str()
+            .map(str::to_string)
+            .into_iter()
+            .collect();
+    }
+    let patch = input["patch"].as_str().unwrap_or_default();
+    let mut paths: Vec<String> = Vec::new();
+    for line in patch.lines() {
+        let named = line
+            .strip_prefix("+++ ")
+            .map(|rest| rest.split('\t').next().unwrap_or(rest).trim())
+            .map(|path| path.strip_prefix("b/").unwrap_or(path))
+            .or_else(|| line.strip_prefix("*** Update File: "))
+            .or_else(|| line.strip_prefix("*** Add File: "))
+            .map(str::trim)
+            .filter(|path| !path.is_empty() && *path != "/dev/null");
+        if let Some(path) = named {
+            if !paths.iter().any(|p| p == path) {
+                paths.push(path.to_string());
+            }
+        }
+    }
+    paths
+}
+
+/// Whether the file at `path` is code, or what builds it: what running
+/// something would check.
+pub fn is_code(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if [
+        "Makefile",
+        "Dockerfile",
+        "Justfile",
+        "Rakefile",
+        "BUILD",
+        "WORKSPACE",
+    ]
+    .contains(&name)
+    {
+        return true;
+    }
+    let Some((_, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    [
+        "rs", "py", "js", "mjs", "cjs", "jsx", "ts", "tsx", "go", "java", "kt", "kts", "scala",
+        "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "fs", "rb", "php", "swift", "m", "mm", "lua",
+        "pl", "r", "jl", "ex", "exs", "erl", "hs", "ml", "dart", "zig", "nim", "sh", "bash", "zsh",
+        "ps1", "sql", "vue", "svelte", "toml", "gradle", "cmake", "mk", "nix", "tf",
+    ]
+    .contains(&extension.to_ascii_lowercase().as_str())
+}
+
+/// What a model that changed code and ran nothing since is told when it
+/// says it is done.
+pub fn unchecked_reminder(paths: &[String]) -> String {
+    format!(
+        "[You changed {} and have run nothing since. If the change can be checked (its tests, \
+         a build, running it), check it now, then finish; if it cannot, say why, and finish.]",
+        paths.join(", ")
+    )
+}
+
 /// Replaces the messages between the task and `tail` with a summary: what
 /// lasts, what is now so and what the person said, kept apart from the
 /// conversation so that no summary of a summary loses them, then `body`.
 fn compact_at(state: &mut State, tail: usize, body: String) {
-    let kept: Vec<String> = [lasting(state), latest(state), told(state, tail)]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect();
+    let kept: Vec<String> = [
+        lasting(state),
+        latest(state),
+        planned(state),
+        told(state, tail),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect();
     let summary = match kept.join("\n") {
         kept if kept.is_empty() => body,
         kept => format!("{kept}\n{body}"),

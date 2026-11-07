@@ -413,6 +413,16 @@ pub enum AgentCommand {
         /// (by default the first --model, unless it is a script).
         #[arg(long, value_name = "MODEL")]
         summary_model: Option<String>,
+        /// Give it no plan to keep (`plan_update`). With one, when it says it
+        /// is done while steps are open, it is asked once to do them or drop
+        /// them, saying why.
+        #[arg(long)]
+        no_plan: bool,
+        /// Let it finish after changing code without running anything since:
+        /// otherwise, with a shell and no --verify, it is asked once to check
+        /// the change first.
+        #[arg(long)]
+        no_change_check: bool,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -1090,6 +1100,8 @@ pub fn run(
             max_tokens,
             compact_at,
             summary_model,
+            no_plan,
+            no_change_check,
             quarantine,
             verify,
             verify_files,
@@ -1160,6 +1172,8 @@ pub fn run(
                     max_tokens,
                     compact_at,
                     summary_model,
+                    no_plan,
+                    no_change_check,
                     verify,
                     verify_files,
                     shared_memory,
