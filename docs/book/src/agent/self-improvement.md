@@ -269,6 +269,10 @@ To build Rust in the sandbox, give it the toolchain and the crates read-only:
 --readable ~/.cargo --readable ~/.rustup --env CARGO_HOME=$HOME/.cargo --env RUSTUP_HOME=$HOME/.rustup
 ```
 
+Each round builds a fresh clone from nothing, and the source as it stands
+is built once more to weigh against, so with Rust each takes as long, and
+as much disk, as a clean build of `sion`.
+
 The `--build`, `--test` and `--candidate` commands can be any harness's.
 The test uses a small one in Python whose coder first changes the test,
 which it may not, and then the harness itself:
@@ -337,7 +341,7 @@ leave open is named in the trust model (`agent:self-improvement`,
 
 - It has not been run on this repository's own Rust code. The commands
   default to it, but the build in the sandbox, with its toolchain mounted
-  read-only, is untried.
+  read-only, is untried, and rounds share no build cache.
 - It has not been run with a real model; the tests use scripted ones.
 - An attestation is not on a bond that can be ruled against; it rests on
   its attester's signature.
