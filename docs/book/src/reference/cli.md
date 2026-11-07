@@ -1202,6 +1202,10 @@ Options:
           The most model turns a run may take (by default 32): it starts with 12 and gains 4 with each turn whose tool calls succeed
       --max-tokens <TOKENS>
           The most tokens each of the model's answers may have (by default 4,096), not counting room to think
+      --compact-at <TOKENS>
+          Compact the conversation once it reaches about this many tokens (by default about 40,000, or 36 messages): the middle is replaced by a summary that keeps, word for word, what the person said after the task
+      --summary-model <MODEL>
+          The model that writes that summary, or none for a mechanical one (by default the first --model, unless it is a script)
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --verify <COMMAND>
@@ -1484,6 +1488,10 @@ Options:
           The most model turns a run may take (by default 32)
       --max-tokens <TOKENS>
           The most tokens each of the model's answers may have (by default 4,096), not counting room to think
+      --compact-at <TOKENS>
+          Compact a conversation once it reaches about this many tokens (by default about 40,000, or 36 messages): the middle is replaced by a summary
+      --summary-model <MODEL>
+          The model that writes the summary when a conversation is compacted, or none for a mechanical one (by default the first model)
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --shared-memory <LOG>

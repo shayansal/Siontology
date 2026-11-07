@@ -296,6 +296,8 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         budget_micros: None,
         max_turns: None,
         max_tokens: None,
+        compact_at: None,
+        summary_model: None,
         quarantine: false,
         shared_memory: Vec::new(),
         confidential: false,

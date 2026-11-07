@@ -141,6 +141,8 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
         budget_micros: None,
         max_turns: None,
         max_tokens: None,
+        compact_at: None,
+        summary_model: None,
         quarantine: false,
         shared_memory: Vec::new(),
         confidential: false,

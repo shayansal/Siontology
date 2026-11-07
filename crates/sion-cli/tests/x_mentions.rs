@@ -91,6 +91,8 @@ fn profile(home: &Path, agent: ObjectId, script: &Value) -> Profile {
         budget_micros: None,
         max_turns: None,
         max_tokens: None,
+        compact_at: None,
+        summary_model: None,
         quarantine: false,
         shared_memory: Vec::new(),
         confidential: false,

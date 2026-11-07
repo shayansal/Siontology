@@ -403,6 +403,16 @@ pub enum AgentCommand {
         /// 4,096), not counting room to think.
         #[arg(long, value_name = "TOKENS")]
         max_tokens: Option<u32>,
+        /// Compact the conversation once it reaches about this many tokens
+        /// (by default about 40,000, or 36 messages): the middle is replaced
+        /// by a summary that keeps, word for word, what the person said
+        /// after the task.
+        #[arg(long, value_name = "TOKENS")]
+        compact_at: Option<u64>,
+        /// The model that writes that summary, or none for a mechanical one
+        /// (by default the first --model, unless it is a script).
+        #[arg(long, value_name = "MODEL")]
+        summary_model: Option<String>,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -1078,6 +1088,8 @@ pub fn run(
             budget_usd,
             max_turns,
             max_tokens,
+            compact_at,
+            summary_model,
             quarantine,
             verify,
             verify_files,
@@ -1146,6 +1158,8 @@ pub fn run(
                     budget_micros: budget_usd,
                     max_turns,
                     max_tokens,
+                    compact_at,
+                    summary_model,
                     verify,
                     verify_files,
                     shared_memory,

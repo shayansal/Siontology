@@ -625,6 +625,21 @@ pub fn thinking_of<'a>(
 /// for the models that take one (Anthropic's before Claude 4.6, Gemini 2.5:
 /// `gemini:gemini-2.5-flash#4096`). It is given room to think besides its
 /// answer ([`sion_agent::model::most_tokens`]).
+/// Sets a run to compact its conversation once it reaches about `tokens`
+/// tokens (`--compact-at`): at three characters a token, and with room for
+/// as many messages as that many tokens would hold.
+pub fn compact_at_tokens(limits: &mut Limits, tokens: u64) -> Result<(), CliError> {
+    if tokens < 2_000 {
+        return Err(CliError::Usage(
+            "--compact-at is at least 2000 tokens".into(),
+        ));
+    }
+    limits.compact_chars = usize::try_from(tokens.saturating_mul(3)).unwrap_or(usize::MAX);
+    let messages = usize::try_from(tokens / 250).unwrap_or(usize::MAX);
+    limits.compact_messages = messages.max(Limits::default().compact_messages);
+    Ok(())
+}
+
 pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
     let (kind, rest) = spec.split_once(':').ok_or_else(|| {
         CliError::Usage(format!(
@@ -929,6 +944,11 @@ pub struct Saved {
     /// made again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared_seen: Vec<String>,
+    /// The model that writes the summary when a long conversation is
+    /// compacted: a model's spec, or `none` for the mechanical summary.
+    /// Without one, the first model writes it, unless it is a script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_model: Option<String>,
 }
 
 /// What an agent knew of itself, as a session's system prompt keeps it
@@ -1650,6 +1670,17 @@ impl Saved {
                 model(spec, skip)
             })
             .collect::<Result<_, _>>()?;
+        // What writes a long conversation's summary when it is compacted.
+        let summarizer: Option<Box<dyn Model>> = match self.summary_model.as_deref() {
+            Some("none") => None,
+            Some(spec) => Some(model(spec, 0)?),
+            None => self
+                .models
+                .first()
+                .filter(|spec| !spec.starts_with("script:"))
+                .map(|spec| model(spec, 0))
+                .transpose()?,
+        };
         // A browser and a desktop held to the hosts the operator named act
         // on what they read, as the autonomy level allows.
         let mut policy = self.policy.clone();
@@ -1737,6 +1768,7 @@ impl Saved {
                 .then_some(&operator as &dyn sion_agent::hooks::ToolHooks),
             extras: sion_agent::session::Extras {
                 prices: Some(&prices),
+                summarizer: summarizer.as_deref(),
                 ..Default::default()
             },
         };
@@ -2818,6 +2850,12 @@ pub struct Equipment {
     pub max_turns: Option<u32>,
     /// The most tokens each answer may have, if not the default.
     pub max_tokens: Option<u32>,
+    /// About how many tokens its conversation may reach before it is
+    /// compacted, if not the default ([`Limits::compact_chars`]).
+    pub compact_at: Option<u64>,
+    /// The model that writes a compacted conversation's summary
+    /// ([`Saved::summary_model`]).
+    pub summary_model: Option<String>,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
@@ -2899,6 +2937,8 @@ pub fn start_watched(
         budget_micros,
         max_turns,
         max_tokens,
+        compact_at,
+        summary_model,
         verify,
         verify_files,
         shared_memory,
@@ -2992,9 +3032,20 @@ pub fn start_watched(
         }
         limits.max_tokens = tokens;
     }
+    if let Some(tokens) = compact_at {
+        compact_at_tokens(&mut limits, tokens)?;
+    }
+    if let Some(spec) = &summary_model {
+        if spec != "none" && !spec.contains(':') {
+            return Err(CliError::Usage(format!(
+                "--summary-model is a model (anthropic:<model>, …) or none, not {spec}"
+            )));
+        }
+    }
     if budget_micros.is_some() {
         let prices = prices()?;
-        for model in models.iter().chain(&subagent_models) {
+        let summary = summary_model.iter().filter(|spec| *spec != "none");
+        for model in models.iter().chain(&subagent_models).chain(summary) {
             if prices.of(model_name(model)).is_none() {
                 return Err(CliError::Usage(format!(
                     "a budget in dollars needs every model's price, and {model} has none: add it to {}",
@@ -3049,6 +3100,7 @@ pub fn start_watched(
         work,
         project,
         shared_seen: Vec::new(),
+        summary_model,
     };
     saved.from_outside(hooks.outside);
     saved.hold_confidential(hooks.confidential || confidential);
@@ -3059,6 +3111,20 @@ pub fn start_watched(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compacting_at_a_number_of_tokens_sets_both_thresholds() {
+        let mut limits = Limits::default();
+        compact_at_tokens(&mut limits, 150_000).unwrap();
+        assert_eq!(limits.compact_chars, 450_000);
+        assert_eq!(limits.compact_messages, 600);
+        // Below the default number of messages, that number stays.
+        let mut small = Limits::default();
+        compact_at_tokens(&mut small, 8_000).unwrap();
+        assert_eq!(small.compact_chars, 24_000);
+        assert_eq!(small.compact_messages, Limits::default().compact_messages);
+        assert!(compact_at_tokens(&mut small, 100).is_err());
+    }
 
     #[test]
     fn times_read_in_utc() {

@@ -90,6 +90,14 @@ pub struct Profile {
     /// The most tokens each answer may have, if not the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// About how many tokens its sessions' conversations may reach before
+    /// they are compacted, if not the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at: Option<u64>,
+    /// The model that writes a compacted conversation's summary
+    /// ([`crate::runtime::Saved::summary_model`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_model: Option<String>,
     /// Whether its sessions hold what tools return from outside in
     /// quarantine ([`sion_agent::quarantine`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -183,6 +191,8 @@ impl Profile {
             budget_micros: self.budget_micros,
             max_turns: self.max_turns,
             max_tokens: self.max_tokens,
+            compact_at: self.compact_at,
+            summary_model: self.summary_model.clone(),
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
@@ -514,6 +524,16 @@ pub enum ProfileCommand {
         /// 4,096), not counting room to think.
         #[arg(long, value_name = "TOKENS")]
         max_tokens: Option<u32>,
+        /// Compact a conversation once it reaches about this many tokens
+        /// (by default about 40,000, or 36 messages): the middle is replaced
+        /// by a summary.
+        #[arg(long, value_name = "TOKENS")]
+        compact_at: Option<u64>,
+        /// The model that writes the summary when a conversation is
+        /// compacted, or none for a mechanical one (by default the first
+        /// model).
+        #[arg(long, value_name = "MODEL")]
+        summary_model: Option<String>,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -614,6 +634,8 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             budget_usd,
             max_turns,
             max_tokens,
+            compact_at,
+            summary_model,
             quarantine,
             shared_memory,
             confidential,
@@ -684,6 +706,8 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 budget_micros: budget_usd,
                 max_turns,
                 max_tokens,
+                compact_at,
+                summary_model,
                 quarantine,
                 shared_memory,
                 confidential,
@@ -844,6 +868,12 @@ pub fn describe(profile: &Profile) -> String {
     }
     if let Some(tokens) = profile.max_tokens {
         extras.push(format!("answers of at most {tokens} tokens"));
+    }
+    if let Some(tokens) = profile.compact_at {
+        extras.push(format!("compacted at about {tokens} tokens"));
+    }
+    if let Some(spec) = &profile.summary_model {
+        extras.push(format!("summaries by {spec}"));
     }
     if profile.quarantine {
         extras.push("quarantine".to_string());

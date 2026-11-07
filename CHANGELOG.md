@@ -10,6 +10,21 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Summaries that keep what matters
+
+- When a long conversation is compacted, a model writes the summary:
+  working notes on what was done and the state things are in, the facts
+  needed later, what failed and why, the requirements found along the way
+  and what remains. It is the run's first model unless `--summary-model`
+  names another (`none` keeps the mechanical summary), its call counts
+  against the run's budgets, and when it fails or would not fit them the
+  summary is the mechanical one.
+- Every summary carries what the person said after the task, word for
+  word, so an instruction given along the way outlives any number of
+  compactions.
+- `--compact-at TOKENS` (on `sion agent run` and on profiles) sets about
+  how long a conversation grows before it is compacted.
+
 ### Terminals that stay open
 
 - With `--shell`, the agent has terminals (`terminal_run`,

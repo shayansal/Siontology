@@ -423,6 +423,8 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         budget_micros: None,
         max_turns: None,
         max_tokens: None,
+        compact_at: None,
+        summary_model: None,
         quarantine: false,
         shared_memory: Vec::new(),
         confidential: false,

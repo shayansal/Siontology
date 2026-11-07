@@ -2388,3 +2388,171 @@ fn what_a_session_last_read_and_wrote_outlives_compaction() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A tool that only reads, answering with the page it is asked for.
+fn pages() -> Toolbox {
+    let (look, _) = counted("look", Effect::Read, |input| {
+        Outcome::ok(format!("page {}", input["i"]))
+    });
+    let mut tools = Toolbox::new();
+    tools.add(look);
+    tools
+}
+
+/// A model that looks at `n` pages, then says it is done.
+fn looking(n: usize) -> Scripted {
+    let mut model = Scripted::new("m");
+    for i in 0..n {
+        model = model.calls("look", json!({ "i": i }));
+    }
+    model.says("Done.")
+}
+
+#[test]
+fn what_the_person_said_after_the_task_outlives_compaction_word_for_word() {
+    let tools = pages();
+    let model = Scripted::new("m").says("Which units should I use?");
+    let model = (0..10)
+        .fold(model, |m, i| m.calls("look", json!({ "i": i })))
+        .says("Done.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.compact_messages = 8;
+    rt.limits.keep_last = 3;
+    let mut state = State::start("s-told", "Measure the rooms", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    // Longer than a mechanical summary keeps of a message.
+    let rule = format!(
+        "Use metric units, and never open the folder named billing. {}",
+        "Round to the nearest centimetre, and say which rooms you could not measure. ".repeat(4)
+    );
+    state.tell(&rule, &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert!(state.compactions >= 2, "{}", state.compactions);
+    let summary = state.messages[1].text();
+    let said = format!(
+        "[What the person said after the task, word for word, oldest first:]\n- {}",
+        rule.trim()
+    );
+    assert!(summary.contains(&said), "{summary}");
+    // The task itself is kept as it was given.
+    assert_eq!(state.messages[0].text(), "Measure the rooms");
+    every_result_answers_a_call(&state);
+
+    // What the person said is kept, oldest first, up to a number of them.
+    let mut many = State::start("s-many", "Task", &Limits::default());
+    for i in 0..(sion_agent::session::TOLD_KEPT + 3) {
+        many.steer(&format!("note {i}"));
+    }
+    assert_eq!(many.told.len(), sion_agent::session::TOLD_KEPT);
+    assert_eq!(many.told[0], "note 3");
+}
+
+#[test]
+fn a_model_writes_the_summary_and_what_it_used_is_the_runs() {
+    let tools = pages();
+    let model = looking(6);
+    let mut summarizer = Scripted::new("notes");
+    for _ in 0..5 {
+        summarizer = summarizer
+            .says("Done so far: pages looked at in order. What remains: the rest.")
+            .using(900, 40);
+    }
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.extras.summarizer = Some(&summarizer);
+    rt.limits.compact_messages = 8;
+    rt.limits.keep_last = 3;
+    let mut state = State::start("s-notes", "Look at six pages", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert!(state.compactions > 0);
+    let asked = summarizer.requests();
+    assert!(!asked.is_empty());
+    // It was asked without tools, given the messages it replaces.
+    let first = &asked[0];
+    assert!(first.tools.is_empty());
+    assert_eq!(first.system, sion_agent::session::SUMMARY_SYSTEM);
+    let shown = first.messages[0].text();
+    assert!(shown.contains(r#"CALL look {"i":0}"#), "{shown}");
+    assert!(shown.contains("RESULT: page 0"), "{shown}");
+    assert!(shown.ends_with(sion_agent::session::SUMMARY_ASK), "{shown}");
+    let summary = state.messages[1].text();
+    assert!(
+        summary.contains("written to save context:]\nDone so far: pages looked at in order."),
+        "{summary}"
+    );
+    // What it used counts against the run, and its call is a step.
+    let summaries = asked.len() as u64;
+    assert!(state.usage.input >= 900 * summaries, "{:?}", state.usage);
+    assert!(state.usage.output >= 40 * summaries, "{:?}", state.usage);
+    assert_eq!(
+        state
+            .steps
+            .iter()
+            .filter(|s| s.outcome.as_deref() == Some("summary"))
+            .count() as u64,
+        summaries
+    );
+    // The model doing the work never saw a request meant for the summary.
+    assert!(model
+        .requests()
+        .iter()
+        .all(|r| r.system != sion_agent::session::SUMMARY_SYSTEM));
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn a_summary_is_the_mechanical_one_when_its_model_fails_or_the_budget_is_short() {
+    let tools = pages();
+
+    // The summarizer fails: the run goes on, with the mechanical summary.
+    let model = looking(6);
+    let summarizer = Scripted::new("notes")
+        .fails(ModelError::Busy("HTTP 503".into()))
+        .fails(ModelError::Busy("HTTP 503".into()))
+        .fails(ModelError::Busy("HTTP 503".into()));
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.extras.summarizer = Some(&summarizer);
+    rt.limits.compact_messages = 8;
+    rt.limits.keep_last = 3;
+    let mut state = State::start("s-failed", "Look at six pages", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert!(state.compactions > 0);
+    assert!(!summarizer.requests().is_empty());
+    assert!(state.messages[1]
+        .text()
+        .contains("compacted to save context"));
+
+    // What the summary would need does not fit the budget: it is not asked.
+    let model = looking(6);
+    let summarizer = Scripted::new("notes").says("Never written.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.extras.summarizer = Some(&summarizer);
+    rt.limits.compact_messages = 8;
+    rt.limits.keep_last = 3;
+    rt.limits.max_tokens = 256;
+    rt.limits.budget_tokens = Some(4_000);
+    let mut state = State::start("s-short", "Look at six pages", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert!(state.compactions > 0);
+    assert!(summarizer.requests().is_empty());
+    assert!(state.messages[1]
+        .text()
+        .contains("compacted to save context"));
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn a_transcript_for_a_summary_fits_its_budget() {
+    let long = "word ".repeat(10_000);
+    let messages = vec![
+        sion_agent::Message {
+            role: Role::Assistant,
+            content: vec![Block::text(long.clone())],
+        },
+        sion_agent::Message::user(long.clone()),
+    ];
+    let whole = sion_agent::session::transcript_for_summary(&messages, 1_000_000);
+    assert!(whole.contains("characters cut"), "texts are cut to a cap");
+    let small = sion_agent::session::transcript_for_summary(&messages, 3_000);
+    assert!(small.chars().count() <= 3_000 + 60, "{}", small.len());
+    assert!(small.starts_with("AGENT: word"), "{small}");
+}
