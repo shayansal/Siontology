@@ -13,6 +13,7 @@ homepage.workspace = true
 aws-lc-rs.workspace = true
 sion-core.workspace = true
 sion-http.workspace = true
+miniz_oxide.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

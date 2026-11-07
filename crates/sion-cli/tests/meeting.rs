@@ -145,6 +145,7 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        hear: None,
         quarantine: false,
         shared_memory: Vec::new(),
         confidential: false,

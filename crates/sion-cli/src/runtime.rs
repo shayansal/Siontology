@@ -957,6 +957,10 @@ pub struct Saved {
     /// Without one, the first model writes it, unless it is a script.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_model: Option<String>,
+    /// What hears its workspace's audio and videos (`transcribe`), as
+    /// `--hear` names it ([`crate::voice::Hearing`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hear: Option<String>,
 }
 
 /// What an agent knew of itself, as a session's system prompt keeps it
@@ -1494,6 +1498,16 @@ impl Saved {
             });
             if let Some(spec) = &self.image_model {
                 tools.add(crate::files::ImageMaker::new(spec, root)?);
+            }
+            // What its audio and videos say, heard as the operator named.
+            if let Some(spec) = &self.hear {
+                tools.add(crate::transcribe::Transcribe {
+                    root: root.clone(),
+                    hearing: crate::voice::Hearing::parse(spec).map_err(CliError::Usage)?,
+                    spec: spec.clone(),
+                    sandbox: self.shell.clone(),
+                    confidential: self.confidential_files.clone(),
+                });
             }
         }
         if self.home_assistant {
@@ -2883,6 +2897,8 @@ pub struct Equipment {
     /// Whether it may finish after changing code without running anything
     /// since ([`Limits::check_changes`]).
     pub no_change_check: bool,
+    /// What hears its workspace's audio and videos ([`Saved::hear`]).
+    pub hear: Option<String>,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
@@ -2968,6 +2984,7 @@ pub fn start_watched(
         summary_model,
         no_plan,
         no_change_check,
+        hear,
         verify,
         verify_files,
         shared_memory,
@@ -3067,6 +3084,14 @@ pub fn start_watched(
     if let Some(tokens) = compact_at {
         compact_at_tokens(&mut limits, tokens)?;
     }
+    if let Some(spec) = &hear {
+        crate::voice::Hearing::parse(spec).map_err(CliError::Usage)?;
+        if workspace.is_none() {
+            return Err(CliError::Usage(
+                "--hear hears the workspace's files: give --workspace".into(),
+            ));
+        }
+    }
     if let Some(spec) = &summary_model {
         if spec != "none" && !spec.contains(':') {
             return Err(CliError::Usage(format!(
@@ -3134,6 +3159,7 @@ pub fn start_watched(
         project,
         shared_seen: Vec::new(),
         summary_model,
+        hear,
     };
     saved.from_outside(hooks.outside);
     saved.hold_confidential(hooks.confidential || confidential);

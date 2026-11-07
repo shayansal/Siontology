@@ -1210,6 +1210,8 @@ Options:
           Give it no plan to keep (`plan_update`). With one, when it says it is done while steps are open, it is asked once to do them or drop them, saying why
       --no-change-check
           Let it finish after changing code without running anything since: otherwise, with a shell and no --verify, it is asked once to check the change first
+      --hear <SPEC>
+          What hears the workspace's audio and videos, for `transcribe` (a video's sound is taken out in the sandbox, with --shell): openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --verify <COMMAND>
@@ -1500,6 +1502,8 @@ Options:
           Give it no plan to keep (`plan_update`), nor hold it to one
       --no-change-check
           Let it finish after changing code without running anything since
+      --hear <SPEC>
+          What hears its workspace's audio and videos (`transcribe`), as voice notes are heard: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --shared-memory <LOG>

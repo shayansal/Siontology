@@ -423,6 +423,13 @@ pub enum AgentCommand {
         /// the change first.
         #[arg(long)]
         no_change_check: bool,
+        /// What hears the workspace's audio and videos, for `transcribe`
+        /// (a video's sound is taken out in the sandbox, with --shell):
+        /// openai:<model>, groq:<model>, deepgram:<model>,
+        /// elevenlabs:<model>, whisper:<model file>, local:<model> or
+        /// command:<program>.
+        #[arg(long, value_name = "SPEC")]
+        hear: Option<String>,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -1102,6 +1109,7 @@ pub fn run(
             summary_model,
             no_plan,
             no_change_check,
+            hear,
             quarantine,
             verify,
             verify_files,
@@ -1174,6 +1182,7 @@ pub fn run(
                     summary_model,
                     no_plan,
                     no_change_check,
+                    hear,
                     verify,
                     verify_files,
                     shared_memory,

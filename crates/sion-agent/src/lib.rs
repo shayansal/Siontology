@@ -97,6 +97,7 @@ pub mod practice;
 pub mod prices;
 pub mod providers;
 pub mod quarantine;
+pub mod reading;
 pub mod remote;
 pub mod sandbox;
 pub mod schedule;

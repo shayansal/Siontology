@@ -327,6 +327,50 @@ connection that drops, is tried again twice, after the pause the server
 asked for or one and then two seconds, each pause at most ten; what still
 fails comes back to the model as the call's error.
 
+### Reading what it finds
+
+`fetch_url` reads what it fetches rather than handing the model its bytes.
+A web page comes as its text: its title, headings marked `#`, list items
+`-`, table cells between `|`, links as `[text](address)` with their
+addresses made whole, pictures by what their `alt` says, and its
+scripts, styles, menus, footers and forms left out. A PDF comes as its
+text page by page, under `[page N]`, its letters found through the fonts'
+`ToUnicode` maps and its words and lines through the fonts' widths; an
+Excel workbook (`.xlsx`) as each sheet's rows, its cells between tabs
+under a line naming the columns (a formula never worked out as the
+formula); a Word document (`.docx`) as its paragraphs, headings and
+lists marked and tables' cells between `|`; a slide deck (`.pptx`) as each
+slide's text. A picture (PNG, JPEG, GIF, WebP, up to 5 MiB) is shown to
+the model, with its size in pixels. At most 60,000 characters come at a
+time: `from` reads on from a character, and each answer says where the
+rest begins. What is fetched is read up to 24 MiB.
+
+`read_file` reads the same kinds in the workspace, documents of up to
+32 MiB, `offset` and `limit` counting the lines of their text. What
+cannot be read is said rather than guessed: an encrypted PDF, one whose
+fonts do not say which letters they draw (its pages would have to be read
+as pictures), one with no text at all (a scan), an archive in ZIP64, or a
+file that is no text and none of these.
+
+All of this is read in Rust, in the session's process, without `unsafe`:
+each stream of a PDF and each file of an archive inflates to 32 MiB at
+most, and all of a document to 128 MiB, so that a file made to break a
+reader runs out of room instead.
+
+### Audio and video
+
+With `--hear` (on `sion agent run` and on profiles), a session with a
+workspace has `transcribe`: what an audio file of the workspace says
+(MP3, M4A, AAC, WAV, Ogg, Opus, FLAC, WebM audio, AMR, up to 25 MB), heard
+by the speech-to-text named as voice notes are (`openai:<model>`,
+`groq:<model>`, `deepgram:<model>`, `elevenlabs:<model>`,
+`whisper:<model file>`, `local:<model>` or `command:<program>`). A
+video's sound (MP4, MOV, MKV, WebM, AVI) is taken out of it first by
+ffmpeg in the agent's sandbox, so it needs `--shell`, and the sound taken
+out is removed once heard. Heard by a service, the sound leaves the
+machine, so the call reaches outside, and waits for a person where the
+autonomy level says.
+
 ## Tools from MCP servers
 
 An [MCP](https://modelcontextprotocol.io) server offers tools: a program,

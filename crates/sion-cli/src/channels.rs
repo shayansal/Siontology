@@ -2042,6 +2042,7 @@ mod tests {
             summary_model: None,
             no_plan: false,
             no_change_check: false,
+            hear: None,
             quarantine: false,
             shared_memory: Vec::new(),
             confidential: false,

@@ -1613,6 +1613,7 @@ name = "sion-agent"
 version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
+ "miniz_oxide",
  "regex",
  "serde",
  "serde_json",

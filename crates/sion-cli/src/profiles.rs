@@ -105,6 +105,9 @@ pub struct Profile {
     /// anything since.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_change_check: bool,
+    /// What hears its workspace's audio and videos (`transcribe`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hear: Option<String>,
     /// Whether its sessions hold what tools return from outside in
     /// quarantine ([`sion_agent::quarantine`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -202,6 +205,7 @@ impl Profile {
             summary_model: self.summary_model.clone(),
             no_plan: self.no_plan,
             no_change_check: self.no_change_check,
+            hear: self.hear.clone(),
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
@@ -550,6 +554,12 @@ pub enum ProfileCommand {
         /// Let it finish after changing code without running anything since.
         #[arg(long)]
         no_change_check: bool,
+        /// What hears its workspace's audio and videos (`transcribe`), as
+        /// voice notes are heard: openai:<model>, groq:<model>,
+        /// deepgram:<model>, elevenlabs:<model>, whisper:<model file>,
+        /// local:<model> or command:<program>.
+        #[arg(long, value_name = "SPEC")]
+        hear: Option<String>,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -654,6 +664,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             summary_model,
             no_plan,
             no_change_check,
+            hear,
             quarantine,
             shared_memory,
             confidential,
@@ -728,6 +739,13 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 summary_model,
                 no_plan,
                 no_change_check,
+                hear: match hear {
+                    Some(spec) => {
+                        crate::voice::Hearing::parse(&spec).map_err(CliError::Usage)?;
+                        Some(spec)
+                    }
+                    None => None,
+                },
                 quarantine,
                 shared_memory,
                 confidential,
@@ -900,6 +918,9 @@ pub fn describe(profile: &Profile) -> String {
     }
     if profile.no_change_check {
         extras.push("changes not checked".to_string());
+    }
+    if let Some(spec) = &profile.hear {
+        extras.push(format!("hears files with {spec}"));
     }
     if profile.quarantine {
         extras.push("quarantine".to_string());

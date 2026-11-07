@@ -10,6 +10,19 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Reading what it finds
+
+- `fetch_url` reads what it fetches: a web page as its text, headings,
+  lists, tables and links kept; a PDF's text page by page; an Excel
+  workbook's sheets; a Word document's or a slide deck's words; a picture
+  shown to the model. Long texts are read on with `from`. Fetches read up
+  to 24 MiB.
+- `read_file` reads PDFs, workbooks, Word documents and decks in the
+  workspace as their text, and shows pictures.
+- `transcribe` (with `--hear`) writes down what an audio file of the
+  workspace says, or a video's, its sound taken out by ffmpeg in the
+  sandbox.
+
 ### Attempts side by side, and research on the web
 
 - Graph templates `attempts` and `research`. `attempts` runs three

@@ -121,6 +121,7 @@ pub mod tasks;
 pub mod teach;
 pub mod teams;
 pub mod training;
+pub mod transcribe;
 pub mod trust;
 pub mod up;
 pub mod update;
