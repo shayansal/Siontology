@@ -197,9 +197,9 @@ refresh();
 
 /// A reader that stops at its deadline: a request that comes too slowly
 /// is not waited for.
-struct Timed<R> {
-    inner: R,
-    deadline: Instant,
+pub(crate) struct Timed<R> {
+    pub(crate) inner: R,
+    pub(crate) deadline: Instant,
 }
 
 impl<R: Read> Read for Timed<R> {

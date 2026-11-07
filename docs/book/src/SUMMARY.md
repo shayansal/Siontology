@@ -24,6 +24,7 @@
   - [Security](agent/security.md)
 - [Commands, scripts and MCP servers](agent/tools.md)
   - [A browser and a desktop](agent/browser.md)
+  - [A canvas](agent/canvas.md)
 - [Skills from others](agent/skills.md)
   - [What a skill may do](agent/skill-permissions.md)
   - [Skills that get better](agent/skill-improvement.md)

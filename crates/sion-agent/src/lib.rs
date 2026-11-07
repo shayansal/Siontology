@@ -63,6 +63,7 @@
 pub mod archive;
 pub mod browser;
 pub mod builtin;
+pub mod canvas;
 pub mod cdp;
 pub mod cloud;
 pub mod code;

@@ -39,7 +39,7 @@ About 39,400 lines of Rust under `src/` at the time of writing (`find crates/sio
 | Around calls | `code_mode`, `hooks` | Programs in Python that call the session's tools that only read, in the sandbox; the operator's hooks before and after calls, which may block one. |
 | Models and providers | `model`, `providers`, `cloud`, `scripted` | Provider-independent request and response types; the Anthropic Messages API, OpenAI-compatible chat, Google Gemini and OpenAI Responses over `sion-http`, AWS Bedrock's Converse API (Signature Version 4) and Google Vertex AI (tokens minted from a service account's key or a person's sign-in), each given back the reasoning it gave and told how hard to think; a model that plays a script. |
 | Tools: builtin | `builtin`, `code` | Workspace files, a shell in the sandbox, web pages; edits, patches, file search and the project's checker and tests. |
-| Tools: web and screens | `websearch`, `browser`, `cdp`, `takeover`, `desktop`, `teach` | Web search services; Chromium driven over the DevTools Protocol, with a profile a person signed in with if given, and its page handed to them on a page of this machine's; an X desktop seen in screenshots; a person's browser recorded while they do a task once, and written down as a draft skill. |
+| Tools: web and screens | `websearch`, `browser`, `cdp`, `takeover`, `desktop`, `canvas`, `teach` | Web search services; Chromium driven over the DevTools Protocol, with a profile a person signed in with if given, and its page handed to them on a page of this machine's; an X desktop seen in screenshots and used in code; a canvas of A2UI components a person watches and acts on; a person's browser recorded while they do a task once, and written down as a draft skill. |
 | Tools: sandbox and egress | `sandbox`, `egress`, `encoding` | Bubblewrap or a Docker image pinned by digest; a filtering proxy and an in-sandbox bridge for the hosts a skill's scripts may reach (`bin/sion-sandbox-bridge.rs`); Base64. |
 | MCP | `mcp`, `mcp_http`, `mcp_input`, `oauth` | An MCP client over standard input and output and over HTTP; elicitation and sampling; OAuth 2.1 for servers that ask for it. Tools are offered only while each definition matches the one an operator reviewed. |
 | Skills and their improvement | `skills`, `evals`, `evolve`, `judge` | Skills in the Agent Skills format with a canonical bundle; evaluation sets; reflective evolution of a skill's variants; a step-by-step judge. |
@@ -59,6 +59,7 @@ About 39,400 lines of Rust under `src/` at the time of writing (`find crates/sio
 - [`Scripted`](src/scripted.rs): a model that plays a list of steps, with `when` and `unless` conditions on the conversation.
 - [`providers::Anthropic`, `OpenAiCompatible`, `Gemini`, `OpenAiResponses`](src/providers.rs): the HTTPS providers.
 - [`cloud::Bedrock`, `cloud::Vertex`, `cloud::SigV4`, `cloud::GoogleCredentials`, `cloud::NAMED`](src/cloud.rs): the cloud platforms, and the providers known by name.
+- [`canvas::Canvas`](src/canvas.rs): a page the agent shows a person things on, as A2UI messages, and hears their actions from.
 - [`skills`](src/skills.rs), [`evals::EvalSet`](src/evals.rs), [`evolve::evolve`](src/evolve.rs): skills, evaluation sets and improvement against them.
 - [`archive::Archive`](src/archive.rs), [`guard`](src/guard.rs), [`harvest::case_of`](src/harvest.rs), [`remote::serve` and `remote::run_candidate`](src/remote.rs): what the agent improving itself is built from.
 - [`graph`](src/graph.rs) and [`work`](src/work.rs): graphs of agents and self-started work.
@@ -69,7 +70,7 @@ Depends on: `sion-core` and `sion-http` (workspace crates), plus `regex`, `serde
 
 ## Tests
 
-About 164 unit tests under `src/` and 93 tests under `tests/` (counted with `grep -c "#\[test\]"`; no test is `#[ignore]`). The tests under `tests/` are `session.rs` (44, the loop, approvals, journal, compaction, pause and resume), `providers.rs` (14, against `tiny_http` stand-ins for the APIs), `reasoning.rs` (11, reasoning kept and given back, and how hard each provider is asked to think, against the same stand-ins), `mcp.rs` (8), `skill_permissions.rs` (5), `code_mode.rs` (4, programs that call tools, and the operator's hooks; skipped where bubblewrap or python3 is not there), `browser.rs` (4, skipped where Chromium, Xvfb and bubblewrap are not installed), `tool_search.rs` (1), `teach.rs` (1) and `attacks.rs` (1, nine attacks on a scripted model that obeys everything it reads, showing what holds and that two get through, as the status file records).
+About 195 unit tests under `src/` and 94 tests under `tests/` (counted with `grep -c "#\[test\]"`; no test is `#[ignore]`). The tests under `tests/` are `session.rs` (44, the loop, approvals, journal, compaction, pause and resume), `providers.rs` (14, against `tiny_http` stand-ins for the APIs), `reasoning.rs` (11, reasoning kept and given back, and how hard each provider is asked to think, against the same stand-ins), `mcp.rs` (8), `skill_permissions.rs` (5), `code_mode.rs` (4, programs that call tools, and the operator's hooks; skipped where bubblewrap or python3 is not there), `browser.rs` (5, skipped where Chromium, Xvfb and bubblewrap are not installed), `tool_search.rs` (1), `teach.rs` (1) and `attacks.rs` (1, nine attacks on a scripted model that obeys everything it reads, showing what holds and that two get through, as the status file records).
 
 All runs use a scripted model and stand-ins for providers' APIs: the implementation status says the environment these were made in reaches none of them, so a run against a real model is not part of the tests. The sandbox tests run bubblewrap for real, and Docker with `SION_TEST_DOCKER_IMAGE`.
 
@@ -84,7 +85,7 @@ cargo test -p sion-agent
 - [What it does alone, and what it asks](../../docs/book/src/agent/autonomy.md)
 - [Checked before it is done](../../docs/book/src/agent/checks.md)
 - [Security](../../docs/book/src/agent/security.md)
-- [Commands, scripts and MCP servers](../../docs/book/src/agent/tools.md), [a browser and a desktop](../../docs/book/src/agent/browser.md)
+- [Commands, scripts and MCP servers](../../docs/book/src/agent/tools.md), [a browser and a desktop](../../docs/book/src/agent/browser.md), [a canvas](../../docs/book/src/agent/canvas.md)
 - [Skills from others](../../docs/book/src/agent/skills.md), [Skill permissions](../../docs/book/src/agent/skill-permissions.md), [Skills that get better](../../docs/book/src/agent/skill-improvement.md)
 - [Graphs of agents](../../docs/book/src/agent/graphs.md), [Profiles and schedules](../../docs/book/src/agent/schedules.md), [Work it takes on](../../docs/book/src/agent/work.md)
 - [Memory](../../docs/book/src/agent/memory.md)

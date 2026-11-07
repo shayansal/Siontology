@@ -1,5 +1,6 @@
 //! What an agent sees and acts on besides files and the ledger: a browser
-//! (`--browser`) and a desktop of its own (`--computer`).
+//! (`--browser`), a desktop of its own (`--computer`), and a canvas it
+//! shows a person things on (`--canvas`, [`sion_agent::canvas`]).
 //!
 //! The browser is Chromium (or Chrome) with a profile made for the session,
 //! in bubblewrap where that works, reaching public addresses only (or only
@@ -8,7 +9,7 @@
 //! is an X server with the programs the operator allows, in bubblewrap or
 //! a Docker image.
 //!
-//! Both live as long as the process that runs the session, between its
+//! All live as long as the process that runs the session, between its
 //! runs too where the process keeps them ([`keep_between_runs`]: a server,
 //! which hears the approvals of its sessions itself). A session continued
 //! by a process of its own gets a browser that goes back to the page it
@@ -22,6 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sion_agent::browser::{self, Credential, Credentials, Restore, Shared};
+use sion_agent::canvas::Canvas;
 use sion_agent::desktop::{self, Computer};
 use sion_agent::permissions::{HostRule, ScriptNetwork};
 use sion_agent::sandbox::{Backend, Sandbox};
@@ -75,12 +77,15 @@ pub struct Screen {
     /// without code (`run_code`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_code: bool,
+    /// Whether it has a canvas to show a person things on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub canvas: bool,
 }
 
 impl Screen {
-    /// Whether it gives neither a browser nor a desktop.
+    /// Whether it gives neither a browser, a desktop nor a canvas.
     pub fn is_empty(&self) -> bool {
-        !self.browser && self.computer.is_none()
+        !self.browser && self.computer.is_none() && !self.canvas
     }
 
     /// Where the browser and the desktop's programs may connect.
@@ -183,6 +188,12 @@ pub struct ScreenArgs {
     /// display, in its sandbox).
     #[arg(long, requires = "computer")]
     pub computer_no_code: bool,
+    /// Give it a canvas: a page on this machine where it shows you what it
+    /// works on (A2UI's components: text, pictures, lists, cards, tabs,
+    /// buttons, fields) as it goes, and hears what you press there. The
+    /// page's address is in its first canvas_show.
+    #[arg(long)]
+    pub canvas: bool,
     /// With a Docker desktop, the Docker network its programs reach: one
     /// you set up (default: none).
     #[arg(
@@ -234,8 +245,9 @@ impl ScreenArgs {
                 .collect(),
             size,
             no_code: self.computer_no_code,
+            canvas: self.canvas,
         };
-        if screen.is_empty() && !screen.hosts.is_empty() {
+        if !screen.browser && screen.computer.is_none() && !screen.hosts.is_empty() {
             return Err(CliError::Usage(
                 "--browser-host goes with --browser or --computer".into(),
             ));
@@ -279,11 +291,12 @@ impl Credentials for Given {
     }
 }
 
-/// A session's browser and desktop while they run.
+/// A session's browser, desktop and canvas while they run.
 #[derive(Clone, Default)]
 struct Open {
     browser: Option<Shared>,
     computer: Option<Computer>,
+    canvas: Option<Canvas>,
 }
 
 static OPEN: OnceLock<Mutex<BTreeMap<String, Open>>> = OnceLock::new();
@@ -388,12 +401,24 @@ pub fn tools(
         }
         tools.push(Box::new(entry.computer.clone().expect("set above")));
     }
+    if screen.canvas {
+        if entry.canvas.is_none() {
+            // Served from the start, and said at once: what a run says
+            // comes when it ends, and the person watches while it works.
+            let canvas = Canvas::new();
+            let url = canvas.url().map_err(CliError::Usage)?;
+            eprintln!("the agent's canvas is at {url}: open it on this machine to watch it");
+            entry.canvas = Some(canvas);
+        }
+        tools.extend(entry.canvas.as_ref().expect("set above").tools());
+    }
     Ok(tools)
 }
 
 /// After a run of session `session`: where its browser is, to go back to;
 /// and its browser and desktop let go, unless it waits and this process
-/// keeps them ([`keep_between_runs`]).
+/// keeps them ([`keep_between_runs`]). Its canvas stays while the process
+/// runs, at the same address, for the session's next run to show on.
 pub fn after_run(session: &str, waits: bool) -> Option<Restore> {
     let mut running = open();
     let state = running
@@ -401,7 +426,13 @@ pub fn after_run(session: &str, waits: bool) -> Option<Restore> {
         .and_then(|open| open.browser.as_ref())
         .and_then(Shared::state);
     if !(waits && KEEP.load(Ordering::SeqCst)) {
-        running.remove(session);
+        if let Some(open) = running.get_mut(session) {
+            open.browser = None;
+            open.computer = None;
+            if open.canvas.is_none() {
+                running.remove(session);
+            }
+        }
     }
     state
 }
@@ -479,5 +510,35 @@ mod tests {
         for size in ["1024", "10x10", "99999x800", "wide"] {
             assert!(parse_size(size).is_err(), "{size}");
         }
+    }
+
+    #[test]
+    fn a_canvas_is_served_once_and_stays_at_its_address_between_runs() {
+        let screen = ScreenArgs {
+            canvas: true,
+            ..args()
+        }
+        .screen()
+        .unwrap();
+        assert!(!screen.is_empty() && !screen.contained());
+        let session = "canvas-test-session";
+        let names = |tools: &[Box<dyn Tool>]| -> Vec<String> {
+            tools.iter().map(|t| t.spec().name).collect()
+        };
+        let given = tools(&screen, session, None, &[], None, None).unwrap();
+        assert_eq!(names(&given), ["canvas_show", "canvas_wait"]);
+        let url = |session: &str| {
+            open()
+                .get(session)
+                .and_then(|o| o.canvas.as_ref())
+                .map(|c| c.url().unwrap())
+        };
+        let first = url(session).unwrap();
+        assert!(first.starts_with("http://127.0.0.1:"), "{first}");
+        // The run ends; the next run shows on the same canvas.
+        assert!(after_run(session, false).is_none());
+        tools(&screen, session, None, &[], None, None).unwrap();
+        assert_eq!(url(session).unwrap(), first);
+        open().remove(session);
     }
 }

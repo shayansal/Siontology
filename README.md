@@ -153,8 +153,10 @@ What is enforced, and where:
   subagents work in git worktrees of their own.
 - A shell in a sandbox, web search, and a browser with tabs, downloads and
   uploads. Given your browser profile it is signed in as you, and it hands
-  you the page for a captcha or a code. It also has a desktop of its own.
-  [Browser](docs/book/src/agent/browser.md)
+  you the page for a captcha or a code. It also has a desktop of its own,
+  used with the pointer and in code, and a canvas where it shows you what
+  it works on and hears what you press.
+  [Browser](docs/book/src/agent/browser.md), [Canvas](docs/book/src/agent/canvas.md)
 - MCP servers over standard input and output or HTTP with OAuth, with
   their resources, prompts, sampling and questions to you; and sion's own
   servers for mail, calendars and documents.

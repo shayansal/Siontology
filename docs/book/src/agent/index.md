@@ -26,8 +26,8 @@ does, and how.
 - [Memory](memory.md): the memory log, searching past sessions, consolidation and dreaming.
 - [Checked before it is done](checks.md): checks a run must pass, budgets, and the nets under it.
 - [Security](security.md): confidential content, signed decisions, imitated notes, attacks tried.
-- [Commands, scripts and MCP servers](tools.md) and [a browser and a
-  desktop](browser.md): its tools.
+- [Commands, scripts and MCP servers](tools.md), [a browser and a
+  desktop](browser.md) and [a canvas](canvas.md): its tools.
 - [Skills from others](skills.md), [what a skill may
   do](skill-permissions.md) and [skills that get
   better](skill-improvement.md).

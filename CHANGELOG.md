@@ -10,6 +10,23 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A canvas the agent shows you things on
+
+- **`--canvas`.** A page on this machine, by a token of 128 bits, where
+  the agent shows what it works on as A2UI (v0.8) messages: text,
+  pictures, rows, columns, lists bound to a data model, cards, tabs,
+  dividers, buttons, check boxes, text fields, sliders and choices,
+  checked and applied all or none, watched live as they change
+  (`sion_agent::canvas`). A button's action, with what the person
+  entered, comes back for `canvas_wait`. The page runs nothing the agent
+  sends and reaches only its own address; showing is a write, not an
+  external call. The canvas stays at its address for the session's runs
+  in the process that serves it.
+
+Tested on the server and in a real run with a browser as the person; a
+book page ([A canvas](docs/book/src/agent/canvas.md)). Trust atom
+`agent:canvas`.
+
 ### A desktop used in code as well as with the pointer
 
 - **Code actions.** The `computer` tool's `run_code` runs a Python

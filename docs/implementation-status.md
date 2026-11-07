@@ -651,7 +651,18 @@ service. Tested in
 bubblewrap with a stand-in person who opens the page, clicks and types a
 code (trust atom `agent:browser-handover`). Not built: a desktop that
 outlives its process; a hand-over reachable from another machine but by a
-tunnel.
+tunnel. A canvas ([A canvas](book/src/agent/canvas.md)): `--canvas` serves
+a page on 127.0.0.1, by a token of 128 bits, where the agent shows a
+person what it works on as A2UI (v0.8) messages, thirteen components of
+its standard catalog with a data model and lists bound to it, checked and
+applied all or none, rendered with the browser's own elements under a
+policy that reaches only the page's own address (pictures from their
+bytes); a button's action comes back, checked as that button's own, for
+`canvas_wait`. Tested on the server (the page, its token and host, a
+watcher sent the canvas and then each change, an action taken and an
+invented one refused) and in a real run with Playwright's Chromium as the
+person (trust atom `agent:canvas`); A2UI's later versions and its other
+components are not built.
 
 **Renting an agent out, and agents' records: built (beyond the paper).**
 `sion agent rent serve` lists a profile's agent for rent by the token: a
@@ -1579,6 +1590,7 @@ the architecture's own:
 | `agent:browser` | The browser is Chromium (or Chrome), contained by bubblewrap's namespaces where it runs in them (its own sandbox is off there, as it cannot nest inside), with the machine's managed browser policies; elsewhere by its own sandbox, as the operator's user, and never as root. Without bubblewrap it reaches the egress proxy through a port on this machine's loopback, which any program of the machine can use while it runs, the runtime's upstream proxy and its credentials included. |
 | `agent:browser-hosts` | A browser held to the hosts the operator names acts on their pages after reading them, as the autonomy level allows: a page there can lead the model to carry what it knows to that site, in an address, a form or a post, and a named host that forwards what it is sent, or serves what others put there, takes it further. Without named hosts, its actions after a page wait for a person. |
 | `agent:browser-logins` | A login is filled only into a field whose frame is of the login's origin, as the browser knows it: a page of that origin can still send what is typed in it elsewhere, so a login is as safe as its site's pages. The password is cut out of what the browser returns as it is, not in every form a page could show it in. |
+| `agent:canvas` | Whoever holds a canvas's address (its token) acts on it as the person: what they press reaches the agent as the person's own, not as content from outside. The page is served without TLS on 127.0.0.1, so anything on the machine that can read the address can watch and act. |
 | `agent:desktop` | A desktop's programs are contained as its sandbox contains them, their address space unbounded under bubblewrap; the X server they share lets each read the others' windows and send them input. A program the agent runs there (`run_code`) is one of them: it reads and changes the workspace and every window on the desktop. A Docker desktop reaches what its Docker network reaches. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
