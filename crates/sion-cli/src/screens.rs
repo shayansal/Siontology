@@ -71,6 +71,10 @@ pub struct Screen {
     /// Its desktop's size, in pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<(u32, u32)>,
+    /// Whether its desktop is used only with the pointer and the keyboard,
+    /// without code (`run_code`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_code: bool,
 }
 
 impl Screen {
@@ -174,6 +178,11 @@ pub struct ScreenArgs {
     /// Its desktop's size, WIDTHxHEIGHT.
     #[arg(long, default_value = "1280x800", value_name = "SIZE")]
     pub computer_size: String,
+    /// Use its desktop only with the pointer and the keyboard: no programs
+    /// of its own run there (`run_code`, Python or bash, on the desktop's
+    /// display, in its sandbox).
+    #[arg(long, requires = "computer")]
+    pub computer_no_code: bool,
     /// With a Docker desktop, the Docker network its programs reach: one
     /// you set up (default: none).
     #[arg(
@@ -224,6 +233,7 @@ impl ScreenArgs {
                 .filter(|argv: &Vec<String>| !argv.is_empty())
                 .collect(),
             size,
+            no_code: self.computer_no_code,
         };
         if screen.is_empty() && !screen.hosts.is_empty() {
             return Err(CliError::Usage(
@@ -373,6 +383,7 @@ pub fn tools(
                 network: network.clone(),
                 egress: egress.clone(),
                 workspace,
+                code: !screen.no_code,
             }));
         }
         tools.push(Box::new(entry.computer.clone().expect("set above")));

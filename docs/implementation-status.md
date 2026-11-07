@@ -617,7 +617,12 @@ person; the operator's logins (`sion agent login`) are filled only into a
 field whose own frame is of the login's origin, and cut out of all it
 returns. `--computer` gives an X server of the session's own (Xvfb,
 xdotool, ImageMagick) in bubblewrap or a Docker image, with the programs
-the operator allows, as the `computer` tool. Pictures reach Anthropic's
+the operator allows, as the `computer` tool, which also acts in code:
+`run_code` runs a Python program or a bash script on the desktop's display,
+in its sandbox with no network, and `windows` and `focus` read and order
+its windows (run for real in the tests: a window opened with the X
+library, found by name and place, focused, and programs that print, fail
+and run too long; trust atom `agent:desktop`). Pictures reach Anthropic's
 models in the tool result and OpenAI-compatible ones after it, the last
 three shown, the last six kept, every one named by its digest in the
 conversation. The browser and the desktop run for real in the tests
@@ -1574,7 +1579,7 @@ the architecture's own:
 | `agent:browser` | The browser is Chromium (or Chrome), contained by bubblewrap's namespaces where it runs in them (its own sandbox is off there, as it cannot nest inside), with the machine's managed browser policies; elsewhere by its own sandbox, as the operator's user, and never as root. Without bubblewrap it reaches the egress proxy through a port on this machine's loopback, which any program of the machine can use while it runs, the runtime's upstream proxy and its credentials included. |
 | `agent:browser-hosts` | A browser held to the hosts the operator names acts on their pages after reading them, as the autonomy level allows: a page there can lead the model to carry what it knows to that site, in an address, a form or a post, and a named host that forwards what it is sent, or serves what others put there, takes it further. Without named hosts, its actions after a page wait for a person. |
 | `agent:browser-logins` | A login is filled only into a field whose frame is of the login's origin, as the browser knows it: a page of that origin can still send what is typed in it elsewhere, so a login is as safe as its site's pages. The password is cut out of what the browser returns as it is, not in every form a page could show it in. |
-| `agent:desktop` | A desktop's programs are contained as its sandbox contains them, their address space unbounded under bubblewrap; the X server they share lets each read the others' windows and send them input. A Docker desktop reaches what its Docker network reaches. |
+| `agent:desktop` | A desktop's programs are contained as its sandbox contains them, their address space unbounded under bubblewrap; the X server they share lets each read the others' windows and send them input. A program the agent runs there (`run_code`) is one of them: it reads and changes the workspace and every window on the desktop. A Docker desktop reaches what its Docker network reaches. |
 | `impl:batch-size-fee` | A batch member's fee floor splits the cost of checking signatures by the size its batch declares. A signer that declares 256 members and sends one pays about a fifth of the base fee for a signature check; validators bound this by checking cheap things first and taking batches whole. |
 | `impl:insecure-sim-signatures` | Only when a devnet is started with `--insecure-fast-signatures`: validators sign with a simulation MAC. The chain identity records it, and light-client reports say so. |
 | `agent:web-search` | A search's results are the provider's (Brave, Tavily, or the operator's SearXNG): it sees every query, and what it returns is taken as from outside, never as instructions. |

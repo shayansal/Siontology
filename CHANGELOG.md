@@ -10,6 +10,21 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A desktop used in code as well as with the pointer
+
+- **Code actions.** The `computer` tool's `run_code` runs a Python
+  program or a bash script on the desktop: its display, the workspace,
+  the desktop's sandbox with no network, 30 seconds unless it asks for
+  more within the sandbox's limit, the program passed in a variable. It
+  answers with how the program ended and what it printed, and a
+  screenshot. `--computer-no-code` leaves it out.
+- **Windows by name.** `windows` lists the windows open with their ids,
+  names, places and sizes; `focus` brings one forward.
+
+Run for real in the tests (Xvfb and bubblewrap: a window opened with the
+X library, found and focused, programs that print, fail and run too
+long), and in the book's transcript with Chrome on the desktop.
+
 ### Models on the cloud platforms, and providers by name
 
 - **AWS Bedrock** (`--model bedrock:<model>`): the Converse API natively,

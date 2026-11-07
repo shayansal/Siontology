@@ -576,6 +576,7 @@ fn a_desktop_is_seen_and_used_with_the_pointer() {
         network: ScriptNetwork::None,
         egress: sion_agent::egress::Options::default(),
         workspace: workspace.clone(),
+        code: true,
     });
     let shot = computer.call(&json!({"action": "screenshot"}), "k");
     assert!(!shot.is_error, "{}", shot.content);
@@ -607,6 +608,178 @@ fn a_desktop_is_seen_and_used_with_the_pointer() {
         none.content
     );
     drop(computer);
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+/// A program that opens a window named "Ledger" at (40, 50), 300×200,
+/// with nothing but the X library, and keeps it open.
+const WINDOW: &str = r#"import ctypes, time
+x = ctypes.cdll.LoadLibrary("libX11.so.6")
+x.XOpenDisplay.restype = ctypes.c_void_p
+x.XOpenDisplay.argtypes = [ctypes.c_char_p]
+d = x.XOpenDisplay(None)
+x.XDefaultRootWindow.restype = ctypes.c_ulong
+x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+x.XCreateSimpleWindow.restype = ctypes.c_ulong
+x.XCreateSimpleWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+    ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_ulong, ctypes.c_ulong]
+w = x.XCreateSimpleWindow(d, x.XDefaultRootWindow(d), 40, 50, 300, 200, 1, 0, 0xffffff)
+x.XStoreName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_char_p]
+x.XStoreName(d, w, b"Ledger")
+x.XMapWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+x.XMapWindow(d, w)
+x.XFlush.argtypes = [ctypes.c_void_p]
+x.XFlush(d)
+time.sleep(120)
+"#;
+
+#[test]
+fn a_desktop_is_used_in_code_as_well_as_with_the_pointer() {
+    let Some(sandbox) = bubblewrap() else {
+        eprintln!("skipped: bubblewrap does not work here");
+        return;
+    };
+    for program in ["Xvfb", "xdotool", "import", "python3", "bash"] {
+        if !std::path::Path::new("/usr/bin").join(program).exists() {
+            eprintln!("skipped: no {program}");
+            return;
+        }
+    }
+    let workspace: PathBuf =
+        std::env::temp_dir().join(format!("sion-desktop-code-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).unwrap();
+    let config = sion_agent::desktop::Config {
+        sandbox,
+        size: (800, 600),
+        programs: vec![vec![
+            "/usr/bin/python3".to_string(),
+            "-c".to_string(),
+            WINDOW.to_string(),
+        ]],
+        bridge: Some(vec![env!("CARGO_BIN_EXE_sion-sandbox-bridge").to_string()]),
+        network: ScriptNetwork::None,
+        egress: sion_agent::egress::Options::default(),
+        workspace: workspace.clone(),
+        code: true,
+    };
+    let computer = sion_agent::desktop::Computer::new(config.clone());
+    assert!(computer.spec().description.contains("run_code"));
+    let code = |language: &str, code: &str, timeout: u64| {
+        computer.call(
+            &json!({"action": "run_code", "language": language, "code": code, "timeout": timeout}),
+            "k",
+        )
+    };
+
+    // A program of its own: on the desktop's display, in the workspace.
+    let ran = code(
+        "python",
+        "import os\nprint('display', os.environ['DISPLAY'])\nopen('made.txt', 'w').write('in code')",
+        30,
+    );
+    assert!(!ran.is_error, "{}", ran.content);
+    assert!(
+        ran.content.starts_with("it exited with 0"),
+        "{}",
+        ran.content
+    );
+    assert!(
+        ran.content.contains("printed:\ndisplay :"),
+        "{}",
+        ran.content
+    );
+    assert!(
+        ran.untrusted,
+        "what a program prints is content from outside"
+    );
+    assert_eq!(ran.pictures.len(), 1, "it answers with a screenshot too");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("made.txt")).unwrap(),
+        "in code"
+    );
+    let ran = code("bash", "xdotool getdisplaygeometry", 30);
+    assert!(ran.content.contains("printed:\n800 600"), "{}", ran.content);
+    let failed = code(
+        "python",
+        "import sys\nprint('no', file=sys.stderr)\nsys.exit(3)",
+        30,
+    );
+    assert!(
+        failed.content.starts_with("it exited with 3") && failed.content.contains("errors:\nno"),
+        "{}",
+        failed.content
+    );
+    let slow = code("bash", "sleep 30", 1);
+    assert!(slow.content.contains("ran too long"), "{}", slow.content);
+    let unknown = code("ruby", "puts 1", 30);
+    assert!(
+        unknown.is_error && unknown.content.contains("python or bash"),
+        "{}",
+        unknown.content
+    );
+
+    // Its windows, by their names and places, and one brought forward.
+    let none = computer.call(&json!({"action": "windows"}), "k");
+    assert_eq!(none.content, "no window is open");
+    let started = computer.call(&json!({"action": "launch", "program": "python3"}), "k");
+    assert!(!started.is_error, "{}", started.content);
+    let mut listed = String::new();
+    for _ in 0..50 {
+        listed = computer.call(&json!({"action": "windows"}), "k").content;
+        if listed.contains("Ledger") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let line = listed
+        .lines()
+        .find(|l| l.contains("\"Ledger\""))
+        .unwrap_or_else(|| panic!("no window named Ledger in:\n{listed}"));
+    assert!(line.ends_with("at (40, 50), 300×200"), "{line}");
+    let id: u64 = line
+        .trim_start_matches("window ")
+        .split(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let focused = computer.call(&json!({"action": "focus", "window": id}), "k");
+    assert_eq!(focused.content, format!("focused window {id}, \"Ledger\""));
+    let has = code("bash", "xdotool getwindowfocus", 30);
+    assert!(
+        has.content.contains(&format!("printed:\n{id}")),
+        "{}",
+        has.content
+    );
+    let missing = computer.call(&json!({"action": "focus", "window": 7}), "k");
+    assert!(missing.is_error, "{}", missing.content);
+    assert_eq!(
+        computer.effect_of(&json!({"action": "windows"})),
+        sion_agent::tools::Effect::Read
+    );
+    assert_eq!(
+        computer.effect_of(&json!({"action": "run_code"})),
+        sion_agent::tools::Effect::External
+    );
+    drop(computer);
+
+    // A desktop used only with the pointer and the keyboard runs no code.
+    let gui = sion_agent::desktop::Computer::new(sion_agent::desktop::Config {
+        code: false,
+        ..config
+    });
+    assert!(!gui.spec().description.contains("run_code"));
+    let refused = gui.call(
+        &json!({"action": "run_code", "language": "bash", "code": "true"}),
+        "k",
+    );
+    assert!(
+        refused.is_error && refused.content.contains("not an action"),
+        "{}",
+        refused.content
+    );
+    drop(gui);
     let _ = std::fs::remove_dir_all(&workspace);
 }
 

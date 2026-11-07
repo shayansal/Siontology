@@ -1181,6 +1181,8 @@ Options:
           A program it may start on its desktop, as a command line (`firefox --new-instance`). Repeat for more
       --computer-size <SIZE>
           Its desktop's size, WIDTHxHEIGHT [default: 1280x800]
+      --computer-no-code
+          Use its desktop only with the pointer and the keyboard: no programs of its own run there (`run_code`, Python or bash, on the desktop's display, in its sandbox)
       --computer-network <NETWORK>
           With a Docker desktop, the Docker network its programs reach: one you set up (default: none) [default: none]
       --no-skill-approvals
@@ -1445,6 +1447,8 @@ Options:
           A program it may start on its desktop, as a command line (`firefox --new-instance`). Repeat for more
       --computer-size <SIZE>
           Its desktop's size, WIDTHxHEIGHT [default: 1280x800]
+      --computer-no-code
+          Use its desktop only with the pointer and the keyboard: no programs of its own run there (`run_code`, Python or bash, on the desktop's display, in its sandbox)
       --computer-network <NETWORK>
           With a Docker desktop, the Docker network its programs reach: one you set up (default: none) [default: none]
       --instructions <INSTRUCTIONS>

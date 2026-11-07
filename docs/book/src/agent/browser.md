@@ -295,9 +295,11 @@ The tool is `computer`, with the actions computer-use models are trained
 on: `screenshot`; `left_click`, `right_click`, `middle_click`,
 `double_click`, `triple_click` and `mouse_move` at a coordinate;
 `left_click_drag`; `type`; `key` (`ctrl+l`, `Return`); `scroll`; `wait`;
-`cursor_position`; and `launch`, which starts an allowed program. Every
-action answers with a screenshot. Here the desktop's program is Chrome,
-which the agent opens on serde_json's page:
+`cursor_position`; and `launch`, which starts an allowed program. Two more
+read the desktop as a program would: `windows` lists the windows open,
+each with its id, name, place and size, and `focus` brings one forward by
+its id. Every action answers with a screenshot. Here the desktop's program
+is Chrome, which the agent opens on serde_json's page:
 
 ```text
 $ sion agent run coder 0f3d94ab…e058 --task 'Open serde_json's page on docs.rs, on your desktop.' --model script:desktop.json --computer --workspace …/desk --computer-program '…/chrome --no-sandbox --no-first-run --user-data-dir=/workspace/.chrome --window-size=1280,800 --window-position=0,0 about:blank' --browser-host docs.rs --autonomy L5 --no-reflect
@@ -333,6 +335,52 @@ session acb082eb9506efde: done
 Its last screenshot, as the model saw it:
 
 ![The agent's desktop: Chrome on serde_json's page on docs.rs](../guides/agent-desktop.png)
+
+### In code
+
+The agents that do best on desktops act in code where code is surer than
+the pointer: they read the spreadsheet an application has open rather
+than scroll through it, and change a hundred settings in one go rather
+than click each. `run_code` runs a Python program or a bash script on the
+desktop, with its display (`DISPLAY`, so `xdotool` and the X programs
+reach its windows), in the workspace, in the desktop's own sandbox: with
+bubblewrap, the system's files read-only, the workspace writable, and no
+network. It answers with how the program ended and what it printed (up
+to 16 KiB of each of its output and its errors), and a screenshot after.
+The program goes to the interpreter in a variable, never as an argument.
+It runs 30 seconds unless it asks for longer, up to the sandbox's limit
+(two minutes by default). Here the agent looks at the windows open, and
+reads the invoices in code rather than on the screen:
+
+```text
+$ sion agent run coder f0a36de9…6023 --task 'How much is still owed in invoices.csv? Chrome is on your desktop if you need it.' --model script:code.json --computer --workspace …/desk --computer-program '…/chrome --no-sandbox --no-first-run --user-data-dir=/workspace/.chrome --window-size=1280,800 --window-position=0,0 about:blank' --browser-host docs.rs --autonomy L5 --no-reflect
+session 46eecf1a8e0a7c54 for agent f0a36de9
+  → computer {"action":"launch","program":"chrome"}
+  ← started chrome
+    [a picture]
+  → computer {"action":"wait","duration":6}
+  ← waited 6 s
+    [a picture]
+  → computer {"action":"windows"}
+  ← window 2097155: "about:blank - Google Chrome for Testing", at (0, 0), 1279×799
+    [a picture]
+  → computer {"action":"run_code","code":"import csv\nrows = list(csv.DictReader(open('invoices.csv')))\nowed = [r for r in rows if r['paid'] == 'no']\nfor r in owed:\n    print(r['number'], r['customer'], r['amount'])\nprint(len(owed), 'of', len(rows), 'unpaid:', sum(float(r['amount']) for r in owed))","language":"python"}
+  ← it exited with 0
+    printed:
+    1042 Brightside Studio 840.50
+    1043 Acme Ltd 400.00
+    2 of 4 unpaid: 1240.5
+    [a picture]
+agent: Two of the four invoices are unpaid, 1,240.50 in all: 1042 (Brightside Studio, 840.50) and 1043 (Acme Ltd, 400.00).
+session 46eecf1a8e0a7c54: done
+```
+
+What a program prints is content from outside, as the screen is, and
+`run_code` is an external call like a click: held to the hosts
+`--browser-host` names, the desktop acts on its own after it has been
+seen, as here; otherwise each action after a screenshot waits for a
+person. `--computer-no-code` leaves `run_code` out, for a desktop used
+only with the pointer and the keyboard.
 
 ## Pictures
 

@@ -869,7 +869,7 @@ impl Sandbox {
 /// Reads a child's stream on a thread of its own, keeping at most `limit`
 /// bytes and draining the rest, so that a chatty command never blocks on a
 /// full pipe.
-fn capture<R: Read + Send + 'static>(
+pub(crate) fn capture<R: Read + Send + 'static>(
     stream: Option<R>,
     limit: usize,
 ) -> JoinHandle<(String, bool)> {
