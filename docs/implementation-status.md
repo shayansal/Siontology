@@ -47,7 +47,7 @@ live.
 | Privacy: encrypted payloads, viewing keys, sealed orders | Built |
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
-| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated; ERC-8004's registration file and calls, written for a wallet to send) |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated; ERC-8004's registration file and calls, written for a wallet to send; C2PA sidecar manifests, ES256) |
 | Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
@@ -1273,7 +1273,28 @@ called, so nothing here knows what a registry holds), an ERC-1271 smart
 wallet's signature, and Siontology's record or bonds published to the
 Reputation or Validation Registry by themselves.
 
-**Not built:** an adapter for C2PA.
+**C2PA: built (sidecar manifests, ES256).** `crate::c2pa` and `sion agent
+c2pa` sign a file as made by the profile's agent: a C2PA 2.x manifest
+store kept beside it (`<file>.c2pa`), a JUMBF box holding a
+`c2pa.claim.v2` that lists, by the SHA-256 of each box, `c2pa.actions.v2`
+(created, or edited, by trained algorithmic media, the IPTC digital source
+type, with Siontology as the software agent), `org.siontology.agent` (the
+agent's DID, name and models) and `c2pa.hash.data` (the SHA-256 of the
+whole file), signed as a COSE_Sign1 with ES256 and the signer's
+certificate chain in its protected header, the key and chain read from
+PEM files and kept nowhere. `verify` checks a manifest against its file:
+the signature, every listed assertion's hash and the data hash (its
+exclusions honoured), and with `--trust` the signer's chain to that root
+as RFC 5280's path validation has it. Checked against C2PA's own SDK
+(c2pa-rs 0.91.3 through c2pa-python 0.38.1): a manifest made here
+validates there (the claim's signature, the three hashed URIs and the data
+hash), with the same `signingCredential.untrusted` for a test CA's
+certificate as c2pa-rs's own manifest signed with it, and is refused there
+once the file changes; a manifest c2pa-rs made, a thumbnail among its
+assertions, verifies here and is refused here once the file changes. Not
+built: a manifest embedded in the file (a PNG's `caBX` chunk, a JPEG's
+APP11 segments), algorithms other than ES256, time-stamps, ingredients,
+trust lists, and the agent's tools signing what they make by themselves.
 
 **The app: partly built.** `sion-app-core` turns a device into a light
 node: it keeps the device's key (`key.seed`, mode 0600), verifies the

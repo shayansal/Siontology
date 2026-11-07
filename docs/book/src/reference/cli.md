@@ -821,6 +821,7 @@ Commands:
   commerce       The services around an ACP checkout: a PSP's delegate payment vault, a 3-D Secure provider, an agent's Feed API, a webhook receiver
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   erc8004        The agent in ERC-8004's registries on EVM chains: its registration file, naming its Siontology DID; the calls that register it, bind its wallet, give it feedback and answer a validation, written out for a wallet to send
+  c2pa           Content Credentials (C2PA) for what the agent makes: a manifest beside a file that binds its bytes and names the agent that made it, signed with your certificate; and checking one
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
   waiting        Everything that waits for a person: work items' questions, approvals and failures, messages that could not be sent, sessions waiting for approval, and chats waiting to be let in
@@ -3682,6 +3683,62 @@ Options:
 ```
 
 See [On Ethereum's agent registries: ERC-8004](../agent/erc8004.md).
+
+## `sion agent c2pa`
+
+```text
+Content Credentials (C2PA) for what the agent makes: a manifest beside a file that binds its bytes and names the agent that made it, signed with your certificate; and checking one
+
+Usage: sion agent c2pa [OPTIONS] <COMMAND>
+
+Commands:
+  sign    Sign a file as made by the profile's agent: a C2PA manifest (Content Credentials) kept beside it as <file>.c2pa, binding its bytes, saying that trained algorithmic media made it (or edited it, with --edited), by Siontology, and naming the agent by its DID
+  verify  Check a file's Content Credentials against the file: the claim's signature, every assertion's hash, and the data hash; with --trust, that the signer's chain leads to a root you trust
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent c2pa sign`
+
+```text
+Sign a file as made by the profile's agent: a C2PA manifest (Content Credentials) kept beside it as <file>.c2pa, binding its bytes, saying that trained algorithmic media made it (or edited it, with --edited), by Siontology, and naming the agent by its DID
+
+Usage: sion agent c2pa sign [OPTIONS] --profile <PROFILE> --cert <PEM> --key <PEM> <FILE>
+
+Arguments:
+  <FILE>  The file
+
+Options:
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>  The profile whose agent made it
+      --cert <PEM>         The signer's certificate chain, PEM, the signer's first
+      --key <PEM>          The signer's P-256 key, PKCS#8 PEM
+      --edited             It was edited, not made from nothing
+      --out <FILE>         Where to write the manifest (default: <file>.c2pa)
+  -h, --help               Print help
+```
+
+## `sion agent c2pa verify`
+
+```text
+Check a file's Content Credentials against the file: the claim's signature, every assertion's hash, and the data hash; with --trust, that the signer's chain leads to a root you trust
+
+Usage: sion agent c2pa verify [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  The file
+
+Options:
+      --manifest <FILE>  Its manifest (default: <file>.c2pa)
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --trust <PEM>      A root certificate you trust, PEM (repeat)
+  -h, --help             Print help
+```
+
+See [Content Credentials: C2PA](../agent/c2pa.md).
 
 ## `sion agent commerce`
 

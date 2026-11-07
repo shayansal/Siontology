@@ -671,6 +671,11 @@ pub enum AgentCommand {
     /// for a wallet to send.
     #[command(subcommand)]
     Erc8004(crate::erc8004::Erc8004Command),
+    /// Content Credentials (C2PA) for what the agent makes: a manifest
+    /// beside a file that binds its bytes and names the agent that made
+    /// it, signed with your certificate; and checking one.
+    #[command(subcommand)]
+    C2pa(crate::c2pa::C2paCommand),
     /// Run scheduled jobs as they fall due.
     Scheduler {
         /// Run the jobs due now, then stop.
@@ -1009,6 +1014,10 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Erc8004(command) => match crate::erc8004::local(command) {
             Ok(done) => done,
             Err(back) => return Err(Box::new(AgentCommand::Erc8004(*back))),
+        },
+        AgentCommand::C2pa(command) => match crate::c2pa::local(command) {
+            Ok(done) => done,
+            Err(back) => return Err(Box::new(AgentCommand::C2pa(*back))),
         },
         other => return Err(Box::new(other)),
     })
@@ -1419,6 +1428,7 @@ pub fn run(
         AgentCommand::Buy(args) => crate::acp_cli::buy(shared, args),
         AgentCommand::Commerce(command) => crate::acp_cli::commerce(command),
         AgentCommand::Erc8004(command) => crate::erc8004::run(ledger, command),
+        AgentCommand::C2pa(command) => crate::c2pa::run(ledger, command),
         AgentCommand::Scheduler { once, poll } => {
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)

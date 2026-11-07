@@ -32,6 +32,7 @@ pub mod batcher;
 pub mod bench;
 pub mod bridge;
 pub mod browser_profiles;
+pub mod c2pa;
 pub mod calendar;
 pub mod channels;
 pub mod chatgpt;

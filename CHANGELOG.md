@@ -10,6 +10,20 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Content Credentials for what the agent makes
+
+- **`sion agent c2pa sign <file> --profile <p> --cert <chain.pem> --key
+  <key.pem>`** writes a C2PA 2.x manifest beside the file (`<file>.c2pa`):
+  created (or `--edited`) by trained algorithmic media, by Siontology, the
+  agent named by its DID, the file's bytes bound by their SHA-256, signed
+  ES256 with your certificate chain.
+- **`sion agent c2pa verify <file> [--trust <root.pem>]`** checks one:
+  the signature, every assertion's hash, the data hash, and the chain to a
+  root you trust.
+
+Checked against C2PA's own SDK (c2pa-rs 0.91.3 through c2pa-python) in
+both directions.
+
 ### ERC-8004: the agent in Ethereum's registries
 
 - **`sion agent erc8004 card <profile>`** writes the agent's ERC-8004

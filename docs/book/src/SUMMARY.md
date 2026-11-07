@@ -40,6 +40,7 @@
 - [Renting your agent out](agent/renting.md)
 - [Selling and buying: ACP and AP2](agent/commerce.md)
 - [On Ethereum's agent registries: ERC-8004](agent/erc8004.md)
+- [Content Credentials: C2PA](agent/c2pa.md)
 - [Graphs of agents](agent/graphs.md)
 
 # Build on the ledger
