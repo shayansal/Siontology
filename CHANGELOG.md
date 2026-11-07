@@ -10,6 +10,22 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Attestations on a bond
+
+- **`sion agent improve attest … --adjudicator <atom> [--bond <USD>]`**
+  publishes the attestation as a claim on the attester's bond
+  `agent-attester`, which that adjudicator can rule against: anyone who
+  rebuilds the release and finds otherwise challenges the bond, and an
+  upheld challenge shows the attestation false and slashes the bond.
+- **`sion agent improve install … --bonded`** counts only attestations on
+  their attesters' bonds. Whatever it is told, it now counts no
+  attestation that expired or was shown false.
+
+Tested on a devnet in the sandbox: a bonded attestation refused until its
+bond was posted, an installer asking for bonds counting it and not a
+signed one, and the release refused once a challenge to the bond was
+upheld.
+
 ### Tasks the agent writes, and a challenger
 
 - **`sion agent improve practice <profile>`** has a model, the profile's

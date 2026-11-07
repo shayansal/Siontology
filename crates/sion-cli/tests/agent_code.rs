@@ -15,6 +15,7 @@ use sion_agent::compare::TaskSet;
 use sion_agent::guard::PatchRules;
 use sion_agent::sandbox::{Backend, Sandbox};
 use sion_agent::Autonomy;
+use sion_assurance::AtomClass;
 use sion_cli::code_improve::{self, CodeSettings};
 use sion_cli::improve_loop::{self, Record};
 use sion_cli::profiles::{self, Profile};
@@ -24,6 +25,8 @@ use sion_cli::self_improve::{self, ImproveCommand};
 use sion_cli::session::Session;
 use sion_core::ids::{AssetId, ObjectId};
 use sion_core::Amount;
+use sion_exec::execute::{bond_atom, Event};
+use sion_exec::TxKind;
 use sion_node::{Devnet, DevnetConfig};
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
@@ -336,6 +339,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &claim,
         &patch,
         &sealed_tasks,
+        None,
         &settings,
         5
     )
@@ -347,6 +351,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &claim,
         &patch,
         &sealed_tasks,
+        None,
         &settings,
         5,
     )
@@ -373,6 +378,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &[],
         &[bob],
         1,
+        false,
         &rules,
         false,
         6,
@@ -387,6 +393,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         std::slice::from_ref(&attestation),
         &[alice],
         1,
+        false,
         &rules,
         false,
         6,
@@ -403,6 +410,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         std::slice::from_ref(&attestation),
         &[bob],
         1,
+        false,
         &PatchRules::default(),
         false,
         6,
@@ -420,9 +428,10 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &claim,
         &source,
         &patch,
-        &[attestation],
+        std::slice::from_ref(&attestation),
         &[bob],
         1,
+        false,
         &rules,
         false,
         6,
@@ -444,11 +453,187 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &[],
         &[],
         1,
+        false,
         &rules,
         true,
         7,
     )
     .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(source.join("agent.py")).unwrap(),
+        AGENT
+    );
+
+    // On a bond: carol attests on hers, under judge as adjudicator, which
+    // the ledger refuses until she has posted it. An installer who asks for
+    // bonded attestations counts hers and not bob's, and once a challenge
+    // against her bond is upheld, hers no longer stands.
+    for wallet in ["carol", "judge", "red-team"] {
+        session
+            .fund(wallet, AssetId::usd(), Amount::units(100))
+            .unwrap();
+    }
+    session
+        .must(
+            "judge",
+            TxKind::PostBond {
+                class: AtomClass::Adjudicator,
+                label: "adjudicator".into(),
+                amount: Amount::units(10),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let judge = bond_atom(AtomClass::Adjudicator, &session.id("judge"), "adjudicator").id;
+    let unposted = code_improve::attest(
+        &mut session,
+        ledger.as_ref(),
+        "carol",
+        &claim,
+        &patch,
+        &sealed_tasks,
+        Some(judge),
+        &settings,
+        8,
+    )
+    .unwrap_err();
+    assert!(unposted.to_string().contains("did not issue"), "{unposted}");
+    session
+        .must(
+            "carol",
+            TxKind::PostBond {
+                class: AtomClass::Economic,
+                label: code_improve::ATTESTER_BOND.into(),
+                amount: Amount::units(20),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let (bonded, lines) = code_improve::attest(
+        &mut session,
+        ledger.as_ref(),
+        "carol",
+        &claim,
+        &patch,
+        &sealed_tasks,
+        Some(judge),
+        &settings,
+        9,
+    )
+    .unwrap();
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .contains("on your bond agent-attester"),
+        "{lines:?}"
+    );
+    let bonded = bonded.unwrap().as_hash().to_hex();
+    let carol = session.id("carol");
+    let unbonded = code_improve::install(
+        ledger.as_ref(),
+        "lead",
+        &claim,
+        &source,
+        &patch,
+        std::slice::from_ref(&attestation),
+        &[bob, carol],
+        1,
+        true,
+        &rules,
+        false,
+        10,
+    )
+    .unwrap_err();
+    assert!(unbonded.to_string().contains("not on a bond"), "{unbonded}");
+    let lines = code_improve::install(
+        ledger.as_ref(),
+        "lead",
+        &claim,
+        &source,
+        &patch,
+        std::slice::from_ref(&bonded),
+        &[carol],
+        1,
+        true,
+        &rules,
+        false,
+        10,
+    )
+    .unwrap();
+    assert!(
+        lines.iter().any(|l| l.contains("on its attester's bond")),
+        "{lines:?}"
+    );
+    code_improve::install(
+        ledger.as_ref(),
+        "lead",
+        &claim,
+        &source,
+        &patch,
+        &[],
+        &[],
+        1,
+        false,
+        &rules,
+        true,
+        11,
+    )
+    .unwrap();
+    // Someone who rebuilds it and finds otherwise challenges her bond; the
+    // adjudicator upholds it, and the attestation is shown false.
+    let opened = session
+        .must(
+            "red-team",
+            TxKind::Challenge {
+                claim: sion_core::ids::ClaimId::from_hash(
+                    sion_core::hash::Hash32::from_hex(&bonded).unwrap(),
+                ),
+                target: bond_atom(AtomClass::Economic, &carol, code_improve::ATTESTER_BOND).id,
+                evidence: sion_core::hash::hash_domain(
+                    "sion/cli/evidence",
+                    b"rebuilt, it loses sealed task 3",
+                ),
+                deposit: Amount::units(10),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let challenge = opened
+        .effects
+        .events
+        .iter()
+        .find_map(|e| match e {
+            Event::ChallengeOpened { challenge, .. } => Some(*challenge),
+            _ => None,
+        })
+        .unwrap();
+    session
+        .must(
+            "judge",
+            TxKind::Rule {
+                challenge,
+                upheld: true,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let fallen = code_improve::install(
+        ledger.as_ref(),
+        "lead",
+        &claim,
+        &source,
+        &patch,
+        &[bonded],
+        &[carol],
+        1,
+        true,
+        &rules,
+        false,
+        12,
+    )
+    .unwrap_err();
+    assert!(fallen.to_string().contains("no longer stands"), "{fallen}");
     assert_eq!(
         std::fs::read_to_string(source.join("agent.py")).unwrap(),
         AGENT

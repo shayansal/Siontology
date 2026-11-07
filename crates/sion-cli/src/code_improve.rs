@@ -39,10 +39,14 @@
 //! evidence. With a wallet it is published as a claim ([`RELEASE_SCHEMA`]),
 //! which the ledger's transaction signs. Anyone holding the source, the
 //! patch and the sealed tasks can rebuild and score it ([`attest`]) and
-//! publish what they found ([`ATTESTATION_SCHEMA`]). [`install`] applies a
-//! release to a checkout only when its claim, its patch and the
-//! attestations of verifiers its owner names agree; nothing installs
-//! itself.
+//! publish what they found ([`ATTESTATION_SCHEMA`]). With an adjudicator,
+//! the attestation is a claim on the attester's bond ([`ATTESTER_BOND`]):
+//! anyone who rebuilds the release and finds otherwise can challenge it,
+//! and an attestation the adjudicator rules against is shown false and
+//! the bond slashed. [`install`] applies a release to a checkout only when
+//! its claim, its patch and the attestations of verifiers its owner names
+//! agree, each still standing, and, when told to, each on its attester's
+//! bond; nothing installs itself.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -76,6 +80,18 @@ pub const RELEASE_SCHEMA: &str = "agent.release/v1";
 /// The schema of a claim that a release was rebuilt, scored and found as
 /// its publisher said.
 pub const ATTESTATION_SCHEMA: &str = "agent.release-attestation/v1";
+
+/// The bond an attester stands behind a bonded attestation with.
+pub const ATTESTER_BOND: &str = "agent-attester";
+
+/// The formula of an attestation on `attester`'s bond: its signature, and
+/// the bond an adjudicator can rule against.
+pub fn bonded_attestation(attester: &sion_core::ids::AccountId) -> sion_assurance::Formula {
+    sion_exec::claim::formulas::bonded_statement(
+        sion_exec::execute::bond_atom(sion_assurance::AtomClass::Economic, attester, ATTESTER_BOND)
+            .id,
+    )
+}
 
 /// The coder's instructions.
 pub const CODER_SYSTEM: &str = "You improve the code of an AI agent's harness: the program that \
@@ -1148,8 +1164,9 @@ pub fn release_of(
 /// both scored on the `sealed` tasks (their exact bytes) the release was
 /// confirmed on. Publishes, as `wallet`'s claim, what was found if the
 /// release holds up — better beyond chance at its level, no sealed task
-/// lost. Returns the attestation's claim, if one was published, and what
-/// was found.
+/// lost — on the attester's bond [`ATTESTER_BOND`] when `adjudicator` is
+/// given, who can rule against it. Returns the attestation's claim, if one
+/// was published, and what was found.
 #[allow(clippy::too_many_arguments)]
 pub fn attest(
     session: &mut Session<'_>,
@@ -1158,6 +1175,7 @@ pub fn attest(
     claim: &str,
     patch: &[u8],
     sealed: &[u8],
+    adjudicator: Option<sion_core::ids::AtomId>,
     settings: &CodeSettings,
     now: u64,
 ) -> Result<(Option<ClaimId>, Vec<String>), CliError> {
@@ -1255,14 +1273,25 @@ pub fn attest(
         payload: Payload::Public(
             serde_json::to_vec(&found).map_err(|e| CliError::Usage(e.to_string()))?,
         ),
-        formula: sion_assurance::Formula::and(vec![sion_exec::claim::formulas::dual_signature()]),
-        adjudicator: None,
-        detection_permille: 0,
+        formula: match adjudicator {
+            Some(_) => bonded_attestation(&session.id(wallet)),
+            None => {
+                sion_assurance::Formula::and(vec![sion_exec::claim::formulas::dual_signature()])
+            }
+        },
+        adjudicator,
+        detection_permille: if adjudicator.is_some() { 1_000 } else { 0 },
         valid_for: crate::sealed::VALID_FOR,
-        challenge_period: 0,
+        challenge_period: if adjudicator.is_some() { 100 } else { 0 },
     };
     let id = crate::vouching::publish(session, wallet, body, Some(attested_key(claim)))?;
-    lines.push(format!("attested, as claim {}", id.as_hash().to_hex()));
+    lines.push(match adjudicator {
+        Some(_) => format!(
+            "attested, as claim {}, on your bond {ATTESTER_BOND}",
+            id.as_hash().to_hex()
+        ),
+        None => format!("attested, as claim {}", id.as_hash().to_hex()),
+    });
     Ok((Some(id), lines))
 }
 
@@ -1271,8 +1300,9 @@ pub fn attest(
 /// `rules` as read from the patch itself, the checkout stands at its
 /// commit, and at least `need` of the `attestations` hold —
 /// each by one of `verifiers`, none by the release's publisher, each about
-/// this release and its patch and finding it better. Returns a line for
-/// what was done.
+/// this release and its patch and finding it better, each still standing
+/// (not expired, nor shown false), and, when `bonded`, each on its
+/// attester's bond with an adjudicator. Returns a line for what was done.
 #[allow(clippy::too_many_arguments)]
 pub fn install(
     ledger: &dyn crate::ledger::Ledger,
@@ -1283,6 +1313,7 @@ pub fn install(
     attestations: &[String],
     verifiers: &[sion_core::ids::AccountId],
     need: usize,
+    bonded: bool,
     rules: &PatchRules,
     undo: bool,
     now: u64,
@@ -1360,10 +1391,36 @@ pub fn install(
             ));
             continue;
         }
+        let on_bond = stored.body.adjudicator.is_some()
+            && stored.body.formula == bonded_attestation(&stored.issuer);
+        if bonded && !on_bond {
+            lines.push(format!(
+                "attestation {short} rests on its attester's signature, not on a bond: not counted"
+            ));
+            continue;
+        }
+        // An attestation that expired, or that its adjudicator ruled
+        // against, attests nothing.
+        let standing = crate::ledger::LedgerExt::claim(ledger, stored.id)?;
+        if standing["status"].as_str() != Some("Active") {
+            lines.push(format!(
+                "attestation {short} no longer stands ({}): not counted",
+                standing["status"].as_str().unwrap_or("unknown")
+            ));
+            continue;
+        }
         if by.insert(stored.issuer) {
             lines.push(format!(
-                "attestation {short}: rebuilt and scored {}/{} against {}/{}",
-                found.after.passed, found.after.total, found.before.passed, found.before.total
+                "attestation {short}: rebuilt and scored {}/{} against {}/{}{}",
+                found.after.passed,
+                found.after.total,
+                found.before.passed,
+                found.before.total,
+                if on_bond {
+                    format!(", on its attester's bond {ATTESTER_BOND}")
+                } else {
+                    String::new()
+                }
             ));
         }
     }

@@ -3206,6 +3206,8 @@ Options:
       --build-secs <BUILD_SECS>        Seconds the build and the tests may each take [default: 1800]
       --runs <RUNS>                    How many times each task is run [default: 2]
       --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+      --adjudicator <ADJUDICATOR>      The adjudicator who can rule against the attestation (its atom's id, 64 hex digits): the attestation is then a claim on your bond `agent-attester`, which anyone who rebuilds the release and finds otherwise can challenge
+      --bond <USD>                     Post your bond `agent-attester` with this many USD first
   -h, --help                           Print help
 ```
 
@@ -3227,6 +3229,7 @@ Options:
       --attestation <CLAIM>  An attestation's claim (repeat)
       --verifier <ACCOUNT>   An account, or a wallet's name, whose attestation counts (repeat)
       --need <NEED>          Attestations needed, by different verifiers [default: 1]
+      --bonded               Count only attestations on their attester's bond, which an adjudicator can rule against
       --allow <PATH>         A path the patch may touch (repeat; default: the agent's runtime, crates/sion-agent/src/, apart from what scores or guards it). The patch is held to these whatever its publisher and attesters allowed
       --undo                 Take the release back out instead
   -h, --help                 Print help

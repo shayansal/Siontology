@@ -1007,6 +1007,15 @@ pub enum ImproveCommand {
         /// The tokens each run of a task may use.
         #[arg(long = "budget-tokens", default_value_t = 20_000)]
         budget_tokens: u64,
+        /// The adjudicator who can rule against the attestation (its
+        /// atom's id, 64 hex digits): the attestation is then a claim on
+        /// your bond `agent-attester`, which anyone who rebuilds the
+        /// release and finds otherwise can challenge.
+        #[arg(long)]
+        adjudicator: Option<String>,
+        /// Post your bond `agent-attester` with this many USD first.
+        #[arg(long, value_name = "USD", requires = "adjudicator")]
+        bond: Option<String>,
     },
     /// Apply a release to a checkout of the source, only if its patch is
     /// the one published and verifiers you name attest it (or, with
@@ -1033,6 +1042,10 @@ pub enum ImproveCommand {
         /// Attestations needed, by different verifiers.
         #[arg(long, default_value_t = 1)]
         need: usize,
+        /// Count only attestations on their attester's bond, which an
+        /// adjudicator can rule against.
+        #[arg(long)]
+        bonded: bool,
         /// A path the patch may touch (repeat; default: the agent's
         /// runtime, crates/sion-agent/src/, apart from what scores or
         /// guards it). The patch is held to these whatever its publisher
@@ -1302,10 +1315,31 @@ pub fn run_with(
             build_secs,
             runs,
             budget_tokens,
+            adjudicator,
+            bond,
         } => {
             let read = |path: &std::path::Path| {
                 std::fs::read(path).map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))
             };
+            let adjudicator = adjudicator
+                .map(|a| {
+                    sion_core::hash::Hash32::from_hex(a.trim())
+                        .map(sion_core::ids::AtomId)
+                        .map_err(|e| CliError::Usage(format!("the adjudicator: {e}")))
+                })
+                .transpose()?;
+            if let Some(amount) = bond {
+                let view = session.must(
+                    &wallet,
+                    sion_exec::TxKind::PostBond {
+                        class: sion_assurance::AtomClass::Economic,
+                        label: crate::code_improve::ATTESTER_BOND.into(),
+                        amount: crate::agents::parse_amount(&amount)?,
+                    },
+                    Vec::new(),
+                )?;
+                crate::agents::print_receipt(session, &view);
+            }
             let settings = code_settings(
                 None,
                 "attest",
@@ -1330,6 +1364,7 @@ pub fn run_with(
                 &release,
                 &read(&patch)?,
                 &read(&tasks)?,
+                adjudicator,
                 &settings,
                 now(),
             )?;
@@ -1346,6 +1381,7 @@ pub fn run_with(
             attestations,
             verifiers,
             need,
+            bonded,
             allow,
             undo,
         } => {
@@ -1366,6 +1402,7 @@ pub fn run_with(
                 &attestations,
                 &verifiers,
                 need,
+                bonded,
                 &rules,
                 undo,
                 now(),

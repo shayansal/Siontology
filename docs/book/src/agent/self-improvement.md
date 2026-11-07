@@ -424,6 +424,16 @@ the sealed tasks the publisher hands over. If the release holds up, the
 attester publishes what it found (`agent.release-attestation/v1`). A
 publisher cannot attest its own release.
 
+**On a bond.** With `--adjudicator <atom>`, the attestation is a claim on
+the attester's bond `agent-attester` (`--bond <USD>` posts it first),
+which that adjudicator can rule against. The ledger issues no bonded
+attestation without the bond. Anyone who rebuilds the release and finds
+otherwise challenges the bond (`sion challenge <wallet> <claim> <bond
+atom> --deposit <USD> --evidence <text>`). If the adjudicator upholds the
+challenge (`sion rule`), the attestation is shown false and the bond is
+slashed. So an attester who attests carelessly loses money, and anyone
+can prove it.
+
 **Installing.** `sion agent improve install <profile> <release> --source
 <checkout> --patch <file> --attestation <claim> --verifier <account>`
 applies a release to a checkout only when four things hold: the patch is
@@ -431,8 +441,9 @@ the one published; it keeps to your own rules (`--allow`, by default the
 agent's runtime), read from the patch itself rather than from what its
 publisher says it changes; the checkout stands at its commit; and
 attestations by verifiers you name hold. An attestation by the publisher,
-or about another release, is not counted. `--undo` takes the release back
-out. Building and installing the result stays yours, outside any
+about another release, expired, or shown false is not counted. With
+`--bonded`, only attestations on their attesters' bonds count. `--undo`
+takes the release back out. Building and installing the result stays yours, outside any
 sandbox; nothing installs itself.
 
 ## Training an open model on its work
@@ -511,8 +522,9 @@ leave open is named in the trust model (`agent:self-improvement`,
   default to it, but the build in the sandbox, with its toolchain mounted
   read-only, is untried, and rounds share no build cache.
 - It has not been run with a real model; the tests use scripted ones.
-- An attestation is not on a bond that can be ruled against; it rests on
-  its attester's signature.
+- A bonded attestation is ruled on by its adjudicator, not proven: the
+  evidence of a challenge is what its challenger says it found, and
+  nothing here reruns it for the adjudicator.
 - The sealed tasks are not kept secret from whoever holds this machine's
   files.
 - A reusable holdout's noise and threshold follow the paper's
