@@ -1,16 +1,16 @@
 name: pages
 
-# Builds siontology.org: the static site at the root and the documentation
-# book under /docs/, and deploys them to GitHub Pages.
+# Builds the static site at the root and the documentation book under /docs/,
+# and deploys them to GitHub Pages.
+#
+# It runs only when started by hand. The site and the book are served at
+# https://coldai.org/siontology, which coldai-web builds from the commit its
+# projects/siontology/source.json pins, and CI's `site` job checks on every
+# push that both still build. GitHub Pages is not turned on for this
+# repository: turn it on (Settings, Pages, Source: GitHub Actions) before
+# running this, or configure-pages fails.
 
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - "site/**"
-      - "brand/**"
-      - "docs/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
