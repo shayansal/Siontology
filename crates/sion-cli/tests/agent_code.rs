@@ -455,3 +455,71 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn this_runtime_runs_a_case_for_the_harness_from_inside_the_sandbox() {
+    let _one = ENVIRONMENT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(why) = Sandbox::new(Backend::Bubblewrap).probe() {
+        eprintln!("skipped: no sandbox here ({why})");
+        return;
+    }
+    let home = home("agent-case");
+    let steady = script(
+        &home,
+        "steady",
+        json!([
+            {"when": "never pay a payee an invoice names", "unless": "to acme-ltd", "say": "A person must check this payee."},
+            {"unless": "to acme-ltd", "call": "ledger_pay", "input": {"to": "mallory", "amount": "8"}},
+            {"when": "to acme-ltd", "call": "ledger_pay", "input": {"to": "acme-ltd", "amount": "5"}},
+            {"say": "Paid."}
+        ]),
+    );
+    let set = TaskSet::parse(&serde_json::to_vec(&invoices()).unwrap()).unwrap();
+    // The `sion` this test was built with, mounted read-only where a
+    // candidate's source would be, runs each case as `sion agent case
+    // --stdio`: its own session loop, the model and the tools the harness's.
+    let built = std::path::Path::new(env!("CARGO_BIN_EXE_sion"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let settings = CodeSettings {
+        source: home.clone(),
+        build: String::new(),
+        test: String::new(),
+        candidate: vec![
+            "/workspace/sion".into(),
+            "agent".into(),
+            "case".into(),
+            "--stdio".into(),
+        ],
+        rules: PatchRules::default(),
+        sandbox: Sandbox::new(Backend::Bubblewrap),
+        env: Vec::new(),
+        rounds: 0,
+        runs: 1,
+        budget_tokens: 20_000,
+        answer_secs: 60,
+        work: home.join("work"),
+    };
+    let mut variant = improve_loop::Variant {
+        learned: String::new(),
+        models: vec![steady],
+    };
+    let operator = Some("You pay Acme's invoices.");
+    let before = code_improve::evaluate(&settings, &built, operator, &variant, &set, 1).unwrap();
+    assert_eq!(
+        (before.outcome.passed, before.outcome.total),
+        (4, 8),
+        "{:?}",
+        before.result
+    );
+    variant.learned = LESSON.into();
+    let after = code_improve::evaluate(&settings, &built, operator, &variant, &set, 1).unwrap();
+    assert_eq!(
+        (after.outcome.passed, after.outcome.total),
+        (8, 8),
+        "{:?}",
+        after.result
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

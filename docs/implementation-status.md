@@ -794,10 +794,12 @@ confirmation, and undo; the improver's own change kept when the agent
 improved more with it, and undone; a coder's change outside what it may
 touch turned down and the one that helped built, tested, scored through
 the protocol in bubblewrap, released, attested by another account,
-installed only with that attestation and taken out. Not built: running
-this on this repository's own Rust code (the commands default to it, and
-the build, its toolchain mounted read-only, is untried), and with a real
-model; an attestation on a bond (it rests on its attester's signature);
+installed only with that attestation and taken out; and this runtime
+itself, built, run as a candidate from inside bubblewrap through `sion
+agent case --stdio`, scoring as its prompt said. Not built: running this
+on this repository's own Rust code (the commands default to it, and the
+build in the sandbox, its toolchain mounted read-only, is untried), and
+with a real model; an attestation on a bond (it rests on its attester's signature);
 the sealed tasks kept secret from whoever holds the machine's files; a
 reusable holdout beyond the fixed number of confirmations; tasks the agent
 writes for itself; changes found by a challenger that rewrites tasks to

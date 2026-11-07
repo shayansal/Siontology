@@ -254,8 +254,8 @@ budget. It calls a tool and the harness answers from the case's
 stand-ins, keeping the call. It says it is done, or that it would ask a
 person. The checks are the harness's, over what the harness answered. A
 candidate cannot claim a pass; it can only behave well. This runtime's
-side of the line is `sion agent case --stdio`, so the defaults build
-`sion` and run that:
+side of the line is `sion agent case --stdio`, run in the tests from
+inside bubblewrap, so the defaults build `sion` and run that:
 
 ```text
 --build "cargo build --offline -p sion-cli"
