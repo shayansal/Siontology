@@ -143,7 +143,7 @@ fn say(
             1 << 20,
         ) {
             Ok(answer) => return (answer.status, serde_json::from_slice(&answer.body).unwrap()),
-            Err(sion_http::HttpError::Status { status, body }) => {
+            Err(sion_http::HttpError::Status { status, body, .. }) => {
                 return (
                     status,
                     serde_json::from_str(&body).unwrap_or(json!({"body": body})),
@@ -374,7 +374,7 @@ fn profiles_are_reached_by_their_own_tokens_across_machines_and_messengers() {
         &[],
         json!({"model": "chat", "messages": [{"role": "user", "content": "Hi"}]}),
     ) {
-        Err(sion_http::HttpError::Status { status, body }) => {
+        Err(sion_http::HttpError::Status { status, body, .. }) => {
             assert_eq!(status, 401);
             assert!(body.contains("authentication_error"), "{body}");
         }

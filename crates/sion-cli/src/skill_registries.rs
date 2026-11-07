@@ -102,7 +102,7 @@ fn get_json(client: &sion_http::Client, url: &str) -> Result<Value, CliError> {
 }
 
 fn registry_error(url: &str, e: sion_http::HttpError) -> CliError {
-    if let sion_http::HttpError::Status { status, body } = &e {
+    if let sion_http::HttpError::Status { status, body, .. } = &e {
         // ClawHub names the skills a slug could mean.
         if let Ok(answer) = serde_json::from_str::<Value>(body) {
             if answer["code"] == "AMBIGUOUS_SKILL_SLUG" {

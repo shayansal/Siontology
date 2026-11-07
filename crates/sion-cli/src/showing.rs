@@ -350,6 +350,11 @@ impl Worker {
     fn apply(&mut self, seen: Seen) {
         match seen {
             Seen::Began(_) | Seen::Asking | Seen::Checking => {}
+            Seen::Pausing(seconds) if self.progress => {
+                self.status = Some(format!("the models are busy: asking again in {seconds} s"));
+                self.behind = true;
+            }
+            Seen::Pausing(_) => {}
             Seen::Text(text) => {
                 self.spoken.add(&text);
                 self.status = None;

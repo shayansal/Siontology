@@ -163,7 +163,13 @@ pub fn done_line(case: &Case, run: &CaseRun) -> Value {
 /// Runs `case` as an episode with `policy` as its model and only its
 /// stand-ins as tools, `system` its system prompt: the run.
 pub fn run(case: &Case, system: &str, policy: &dyn Model, limits: &Limits) -> CaseRun {
-    crate::evals::run_case_with(case, Toolbox::new(), &[policy], system, limits)
+    // A policy that failed, or closed its side, is not waited for: what it
+    // answers is its own to decide.
+    let limits = Limits {
+        patience: 0,
+        ..limits.clone()
+    };
+    crate::evals::run_case_with(case, Toolbox::new(), &[policy], system, &limits)
 }
 
 #[cfg(test)]

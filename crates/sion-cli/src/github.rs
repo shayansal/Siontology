@@ -450,7 +450,7 @@ impl Repo {
             .post_json(&path, &headers, body.as_bytes(), MAX_BYTES)
         {
             Ok(_) => Ok(()),
-            Err(sion_http::HttpError::Status { status, body })
+            Err(sion_http::HttpError::Status { status, body, .. })
                 if status == 404 || status == 410 =>
             {
                 Err(Unsent::Gone(self.hide(format!(

@@ -157,11 +157,16 @@ pub(crate) fn post_stream(
         .send("POST", url, &all, Some(body))
         .map_err(http_error)?;
     if !(200..300).contains(&response.status) {
+        let retry_after = sion_http::retry_after(
+            response.header("retry-after"),
+            response.header("retry-after-ms"),
+        );
         let mut start = Vec::new();
         let _ = response.body().take(2_048).read_to_end(&mut start);
         return Err(http_error(sion_http::HttpError::Status {
             status: response.status,
             body: String::from_utf8_lossy(&start).into_owned(),
+            retry_after,
         }));
     }
     Ok(response)
@@ -220,10 +225,18 @@ fn stream_error(error: &Value) -> ModelError {
 pub(crate) fn http_error(error: sion_http::HttpError) -> ModelError {
     use sion_http::HttpError::*;
     match error {
-        Status { status, body } => match status {
-            408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 | 529 => {
-                ModelError::Busy(format!("HTTP {status}: {body}"))
-            }
+        Status {
+            status,
+            body,
+            retry_after,
+        } => match status {
+            408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 | 529 => match retry_after {
+                Some(retry_after) => ModelError::Limited {
+                    message: format!("HTTP {status}: {body}"),
+                    retry_after,
+                },
+                None => ModelError::Busy(format!("HTTP {status}: {body}")),
+            },
             _ => ModelError::Refused(format!("HTTP {status}: {body}")),
         },
         Transport(e) => ModelError::Transport(e),
@@ -334,6 +347,11 @@ impl Keys {
 fn rest_for(error: &ModelError) -> Option<Duration> {
     match error {
         ModelError::Busy(why) if why.starts_with("HTTP 429") => Some(LIMITED_REST),
+        // As long as the provider asked.
+        ModelError::Limited {
+            message,
+            retry_after,
+        } if message.starts_with("HTTP 429") => Some(Duration::from_secs((*retry_after).max(1))),
         ModelError::Refused(why)
             if ["HTTP 401", "HTTP 402", "HTTP 403"]
                 .iter()

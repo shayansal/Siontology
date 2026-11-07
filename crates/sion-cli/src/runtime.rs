@@ -1728,6 +1728,7 @@ impl Saved {
                 .then_some(&operator as &dyn sion_agent::hooks::ToolHooks),
             extras: sion_agent::session::Extras {
                 prices: Some(&prices),
+                ..Default::default()
             },
         };
         let from = self.state.messages.len();

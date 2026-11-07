@@ -223,7 +223,9 @@ estimate of what it sends and the most it may answer, ending with a last
 answer within a reserve; a budget in dollars per run, if given, held the
 same way at the models' prices (Anthropic's list prices for Claude built
 in, others from the operator's file), and the cost of every run counted
-from the tokens providers report, calls to models without a price apart;
+from the tokens providers report, calls to models without a price apart; pauses, of what a provider asked
+or growing up to a minute, when every model is busy or unreachable, for
+five minutes in all before the run ends;
 a stop for a model that goes round in circles (told at the third same
 result in a row, stopped at the fifth); compaction that cuts the results
 of calls long past first and begins each summary with what the session

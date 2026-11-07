@@ -70,6 +70,15 @@ pub struct Limits {
     /// verifier ends unverified ([`Runtime::verify`], [`Ended::Unverified`]).
     #[serde(default = "default_verify_attempts")]
     pub verify_attempts: u32,
+    /// Seconds a run may wait, in all, between rounds of asking models that
+    /// were busy, limited or unreachable, before it ends
+    /// ([`Ended::ModelsFailed`]); 0 asks each model once.
+    #[serde(default = "default_patience")]
+    pub patience: u64,
+}
+
+fn default_patience() -> u64 {
+    300
 }
 
 fn default_stuck_after() -> u32 {
@@ -101,6 +110,7 @@ impl Default for Limits {
             budget_micros: None,
             reserve_tokens: default_reserve_tokens(),
             verify_attempts: default_verify_attempts(),
+            patience: default_patience(),
         }
     }
 }
@@ -517,6 +527,9 @@ pub enum Seen {
     Waiting(String),
     /// The model's answer is being checked ([`Runtime::verify`]).
     Checking,
+    /// Every model was busy or unreachable: the run waits this many
+    /// seconds before asking again.
+    Pausing(u64),
 }
 
 /// What the runtime tells a model whose answer was cut off at its token
@@ -577,6 +590,10 @@ pub struct Extras<'a> {
     /// The models' prices: with them, a run counts what it costs in dollars
     /// ([`State::cost`]) and keeps to [`Limits::budget_micros`].
     pub prices: Option<&'a Prices>,
+    /// What waits a number of seconds before models are asked again
+    /// ([`Limits::patience`]): `std::thread::sleep`, a second at a time,
+    /// if not given.
+    pub sleep: Option<&'a (dyn Fn(u64) + Sync)>,
 }
 
 /// What checks a model's answer ([`Runtime::verify`]): given the session and
@@ -709,6 +726,19 @@ impl RunStart {
                 .saturating_sub(self.delegated.total())
     }
 }
+
+/// The pause before the models are asked again, in seconds: the one the
+/// provider asked for, if it did (at most [`MAX_PAUSE`]), or else 2, 4, 8…
+/// up to a minute, by `round` (from 0).
+fn pause_for(round: u32, asked: Option<u64>) -> u64 {
+    match asked {
+        Some(seconds) => seconds.clamp(1, MAX_PAUSE),
+        None => (2u64 << round.min(5)).min(60),
+    }
+}
+
+/// The longest pause before asking a model again, whatever a provider asks.
+pub const MAX_PAUSE: u64 = 600;
 
 /// A call a session made lately, to tell when it goes round in circles.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1750,9 +1780,12 @@ impl Runtime<'_> {
             match model.complete(request) {
                 Ok(response) => return Ok(response),
                 Err(error) if error.transient() => {
-                    state
-                        .cooling
-                        .insert(index, now.saturating_add(self.limits.cooldown));
+                    // Cooling as long as the provider asked, if longer.
+                    let cool = self
+                        .limits
+                        .cooldown
+                        .max(error.retry_after().unwrap_or_default());
+                    state.cooling.insert(index, now.saturating_add(cool));
                     last = error;
                 }
                 Err(error) => return Err(error),
@@ -1992,8 +2025,53 @@ impl Runtime<'_> {
         prices.of(model.id())
     }
 
-    /// [`Runtime::ask`], the answer at most `max_tokens` long.
+    /// [`Runtime::ask`], the answer at most `max_tokens` long. When every
+    /// model fails in a way that may pass (busy, limited, unreachable), the
+    /// models are asked again after a pause, the one the provider asked
+    /// for if it did, or 2, 4, 8… seconds up to a minute, until the run's
+    /// patience is spent ([`Limits::patience`]): then the run ends
+    /// ([`Ended::ModelsFailed`]).
     fn ask_with(&self, state: &mut State, max_tokens: u32) -> Result<Response, ModelError> {
+        let mut waited = 0u64;
+        let mut round = 0u32;
+        loop {
+            match self.ask_round(state, max_tokens, round > 0) {
+                Err(error) if error.transient() => {
+                    let pause = pause_for(round, error.retry_after());
+                    if waited.saturating_add(pause) > self.limits.patience || (self.stopped)() {
+                        return Err(error);
+                    }
+                    self.seen(&Seen::Pausing(pause));
+                    match self.extras.sleep {
+                        Some(sleep) => sleep(pause),
+                        None => {
+                            // A second at a time, so that the kill switch
+                            // stops a long pause.
+                            for _ in 0..pause {
+                                if (self.stopped)() {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                            }
+                        }
+                    }
+                    waited = waited.saturating_add(pause);
+                    round += 1;
+                }
+                answered => return answered,
+            }
+        }
+    }
+
+    /// One round of [`Runtime::ask_with`]: each model in turn until one
+    /// answers, those cooling down after a failure skipped unless the run
+    /// has just paused for them (`after_pause`).
+    fn ask_round(
+        &self,
+        state: &mut State,
+        max_tokens: u32,
+        after_pause: bool,
+    ) -> Result<Response, ModelError> {
         let request = Request {
             system: self.system.clone(),
             messages: state.messages.clone(),
@@ -2005,7 +2083,7 @@ impl Runtime<'_> {
         let mut last = ModelError::Refused("no model is configured".into());
         let mut asked = false;
         for (index, model) in self.models.iter().enumerate() {
-            if state.cooling.get(&index).is_some_and(|until| now < *until) {
+            if !after_pause && state.cooling.get(&index).is_some_and(|until| now < *until) {
                 continue;
             }
             asked = true;
@@ -2038,9 +2116,12 @@ impl Runtime<'_> {
                     return Ok(response);
                 }
                 Err(error) if error.transient() => {
-                    state
-                        .cooling
-                        .insert(index, now.saturating_add(self.limits.cooldown));
+                    // Cooling as long as the provider asked, if longer.
+                    let cool = self
+                        .limits
+                        .cooldown
+                        .max(error.retry_after().unwrap_or_default());
+                    state.cooling.insert(index, now.saturating_add(cool));
                     last = error;
                 }
                 Err(error) => return Err(error),

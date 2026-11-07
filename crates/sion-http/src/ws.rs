@@ -286,6 +286,7 @@ impl WebSocket<Stream> {
             return Err(HttpError::Status {
                 status,
                 body: "the server did not open a WebSocket".into(),
+                retry_after: None,
             });
         }
         let headers = headers_of(&head);

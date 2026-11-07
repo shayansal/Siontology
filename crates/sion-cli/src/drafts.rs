@@ -92,7 +92,9 @@ impl Api {
                     ),
                 )
             }),
-            Err(sion_http::HttpError::Status { status: 429, body }) => Err((
+            Err(sion_http::HttpError::Status {
+                status: 429, body, ..
+            }) => Err((
                 Some(retry_after(&body)),
                 hide(format!("{}: HTTP 429: {body}", self.service)),
             )),

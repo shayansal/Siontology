@@ -278,6 +278,28 @@ fn busy_answers_are_transient_and_bad_requests_are_not() {
 }
 
 #[test]
+fn a_provider_that_asks_to_be_left_is_left_that_long() {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", server.server_addr());
+    thread::spawn(move || {
+        let request = server.recv().unwrap();
+        let response = tiny_http::Response::from_string(
+            json!({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})
+                .to_string(),
+        )
+        .with_status_code(429)
+        .with_header("Retry-After: 17".parse::<tiny_http::Header>().unwrap());
+        request.respond(response).unwrap();
+    });
+    let mut provider = Anthropic::new(client(), "claude-opus-5-5", "k");
+    provider.base = base;
+    let error = provider.complete(&conversation()).unwrap_err();
+    assert!(error.transient());
+    assert_eq!(error.retry_after(), Some(17), "{error}");
+    assert!(matches!(error, ModelError::Limited { .. }));
+}
+
+#[test]
 fn openai_compatible_maps_tool_calls_both_ways() {
     let (base, seen) = serve_once(
         200,

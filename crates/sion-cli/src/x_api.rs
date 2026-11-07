@@ -195,7 +195,7 @@ impl XApi {
                 Err(sion_http::HttpError::Status { status: 401, .. }) if !renewed => {
                     self.renew().map_err(XError::Other)?
                 }
-                Err(sion_http::HttpError::Status { status, body }) => {
+                Err(sion_http::HttpError::Status { status, body, .. }) => {
                     return Err(XError::Status(status, body.replace(&access, "<token>")))
                 }
                 Err(e) => return Err(XError::Other(e.to_string().replace(&access, "<token>"))),

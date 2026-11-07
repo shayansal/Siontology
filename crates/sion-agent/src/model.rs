@@ -555,6 +555,15 @@ pub enum ModelError {
     /// Too many requests or overloaded: try later, or another model.
     #[error("busy: {0}")]
     Busy(String),
+    /// Too many requests or overloaded, and the provider said how long to
+    /// wait before asking again (`Retry-After`), in seconds.
+    #[error("busy: {message} (asked to wait {retry_after} s)")]
+    Limited {
+        /// What the provider said.
+        message: String,
+        /// Seconds to wait.
+        retry_after: u64,
+    },
     /// The connection failed or timed out: the request may or may not have
     /// been processed (a model call has no side effects, so it can be
     /// repeated).
@@ -572,7 +581,18 @@ pub enum ModelError {
 impl ModelError {
     /// Whether another attempt, or another model, may succeed.
     pub fn transient(&self) -> bool {
-        matches!(self, ModelError::Busy(_) | ModelError::Transport(_))
+        matches!(
+            self,
+            ModelError::Busy(_) | ModelError::Limited { .. } | ModelError::Transport(_)
+        )
+    }
+
+    /// How long the provider asked to be left, in seconds, if it said.
+    pub fn retry_after(&self) -> Option<u64> {
+        match self {
+            ModelError::Limited { retry_after, .. } => Some(*retry_after),
+            _ => None,
+        }
     }
 }
 

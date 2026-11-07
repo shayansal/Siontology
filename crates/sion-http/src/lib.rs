@@ -54,6 +54,10 @@ pub enum HttpError {
         status: u16,
         /// The start of the body.
         body: String,
+        /// How long the server asked to be left before it is asked again,
+        /// in seconds (`Retry-After`, or `retry-after-ms` rounded up), if
+        /// it said.
+        retry_after: Option<u64>,
     },
     /// The body is longer than the limit.
     #[error("the response is longer than {0} bytes")]
@@ -366,11 +370,16 @@ impl Client {
         let response = match result {
             Ok(response) => response,
             Err(ureq::Error::Status(status, response)) => {
+                let retry_after = retry_after(
+                    response.header("retry-after"),
+                    response.header("retry-after-ms"),
+                );
                 let mut start = Vec::new();
                 let _ = response.into_reader().take(2_048).read_to_end(&mut start);
                 return Err(HttpError::Status {
                     status,
                     body: String::from_utf8_lossy(&start).into_owned(),
+                    retry_after,
                 });
             }
             Err(ureq::Error::Transport(transport)) => {
@@ -385,6 +394,7 @@ impl Client {
                     "not followed (to {})",
                     response.header("location").unwrap_or("nowhere")
                 ),
+                retry_after: None,
             });
         }
         if let Some(length) = response
@@ -414,6 +424,69 @@ impl Client {
 }
 
 /// A response whose body is read as it arrives ([`Client::send`]).
+/// Whether `error` may pass if the request is made again: the connection
+/// failed, or the server was busy or failing (408, 425, 429, 500, 502, 503,
+/// 504, 529).
+pub fn transient(error: &HttpError) -> bool {
+    match error {
+        HttpError::Transport(_) => true,
+        HttpError::Status { status, .. } => {
+            matches!(status, 408 | 425 | 429 | 500 | 502 | 503 | 504 | 529)
+        }
+        _ => false,
+    }
+}
+
+/// `request` made, and made again at most `retries` times while it fails
+/// in a way that may pass ([`transient`]): after the pause the server asks
+/// for (`Retry-After`) or else 1, 2, 4… seconds, each pause at most
+/// `max_pause` seconds; `pause` waits (`std::thread::sleep` in use, a
+/// counter in tests). Only for requests that can be repeated safely.
+pub fn retrying<T>(
+    retries: u32,
+    max_pause: u64,
+    pause: &dyn Fn(u64),
+    request: &dyn Fn() -> Result<T, HttpError>,
+) -> Result<T, HttpError> {
+    let mut tried = 0;
+    loop {
+        match request() {
+            Err(error) if tried < retries && transient(&error) => {
+                let asked = match &error {
+                    HttpError::Status { retry_after, .. } => *retry_after,
+                    _ => None,
+                };
+                let wait = asked
+                    .unwrap_or(1 << tried.min(16))
+                    .clamp(1, max_pause.max(1));
+                pause(wait);
+                tried += 1;
+            }
+            answered => return answered,
+        }
+    }
+}
+
+/// Waits `seconds`: [`retrying`]'s pause in use.
+pub fn sleep_seconds(seconds: u64) {
+    std::thread::sleep(std::time::Duration::from_secs(seconds));
+}
+
+/// How long a server asks to be left, in seconds, from its `Retry-After`
+/// (seconds; a date is not read) and `retry-after-ms` headers: the
+/// milliseconds rounded up, if it gave both or only them.
+pub fn retry_after(seconds: Option<&str>, millis: Option<&str>) -> Option<u64> {
+    let millis = millis
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|ms| ms.is_finite() && *ms >= 0.0)
+        .map(|ms| (ms / 1_000.0).ceil() as u64);
+    let seconds = seconds
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map(|s| s.ceil() as u64);
+    millis.or(seconds)
+}
+
 pub struct Response {
     /// The status code.
     pub status: u16,
@@ -1050,6 +1123,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_failure_that_may_pass_is_tried_again_after_the_pause_asked() {
+        assert_eq!(retry_after(Some("7"), None), Some(7));
+        assert_eq!(retry_after(Some("1.5"), Some("2500")), Some(3));
+        assert_eq!(
+            retry_after(Some("Wed, 21 Oct 2026 07:28:00 GMT"), None),
+            None
+        );
+        assert_eq!(retry_after(Some("-1"), None), None);
+        let paused = std::cell::RefCell::new(Vec::new());
+        let tries = std::cell::Cell::new(0);
+        let answered: Result<u32, HttpError> =
+            retrying(3, 30, &|s| paused.borrow_mut().push(s), &|| {
+                tries.set(tries.get() + 1);
+                match tries.get() {
+                    1 => Err(HttpError::Status {
+                        status: 429,
+                        body: "slow down".into(),
+                        retry_after: Some(120),
+                    }),
+                    2 => Err(HttpError::Transport("reset".into())),
+                    _ => Ok(5),
+                }
+            });
+        assert_eq!(answered, Ok(5));
+        // The pause asked for, held to the most; then 2 seconds.
+        assert_eq!(*paused.borrow(), vec![30, 2]);
+        // A refusal is not tried again.
+        tries.set(0);
+        let refused: Result<u32, HttpError> = retrying(3, 30, &|_| {}, &|| {
+            tries.set(tries.get() + 1);
+            Err(HttpError::Status {
+                status: 404,
+                body: "gone".into(),
+                retry_after: None,
+            })
+        });
+        assert!(refused.is_err());
+        assert_eq!(tries.get(), 1);
+    }
+
+    #[test]
     fn local_and_private_addresses_are_not_public() {
         for text in [
             "127.0.0.1",
@@ -1183,7 +1297,8 @@ mod tests {
             client.get(&url, 10),
             Err(HttpError::Status {
                 status: 404,
-                body: "nope".into()
+                body: "nope".into(),
+                retry_after: None,
             })
         );
         handle.join().unwrap();

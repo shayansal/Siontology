@@ -462,6 +462,61 @@ fn a_busy_model_cools_down_and_the_next_one_answers() {
 }
 
 #[test]
+fn a_run_pauses_for_busy_models_and_asks_again_until_its_patience_is_spent() {
+    let tools = Toolbox::new();
+    // Busy twice, the second time saying how long to wait, then it answers.
+    let model = Scripted::new("only")
+        .fails(ModelError::Busy("HTTP 529: overloaded".into()))
+        .fails(ModelError::Limited {
+            message: "HTTP 429: slow down".into(),
+            retry_after: 7,
+        })
+        .says("at last");
+    let paused = std::sync::Mutex::new(Vec::new());
+    let sleep = |s: u64| paused.lock().unwrap().push(s);
+    let seen = std::sync::Mutex::new(Vec::new());
+    let watch = |s: &sion_agent::Seen| seen.lock().unwrap().push(s.clone());
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.extras.sleep = Some(&sleep);
+    rt.watch = Some(&watch);
+    let mut state = State::start("s-pause", "Hello", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "at last".into()
+        }
+    );
+    // Two seconds after the first failure; the seven asked for after the
+    // second.
+    assert_eq!(*paused.lock().unwrap(), vec![2, 7]);
+    assert!(seen.lock().unwrap().contains(&sion_agent::Seen::Pausing(7)));
+
+    // A run whose patience is spent ends.
+    let mut model = Scripted::new("down");
+    for _ in 0..10 {
+        model = model.fails(ModelError::Transport("connection reset".into()));
+    }
+    let paused = std::sync::Mutex::new(Vec::new());
+    let sleep = |s: u64| paused.lock().unwrap().push(s);
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.extras.sleep = Some(&sleep);
+    rt.limits.patience = 20;
+    let mut state = State::start("s-down", "Hello", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::ModelsFailed { .. }));
+    // 2, 4 and 8 seconds fit in 20; 16 more would not.
+    assert_eq!(*paused.lock().unwrap(), vec![2, 4, 8]);
+    assert_eq!(model.requests().len(), 4);
+
+    // With no patience, each model is asked once.
+    let model = Scripted::new("once").fails(ModelError::Busy("HTTP 503".into()));
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.patience = 0;
+    let mut state = State::start("s-once", "Hello", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::ModelsFailed { .. }));
+    assert_eq!(model.requests().len(), 1);
+}
+
+#[test]
 fn long_conversations_are_compacted_without_orphaned_results() {
     let (work, _) = counted("work", Effect::Read, |_| Outcome::ok("x".repeat(500)));
     let mut tools = Toolbox::new();

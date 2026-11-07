@@ -284,6 +284,10 @@ the environment or kept with `sion agent credential add`. A search returns
 up to ten results (five unless more are asked for), each its title,
 address and snippet, from the past day, week, month or year if asked.
 What it returns is from outside: it taints the session, as a page does.
+A page or a search service that is busy (HTTP 429 or a 5xx), or a
+connection that drops, is tried again twice, after the pause the server
+asked for or one and then two seconds, each pause at most ten; what still
+fails comes back to the model as the call's error.
 
 ## Tools from MCP servers
 

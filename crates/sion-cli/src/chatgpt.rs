@@ -193,7 +193,7 @@ fn token_request(pairs: &[(&str, &str)]) -> Result<Value, String> {
     match answered {
         Ok(fetched) => serde_json::from_slice(&fetched.body)
             .map_err(|e| format!("the sign-in answered with something other than JSON: {e}")),
-        Err(sion_http::HttpError::Status { status, body }) => {
+        Err(sion_http::HttpError::Status { status, body, .. }) => {
             let reason = serde_json::from_str::<Value>(&body)
                 .ok()
                 .and_then(|v| v["error"].as_str().map(str::to_string))

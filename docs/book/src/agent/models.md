@@ -14,8 +14,15 @@ same, and only `--model` changes.
 
 `--model` names a provider and a model, and can be repeated: if a model is
 busy or failing (HTTP 429, 500, 502, 503, 504 or 529) or unreachable, the
-next one is asked, and the failing one is left alone for 30 seconds. A
-request the provider refuses as malformed or unauthorized is not retried.
+next one is asked, and the failing one is left alone for 30 seconds, or as
+long as the provider asked (`Retry-After`, or `retry-after-ms`), if that
+is longer. When every model has failed that way, the run pauses and asks
+them again: for as long as a provider asked, or else 2, 4, 8… seconds, up
+to a minute a pause, until five minutes of pauses are spent; then it ends
+(`no model could answer`). A watched run says so while it waits (`the
+models are busy: asking again in 8 s`), and the kill switch stops a pause.
+A request the provider refuses as malformed or unauthorized is not
+retried.
 
 | `--model` | Provider |
 |---|---|
@@ -36,8 +43,8 @@ credential add`, or `sion setup`): the environment's wins
 ([Run it on your computer](../getting-started/your-computer.md#models)).
 A key variable may hold several keys, separated by commas: each call
 starts with the next key; a key the provider limits (HTTP 429) rests a
-minute and one it refuses (401, 402, 403) an hour, while the call goes on
-with the next key at once. With one key, a limited call is the model's
+minute, or as long as the provider asked, and one it refuses (401, 402,
+403) an hour, while the call goes on with the next key at once. With one key, a limited call is the model's
 failure, and the next model is asked.
 
 Requests go through the same guarded HTTPS client as storage providers,

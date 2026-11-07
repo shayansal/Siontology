@@ -484,7 +484,11 @@ impl Tool for Fetch {
 
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         let url = input["url"].as_str().unwrap_or_default();
-        match self.client.get(url, MAX_FETCH) {
+        // A page that is busy or a connection that drops is tried again,
+        // twice, after a pause of at most ten seconds.
+        match sion_http::retrying(2, 10, &sion_http::sleep_seconds, &|| {
+            self.client.get(url, MAX_FETCH)
+        }) {
             Ok(page) => {
                 let text = String::from_utf8_lossy(&page.body);
                 let mut shown: String = text.chars().take(MAX_PAGE_CHARS).collect();

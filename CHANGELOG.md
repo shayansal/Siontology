@@ -10,6 +10,17 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Riding out busy models
+
+- When every model is busy, limited or unreachable, a run pauses and asks
+  again, as long as the provider asked (`Retry-After`, `retry-after-ms`)
+  or 2, 4, 8… seconds up to a minute, until five minutes of pauses are
+  spent, instead of ending at the first failure. A watched run says it is
+  waiting; the kill switch stops a pause.
+- A model, or a key, the provider asked to be left is left that long.
+- `fetch_url` and `web_search` try a busy server or a dropped connection
+  again, twice.
+
 ### Longer runs, what they cost, and pass^k
 
 - `--max-turns` and `--max-tokens` (on `sion agent run` and on profiles)

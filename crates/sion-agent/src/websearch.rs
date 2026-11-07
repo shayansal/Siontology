@@ -210,7 +210,9 @@ impl WebSearch {
         freshness: Option<Freshness>,
     ) -> Result<Vec<Hit>, String> {
         let count = count.clamp(1, MAX_RESULTS);
-        let answer = match &self.provider {
+        // A search service that is busy, or a connection that drops, is
+        // asked again, twice, after a pause of at most ten seconds.
+        let ask = || match &self.provider {
             Provider::Brave { key } => {
                 let base = self
                     .base
@@ -268,6 +270,7 @@ impl WebSearch {
                 )
             }
         };
+        let answer = sion_http::retrying(2, 10, &sion_http::sleep_seconds, &ask);
         let fetched = answer.map_err(|e| self.failure(&e.to_string()))?;
         let value: Value = serde_json::from_slice(&fetched.body).map_err(|_| {
             format!(
