@@ -540,6 +540,11 @@ the session that searched, as reading that content again would.
 
 ## Facts from other owners: who vouched, and pulling one back
 
+> **In the library, not yet a command.** Keeping another owner's log in
+> mind works today; vouching, revocation and leaving revoked facts out
+> are written and unit-tested (`vouching` in `sion-cli`), and no `sion`
+> command or session reaches them yet.
+
 An agent can keep another owner's curated log in mind
 (`--shared-memory`), and every atom already carries where it came from: its
 sources, the spans in them, the model that read them. Two more things make

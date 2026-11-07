@@ -463,11 +463,15 @@ the HTTP channel, a messenger, a schedule or a gateway's host.
 
 ## Improving the agent, not only a skill
 
+> **In the library, not yet a command.** What this section describes is
+> written and unit-tested (`self_improve` in `sion-cli`), and no `sion`
+> command reaches it yet.
+
 A skill's instructions are not the only thing that can be made better.
-`sion agent improve` tries changes to the agent itself: the words its
-operator gives it, which models a kind of task reaches for, and how it
-works a task (alone, voting, or as a graph). Each change is scored against
-the agent as it is on a set of tasks, and kept only if it clears two bars:
+Changes to the agent itself can be tried too: the words its operator
+gives it, which models a kind of task reaches for, and how it works a task
+(alone, voting, or as a graph). Each change is scored against the agent as
+it is on a set of tasks, and kept only if it clears two bars:
 
 1. It is **better beyond chance** on the tasks tried — Newcombe's 95%
    interval for the difference in pass rate has its lower end above zero,

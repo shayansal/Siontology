@@ -28,7 +28,7 @@ misconfigured or fooled still cannot spend beyond it
 
 ## The crates
 
-Eighteen crates in one Cargo workspace. Each depends only on crates below
+Nineteen crates in one Cargo workspace. Each depends only on crates below
 it, and on `sion-core` rather than on its neighbours where it can. An arrow
 points from a crate to what it depends on (with the dependencies that
 follow from others left out):
@@ -52,7 +52,8 @@ flowchart BT
   net[sion-net] --> crypto
   node[sion-node] --> prover & light & net
   agent[sion-agent] --> http & core
-  cli[sion-cli] --> node & memory & agent
+  enclave[sion-enclave] --> core
+  cli[sion-cli] --> node & memory & agent & enclave
   app[sion-app-core] --> cli
 ```
 
@@ -63,8 +64,8 @@ flowchart BT
 | The state transition | [`sion-exec`](crates/sion-exec) (stack A), [`sion-spec`](crates/sion-spec) (stack B), [`sion-prover`](crates/sion-prover) | What a transaction and a Pulse do to the state, written twice, independently; World Proofs over both |
 | Verification | [`sion-light`](crates/sion-light) | What a client with only the genesis chain identity can check |
 | The node | [`sion-node`](crates/sion-node), [`sion-net`](crates/sion-net) | Validators, the gateway, the prover thread, durability, the HTTP API; QUIC between processes |
-| The agent runtime | [`sion-agent`](crates/sion-agent) | The run loop, models, tools and their effects, the policy, the journal, the sandbox, the browser, MCP, skills |
-| The command | [`sion-cli`](crates/sion-cli), [`sion-app-core`](crates/sion-app-core) | Everything a person runs: the devnet, wallets, the ledger's commands, the agent's profiles, channels and services; the app's core |
+| The agent runtime | [`sion-agent`](crates/sion-agent), [`sion-enclave`](crates/sion-enclave) | The run loop, models, tools and their effects, the policy, the journal, the sandbox, the browser, MCP, skills; the attestation of an enclave an agent is rented out from |
+| The command | [`sion-cli`](crates/sion-cli), [`sion-app-core`](crates/sion-app-core) | Everything a person runs: the devnet, wallets, the ledger's commands, the agent's profiles, channels and services, renting, ACP and AP2; the app's core |
 
 `sion-spec` uses `sion-exec`'s types only, never its logic: that is what
 makes it a second implementation
@@ -186,7 +187,14 @@ mounts the tools a profile has (the ledger's, the workspace's, the shell,
 the browser, MCP servers, subagents), `sion_cli::channels` keeps each
 conversation's session, `sion_cli::bridge` answers the messengers,
 `sion_cli::work` runs the work the agent takes on, and `sion_cli::talk` and
-`sion_cli::listening` are the terminal and its voice. The book's
+`sion_cli::listening` are the terminal and its voice. Selling and buying
+are `sion_cli::acp` (ACP's merchant and buyer, cards, 3-D Secure, feeds,
+webhooks and request signatures) and `sion_cli::ap2` (mandates);
+renting is `sion_cli::rentals`, over `sion_enclave` for attestation, and
+`sion_cli::trust` serves the reads other frameworks check an agent by.
+`sion_cli::self_improve`, `projects`, `vouching`, `meeting_voice` and
+`reputation::rank` are in the library and unit-tested, and no command
+reaches them yet. The book's
 [Your agent](docs/book/src/agent/index.md) pages describe each part from
 the outside.
 
@@ -217,6 +225,7 @@ randomness in every test (`sion_core::rng`).
 | A scenario for every transaction kind, and differential tests between the two stacks | `crates/sion-exec/tests`, `crates/sion-spec/tests` |
 | End-to-end devnet tests with dual post-quantum signatures | `crates/sion-node/tests`, `crates/sion-cli/tests` |
 | The agent against a scripted model (`sion_agent::scripted`) and stand-ins for the services it talks to, the browser with Chromium in bubblewrap | `crates/sion-agent/tests`, `crates/sion-cli/tests` |
+| ACP and AP2 against their published schemas and example tokens, with property tests of the signing and the amounts | `crates/sion-cli/tests/{commerce,commerce_cards,commerce_properties,ap2_vectors,interop}.rs`, [`scripts/interop`](scripts/interop/README.md) |
 | The demos, which take minutes (`#[ignore]`, run nightly) | `crates/sion-cli/tests/demos.rs` |
 
 CI ([`.github/workflows`](.github/workflows)) runs `cargo fmt`, `cargo

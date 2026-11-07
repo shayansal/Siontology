@@ -385,10 +385,14 @@ The other commands: `answer` (tell an item something, as its operator),
 
 ## Projects that run for weeks
 
+> **In the library, not yet a command.** Projects are written and
+> unit-tested (`projects` in `sion-cli`), and no `sion` command reaches
+> them yet.
+
 A work item is one piece of work, taken on and finished. A project is the
-longer thing: `sion agent project` gives a profile's agent a goal it keeps
-returning to, money it may spend on the way, milestones to work towards,
-and a standing arrangement to tell you where it stands. The agent writes
+longer thing: it gives a profile's agent a goal it keeps returning to,
+money it may spend on the way, milestones to work towards, and a standing
+arrangement to tell you where it stands. The agent writes
 to the project's log as it works; a check-in reports what it did since the
 last one — and says so plainly when that is nothing — what is still to do,
 and when the next report is due. Reports go wherever a schedule's do.

@@ -21,10 +21,11 @@ Everything written about Siontology, in one place. Start with the
 Each crate has a README: what it holds, its main types, how it fits, its
 status and its tests.
 
-[`sion-core`](../crates/sion-core/README.md) · [`sion-crypto`](../crates/sion-crypto/README.md) · [`sion-assurance`](../crates/sion-assurance/README.md) · [`sion-lp`](../crates/sion-lp/README.md) · [`sion-clearing`](../crates/sion-clearing/README.md) · [`sion-da`](../crates/sion-da/README.md) · [`sion-consensus`](../crates/sion-consensus/README.md) · [`sion-exec`](../crates/sion-exec/README.md) · [`sion-spec`](../crates/sion-spec/README.md) · [`sion-prover`](../crates/sion-prover/README.md) · [`sion-light`](../crates/sion-light/README.md) · [`sion-memory`](../crates/sion-memory/README.md) · [`sion-net`](../crates/sion-net/README.md) · [`sion-http`](../crates/sion-http/README.md) · [`sion-agent`](../crates/sion-agent/README.md) · [`sion-node`](../crates/sion-node/README.md) · [`sion-cli`](../crates/sion-cli/README.md) · [`sion-app-core`](../crates/sion-app-core/README.md)
+[`sion-core`](../crates/sion-core/README.md) · [`sion-crypto`](../crates/sion-crypto/README.md) · [`sion-assurance`](../crates/sion-assurance/README.md) · [`sion-lp`](../crates/sion-lp/README.md) · [`sion-clearing`](../crates/sion-clearing/README.md) · [`sion-da`](../crates/sion-da/README.md) · [`sion-consensus`](../crates/sion-consensus/README.md) · [`sion-exec`](../crates/sion-exec/README.md) · [`sion-spec`](../crates/sion-spec/README.md) · [`sion-prover`](../crates/sion-prover/README.md) · [`sion-light`](../crates/sion-light/README.md) · [`sion-memory`](../crates/sion-memory/README.md) · [`sion-net`](../crates/sion-net/README.md) · [`sion-http`](../crates/sion-http/README.md) · [`sion-agent`](../crates/sion-agent/README.md) · [`sion-enclave`](../crates/sion-enclave/README.md) · [`sion-node`](../crates/sion-node/README.md) · [`sion-cli`](../crates/sion-cli/README.md) · [`sion-app-core`](../crates/sion-app-core/README.md)
 
 And the [`mcp-notes` example](../examples/mcp-notes/README.md), the
-[app](../apps/sion-app/README.md), and the [release scripts](../scripts/release/README.md).
+[app](../apps/sion-app/README.md), the [release scripts](../scripts/release/README.md),
+and the [checks against other implementations of ACP and AP2](../scripts/interop/README.md).
 
 ## The book
 
@@ -48,7 +49,7 @@ Install it, run the agent of your own, run the demos, a devnet, a first transfer
 
 ### Your agent
 
-What the agent does and how: runs within limits, models, autonomy, memory, checks, security, tools, the browser, skills, channels, messengers, voice, schedules, servers, work, teams and graphs.
+What the agent does and how: runs within limits, models, autonomy, memory, checks, security, tools, the browser, skills, channels, messengers, voice, schedules, an agent brought over from OpenClaw or Hermes, servers, work, teams, renting it out, selling and buying through ACP and AP2, and graphs.
 
 - [Your agent](book/src/agent/index.md)
   - [A run, within its limits](book/src/agent/run.md)
@@ -66,9 +67,12 @@ What the agent does and how: runs within limits, models, autonomy, memory, check
   - [Messengers](book/src/agent/messengers.md)
   - [Pairing and voice](book/src/agent/voice.md)
 - [Profiles and schedules](book/src/agent/schedules.md)
+  - [Coming from OpenClaw or Hermes](book/src/agent/import.md)
 - [Run it on a server](book/src/agent/server.md)
 - [Work it takes on by itself](book/src/agent/work.md)
 - [Subagents and hired help](book/src/agent/teams.md)
+- [Renting your agent out](book/src/agent/renting.md)
+- [Selling and buying: ACP and AP2](book/src/agent/commerce.md)
 - [Graphs of agents](book/src/agent/graphs.md)
 
 ### Build on the ledger

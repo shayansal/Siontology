@@ -35,11 +35,30 @@ does, and how.
   voice](voice.md): where it is reached.
 - [Profiles and schedules](schedules.md), [subagents and hired
   help](teams.md), and [graphs of agents](graphs.md).
+- [Coming from OpenClaw or Hermes](import.md): an agent brought over,
+  its persona, memories, jobs, models, keys and chats, with a plan shown
+  first.
 - [Run it on a server](server.md): one process that keeps everything
   running, and one command that puts it on a server of yours.
 - [Work it takes on by itself](work.md): what it watches on GitHub and
   in chats, who may ask it for work, what it takes on unasked, its
-  mandates, and what waits for you.
+  mandates, what waits for you, and its record, which anyone can read.
+- [Renting your agent out](renting.md): listed by the token from an
+  enclave whose attestation the renter checks, paid through a stream for
+  the tokens the enclave signed for.
+- [Selling and buying: ACP and AP2](commerce.md): its work sold to other
+  agents through ACP's checkout, paid on the ledger or by card, and
+  bought under the user's AP2 mandates.
+
+Five pieces these pages describe are written and unit-tested but no
+command reaches them yet, and their sections say so: improving the whole
+agent ([Skills that get better](skill-improvement.md#improving-the-agent-not-only-a-skill)),
+projects that run for weeks ([Work](work.md#projects-that-run-for-weeks)),
+vouching for and revoking shared facts
+([Memory](memory.md#facts-from-other-owners-who-vouched-and-pulling-one-back)),
+a meeting guest that speaks ([Pairing and voice](voice.md#speaking-when-it-is-spoken-to)),
+and finding an agent for a task
+([Subagents and hired help](teams.md#an-agents-record-and-finding-one-for-a-task)).
 
 ## How these pages were made
 

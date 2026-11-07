@@ -6,8 +6,7 @@
 </p>
 
 <p align="center">
-  A ledger whose product is verified knowledge, and an AI agent that acts
-  within limits the ledger enforces.
+  An AI agent you run yourself, on a ledger that holds it to its limits.
 </p>
 
 <p align="center">
@@ -17,65 +16,42 @@
   <img alt="Status: devnet reference implementation" src="https://img.shields.io/badge/status-devnet%20reference%20implementation-555555">
 </p>
 
-Siontology is an open-source reference implementation, in Rust, of a
-**neo-blockchain**: a network whose product is verified knowledge, not
-ordered transactions. Every claim it records, about a payment, a
-computation, an AI output or a physical event, carries a proof or priced
-evidence, and anyone can check it from a phone. It implements the design in
-the paper
-[*Neo-Blockchains: The Fold Architecture*](docs/book/src/papers/architecture.md).
+Siontology is an **AI agent you run yourself**: in the terminal, by voice
+and on 28 messaging services, with a browser, tools for code, a sandboxed
+shell, memory and skills. It takes on work from the GitHub repositories
+and chats it watches, sells its work to other agents and buys from them
+through ACP, AP2 and x402, and can be rented out by the token from an
+enclave its renters can check.
 
-It comes with **an AI agent you run on your own computer**. `sion setup`
-makes a chain of your own and an agent on it, and `sion` talks with it. The
-agent answers in the terminal, typed or spoken, on 28 messaging services and
-over HTTP. It works in a folder you give it, searches the web, browses,
-changes and tests code, remembers, and takes work on by itself from the
-GitHub repositories and chats it watches. The ledger holds its spending to
-its charter: a payment the charter forbids is refused, whatever the agent
-was told.
+What makes it different is underneath: **a ledger of its own**, a
+neo-blockchain, that checks every payment against the agent's charter,
+keeps the history of its memory, and pays for work only when it passes a
+rule fixed in advance. A payment the charter forbids is refused, whatever
+the agent was told. The ledger is a reference implementation, in Rust and
+at devnet scale, of the architecture in
+[*Neo-Blockchains: The Fold Architecture*](docs/book/src/papers/architecture.md):
+a network whose product is verified knowledge, where every claim carries
+a proof or priced evidence that, by design, a phone can check.
 
-> **Status.** A devnet-scale reference implementation. Its validity proofs
-> are *replay proofs* that stand in for succinct ones, its validators run in
-> one process (or as separate processes on one machine, over QUIC), and it
-> secures nothing of value. The agent is tested with a scripted model and
-> stand-ins for the services it talks to, and no release is published yet.
-> [`docs/implementation-status.md`](docs/implementation-status.md) says what
-> is built, simplified, simulated or missing; every document here keeps to
-> it. Siontology has no token and nothing is on offer. Fees are paid in
-> stablecoins.
+> **Status.** A devnet-scale reference implementation. The agent is tested
+> with scripted models and stand-ins for the services it talks to, and no
+> release is published yet. The ledger's validity proofs are *replay
+> proofs* that stand in for succinct ones, its validators run in one
+> process (or as separate processes on one machine, over QUIC), and it
+> secures nothing of value. Card payments run against a simulated acquirer
+> and 3-D Secure issuer.
+> [`docs/implementation-status.md`](docs/implementation-status.md) says
+> what is built, simplified, simulated or missing; every document here
+> keeps to it. Siontology has no token and nothing is on offer. Fees are
+> paid in stablecoins.
 
-**Contents:** [Why](#why) · [Get started](#get-started) ·
-[How the ledger works](#how-the-ledger-works) · [The agent](#the-agent) ·
+**Contents:** [Get started](#get-started) · [The agent](#the-agent) ·
+[Selling, buying and renting](#selling-buying-and-renting) ·
+[The ledger underneath](#the-ledger-underneath) · [The app](#the-app) ·
 [What exists today](#what-exists-today) · [Demos](#demos) ·
 [The repository](#the-repository) · [Documentation](#documentation) ·
 [Development](#development) ·
 [Security, contributing and licence](#security-contributing-and-licence)
-
-## Why
-
-AI made producing text, code and decisions nearly free. Checking them did
-not get cheaper. Every AI output, agent action and data feed raises the same
-questions: is this real, and who pays if it is not? Agents acting for people
-are about to multiply the exchanges between strangers that pay that cost.
-
-Blockchains make one thing trustworthy, their own ledger state. They cannot
-check the facts most transactions depend on, every node re-executes every
-transaction, and everything is public by default. A neo-blockchain extends
-verifiable trust to anything that can carry evidence, and puts a price on
-evidence that is not a proof: every claim says what it would cost to falsify
-it, and whoever relies on it decides, under their own policy, whether that
-is enough for what is at stake.
-
-For AI agents, that means limits that hold even when the agent is fooled:
-
-- a **charter** the validators check on every payment (whom it may pay, its
-  largest payment, how fast it may spend, until when);
-- **memory** whose past cannot be rewritten, its log's head kept by the
-  ledger;
-- **work** paid only for a result that passes a rule fixed when the work was
-  posted;
-- **skills from others** installed only when bonds and audits cover what
-  they could cost.
 
 ## Get started
 
@@ -94,17 +70,24 @@ computer](docs/book/src/getting-started/your-computer.md) walks through
 setup, and [Your agent](docs/book/src/agent/index.md) says what the agent
 can do.
 
-### Try the ledger
+### What to try next
+
+| To | Run | Read |
+|---|---|---|
+| Reach it on a messenger | `sion agent bridge <profile> --via telegram` (or slack, discord, signal, whatsapp, …) | [Channels](docs/book/src/agent/channels.md), [Messengers](docs/book/src/agent/messengers.md) |
+| Let it take on work from GitHub | `sion agent work watch …`, then `sion agent work run` | [Work it takes on by itself](docs/book/src/agent/work.md) |
+| Keep it running on a server of yours | `sion deploy <user@host>`, which runs everything there with `sion agent up` | [Run it on a server](docs/book/src/agent/server.md) |
+| Sell its work to other agents | `sion agent sell serve catalog.json --pay-to <wallet> --name …` | [Selling and buying](docs/book/src/agent/commerce.md) |
+| Rent it out by the token | `sion agent rent serve <profile> --name … --per-1k-input … --per-1k-output …` | [Renting your agent out](docs/book/src/agent/renting.md) |
+| Connect another AI agent over MCP | `sion mcp` | [MCP](docs/book/src/getting-started/mcp.md) |
+| Run every scripted demo of the ledger | `sion demo all --local` | [Run the demos](docs/book/src/getting-started/demos.md) |
+| Check the chain as a light client | `sion verify --chain <identity>` | [Light client](docs/book/src/getting-started/light-client.md) |
+
+### Try the ledger on its own
 
 ```bash
 cargo build --release
 alias sion=./target/release/sion
-sion demo all --local                # every scripted demo, against an in-process devnet
-```
-
-Or run a devnet and use it from another terminal:
-
-```bash
 sion devnet                          # 4 validators, 2 shards, the API on 127.0.0.1:8730
 sion keys new dana                   # a wallet in ~/.sion/wallets (or $SION_HOME/wallets)
 sion faucet dana 100
@@ -112,17 +95,157 @@ sion send dana alice 12.5            # prints the sentence it signs, then the ou
 sion verify --chain <the identity sion devnet printed>
 ```
 
-More to try, each with its page in the book:
+## The agent
 
-| To | Run | Read |
+```mermaid
+flowchart LR
+  you["You<br/>the terminal, by voice,<br/>28 messengers, HTTP, A2A"] <--> runtime
+  subgraph machine["Your computer, or a server of yours"]
+    runtime["The agent runtime<br/>autonomy levels, approvals,<br/>taint, a journal of its acts"]
+    tools["Its tools<br/>files and code, a sandboxed shell,<br/>web search, a browser, MCP servers"]
+    memory["Its memory log<br/>and sessions"]
+    runtime --> tools
+    runtime --> memory
+  end
+  runtime <--> model["The model you chose<br/>Claude, OpenAI, Gemini,<br/>your ChatGPT plan, a local model"]
+  runtime -->|"payments, claims, tasks"| ledger["The ledger<br/>checks every payment<br/>against the charter"]
+  memory -->|"the log's head"| ledger
+```
+
+What is enforced, and where:
+
+| What | Where it is enforced |
+|---|---|
+| What the agent tries: its autonomy level, approvals, taint, quarantine, confidential files | The runtime, on your machine (trust atom `agent:local-policy`) |
+| What it can do with money: its budget, its largest payment, whom it may pay, how fast it spends | The ledger: validators check every payment against its charter, whatever the runtime allowed |
+| What it remembers | Its memory log on your machine, whose head the ledger keeps and lets only grow |
+| Where its conversation goes | The model provider you chose, which sees it (trust atom `agent:provider-sees-context`) |
+
+### Where you reach it
+
+- **The terminal**, typed, by push-to-talk or live: it speaks as it
+  writes, takes its own voice out of what the microphone hears, stops when
+  you talk over it, can wait for a wake word, and tells when you have
+  finished by what you said. Speech runs through a service or on your
+  machine (whisper.cpp, Piper). Tested with stand-ins for the microphone
+  and the speech services; no microphone or loudspeaker was used.
+  [Voice](docs/book/src/agent/voice.md)
+- **28 messaging services**, from Telegram, Slack, Discord, Signal,
+  WhatsApp and email to Teams, WeChat, Matrix, Nostr and phone calls, with
+  voice notes, pairing for people it does not know yet, and approvals
+  asked in the chat. X's mentions are answered with their sources.
+  [Messengers](docs/book/src/agent/messengers.md)
+- **HTTP and other agents**: its own API, OpenAI's chat completions API
+  (a profile as the model), and A2A.
+  [Channels](docs/book/src/agent/channels.md)
+- **Meetings**: it takes notes by phone, on your machine, or as a guest
+  that joins by the meeting's link and listens, with who said what when a
+  transcriber that tells speakers apart is given (`--diarize`). Tested
+  against stand-in meeting pages and services: Meet, Zoom, Teams and
+  Twilio were not reached.
+  [Voice](docs/book/src/agent/voice.md#meeting-notes)
+
+### What it works with
+
+- Files and code: it edits, patches, searches, checks and tests, and its
+  subagents work in git worktrees of their own.
+- A shell in a sandbox, web search, and a browser with tabs, downloads and
+  uploads. Given your browser profile it is signed in as you, and it hands
+  you the page for a captcha or a code. It also has a desktop of its own.
+  [Browser](docs/book/src/agent/browser.md)
+- MCP servers over standard input and output or HTTP with OAuth, with
+  their resources, prompts, sampling and questions to you; and sion's own
+  servers for mail, calendars and documents.
+  [Tools](docs/book/src/agent/tools.md)
+- Programs it writes that call its tools that only read, run in the
+  sandbox; a search over a large toolbox; your hooks before and after its
+  calls.
+
+### Within limits, and checked
+
+- Autonomy levels from L0 to L6, approvals, taint from what comes from
+  outside, quarantine, confidential files, signed decisions, and a journal
+  of everything it did.
+  [What it does alone](docs/book/src/agent/autonomy.md),
+  [Security](docs/book/src/agent/security.md)
+- Checks a run must pass before it is done, budgets for time and tokens,
+  and detection of a run that is stuck.
+  [Checked before it is done](docs/book/src/agent/checks.md)
+- A charter on the ledger for its money: payees, largest payment, rate of
+  spending, expiry. [A run, within its limits](docs/book/src/agent/run.md)
+
+### What it knows, and how it gets better
+
+- **Memory**: a log whose head the ledger keeps, search over past
+  sessions, consolidation, and dreaming whose results are kept only when
+  they pass. [Memory](docs/book/src/agent/memory.md)
+- **Skills** in the Agent Skills format: its own, written as it works or
+  taught by doing a task once in a browser; others', installed when bonds
+  and audits cover what they could cost, or imported from a folder, a
+  repository, ClawHub or skills.sh after an audit of their files; each
+  held to the permissions it declares.
+  [Skills](docs/book/src/agent/skills.md),
+  [What a skill may do](docs/book/src/agent/skill-permissions.md)
+- **Skills that get better**: measured against an evaluation set, evolved,
+  and released again on the attestations of verifiers fixed in advance.
+  [Skills that get better](docs/book/src/agent/skill-improvement.md)
+- **Models**: Claude, OpenAI, Gemini, your ChatGPT plan or a local model,
+  with fallback, their reasoning kept across tool calls, how hard each
+  thinks set per model, and a model for each kind of task, chosen by rule
+  or by a small model and compared on your own tasks.
+  [Models](docs/book/src/agent/models.md)
+
+### Help, and work of its own
+
+- **Subagents** with budgets carved from its own, keyless ones signed for
+  in batches; **hired agents** paid through Task Charters; and **graphs of
+  agents** (fan-out, work-check, draft-review, self-consistency, an
+  orchestrator, or one of your own).
+  [Subagents and hired help](docs/book/src/agent/teams.md),
+  [Graphs](docs/book/src/agent/graphs.md)
+- **Work it takes on by itself**: it watches GitHub repositories and
+  chats, a fixed gate decides what it may take on, every piece of work has
+  a mandate on the ledger, it follows its pull requests' reviews and
+  failed checks, and what needs you waits on one list.
+  [Work](docs/book/src/agent/work.md)
+- **Schedules and profiles**, and an agent brought over from OpenClaw or
+  Hermes Agent: its persona, memories, jobs, models, keys and chats, with
+  a plan shown first.
+  [Profiles and schedules](docs/book/src/agent/schedules.md),
+  [Import](docs/book/src/agent/import.md)
+- **Where it runs**: your computer, or a server of yours, with one process
+  that keeps everything running.
+  [Run it on a server](docs/book/src/agent/server.md)
+
+**In the library, not yet a command.** Five pieces are written and
+unit-tested but no command reaches them yet: improving the whole agent
+(keeping a change only when it is better beyond chance and loses nothing
+on held-out tasks), projects that run for weeks, vouching for and revoking
+facts in memory shared between owners, a meeting guest that speaks when
+spoken to, and finding the best agent for a task. Wiring them into
+commands is the next step.
+
+## Selling, buying and renting
+
+Agents pay each other, and the ledger is where it is checked.
+
+| What | How | Read |
 |---|---|---|
-| Connect an AI agent over the Model Context Protocol | `sion mcp` | [MCP](docs/book/src/getting-started/mcp.md) |
-| Sell an API per request, and pay for it | `sion x402 serve carol --price 0.25`, then `sion x402 fetch …` | [x402](docs/book/src/guides/x402.md) |
-| Pay per request from a stream, one hash a request | `sion stream open dana carol --unit 0.001 --deposit 5` | [Streams](docs/book/src/guides/streams.md) |
-| Check the chain as a light client | `sion verify --chain <identity>` | [Light client](docs/book/src/getting-started/light-client.md) |
-| Measure everything on your machine | `sion bench` | [Benchmarks](docs/book/src/guides/benchmarks.md) |
+| Sell through ACP | `sion agent sell serve` serves the Agentic Commerce Protocol (2026-04-17): checkout, carts, orders sent by signed webhooks, request signatures, product feeds. A session is paid on the ledger, the order made once the payment's receipt verifies, or by a card delegated to the merchant's PSP or Stripe, with 3-D Secure. Its state is kept across restarts. | [Selling and buying](docs/book/src/agent/commerce.md) |
+| Buy, under the user's mandates | `sion agent buy` pays an ACP merchant on the ledger or by card, within a cap. AP2 v0.2 mandates say what it may buy and pay, rooted in keys or certificate chains the merchant trusts (a certificate's revocation is not checked), recurring payments counted against their limits. | [AP2 mandates](docs/book/src/agent/commerce.md#ap2-mandates) |
+| Pay per request | x402: an API answers `402`, the agent pays under its charter and retries. Payment streams pay by revealing one hash a request, settled in a few transactions. | [x402](docs/book/src/guides/x402.md), [Streams](docs/book/src/guides/streams.md) |
+| Rent an agent out | Listed by the token from an AMD SEV-SNP enclave whose attestation the renter checks before sending anything; requests sealed to the enclave; paid through a stream for the tokens the enclave signed for; its sessions hold none of the owner's memory, files or reach. | [Renting](docs/book/src/agent/renting.md) |
+| Let other frameworks check | Public reads, without a token: an agent's record from the ledger's events, a transaction's outcome with how to verify its receipt, and a rental listing with whether its enclave checks out. | [Its record, for anyone to read](docs/book/src/agent/work.md#its-record-for-anyone-to-read) |
 
-## How the ledger works
+Checked against outside work: 34 requests and answers from a live run
+meet ACP's published JSON Schemas, and AP2's own example tokens verify
+([`scripts/interop`](scripts/interop/README.md)). Card payments here move
+no money: the PSP's acquirer and the 3-D Secure issuer are simulated. The
+Stripe path was tested against a stand-in for Stripe's API. Renting ran
+end to end with a simulated enclave: no AMD hardware was reached, and
+building and launching the confidential VM itself is not built.
+
+## The ledger underneath
 
 Blockchains chain blocks; DAGs link transactions; neo-blockchains **fold
 claims**. Four pieces carry the design:
@@ -132,7 +255,23 @@ claims**. Four pieces carry the design:
 | Two-sorted state | Knowledge never needs coordination; only the consumption of resources is ordered, and only among contenders. | [Two-sorted state](docs/book/src/concepts/two-sorted-state.md) |
 | The Assurance Algebra | Every claim carries a formula of its assumptions; anyone computes what an attacker must forfeit to falsify it, relies on it only when that exceeds what is at stake, and reserves that backing. | [The Assurance Algebra](docs/book/src/concepts/assurance/index.md) |
 | Verifiable Clearing | A market clearing is valid only with a certificate that no better allocation exists, checked in linear time. | [Verifiable Clearing](docs/book/src/concepts/verifiable-clearing.md) |
-| The Fold | Every proof folds into one World Proof per Pulse, so a phone can verify the whole history. | [The Fold](docs/book/src/concepts/the-fold.md) |
+| The Fold | Every proof folds into one World Proof per Pulse, so a phone can verify the whole history (here, replay proofs stand in for the succinct ones that needs). | [The Fold](docs/book/src/concepts/the-fold.md) |
+
+Why it matters for agents: AI made producing text, code and decisions
+nearly free, and checking them did not get cheaper. Blockchains make one
+thing trustworthy, their own ledger state; a neo-blockchain extends
+verifiable trust to anything that can carry evidence, and puts a price on
+evidence that is not a proof. For an agent, that means limits that hold
+even when the agent is fooled:
+
+- a **charter** the validators check on every payment (whom it may pay,
+  its largest payment, how fast it may spend, until when);
+- **memory** whose past cannot be rewritten unnoticed: the ledger keeps
+  its log's head and lets it only grow;
+- **work** paid only for a result that passes a rule fixed when the work
+  was posted;
+- **skills from others** installed only when bonds and audits cover what
+  they could cost.
 
 A transfer, `sion send dana alice 12.5`, goes through the code like this
 (each step's module is named in
@@ -162,7 +301,7 @@ Around the four pieces:
   ([Escrow Lanes](docs/book/src/concepts/escrow-lanes.md)). Only contended
   objects go through consensus
   ([Contention Consensus](docs/book/src/concepts/contention-consensus.md)).
-- **Agents within limits.** An [Agent Charter](docs/book/src/concepts/agent-charters.md)
+- **Agents as identities.** An [Agent Charter](docs/book/src/concepts/agent-charters.md)
   fixes an agent's payees, its largest payment, a spending rate carved down
   its tree of subagents, an expiry and the evidence a payment needs; a
   charter only narrows when delegated, and suspending one stops the whole
@@ -196,49 +335,15 @@ Around the four pieces:
   pay devices to keep data, proven every round
   ([Storage deals](docs/book/src/concepts/storage.md)).
 
-## The agent
+## The app
 
-```mermaid
-flowchart LR
-  you["You<br/>the terminal, by voice,<br/>28 messengers, HTTP, A2A"] <--> runtime
-  subgraph machine["Your computer, or a server of yours"]
-    runtime["The agent runtime<br/>autonomy levels, approvals,<br/>taint, a journal of its acts"]
-    tools["Its tools<br/>files and code, a sandboxed shell,<br/>web search, a browser, MCP servers"]
-    memory["Its memory log<br/>and sessions"]
-    runtime --> tools
-    runtime --> memory
-  end
-  runtime <--> model["The model you chose<br/>Claude, OpenAI, Gemini,<br/>your ChatGPT plan, a local model"]
-  runtime -->|"payments, claims, tasks"| ledger["The ledger<br/>checks every payment<br/>against the charter"]
-  memory -->|"the log's head"| ledger
-```
-
-What is enforced, and where:
-
-| What | Where it is enforced |
-|---|---|
-| What the agent tries: its autonomy level, approvals, taint, quarantine, confidential files | The runtime, on your machine (trust atom `agent:local-policy`) |
-| What it can do with money: its budget, its largest payment, whom it may pay, how fast it spends | The ledger: validators check every payment against its charter, whatever the runtime allowed |
-| What it remembers | Its memory log on your machine, whose head the ledger keeps and lets only grow |
-| Where its conversation goes | The model provider you chose, which sees it (trust atom `agent:provider-sees-context`) |
-
-What it does:
-
-| | | Read |
-|---|---|---|
-| Talk with it | In the terminal, typed, by push-to-talk, or live (it speaks as it writes, takes its own voice out of what the microphone hears, stops when you talk over it, can wait for a wake word, tells when you have finished by what you said, or talk through a realtime speech model that asks the agent), hearing and speaking through services or on your machine (whisper.cpp, Piper); on 28 messaging services, with voice notes; X's mentions, answered with their sources; over HTTP, OpenAI's chat API and A2A; and it takes meetings' notes, by phone, on your machine or as a guest by the meeting's link, with who said what | [Channels](docs/book/src/agent/channels.md), [Voice](docs/book/src/agent/voice.md), [Messengers](docs/book/src/agent/messengers.md) |
-| Its tools | Files and code (edit, patch, search, check, test), a shell in a sandbox, web search, a browser with tabs, downloads and uploads (signed in as you if you give it your profile, handing you the page for a captcha or a code), a desktop of its own, programs that call its tools, your hooks around its calls, MCP servers with their resources, prompts and questions to you, and sion's own servers for mail, calendars and documents | [Tools](docs/book/src/agent/tools.md), [Browser](docs/book/src/agent/browser.md) |
-| What it does alone | Autonomy levels from L0 to L6, approvals, taint from what comes from outside, quarantine, confidential files | [Autonomy](docs/book/src/agent/autonomy.md) |
-| Memory | A memory log whose head the ledger keeps, search over past sessions, consolidation and dreaming | [Memory](docs/book/src/agent/memory.md) |
-| Skills | Its own; taught by doing a task once in a browser; others', installed on bonds and audits or imported from a folder, a repository, ClawHub or skills.sh after an audit of their files; skills that get better through evaluation that others verify | [Skills](docs/book/src/agent/skills.md), [Improvement](docs/book/src/agent/skill-improvement.md) |
-| Helpers | Subagents with budgets carved from its own, in git worktrees of their own when they change code, other agents hired through Task Charters, graphs of agents |
-| Getting better | It tries changes to itself — its instructions, which model it reaches for, how it works a task — and keeps one only when it is measurably better on tasks it is set and loses nothing on tasks it never saw, recording the evidence | [Improvement](docs/book/src/agent/skill-improvement.md) |
-| Long projects | A goal it returns to over weeks, with a budget, milestones and a check-in that tells you what it did since the last one | [Work](docs/book/src/agent/work.md) |
-| Renting it out | List it by the token in an enclave renters can check (AMD SEV-SNP, attested), paid through a payment stream for the tokens the enclave signed for, its sessions holding none of your memory, files or reach; and every agent's record read from the ledger, to find the best one for a task | [Renting](docs/book/src/agent/renting.md), [Records](docs/book/src/agent/teams.md) | [Teams](docs/book/src/agent/teams.md), [Graphs](docs/book/src/agent/graphs.md) |
-| Work it takes on | It watches GitHub repositories and chats, a fixed gate decides what it may take on, every piece of work has a mandate on the ledger, and it follows its pull requests' reviews and failed checks | [Work](docs/book/src/agent/work.md) |
-| Models | Claude, OpenAI, Gemini, your ChatGPT plan or a local model, their reasoning kept across tool calls and how hard they think set per model, and a model for each kind of task, chosen by rule or by a small model and compared on your own tasks | [Models](docs/book/src/agent/models.md) |
-| Coming from OpenClaw or Hermes | Its persona, memories, jobs, models, keys and chats brought over to a profile, a plan shown first | [Import](docs/book/src/agent/import.md) |
-| Where it runs | Your computer, or a server of yours: `sion deploy` puts it there, `sion agent up` keeps it running | [Run it on a server](docs/book/src/agent/server.md) |
+[`apps/sion-app`](apps/sion-app) turns a device into a light node: a Tauri
+shell over [`sion-app-core`](crates/sion-app-core), which keeps the
+device's key, checks the device's own receipts as a light client, pays,
+and provides storage from the device for storage deals. The desktop shell
+is built and run (its Agents tab, added later, only type-checked); the
+Android and iOS builds are configured, not built.
+[The app](docs/book/src/getting-started/app.md)
 
 ## What exists today
 
@@ -253,7 +358,15 @@ implementation adds. In short:
   and the Assurance Algebra; Verifiable Clearing; encrypted payloads,
   viewing keys and sealed orders; data availability coding, sampling,
   reconstruction and fraud proofs; payment streams, memory logs, Task
-  Charters and storage deals; the CLI, the HTTP API and the MCP server.
+  Charters and storage deals; the CLI, the HTTP API and the MCP server;
+  work the agent takes on by itself; renting an agent out and agents'
+  records.
+- **Partly built**: the agent runtime (tested with scripted models and
+  stand-ins for the services it talks to); five agent features in the
+  library that no command reaches yet; the adapters for outside protocols
+  (x402, ACP and AP2 are built, with card networks simulated; ERC-8004 and
+  C2PA are not); the app (the desktop shell is built and run; mobile is
+  configured, not built).
 - **Simplified**: consensus is a certified DAG, not an uncertified one;
   forced inclusion replaces a censoring committee but does not freeze the
   shard; data retention and archival; networking between machines (QUIC
@@ -262,14 +375,9 @@ implementation adds. In short:
   Pulse in two independent stacks, a stand-in for succinct proofs, with
   real bindings to the state, receipts, data and certificates
   (`impl:replay-proofs`).
-- **Partly built**: the agent runtime (tested with a scripted model and
-  stand-ins); interfaces to other standards (x402 is built, and so are
-  AP2 mandates and ACP, at devnet scale, with card payments' acquirer and
-  3-D Secure issuer simulated; ERC-8004 and C2PA are not); the app (the
-  desktop shell is built and run; mobile is configured, not built).
 - **Not built**: personhood claims, a proving market, confidential amounts
-  and zero-knowledge compliance, payments to provers and the value-in-flight
-  cap.
+  and zero-knowledge compliance, ERC-8004 and C2PA adapters, payments to
+  provers and the value-in-flight cap.
 
 <details>
 <summary>The status of every section of the architecture</summary>
@@ -282,7 +390,10 @@ implementation adds. In short:
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, work it takes on by itself from GitHub and chats under mandates, its pull requests' reviews and checks followed, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders and repositories, everything kept running on a server, live voice with a wake word, reasoning kept across tool calls, tool search, programs that call tools, the operator's hooks, subagents in git worktrees, voice on the machine, a meeting guest that tells speakers apart, a browser signed in as you that hands you its page, renting an agent out by the token in an attested enclave, agents' records from the ledger, improvement kept only when measured, shared memory with sources and revocation, projects over weeks, a meeting guest that speaks, a trust layer other frameworks read) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter: models, tools, autonomy and approvals, memory, skills, channels and voice (beyond the paper) | Partly built (tested with scripted models and stand-ins for the services it talks to) |
+| Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
+| Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
+| Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Partly built (in the library and unit-tested; no command reaches them yet) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -339,7 +450,7 @@ availability and proving) and narrates what the ledger established;
 
 ## The repository
 
-One Cargo workspace of eighteen crates; each has a README of its own.
+One Cargo workspace of nineteen crates; each has a README of its own.
 Lower crates know nothing of higher ones
 ([Crate map](docs/book/src/architecture/crates.md),
 [Architecture](ARCHITECTURE.md)).
@@ -363,7 +474,7 @@ Lower crates know nothing of higher ones
 | [`sion-agent`](crates/sion-agent) | The agent runtime: models, tools with effects, autonomy and approvals, taint, the journal, budgets, the sandbox, the browser, MCP, skills, schedules, graphs |
 | [`sion-enclave`](crates/sion-enclave) | Attestation for agents in enclaves: AMD SEV-SNP reports checked against AMD's chain, the session's keys bound in them, a simulated platform for tests |
 | [`sion-node`](crates/sion-node) | The devnet and `sion node`: validators, the gateway, the prover, the write-ahead log and snapshots, the HTTP API |
-| [`sion-cli`](crates/sion-cli) | The `sion` command: the devnet and nodes, wallets, the ledger's commands, the agent's channels, messengers, voice, work, its own MCP servers, setup, deploying, demos |
+| [`sion-cli`](crates/sion-cli) | The `sion` command: the devnet and nodes, wallets, the ledger's commands, the agent's channels, messengers, voice, work, renting, ACP and AP2, its own MCP servers, setup, deploying, demos |
 | [`sion-app-core`](crates/sion-app-core) | The app's core: the device's key, a light client for the device's own receipts, payments, storage provided from the device |
 
 Besides the crates:
@@ -375,7 +486,7 @@ Besides the crates:
 | [`examples/mcp-notes`](examples/mcp-notes) | A small MCP server, in Python's standard library, that the book's tool chapter uses |
 | [`skills/starter`](skills/starter) | The starter skills `sion skill starter` installs |
 | [`deploy`](deploy) | A compose file that runs `sion agent up` in a container |
-| [`scripts`](scripts) | The installer and the release tooling |
+| [`scripts`](scripts) | The installer, the release tooling, and checks against other implementations of ACP and AP2 ([`scripts/interop`](scripts/interop/README.md)) |
 | [`packaging`](packaging) | A Homebrew formula (the Nix flake is `flake.nix`, the image's `Dockerfile` is at the root) |
 | [`site`](site) | The website's source and its generated pages |
 | [`brand`](brand) | The logo, colours and type, with their [guidelines](brand/guidelines.md) |
@@ -384,10 +495,10 @@ Besides the crates:
 
 - **[The documentation index](docs/README.md)**: everything below, with a
   line on each.
-- **[The Siontology book](docs/book/src/SUMMARY.md)**, about 115 pages:
-  getting started, your agent, building on the ledger, running a network,
-  the concepts, a reference for the CLI, the HTTP API, the MCP tools and
-  the transaction kinds, the architecture of the code, research and the
+- **[The Siontology book](docs/book/src/SUMMARY.md)**, 117 pages: getting
+  started, your agent, building on the ledger, running a network, the
+  concepts, a reference for the CLI, the HTTP API, the MCP tools and the
+  transaction kinds, the architecture of the code, research and the
   security model, with a [glossary](docs/book/src/project/glossary.md).
   `mdbook build docs/book` builds it.
 - **[Architecture](ARCHITECTURE.md)**: a tour of the code for someone about
@@ -421,14 +532,14 @@ nothing is deleted from state; every trust assumption is named; simulation
 shortcuts are labelled in the types; and there is no unsafe Rust.
 
 The tests include property tests for the Assurance Algebra, the linear
-programming certificates and the state machine; a deterministic consensus
-simulator with adversarial network phases; a scenario for every transaction
-kind; differential tests between the two proof stacks; end-to-end devnet
-tests with dual post-quantum signatures; the agent's runs against a scripted
-model and stand-ins for the services it uses; and the demos. At the time of
-writing the crates hold about 181,000 lines of Rust under their `src/`
-folders and 42,000 more in their `tests/` folders, with about 1,060 test
-functions besides the property tests.
+programming certificates, the state machine and the commerce code; a
+deterministic consensus simulator with adversarial network phases; a
+scenario for every transaction kind; differential tests between the two
+proof stacks; end-to-end devnet tests with dual post-quantum signatures;
+the agent's runs against scripted models and stand-ins for the services it
+uses; and the demos. At the time of writing the crates hold about 215,000
+lines of Rust under their `src/` folders and 51,000 more in their `tests/`
+folders, with about 1,250 test functions besides the property tests.
 
 ## Security, contributing and licence
 

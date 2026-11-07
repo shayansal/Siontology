@@ -1,17 +1,27 @@
 # Siontology
 
-Siontology is an open-source **neo-blockchain**: a network whose product is
+Siontology is an **AI agent you run yourself**, and the ledger underneath
+it that holds it to its limits.
+
+The agent answers you in the terminal, by voice and on 28 messaging
+services, and works with a browser, tools for code, a sandboxed shell,
+memory and skills. It takes on work from the GitHub repositories and chats
+it watches, sells its work to other agents and buys from them through ACP,
+AP2 and x402, and can be rented out by the token from an enclave its
+renters can check. Its sessions and decisions are kept on your computer,
+and the model provider you choose sees its conversations.
+[Run it on your computer](getting-started/your-computer.md) sets it up,
+and the ledger with it, in one command; [Your agent](agent/index.md) says
+what it can do.
+
+The ledger is an open-source **neo-blockchain**: a network whose product is
 verified knowledge, not ordered transactions. Every claim it records, about
 a payment, a computation, an AI output or a physical event, carries a proof
-or priced evidence, and anyone can check it from a phone.
-
-It comes with an AI agent you run on your own computer. It answers you in
-the terminal and on messaging services, works in a folder you give it,
-browses and remembers. The ledger refuses whatever its charter forbids and
-keeps the head of its memory log; its sessions and decisions stay on your
-computer.
-[Run it on your computer](getting-started/your-computer.md) sets both up
-with one command.
+or priced evidence that, by design, anyone can check from a phone. For the
+agent, it checks every payment against the agent's charter, whatever the
+agent was told; keeps the head of its memory log, so its past cannot be
+rewritten unnoticed; and pays for work only when it passes a rule fixed in
+advance.
 
 This book documents the reference implementation in Rust: how to run it,
 what each mechanism does, how the code is organised, and what is not built
@@ -29,9 +39,11 @@ yet. The design it implements is described in the architecture paper
 > keys can be derived by anyone. It secures nothing of value and has no
 > production deployment. The agent has been tested with a scripted model
 > and stand-ins for the model providers' and messengers' APIs, and no
-> release of it has been published. [What exists today](#what-exists-today) below
-> says exactly what is built, simplified, simulated or missing, and every
-> chapter follows it.
+> release of it has been published; card payments run against a simulated
+> acquirer and 3-D Secure issuer. [What exists today](#what-exists-today)
+> below says exactly what is built, simplified, simulated or missing, and
+> every chapter follows it. Siontology has no token and nothing is on
+> offer. Fees are paid in stablecoins.
 
 ## Why
 
@@ -109,7 +121,10 @@ summary.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, work it takes on by itself from GitHub and chats under mandates, its pull requests' reviews and checks followed, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders and repositories, everything kept running on a server, live voice with a wake word) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders, repositories and registries (ClawHub, skills.sh, a site's well-known index) through the audit, a model chosen for each task, OpenClaw and Hermes agents imported, tasks taught by doing them once in a browser, X's mentions answered with their sources and its posts searched, everything kept running on a server, live voice with a wake word, a model of speech, echo cancellation and a realtime model that asks the agent, meeting notes by phone or on the machine) |
+| Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
+| Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
+| Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Partly built (in the library and unit-tested; no command reaches them yet) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -162,7 +177,9 @@ From the architecture paper, stated plainly:
 
 - To run an agent of your own, start with
   [Run it on your computer](getting-started/your-computer.md), then
-  [Your agent](agent/index.md).
+  [Your agent](agent/index.md). To have it sell, buy or be rented out,
+  read [Selling and buying](agent/commerce.md) and
+  [Renting your agent out](agent/renting.md).
 - To try the ledger, start with [Install from source](getting-started/install.md)
   and [Run the demos](getting-started/demos.md).
 - To understand it, read the [Concepts](concepts/neo-blockchains.md) in

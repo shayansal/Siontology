@@ -25,7 +25,10 @@ live.
 | Identity: Agent Charters | Built |
 | Identity: agent identities and subagents | Built (devnet scale) |
 | Identity: batched authorization and keyless subagents (beyond the paper) | Built (devnet scale) |
-| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, work it takes on by itself from GitHub and chats under mandates, its pull requests' reviews and checks followed, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders, repositories and registries (ClawHub, skills.sh, a site's well-known index) through the audit, a model chosen for each task, OpenClaw and Hermes agents imported, tasks taught by doing them once in a browser, X's mentions answered with their sources and its posts searched, everything kept running on a server, live voice with a wake word, a model of speech, echo cancellation and a realtime model that asks the agent, meeting notes by phone or on the machine) |
+| Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders, repositories and registries (ClawHub, skills.sh, a site's well-known index) through the audit, a model chosen for each task, OpenClaw and Hermes agents imported, tasks taught by doing them once in a browser, X's mentions answered with their sources and its posts searched, everything kept running on a server, live voice with a wake word, a model of speech, echo cancellation and a realtime model that asks the agent, meeting notes by phone or on the machine) |
+| Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
+| Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
+| Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Partly built (in the library and unit-tested; no command reaches them yet) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -663,9 +666,12 @@ the stream's position is the signed total in steps and its escrow falls by
 exactly that. No AMD hardware, and no model provider, was reached. An
 agent's record is read from the ledger's own events (tasks delivered and
 what they earned, tasks released, delivered results later proven false)
-and turned into one number to trust it by; finding an agent for a task
+and turned into one number to trust it by, served to anyone at
+`GET /v1/trust/agents/<account>` (below). Finding an agent for a task
 weighs how well each candidate's offer fits the task (BM25) against that
-record, held to what is needed (an enclave, a price). Trust atoms
+record, held to what is needed (an enclave, a price); that is in the
+library (`reputation::rank`) and unit-tested, and no command reaches it
+yet. Trust atoms
 `agent:rented-enclave`, `agent:metered-tokens`, `agent:agent-record`. Not
 built: checking Intel TDX quotes (collected, then refused); AMD's
 revocation lists; Turin's layout of firmware versions in a report; a
@@ -674,9 +680,13 @@ confidential VM itself; a quote before a request, or a spending cap inside
 a rented session; enumerating every agent or listing on the chain to search
 through.
 
-**Improving the whole agent, shared memory, projects, a speaking guest
-and the trust layer: built (beyond the paper).** Changes to the agent
-itself — the words its operator gives it, the models a kind of task
+**Improving the whole agent, shared memory, projects and a speaking
+guest: partly built (beyond the paper).** Each is written in `sion-cli`'s
+library (`self_improve`, `vouching`, `projects`, `meeting_voice`) and
+unit-tested, and no command reaches any of them yet: `sion agent meeting`
+joins as a guest that only listens, and a session that keeps another
+owner's log in mind does not yet leave revoked facts out. Changes to the
+agent itself — the words its operator gives it, the models a kind of task
 reaches for, how it works a task — are scored against the agent as it is
 and kept only when better beyond chance on the tasks tried (Newcombe's 95%
 interval above zero) and regressing on no held-out task it already
@@ -694,16 +704,20 @@ work, and the budget holds whatever it tries to spend
 (`agent:project-budget`). A meeting's guest can be given a voice: a
 PulseAudio sink whose monitor is remapped into a source the browser takes
 as its microphone, and it answers only lines that name it, found anywhere
-in the line (`agent:meeting-voice`). The HTTP channel serves three public
-reads for agents on other frameworks, without a token: an agent's record,
-a transaction's outcome with how to verify its receipt, and a rental
-listing with whether its enclave checks out (`GET /v1/trust` says what it
-serves). All unit-tested; the guest's microphone needs PulseAudio and a
-meeting and was not run, and no change was measured against a real model.
-Not built: choosing the tasks an improvement is measured on (a set written
-to flatter a change would pass it); a project that spends
-from its own allotment on the ledger rather than being counted against a
-budget kept here.
+in the line (`agent:meeting-voice`). The guest's microphone needs
+PulseAudio and a meeting and was not run, and no change was measured
+against a real model. Not built: the commands that reach these; choosing
+the tasks an improvement is measured on (a set written to flatter a change
+would pass it); a project that spends from its own allotment on the ledger
+rather than being counted against a budget kept here.
+
+**Reads for agents on other frameworks: built (beyond the paper).** The
+HTTP channel serves three public reads, without a token: an agent's
+record, a transaction's outcome with how to verify its receipt, and a
+rental listing with whether its enclave checks out (`GET /v1/trust` says
+what it serves). Tested in units: which reads are answered, what
+`GET /v1/trust` says, and accounts and digests taken only as 64 hex
+digits; the record it serves is tested where it is computed.
 
 **Work the agent takes on by itself: built (beyond the paper).** `sion
 agent work` gives a profile's agent watches: GitHub repositories (new

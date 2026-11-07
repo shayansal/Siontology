@@ -331,6 +331,10 @@ Meet, Zoom and Teams themselves were not reached.
 
 ### Speaking when it is spoken to
 
+> **In the library, not yet a command.** The guest's voice is written and
+> unit-tested (`meeting_voice` in `sion-cli`), and `sion agent meeting`
+> does not use it yet: a guest today only listens.
+
 A guest that only listens says nothing: its microphone plays a second of
 silence. Given a voice, it answers when it is addressed. A microphone of
 its own is made out of PulseAudio parts — a sink nothing listens to, whose

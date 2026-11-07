@@ -10,6 +10,24 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Documentation: the agent first, and what no command reaches yet
+
+- **The README** now leads with the agent: where it is reached, what it
+  works with, its limits, what it knows and how it gets better, help and
+  work of its own; then selling, buying and renting (ACP, AP2, x402,
+  streams, renting from an enclave, the public reads), the ledger
+  underneath, and the app. Its figures are current: nineteen crates, about
+  215,000 lines under `src/` and 51,000 in `tests/`, 117 pages in the book.
+- **What no command reaches yet** is said wherever it is described:
+  improving the whole agent, projects, vouching for and revoking shared
+  facts, a meeting guest that speaks, and finding an agent for a task are
+  in `sion-cli`'s library and unit-tested only. The implementation status
+  had called them built; its summary now gives them a row of their own,
+  partly built, beside new rows for the work the agent takes on and for
+  renting, records and the public reads. The book's introduction, the
+  agent pages, the crate map (now with `sion-enclave`), `ARCHITECTURE.md`,
+  the documentation index and `sion-cli`'s README follow it.
+
 ### Agentic commerce: the rest of ACP, and AP2's certificates and recurrence
 
 - **Cards**: the merchant takes ACP's `dev.acp.tokenized.card` handler,
@@ -72,7 +90,11 @@ Commit messages before the rename use the working name, Fold.
 
 ### Improving itself, shared memory, projects and the trust layer
 
-- **Improving the whole agent**: `sion agent improve` tries changes to the
+The first four of these were written in `sion-cli`'s library and
+unit-tested, and no command reached them yet (see the documentation entry
+above); the trust layer is served.
+
+- **Improving the whole agent**: `self_improve` tries changes to the
   agent itself — the words its operator gives it, the models a kind of
   task reaches for, how it works a task — and keeps one only if it is
   better beyond chance on the tasks tried (Newcombe's 95% interval) and
