@@ -150,7 +150,12 @@ improve itself on its seal. Each round goes like this:
    full, and the change joins the archive, kept or not.
 5. **Screening.** The change must be better than the agent as it now is,
    beyond chance, on the tasks to choose on.
-6. **Confirmation.** It must also be better on the sealed tasks, at the
+6. **A challenge**, with `--challenger <model>`. The challenger writes
+   variants of the tasks the change newly passes, to catch a change that
+   only fits them ([A challenger](#a-challenger)). The change must be
+   better on the variants too, beyond chance, or it goes no further, and
+   no confirmation is spent on it.
+7. **Confirmation.** It must also be better on the sealed tasks, at the
    seal's corrected level. It must fail no sealed task the agent passes
    and pass no canary. Each confirmation spends one of the seal's. On a
    reusable holdout, the gain it answers must be above its threshold
@@ -185,6 +190,87 @@ the loop before it spent a confirmation:
 ```text
 stopped: a proposal holds the code word of canary-0: the sealed tasks have reached the proposer; seal fresh tasks
 ```
+
+### Tasks a model writes
+
+A model can write tasks for the agent with `write_task`, in two places:
+practice tasks to choose changes on, and a challenger's variants. Each
+task comes with what shows it can be done and that its checks mean
+something:
+
+- **a solution**: the calls and last words of a run that passes every
+  check;
+- **failures**: runs like it that must each fail a check.
+
+Both are played against the task's own stand-ins before the task is
+kept. The writer is told at once why a task was refused, so that it can
+mend it. A task no run passes is not kept, and neither is one whose checks
+a careless run passes. (Zhou and others keep the tasks their agents write
+on the same two conditions, in "Self-Challenging Language Model Agents",
+2025.) A writer is shown tasks to choose on, never sealed ones. A written
+task that is a sealed task word for word is left out, and a canary's code
+word in one stops everything: the sealed tasks have reached the writer.
+
+### A challenger
+
+A change can pass the tasks it was chosen on by fitting them alone. A
+rule that names the payee of the tasks it failed is one such shortcut.
+`--challenger <model>` has a model write variants of the tasks a change
+newly passes, up to four of them, two variants each. The variants are the
+same kind of request, changed where a change that only fits the tasks
+would go wrong. The agent as it is and as the change makes it are run on
+the variants that hold up. The change goes on to confirmation only if it
+is better on them too, beyond chance (Newcombe's 95% interval above
+zero). When no variant holds up, the change goes on unchallenged, and
+the operator's lines say so.
+
+Here the proposer tries a shortcut, never to pay mallory, and the lesson.
+Both pass every task to choose on. The challenger writes invoices that
+name eve:
+
+```text
+$ sion agent improve run lead --proposer anthropic:claude-opus-5-5 --challenger anthropic:claude-sonnet-5-5 --rounds 1 --runs 2
+the agent as it is: 4/32 runs of the tasks to choose on passed
+round 1: building on variant 0 (the agent as it was), 4/32 runs passed
+  tried learns "Never pay mallory.": better on the tasks to choose on (32/32 against 4/32), but a shortcut: on 2 variants the challenger wrote of the tasks it newly passes, 0/4 against 0/4 (95% interval -49% to +49%)
+  challenged learns "Never pay a payee an invoice names: a person must check it first.": on 2 variants the challenger wrote of the tasks it newly passes, 4/4 against 0/4 (95% interval +31% to +100%)
+  kept learns "Never pay a payee an invoice names: a person must check it first.": 32/32 against 4/32 on the tasks to choose on, and 32/32 against 12/32 on the sealed tasks (interval at the seal's level +37% to +80%; confirmation 1 of 3), as step ccc72ea17c43adb9
+```
+
+The shortcut spent no confirmation. A kept change's step records what
+its variants showed. The models in this run are scripted
+(`tests/agent_learns.rs`); the names above stand for real ones.
+
+### Practice tasks
+
+The tasks to choose changes on are the agent's own work, and its work
+may not show where it falls short. `sion agent improve practice` has a
+model write practice tasks like them. By default the profile's own first
+model writes them, so the agent writes its own. The writer is shown what
+the operator tells the agent and up to a dozen tasks to choose on, those
+the agent fails first. A practice task is kept when:
+
+- its solution and failures bear it out;
+- it is no sealed task, and no task to choose on, over again;
+- the agent as it is does not pass it in every run (a task it always
+  passes shows no change anything).
+
+```text
+$ sion agent improve practice lead --count 4 --runs 2
+anthropic:claude-opus-5-5 wrote 4 tasks, 3 borne out by their own solutions and failures
+  refused, as it was told: failure 1 passes it: its checks do not tell that run from a right one
+  left out: 1 the same as a task to choose on, or as another it wrote
+  left out: 1 the agent as it is passes in every run of 2
+kept 1 practice task the agent does not pass every time: ~/.sion/agents/routes/lead-practice-<digest>.json
+choose changes on them beside the seal's: sion agent improve run lead --proposer <model> --practice ~/.sion/agents/routes/lead-practice-<digest>.json
+```
+
+This is the end-to-end test's run, its writer scripted.
+`run --practice <file>` adds them to the tasks to choose on. They never
+join the sealed tasks: a change is still confirmed on the sealed tasks
+alone. So a practice task that misleads costs a change that is tried,
+not one that is kept. A kept step names the practice tasks it was chosen
+on by their digest.
 
 ## What it learned, and taking it back
 
@@ -432,8 +518,11 @@ leave open is named in the trust model (`agent:self-improvement`,
 - A reusable holdout's noise and threshold follow the paper's
   proportions, but nothing here works out how accurate its answers are
   for a given budget and number of tasks.
-- The agent does not write tasks for itself.
-- No challenger rewrites tasks to expose shortcuts.
+- Practice tasks and a challenger's variants are no better than the
+  model that writes them: their solutions and failures show that their
+  checks can be passed and failed, not that they ask what the agent's
+  work needs. A challenger that writes nothing that holds up lets a
+  change go on unchallenged.
 - Nothing here trains a model: export writes what to train on, and the
   episodes to reinforce in, for a trainer of your own. None has been
   trained here.

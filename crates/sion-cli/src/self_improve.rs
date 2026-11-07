@@ -847,12 +847,48 @@ pub enum ImproveCommand {
         /// The seed of the archive's draws (default: drawn).
         #[arg(long)]
         seed: Option<u64>,
+        /// Practice tasks (as `sion agent improve practice` writes) to
+        /// choose changes on beside the seal's; a change is still confirmed
+        /// on the sealed tasks alone.
+        #[arg(long, value_name = "FILE")]
+        practice: Option<std::path::PathBuf>,
+        /// A model that writes variants of the tasks each change newly
+        /// passes, to catch a change that only fits them: it must be better
+        /// on them too, beyond chance, before it is confirmed.
+        #[arg(long, value_name = "MODEL")]
+        challenger: Option<String>,
         /// Make each kept change the profile's.
         #[arg(long)]
         apply: bool,
         /// Publish each kept change as this wallet's claim.
         #[arg(long)]
         wallet: Option<String>,
+    },
+    /// Have a model write practice tasks for the profile, like the seal's
+    /// tasks to choose on (it is never shown the sealed ones): each kept
+    /// only when its own solution passes it and its failures fail it, when
+    /// it is no sealed task or task to choose on over again, and when the
+    /// agent as it is does not pass it every time. `run --practice FILE`
+    /// chooses changes on them beside the seal's.
+    Practice {
+        /// The profile.
+        profile: String,
+        /// The model that writes them (default: the profile's first, so
+        /// that the agent writes its own).
+        #[arg(long, value_name = "MODEL")]
+        writer: Option<String>,
+        /// How many to ask for.
+        #[arg(long, default_value_t = 8)]
+        count: usize,
+        /// How many times the agent runs each.
+        #[arg(long, default_value_t = 2)]
+        runs: u32,
+        /// The tokens each run may use.
+        #[arg(long = "budget-tokens", default_value_t = 20_000)]
+        budget_tokens: u64,
+        /// Where to write them (default: beside the seal).
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
     },
     /// The changes the agent kept from its own work, with their evidence;
     /// with --check, each held to its claim on the ledger.
@@ -1171,6 +1207,8 @@ pub fn run_with(
             total_tokens,
             models,
             seed,
+            practice,
+            challenger,
             apply: make_it_so,
             wallet: Some(wallet),
         } => {
@@ -1205,6 +1243,10 @@ pub fn run_with(
                     total_tokens,
                     models,
                     seed: seed.unwrap_or_else(drawn),
+                },
+                &RunWith {
+                    practice,
+                    challenger,
                 },
                 make_it_so,
                 &mut publish,
@@ -1435,6 +1477,8 @@ fn code_command(
         sealed_digest: crate::code_improve::digest_of(&seal.sealed)?,
         z: seal.z(),
         reusable: false,
+        practice: None,
+        challenger: None,
     };
     let model = crate::runtime::model(coder, 0)?;
     let name = profile.name.clone();
@@ -1523,6 +1567,76 @@ fn seal_command(
     Ok(())
 }
 
+fn practice_command(
+    profile: &str,
+    writer: Option<&str>,
+    count: usize,
+    runs: u32,
+    budget_tokens: u64,
+    out: Option<std::path::PathBuf>,
+) -> Result<(), CliError> {
+    let found = crate::profiles::get(profile)?;
+    let seal = crate::sealed::current(profile)?;
+    let (train, _) = seal.train_set()?;
+    let (sealed, _) = seal.sealed_set()?;
+    let writer = match writer {
+        Some(writer) => writer.to_string(),
+        None => found.models.first().cloned().ok_or_else(|| {
+            CliError::Usage(format!(
+                "profile {profile} has no model to write tasks with: give --writer"
+            ))
+        })?,
+    };
+    let model = crate::runtime::model(&writer, 0)?;
+    let practiced = crate::practice::write_practice(
+        &found,
+        &*model,
+        &writer,
+        &train,
+        &sealed,
+        count,
+        runs,
+        budget_tokens,
+    )?;
+    for line in &practiced.lines {
+        println!("{line}");
+    }
+    let Some(set) = practiced.set else {
+        println!("no practice task kept; {} tokens used", practiced.tokens);
+        return Ok(());
+    };
+    let bytes = serde_json::to_vec_pretty(&set)
+        .map_err(|e| CliError::Usage(format!("the tasks could not be written: {e}")))?;
+    let digest = sion_agent::evals::digest(&bytes);
+    let path = out.unwrap_or_else(|| crate::practice::practice_path(profile, &digest));
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| CliError::Usage(format!("{}: {e}", dir.display())))?;
+    }
+    std::fs::write(&path, &bytes)
+        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+    println!(
+        "kept {} the agent does not pass every time: {}",
+        crate::practice::counted(set.cases.len()),
+        path.display()
+    );
+    println!(
+        "choose changes on them beside the seal's: sion agent improve run {profile} --proposer <model> --practice {}",
+        path.display()
+    );
+    println!("{} tokens used", practiced.tokens);
+    Ok(())
+}
+
+/// What a loop runs with beside its seal.
+#[derive(Clone, Debug, Default)]
+pub struct RunWith {
+    /// Practice tasks to choose changes on beside the seal's.
+    pub practice: Option<std::path::PathBuf>,
+    /// The model that challenges each change.
+    pub challenger: Option<String>,
+}
+
 /// Runs the loop on `profile`'s seal, `kept` told of each change it keeps
 /// before it is recorded.
 fn run_loop(
@@ -1530,13 +1644,32 @@ fn run_loop(
     seal: &crate::sealed::Seal,
     proposer: &str,
     settings: crate::improve_loop::Settings,
+    with: &RunWith,
     make_it_so: bool,
     kept: &mut dyn FnMut(&mut crate::improve_loop::Step) -> Result<Vec<String>, CliError>,
 ) -> Result<(), CliError> {
     let (train, _) = seal.train_set()?;
     let (sealed, _) = seal.sealed_set()?;
-    let train_digest = sion_core::hash::Hash32::from_hex(&seal.train)
-        .map_err(|e| CliError::Usage(format!("the seal's digest: {e}")))?;
+    // Practice tasks join the tasks to choose on, never the sealed ones.
+    let (train, practice, train_digest) = match &with.practice {
+        Some(path) => {
+            let (joined, practice, line) = crate::practice::joined(&train, path, &sealed)?;
+            println!("{line}");
+            let digest = crate::practice::digest_of(&joined)?;
+            (joined, Some(practice), digest)
+        }
+        None => (
+            train,
+            None,
+            sion_core::hash::Hash32::from_hex(&seal.train)
+                .map_err(|e| CliError::Usage(format!("the seal's digest: {e}")))?,
+        ),
+    };
+    let challenger = with
+        .challenger
+        .as_deref()
+        .map(|m| crate::runtime::model(m, 0))
+        .transpose()?;
     let sealed_digest = sion_core::hash::Hash32::from_hex(&seal.sealed)
         .map_err(|e| CliError::Usage(format!("the seal's digest: {e}")))?;
     if seal.left() == 0 {
@@ -1560,6 +1693,8 @@ fn run_loop(
         sealed_digest,
         z: seal.z(),
         reusable: seal.reusable.is_some(),
+        practice,
+        challenger: challenger.as_deref().map(crate::improve_loop::Challenger),
     };
     let name = profile.name.clone();
     let sealed_now = seal.sealed.clone();
@@ -1745,6 +1880,8 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
             total_tokens,
             models,
             seed,
+            practice,
+            challenger,
             apply: make_it_so,
             wallet: None,
         } => {
@@ -1762,10 +1899,22 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
                     models,
                     seed: seed.unwrap_or_else(drawn),
                 },
+                &RunWith {
+                    practice,
+                    challenger,
+                },
                 make_it_so,
                 &mut |_| Ok(Vec::new()),
             )
         }
+        ImproveCommand::Practice {
+            profile,
+            writer,
+            count,
+            runs,
+            budget_tokens,
+            out,
+        } => practice_command(&profile, writer.as_deref(), count, runs, budget_tokens, out),
         ImproveCommand::Lineage { profile, .. } => print_lineage(&profile),
         ImproveCommand::Adopt { profile, step } => {
             let steps = crate::improve_loop::lineage(&profile)?;

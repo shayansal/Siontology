@@ -10,6 +10,26 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Tasks the agent writes, and a challenger
+
+- **`sion agent improve practice <profile>`** has a model, the profile's
+  own by default, write practice tasks like the seal's tasks to choose on
+  (never shown a sealed one). Each comes with a solution and failures,
+  played against its own stand-ins before it is kept
+  (`sion_agent::practice`); the writer is told why one is refused. A task
+  is kept when it is no sealed task or task to choose on over again and the
+  agent as it is does not pass it every time. `run --practice <file>`
+  chooses changes on them beside the seal's tasks, never confirms on them,
+  and each kept step names them by digest.
+- **`run --challenger <model>`** has a model write variants of the tasks
+  each change newly passes, written to catch a change that only fits them.
+  The change must be better on the variants too, beyond chance, before a
+  confirmation is spent on it; a kept step records what they showed.
+
+Tested with scripted models: a shortcut turned down on the variants
+without spending a confirmation and the lesson kept; practice tasks
+written, refused and left out as above, and the lesson kept on them.
+
 ### A reusable holdout
 
 - **`sion agent improve seal <profile> --tasks <file> --reusable`** makes

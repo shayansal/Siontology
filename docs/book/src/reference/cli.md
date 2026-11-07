@@ -2879,8 +2879,9 @@ Commands:
   harvest   Turn the profile's sessions whose outcome is known (marked, or their check passed) into a set of tasks: each task asked again, of stand-ins that answer what its tools answered, checked against what the session did
   export    Export what the profile's work gives for training an open model on it: its sessions that went well as examples to fine-tune on (sft.jsonl, OpenAI's chat format with tool calls and the tools shown), and its tasks as environments to reinforce in (environments.jsonl, tasks.json: sion agent improve env runs one). Nothing sealed is exported, and nothing exported is sealed later
   env       Run one task as an episode for reinforcement learning, the policy outside: each request on standard output, in OpenAI's chat format ({"request": {"messages", "tools", "max_tokens"}}), the policy's turn on standard input ({"message": {...}}), and the reward last ({"done": {"reward", "passed", "failures"}}), the share of the task's checks that held
-  seal      Seal a set of tasks for the profile: a share held apart to confirm changes on, which no proposer is shown, with canary cases among them and a number of confirmations. With --wallet, the seal's digests are published on the ledger before anything is tried on it
+  seal      Seal a set of tasks for the profile: a share held apart to confirm changes on, which no proposer is shown, with canary cases among them and a number of confirmations (with --reusable, a reusable holdout instead). With --wallet, the seal's digests are published on the ledger before anything is tried on it
   run       Let the agent improve itself: a proposer model writes changes from the tasks it failed among the seal's tasks to choose on; each is tried there, and kept only when confirmed better on the sealed tasks. With --apply a kept change becomes the profile's; with --wallet each is published on the ledger
+  practice  Have a model write practice tasks for the profile, like the seal's tasks to choose on (it is never shown the sealed ones): each kept only when its own solution passes it and its failures fail it, when it is no sealed task or task to choose on over again, and when the agent as it is does not pass it every time. `run --practice FILE` chooses changes on them beside the seal's
   lineage   The changes the agent kept from its own work, with their evidence; with --check, each held to its claim on the ledger
   adopt     Make a kept change the profile's
   undo      Take back the last change made the profile's
@@ -3044,12 +3045,36 @@ Options:
       --total-tokens <TOTAL_TOKENS>    The tokens the whole run may use, its proposer's included (0: no limit but the rounds) [default: 0]
       --model <MODEL>                  A model the proposer may choose, besides the profile's own (repeat for more)
       --seed <SEED>                    The seed of the archive's draws (default: drawn)
+      --practice <FILE>                Practice tasks (as `sion agent improve practice` writes) to choose changes on beside the seal's; a change is still confirmed on the sealed tasks alone
+      --challenger <MODEL>             A model that writes variants of the tasks each change newly passes, to catch a change that only fits them: it must be better on them too, beyond chance, before it is confirmed
       --apply                          Make each kept change the profile's
       --wallet <WALLET>                Publish each kept change as this wallet's claim
   -h, --help                           Print help
 ```
 
 See [Improving itself](../agent/self-improvement.md#the-loop).
+
+## `sion agent improve practice`
+
+```text
+Have a model write practice tasks for the profile, like the seal's tasks to choose on (it is never shown the sealed ones): each kept only when its own solution passes it and its failures fail it, when it is no sealed task or task to choose on over again, and when the agent as it is does not pass it every time. `run --practice FILE` chooses changes on them beside the seal's
+
+Usage: sion agent improve practice [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --writer <MODEL>                 The model that writes them (default: the profile's first, so that the agent writes its own)
+      --count <COUNT>                  How many to ask for [default: 8]
+      --runs <RUNS>                    How many times the agent runs each [default: 2]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run may use [default: 20000]
+      --out <FILE>                     Where to write them (default: beside the seal)
+  -h, --help                           Print help
+```
+
+The writer is shown what the operator tells the agent and the seal's tasks to choose on, never its sealed ones. A task it writes comes with a solution and failures, played against the task's own stand-ins before it is kept. See [Improving itself](../agent/self-improvement.md#practice-tasks).
 
 ## `sion agent improve lineage`
 

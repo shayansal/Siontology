@@ -671,6 +671,14 @@ pub struct Step {
     /// that gain twice, and `z` 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered: Option<sion_agent::holdout::Answer>,
+    /// The digest of the practice tasks among those it was chosen on, if
+    /// there were any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub practice: Option<String>,
+    /// What a challenger's variants of the tasks it newly passed showed, if
+    /// it was challenged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge: Option<Challenge>,
     /// When it was kept (seconds since the epoch).
     pub at: u64,
     /// The claim that published it, if one did.
@@ -959,6 +967,178 @@ pub struct Problem<'a> {
     /// spent only when the sealed tasks disagree with the tasks to choose
     /// on, instead of a confirmation each.
     pub reusable: bool,
+    /// The digest of the practice tasks among `train`, if there are any
+    /// ([`crate::practice`]).
+    pub practice: Option<Hash32>,
+    /// A model that writes variants of the tasks a change newly passes, if
+    /// one is set: a change must be better on them too, beyond chance,
+    /// before it is confirmed ([`challenge`]).
+    pub challenger: Option<Challenger<'a>>,
+}
+
+/// A model that writes variants of the tasks a change newly passes, to
+/// catch a change that only fits them.
+pub struct Challenger<'a>(pub &'a dyn Model);
+
+impl std::fmt::Debug for Challenger<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Challenger({})", self.0.id())
+    }
+}
+
+/// The most tasks a change newly passes that the challenger varies.
+pub const CHALLENGED: usize = 4;
+
+/// The most variants the challenger writes of each.
+pub const VARIANTS: usize = 2;
+
+/// What the challenger is told it is.
+pub const CHALLENGER_SYSTEM: &str = "You test changes to an AI agent. A change made the agent \
+pass tasks it failed before. You write variants of those tasks that a change which only fits them \
+would fail and one which does what they need would pass, each with write_task, with a solution \
+and failures that show its checks mean what they say.";
+
+/// What a challenger's variants showed of a change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Challenge {
+    /// The digest of the variants that held up.
+    pub variants: String,
+    /// How many there were.
+    pub cases: usize,
+    /// How the agent before the change did on them.
+    pub before: Outcome,
+    /// How it did after.
+    pub after: Outcome,
+    /// Newcombe's 95% interval for the difference.
+    pub interval: (f64, f64),
+}
+
+/// The challenger's prompt: the change, and the tasks it newly passes.
+pub fn challenger_prompt(change: &str, tasks: &[&sion_agent::evals::Case], most: usize) -> String {
+    let mut text = format!(
+        "A change to an agent made it pass the tasks below, which it failed before.\n\nThe change: {}\n\nThe tasks:\n",
+        clip(change, 4_000)
+    );
+    for case in tasks {
+        text.push_str(&sion_agent::practice::shown(case));
+    }
+    text.push_str(&format!(
+        "\nWrite up to {most} variants of these tasks with write_task, `of` naming the task each \
+         varies: the same kind of request, changed where a change that only fits these tasks would \
+         go wrong (other names, amounts or wording, a step more or less), while a change that does \
+         what they need would still pass."
+    ));
+    text
+}
+
+/// What came of challenging a change.
+struct Challenged {
+    /// What its variants showed, when any held up.
+    challenge: Option<Challenge>,
+    /// Why variants were refused.
+    refused: Vec<String>,
+    /// A canary whose code word a variant held.
+    canary: Option<String>,
+    /// The tokens used.
+    tokens: u64,
+}
+
+/// Has `challenger` write variants of `tasks`, which `child` newly passes
+/// after `change`, and runs `incumbent` and `child` on those that hold up:
+/// none that is a sealed task or a task to choose on over again.
+#[allow(clippy::too_many_arguments)]
+fn challenge(
+    profile: &Profile,
+    incumbent: &Variant,
+    child: &Variant,
+    change: &str,
+    tasks: &[&sion_agent::evals::Case],
+    challenger: &dyn Model,
+    sealed: &[sion_agent::evals::Case],
+    train: &TaskSet,
+    settings: &Settings,
+) -> Result<Challenged, CliError> {
+    let most = tasks.len() * VARIANTS;
+    let writing = sion_agent::practice::write(
+        challenger,
+        CHALLENGER_SYSTEM,
+        &challenger_prompt(change, tasks, most),
+        most,
+    );
+    let mut found = Challenged {
+        challenge: None,
+        refused: writing.refused.clone(),
+        canary: None,
+        tokens: writing.tokens,
+    };
+    let mut cases: Vec<sion_agent::evals::Case> = Vec::new();
+    for (at, written) in writing.written.iter().enumerate() {
+        let case = written.case(&format!("variant-{at}"));
+        match crate::practice::against_sealed(&case, sealed) {
+            Some(crate::practice::Against::Canary(canary)) => {
+                found.canary = Some(canary);
+                return Ok(found);
+            }
+            Some(crate::practice::Against::Copy(_)) => {
+                found
+                    .refused
+                    .push(format!("variant {} is a sealed task", at + 1));
+                continue;
+            }
+            None => {}
+        }
+        if train
+            .cases
+            .iter()
+            .chain(&cases)
+            .any(|c| sion_agent::practice::same_task(&c.task, &case.task))
+        {
+            found
+                .refused
+                .push(format!("variant {} is a task to choose on", at + 1));
+            continue;
+        }
+        cases.push(case);
+    }
+    if cases.is_empty() {
+        return Ok(found);
+    }
+    let set = TaskSet {
+        name: "challenge".into(),
+        about: format!("variants a challenger wrote of the tasks {change} newly passes"),
+        system: train.system.clone(),
+        cases,
+    };
+    let digest = crate::practice::digest_of(&set)?;
+    let before = score(
+        profile,
+        incumbent,
+        &set,
+        digest,
+        settings.runs,
+        settings.budget_tokens,
+    )?;
+    let after = score(
+        profile,
+        child,
+        &set,
+        digest,
+        settings.runs,
+        settings.budget_tokens,
+    )?;
+    found.tokens += before.outcome.tokens + after.outcome.tokens;
+    let interval = newcombe(
+        (after.outcome.passed, after.outcome.total),
+        (before.outcome.passed, before.outcome.total),
+    );
+    found.challenge = Some(Challenge {
+        variants: digest.to_hex(),
+        cases: set.cases.len(),
+        before: before.outcome,
+        after: after.outcome,
+        interval,
+    });
+    Ok(found)
 }
 
 /// What a reusable holdout answered: the answer, how much of its budget
@@ -1102,6 +1282,7 @@ pub fn improve(
         .collect();
     let mut incumbent = start.clone();
     let mut incumbent_train = first.outcome;
+    let mut incumbent_cases = first.cases.clone();
     let mut incumbent_sealed: Option<Scored> = None;
     let mut last_step: Option<String> = crate::improve_loop::lineage(&profile.name)
         .ok()
@@ -1311,6 +1492,80 @@ pub fn improve(
                 report.stopped = Some(format!("its {} tokens are used", settings.total_tokens));
                 break 'rounds;
             }
+            // Challenged, when a challenger is set: variants of the tasks it
+            // newly passes, written to catch a change that only fits them.
+            let mut challenged: Option<Challenge> = None;
+            if let Some(challenger) = &problem.challenger {
+                let newly: Vec<&sion_agent::evals::Case> = problem
+                    .train
+                    .cases
+                    .iter()
+                    .zip(trained.cases.iter().zip(&incumbent_cases))
+                    .filter(|(_, (now, before))| **now && !**before)
+                    .map(|(case, _)| case)
+                    .take(CHALLENGED)
+                    .collect();
+                if !newly.is_empty() {
+                    let found = challenge(
+                        profile,
+                        &incumbent,
+                        &child,
+                        &change,
+                        &newly,
+                        challenger.0,
+                        &sealed_cases,
+                        problem.train,
+                        settings,
+                    )?;
+                    report.tokens += found.tokens;
+                    if let Some(canary) = found.canary {
+                        report.stopped = Some(format!(
+                            "a variant the challenger wrote holds the code word of {canary}: the sealed tasks have reached it; seal fresh tasks"
+                        ));
+                        break 'rounds;
+                    }
+                    match found.challenge {
+                        Some(shown) if shown.interval.0 <= 0.0 => {
+                            report.lines.push(format!(
+                                "  tried {change}: better on the tasks to choose on ({}/{} against {}/{}), but a shortcut: on {} variants the challenger wrote of the tasks it newly passes, {}/{} against {}/{} (95% interval {:+.0}% to {:+.0}%)",
+                                trained.outcome.passed, trained.outcome.total, incumbent_train.passed, incumbent_train.total,
+                                shown.cases, shown.after.passed, shown.after.total, shown.before.passed, shown.before.total,
+                                shown.interval.0 * 100.0, shown.interval.1 * 100.0
+                            ));
+                            history.push(told(
+                                &change,
+                                &format!(
+                                    "{}/{} runs passed against {}/{}, but on variants of the tasks it newly passed, written to catch a change that only fits them, {}/{} against {}/{}: not kept",
+                                    trained.outcome.passed, trained.outcome.total, incumbent_train.passed, incumbent_train.total,
+                                    shown.after.passed, shown.after.total, shown.before.passed, shown.before.total
+                                ),
+                            ));
+                            continue;
+                        }
+                        Some(shown) => {
+                            report.lines.push(format!(
+                                "  challenged {change}: on {} variants the challenger wrote of the tasks it newly passes, {}/{} against {}/{} (95% interval {:+.0}% to {:+.0}%)",
+                                shown.cases, shown.after.passed, shown.after.total, shown.before.passed, shown.before.total,
+                                shown.interval.0 * 100.0, shown.interval.1 * 100.0
+                            ));
+                            challenged = Some(shown);
+                        }
+                        None => report.lines.push(format!(
+                            "  challenged {change}: no variant held up ({}), so it goes on unchallenged",
+                            if found.refused.is_empty() {
+                                "none was written".to_string()
+                            } else {
+                                clip(&found.refused.join("; "), 400)
+                            }
+                        )),
+                    }
+                    if over(&report) {
+                        report.stopped =
+                            Some(format!("its {} tokens are used", settings.total_tokens));
+                        break 'rounds;
+                    }
+                }
+            }
             // Confirmation, on tasks the proposer never saw.
             let before = match &incumbent_sealed {
                 Some(scored) => scored.clone(),
@@ -1468,6 +1723,8 @@ pub fn improve(
                 confirmation,
                 budget,
                 answered,
+                practice: problem.practice.map(|d| d.to_hex()),
+                challenge: challenged,
                 at: (sinks.now)(),
                 claim: None,
             };
@@ -1490,6 +1747,7 @@ pub fn improve(
             last_step = Some(step.id.clone());
             incumbent = child;
             incumbent_train = trained.outcome;
+            incumbent_cases = trained.cases.clone();
             incumbent_sealed = Some(after);
             report.kept.push(step);
         }
@@ -1685,6 +1943,8 @@ pub fn grade(
             sealed_digest: problem.held_digest,
             z: sion_agent::compare::z_for(crate::sealed::ALPHA / f64::from(budget)),
             reusable: false,
+            practice: None,
+            challenger: None,
         };
         let report = improve(
             profile,

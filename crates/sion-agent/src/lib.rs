@@ -92,6 +92,7 @@ pub mod model;
 pub mod oauth;
 pub mod permissions;
 pub mod policy;
+pub mod practice;
 pub mod providers;
 pub mod quarantine;
 pub mod remote;
