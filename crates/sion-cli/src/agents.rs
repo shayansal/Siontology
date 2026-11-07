@@ -307,7 +307,12 @@ pub enum AgentCommand {
         /// chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent
         /// chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model>
         /// (a model server on this machine or its network,
-        /// SION_LOCAL_MODEL_URL) or script:<file>; how hard it thinks may
+        /// SION_LOCAL_MODEL_URL), bedrock:<model> (AWS_BEARER_TOKEN_BEDROCK
+        /// or AWS's access keys), vertex:<model> (GOOGLE_CLOUD_PROJECT and
+        /// Google's sign-in), azure:<deployment> (AZURE_OPENAI_ENDPOINT,
+        /// AZURE_OPENAI_API_KEY), openrouter, deepseek, moonshot, xai,
+        /// groq, together, fireworks, mistral or cerebras:<model>
+        /// (<NAME>_API_KEY) or script:<file>; how hard it thinks may
         /// follow a # (anthropic:claude-opus-5-5#high: none, minimal, low,
         /// medium, high, xhigh, max, or a budget of tokens); several keys,
         /// comma-separated, are used in turn, and keys may be kept on this

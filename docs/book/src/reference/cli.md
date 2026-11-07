@@ -1134,7 +1134,7 @@ Options:
       --task <TASK>
           The task, in words
       --model <MODELS>
-          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>, chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model> (a model server on this machine or its network, SION_LOCAL_MODEL_URL) or script:<file>; how hard it thinks may follow a # (anthropic:claude-opus-5-5#high: none, minimal, low, medium, high, xhigh, max, or a budget of tokens); several keys, comma-separated, are used in turn, and keys may be kept on this machine (sion agent credential add). Repeat for fallbacks, in order
+          The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model> (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>, chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model> (a model server on this machine or its network, SION_LOCAL_MODEL_URL), bedrock:<model> (AWS_BEARER_TOKEN_BEDROCK or AWS's access keys), vertex:<model> (GOOGLE_CLOUD_PROJECT and Google's sign-in), azure:<deployment> (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY), openrouter, deepseek, moonshot, xai, groq, together, fireworks, mistral or cerebras:<model> (<NAME>_API_KEY) or script:<file>; how hard it thinks may follow a # (anthropic:claude-opus-5-5#high: none, minimal, low, medium, high, xhigh, max, or a budget of tokens); several keys, comma-separated, are used in turn, and keys may be kept on this machine (sion agent credential add). Repeat for fallbacks, in order
       --autonomy <AUTONOMY>
           How much it may do without asking: L0 (nothing) to L6 (spend within its charter). L3 reads and writes its workspace; L5 also fetches from the web and asks before paying [default: L5]
       --workspace <WORKSPACE>
@@ -3160,6 +3160,7 @@ Options:
       --attestation <CLAIM>  An attestation's claim (repeat)
       --verifier <ACCOUNT>   An account, or a wallet's name, whose attestation counts (repeat)
       --need <NEED>          Attestations needed, by different verifiers [default: 1]
+      --allow <PATH>         A path the patch may touch (repeat; default: the agent's runtime, crates/sion-agent/src/, apart from what scores or guards it). The patch is held to these whatever its publisher and attesters allowed
       --undo                 Take the release back out instead
   -h, --help                 Print help
 ```

@@ -35,6 +35,7 @@ pub mod browser_profiles;
 pub mod calendar;
 pub mod channels;
 pub mod chatgpt;
+pub mod clouds;
 pub mod code_improve;
 pub mod cohorts;
 pub mod consolidate;

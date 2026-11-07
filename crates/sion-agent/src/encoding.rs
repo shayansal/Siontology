@@ -1,5 +1,6 @@
 //! Base64, as the protocols the runtime speaks use it (HTTP Basic
-//! credentials, MCP's encoded header values, PKCE), without a dependency.
+//! credentials, MCP's encoded header values, PKCE), and hexadecimal,
+//! without a dependency.
 
 const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -32,6 +33,17 @@ pub fn base64(bytes: &[u8]) -> String {
 /// Base64 for URLs, with `-`, `_` and no padding (RFC 4648, section 5).
 pub fn base64_url(bytes: &[u8]) -> String {
     encode(bytes, URL_SAFE, false)
+}
+
+/// Lower-case hexadecimal, two digits a byte.
+pub fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(DIGITS[usize::from(byte >> 4)] as char);
+        out.push(DIGITS[usize::from(byte & 15)] as char);
+    }
+    out
 }
 
 /// The bytes of standard Base64 (`+`, `/`, padding optional), or none if

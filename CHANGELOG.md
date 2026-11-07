@@ -10,6 +10,31 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Models on the cloud platforms, and providers by name
+
+- **AWS Bedrock** (`--model bedrock:<model>`): the Converse API natively,
+  each request signed with Signature Version 4 (an access key from the
+  environment or AWS's own files, a session token with it) or carrying a
+  Bedrock API key (`AWS_BEARER_TOKEN_BEDROCK`); pictures, tool calls and
+  their results, Claude's signed thinking given back, Claude's and Nova's
+  prompts cached at two points (`sion_agent::cloud::Bedrock`).
+- **Google Vertex AI** (`--model vertex:<model>`): Gemini and Claude,
+  streamed, with a token given or minted from a service account's key (a
+  JWT signed with RS256) or a person's sign-in from `gcloud auth
+  application-default login`, renewed before it lapses; Gemini in express
+  mode with an API key (`sion_agent::cloud::Vertex`).
+- **Azure OpenAI** (`--model azure:<deployment>`): the v1 API at the
+  resource's endpoint, its key as `api-key`.
+- **Providers by name**: `openrouter:`, `deepseek:`, `moonshot:`, `xai:`,
+  `groq:`, `together:`, `fireworks:`, `mistral:` and `cerebras:`, each with
+  its own address and key (`<NAME>_API_KEY`), so that several mix in one
+  agent's models; their keys can be kept on the machine, and OpenClaw's
+  and Hermes's settings naming them are imported as they are.
+
+Tested against stand-ins of each API (the signatures against those AWS's
+SDK computes for the same request); not run against AWS, Google Cloud or
+Azure. Trust atom `agent:cloud-credentials`.
+
 ### The agent improving itself: its own changes, sealed tasks, the improver, its own code
 
 - **Tasks from its own work.** `sion agent improve mark` says how a

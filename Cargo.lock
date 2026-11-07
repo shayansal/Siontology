@@ -1601,6 +1601,7 @@ dependencies = [
 name = "sion-agent"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "regex",
  "serde",
  "serde_json",

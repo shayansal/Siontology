@@ -37,7 +37,7 @@ About 39,400 lines of Rust under `src/` at the time of writing (`find crates/sio
 |---|---|---|
 | Run core | `session`, `policy`, `journal`, `tools`, `verify`, `trace`, `quarantine`, `imitation`, `permissions` | The loop and everything it enforces, as in the table above; a large toolbox's search (BM25), and what is loaded from it. |
 | Around calls | `code_mode`, `hooks` | Programs in Python that call the session's tools that only read, in the sandbox; the operator's hooks before and after calls, which may block one. |
-| Models and providers | `model`, `providers`, `scripted` | Provider-independent request and response types; the Anthropic Messages API, OpenAI-compatible chat, Google Gemini and OpenAI Responses over `sion-http`, each given back the reasoning it gave and told how hard to think; a model that plays a script. |
+| Models and providers | `model`, `providers`, `cloud`, `scripted` | Provider-independent request and response types; the Anthropic Messages API, OpenAI-compatible chat, Google Gemini and OpenAI Responses over `sion-http`, AWS Bedrock's Converse API (Signature Version 4) and Google Vertex AI (tokens minted from a service account's key or a person's sign-in), each given back the reasoning it gave and told how hard to think; a model that plays a script. |
 | Tools: builtin | `builtin`, `code` | Workspace files, a shell in the sandbox, web pages; edits, patches, file search and the project's checker and tests. |
 | Tools: web and screens | `websearch`, `browser`, `cdp`, `takeover`, `desktop`, `teach` | Web search services; Chromium driven over the DevTools Protocol, with a profile a person signed in with if given, and its page handed to them on a page of this machine's; an X desktop seen in screenshots; a person's browser recorded while they do a task once, and written down as a draft skill. |
 | Tools: sandbox and egress | `sandbox`, `egress`, `encoding` | Bubblewrap or a Docker image pinned by digest; a filtering proxy and an in-sandbox bridge for the hosts a skill's scripts may reach (`bin/sion-sandbox-bridge.rs`); Base64. |
@@ -58,6 +58,7 @@ About 39,400 lines of Rust under `src/` at the time of writing (`find crates/sio
 - [`Sandbox`](src/sandbox.rs): runs commands where they can write only the workspace.
 - [`Scripted`](src/scripted.rs): a model that plays a list of steps, with `when` and `unless` conditions on the conversation.
 - [`providers::Anthropic`, `OpenAiCompatible`, `Gemini`, `OpenAiResponses`](src/providers.rs): the HTTPS providers.
+- [`cloud::Bedrock`, `cloud::Vertex`, `cloud::SigV4`, `cloud::GoogleCredentials`, `cloud::NAMED`](src/cloud.rs): the cloud platforms, and the providers known by name.
 - [`skills`](src/skills.rs), [`evals::EvalSet`](src/evals.rs), [`evolve::evolve`](src/evolve.rs): skills, evaluation sets and improvement against them.
 - [`archive::Archive`](src/archive.rs), [`guard`](src/guard.rs), [`harvest::case_of`](src/harvest.rs), [`remote::serve` and `remote::run_candidate`](src/remote.rs): what the agent improving itself is built from.
 - [`graph`](src/graph.rs) and [`work`](src/work.rs): graphs of agents and self-started work.

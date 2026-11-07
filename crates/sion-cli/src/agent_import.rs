@@ -692,11 +692,21 @@ pub fn model_spec(provider: &str, model: &str) -> Result<String, String> {
         "openai-codex" => Ok(format!("chatgpt:{model}")),
         "google" | "gemini" | "google-gemini" => Ok(format!("gemini:{model}")),
         "ollama" | "lmstudio" | "llamacpp" | "vllm" => Ok(format!("local:{model}")),
-        "groq" => Err(format!("{provider}/{model}: give it as openai:{model} with OPENAI_BASE_URL set to Groq's")),
-        "openrouter" => Err(format!(
-            "{provider}/{model}: OpenRouter is reached here as openai:{model} with OPENAI_BASE_URL=https://openrouter.ai/api/v1"
-        )),
-        _ => Err(format!("{provider}/{model}: a provider sion does not reach by name")),
+        "amazon-bedrock" | "bedrock" | "aws-bedrock" => Ok(format!("bedrock:{model}")),
+        "google-vertex" | "vertex" | "vertex-ai" | "google-vertex-anthropic" => {
+            Ok(format!("vertex:{model}"))
+        }
+        "azure" | "azure-openai" => Ok(format!("azure:{model}")),
+        "kimi" | "moonshotai" => Ok(format!("moonshot:{model}")),
+        "x-ai" | "grok" => Ok(format!("xai:{model}")),
+        "togetherai" | "together-ai" => Ok(format!("together:{model}")),
+        "fireworks-ai" => Ok(format!("fireworks:{model}")),
+        name => match sion_agent::cloud::named(name) {
+            Some(named) => Ok(format!("{}:{model}", named.name)),
+            None => Err(format!(
+                "{provider}/{model}: a provider sion does not reach by name"
+            )),
+        },
     }
 }
 
@@ -706,8 +716,12 @@ fn key_name(provider: &str) -> Option<&'static str> {
         "anthropic" => Some("ANTHROPIC_API_KEY"),
         "openai" => Some("OPENAI_API_KEY"),
         "google" | "gemini" | "google-gemini" => Some("GEMINI_API_KEY"),
-        "groq" => Some("GROQ_API_KEY"),
-        _ => None,
+        "azure" | "azure-openai" => Some("AZURE_OPENAI_API_KEY"),
+        "kimi" | "moonshotai" => Some("MOONSHOT_API_KEY"),
+        "x-ai" | "grok" => Some("XAI_API_KEY"),
+        "togetherai" | "together-ai" => Some("TOGETHER_API_KEY"),
+        "fireworks-ai" => Some("FIREWORKS_API_KEY"),
+        name => sion_agent::cloud::named(name).map(|named| named.key),
     }
 }
 
@@ -1434,9 +1448,6 @@ pub fn hermes(home: &Path) -> Result<Plan, CliError> {
             }
         }
     }
-    if env.contains_key("OPENROUTER_API_KEY") {
-        plan.left.push("OPENROUTER_API_KEY: sion reaches OpenRouter as an OpenAI-compatible API (OPENAI_API_KEY, OPENAI_BASE_URL): set them yourself".into());
-    }
     // Chats.
     let list = |name: &str| -> Vec<String> {
         env.get(name)
@@ -2095,9 +2106,24 @@ mod tests {
             "chatgpt:gpt-5.2"
         );
         assert_eq!(model_spec("ollama", "qwen3").unwrap(), "local:qwen3");
-        assert!(model_spec("openrouter", "anthropic/claude")
-            .unwrap_err()
-            .contains("OPENAI_BASE_URL"));
+        assert_eq!(
+            model_spec("openrouter", "anthropic/claude-opus-5.5").unwrap(),
+            "openrouter:anthropic/claude-opus-5.5"
+        );
+        assert_eq!(
+            model_spec("kimi", "kimi-k2.5").unwrap(),
+            "moonshot:kimi-k2.5"
+        );
+        assert_eq!(
+            model_spec(
+                "amazon-bedrock",
+                "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            )
+            .unwrap(),
+            "bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        );
+        assert_eq!(key_name("groq"), Some("GROQ_API_KEY"));
+        assert_eq!(key_name("deepseek"), Some("DEEPSEEK_API_KEY"));
         assert!(model_spec("minimax", "M2").is_err());
     }
 

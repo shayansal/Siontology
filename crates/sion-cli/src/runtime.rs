@@ -583,11 +583,11 @@ pub fn thinking_of<'a>(
     if name.is_empty() {
         return Err(format!("{kind}:{rest} names no model"));
     }
-    if let (
-        Some(sion_agent::Thinking::Budget(_)),
-        "openai" | "local" | "openai-responses" | "chatgpt",
-    ) = (thinking, kind)
-    {
+    let chat_completions = matches!(
+        kind,
+        "openai" | "local" | "openai-responses" | "chatgpt" | "azure"
+    ) || sion_agent::cloud::named(kind).is_some();
+    if let (Some(sion_agent::Thinking::Budget(_)), true) = (thinking, chat_completions) {
         return Err(format!(
             "{kind} models take how hard to think as an effort level (#low, #medium, #high, \
              #xhigh), not a budget of tokens"
@@ -606,8 +606,13 @@ pub fn thinking_of<'a>(
 /// `local:<model>` (a model server on this machine or its network that
 /// speaks OpenAI's API, at `SION_LOCAL_MODEL_URL`, by default Ollama's
 /// `http://127.0.0.1:11434/v1`; key in `SION_LOCAL_MODEL_KEY` if it needs
-/// one), or `script:<file>` (a scripted model, for demos and
-/// tests), whose first `skip` steps are dropped. A key variable may hold
+/// one), `bedrock:<model>`, `vertex:<model>` and `azure:<deployment>` (the
+/// cloud platforms, [`crate::clouds`]), `<name>:<model>` for the providers
+/// known by name (`openrouter`, `deepseek`, `moonshot`, `xai`, `groq`,
+/// `together`, `fireworks`, `mistral`, `cerebras`: key in
+/// `<NAME>_API_KEY`, [`sion_agent::cloud::NAMED`]), or `script:<file>` (a
+/// scripted model, for demos and tests), whose first `skip` steps are
+/// dropped. A key variable may hold
 /// several keys, comma-separated, used in turn
 /// ([`sion_agent::providers::Keys`]). Each variable is the environment's,
 /// or else the one this machine keeps ([`crate::credentials`]). A base URL
@@ -623,7 +628,8 @@ pub fn thinking_of<'a>(
 pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
     let (kind, rest) = spec.split_once(':').ok_or_else(|| {
         CliError::Usage(format!(
-            "a model is anthropic:<model>, openai:<model>, openai-responses:<model>, chatgpt:<model>, gemini:<model>, local:<model> or script:<file>, not {spec}"
+            "a model is anthropic:<model>, openai:<model>, openai-responses:<model>, chatgpt:<model>, gemini:<model>, local:<model>, bedrock:<model>, vertex:<model>, azure:<deployment>, <provider>:<model> for {} or script:<file>, not {spec}",
+            named_providers()
         ))
     })?;
     let (rest, thinking) = thinking_of(kind, rest).map_err(CliError::Usage)?;
@@ -727,16 +733,61 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
             provider.thinking = thinking;
             Ok(Box::new(provider))
         }
+        "bedrock" => {
+            let client = http(env("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").as_deref())?;
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            Ok(Box::new(crate::clouds::bedrock(
+                rest,
+                thinking,
+                &env,
+                home.as_deref(),
+                client,
+            )?))
+        }
+        "vertex" => {
+            let client = http(env("VERTEX_BASE_URL").as_deref())?;
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            Ok(Box::new(crate::clouds::vertex(
+                rest,
+                thinking,
+                &env,
+                home.as_deref(),
+                client,
+            )?))
+        }
+        "azure" => {
+            let client = http(env("AZURE_OPENAI_ENDPOINT").as_deref())?;
+            Ok(Box::new(crate::clouds::azure(rest, thinking, &env, client)?))
+        }
         "script" => {
             let text = std::fs::read_to_string(rest)
                 .map_err(|e| CliError::Usage(format!("{rest}: {e}")))?;
             let scripted = Scripted::from_json(spec, &text).map_err(CliError::Usage)?;
             Ok(Box::new(scripted.skip(skip)))
         }
-        other => Err(CliError::Usage(format!(
-            "unknown model provider {other}: use anthropic, openai, openai-responses, chatgpt, gemini, local or script"
-        ))),
+        other => match sion_agent::cloud::named(other) {
+            Some(provider) => {
+                let base = crate::clouds::named_base(provider, &env);
+                let client = http(Some(&base))?;
+                Ok(Box::new(crate::clouds::named(
+                    provider, rest, thinking, &env, client,
+                )?))
+            }
+            None => Err(CliError::Usage(format!(
+                "unknown model provider {other}: use anthropic, openai, openai-responses, chatgpt, gemini, local, bedrock, vertex, azure, {} or script",
+                named_providers()
+            ))),
+        },
     }
+}
+
+/// The providers known by name, as a list to read.
+fn named_providers() -> String {
+    sion_agent::cloud::NAMED
+        .iter()
+        .map(|provider| provider.name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A session as it is kept on disk.

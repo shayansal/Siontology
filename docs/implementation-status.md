@@ -171,7 +171,15 @@ language model as an agent: the Anthropic Messages API (version
 2026-10-21), any OpenAI-compatible API (with `local:`, a model server on
 the machine or its network), Google's Gemini API natively, OpenAI's
 Responses API, the Responses API on a ChatGPT plan signed in on the
-machine (`sion agent chatgpt login`), or a scripted model; fallback with
+machine (`sion agent chatgpt login`), AWS Bedrock's Converse API (signed
+with Signature Version 4, or a Bedrock API key), Google Vertex AI
+(Gemini and Claude, with tokens given or minted from a service account's
+key or a person's sign-in), Azure OpenAI, nine providers that speak
+OpenAI's API under their own names (OpenRouter, DeepSeek, Moonshot, xAI,
+Groq, Together, Fireworks, Mistral, Cerebras), or a scripted model, the
+cloud platforms tested against stand-ins of their APIs (the signatures
+against those AWS's SDK computes) and not run against AWS, Google Cloud
+or Azure (trust atom `agent:cloud-credentials`); fallback with
 a 30-second cooldown; a profile's routes choosing its models for each
 task (pictures, work items and long tasks by rule, other tasks sorted by
 a model shown the task as data and allowed only to name a route, a
@@ -1597,6 +1605,7 @@ the architecture's own:
 | `agent:code-mode` | A program that calls tools runs in the shell's sandbox with no network and nothing of the machine mounted; its calls are limited to tools whose effect is to read, as they declare it. A tool that says it only reads but changes something, or reaches out, does so from code as it would for the model, up to 200 times a program. What the program prints is the model's own reading of what the tools returned. A tool that waits for a person (a page handed over) is not called from code, but an MCP server that asks the person during a call it serves from code keeps the program waiting for the answer. |
 | `agent:hooks` | The operator's hooks run as the operator, unsandboxed, with each call's input (and an after-hook its result) as JSON: they see what the calls they match carry. What an after-hook or a run's start hook prints is shown to the model as the operator's. A before-hook guards only the calls it matches, and only as well as its command checks them. |
 | `agent:worktrees` | A subagent's worktree is a checkout of its parent's repository: it reads all that HEAD holds, and what it commits on its branch is merged only by its parent. Git runs for it on this machine with its git directory named outright and hooks, the file-system monitor and signing off; filters the repository's own configuration names still run on what it wrote, as they would for the operator. |
+| `agent:cloud-credentials` | A model on a cloud platform is reached with the credentials its variables or the platform's own files hold: an AWS access key, a Bedrock API key, a Google token, a service account's key or a person's refresh token, an Azure key. They are read when an agent starts, held in its memory, and sent only to the platform's endpoint (or the one its variable names); a token minted from them is kept in memory until a minute before it lapses. Whoever can read those variables or files can use them. |
 | `agent:kept-reasoning` | What a model thought is kept in its session's file as its provider gave it: encrypted where the provider encrypts it (OpenAI's reasoning items, Anthropic's signatures and redacted thinking), and readable where it does not (Anthropic's summaries, a chat completions server's reasoning text). It is given back to whatever answers at the same kind of provider, base URL and model, so a base URL that is a proxy is given it too. Whether it is the model's own, unchanged, is checked by the provider, not here. |
 | `agent:live-voice` | A live conversation takes what its model of speech (or its loudness) finds near the microphone as the person's speech: without a wake word, what anyone says there goes to the transcriber and to the agent as the person's words; with `--wake-cloud`, everything said there goes to the transcriber's provider. The echo canceller takes out what the loudspeaker was given, not other sound: a voice from another device is speech. With turns told by what was said, what sounds unfinished is held a second and a half, and what is heard next within it is taken as its rest, whoever says it. |
 | `agent:realtime-voice` | Through a realtime model, what the agent is asked is the realtime model's account of what the person said, and what the person hears is its account of the agent's answer: it is told to pass both on faithfully and to answer nothing itself, which a model may not do. It sees the conversation's utterances and the agent's answers. |

@@ -64,6 +64,7 @@ pub mod archive;
 pub mod browser;
 pub mod builtin;
 pub mod cdp;
+pub mod cloud;
 pub mod code;
 pub mod code_mode;
 pub mod compare;

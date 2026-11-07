@@ -46,7 +46,7 @@ use crate::model::{
 /// more without that reasoning: reasoning that no longer checks (another
 /// key's organization, a changed model) is let go rather than failing the
 /// call. What comes back is marked as `from`'s.
-fn kept_or_not(
+pub(crate) fn kept_or_not(
     request: &Request,
     from: &str,
     mut send: impl FnMut(&Request) -> Result<Response, ModelError>,
@@ -107,14 +107,14 @@ pub const IMAGE_NOT_SHOWN: &str = "[a picture, no longer shown: take a new one t
 
 /// The pictures of a request, as the providers walk them: which are shown,
 /// and the place of the next one.
-struct Pictures<'a> {
+pub(crate) struct Pictures<'a> {
     kept: &'a BTreeMap<String, String>,
     shown: BTreeSet<usize>,
     next: usize,
 }
 
 impl<'a> Pictures<'a> {
-    fn of(messages: &[Message], kept: &'a BTreeMap<String, String>) -> Pictures<'a> {
+    pub(crate) fn of(messages: &[Message], kept: &'a BTreeMap<String, String>) -> Pictures<'a> {
         Pictures {
             kept,
             shown: images_shown(messages, kept),
@@ -123,7 +123,7 @@ impl<'a> Pictures<'a> {
     }
 
     /// The bytes of the next picture, `image`, if it is shown.
-    fn next(&mut self, image: &Image) -> Option<&'a str> {
+    pub(crate) fn next(&mut self, image: &Image) -> Option<&'a str> {
         let at = self.next;
         self.next += 1;
         if self.shown.contains(&at) {
@@ -135,14 +135,14 @@ impl<'a> Pictures<'a> {
 }
 
 /// The most bytes of a model's answer read.
-const MAX_ANSWER: u64 = 8 << 20;
+pub(crate) const MAX_ANSWER: u64 = 8 << 20;
 
 /// The most bytes of one event of a streamed answer.
-const MAX_EVENT: usize = 1 << 20;
+pub(crate) const MAX_EVENT: usize = 1 << 20;
 
 /// `POST url` with `body`, asking for the answer as Server-Sent Events; an
 /// error status is mapped as [`http_error`] maps it.
-fn post_stream(
+pub(crate) fn post_stream(
     client: &sion_http::Client,
     url: &str,
     headers: &[(&str, &str)],
@@ -168,13 +168,13 @@ fn post_stream(
 }
 
 /// Whether `response` streams events, rather than an answer whole.
-fn streams(response: &sion_http::Response) -> bool {
+pub(crate) fn streams(response: &sion_http::Response) -> bool {
     response.media_type().as_deref() == Some("text/event-stream")
 }
 
 /// An answer that came whole, although it was asked to stream: read in
 /// full, with `read`, and told at once.
-fn whole(
+pub(crate) fn whole(
     response: sion_http::Response,
     read: fn(&Value) -> Result<Response, ModelError>,
     seen: &mut dyn FnMut(Delta) -> bool,
@@ -217,7 +217,7 @@ fn stream_error(error: &Value) -> ModelError {
     }
 }
 
-fn http_error(error: sion_http::HttpError) -> ModelError {
+pub(crate) fn http_error(error: sion_http::HttpError) -> ModelError {
     use sion_http::HttpError::*;
     match error {
         Status { status, body } => match status {
@@ -401,20 +401,23 @@ impl Anthropic {
 
     /// How hard it thinks, a budget at least the API's least (1,024).
     fn thinks(&self) -> Option<Thinking> {
-        self.thinking.map(|thinking| match thinking {
-            Thinking::Budget(tokens) if tokens > 0 => Thinking::Budget(tokens.max(1_024)),
-            other => other,
-        })
+        claude_thinks(self.thinking)
     }
 
     /// The request body for `request`.
     pub fn body(&self, request: &Request) -> Value {
-        let from = self.source();
+        self.body_from(request, &self.source())
+    }
+
+    /// The request body for `request`, giving back the reasoning kept from
+    /// `from`: its own, or that of the platform it is reached through
+    /// ([`crate::cloud::Vertex`]).
+    pub(crate) fn body_from(&self, request: &Request, from: &str) -> Value {
         let mut pictures = Pictures::of(&request.messages, &request.images);
         let messages: Vec<Value> = request
             .messages
             .iter()
-            .map(|m| anthropic_message(m, &mut pictures, &from))
+            .map(|m| anthropic_message(m, &mut pictures, from))
             .collect();
         let tools: Vec<Value> = request
             .tools
@@ -434,28 +437,52 @@ impl Anthropic {
         if self.cache {
             body["cache_control"] = json!({"type": "ephemeral"});
         }
-        match self.thinks() {
-            None => {}
-            Some(Thinking::Effort(Effort::None) | Thinking::Budget(0)) => {
-                body["thinking"] = json!({"type": "disabled"});
-            }
-            Some(Thinking::Effort(level)) => {
-                body["thinking"] = json!({"type": "adaptive"});
-                body["output_config"] = json!({"effort": match level {
+        for (field, value) in claude_thinking(self.thinking, most) {
+            body[field] = value;
+        }
+        body
+    }
+}
+
+/// How hard Claude thinks when asked to as `thinking` says: a budget at
+/// least the API's least (1,024).
+pub(crate) fn claude_thinks(thinking: Option<Thinking>) -> Option<Thinking> {
+    thinking.map(|thinking| match thinking {
+        Thinking::Budget(tokens) if tokens > 0 => Thinking::Budget(tokens.max(1_024)),
+        other => other,
+    })
+}
+
+/// The fields of a request to Claude that say how hard it thinks
+/// (`thinking`, and `output_config` for an effort level) when it may write
+/// `most` tokens in all.
+pub(crate) fn claude_thinking(thinking: Option<Thinking>, most: u32) -> Vec<(&'static str, Value)> {
+    match claude_thinks(thinking) {
+        None => Vec::new(),
+        Some(Thinking::Effort(Effort::None) | Thinking::Budget(0)) => {
+            vec![("thinking", json!({"type": "disabled"}))]
+        }
+        Some(Thinking::Effort(level)) => vec![
+            ("thinking", json!({"type": "adaptive"})),
+            (
+                "output_config",
+                json!({"effort": match level {
                     Effort::None | Effort::Minimal | Effort::Low => "low",
                     Effort::Medium => "medium",
                     Effort::High => "high",
                     Effort::Xhigh => "xhigh",
                     Effort::Max => "max",
-                }});
-            }
-            Some(Thinking::Budget(tokens)) => {
-                // Less than all it may write, as the API asks.
-                let budget = tokens.min(most.saturating_sub(1));
-                body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
-            }
+                }}),
+            ),
+        ],
+        Some(Thinking::Budget(tokens)) => {
+            // Less than all it may write, as the API asks.
+            let budget = tokens.min(most.saturating_sub(1));
+            vec![(
+                "thinking",
+                json!({"type": "enabled", "budget_tokens": budget}),
+            )]
         }
-        body
     }
 }
 
@@ -847,6 +874,9 @@ pub struct OpenAiCompatible {
     /// `max_tokens` (OpenAI's reasoning models): learned when it refuses
     /// the one.
     completion_tokens: AtomicBool,
+    /// The header the key goes in as it is (Azure's `api-key`); none: as
+    /// `Authorization: Bearer <key>`.
+    pub key_header: Option<String>,
 }
 
 impl std::fmt::Debug for OpenAiCompatible {
@@ -866,6 +896,7 @@ impl OpenAiCompatible {
             keys: Keys::parse(key.unwrap_or_default()),
             thinking: None,
             completion_tokens: AtomicBool::new(false),
+            key_header: None,
         }
     }
 
@@ -1202,8 +1233,14 @@ impl OpenAiCompatible {
         format!("{}/chat/completions", self.base.trim_end_matches('/'))
     }
 
-    fn bearer(key: Option<&str>) -> Option<String> {
-        key.map(|k| format!("Bearer {k}"))
+    /// The header a request carries its key in: `Authorization: Bearer
+    /// <key>`, or the key as it is in [`OpenAiCompatible::key_header`].
+    fn key_headers(&self, key: Option<&str>) -> Vec<(String, String)> {
+        match (key, &self.key_header) {
+            (None, _) => Vec::new(),
+            (Some(key), Some(header)) => vec![(header.clone(), key.to_string())],
+            (Some(key), None) => vec![("Authorization".into(), format!("Bearer {key}"))],
+        }
     }
 }
 
@@ -1229,11 +1266,11 @@ impl OpenAiCompatible {
             let bytes =
                 serde_json::to_vec(body).map_err(|e| ModelError::Protocol(e.to_string()))?;
             self.keys.send(|key| {
-                let bearer = Self::bearer(key);
-                let headers: Vec<(&str, &str)> = bearer
-                    .as_deref()
-                    .map(|b| vec![("Authorization", b)])
-                    .unwrap_or_default();
+                let owned = self.key_headers(key);
+                let headers: Vec<(&str, &str)> = owned
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_str()))
+                    .collect();
                 self.client
                     .post_json(&self.url(), &headers, &bytes, MAX_ANSWER)
                     .map_err(http_error)
@@ -1265,11 +1302,11 @@ impl OpenAiCompatible {
             let bytes =
                 serde_json::to_vec(body).map_err(|e| ModelError::Protocol(e.to_string()))?;
             self.keys.send(|key| {
-                let bearer = Self::bearer(key);
-                let headers: Vec<(&str, &str)> = bearer
-                    .as_deref()
-                    .map(|b| vec![("Authorization", b)])
-                    .unwrap_or_default();
+                let owned = self.key_headers(key);
+                let headers: Vec<(&str, &str)> = owned
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_str()))
+                    .collect();
                 post_stream(&self.client, &self.url(), &headers, &bytes)
             })
         };
@@ -1393,7 +1430,14 @@ impl Gemini {
     /// as function declarations with their JSON Schemas, and how hard it
     /// thinks, with room to.
     pub fn body(&self, request: &Request) -> Value {
-        let mut body = gemini_body(request, &self.source());
+        self.body_from(request, &self.source())
+    }
+
+    /// The request body for `request`, giving back the signatures kept from
+    /// `from`: its own, or those of the platform it is reached through
+    /// ([`crate::cloud::Vertex`]).
+    pub(crate) fn body_from(&self, request: &Request, from: &str) -> Value {
+        let mut body = gemini_body(request, from);
         body["generationConfig"]["maxOutputTokens"] = json!(self.most_tokens(request.max_tokens));
         match self.thinking {
             None => {}

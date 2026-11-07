@@ -25,6 +25,10 @@ request the provider refuses as malformed or unauthorized is not retried.
 | `gemini:gemini-3-pro-preview` | Google's Gemini API, natively (`generateContent`, streamed): `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_BASE_URL` for another endpoint. The thought signature it gives with a call goes back with the call, as Gemini 3 requires, the one it puts on its text with the text, and a call another model made goes with the value Google gives for one it did not sign |
 | `openai-responses:<model>` | OpenAI's Responses API (`POST /v1/responses`), streamed and not stored: `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
 | `chatgpt:<model>` | The Responses API on the ChatGPT plan of whoever signed in on this machine (`sion agent chatgpt login`, below); `sion agent chatgpt models` lists the plan's models |
+| `bedrock:<model>` | AWS Bedrock's Converse API, natively: a model id or an inference profile (`bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0`), in `AWS_REGION` (or `AWS_DEFAULT_REGION`, or the profile's region, or `us-east-1`). A Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`, or an access key signed with Signature Version 4: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, or the profile's in AWS's own files (`AWS_PROFILE`, `~/.aws/credentials`). Below |
+| `vertex:<model>` | Google Vertex AI: Gemini (`generateContent`) and Claude (`rawPredict`), streamed, in `GOOGLE_CLOUD_PROJECT` at `GOOGLE_CLOUD_LOCATION` (by default `global`; the variables Claude's own tools use, `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION`, are read too). Below |
+| `azure:<deployment>` | Azure OpenAI's v1 API at `AZURE_OPENAI_ENDPOINT` (`https://<resource>.openai.azure.com`, its `/openai/v1`), the key in `AZURE_OPENAI_API_KEY`, sent as `api-key` |
+| `openrouter:`, `deepseek:`, `moonshot:`, `xai:`, `groq:`, `together:`, `fireworks:`, `mistral:`, `cerebras:` | Providers that speak OpenAI's chat completions, each at its own address with its own key: `<NAME>_API_KEY` (`OPENROUTER_API_KEY`), and `<NAME>_BASE_URL` to change the address. Several can be mixed in one agent's models: `--model openrouter:moonshotai/kimi-k2.5 --model deepseek:deepseek-chat` |
 | `script:<file>` | A scripted model, for tests and demos |
 
 Each variable may instead be kept on this machine, sealed (`sion agent
@@ -38,6 +42,41 @@ failure, and the next model is asked.
 
 Requests go through the same guarded HTTPS client as storage providers,
 offering the hybrid post-quantum key exchange first.
+
+### On the cloud platforms
+
+**Bedrock.** A request is Converse's (`POST /model/<model>/converse`):
+the system prompt, the conversation with its pictures, the tools as tool
+specifications, and the calls and their results, screenshots among them.
+An access key signs each request with AWS's Signature Version 4, a session
+token with it if the credentials are temporary; a profile that signs in
+another way (single sign-on, a role, a process) is not followed, and its
+credentials can be put in the environment first (`eval "$(aws configure
+export-credentials --format env)"`). Claude's and Nova's prompts are cached
+at two points (after the system prompt and at the end of the
+conversation). Claude's thinking is asked for as with Anthropic's API, in
+the fields Bedrock passes on to the model, and what it thought comes back
+signed, and goes back as it came. Bedrock's framing of a streamed answer
+is not read: its answers come whole. `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`
+names another endpoint.
+
+**Vertex AI.** A request carries a token: one given
+(`GOOGLE_OAUTH_ACCESS_TOKEN`, from `gcloud auth print-access-token`), or
+one minted when needed and kept until a minute before it lapses, with the
+credentials at `GOOGLE_APPLICATION_CREDENTIALS` (a service account's key:
+a JWT signed with its key, RS256, is exchanged at Google's token endpoint)
+or those `gcloud auth application-default login` keeps (a person's own
+sign-in, its refresh token exchanged). Claude's requests are Anthropic's,
+with Vertex AI's `anthropic_version`, the prompt cached at a breakpoint on
+the system prompt and one on the conversation's last block. Without a
+project, Gemini is reached in Vertex AI's express mode, its key in
+`GOOGLE_API_KEY`; Claude is reached only in a project. `VERTEX_BASE_URL`
+names another endpoint.
+
+These providers are tested against stand-ins of the platforms' APIs: the
+signatures against the ones AWS's own SDK computes for the same request,
+the tokens against a stand-in of Google's token endpoint. They have not
+been run against AWS, Google Cloud or Azure themselves here.
 
 ### Signing in with ChatGPT
 
@@ -73,8 +112,10 @@ for the models that take one.
 |---|---|---|
 | `anthropic:` | Adaptive thinking at that effort (`output_config.effort`; `minimal` is `low`); `none` turns thinking off where a model allows it | Thinking on that budget (`budget_tokens`, at least 1,024), for models before Claude 4.6 |
 | `openai-responses:`, `chatgpt:` | `reasoning.effort` (`max` is `xhigh`) | Not taken |
-| `openai:`, `local:` | `reasoning_effort` (`max` is `xhigh`) | Not taken |
+| `openai:`, `local:`, `azure:` and the providers known by name | `reasoning_effort` (`max` is `xhigh`) | Not taken |
 | `gemini:` | `thinkingLevel`, for Gemini 3 and later (`none` is `minimal`; above `high` is `high`) | `thinkingBudget`, for Gemini 2.5 (`#0` turns thinking off where a model allows it) |
+| `bedrock:` | Claude's, as `anthropic:`; other models are not asked | Claude's, as `anthropic:` |
+| `vertex:` | Claude's as `anthropic:`, Gemini's as `gemini:` | The same |
 
 Without it, the provider's default applies. A model told how hard to
 think is given room to: its answer may be as long as before, and its

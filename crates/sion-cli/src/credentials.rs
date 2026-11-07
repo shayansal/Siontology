@@ -23,7 +23,8 @@ pub const FILE: &str = "credentials.bin";
 pub const MAGIC: &[u8] = b"sion-agent-credentials/v1\n";
 
 /// The variables that may be kept: the models' and the speech services'.
-pub const NAMES: [&str; 14] = [
+/// AWS's access keys are not among them: AWS's own files keep those.
+pub const NAMES: [&str; 36] = [
     "SION_LOCAL_MODEL_URL",
     "SION_LOCAL_MODEL_KEY",
     "ANTHROPIC_API_KEY",
@@ -35,6 +36,28 @@ pub const NAMES: [&str; 14] = [
     "GEMINI_BASE_URL",
     "GROQ_API_KEY",
     "GROQ_BASE_URL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    "MOONSHOT_API_KEY",
+    "MOONSHOT_BASE_URL",
+    "XAI_API_KEY",
+    "XAI_BASE_URL",
+    "TOGETHER_API_KEY",
+    "TOGETHER_BASE_URL",
+    "FIREWORKS_API_KEY",
+    "FIREWORKS_BASE_URL",
+    "MISTRAL_API_KEY",
+    "MISTRAL_BASE_URL",
+    "CEREBRAS_API_KEY",
+    "CEREBRAS_BASE_URL",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_REGION",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
     "DEEPGRAM_API_KEY",
     "ELEVENLABS_API_KEY",
     "ELEVENLABS_API_BASE",

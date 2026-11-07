@@ -107,7 +107,7 @@ flowchart LR
     runtime --> tools
     runtime --> memory
   end
-  runtime <--> model["The model you chose<br/>Claude, OpenAI, Gemini,<br/>your ChatGPT plan, a local model"]
+  runtime <--> model["The model you chose<br/>Claude, OpenAI, Gemini, Bedrock, Vertex,<br/>your ChatGPT plan, a local model"]
   runtime -->|"payments, claims, tasks"| ledger["The ledger<br/>checks every payment<br/>against the charter"]
   memory -->|"the log's head"| ledger
 ```
@@ -209,8 +209,9 @@ What is enforced, and where:
   mind, each fact vouched for on someone's bond or revoked by its writer (a
   voucher withdraws only its own vouching); a revoked fact, and whatever
   was drawn from it, leaves the prompt. [Memory](docs/book/src/agent/memory.md#facts-from-other-owners-who-vouched-and-pulling-one-back)
-- **Models**: Claude, OpenAI, Gemini, your ChatGPT plan or a local model,
-  with fallback, their reasoning kept across tool calls, how hard each
+- **Models**: Claude, OpenAI, Gemini, your ChatGPT plan, a local model,
+  AWS Bedrock, Google Vertex AI, Azure OpenAI or nine providers by name
+  (OpenRouter, DeepSeek and others), with fallback, their reasoning kept across tool calls, how hard each
   thinks set per model, and a model for each kind of task, chosen by rule
   or by a small model and compared on your own tasks.
   [Models](docs/book/src/agent/models.md)

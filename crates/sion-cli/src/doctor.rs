@@ -224,6 +224,19 @@ pub fn findings_at(home: &Path, node: &str) -> Vec<Finding> {
         "OPENAI_BASE_URL",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "MOONSHOT_API_KEY",
+        "XAI_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "FIREWORKS_API_KEY",
+        "MISTRAL_API_KEY",
+        "CEREBRAS_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_ACCESS_KEY_ID",
+        "GOOGLE_CLOUD_PROJECT",
     ]);
     let chatgpt = crate::chatgpt::load()
         .map(|store| store.account.is_some())
