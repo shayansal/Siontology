@@ -17,7 +17,7 @@
 //! of a case are not, so they are narrower than they would be over more
 //! cases. With a scripted model, the figures are the script's.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -198,6 +198,31 @@ impl ArmResult {
             .collect()
     }
 
+    /// pass^`k`: the chance that `k` runs of a case, drawn from its runs,
+    /// all pass, averaged over the cases (τ-bench's estimate, unbiased for
+    /// runs that are independent): what a pass rate hides when an agent
+    /// passes a case only sometimes. None if a case has fewer than `k` runs,
+    /// or `k` is 0.
+    pub fn pass_k(&self, k: usize) -> Option<f64> {
+        if k == 0 {
+            return None;
+        }
+        let mut by_case: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        for trial in &self.trials {
+            let entry = by_case.entry(trial.case.as_str()).or_default();
+            entry.0 += 1;
+            entry.1 += usize::from(trial.passed);
+        }
+        if by_case.is_empty() || by_case.values().any(|(runs, _)| *runs < k) {
+            return None;
+        }
+        let sum: f64 = by_case
+            .values()
+            .map(|(runs, passed)| pass_hat_k(*runs, *passed, k))
+            .sum();
+        Some(sum / by_case.len() as f64)
+    }
+
     /// What a judge said of every run's steps, if it was asked.
     pub fn judged(&self) -> Option<Counts> {
         let mut all = Counts::default();
@@ -208,6 +233,16 @@ impl ArmResult {
         }
         any.then_some(all)
     }
+}
+
+/// The chance that `k` runs drawn without replacement from `n` runs, `c`
+/// of which passed, all passed: C(c, k) / C(n, k).
+pub fn pass_hat_k(n: usize, c: usize, k: usize) -> f64 {
+    if k > n || c < k {
+        return 0.0;
+    }
+    // The product of (c - i) / (n - i) for i below k: no factorials.
+    (0..k).map(|i| (c - i) as f64 / (n - i) as f64).product()
 }
 
 /// The z of a 95% two-sided interval.
@@ -389,6 +424,11 @@ impl Comparison {
                 arm.per_repeat(),
                 arm.tokens() / arm.total().max(1) as u64
             );
+            if self.repeats > 1 {
+                if let Some(all) = arm.pass_k(self.repeats as usize) {
+                    line.push_str(&format!("  pass^{} {:.1}%", self.repeats, 100.0 * all));
+                }
+            }
             if let (Some(single), false) = (single, arm.arm == Arm::Single) {
                 let (low, high) = newcombe(
                     (arm.passed(), arm.total()),
@@ -726,6 +766,7 @@ fn session(
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start(&format!("compare-{}", case.id), prompt, &limits);
     if held.tainted {
@@ -818,6 +859,41 @@ mod tests {
     use super::*;
     use crate::scripted::Scripted;
     use serde_json::json;
+
+    #[test]
+    fn pass_k_is_the_chance_that_every_run_passes() {
+        assert_eq!(pass_hat_k(4, 4, 4), 1.0);
+        assert_eq!(pass_hat_k(4, 3, 4), 0.0);
+        assert_eq!(pass_hat_k(4, 2, 1), 0.5);
+        // Two of three draws from 4 runs, 3 of which passed: 3/4 × 2/3.
+        assert!((pass_hat_k(4, 3, 2) - 0.5).abs() < 1e-12);
+        assert_eq!(pass_hat_k(2, 2, 3), 0.0);
+        let trial = |case: &str, repeat: u32, passed: bool| Trial {
+            case: case.into(),
+            repeat,
+            passed,
+            failures: Vec::new(),
+            tokens: 0,
+            answer: String::new(),
+            judged: None,
+        };
+        let arm = ArmResult {
+            arm: Arm::Single,
+            trials: vec![
+                trial("a", 1, true),
+                trial("a", 2, true),
+                trial("a", 3, true),
+                trial("b", 1, true),
+                trial("b", 2, false),
+                trial("b", 3, true),
+            ],
+        };
+        // Case a always passes; case b passes all three only never.
+        assert_eq!(arm.pass_k(3), Some(0.5));
+        assert_eq!(arm.pass_k(1), Some((1.0 + 2.0 / 3.0) / 2.0));
+        assert_eq!(arm.pass_k(4), None);
+        assert_eq!(arm.pass_k(0), None);
+    }
 
     #[test]
     fn the_z_of_a_level_is_the_normal_quantile() {

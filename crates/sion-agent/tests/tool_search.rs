@@ -74,6 +74,7 @@ fn what_a_search_finds_is_loaded_and_called_by_name() {
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start("s-search", "Email Ana", &rt.limits);
     assert_eq!(

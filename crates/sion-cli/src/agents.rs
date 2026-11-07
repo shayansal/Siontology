@@ -388,6 +388,21 @@ pub enum AgentCommand {
         /// a last answer, without tools, of what it did and what remains.
         #[arg(long, value_name = "TOKENS")]
         budget_tokens: Option<u64>,
+        /// Dollars each run may spend, its subagents' included, at the
+        /// models' prices (`sion agent prices`): before each model call,
+        /// what it sends at the uncached price and the most it may answer
+        /// must fit in what is left, as with --budget-tokens. Every model it
+        /// may use needs a price.
+        #[arg(long, value_name = "DOLLARS", value_parser = parse_usd)]
+        budget_usd: Option<u64>,
+        /// The most model turns a run may take (by default 32): it starts
+        /// with 12 and gains 4 with each turn whose tool calls succeed.
+        #[arg(long, value_name = "TURNS")]
+        max_turns: Option<u32>,
+        /// The most tokens each of the model's answers may have (by default
+        /// 4,096), not counting room to think.
+        #[arg(long, value_name = "TOKENS")]
+        max_tokens: Option<u32>,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -676,6 +691,12 @@ pub enum AgentCommand {
     /// it, signed with your certificate; and checking one.
     #[command(subcommand)]
     C2pa(crate::c2pa::C2paCommand),
+    /// The models' prices that runs are counted at: Anthropic's list
+    /// prices for Claude, built in, and yours from `$SION_HOME/prices.json`
+    /// (an object of model names, each with `input`, `output` and
+    /// optionally `cache_read` and `cache_write`, in dollars a million
+    /// tokens), in their place where both price a model.
+    Prices,
     /// Run scheduled jobs as they fall due.
     Scheduler {
         /// Run the jobs due now, then stop.
@@ -1019,6 +1040,7 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
             Ok(done) => done,
             Err(back) => return Err(Box::new(AgentCommand::C2pa(*back))),
         },
+        AgentCommand::Prices => show_prices(),
         other => return Err(Box::new(other)),
     })
 }
@@ -1053,6 +1075,9 @@ pub fn run(
             screen,
             no_skill_approvals,
             budget_tokens,
+            budget_usd,
+            max_turns,
+            max_tokens,
             quarantine,
             verify,
             verify_files,
@@ -1118,6 +1143,9 @@ pub fn run(
                     storage,
                     screen,
                     budget_tokens,
+                    budget_micros: budget_usd,
+                    max_turns,
+                    max_tokens,
                     verify,
                     verify_files,
                     shared_memory,
@@ -1429,6 +1457,7 @@ pub fn run(
         AgentCommand::Commerce(command) => crate::acp_cli::commerce(command),
         AgentCommand::Erc8004(command) => crate::erc8004::run(ledger, command),
         AgentCommand::C2pa(command) => crate::c2pa::run(ledger, command),
+        AgentCommand::Prices => show_prices(),
         AgentCommand::Scheduler { once, poll } => {
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)
@@ -2476,6 +2505,48 @@ pub fn parse_amount(text: &str) -> Result<Amount, CliError> {
         .parse()
         .map_err(|_| CliError::Usage(format!("{text:?} is not an amount")))?;
     Ok(Amount(whole * 1_000_000 + fraction))
+}
+
+/// Prints the prices runs are counted at, a model a line, per million
+/// tokens.
+fn show_prices() -> Result<(), CliError> {
+    let prices = crate::runtime::prices()?;
+    let path = crate::runtime::prices_path();
+    println!(
+        "dollars a million tokens: input, output, cache read, cache write (built in: Anthropic's list prices of {}; yours: {}{})",
+        sion_agent::prices::BUILTIN_AS_OF,
+        path.display(),
+        if path.exists() { "" } else { ", none yet" }
+    );
+    let shown = |p: &sion_agent::prices::Price| {
+        let d = |micros: u64| format!("{}", micros as f64 / 1e6);
+        format!(
+            "{} {} {} {}",
+            d(p.input),
+            d(p.output),
+            d(p.cache_read),
+            d(p.cache_write)
+        )
+    };
+    for (model, pricing) in &prices.models {
+        let mut line = format!("{model:<24} {}", shown(&pricing.price));
+        if let (Some(over), Some(long)) = (pricing.long_over, &pricing.long) {
+            line.push_str(&format!("; over {over} tokens of prompt: {}", shown(long)));
+        }
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// Dollars on the command line (`5`, `0.25`, `$12.50`), as micro-dollars.
+pub(crate) fn parse_usd(text: &str) -> Result<u64, String> {
+    match sion_agent::prices::parse_dollars(text) {
+        Some(0) => Err("a budget is more than nothing".into()),
+        Some(micros) => Ok(micros),
+        None => Err(format!(
+            "not an amount of dollars (at most six decimals): {text}"
+        )),
+    }
 }
 
 #[cfg(test)]

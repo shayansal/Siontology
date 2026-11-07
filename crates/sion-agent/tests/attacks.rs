@@ -126,6 +126,7 @@ impl Attack {
             verify: None,
             code: None,
             hooks: None,
+            extras: Default::default(),
         };
         let limits = Limits::default();
         let mut state = State::start(

@@ -792,6 +792,7 @@ fn a_run_s_budget_counts_the_room_its_model_thinks_in() {
             verify: None,
             code: None,
             hooks: None,
+            extras: Default::default(),
         };
         let mut state = State::start("s-room", "Hello", &rt.limits);
         rt.run(&mut state)

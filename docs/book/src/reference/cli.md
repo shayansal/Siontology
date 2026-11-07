@@ -822,6 +822,7 @@ Commands:
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   erc8004        The agent in ERC-8004's registries on EVM chains: its registration file, naming its Siontology DID; the calls that register it, bind its wallet, give it feedback and answer a validation, written out for a wallet to send
   c2pa           Content Credentials (C2PA) for what the agent makes: a manifest beside a file that binds its bytes and names the agent that made it, signed with your certificate; and checking one
+  prices         The models' prices that runs are counted at: Anthropic's list prices for Claude, built in, and yours from `$SION_HOME/prices.json` (an object of model names, each with `input`, `output` and optionally `cache_read` and `cache_write`, in dollars a million tokens), in their place where both price a model
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
   waiting        Everything that waits for a person: work items' questions, approvals and failures, messages that could not be sent, sessions waiting for approval, and chats waiting to be let in
@@ -1193,6 +1194,12 @@ Options:
           Ask before every call its autonomy does not cover, even those a skill it read pre-approves with `allowed-tools`
       --budget-tokens <TOKENS>
           Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
+      --budget-usd <DOLLARS>
+          Dollars each run may spend, its subagents' included, at the models' prices (`sion agent prices`): before each model call, what it sends at the uncached price and the most it may answer must fit in what is left, as with --budget-tokens. Every model it may use needs a price
+      --max-turns <TURNS>
+          The most model turns a run may take (by default 32): it starts with 12 and gains 4 with each turn whose tool calls succeed
+      --max-tokens <TOKENS>
+          The most tokens each of the model's answers may have (by default 4,096), not counting room to think
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --verify <COMMAND>
@@ -1467,6 +1474,12 @@ Options:
           Give it Home Assistant's devices as tools (HOME_ASSISTANT_URL, HOME_ASSISTANT_TOKEN): their states read, a service called as an external call
       --budget-tokens <TOKENS>
           Tokens each run may use, its subagents' included: before each model call, what it sends (estimated) and the most it may answer must fit in what is left, and when they do not, the run ends with a last answer, without tools, of what it did and what remains
+      --budget-usd <DOLLARS>
+          Dollars each run may spend, its subagents' included, at the models' prices (`sion agent prices`). Every model it may use needs a price
+      --max-turns <TURNS>
+          The most model turns a run may take (by default 32)
+      --max-tokens <TOKENS>
+          The most tokens each of the model's answers may have (by default 4,096), not counting room to think
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --shared-memory <LOG>
@@ -3741,6 +3754,18 @@ Options:
 ```
 
 See [Content Credentials: C2PA](../agent/c2pa.md).
+
+## `sion agent prices`
+
+```text
+The models' prices that runs are counted at: Anthropic's list prices for Claude, built in, and yours from `$SION_HOME/prices.json` (an object of model names, each with `input`, `output` and optionally `cache_read` and `cache_write`, in dollars a million tokens), in their place where both price a model
+
+Usage: sion agent prices [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
 
 ## `sion agent commerce`
 

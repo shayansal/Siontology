@@ -636,7 +636,7 @@ pub fn model(spec: &str, skip: usize) -> Result<Box<dyn Model>, CliError> {
     // A model server on this machine is reached; no other local address.
     let http = |base: Option<&str>| {
         sion_http::Client::new(sion_http::Options {
-            timeout: std::time::Duration::from_secs(300),
+            timeout: model_timeout(),
             allow_private: base.is_some_and(sion_agent::oauth::is_loopback),
             ..sion_http::Options::default()
         })
@@ -1682,6 +1682,7 @@ impl Saved {
         });
         // The operator's hooks: around each call, and each run.
         let operator = crate::hooks::OperatorHooks::load(self.workspace.as_deref())?;
+        let prices = prices()?;
         if let Some(note) = self
             .state
             .messages
@@ -1725,6 +1726,9 @@ impl Saved {
             hooks: operator
                 .for_tools()
                 .then_some(&operator as &dyn sion_agent::hooks::ToolHooks),
+            extras: sion_agent::session::Extras {
+                prices: Some(&prices),
+            },
         };
         let from = self.state.messages.len();
         let waiting = self.decided.take().or_else(|| self.state.pending.clone());
@@ -1820,6 +1824,7 @@ impl Saved {
         // What it shared: sent with the reply on a channel, named here.
         lines.extend(self.shared.iter().map(|path| format!("shared: {path}")));
         lines.push(ending(&ended, &self.state));
+        lines.extend(spent(&self.state));
         if !reflection.is_empty() {
             lines.push("asked whether to write down how it did the task, as a skill:".to_string());
             lines.extend(reflection);
@@ -2081,6 +2086,7 @@ impl Saved {
             verify: None,
             code: None,
             hooks: None,
+            extras: Default::default(),
         };
         let pending = self.state.pending.clone();
         match reply {
@@ -2367,6 +2373,29 @@ pub fn transcript(messages: &[sion_agent::Message]) -> Vec<String> {
     lines
 }
 
+/// What the session in `state` has used so far, its subagents included,
+/// and what that cost at the models' prices, in a line: none before its
+/// first model call.
+fn spent(state: &State) -> Option<String> {
+    let mut usage = state.usage;
+    usage.add(&state.delegated);
+    if usage.total() == 0 {
+        return None;
+    }
+    let mut cost = state.cost;
+    cost.add(&state.delegated_cost);
+    let cached = match usage.cached() {
+        Some((read, _)) if read > 0 => format!(", {read} of them read from the cache"),
+        _ => String::new(),
+    };
+    Some(format!(
+        "used {} tokens in {} turns{cached}; cost {}",
+        usage.total(),
+        state.turns_taken,
+        cost.shown()
+    ))
+}
+
 /// How a run of the session in `state` ended, in a line, with what to do
 /// next.
 fn ending(ended: &Ended, state: &State) -> String {
@@ -2414,9 +2443,48 @@ fn ending(ended: &Ended, state: &State) -> String {
             "session {id}: stopped going round in circles ({why}); `sion agent continue {id} --say <more>` to go on another way"
         ),
         Ended::OutOfBudget { .. } => format!(
-            "session {id}: its run's token budget is spent; `sion agent continue {id} --say <more>` to go on with another"
+            "session {id}: its run's budget is spent; `sion agent continue {id} --say <more>` to go on with another"
         ),
     }
+}
+
+/// How long a model call may take: `SION_MODEL_TIMEOUT` seconds, by
+/// default 300. Long answers that are not streamed need more.
+fn model_timeout() -> std::time::Duration {
+    let seconds = std::env::var("SION_MODEL_TIMEOUT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(300);
+    std::time::Duration::from_secs(seconds)
+}
+
+/// Where the operator's prices of models are kept: a JSON object of model
+/// names, each with prices in dollars a million tokens
+/// ([`sion_agent::prices::Prices::from_json`]).
+pub fn prices_path() -> PathBuf {
+    sion_home().join("prices.json")
+}
+
+/// The models' prices: those built in ([`sion_agent::prices::Prices::builtin`]),
+/// and the operator's ([`prices_path`]) in their place where both price a
+/// model.
+pub fn prices() -> Result<sion_agent::prices::Prices, CliError> {
+    let builtin = sion_agent::prices::Prices::builtin();
+    let path = prices_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => sion_agent::prices::Prices::from_json(&text)
+            .map(|own| builtin.with(own))
+            .map_err(|e| CliError::Usage(format!("{}: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(builtin),
+        Err(e) => Err(CliError::Usage(format!("{}: {e}", path.display()))),
+    }
+}
+
+/// A model's spec (`provider:model`, with options after a `#` or a space)
+/// as prices name it.
+fn model_name(spec: &str) -> &str {
+    spec.split(['#', ' ']).next().unwrap_or(spec)
 }
 
 /// This machine's Siontology home: its wallets, sessions and skills.
@@ -2726,6 +2794,13 @@ pub struct Equipment {
     /// Tokens each of its runs may use, its subagents' included, if they
     /// have a budget ([`Limits::budget_tokens`]).
     pub budget_tokens: Option<u64>,
+    /// Micro-dollars each run may spend, if it has a budget in dollars
+    /// ([`Limits::budget_micros`]): every model it may use needs a price.
+    pub budget_micros: Option<u64>,
+    /// The most turns a run may take, if not the default.
+    pub max_turns: Option<u32>,
+    /// The most tokens each answer may have, if not the default.
+    pub max_tokens: Option<u32>,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
@@ -2804,6 +2879,9 @@ pub fn start_watched(
         image_model,
         home_assistant,
         budget_tokens,
+        budget_micros,
+        max_turns,
+        max_tokens,
         verify,
         verify_files,
         shared_memory,
@@ -2879,10 +2957,35 @@ pub fn start_watched(
         }
     }
     let did = crate::agents::did(ledger.as_ref(), &agent)?;
-    let limits = Limits {
+    let mut limits = Limits {
         budget_tokens,
+        budget_micros,
         ..Limits::default()
     };
+    if let Some(most) = max_turns {
+        if most == 0 {
+            return Err(CliError::Usage("--max-turns is at least 1".into()));
+        }
+        limits.max_turns = most;
+        limits.turns = limits.turns.min(most);
+    }
+    if let Some(tokens) = max_tokens {
+        if tokens < 256 {
+            return Err(CliError::Usage("--max-tokens is at least 256".into()));
+        }
+        limits.max_tokens = tokens;
+    }
+    if budget_micros.is_some() {
+        let prices = prices()?;
+        for model in models.iter().chain(&subagent_models) {
+            if prices.of(model_name(model)).is_none() {
+                return Err(CliError::Usage(format!(
+                    "a budget in dollars needs every model's price, and {model} has none: add it to {}",
+                    prices_path().display()
+                )));
+            }
+        }
+    }
     let mut saved = Saved {
         wallet: wallet.to_string(),
         agent,

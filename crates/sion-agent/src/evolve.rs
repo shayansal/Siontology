@@ -605,6 +605,7 @@ fn propose(mutator: &dyn Model, prompt: &str, limits: &Limits, generation: usize
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start(&format!("mutate-{generation}"), prompt, limits);
     runtime.run(&mut state);
@@ -937,6 +938,7 @@ pub fn evolve_instructions(
             verify: None,
             code: None,
             hooks: None,
+            extras: Default::default(),
         };
         let mut state = State::start(
             &format!("mutate-instructions-{generation}"),

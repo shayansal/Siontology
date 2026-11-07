@@ -93,6 +93,7 @@ pub mod oauth;
 pub mod permissions;
 pub mod policy;
 pub mod practice;
+pub mod prices;
 pub mod providers;
 pub mod quarantine;
 pub mod remote;

@@ -515,6 +515,7 @@ pub fn propose(
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start(&format!("improve-propose-{round}"), &prompt, &limits);
     runtime.run(&mut state);
@@ -2179,6 +2180,7 @@ fn propose_improver(
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let prompt = meta_prompt(improver, graded, history);
     let mut state = State::start(&format!("improve-improver-{round}"), &prompt, &limits);

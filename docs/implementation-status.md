@@ -216,9 +216,14 @@ conversation for a reader without tools to answer to a schema, answers of
 values leaving the session untainted and the strings they give watched
 for in external calls and payments; a journal that returns the recorded outcome of a
 repeated call and never repeats one whose outcome is unknown; a turn
-budget of 12, plus 4 per turn of progress, at most 32; a token budget per
-run, if given, held before each model call to an estimate of what it sends
-and the most it may answer, ending with a last answer within a reserve;
+budget of 12, plus 4 per turn of progress, at most 32 unless the operator
+sets another most (`--max-turns`, and `--max-tokens` for each answer); a
+token budget per run, if given, held before each model call to an
+estimate of what it sends and the most it may answer, ending with a last
+answer within a reserve; a budget in dollars per run, if given, held the
+same way at the models' prices (Anthropic's list prices for Claude built
+in, others from the operator's file), and the cost of every run counted
+from the tokens providers report, calls to models without a price apart;
 a stop for a model that goes round in circles (told at the third same
 result in a row, stopped at the fifth); compaction that cuts the results
 of calls long past first and begins each summary with what the session
@@ -236,7 +241,7 @@ task to one agent unless it divides, and taint passed along the edges
 (`sion agent graph eval`) runs one agent, one agent voting over several
 tries and each graph on a set of tasks with stand-in tools, on the same
 token budget, each case several times, and reports pass rates with
-Wilson intervals; a graph whose rate beats both baselines by Newcombe's
+Wilson intervals and pass^k; a graph whose rate beats both baselines by Newcombe's
 interval earns the profile's traffic, and the router offers only graphs
 that have. A judge (`sion agent judge`) reads a session's steps after
 labelled examples, and is measured on labelled steps it was not shown. A
@@ -1658,6 +1663,7 @@ the architecture's own:
 | `agent:storage-from-account` | A storage deal an agent posts is paid from its account's balance, the money it pays fees with, not from its charter's budget: the charter's caveats do not bound it. |
 | `agent:skill-pre-approval` | A skill a session has read pre-approves the calls its `allowed-tools` names until the session ends: where the autonomy level would ask a person, they run. A rule naming a command's first words (`Bash(git:*)`) covers whatever that program can be told to do through its arguments, inside the sandbox. A pre-approval never covers a call the level refuses, spending, or a session that has read content from outside, and the agent cannot grant one, since it writes only a skill's name, description and instructions: it comes from whoever placed the skill, or from the operator's consent when installing its release. |
 | `agent:session-allowance` | A person who approves a call may allow, for the rest of the session, the same call again, or the calls of its tool a rule matches (`shell(git status:*)`, as a skill's `allowed-tools` writes it): those run without asking. A rule naming a command's first words covers whatever that program can be told to do through its arguments, inside the sandbox. An allowance never covers a call the level refuses, spending, or a session that has read content from outside (and none is given while it has); it is given only by someone who may decide, kept with the session with who gave it, and withdrawn with `/allowed off`. |
+| `agent:list-prices` | A run's cost, and its budget in dollars, are counted at list prices: Anthropic's for Claude as its pricing page gave them on 8 November 2026, and the operator's for other models. What a provider bills (a contract, a discount, a change of price, a region's surcharge) can differ, and a subagent's dollars count against the run once it reports. |
 | `agent:token-estimate` | A run's token budget is held to an estimate of what each model call sends (a token for every three bytes, pictures as some text would be) and the most it may answer; the tokens a provider reports are counted as it reports them. A provider that counts more tokens for the same request (some scripts, pictures) can take a run past its budget by the difference, and a subagent's tokens count once its run has ended. |
 | `agent:quarantine` | In quarantine, content from outside is held out of the agent's conversation and read by a reader that has no tools, whose answer is held to a schema the agent gives. An answer of values (booleans, numbers, strings from an enum, strings of a strict format) does not taint the session, though it is only what the content made the reader say, and can be false; an answer with free text taints it. The strings an answer gives are matched in arguments exactly as given (four characters or more), so an argument the agent writes from one in another form is not caught. A browser's pages, a desktop's screens and the shell's output are not held. |
 | `agent:verifier` | A check the operator gives (`--verify`) runs in the agent's sandbox, in its workspace, where the agent can change what the check reads or runs there (its tests, its scripts, a test runner's settings). The check's own files (`--verify-files`) are bound into the sandbox only while it runs, read-only, so the agent's commands neither see nor change them, though a tool that reads files outside the workspace (an MCP server of the agent's own) could. A check that passed shows that the command exited with status 0 then, not that the work is right, and a score is what the command printed. |

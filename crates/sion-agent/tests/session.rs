@@ -62,6 +62,7 @@ fn runtime<'a>(models: Vec<&'a dyn Model>, tools: &'a Toolbox, autonomy: Autonom
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     }
 }
 
@@ -1507,7 +1508,7 @@ fn a_run_with_a_token_budget_ends_with_a_last_answer_before_going_over() {
     let mut model = Scripted::new("m");
     for _ in 0..6 {
         model = model.then(|request| {
-            if last_says(request, "token budget for this task is nearly spent") {
+            if last_says(request, "budget for this task is nearly spent") {
                 // Its last answer: a call it makes now is not made.
                 return Ok(used(
                     vec![
@@ -1582,6 +1583,82 @@ fn a_run_with_a_token_budget_ends_with_a_last_answer_before_going_over() {
         }
     );
     assert!(model.requests().is_empty());
+}
+
+/// What a model priced at Claude Sonnet 5.5's list prices answers: 1,800
+/// tokens in, 1,500 of them from the cache, and 200 out, $0.00275.
+fn priced(content: Vec<Block>, stop: sion_agent::Stop) -> sion_agent::Response {
+    sion_agent::Response {
+        model: "claude-sonnet-5-5-20261001".into(),
+        ..used(content, stop)
+    }
+}
+
+#[test]
+fn a_run_counts_what_it_costs_and_keeps_to_a_budget_in_dollars() {
+    let (search, searches) = counted("search", Effect::Read, |input| {
+        Outcome::ok(format!("results for {}", input["q"]))
+    });
+    let mut tools = Toolbox::new();
+    tools.add(search);
+    let mut model = Scripted::new("anthropic:claude-sonnet-5-5");
+    for _ in 0..6 {
+        model = model.then(|request| {
+            if last_says(request, "budget for this task is nearly spent") {
+                return Ok(priced(
+                    vec![Block::text("I searched for a and b; c remains.")],
+                    sion_agent::Stop::EndTurn,
+                ));
+            }
+            let q = ["a", "b", "c", "d", "e", "f"][request.messages.len() / 2];
+            Ok(priced(
+                vec![Block::ToolUse {
+                    id: format!("s{}", request.messages.len()),
+                    name: "search".into(),
+                    input: json!({ "q": q }),
+                    signature: None,
+                }],
+                sion_agent::Stop::ToolUse,
+            ))
+        });
+    }
+    let prices = sion_agent::prices::Prices::builtin();
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.extras.prices = Some(&prices);
+    // Each call may cost up to $0.01 for its 1,000 tokens of answer, and
+    // $0.005 is kept for the reserve's 500: $0.019 pays for two calls
+    // ($0.00275 each), and a third would leave too little.
+    rt.limits.budget_micros = Some(19_000);
+    rt.limits.max_tokens = 1_000;
+    rt.limits.reserve_tokens = 500;
+    let mut state = State::start("s-dollars", "Search for a, b and c", &rt.limits);
+    let ended = rt.run(&mut state);
+    assert_eq!(
+        ended,
+        Ended::OutOfBudget {
+            text: "I searched for a and b; c remains.".into()
+        }
+    );
+    assert_eq!(searches.load(Ordering::SeqCst), 2);
+    // Three calls, the last answer among them, priced by the name the
+    // provider gave, dated.
+    assert_eq!(state.cost.micros, 3 * 2_750);
+    assert!(state.cost.complete());
+    assert!(state.cost.micros <= 19_000);
+    assert_eq!(state.cost.shown(), "$0.0083");
+}
+
+#[test]
+fn a_run_without_prices_counts_its_tokens_as_unpriced() {
+    let tools = Toolbox::new();
+    let model = Scripted::new("m")
+        .then(|_| Ok(used(vec![Block::text("Done.")], sion_agent::Stop::EndTurn)));
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("s-unpriced", "Say done", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert_eq!(state.cost.micros, 0);
+    assert_eq!(state.cost.unpriced.total(), 2_000);
+    assert!(state.cost.shown().starts_with("unknown"));
 }
 
 /// A tool whose calls run models of their own, as subagents do: it notes

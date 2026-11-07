@@ -417,6 +417,7 @@ where
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start(&format!("case-{}", start.case), &start.task, &limits);
     let ended = runtime.run(&mut state);

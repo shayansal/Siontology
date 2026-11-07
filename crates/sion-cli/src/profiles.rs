@@ -80,6 +80,16 @@ pub struct Profile {
     /// Tokens each run of its sessions may use, its subagents' included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u64>,
+    /// Micro-dollars each run of its sessions may spend, its subagents'
+    /// included, at the models' prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_micros: Option<u64>,
+    /// The most turns a run of its sessions may take, if not the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    /// The most tokens each answer may have, if not the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
     /// Whether its sessions hold what tools return from outside in
     /// quarantine ([`sion_agent::quarantine`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -170,6 +180,9 @@ impl Profile {
             image_model: self.image_model.clone(),
             home_assistant: self.home_assistant,
             budget_tokens: self.budget_tokens,
+            budget_micros: self.budget_micros,
+            max_turns: self.max_turns,
+            max_tokens: self.max_tokens,
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
@@ -489,6 +502,18 @@ pub enum ProfileCommand {
         /// a last answer, without tools, of what it did and what remains.
         #[arg(long, value_name = "TOKENS")]
         budget_tokens: Option<u64>,
+        /// Dollars each run may spend, its subagents' included, at the
+        /// models' prices (`sion agent prices`). Every model it may use
+        /// needs a price.
+        #[arg(long, value_name = "DOLLARS", value_parser = crate::agents::parse_usd)]
+        budget_usd: Option<u64>,
+        /// The most model turns a run may take (by default 32).
+        #[arg(long, value_name = "TURNS")]
+        max_turns: Option<u32>,
+        /// The most tokens each of the model's answers may have (by default
+        /// 4,096), not counting room to think.
+        #[arg(long, value_name = "TOKENS")]
+        max_tokens: Option<u32>,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -586,6 +611,9 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             image_model,
             home_assistant,
             budget_tokens,
+            budget_usd,
+            max_turns,
+            max_tokens,
             quarantine,
             shared_memory,
             confidential,
@@ -653,6 +681,9 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 },
                 home_assistant,
                 budget_tokens,
+                budget_micros: budget_usd,
+                max_turns,
+                max_tokens,
                 quarantine,
                 shared_memory,
                 confidential,
@@ -801,6 +832,18 @@ pub fn describe(profile: &Profile) -> String {
     }
     if let Some(tokens) = profile.budget_tokens {
         extras.push(format!("a budget of {tokens} tokens a run"));
+    }
+    if let Some(micros) = profile.budget_micros {
+        extras.push(format!(
+            "a budget of {} a run",
+            sion_agent::prices::dollars(micros)
+        ));
+    }
+    if let Some(turns) = profile.max_turns {
+        extras.push(format!("at most {turns} turns a run"));
+    }
+    if let Some(tokens) = profile.max_tokens {
+        extras.push(format!("answers of at most {tokens} tokens"));
     }
     if profile.quarantine {
         extras.push("quarantine".to_string());

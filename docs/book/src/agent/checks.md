@@ -155,10 +155,42 @@ task fixed when it was posted
   left, besides a reserve of 2,000 tokens for a last answer. When they do
   not, the model is asked, within what is left, to say what it did, what
   it found and what remains, and a call it makes then is not made; the
-  run ends with `its run's token budget is spent`. The subagents of a
+  run ends with `its run's budget is spent`. The subagents of a
   turn share what is left, the reserve kept back, and what they used
   counts against it. The estimate is not a provider's count: some text,
   and pictures, cost more tokens than it says (`agent:token-estimate`).
+- **A budget in dollars.** `--budget-usd <dollars>` (on `sion agent run`
+  and on profiles) does the same in dollars, at the models' prices: before
+  each model call, what it sends, priced as if none of it came from the
+  provider's cache, and the most it may answer, at the output price, must
+  fit in what is left, besides the reserve's tokens at the output price.
+  Every model the run may use needs a price, or the run does not start.
+  Anthropic's list prices for Claude models are built in, as its pricing
+  page gave them on 8 November 2026; others come from
+  `$SION_HOME/prices.json`, which takes the place of a built-in price for
+  the same model, and `sion agent prices` lists them. Subagents are held
+  to a token budget while they run, not to dollars: what they cost counts
+  against the run's dollars when they report.
+- **What a run cost.** A run ends with a line of what its session has used
+  so far, its subagents included, and what that cost:
+
+  ```text
+  used 41230 tokens in 9 turns, 30188 of them read from the cache; cost $0.12
+  ```
+
+  The cost is counted from the tokens each provider reports, at the
+  prices above: cache reads and (five-minute) cache writes at their own
+  prices, and a prompt over a model's long-context threshold at its long
+  price. A call to a model without a price is counted apart (`cost
+  unknown (… tokens of models without a price)`), never guessed. `/usage`
+  on a channel says the same. List prices are not what a provider bills
+  under a contract or a discount (`agent:list-prices`).
+- **Longer runs.** A run takes at most 32 turns, starting with 12 and
+  gaining 4 with each turn whose tool calls succeed; each answer has at
+  most 4,096 tokens, besides room to think. `--max-turns` and
+  `--max-tokens` (on `sion agent run` and on profiles) raise or lower
+  both, for tasks of hundreds of steps. A model call may take 300 seconds;
+  `SION_MODEL_TIMEOUT` (seconds) changes that.
 - **The kill switch.** `sion agent kill-switch on` stops every agent run
   on this machine before its next model or tool call:
 

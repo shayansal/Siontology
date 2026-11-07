@@ -10,6 +10,24 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Longer runs, what they cost, and pass^k
+
+- `--max-turns` and `--max-tokens` (on `sion agent run` and on profiles)
+  set how many turns a run may take (32 by default) and how long each
+  answer may be (4,096 tokens), for tasks of hundreds of steps;
+  `SION_MODEL_TIMEOUT` sets how long a model call may take.
+- Every run counts what it cost, in dollars, from the tokens providers
+  report: Anthropic's list prices for Claude models are built in (as of
+  8 November 2026), others come from `$SION_HOME/prices.json`, and calls
+  to a model without a price are counted apart. A run ends with a line of
+  tokens and cost; `/usage` says the same; `sion agent prices` lists the
+  prices.
+- `--budget-usd` holds a run to a budget in dollars, as `--budget-tokens`
+  does in tokens.
+- Comparisons (`sion agent graph eval`, `sion agent routes eval`) report
+  pass^k beside each pass rate: the chance that every run of a case
+  passes, averaged over the cases.
+
 ### Fixed, after an independent review of the above
 
 - A reusable holdout kept a change on the gain it answered from the tasks

@@ -140,6 +140,7 @@ fn runtime<'a>(
         verify: None,
         code,
         hooks,
+        extras: Default::default(),
     }
 }
 

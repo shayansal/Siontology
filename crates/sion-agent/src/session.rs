@@ -15,6 +15,7 @@ use crate::model::{
     Response, Role, Stop, ToolSpec, Usage,
 };
 use crate::policy::{Decision, Policy, Standing};
+use crate::prices::{Cost, Prices, Pricing};
 use crate::quarantine::{self, Held, QUARANTINE_READ};
 use crate::tools::{Dedup, Effect, Outcome, Toolbox, TOOLS_CALL, TOOLS_SEARCH};
 use crate::verify::{self, Attempts, Verdict, CANNOT_COMPLETE};
@@ -52,6 +53,15 @@ pub struct Limits {
     /// ([`Ended::OutOfBudget`]) rather than go over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u64>,
+    /// Micro-dollars a run may spend, its subagents' included, if it has a
+    /// budget in dollars: each model call is checked against what is left
+    /// before it is sent (what it sends at the uncached price, and the most
+    /// it may answer), at the prices of [`Extras::prices`], and the run ends
+    /// ([`Ended::OutOfBudget`]) rather than go over. A model without a price
+    /// is not held to it, so a runtime with such a budget prices every model
+    /// it is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_micros: Option<u64>,
     /// Tokens of the budget kept for a last answer without tools, in which
     /// the model says what it did and what remains.
     #[serde(default = "default_reserve_tokens")]
@@ -88,6 +98,7 @@ impl Default for Limits {
             cooldown: 30,
             stuck_after: default_stuck_after(),
             budget_tokens: None,
+            budget_micros: None,
             reserve_tokens: default_reserve_tokens(),
             verify_attempts: default_verify_attempts(),
         }
@@ -261,6 +272,10 @@ pub struct State {
     pub failures: BTreeMap<String, u32>,
     /// Tokens used.
     pub usage: Usage,
+    /// What its model calls cost, at the runtime's prices
+    /// ([`Extras::prices`]); calls without one, apart.
+    #[serde(default)]
+    pub cost: Cost,
     /// Until when each model is not asked (seconds), by its index.
     pub cooling: BTreeMap<usize, u64>,
     /// The call waiting for approval, if any.
@@ -284,6 +299,10 @@ pub struct State {
     /// Tokens the calls' own models used (subagents at work).
     #[serde(default)]
     pub delegated: Usage,
+    /// What the calls' own models cost (subagents at work); the tokens of
+    /// those that did not say, apart.
+    #[serde(default)]
+    pub delegated_cost: Cost,
     /// What tools returned from outside and was held out of the
     /// conversation, in quarantine ([`crate::quarantine`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -546,6 +565,18 @@ pub struct Runtime<'a> {
     /// call runs, which they may block, and after, which they may add a
     /// note to ([`crate::hooks`]).
     pub hooks: Option<&'a dyn ToolHooks>,
+    /// What else it has, each part off unless given ([`Extras`]).
+    pub extras: Extras<'a>,
+}
+
+/// What a runtime may be given besides what every runtime has: each part,
+/// left out, changes nothing.
+#[derive(Clone, Copy, Default)]
+#[allow(missing_debug_implementations)]
+pub struct Extras<'a> {
+    /// The models' prices: with them, a run counts what it costs in dollars
+    /// ([`State::cost`]) and keeps to [`Limits::budget_micros`].
+    pub prices: Option<&'a Prices>,
 }
 
 /// What checks a model's answer ([`Runtime::verify`]): given the session and
@@ -634,10 +665,10 @@ fn marked(ready: &Ready, mut outcome: Outcome) -> Outcome {
 /// What a tool use waiting for approval says to the model meanwhile.
 const WAITING: &str = "waiting for a person's approval";
 
-/// What the model is told when the run's token budget is nearly spent: its
-/// last answer.
-pub const BUDGET_SPENT: &str = "[The token budget for this task is nearly spent. Do not call \
-     tools now. Say what you did, what you found, and what remains to be done.]";
+/// What the model is told when the run's budget, in tokens or dollars, is
+/// nearly spent: its last answer.
+pub const BUDGET_SPENT: &str = "[The budget for this task is nearly spent. Do not call tools \
+     now. Say what you did, what you found, and what remains to be done.]";
 
 /// What a run used, when it began: to count what it uses against its
 /// budget.
@@ -645,6 +676,7 @@ pub const BUDGET_SPENT: &str = "[The token budget for this task is nearly spent.
 struct RunStart {
     usage: Usage,
     delegated: Usage,
+    micros: u64,
 }
 
 impl RunStart {
@@ -652,7 +684,20 @@ impl RunStart {
         RunStart {
             usage: state.usage,
             delegated: state.delegated,
+            micros: state
+                .cost
+                .micros
+                .saturating_add(state.delegated_cost.micros),
         }
+    }
+
+    /// Micro-dollars spent since, the subagents' included.
+    fn spent_micros(&self, state: &State) -> u64 {
+        state
+            .cost
+            .micros
+            .saturating_add(state.delegated_cost.micros)
+            .saturating_sub(self.micros)
     }
 
     /// Tokens used since, the subagents' included.
@@ -950,6 +995,24 @@ impl Runtime<'_> {
                     return self.wrap_up(state, left);
                 }
             }
+            // Within the budget in dollars, the same way, at the price of
+            // the model asked first.
+            if let (Some(budget), Some(pricing)) =
+                (self.limits.budget_micros, self.next_pricing(state))
+            {
+                let left = budget.saturating_sub(start.spent_micros(state));
+                let input = self.request_tokens(state, 0);
+                let output = self
+                    .request_tokens(state, self.limits.max_tokens)
+                    .saturating_sub(input);
+                let need = pricing.most(input, output);
+                let reserve = pricing.most(0, self.limits.reserve_tokens);
+                if need.saturating_add(reserve) > left {
+                    let answer = pricing
+                        .output_tokens_for(left.saturating_sub(pricing.most(input, 0)), input);
+                    return self.wrap_up(state, input.saturating_add(answer));
+                }
+            }
             let start_ms = wall_ms();
             let tainted = state.standing.tainted((self.now)());
             let response = match self.ask(state) {
@@ -977,7 +1040,7 @@ impl Runtime<'_> {
             );
             state.turns_left -= 1;
             state.turns_taken += 1;
-            state.usage.add(&response.usage);
+            self.account(state, &response);
             // Cut off by a stop while it wrote: what it wrote is kept, and
             // the run stops there.
             if response.stop == Stop::Cut {
@@ -1629,7 +1692,7 @@ impl Runtime<'_> {
             Ok(response) => response,
             Err(error) => return Outcome::error(format!("the reader could not answer: {error}")),
         };
-        state.usage.add(&response.usage);
+        self.account(state, &response);
         self.step(
             state,
             Step {
@@ -1753,7 +1816,7 @@ impl Runtime<'_> {
                     },
                 );
                 state.turns_taken += 1;
-                state.usage.add(&response.usage);
+                self.account(state, &response);
                 // Its words only: a call it asks for is not made.
                 let content: Vec<Block> = response
                     .content
@@ -1902,6 +1965,33 @@ impl Runtime<'_> {
         self.ask_with(state, self.limits.max_tokens)
     }
 
+    /// Counts what a model's answer used, and what it cost at the
+    /// runtime's prices.
+    fn account(&self, state: &mut State, response: &Response) {
+        state.usage.add(&response.usage);
+        match self.extras.prices {
+            Some(prices) => state
+                .cost
+                .add_call(prices, &response.model, &response.usage),
+            None => state.cost.unpriced.add(&response.usage),
+        }
+    }
+
+    /// The pricing of the model that would be asked next: the first not
+    /// cooling down after a failure.
+    fn next_pricing(&self, state: &State) -> Option<&Pricing> {
+        let prices = self.extras.prices?;
+        let now = (self.now)();
+        let model = self
+            .models
+            .iter()
+            .enumerate()
+            .find(|(index, _)| !state.cooling.get(index).is_some_and(|until| now < *until))
+            .or_else(|| self.models.iter().enumerate().next())?
+            .1;
+        prices.of(model.id())
+    }
+
     /// [`Runtime::ask`], the answer at most `max_tokens` long.
     fn ask_with(&self, state: &mut State, max_tokens: u32) -> Result<Response, ModelError> {
         let request = Request {
@@ -1939,7 +2029,14 @@ impl Runtime<'_> {
                 None => model.complete(&request),
             };
             match answered {
-                Ok(response) => return Ok(response),
+                Ok(mut response) => {
+                    // Named, for its trace and its price, as the provider
+                    // named it, or else as it is configured.
+                    if response.model.is_empty() {
+                        response.model = model.id().to_string();
+                    }
+                    return Ok(response);
+                }
                 Err(error) if error.transient() => {
                     state
                         .cooling
@@ -2275,6 +2372,11 @@ impl Runtime<'_> {
         let now = (self.now)();
         if let Some(spent) = outcome.spent {
             state.delegated.add(&spent);
+            // What it cost, if the tool said; its tokens, unpriced, if not.
+            match &outcome.cost {
+                Some(cost) => state.delegated_cost.add(cost),
+                None => state.delegated_cost.unpriced.add(&spent),
+            }
         }
         if outcome.untrusted {
             state.standing.taint(&self.policy, now);

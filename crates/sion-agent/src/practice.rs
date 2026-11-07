@@ -272,6 +272,7 @@ pub fn write(writer: &dyn Model, system: &str, prompt: &str, most: usize) -> Wri
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start("write-tasks", prompt, &limits);
     runtime.run(&mut state);

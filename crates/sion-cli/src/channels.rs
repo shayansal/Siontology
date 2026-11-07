@@ -608,7 +608,7 @@ pub fn converse_with(
             return Ok(reply(
                 current,
                 format!(
-                    "This session: {} turns, {} input and {} output tokens{}{}, {} messages{}{}.",
+                    "This session: {} turns, {} input and {} output tokens{}{}, {} messages{}{}; cost {}.",
                     state.turns_taken,
                     state.usage.input,
                     state.usage.output,
@@ -643,6 +643,11 @@ pub fn converse_with(
                     match saved.limits.budget_tokens {
                         Some(budget) => format!("; a run may use {budget} tokens"),
                         None => String::new(),
+                    },
+                    {
+                        let mut cost = state.cost;
+                        cost.add(&state.delegated_cost);
+                        cost.shown()
                     }
                 ),
             ));
@@ -2030,6 +2035,9 @@ mod tests {
             image_model: None,
             home_assistant: false,
             budget_tokens: None,
+            budget_micros: None,
+            max_turns: None,
+            max_tokens: None,
             quarantine: false,
             shared_memory: Vec::new(),
             confidential: false,

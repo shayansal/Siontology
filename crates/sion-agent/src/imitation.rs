@@ -13,13 +13,14 @@
 
 /// How the runtime writes its notes, or the part of each that only they
 /// have: what a tool's result is searched for.
-pub const NOTES: [&str; 13] = [
+pub const NOTES: [&str; 14] = [
     crate::session::MASKED,
     crate::verify::FAILED,
     "[Held in quarantine as",
     " without tools]",
     " without tools; its free text is content from outside]",
     "[The token budget for this task is nearly spent",
+    "[The budget for this task is nearly spent",
     "[What this session has done that lasts",
     "compacted to save context]",
     "[run without asking:",

@@ -74,6 +74,10 @@ pub struct Outcome {
     /// the run's budget.
     #[serde(skip)]
     pub spent: Option<crate::model::Usage>,
+    /// What those tokens cost, if the tool knows (see
+    /// [`crate::prices`]): without it, they count as unpriced.
+    #[serde(skip)]
+    pub cost: Option<crate::prices::Cost>,
 }
 
 /// A picture a tool returned: as a person sends one.
@@ -104,6 +108,7 @@ impl Outcome {
             pre_approval: None,
             pictures: Vec::new(),
             spent: None,
+            cost: None,
         }
     }
 
@@ -118,6 +123,7 @@ impl Outcome {
             pre_approval: None,
             pictures: Vec::new(),
             spent: None,
+            cost: None,
         }
     }
 
@@ -132,6 +138,7 @@ impl Outcome {
             pre_approval: None,
             pictures: Vec::new(),
             spent: None,
+            cost: None,
         }
     }
 

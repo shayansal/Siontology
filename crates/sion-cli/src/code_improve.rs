@@ -747,6 +747,7 @@ fn code(
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start(&format!("improve-code-{round}"), prompt, &limits);
     let ended = runtime.run(&mut state);

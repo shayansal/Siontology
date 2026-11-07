@@ -79,6 +79,7 @@ fn runtime<'a>(model: &'a Scripted, tools: &'a Toolbox, autonomy: Autonomy) -> R
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     }
 }
 

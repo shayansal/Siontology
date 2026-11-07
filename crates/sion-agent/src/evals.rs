@@ -443,6 +443,7 @@ pub fn run_case_with(
         verify: None,
         code: None,
         hooks: None,
+        extras: Default::default(),
     };
     let mut state = State::start(&format!("eval-{}", case.id), &case.task, limits);
     let ended = runtime.run(&mut state);

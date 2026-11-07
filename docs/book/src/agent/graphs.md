@@ -228,18 +228,23 @@ model:
 ```text
 $ sion agent graph eval team --set lookups.json --template fan-out --template work-check --runs 5
 set plan-lookups: 3 cases, each run 5 times by each way of working, on 30000 tokens a case
-single           5/15  passed   33.3% [15.2–58.3]  repeats [1, 1, 1, 1, 1]  0 tokens a run
-vote-3           5/15  passed   33.3% [15.2–58.3]  repeats [1, 1, 1, 1, 1]  0 tokens a run  vs single +0.0 points [-30.9, +30.9]
-fan-out         15/15  passed  100.0% [79.6–100.0]  repeats [3, 3, 3, 3, 3]  0 tokens a run  vs single +66.7 points [+34.4, +84.8]
-work-check       5/15  passed   33.3% [15.2–58.3]  repeats [1, 1, 1, 1, 1]  0 tokens a run  vs single +0.0 points [-30.9, +30.9]
+single           5/15  passed   33.3% [15.2–58.3]  repeats [1, 1, 1, 1, 1]  0 tokens a run  pass^5 33.3%
+vote-3           5/15  passed   33.3% [15.2–58.3]  repeats [1, 1, 1, 1, 1]  0 tokens a run  pass^5 33.3%  vs single +0.0 points [-30.9, +30.9]
+fan-out         15/15  passed  100.0% [79.6–100.0]  repeats [3, 3, 3, 3, 3]  0 tokens a run  pass^5 100.0%  vs single +66.7 points [+34.4, +84.8]
+work-check       5/15  passed   33.3% [15.2–58.3]  repeats [1, 1, 1, 1, 1]  0 tokens a run  pass^5 33.3%  vs single +0.0 points [-30.9, +30.9]
 earned: fan-out, above both baselines by Newcombe's 95% interval
 kept: $SION_HOME/agents/evals/team/9c81beef008297fb2cafdb18e0f0c119d3119d10680606a576de6075bfeb18a9.json
 ```
 
 Each line gives the runs that passed and their share, with its 95% Wilson
 interval, the passes of each repeat (to see how much runs vary), the
-tokens a run used (a scripted model reports none) and the difference from
-one agent with its interval. The interval treats every run as
+tokens a run used (a scripted model reports none), pass^k and the
+difference from one agent with its interval. pass^k, for k the number of
+runs of each case, is the chance that k runs of a case all pass, averaged
+over the cases (τ-bench's estimate, C(c, k) / C(n, k) for a case passed
+c times in n): a way that passes a case only sometimes scores lower here
+than in its pass rate. A script answers the same every time, so its
+pass^k is its pass rate. The interval treats every run as
 independent, though the repeats of a case are not, so it is narrower than
 it would be over as many different cases. The comparison is kept under
 `$SION_HOME/agents/evals/<profile>`, the latest for each set, and
