@@ -10,6 +10,28 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Fixed, after an independent review of the above
+
+- A reusable holdout kept a change on the gain it answered from the tasks
+  to choose on, which could be a change the sealed tasks showed no gain
+  on. It now only turns changes down; a confirmation keeps them.
+- `sion agent c2pa verify` took a data hash's exclusions as given, so a
+  manifest that excluded every byte bound any file. A sidecar's data hash
+  must now cover the whole file, and an assertion listed twice is refused.
+- `install --bonded` counted attestations on a bond an upheld challenge
+  had broken or its owner had withdrawn, and under any adjudicator the
+  attester chose. It now counts only those under adjudicators you name
+  (`--adjudicator`), on bonds unbroken and holding at least
+  `--least-bond`.
+- `sion agent erc8004` gave chains it did not know the mainnet registry's
+  address; it now knows five mainnets and nine testnets, and asks for
+  `--registry` on any other. Its wallet signature is good for four
+  minutes by default, under the registry's five, and feedback values past
+  10^38 are refused as the registry refuses them.
+- `run --practice` kept its archive of tried variants under the seal's
+  tasks rather than the tasks it chose on, and a seal asked anything as a
+  reusable holdout could still be published.
+
 ### Content Credentials for what the agent makes
 
 - **`sion agent c2pa sign <file> --profile <p> --cert <chain.pem> --key
@@ -77,19 +99,22 @@ written, refused and left out as above, and the lesson kept on them.
 ### A reusable holdout
 
 - **`sion agent improve seal <profile> --tasks <file> --reusable`** makes
-  the sealed tasks a reusable holdout (Thresholdout, from "The reusable
-  holdout", *Science*, 2015; `sion_agent::holdout`). `run` asks it about
-  each change's gain: answered from the tasks to choose on while the
-  sealed tasks agree within a noisy threshold, and from the sealed tasks
-  with Laplace noise when they do not, the budget (`--confirmations`)
-  spent only then. A change is kept when the gain answered is above the
-  threshold, 2/√n for n sealed tasks. A kept step records what was
-  answered, and a seal's claim its threshold and noise.
+  the sealed tasks a reusable holdout as well (Thresholdout, from "The
+  reusable holdout", *Science*, 2015; `sion_agent::holdout`). `run` asks
+  it about each change's gain before a confirmation is spent: answered
+  from the tasks to choose on while the sealed tasks agree within a noisy
+  threshold, and from the sealed tasks with Laplace noise when they do
+  not, its own budget spent only then. A change whose gain the sealed
+  tasks answer as not above the threshold (2/√n for n sealed tasks) is
+  turned down without spending a confirmation; every other change is
+  confirmed as on any seal. A kept step records what was answered, and a
+  seal's claim the threshold and noise.
 
-Tested with scripted models on 80 sealed tasks: the lesson kept without
-spending, a change that did nothing never asked about, and a gain the
-sealed tasks did not bear out answered from them until the budget was
-spent and the loop refused to run.
+Tested with scripted models on 80 sealed tasks: the lesson not turned
+down and kept by a confirmation, a change that did nothing never asked
+about, and a gain the sealed tasks did not bear out answered from them,
+spending no confirmation, until the holdout's budget was spent and the
+loop refused to run.
 
 ### What the agent's work gives for training an open model
 

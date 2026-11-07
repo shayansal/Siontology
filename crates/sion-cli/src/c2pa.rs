@@ -45,6 +45,9 @@ pub const TRAINED_ALGORITHMIC_MEDIA: &str =
 /// The label of the agent's own assertion.
 pub const AGENT_ASSERTION: &str = "org.siontology.agent";
 
+/// The most assertions a claim checked here lists.
+pub const MAX_ASSERTIONS: usize = 256;
+
 /// A UUID of ISO's JUMBF form: four characters, then 0011-0010-8000-00AA00389B71.
 const fn uuid(code: [u8; 4]) -> [u8; 16] {
     [
@@ -497,6 +500,29 @@ pub fn sign(
             "a manifest is signed with a certificate".into(),
         ));
     }
+    let hard = Cbor::map(vec![
+        ("name", Cbor::text("jumbf manifest")),
+        ("alg", Cbor::text("sha256")),
+        ("hash", Cbor::Bytes(Sha256::digest(asset).to_vec())),
+        ("pad", Cbor::Bytes(Vec::new())),
+    ]);
+    signed_with(hard, title, maker, action, chain, key)
+}
+
+/// A manifest store whose hard binding is `hard`, signed as [`sign`] signs.
+fn signed_with(
+    hard: Cbor,
+    title: &str,
+    maker: &Maker,
+    action: Action,
+    chain: &[Vec<u8>],
+    key: &SigningKey,
+) -> Result<Vec<u8>, CliError> {
+    if chain.is_empty() {
+        return Err(CliError::Usage(
+            "a manifest is signed with a certificate".into(),
+        ));
+    }
     let label = format!("urn:c2pa:{}", uuid_v4());
     let mut action_entry = vec![
         ("action", Cbor::text(action.label())),
@@ -519,12 +545,6 @@ pub fn sign(
             Cbor::Array(maker.models.iter().map(|m| Cbor::text(m)).collect()),
         ));
     }
-    let hard = Cbor::map(vec![
-        ("name", Cbor::text("jumbf manifest")),
-        ("alg", Cbor::text("sha256")),
-        ("hash", Cbor::Bytes(Sha256::digest(asset).to_vec())),
-        ("pad", Cbor::Bytes(Vec::new())),
-    ]);
     let assertions: Vec<(&str, Cbor)> = vec![
         ("c2pa.hash.data", hard),
         ("c2pa.actions.v2", actions),
@@ -776,6 +796,12 @@ pub fn verify(asset: &[u8], store: &[u8], roots: &[Vec<u8>], now: u64) -> Result
             listed.extend(items.iter().cloned());
         }
     }
+    if listed.len() > MAX_ASSERTIONS {
+        return Err(bad(format!(
+            "the claim lists more than {MAX_ASSERTIONS} assertions"
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
     for entry in &listed {
         let url = entry.get("url").and_then(Cbor::as_text).unwrap_or_default();
         let hash = entry
@@ -783,6 +809,9 @@ pub fn verify(asset: &[u8], store: &[u8], roots: &[Vec<u8>], now: u64) -> Result
             .and_then(Cbor::as_bytes)
             .unwrap_or_default();
         let label = url.rsplit('/').next().unwrap_or_default();
+        if !seen.insert(label.to_string()) {
+            return Err(bad(format!("the claim lists assertion {label} twice")));
+        }
         let found = assertions
             .iter()
             .find(|a| a.label == label)
@@ -795,28 +824,16 @@ pub fn verify(asset: &[u8], store: &[u8], roots: &[Vec<u8>], now: u64) -> Result
         let value = || -> Result<Cbor, CliError> { Cbor::decode(&content(found)?).map_err(bad) };
         if label == "c2pa.hash.data" {
             let value = value()?;
-            let mut hasher = Sha256::new();
-            let mut at = 0usize;
-            let mut exclusions: Vec<(usize, usize)> = match value.get("exclusions") {
-                Some(Cbor::Array(items)) => items
-                    .iter()
-                    .filter_map(|x| match (x.get("start"), x.get("length")) {
-                        (Some(Cbor::Int(s)), Some(Cbor::Int(l))) => {
-                            Some((usize::try_from(*s).ok()?, usize::try_from(*l).ok()?))
-                        }
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-            exclusions.sort();
-            for (start, length) in exclusions {
-                let start = start.min(asset.len());
-                hasher.update(&asset[at.min(start)..start]);
-                at = start.saturating_add(length).min(asset.len());
+            // A sidecar's manifest is not in the asset, so nothing in the
+            // asset is to be left out of its hash: an exclusion could leave
+            // out all of it, and bind the manifest to any file.
+            if matches!(value.get("exclusions"), Some(Cbor::Array(items)) if !items.is_empty()) {
+                return Err(bad(
+                    "the data hash leaves part of the asset out, which a sidecar manifest has no reason to",
+                ));
             }
-            hasher.update(&asset[at.min(asset.len())..]);
-            if Some(hasher.finalize().as_slice()) != value.get("hash").and_then(Cbor::as_bytes) {
+            if Some(Sha256::digest(asset).as_slice()) != value.get("hash").and_then(Cbor::as_bytes)
+            {
                 return Err(bad(
                     "the asset is not the one signed: its data hash differs",
                 ));
@@ -914,6 +931,49 @@ mod tests {
             Cbor::decode(&[0x5f]).is_err(),
             "indefinite lengths are refused"
         );
+    }
+
+    #[test]
+    fn a_data_hash_that_leaves_the_asset_out_is_refused() {
+        let fixture = |name: &str| {
+            std::fs::read_to_string(format!(
+                "{}/tests/fixtures/c2pa/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        let chain = certificates(&fixture("chain.pem")).unwrap();
+        let key = private_key(&fixture("test-only-leaf.key")).unwrap();
+        // Its exclusion covers every byte and its hash is of nothing: were
+        // exclusions taken as given, it would bind any file.
+        let hard = Cbor::map(vec![
+            (
+                "exclusions",
+                Cbor::Array(vec![Cbor::map(vec![
+                    ("start", Cbor::Int(0)),
+                    ("length", Cbor::Int(1 << 62)),
+                ])]),
+            ),
+            ("alg", Cbor::text("sha256")),
+            ("hash", Cbor::Bytes(Sha256::digest(b"").to_vec())),
+            ("pad", Cbor::Bytes(Vec::new())),
+        ]);
+        let store = signed_with(
+            hard,
+            "any",
+            &Maker::default(),
+            Action::Created,
+            &chain,
+            &key,
+        )
+        .unwrap();
+        for file in [b"one file".as_slice(), b"another".as_slice()] {
+            let refused = verify(file, &store, &[], 1_794_127_318).unwrap_err();
+            assert!(
+                refused.to_string().contains("leaves part of the asset out"),
+                "{refused}"
+            );
+        }
     }
 
     #[test]

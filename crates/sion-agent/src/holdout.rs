@@ -15,11 +15,17 @@
 //! adaptive questioner from learning the holdout through the answers.
 //!
 //! The defaults scale with the holdout: noise of `1/(2√n)` and a threshold
-//! four times that, the paper's proportions. A small holdout answers
-//! coarsely, and a decision should ask for a gain larger than the
-//! threshold ([`Thresholdout::threshold`]). The noise on the comparison
+//! four times that, the paper's proportions. The noise on the comparison
 //! also spends the budget on about one question in five where the two
-//! agree: still far fewer than one confirmation a question.
+//! agree.
+//!
+//! An answer taken from the tasks changes are chosen on says only that the
+//! holdout agreed with them within a noisy threshold, not that the
+//! statistic is what they say: with a holdout of hundreds of tasks the
+//! noise is too large for that to bound how often a change that does
+//! nothing would be answered as helping. So an answer is fit to turn a
+//! change down (the holdout's own value, not above the threshold), and a
+//! change it does not turn down is still to be confirmed as any is.
 
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +63,9 @@ pub struct Thresholdout {
     /// The threshold with its noise, `T + γ`, drawn again each time the
     /// holdout is spent.
     pub noisy: f64,
+    /// How many questions it has been asked.
+    #[serde(default)]
+    pub asked: u32,
 }
 
 /// A draw from the Laplace distribution of scale `b`, from `u`, uniform in
@@ -78,6 +87,7 @@ impl Thresholdout {
             budget,
             used: 0,
             noisy: threshold + laplace(2.0 * sigma, uniform()),
+            asked: 0,
         }
     }
 
@@ -98,6 +108,7 @@ impl Thresholdout {
         if self.left() == 0 {
             return None;
         }
+        self.asked = self.asked.saturating_add(1);
         let eta = laplace(4.0 * self.sigma, uniform());
         if (holdout - train).abs() > self.noisy + eta {
             self.used += 1;

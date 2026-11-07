@@ -667,8 +667,8 @@ pub struct Step {
     /// Of how many.
     pub budget: u32,
     /// If the sealed tasks were a reusable holdout
-    /// ([`sion_agent::holdout`]): the gain it answered. `confirm` is then
-    /// that gain twice, and `z` 0.
+    /// ([`sion_agent::holdout`]): the gain it answered before the change
+    /// was confirmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered: Option<sion_agent::holdout::Answer>,
     /// The digest of the practice tasks among those it was chosen on, if
@@ -962,10 +962,10 @@ pub struct Problem<'a> {
     /// The z each confirmation is held to.
     pub z: f64,
     /// Whether the sealed tasks are a reusable holdout
-    /// ([`sion_agent::holdout`]): a change is then kept when the gain it
-    /// is answered exceeds the holdout's threshold, and the budget is
-    /// spent only when the sealed tasks disagree with the tasks to choose
-    /// on, instead of a confirmation each.
+    /// ([`sion_agent::holdout`]): asked first about a change's gain, it
+    /// turns down, without spending a confirmation, a change whose gain the
+    /// sealed tasks answer is not above its threshold; any other change is
+    /// confirmed as on any seal.
     pub reusable: bool,
     /// The digest of the practice tasks among `train`, if there are any
     /// ([`crate::practice`]).
@@ -1589,19 +1589,20 @@ pub fn improve(
                     scored
                 }
             };
-            // A fixed confirmation is spent before the sealed tasks are run;
-            // a reusable holdout spends only when it disagrees, after.
-            let spent = if problem.reusable {
-                None
-            } else {
+            // On a reusable holdout the sealed tasks are run first and asked
+            // about the change's gain: a change they turn down spends no
+            // confirmation. Whatever is kept is kept by a confirmation.
+            let fixed_first = !problem.reusable;
+            let mut spent = None;
+            if fixed_first {
                 match (sinks.spend)() {
-                    Ok(spent) => Some(spent),
+                    Ok(confirmation) => spent = Some(confirmation),
                     Err(why) => {
                         report.stopped = Some(why.to_string());
                         break 'rounds;
                     }
                 }
-            };
+            }
             let after = score(
                 profile,
                 &child,
@@ -1618,22 +1619,57 @@ pub fn improve(
                 break 'rounds;
             }
             let rate = |o: &Outcome| o.passed as f64 / o.total.max(1) as f64;
-            // A reusable holdout decides on its answer alone: no sealed
-            // task's own result is looked at, as that would tell more of
-            // them than the noisy answer does.
-            let (confirm, z, confirmation, budget, verdict, answered) = match spent {
-                Some((confirmation, budget)) => {
-                    let confirm = newcombe_with(
-                        (after.outcome.passed, after.outcome.total),
-                        (before.outcome.passed, before.outcome.total),
-                        problem.z,
-                    );
+            let mut answered = None;
+            let mut turned_down = None;
+            if problem.reusable {
+                let train_gain = rate(&trained.outcome) - rate(&incumbent_train);
+                let sealed_gain = rate(&after.outcome) - rate(&before.outcome);
+                let (answer, used, budget, threshold) = match (sinks.ask)(train_gain, sealed_gain) {
+                    Ok(asked) => asked,
+                    Err(why) => {
+                        report.stopped = Some(why.to_string());
+                        break 'rounds;
+                    }
+                };
+                answered = Some(answer);
+                // Only an answer the sealed tasks gave turns a change down:
+                // one taken from the tasks to choose on says no more than
+                // that they agreed within the threshold, which is not that
+                // the change helps.
+                if answer.source == sion_agent::holdout::Source::Holdout
+                    && answer.value <= threshold
+                {
+                    turned_down = Some(format!(
+                        "the reusable holdout turned it down: the sealed tasks answered a gain of {:+.0}%, with noise, not above its threshold of {:.0}% (its budget {used} of {budget} used)",
+                        answer.value * 100.0,
+                        threshold * 100.0
+                    ));
+                } else {
+                    match (sinks.spend)() {
+                        Ok(confirmation) => spent = Some(confirmation),
+                        Err(why) => {
+                            report.stopped = Some(why.to_string());
+                            break 'rounds;
+                        }
+                    }
+                }
+            }
+            let (confirmation, budget) = spent.unwrap_or((0, 0));
+            let confirm = newcombe_with(
+                (after.outcome.passed, after.outcome.total),
+                (before.outcome.passed, before.outcome.total),
+                problem.z,
+            );
+            let z = problem.z;
+            let verdict = match turned_down {
+                Some(why) => Err(why),
+                None => {
                     let regressed = before
                         .cases
                         .iter()
                         .zip(&after.cases)
                         .position(|(b, a)| *b && !a);
-                    let verdict = match regressed {
+                    match regressed {
                         Some(at) => Err(format!("it fails sealed task {} that the agent passes", at + 1)),
                         None if confirm.0 <= 0.0 => Err(format!(
                             "{}/{} against {}/{} on the sealed tasks (interval at the seal's level {:+.0}% to {:+.0}%): not better beyond chance",
@@ -1641,49 +1677,14 @@ pub fn improve(
                             confirm.0 * 100.0, confirm.1 * 100.0
                         )),
                         None => Ok(format!(
-                            "interval at the seal's level {:+.0}% to {:+.0}%; confirmation {confirmation} of {budget}",
-                            confirm.0 * 100.0, confirm.1 * 100.0
-                        )),
-                    };
-                    (confirm, problem.z, confirmation, budget, verdict, None)
-                }
-                None => {
-                    let train_gain = rate(&trained.outcome) - rate(&incumbent_train);
-                    let sealed_gain = rate(&after.outcome) - rate(&before.outcome);
-                    let (answer, used, budget, threshold) =
-                        match (sinks.ask)(train_gain, sealed_gain) {
-                            Ok(asked) => asked,
-                            Err(why) => {
-                                report.stopped = Some(why.to_string());
-                                break 'rounds;
+                            "interval at the seal's level {:+.0}% to {:+.0}%; confirmation {confirmation} of {budget}{}",
+                            confirm.0 * 100.0, confirm.1 * 100.0,
+                            match &answered {
+                                Some(answer) => format!(", after the reusable holdout answered a gain of {:+.0}%", answer.value * 100.0),
+                                None => String::new(),
                             }
-                        };
-                    let from = match answer.source {
-                        sion_agent::holdout::Source::Train => {
-                            "from the tasks to choose on, as the sealed tasks agreed"
-                        }
-                        sion_agent::holdout::Source::Holdout => {
-                            "from the sealed tasks with noise, as they disagreed"
-                        }
-                    };
-                    let (gain, threshold_said) = (answer.value * 100.0, threshold * 100.0);
-                    let verdict = if answer.value > threshold {
-                        Ok(format!(
-                            "answered by the reusable holdout as a gain of {gain:+.0}%, above its threshold of {threshold_said:.0}%: {from}; its budget {used} of {budget} used"
-                        ))
-                    } else {
-                        Err(format!(
-                            "the reusable holdout answered a gain of {gain:+.0}%, not above its threshold of {threshold_said:.0}%: {from}; its budget {used} of {budget} used"
-                        ))
-                    };
-                    (
-                        (answer.value, answer.value),
-                        0.0,
-                        used,
-                        budget,
-                        verdict,
-                        Some(answer),
-                    )
+                        )),
+                    }
                 }
             };
             if let Err(why) = &verdict {

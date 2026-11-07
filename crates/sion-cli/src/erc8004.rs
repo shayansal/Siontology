@@ -45,16 +45,32 @@ pub const REPUTATION_MAINNET: &str = "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63
 /// The Reputation Registry on the testnets.
 pub const REPUTATION_TESTNET: &str = "0x8004B663056A597Dffe9eCcC1965A193B7388713";
 
-/// The testnets the registries are on at their testnet addresses: Sepolia,
-/// Base Sepolia, Optimism Sepolia, Arbitrum Sepolia and Polygon Amoy.
-pub const TESTNETS: [u64; 5] = [11_155_111, 84_532, 11_155_420, 421_614, 80_002];
+/// The mainnets the reference deployment lists at its mainnet addresses
+/// that are known here: Ethereum, Optimism, Polygon, Base and Arbitrum One.
+pub const MAINNETS: [u64; 5] = [1, 10, 137, 8_453, 42_161];
+
+/// The testnets known here at its testnet addresses: Sepolia, Base
+/// Sepolia, Optimism Sepolia, Arbitrum Sepolia, Polygon Amoy, Linea
+/// Sepolia, BNB Smart Chain's testnet, Avalanche Fuji and Hedera's testnet.
+/// On any other chain the registry is given, never guessed.
+pub const TESTNETS: [u64; 9] = [
+    11_155_111, 84_532, 11_155_420, 421_614, 80_002, 59_141, 97, 43_113, 296,
+];
 
 /// The EIP-712 domain of the Identity Registry.
 pub const IDENTITY_DOMAIN: (&str, &str) = ("ERC8004IdentityRegistry", "1");
 
 /// The most seconds ahead a wallet's signature may be good for, as the
-/// registry allows.
+/// registry allows (by the chain's clock).
 pub const MAX_DEADLINE: u64 = 5 * 60;
+
+/// How long a wallet's signature is good for unless told otherwise: under
+/// the registry's limit, so that a clock a little ahead of the chain's
+/// does not make it too far.
+pub const DEADLINE: u64 = 4 * 60;
+
+/// The largest feedback value the Reputation Registry takes, either way.
+pub const MAX_FEEDBACK: i128 = 100_000_000_000_000_000_000_000_000_000_000_000_000;
 
 /// Keccak-256.
 pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
@@ -295,13 +311,20 @@ pub fn agent_wallet_digest(
     keccak256(&message)
 }
 
-/// The Identity Registry on `chain`: the testnet address on a testnet, the
-/// mainnet one elsewhere, unless `given`.
+fn unknown_chain(chain: u64) -> CliError {
+    CliError::Usage(format!(
+        "no registry is known here on chain {chain}: give its address (--registry)"
+    ))
+}
+
+/// The Identity Registry on `chain`, unless `given`: the reference
+/// deployment's on a chain known here, and none on any other.
 pub fn identity_registry(chain: u64, given: Option<&str>) -> Result<Address, CliError> {
     match given {
         Some(given) => Address::parse(given),
         None if TESTNETS.contains(&chain) => Address::parse(IDENTITY_TESTNET),
-        None => Address::parse(IDENTITY_MAINNET),
+        None if MAINNETS.contains(&chain) => Address::parse(IDENTITY_MAINNET),
+        None => Err(unknown_chain(chain)),
     }
 }
 
@@ -310,7 +333,8 @@ pub fn reputation_registry(chain: u64, given: Option<&str>) -> Result<Address, C
     match given {
         Some(given) => Address::parse(given),
         None if TESTNETS.contains(&chain) => Address::parse(REPUTATION_TESTNET),
-        None => Address::parse(REPUTATION_MAINNET),
+        None if MAINNETS.contains(&chain) => Address::parse(REPUTATION_MAINNET),
+        None => Err(unknown_chain(chain)),
     }
 }
 
@@ -441,6 +465,11 @@ pub fn feedback_tx(
 ) -> Result<Tx, CliError> {
     if feedback.decimals > 18 {
         return Err(CliError::Usage("feedback has 0 to 18 decimals".into()));
+    }
+    if feedback.value.abs() > MAX_FEEDBACK {
+        return Err(CliError::Usage(
+            "the registry takes feedback values of at most 10^38 either way".into(),
+        ));
     }
     Ok(Tx::new(
         chain,
@@ -719,6 +748,12 @@ mod tests {
             Address::parse(IDENTITY_MAINNET).unwrap().to_string(),
             IDENTITY_MAINNET
         );
+        // On a chain not known here, the registry is given, never guessed.
+        assert!(identity_registry(59_144, None).is_err());
+        assert_eq!(
+            identity_registry(59_141, None).unwrap().to_string(),
+            IDENTITY_TESTNET
+        );
     }
 
     #[test]
@@ -901,8 +936,9 @@ pub enum Erc8004Command {
         /// The agent's owner, who sends the call.
         #[arg(long)]
         owner: String,
-        /// Seconds the signature is good for (at most 300).
-        #[arg(long, default_value_t = MAX_DEADLINE)]
+        /// Seconds the signature is good for (at most 300, by the
+        /// chain's clock).
+        #[arg(long, default_value_t = DEADLINE)]
         within: u64,
         /// The chain (EIP-155 id).
         #[arg(long, default_value_t = 1)]

@@ -378,7 +378,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &[],
         &[bob],
         1,
-        false,
+        None,
         &rules,
         false,
         6,
@@ -393,7 +393,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         std::slice::from_ref(&attestation),
         &[alice],
         1,
-        false,
+        None,
         &rules,
         false,
         6,
@@ -410,7 +410,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         std::slice::from_ref(&attestation),
         &[bob],
         1,
-        false,
+        None,
         &PatchRules::default(),
         false,
         6,
@@ -431,7 +431,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         std::slice::from_ref(&attestation),
         &[bob],
         1,
-        false,
+        None,
         &rules,
         false,
         6,
@@ -453,7 +453,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &[],
         &[],
         1,
-        false,
+        None,
         &rules,
         true,
         7,
@@ -539,7 +539,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         std::slice::from_ref(&attestation),
         &[bob, carol],
         1,
-        true,
+        Some((std::slice::from_ref(&judge), Amount::units(10))),
         &rules,
         false,
         10,
@@ -555,7 +555,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         std::slice::from_ref(&bonded),
         &[carol],
         1,
-        true,
+        Some((std::slice::from_ref(&judge), Amount::units(10))),
         &rules,
         false,
         10,
@@ -574,7 +574,7 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &[],
         &[],
         1,
-        false,
+        None,
         &rules,
         true,
         11,
@@ -627,13 +627,65 @@ fn the_agent_changes_its_own_code_in_a_sandbox_and_releases_what_sealed_tasks_co
         &[bonded],
         &[carol],
         1,
-        true,
+        Some((std::slice::from_ref(&judge), Amount::units(10))),
         &rules,
         false,
         12,
     )
     .unwrap_err();
     assert!(fallen.to_string().contains("no longer stands"), "{fallen}");
+    // Attesting again on the broken bond, the ledger issues the claim, but
+    // a bond an upheld challenge broke stands behind nothing; nor does an
+    // attestation count under an adjudicator the installer did not name.
+    let (again, _) = code_improve::attest(
+        &mut session,
+        ledger.as_ref(),
+        "carol",
+        &claim,
+        &patch,
+        &sealed_tasks,
+        Some(judge),
+        &settings,
+        13,
+    )
+    .unwrap();
+    let again = again.unwrap().as_hash().to_hex();
+    let broken = code_improve::install(
+        ledger.as_ref(),
+        "lead",
+        &claim,
+        &source,
+        &patch,
+        std::slice::from_ref(&again),
+        &[carol],
+        1,
+        Some((std::slice::from_ref(&judge), Amount::units(10))),
+        &rules,
+        false,
+        14,
+    )
+    .unwrap_err();
+    assert!(broken.to_string().contains("bond is broken"), "{broken}");
+    let stranger = bond_atom(AtomClass::Adjudicator, &session.id("nobody"), "adjudicator").id;
+    let unnamed = code_improve::install(
+        ledger.as_ref(),
+        "lead",
+        &claim,
+        &source,
+        &patch,
+        &[again],
+        &[carol],
+        1,
+        Some((std::slice::from_ref(&stranger), Amount::units(10))),
+        &rules,
+        false,
+        14,
+    )
+    .unwrap_err();
+    assert!(
+        unnamed.to_string().contains("adjudicator you did not name"),
+        "{unnamed}"
+    );
     assert_eq!(
         std::fs::read_to_string(source.join("agent.py")).unwrap(),
         AGENT

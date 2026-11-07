@@ -707,9 +707,7 @@ fn a_reusable_holdout_answers_from_the_tasks_to_choose_on_while_they_agree() {
         "{holdout:?}"
     );
     assert_eq!((holdout.budget, holdout.used), (3, 0));
-    // It is asked, never spent; and its noisy threshold is drawn once.
-    let spent = sealed::spend("reuse", &seal.sealed).unwrap_err();
-    assert!(spent.to_string().contains("reusable"), "{spent}");
+    // Its noisy threshold is drawn once.
     assert!(sealed::make_reusable("reuse").is_err());
 
     // The lesson helps as much on the sealed tasks as on the others: kept
@@ -748,20 +746,22 @@ fn a_reusable_holdout_answers_from_the_tasks_to_choose_on_while_they_agree() {
     let step = &steps[0];
     assert_eq!(step.to.learned, LESSON);
     let answered = step.answered.expect("answered by the holdout");
-    assert!(answered.value > holdout.threshold, "{step:?}");
-    assert_eq!((step.z, step.budget), (0.0, 3));
+    // It was not turned down, and it was kept by a confirmation, as on any
+    // seal: the answer alone keeps nothing.
+    assert!(
+        answered.source == Source::Train || answered.value > holdout.threshold,
+        "{step:?}"
+    );
+    assert_eq!((step.confirmation, step.budget), (1, 3));
+    assert!(step.confirm.0 > 0.0 && step.z > 2.0, "{step:?}");
+    let after_run = sealed::current("reuse").unwrap();
+    assert_eq!(after_run.used, 1, "one confirmation spent");
+    let disagreed = after_run.reusable.as_ref().unwrap().used;
     let rate = |o: &self_improve::Outcome| o.passed as f64 / o.total as f64;
-    let used = sealed::current("reuse").unwrap().used;
-    match answered.source {
-        // Agreeing, it is answered from the tasks to choose on and spends
-        // nothing.
-        Source::Train => {
-            assert_eq!(used, 0);
-            let gain = rate(&step.train_after) - rate(&step.train_before);
-            assert!((answered.value - gain).abs() < 1e-12, "{step:?}");
-        }
-        // Its noise may say they disagree, now and then: one spent.
-        Source::Holdout => assert_eq!(used, 1),
+    if answered.source == Source::Train {
+        let gain = rate(&step.train_after) - rate(&step.train_before);
+        assert!((answered.value - gain).abs() < 1e-12, "{step:?}");
+        assert_eq!(disagreed, 0);
     }
 
     // A gain the sealed tasks do not bear out is answered from them, with
@@ -785,8 +785,10 @@ fn a_reusable_holdout_answers_from_the_tasks_to_choose_on_while_they_agree() {
     }
     let ended = ended.expect("the budget is spent");
     assert!(ended.contains("all its budget"), "{ended}");
-    assert_eq!(from_holdout, 3 - used);
-    assert_eq!(sealed::current("reuse").unwrap().used, 3);
+    assert_eq!(from_holdout, 3 - disagreed);
+    let spent = sealed::current("reuse").unwrap();
+    assert_eq!(spent.reusable.unwrap().used, 3);
+    assert_eq!(spent.used, 1, "its disagreements spend no confirmation");
     let refused = run(&proposer).unwrap_err().to_string();
     assert!(refused.contains("all its budget"), "{refused}");
     let _ = std::fs::remove_dir_all(&home);

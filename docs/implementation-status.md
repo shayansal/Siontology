@@ -767,12 +767,14 @@ session's tools answered and whose checks are that a run makes the
 changes a good session made, or none of a bad one's. `seal` splits a set
 by a draw from its digest and a seed, adds canary cases to the sealed part
 (a code word no run is told), and allows a number of confirmations; with
-`--reusable` the sealed part is a reusable holdout instead (Thresholdout:
-a change's gain answered from the tasks to choose on while the sealed
-tasks agree within a noisy threshold, and from the sealed tasks with
-Laplace noise when they do not, the budget spent only then, a change kept
-when the gain answered is above the threshold); with a wallet its digests
-are published as a claim before anything is tried.
+`--reusable` the sealed part is a reusable holdout as well (Thresholdout:
+asked about a change's gain before a confirmation is spent, answered from
+the tasks to choose on while the sealed tasks agree within a noisy
+threshold and from the sealed tasks with Laplace noise when they do not,
+its own budget spent only then; a change whose gain the sealed tasks
+answer as not above the threshold is turned down without spending a
+confirmation, and every other change is confirmed as on any seal); with a
+wallet its digests are published as a claim before anything is tried.
 `run` lets the agent improve itself: a proposer model, shown the operator's
 words (fixed), what the agent has learned, the models it may run on, the
 tasks it failed among those to choose on and what was tried before —
@@ -822,7 +824,9 @@ the evidence, published as a claim the transaction signs. `attest`
 rebuilds and scores someone else's release on the sealed tasks they hand
 over, and publishes what it found if the release holds up, with
 `--adjudicator` as a claim on the attester's bond `agent-attester` that
-a challenge the adjudicator upholds shows false; `install`
+a challenge the adjudicator upholds shows false (`install --bonded`
+counting only those under adjudicators it names, on bonds unbroken and
+holding at least `--least-bond`); `install`
 applies a release to a checkout only when its patch is the one published
 and attestations by verifiers its owner names hold, and `--undo` takes it
 out (`agent:self-improvement`, `agent:code-release`). Tested on a devnet:
@@ -831,10 +835,10 @@ that changed nothing, one that repeated a sealed task and a model not
 allowed turned down, the lesson kept, published, applied and reaching the
 next session, a canary's code word stopping the loop before it spent a
 confirmation, and undo; on a reusable holdout of 80 sealed tasks, the
-lesson kept on the gain answered without spending, a change that did
+lesson not turned down and kept by one confirmation, a change that did
 nothing never asked about, and a gain the sealed tasks did not bear out
-answered from them until the budget was spent and the loop refused to
-run; a shortcut that fitted only the tasks it was chosen on turned down on
+answered from them, spending no confirmation, until the holdout's budget
+was spent and the loop refused to run; a shortcut that fitted only the tasks it was chosen on turned down on
 the challenger's variants before it spent a confirmation, and the lesson
 challenged and kept; practice tasks written, one whose failure passed
 refused as its writer was told, one the agent always passed and one that
@@ -846,7 +850,8 @@ the protocol in bubblewrap, released, attested by another account,
 installed only with that attestation and taken out, attested again on a
 bond (refused by the ledger until the bond was posted), installed with
 `--bonded` on that attestation alone, and refused once a challenge to the
-bond was upheld; and this runtime
+bond was upheld, as was an attestation issued again on the broken bond
+and one under an adjudicator the installer did not name; and this runtime
 itself, built, run as a candidate from inside bubblewrap through `sion
 agent case --stdio`, scoring as its prompt said. Not built: running this
 on this repository's own Rust code (the commands default to it, and the
@@ -855,7 +860,8 @@ with a real model; a challenge to a bonded attestation proven rather than
 ruled on (its evidence is what the challenger says it found);
 the sealed tasks kept secret from whoever holds the machine's files; a
 bound on how accurate a reusable holdout's answers are for its budget and
-size (its noise and threshold follow the paper's proportions); written
+size (its noise and threshold follow the paper's proportions, and at the
+sizes here it only turns changes down); written
 tasks that are shown to ask what the agent's work needs (their solutions
 and failures show only that their checks can be passed and failed);
 training a model (`sion agent improve export` writes
@@ -1261,10 +1267,13 @@ and always its Siontology DID; `supportedTrust` of `reputation` and
 and write the calls the registries take as transactions for a wallet to
 send: `register(agentURI)` to the Identity Registry; `setAgentWallet`
 with the wallet's EIP-712 `AgentWalletSet` signature (secp256k1, the key
-read from `EVM_PRIVATE_KEY` and kept nowhere, good for at most five
-minutes as the registry allows); `giveFeedback` with the spec's feedback
+read from `EVM_PRIVATE_KEY` and kept nowhere, good for four minutes
+unless told otherwise, under the registry's five); `giveFeedback` with the
+spec's feedback
 file and its Keccak digest; and `validationResponse`. The default
-addresses are the reference deployment's (mainnets and five testnets).
+addresses are the reference deployment's on the five mainnets and nine
+testnets known here; on any other chain the registry is given, never
+guessed.
 Checked against eth-account 0.13.4 and eth-abi: the digest, the
 signature and the four calls are the same bytes, and a signature made
 through the binary recovers to its wallet; the card tested on a devnet
@@ -1283,8 +1292,10 @@ agent's DID, name and models) and `c2pa.hash.data` (the SHA-256 of the
 whole file), signed as a COSE_Sign1 with ES256 and the signer's
 certificate chain in its protected header, the key and chain read from
 PEM files and kept nowhere. `verify` checks a manifest against its file:
-the signature, every listed assertion's hash and the data hash (its
-exclusions honoured), and with `--trust` the signer's chain to that root
+the signature, every listed assertion's hash and the data hash (refusing
+one that leaves any of the file out, which a sidecar has no reason to,
+and a claim that lists an assertion twice), and with `--trust` the
+signer's chain to that root
 as RFC 5280's path validation has it. Checked against C2PA's own SDK
 (c2pa-rs 0.91.3 through c2pa-python 0.38.1): a manifest made here
 validates there (the claim's signature, the three hashed URIs and the data
@@ -1294,7 +1305,9 @@ once the file changes; a manifest c2pa-rs made, a thumbnail among its
 assertions, verifies here and is refused here once the file changes. Not
 built: a manifest embedded in the file (a PNG's `caBX` chunk, a JPEG's
 APP11 segments), algorithms other than ES256, time-stamps, ingredients,
-trust lists, and the agent's tools signing what they make by themselves.
+trust lists, the agent's DID tied to the signing certificate (a manifest
+names the agent its signer says), and the agent's tools signing what they
+make by themselves.
 
 **The app: partly built.** `sion-app-core` turns a device into a light
 node: it keeps the device's key (`key.seed`, mode 0600), verifies the
@@ -1684,8 +1697,8 @@ the architecture's own:
 | `agent:metered-tokens` | What a renter pays is the token count the enclave signed with the key its attestation binds, so the owner cannot inflate it; but the count is the enclave's own reading of what its model provider reported, and a renter cannot check it against the provider. Payment runs one request behind, so the owner carries one request's tokens as credit, and a renter carries the risk that a request it paid for was served badly. |
 | `agent:agent-record` | An agent's record is what the ledger's events show: tasks settled to it, tasks it was named for and released, and its delivered results later proven false. Work done off the ledger is not in it, a result nobody challenged counts as good, and the number a record is turned into, and the ranking built on it, are a reader's own weighing rather than the ledger's. |
 | `agent:measured-improvement` | A change the agent keeps was better beyond chance on the tasks it was tried on and regressed on no held-out task it already passed. Both bars are only as good as those tasks: a set that does not cover what the agent is used for, or one written to flatter a change, passes it, and nothing here chooses the tasks. The evidence recorded is the counts and the interval, not the runs themselves. |
-| `agent:self-improvement` | A change the loop keeps was better beyond chance on the tasks it was chosen on and then on sealed tasks its proposer was never shown, at 5% split over the seal's confirmations, failing none the agent passed and passing no canary; that is evidence it helps on tasks like those, not that it helps on others, and the bars are only as good as the tasks: harvested cases are a floor under what the agent did (a check that the same payment is made fails a better route), and a set that does not cover what the agent is used for passes a change that hurts elsewhere. The correction covers the number of confirmations, not how earlier answers steered later changes, so a seal's few confirmations leak a little each; the intervals treat repeated runs of a case as independent. The sealed tasks are kept from the proposer by the harness, not hidden from whoever holds this machine's files; the leak check catches a run of eight words shared with a sealed task, not a paraphrase. On a reusable holdout (`--reusable`), a change is kept when the gain Thresholdout answers is above its threshold: the gain on the tasks to choose on while the sealed tasks agree within that threshold with noise, theirs with Laplace noise when they do not, only a disagreement spending the budget. Its noise is what keeps the questions asked from learning the sealed tasks; its proportions are the paper's, no bound is worked out here on how accurate its answers are for a given budget and number of tasks, and a regression on one sealed task is not looked at. Practice tasks and a challenger's variants are written by a model, and their own solutions and failures show only that their checks can be passed and failed, not that they ask what the agent's work needs; practice tasks only join the tasks changes are chosen on and a challenge only turns changes down, so neither can have a change kept that the sealed tasks do not confirm. The improver's own changes are confirmed at a level corrected for the confirmations of one run: runs repeated on the same held-out problems are not corrected for one another. What a proposer writes reaches the agent's prompt only after both bars, and the operator's words and the agent's policy, grants and charter are outside its reach. A seal's or a step's claim is a commitment signed by its issuer, proving when the seal came, not what the tasks say. |
-| `agent:code-release` | A change to the agent's own code is contained by the sandbox that builds, tests and runs it (`agent:sandbox`), with no network; the harness reads the coder's work without running anything the copy holds, but git itself runs on the files, and the paths a patch may touch, its size and the words its added lines may not hold are checked as text, so a harmful change inside the paths allowed passes them. The candidate is scored only by what the harness answered, so it cannot claim a pass, but a build that behaves differently outside the sandbox is not caught. A release's claim is signed by its publisher; an attestation is its attester's signed account of rebuilding and scoring it, and it holds only as far as the attester ran the same sealed tasks on the same models; with an adjudicator it is a claim on the attester's bond, so a challenge the adjudicator upholds shows it false and slashes the bond, but the adjudicator rules on what the challenger says it found, nothing reruns it, and an installer counts bonded attestations alone only with `--bonded`. An attester runs the publisher's build, test and candidate commands, in its own sandbox. Installing holds the patch, read from the patch itself, to the installer's own rules before applying it to a checkout (binary files are refused anywhere); building and running the result is the owner's, outside any sandbox. |
+| `agent:self-improvement` | A change the loop keeps was better beyond chance on the tasks it was chosen on and then on sealed tasks its proposer was never shown, at 5% split over the seal's confirmations, failing none the agent passed and passing no canary; that is evidence it helps on tasks like those, not that it helps on others, and the bars are only as good as the tasks: harvested cases are a floor under what the agent did (a check that the same payment is made fails a better route), and a set that does not cover what the agent is used for passes a change that hurts elsewhere. The correction covers the number of confirmations, not how earlier answers steered later changes, so a seal's few confirmations leak a little each; the intervals treat repeated runs of a case as independent. The sealed tasks are kept from the proposer by the harness, not hidden from whoever holds this machine's files; the leak check catches a run of eight words shared with a sealed task, not a paraphrase. On a reusable holdout (`--reusable`), the sealed tasks are asked first, through Thresholdout, and a change whose gain they answer, with Laplace noise, as not above its threshold is turned down without spending a confirmation; every change kept is still confirmed as on any seal, so the holdout can turn down a change that helps (its answers are coarse at these sizes) but keeps none by itself, and the noise is what keeps its questions from learning the sealed tasks. Practice tasks and a challenger's variants are written by a model, and their own solutions and failures show only that their checks can be passed and failed, not that they ask what the agent's work needs; practice tasks only join the tasks changes are chosen on and a challenge only turns changes down, so neither can have a change kept that the sealed tasks do not confirm. The improver's own changes are confirmed at a level corrected for the confirmations of one run: runs repeated on the same held-out problems are not corrected for one another. What a proposer writes reaches the agent's prompt only after both bars, and the operator's words and the agent's policy, grants and charter are outside its reach. A seal's or a step's claim is a commitment signed by its issuer, proving when the seal came, not what the tasks say. |
+| `agent:code-release` | A change to the agent's own code is contained by the sandbox that builds, tests and runs it (`agent:sandbox`), with no network; the harness reads the coder's work without running anything the copy holds, but git itself runs on the files, and the paths a patch may touch, its size and the words its added lines may not hold are checked as text, so a harmful change inside the paths allowed passes them. The candidate is scored only by what the harness answered, so it cannot claim a pass, but a build that behaves differently outside the sandbox is not caught. A release's claim is signed by its publisher; an attestation is its attester's signed account of rebuilding and scoring it, and it holds only as far as the attester ran the same sealed tasks on the same models; with an adjudicator it is a claim on the attester's bond, so a challenge the adjudicator upholds shows it false and slashes the bond, but the adjudicator rules on what the challenger says it found, nothing reruns it, and an installer counts bonded attestations alone only with `--bonded`, and then only those under adjudicators it names, on bonds unbroken and holding at least what it asks (the ledger itself still issues a claim on a broken bond, which counts for nothing there). An attester runs the publisher's build, test and candidate commands, in its own sandbox. Installing holds the patch, read from the patch itself, to the installer's own rules before applying it to a checkout (binary files are refused anywhere); building and running the result is the owner's, outside any sandbox. |
 | `agent:vouched-memory` | A vouching is a claim on the voucher's bond, so who stands behind a shared fact costs something and can be ruled against; it says the voucher stands behind the fact, not that the fact is true. A revocation rests on the revoker's signature alone. A revoked fact and whatever rests on it are left out by the reader, not removed from any log, and only links the atoms actually carry (derived-from, assumes) are followed: a fact drawn from another without saying so is not pulled with it. Only the log's writer's revocation pulls a fact; a voucher's withdraws its own vouching, and a vouching shows only while its claim stands. A reader finds revocations and vouchings in the node's events, unproven: a node that leaves one out keeps a revoked fact in mind or a vouching unshown, and a Pulse with more events than a node answers at once is read only in part. |
 | `agent:project-budget` | A project's budget is counted here, in the file that holds the project, not escrowed on the ledger: it bounds the payments the agent makes in the project's sessions, each counted before it is sent, and the charter and its allotments are what actually bound what it can spend. Payments made in other sessions are not counted against the project (a project's own session has no subagents, tasks or storage deals). The file is changed under a lock file that holds across processes; a lock left by a process that stopped is taken over once stale, and two processes taking it over at once could both hold it. A project that is ended or out of budget takes no more work through the project, which is not the same as the agent stopping. |
 | `agent:acp-checkout` | An ACP order paid on the ledger is made only once the payment for the session's total has executed and its receipt verifies against the chain the merchant pinned, so a merchant is not paid in words; what was bought is the merchant's to deliver, and nothing on the ledger says it was. A buyer is bounded by its cap and by its Agent Charter, not by the merchant. The handler is Siontology's own: the ACP specification names handlers as an extension point, and no other ACP party is known to speak it. Who is asking is a bearer token, and a signature only for clients made to sign. Webhooks are signed with a secret the merchant and the platform share, and are delivered at least once: a receiver keeps the `Request-Id`s it has seen. |

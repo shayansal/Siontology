@@ -794,7 +794,7 @@ pub enum ImproveCommand {
         #[arg(long, default_value_t = crate::sealed::SHARE)]
         share: u32,
         /// The confirmations the seal allows; each is held to 5% split
-        /// among them all. For a reusable holdout: how many times its
+        /// among them all. For a reusable holdout, also how many times its
         /// sealed tasks may disagree with the tasks to choose on.
         #[arg(long, default_value_t = crate::sealed::BUDGET)]
         confirmations: u32,
@@ -804,12 +804,12 @@ pub enum ImproveCommand {
         /// A seed mixed into the split (default: drawn).
         #[arg(long)]
         seed: Option<u64>,
-        /// Make the sealed tasks a reusable holdout (Thresholdout): a
-        /// change's gain is answered from the tasks to choose on while the
-        /// sealed tasks agree, and from the sealed tasks with noise when
-        /// they do not, its budget spent only then. It answers many more
-        /// changes than fixed confirmations, each more coarsely: it suits
-        /// hundreds of sealed tasks.
+        /// Make the sealed tasks a reusable holdout too (Thresholdout):
+        /// asked first about a change's gain, they turn down, without
+        /// spending a confirmation, a change whose gain they answer, with
+        /// noise, as not above a threshold; any other change is confirmed
+        /// as on any seal. Its own budget is spent only when they disagree
+        /// with the tasks to choose on.
         #[arg(long)]
         reusable: bool,
         /// Publish the seal as this wallet's claim.
@@ -1042,10 +1042,17 @@ pub enum ImproveCommand {
         /// Attestations needed, by different verifiers.
         #[arg(long, default_value_t = 1)]
         need: usize,
-        /// Count only attestations on their attester's bond, which an
-        /// adjudicator can rule against.
-        #[arg(long)]
+        /// Count only attestations on their attester's bond, unbroken and
+        /// holding at least --least-bond, under an adjudicator you name.
+        #[arg(long, requires = "adjudicators")]
         bonded: bool,
+        /// An adjudicator whose rulings you accept, for --bonded (its
+        /// atom's id, 64 hex digits; repeat).
+        #[arg(long = "adjudicator", value_name = "ATOM")]
+        adjudicators: Vec<String>,
+        /// The least an attester's bond must hold, in USD, for --bonded.
+        #[arg(long = "least-bond", value_name = "USD", default_value = "10")]
+        least_bond: String,
         /// A path the patch may touch (repeat; default: the agent's
         /// runtime, crates/sion-agent/src/, apart from what scores or
         /// guards it). The patch is held to these whatever its publisher
@@ -1382,9 +1389,20 @@ pub fn run_with(
             verifiers,
             need,
             bonded,
+            adjudicators,
+            least_bond,
             allow,
             undo,
         } => {
+            let adjudicators: Vec<sion_core::ids::AtomId> = adjudicators
+                .iter()
+                .map(|a| {
+                    sion_core::hash::Hash32::from_hex(a.trim())
+                        .map(sion_core::ids::AtomId)
+                        .map_err(|e| CliError::Usage(format!("adjudicator {a}: {e}")))
+                })
+                .collect::<Result<_, _>>()?;
+            let least_bond = crate::agents::parse_amount(&least_bond)?;
             let mut rules = sion_agent::guard::PatchRules::default();
             if !allow.is_empty() {
                 rules.allowed = allow;
@@ -1402,7 +1420,7 @@ pub fn run_with(
                 &attestations,
                 &verifiers,
                 need,
-                bonded,
+                bonded.then_some((adjudicators.as_slice(), least_bond)),
                 &rules,
                 undo,
                 now(),
@@ -1578,11 +1596,12 @@ fn seal_command(
     }
     match &seal.reusable {
         Some(holdout) => println!(
-            "sealed {} of {} tasks for profile {profile} (with {} canaries), {} left to choose changes on, as a reusable holdout: a change is kept when the gain it answers is above {:.1}% (its noise {:.1}%), and its sealed tasks may disagree with the tasks to choose on {} times",
+            "sealed {} of {} tasks for profile {profile} (with {} canaries), {} left to choose changes on; {} confirmations allowed. As a reusable holdout, the sealed tasks turn down a change whose gain they answer at {:.1}% or less (their noise {:.1}%) without spending a confirmation, and may disagree with the tasks to choose on {} times",
             seal.sealed_cases,
             seal.sealed_cases + seal.train_cases,
             seal.canaries,
             seal.train_cases,
+            seal.budget,
             holdout.threshold * 100.0,
             holdout.sigma * 100.0,
             holdout.budget
@@ -1710,16 +1729,16 @@ fn run_loop(
     let sealed_digest = sion_core::hash::Hash32::from_hex(&seal.sealed)
         .map_err(|e| CliError::Usage(format!("the seal's digest: {e}")))?;
     if seal.left() == 0 {
-        return Err(CliError::Usage(match seal.reusable {
-            Some(_) => format!(
-                "the reusable holdout disagreed {} times, all its budget: seal fresh tasks (sion agent improve seal)",
-                seal.budget
-            ),
-            None => format!(
-                "the seal's {} confirmations are spent: seal fresh tasks (sion agent improve seal)",
-                seal.budget
-            ),
-        }));
+        return Err(CliError::Usage(format!(
+            "the seal's {} confirmations are spent: seal fresh tasks (sion agent improve seal)",
+            seal.budget
+        )));
+    }
+    if let Some(holdout) = seal.reusable.as_ref().filter(|h| h.left() == 0) {
+        return Err(CliError::Usage(format!(
+            "the reusable holdout disagreed {} times, all its budget: seal fresh tasks (sion agent improve seal)",
+            holdout.budget
+        )));
     }
     let improver = crate::improve_loop::improver(&profile.name)?;
     let model = crate::runtime::model(proposer, 0)?;
@@ -1763,7 +1782,10 @@ fn run_loop(
         stopped: &stopped,
         now: &now,
     };
-    let archive = crate::improve_loop::archive_for(&profile.name, &seal.train);
+    // The archive is of the tasks chosen on: the seal's, or the seal's with
+    // the practice tasks, whose scores are not the seal's alone.
+    let archived_on = train_digest.to_hex();
+    let archive = crate::improve_loop::archive_for(&profile.name, &archived_on);
     let report = crate::improve_loop::improve(
         profile,
         &problem,
@@ -1777,7 +1799,7 @@ fn run_loop(
         println!("{line}");
     }
     if let Some(archive) = &report.archive {
-        crate::improve_loop::keep_archive(&profile.name, &seal.train, archive)?;
+        crate::improve_loop::keep_archive(&profile.name, &archived_on, archive)?;
     }
     println!("{} tokens used", report.tokens);
     if !report.kept.is_empty() {

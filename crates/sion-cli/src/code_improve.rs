@@ -1301,8 +1301,10 @@ pub fn attest(
 /// commit, and at least `need` of the `attestations` hold —
 /// each by one of `verifiers`, none by the release's publisher, each about
 /// this release and its patch and finding it better, each still standing
-/// (not expired, nor shown false), and, when `bonded`, each on its
-/// attester's bond with an adjudicator. Returns a line for what was done.
+/// (not expired, nor shown false), and, when `bonded` holds the adjudicators
+/// the installer accepts and the least bond, each on its attester's bond
+/// [`ATTESTER_BOND`], unbroken and holding at least that much, under one of
+/// those adjudicators. Returns a line for what was done.
 #[allow(clippy::too_many_arguments)]
 pub fn install(
     ledger: &dyn crate::ledger::Ledger,
@@ -1313,11 +1315,18 @@ pub fn install(
     attestations: &[String],
     verifiers: &[sion_core::ids::AccountId],
     need: usize,
-    bonded: bool,
+    bonded: Option<(&[sion_core::ids::AtomId], sion_core::Amount)>,
     rules: &PatchRules,
     undo: bool,
     now: u64,
 ) -> Result<Vec<String>, CliError> {
+    if let Some((adjudicators, _)) = bonded {
+        if adjudicators.is_empty() {
+            return Err(CliError::Usage(
+                "bonded attestations count only under adjudicators you name (--adjudicator)".into(),
+            ));
+        }
+    }
     let (release, issuer) = release_of(ledger, claim)?;
     if patch_digest(patch) != release.patch {
         return Err(CliError::Usage(
@@ -1393,12 +1402,6 @@ pub fn install(
         }
         let on_bond = stored.body.adjudicator.is_some()
             && stored.body.formula == bonded_attestation(&stored.issuer);
-        if bonded && !on_bond {
-            lines.push(format!(
-                "attestation {short} rests on its attester's signature, not on a bond: not counted"
-            ));
-            continue;
-        }
         // An attestation that expired, or that its adjudicator ruled
         // against, attests nothing.
         let standing = crate::ledger::LedgerExt::claim(ledger, stored.id)?;
@@ -1408,6 +1411,55 @@ pub fn install(
                 standing["status"].as_str().unwrap_or("unknown")
             ));
             continue;
+        }
+        if let Some((adjudicators, least)) = bonded {
+            if !on_bond {
+                lines.push(format!(
+                    "attestation {short} rests on its attester's signature, not on a bond: not counted"
+                ));
+                continue;
+            }
+            if !stored
+                .body
+                .adjudicator
+                .is_some_and(|a| adjudicators.contains(&a))
+            {
+                lines.push(format!(
+                    "attestation {short} is under an adjudicator you did not name: not counted"
+                ));
+                continue;
+            }
+            // The bond as the ledger has it now: one broken by an upheld
+            // challenge, or emptied, stands behind nothing.
+            let label = format!("bond:{}:{ATTESTER_BOND}", stored.issuer);
+            let bond = standing["atoms"].as_array().and_then(|atoms| {
+                atoms
+                    .iter()
+                    .find(|a| a["atom"]["label"].as_str() == Some(label.as_str()))
+            });
+            let amount = |v: &serde_json::Value| -> u128 {
+                v.as_u64()
+                    .map(u128::from)
+                    .or_else(|| v.as_str().and_then(|t| t.parse().ok()))
+                    .unwrap_or(0)
+            };
+            let held = bond.map_or(0, |b| {
+                amount(&b["bond"]["amount"]).saturating_sub(amount(&b["bond"]["slashed"]))
+            });
+            if bond.map_or(true, |b| b["broken"].as_bool() != Some(false)) {
+                lines.push(format!(
+                    "attestation {short}'s bond is broken, or the ledger names none: not counted"
+                ));
+                continue;
+            }
+            if held < least.0 {
+                lines.push(format!(
+                    "attestation {short}'s bond holds {} USD, less than the {} USD asked: not counted",
+                    sion_core::Amount(held),
+                    least
+                ));
+                continue;
+            }
         }
         if by.insert(stored.issuer) {
             lines.push(format!(

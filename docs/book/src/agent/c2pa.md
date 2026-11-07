@@ -73,6 +73,13 @@ other direction, `verify` checks a manifest that c2pa-rs made, with a
 thumbnail among its assertions, and refuses it when the file changes
 (`crates/sion-cli/tests/c2pa.rs`).
 
+A data hash that leaves any of the file out is refused: a sidecar is not
+in the file, so it has nothing to leave out, and an exclusion could leave
+out all of it. A claim that lists an assertion twice is refused too.
+
+The agent a manifest names is its signer's word: nothing here ties the
+agent's DID to the certificate that signed it.
+
 Not built: a manifest embedded in the file (in a PNG's `caBX` chunk or a
 JPEG's APP11 segments), signatures other than ES256, time-stamps from a
 time-stamp authority, ingredients (the files an edit was made from), and

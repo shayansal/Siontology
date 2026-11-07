@@ -3018,10 +3018,10 @@ Options:
       --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --tasks <FILE>                   The tasks (a set, as `sion agent improve harvest` writes)
       --share <SHARE>                  The share sealed, in percent [default: 30]
-      --confirmations <CONFIRMATIONS>  The confirmations the seal allows; each is held to 5% split among them all. For a reusable holdout: how many times its sealed tasks may disagree with the tasks to choose on [default: 8]
+      --confirmations <CONFIRMATIONS>  The confirmations the seal allows; each is held to 5% split among them all. For a reusable holdout, also how many times its sealed tasks may disagree with the tasks to choose on [default: 8]
       --canaries <CANARIES>            Canary cases added to the sealed tasks [default: 2]
       --seed <SEED>                    A seed mixed into the split (default: drawn)
-      --reusable                       Make the sealed tasks a reusable holdout (Thresholdout): a change's gain is answered from the tasks to choose on while the sealed tasks agree, and from the sealed tasks with noise when they do not, its budget spent only then. It answers many more changes than fixed confirmations, each more coarsely: it suits hundreds of sealed tasks
+      --reusable                       Make the sealed tasks a reusable holdout too (Thresholdout): asked first about a change's gain, they turn down, without spending a confirmation, a change whose gain they answer, with noise, as not above a threshold; any other change is confirmed as on any seal. Its own budget is spent only when they disagree with the tasks to choose on
       --wallet <WALLET>                Publish the seal as this wallet's claim
   -h, --help                           Print help
 ```
@@ -3231,7 +3231,9 @@ Options:
       --attestation <CLAIM>  An attestation's claim (repeat)
       --verifier <ACCOUNT>   An account, or a wallet's name, whose attestation counts (repeat)
       --need <NEED>          Attestations needed, by different verifiers [default: 1]
-      --bonded               Count only attestations on their attester's bond, which an adjudicator can rule against
+      --bonded               Count only attestations on their attester's bond, unbroken and holding at least --least-bond, under an adjudicator you name
+      --adjudicator <ATOM>   An adjudicator whose rulings you accept, for --bonded (its atom's id, 64 hex digits; repeat)
+      --least-bond <USD>     The least an attester's bond must hold, in USD, for --bonded [default: 10]
       --allow <PATH>         A path the patch may touch (repeat; default: the agent's runtime, crates/sion-agent/src/, apart from what scores or guards it). The patch is held to these whatever its publisher and attesters allowed
       --undo                 Take the release back out instead
   -h, --help                 Print help
@@ -3617,7 +3619,7 @@ Arguments:
 Options:
       --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --owner <OWNER>        The agent's owner, who sends the call
-      --within <WITHIN>      Seconds the signature is good for (at most 300) [default: 300]
+      --within <WITHIN>      Seconds the signature is good for (at most 300, by the chain's clock) [default: 240]
       --chain <CHAIN>        The chain (EIP-155 id) [default: 1]
       --registry <REGISTRY>  The Identity Registry (default: the one deployed on that chain)
   -h, --help                 Print help

@@ -502,11 +502,6 @@ pub fn spend(profile: &str, sealed: &str) -> Result<Seal, CliError> {
             "the profile's tasks were sealed anew while this ran".into(),
         ));
     }
-    if seal.reusable.is_some() {
-        return Err(CliError::Usage(
-            "the profile's seal is a reusable holdout: it is asked, not spent".into(),
-        ));
-    }
     if seal.left() == 0 {
         return Err(CliError::Usage(format!(
             "the seal's {} confirmations are spent: seal fresh tasks (sion agent improve seal)",
@@ -589,7 +584,6 @@ pub fn ask(
             state.budget
         ))
     })?;
-    seal.used = state.used;
     seal.reusable = Some(state.clone());
     save(&seal)?;
     Ok((answer, state))
@@ -693,9 +687,9 @@ pub fn publish(
             "the seal is already published, as claim {claim}"
         )));
     }
-    if seal.used > 0 {
+    if seal.used > 0 || seal.reusable.as_ref().is_some_and(|r| r.asked > 0) {
         return Err(CliError::Usage(format!(
-            "a seal is published before anything is tried on it, and this one has spent {} of its confirmations: seal fresh tasks",
+            "a seal is published before anything is tried on it, and this one has spent {} of its confirmations or been asked: seal fresh tasks",
             seal.used
         )));
     }
