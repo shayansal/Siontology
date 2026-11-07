@@ -208,6 +208,7 @@ impl Profile {
             verify_files: None,
             shared_memory: self.shared_memory.clone(),
             read_only: false,
+            reads_web: false,
             confidential: self.confidential,
             confidential_files: self.confidential_files.clone(),
             // A work item's session is started by the work runner

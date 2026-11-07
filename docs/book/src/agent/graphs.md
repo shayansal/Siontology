@@ -28,6 +28,8 @@ work-check        work → check; check → work if it fails
 draft-review      draft → review; review → draft if it fails
 self-consistency  solve (×3) → vote (votes)
 orchestrator      plan → research for each of its questions; plan → verify (waits for all); research → verify (waits for all); verify → write if it passes; verify → plan if it fails
+attempts          attempt (×3, each in a workspace of its own) → pick (picks one, adopts it)
+research          plan → research for each of its questions; research → synthesize (waits for all)
 ```
 
 - **fan-out**: `split` divides the task into parts (its answer keeps to a
@@ -52,6 +54,40 @@ orchestrator      plan → research for each of its questions; plan → verify (
   up none of them. Findings it passes go to `write`; otherwise it goes back
   to `plan` once, with what was missing and what holds, which the plan
   lists as known for the second verification.
+- **attempts**: `attempt` runs in three copies side by side, each in a
+  workspace of its own, and `pick`, a judge that may only read, is shown
+  each attempt numbered: what its agent said, what it changed (its diff,
+  up to 12,000 characters) and what its check said, if it has one. It
+  answers `{"pick": n, "why": …}`; the graph's answer is the attempt it
+  picked, and what that attempt changed is adopted into the workspace.
+- **research**: `plan` splits the task into two to six questions, a
+  `research` node looks each up with the tools that read and the web's
+  (`web_search`, `fetch_url`, which reach outside only to read), each
+  claim with its source, and `synthesize` puts the findings together:
+  what they establish, where they disagree, what is unknown, each claim's
+  source beside it. The profile needs the web (`--web`) for the
+  researchers to reach it; without, they read only what is here.
+
+## Attempts in workspaces of their own
+
+A node with `"own_workspace": true` works, each time it runs, in a git
+worktree of the profile's workspace, which must be the root of a git
+repository (as for [subagents that change code](tools.md#subagents-that-change-code)),
+with the profile's shell: a branch of its own, `sion/graph-<run>-<node>-<n>`,
+from the repository's HEAD. When its session ends, what it changed is
+committed on that branch and the worktree removed; an attempt that
+changed nothing leaves no branch. With a check (`--check <command>` on
+`sion agent graph run`, or `"check"` on the node), each attempt's session
+is checked in its worktree as `--verify` checks a session, and the judge
+is told whether it passed. A pick merges the branch of the attempt it
+picked into what the workspace has checked out (fast-forward when nothing
+else changed it), with no hooks and no signing; a merge that conflicts is
+undone and the run stops there, the branches kept for a person to merge.
+The other attempts' branches stay, to look at or delete.
+
+An attempt whose session stops for a person's approval ends there: its
+work so far is committed on its branch, and the graph stops, since its
+worktree is gone and the session cannot go on in it.
 
 ## A run
 
@@ -307,7 +343,8 @@ are data.
 A graph is a JSON file: its nodes (an id, instructions, and optionally
 `tools`, `model`, `output` (a JSON schema its answer keeps to),
 `max_visits`, `copies` (runs side by side each time it is reached, at
-most its `max_visits`) and `read_only`), its edges (`from`, `to`, and `when`: `always`, `pass`,
+most its `max_visits`), `read_only`, `reads_web` (with `read_only`, the
+web's tools too), `own_workspace` and `check`), its edges (`from`, `to`, and `when`: `always`, `pass`,
 `fail`, `{"field": {"field": …, "equals": …}}`, or `{"each": {"field":
 …}}` to fan out over a list in the answer), its `start`, and optionally
 its `end` (the node whose answer is the graph's) and `max_runs` (24 by
@@ -317,7 +354,10 @@ until nothing that leads to it is left to run, or, with `"wait":
 "first"`, runs as soon as an answer reaches it (with what reached it in
 the same wave), or with `"wait": {"quorum": n}` once n have; a join that
 does not wait for all runs once, and what reaches it later is not passed
-on. A vote (`"kind": "vote"`) is a join that answers without a model. The graph is checked
+on. A vote (`"kind": "vote"`) is a join that answers without a model; a
+pick (`"kind": "pick"`) is a join whose session is shown the answers that
+reached it numbered and answers `{"pick": n, "why": …}`, and keeps to no
+other schema. The graph is checked
 before it runs: every node reachable, every edge between its nodes, the
 limits within reason (16 nodes, a node run at most 12 times, 12 parts to
 a fan-out). Run it with `sion agent graph run <profile> --graph <file>
@@ -336,3 +376,9 @@ a fan-out). Run it with `sion agent graph run <profile> --graph <file>
   ([Hiring another agent](teams.md#hiring-another-agent)).
 - The router is a model's judgment, among what a comparison let through:
   it can be wrong, which is why its default is one agent.
+- A workspace of a node's own is a git worktree, so it needs the profile's
+  workspace to be a repository's root; a directory that is not one is not
+  copied. A judge reads what each attempt said and changed, not the
+  attempt's files themselves, and a judge's pick is a model's judgment: a
+  check that passed is what makes an attempt right, as far as the check
+  goes.

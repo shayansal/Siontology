@@ -2489,10 +2489,11 @@ Arguments:
 Options:
       --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --task <TASK>          The task
-      --template <TEMPLATE>  A template: fan-out, work-check, draft-review, self-consistency or orchestrator
+      --template <TEMPLATE>  A template: fan-out, work-check, draft-review, self-consistency, orchestrator, attempts or research
       --graph <GRAPH>        A graph of your own: a JSON file
       --route                Ask the profile's model first how to work on the task: one agent (a single session), or one of the templates that beat one agent in the profile's comparisons (`sion agent graph eval`)
       --untested             With --route, let the router choose any template, measured or not
+      --check <COMMAND>      A command that checks each run of a node that works in a workspace of its own (the attempts), there, as --verify checks a session: what it says goes to the judge. The profile needs a shell
   -h, --help                 Print help
 ```
 

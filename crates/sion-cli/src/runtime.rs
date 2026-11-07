@@ -625,6 +625,10 @@ pub fn thinking_of<'a>(
 /// for the models that take one (Anthropic's before Claude 4.6, Gemini 2.5:
 /// `gemini:gemini-2.5-flash#4096`). It is given room to think besides its
 /// answer ([`sion_agent::model::most_tokens`]).
+/// The tools that read the web: a session that may use only the tools that
+/// read may use them too if it reads the web ([`Saved::reads_web`]).
+pub const WEB_READERS: [&str; 2] = ["web_search", "fetch_url"];
+
 /// Sets a run to compact its conversation once it reaches about `tokens`
 /// tokens (`--compact-at`): at three characters a token, and with room for
 /// as many messages as that many tokens would hold.
@@ -915,6 +919,10 @@ pub struct Saved {
     /// Whether it may use only the tools that read (a graph's researcher).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// Whether, using only the tools that read, it may also search the web
+    /// and read its pages ([`WEB_READERS`]: a graph's web researcher).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_web: bool,
     /// The paths of its workspace whose content is confidential
     /// ([`sion_agent::builtin::confidential_path`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1653,6 +1661,7 @@ impl Saved {
                     tools
                         .get(name)
                         .is_some_and(|t| t.effect() == sion_agent::Effect::Read)
+                        || (self.reads_web && WEB_READERS.contains(&name.as_str()))
                 })
                 .collect();
             tools.retain(|name| readers.contains(name));
@@ -2840,6 +2849,9 @@ pub struct Equipment {
     pub only_tools: Option<std::collections::BTreeSet<String>>,
     /// Whether it may use only the tools that read ([`Saved::read_only`]).
     pub read_only: bool,
+    /// Whether, reading only, it may also read the web
+    /// ([`Saved::reads_web`]).
+    pub reads_web: bool,
     /// Whether it holds confidential content from the start (its task is
     /// confidential): its external calls and spending wait for a person.
     pub confidential: bool,
@@ -2960,6 +2972,7 @@ pub fn start_watched(
         verify_files,
         shared_memory,
         read_only,
+        reads_web,
         confidential,
         confidential_files,
         work,
@@ -3112,6 +3125,7 @@ pub fn start_watched(
         chat_instructions,
         only_tools,
         read_only,
+        reads_web,
         confidential_files,
         shared: Vec::new(),
         image_model,

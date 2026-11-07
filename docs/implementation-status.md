@@ -241,9 +241,13 @@ caches counted; a check of the task, if given, run each time the model
 says it is done, and an end for a task it cannot complete; a kill switch;
 sessions that serialise, pause for approval and resume; trajectories
 in chat format; and graphs of a profile's agent (fan-out, work-check,
-draft-review, self-consistency, orchestrator or one's own, with copies,
-votes, joins that wait for all, the first or a quorum, read-only nodes,
-runs pinned to their graph, replayed and continued after a person), each node a session, a router that keeps a
+draft-review, self-consistency, orchestrator, attempts, research or one's
+own, with copies, votes, joins that wait for all, the first or a quorum,
+read-only nodes and nodes that read the web, runs pinned to their graph,
+replayed and continued after a person; attempts side by side, each in a
+git worktree of its own and checked there, one picked by a judge and its
+branch merged; questions looked up on the web and put together with
+their sources), each node a session, a router that keeps a
 task to one agent unless it divides, and taint passed along the edges
 ([Graphs of agents](book/src/agent/graphs.md)). A comparison
 (`sion agent graph eval`) runs one agent, one agent voting over several

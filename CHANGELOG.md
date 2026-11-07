@@ -10,6 +10,19 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Attempts side by side, and research on the web
+
+- Graph templates `attempts` and `research`. `attempts` runs three
+  attempts at a change side by side, each in a git worktree of its own;
+  a judge (`"kind": "pick"`) is shown each one's report, diff and check,
+  picks one, and its branch is merged into the workspace. `research`
+  splits a question, looks each part up on the web (`reads_web`: the
+  tools that read, and `web_search` and `fetch_url`), and puts the
+  findings together with their sources.
+- Graph nodes take `own_workspace`, `check` and `reads_web`, and
+  `sion agent graph run --check <command>` checks every attempt where it
+  worked.
+
 ### A plan, and finishing what it says
 
 - The agent keeps a plan with `plan_update`: its steps in order, one

@@ -106,7 +106,12 @@ pub struct Sessions<'a> {
     pub ledger: SharedLedger,
     /// The profile.
     pub profile: &'a Profile,
+    /// The graph's run: its attempts' worktrees are named after it.
+    pub run: String,
 }
+
+/// The most characters of what an attempt changed shown to its judge.
+pub const DIFF_CHARS: usize = 12_000;
 
 impl std::fmt::Debug for Sessions<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -135,6 +140,8 @@ impl Executor for Sessions<'_> {
             crate::runtime::Equipment {
                 only_tools: node.tools.clone(),
                 read_only: node.read_only,
+                reads_web: node.reads_web,
+                verify: node.check.clone(),
                 // A node is one step of the graph: it does not stop to write
                 // down how it did it.
                 reflect: false,
@@ -148,6 +155,147 @@ impl Executor for Sessions<'_> {
         )
         .map_err(|e| e.to_string())?;
         answer_of(&saved)
+    }
+
+    fn run_at(
+        &self,
+        node: &Node,
+        prompt: &str,
+        held: sion_agent::Held,
+        index: usize,
+    ) -> Result<Answer, String> {
+        if !node.own_workspace {
+            return self.run(node, prompt, held);
+        }
+        self.attempt(node, prompt, held, index)
+    }
+
+    fn adopt(&self, answer: &Answer) -> Result<String, String> {
+        let branch = answer
+            .workspace
+            .as_deref()
+            .ok_or("its run changed no workspace of its own")?;
+        let repo = self.repository()?;
+        crate::worktrees::merge(repo, branch, &self.profile.name)
+    }
+}
+
+impl Sessions<'_> {
+    /// The profile's workspace, a git repository's root, in which a node's
+    /// runs get workspaces of their own.
+    fn repository(&self) -> Result<&std::path::Path, String> {
+        self.profile
+            .workspace
+            .as_deref()
+            .filter(|dir| crate::worktrees::is_repo_root(dir))
+            .ok_or_else(|| {
+                "a workspace of its own is a git worktree: the profile's workspace must be the \
+                 root of a git repository"
+                    .to_string()
+            })
+    }
+
+    /// Runs `node` (the node run `index`) in a worktree of its own: what it
+    /// changed is committed on its branch, its worktree removed, and its
+    /// answer says what it changed, and what its check said if it has one.
+    fn attempt(
+        &self,
+        node: &Node,
+        prompt: &str,
+        held: sion_agent::Held,
+        index: usize,
+    ) -> Result<Answer, String> {
+        let profile = self.profile;
+        let repo = self.repository()?;
+        if profile.shell.is_none() {
+            return Err(format!(
+                "{} works in a workspace of its own: the profile needs a shell",
+                node.id
+            ));
+        }
+        let run: String = self.run.chars().take(8).collect();
+        let name = format!("graph-{run}-{}-{}", node.id, index + 1);
+        let worktree = crate::worktrees::create(repo, &name)?;
+        let mut models = profile.models.clone();
+        if let Some(model) = &node.model {
+            models.retain(|m| m != model);
+            models.insert(0, model.clone());
+        }
+        let started = crate::runtime::start_watched(
+            self.ledger.clone(),
+            &profile.wallet,
+            profile.agent,
+            prompt,
+            &[],
+            models,
+            profile.policy(),
+            crate::runtime::Equipment {
+                workspace: Some(worktree.dir.clone()),
+                only_tools: node.tools.clone(),
+                read_only: node.read_only,
+                reads_web: node.reads_web,
+                verify: node.check.clone(),
+                reflect: false,
+                ..profile.equipment()
+            },
+            crate::runtime::Hooks {
+                outside: held.tainted,
+                confidential: held.confidential,
+                ..crate::runtime::Hooks::default()
+            },
+        );
+        let saved = match started {
+            Ok((saved, _)) => saved,
+            Err(e) => {
+                worktree.remove();
+                return Err(e.to_string());
+            }
+        };
+        let subject = format!("Attempt {} of graph run {run}: {}", index + 1, node.id);
+        let finished = worktree
+            .finish(&subject, &profile.name)
+            .map_err(|e| format!("its changes could not be committed: {e}"))?;
+        let on = finished
+            .branch
+            .as_ref()
+            .map_or("no branch: it changed nothing".to_string(), |b| {
+                format!("branch {b}")
+            });
+        let mut answer = match &saved.ended {
+            Some(Ended::Unverified { text, why, .. }) => {
+                let mut answer = answer_of(&crate::runtime::Saved {
+                    ended: Some(Ended::Done { text: text.clone() }),
+                    ..saved.clone()
+                })?;
+                answer.text = format!("{}\n\n[Its check failed: {why}]", text.trim_end());
+                answer
+            }
+            Some(Ended::NeedsApproval { tool, .. }) => {
+                return Err(format!(
+                    "session {} stopped for a person's approval of {tool}: an attempt in a \
+                     workspace of its own does not go on after one; its work so far is on {on}",
+                    saved.state.id
+                ))
+            }
+            _ => answer_of(&saved)?,
+        };
+        if let (Some(check), Some(Ended::Done { .. })) = (&node.check, &saved.ended) {
+            answer
+                .text
+                .push_str(&format!("\n\n[Its check passed: {check}]"));
+        }
+        match &finished.branch {
+            Some(branch) => {
+                let diff = crate::worktrees::diff(repo, &worktree.base, branch, DIFF_CHARS)?;
+                answer.text.push_str(&format!(
+                    "\n\n[What it changed, on branch {branch} ({}):]\n{diff}",
+                    finished.stat
+                ));
+                answer.workspace = Some(branch.clone());
+            }
+            None => answer.text.push_str("\n\n[It changed no files.]"),
+        }
+        Ok(answer)
     }
 }
 
@@ -166,6 +314,8 @@ fn answer_of(saved: &crate::runtime::Saved) -> Result<Answer, String> {
             // may carry what it held confidential.
             outside: saved.state.standing.tainted_until.is_some(),
             confidential: saved.state.standing.confidential,
+            workspace: None,
+            adopted: None,
         }),
         Some(Ended::NeedsApproval { tool, .. }) => Err(format!(
             "session {} waits for a person's approval of {tool}",
@@ -329,6 +479,27 @@ pub fn evaluate(
     .map_err(CliError::Usage)
 }
 
+/// Gives every node of `graph` that works in a workspace of its own the
+/// check `command` (`sion agent graph run --check`).
+pub fn with_check(graph: &mut Graph, command: &str) -> Result<(), CliError> {
+    if command.trim().is_empty() {
+        return Err(CliError::Usage("--check is a command".into()));
+    }
+    let mut given = 0;
+    for node in graph.nodes.iter_mut().filter(|n| n.own_workspace) {
+        node.check = Some(command.to_string());
+        given += 1;
+    }
+    if given == 0 {
+        return Err(CliError::Usage(format!(
+            "--check checks the nodes that work in a workspace of their own, and graph {} has \
+             none (the attempts template has)",
+            graph.name
+        )));
+    }
+    Ok(())
+}
+
 /// Runs `graph` on `task` with `profile`'s agent, keeping the run after
 /// each wave; returns it and the lines to show.
 pub fn run(
@@ -355,7 +526,11 @@ pub fn go_on(
     profile: &Profile,
     mut kept: Kept,
 ) -> Result<(Kept, Vec<String>), CliError> {
-    let executor = Sessions { ledger, profile };
+    let executor = Sessions {
+        ledger,
+        profile,
+        run: kept.id.clone(),
+    };
     let graph = kept.graph.clone();
     let id = kept.id.clone();
     let name = kept.profile.clone();
@@ -472,8 +647,8 @@ pub enum GraphCommand {
         /// The task.
         #[arg(long)]
         task: String,
-        /// A template: fan-out, work-check, draft-review, self-consistency
-        /// or orchestrator.
+        /// A template: fan-out, work-check, draft-review, self-consistency,
+        /// orchestrator, attempts or research.
         #[arg(long, conflicts_with_all = ["graph", "route"])]
         template: Option<String>,
         /// A graph of your own: a JSON file.
@@ -488,6 +663,12 @@ pub enum GraphCommand {
         /// not.
         #[arg(long, requires = "route")]
         untested: bool,
+        /// A command that checks each run of a node that works in a
+        /// workspace of its own (the attempts), there, as --verify checks a
+        /// session: what it says goes to the judge. The profile needs a
+        /// shell.
+        #[arg(long, value_name = "COMMAND")]
+        check: Option<String>,
     },
     /// Compare ways of working through a set of tasks, with a profile's
     /// models: one agent, one agent several times with its answers put to
@@ -578,9 +759,10 @@ pub fn command(ledger: SharedLedger, command: GraphCommand) -> Result<(), CliErr
             graph,
             route: routed,
             untested,
+            check,
         } => {
             let profile = crate::profiles::get(&profile)?;
-            let graph = match (chosen, graph, routed) {
+            let mut graph = match (chosen, graph, routed) {
                 (Some(name), _, _) => named(&name)?,
                 (None, Some(path), _) => {
                     let text = std::fs::read_to_string(&path)
@@ -615,6 +797,9 @@ pub fn command(ledger: SharedLedger, command: GraphCommand) -> Result<(), CliErr
                     ))
                 }
             };
+            if let Some(command) = check {
+                with_check(&mut graph, &command)?;
+            }
             let (_, lines) = run(ledger, &profile, graph, &task)?;
             print(lines);
         }

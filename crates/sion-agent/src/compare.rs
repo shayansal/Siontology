@@ -842,6 +842,8 @@ impl Executor for Fixtures<'_> {
                 tokens: ran.tokens,
                 outside: ran.state.standing.tainted_until.is_some(),
                 confidential: ran.state.standing.confidential,
+                workspace: None,
+                adopted: None,
             }),
             other => Err(format!(
                 "its session ended without an answer: {}",

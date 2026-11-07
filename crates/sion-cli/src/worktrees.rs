@@ -251,6 +251,53 @@ impl Worktree {
     }
 }
 
+/// What `branch` changed since `base`, in `repo`, as `git diff` shows it,
+/// cut to about `max` characters.
+pub fn diff(repo: &Path, base: &str, branch: &str, max: usize) -> Result<String, String> {
+    let diff = git(repo, &["diff", "--no-color", "--no-ext-diff", base, branch])?;
+    let count = diff.chars().count();
+    if count <= max {
+        return Ok(diff);
+    }
+    let kept: String = diff.chars().take(max).collect();
+    Ok(format!(
+        "{kept}\n[… {} characters more: git diff {base} {branch}]",
+        count - max
+    ))
+}
+
+/// Merges `branch` into what `repo` has checked out (fast-forward when it
+/// can), as `author`'s merge: a merge that does not go through is undone,
+/// and why is said.
+pub fn merge(repo: &Path, branch: &str, author: &str) -> Result<String, String> {
+    if !branch.starts_with(BRANCH_PREFIX) {
+        return Err(format!("{branch} is not a branch sion made"));
+    }
+    let name = format!("user.name=sion {author}");
+    let email = format!("user.email={author}@agents.sion.invalid");
+    let merged = git(
+        repo,
+        &[
+            "-c",
+            &name,
+            "-c",
+            &email,
+            "merge",
+            "--no-edit",
+            "--no-verify",
+            "--quiet",
+            branch,
+        ],
+    );
+    match merged {
+        Ok(_) => Ok(format!("merged branch {branch} into the workspace")),
+        Err(why) => {
+            let _ = git(repo, &["merge", "--abort"]);
+            Err(format!("{why} (the merge was undone; the branch stays)"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +323,41 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    #[test]
+    fn an_attempt_s_branch_is_shown_as_a_diff_and_merged_or_its_merge_undone() {
+        let repo = repo();
+        let first = create(&repo, "graph-x-attempt-1").unwrap();
+        let second = create(&repo, "graph-x-attempt-2").unwrap();
+        std::fs::write(first.dir.join("a.txt"), "two\n").unwrap();
+        std::fs::write(second.dir.join("a.txt"), "three\n").unwrap();
+        let one = first.finish("Attempt 1", "team").unwrap().branch.unwrap();
+        let two = second.finish("Attempt 2", "team").unwrap().branch.unwrap();
+        let shown = diff(&repo, &first.base, &one, 10_000).unwrap();
+        assert!(shown.contains("-one\n+two"), "{shown}");
+        assert!(diff(&repo, &first.base, &one, 10)
+            .unwrap()
+            .contains("characters more"));
+        assert_eq!(
+            merge(&repo, &one, "team").unwrap(),
+            format!("merged branch {one} into the workspace")
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "two\n"
+        );
+        // The second changed the same line: its merge is undone.
+        let refused = merge(&repo, &two, "team").unwrap_err();
+        assert!(refused.contains("the merge was undone"), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(git(&repo, &["status", "--porcelain"]).unwrap(), "");
+        // Only a branch sion made is merged.
+        assert!(merge(&repo, "main", "team").is_err());
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

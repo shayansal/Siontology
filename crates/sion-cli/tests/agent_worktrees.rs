@@ -1,8 +1,9 @@
 //! On a devnet: subagents that change code in git worktrees of their
 //! parent's workspace, side by side, their work committed on branches of
 //! their own; a program that calls the session's tools that read; and the
-//! operator's hooks, one of which blocks a command. Skipped where
-//! bubblewrap does not work.
+//! operator's hooks, one of which blocks a command; and a graph's attempts
+//! at a change, each in a worktree of its own, the one picked merged.
+//! Skipped where bubblewrap does not work.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -329,10 +330,10 @@ fn subagents_change_code_in_worktrees_and_programs_and_hooks_work_around_calls()
         agent,
         "Clean up.",
         vec![commands],
-        policy,
+        policy.clone(),
         Equipment {
             workspace: Some(work.clone()),
-            shell: Some(sandbox),
+            shell: Some(sandbox.clone()),
             ..Equipment::default()
         },
     )
@@ -353,5 +354,109 @@ fn subagents_change_code_in_worktrees_and_programs_and_hooks_work_around_calls()
     );
     assert!(work.join("notes.txt").exists());
     let _ = std::fs::remove_file(&hooks_file);
+
+    // 4. Three attempts at a change, each in a worktree of its own, side by
+    // side; a judge picks the second, and its branch is merged.
+    let team = sion_cli::profiles::Profile {
+        name: "team".into(),
+        wallet: "coder".into(),
+        agent,
+        models: vec![script(
+            &home,
+            "attempts.json",
+            json!([
+                {"when": "this is attempt 1 of 3", "call": "write_file", "input": {"path": "fix.txt", "content": "fixed once\n"}},
+                {"when": "this is attempt 1 of 3", "say": "Wrote fix.txt."},
+                {"when": "this is attempt 2 of 3", "call": "write_file", "input": {"path": "fix.txt", "content": "fixed well\n"}},
+                {"when": "this is attempt 2 of 3", "say": "Wrote fix.txt, and read it back."},
+                {"when": "this is attempt 3 of 3", "say": "Nothing needed changing."},
+                {"when": "you judge attempts", "say": "{\"pick\": 2, \"why\": \"it read its work back\"}"}
+            ]),
+        )],
+        autonomy: Autonomy::L6,
+        memory: None,
+        skills: None,
+        workspace: Some(work.clone()),
+        web: false,
+        delegate: false,
+        subagent_models: Vec::new(),
+        adjudicator: None,
+        reflect: false,
+        shell: Some(sandbox),
+        mcp: Vec::new(),
+        storage: false,
+        instructions: None,
+        skill_approvals: true,
+        screen: Default::default(),
+        image_model: None,
+        home_assistant: false,
+        budget_tokens: None,
+        budget_micros: None,
+        max_turns: None,
+        max_tokens: None,
+        compact_at: None,
+        summary_model: None,
+        no_plan: false,
+        no_change_check: false,
+        quarantine: false,
+        shared_memory: Vec::new(),
+        confidential: false,
+        confidential_files: Vec::new(),
+        routes: Vec::new(),
+        sorter: None,
+    };
+    let graph = sion_agent::graph::template("attempts").unwrap();
+    let (kept, lines) = sion_cli::graphs::run(ledger.clone(), &team, graph, "Fix it.").unwrap();
+    let text = lines.join("\n");
+    let sion_agent::graph::Standing::Done(answer) = &kept.run.standing else {
+        panic!("{text}");
+    };
+    let short: String = kept.id.chars().take(8).collect();
+    let second = format!("sion/graph-{short}-attempt-2");
+    assert!(
+        answer
+            .text
+            .starts_with("Wrote fix.txt, and read it back.\n\n[What it changed, on branch"),
+        "{text}"
+    );
+    assert!(
+        answer.text.ends_with(&format!(
+            "[Picked answer 2 of 3: it read its work back. Adopted: merged branch {second} into the workspace.]"
+        )),
+        "{text}"
+    );
+    // The judge was shown each attempt's change, numbered.
+    let pick = &kept.run.ran[3].activation;
+    assert_eq!(pick.inputs.len(), 3, "{text}");
+    assert!(
+        pick.inputs
+            .iter()
+            .any(|(_, said)| said.contains("+fixed well")),
+        "{text}"
+    );
+    assert!(
+        pick.inputs
+            .iter()
+            .any(|(_, said)| said.ends_with("[It changed no files.]")),
+        "{text}"
+    );
+    // The second attempt's work is the workspace's now; the first's stays
+    // on its branch, and every worktree is gone.
+    assert_eq!(
+        std::fs::read_to_string(work.join("fix.txt")).unwrap(),
+        "fixed well\n"
+    );
+    assert_eq!(
+        git(
+            &work,
+            &["show", &format!("sion/graph-{short}-attempt-1:fix.txt")]
+        ),
+        "fixed once"
+    );
+    assert_eq!(
+        git(&work, &["worktree", "list"]).lines().count(),
+        1,
+        "worktrees removed"
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
