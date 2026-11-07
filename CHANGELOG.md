@@ -10,6 +10,23 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A reusable holdout
+
+- **`sion agent improve seal <profile> --tasks <file> --reusable`** makes
+  the sealed tasks a reusable holdout (Thresholdout, from "The reusable
+  holdout", *Science*, 2015; `sion_agent::holdout`). `run` asks it about
+  each change's gain: answered from the tasks to choose on while the
+  sealed tasks agree within a noisy threshold, and from the sealed tasks
+  with Laplace noise when they do not, the budget (`--confirmations`)
+  spent only then. A change is kept when the gain answered is above the
+  threshold, 2/√n for n sealed tasks. A kept step records what was
+  answered, and a seal's claim its threshold and noise.
+
+Tested with scripted models on 80 sealed tasks: the lesson kept without
+spending, a change that did nothing never asked about, and a gain the
+sealed tasks did not bear out answered from them until the budget was
+spent and the loop refused to run.
+
 ### What the agent's work gives for training an open model
 
 - **`sion agent improve export <profile> --out <dir>`** writes the

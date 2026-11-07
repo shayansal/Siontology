@@ -3004,7 +3004,7 @@ Options:
 ## `sion agent improve seal`
 
 ```text
-Seal a set of tasks for the profile: a share held apart to confirm changes on, which no proposer is shown, with canary cases among them and a number of confirmations. With --wallet, the seal's digests are published on the ledger before anything is tried on it
+Seal a set of tasks for the profile: a share held apart to confirm changes on, which no proposer is shown, with canary cases among them and a number of confirmations (with --reusable, a reusable holdout instead). With --wallet, the seal's digests are published on the ledger before anything is tried on it
 
 Usage: sion agent improve seal [OPTIONS] --tasks <FILE> <PROFILE>
 
@@ -3015,14 +3015,15 @@ Options:
       --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --tasks <FILE>                   The tasks (a set, as `sion agent improve harvest` writes)
       --share <SHARE>                  The share sealed, in percent [default: 30]
-      --confirmations <CONFIRMATIONS>  The confirmations the seal allows; each is held to 5% split among them all [default: 8]
+      --confirmations <CONFIRMATIONS>  The confirmations the seal allows; each is held to 5% split among them all. For a reusable holdout: how many times its sealed tasks may disagree with the tasks to choose on [default: 8]
       --canaries <CANARIES>            Canary cases added to the sealed tasks [default: 2]
       --seed <SEED>                    A seed mixed into the split (default: drawn)
+      --reusable                       Make the sealed tasks a reusable holdout (Thresholdout): a change's gain is answered from the tasks to choose on while the sealed tasks agree, and from the sealed tasks with noise when they do not, its budget spent only then. It answers many more changes than fixed confirmations, each more coarsely: it suits hundreds of sealed tasks
       --wallet <WALLET>                Publish the seal as this wallet's claim
   -h, --help                           Print help
 ```
 
-With `--wallet`, the seal's digests are published as a claim (`agent.seal/v1`) before anything is tried on it. See [Improving itself](../agent/self-improvement.md#sealed-before-anything-is-tried).
+With `--wallet`, the seal's digests are published as a claim (`agent.seal/v1`) before anything is tried on it. With `--reusable`, its sealed tasks are a reusable holdout (Thresholdout), asked about each change's gain instead of spending a fixed confirmation each. See [Improving itself](../agent/self-improvement.md#sealed-before-anything-is-tried).
 
 ## `sion agent improve run`
 

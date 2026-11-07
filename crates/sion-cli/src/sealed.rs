@@ -218,7 +218,7 @@ fn set_name(name: &str) -> String {
 
 /// A seal: tasks split into those changes may be chosen on and those they
 /// are confirmed on, and how many confirmations it allows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Seal {
     /// The profile it is for.
     pub profile: String,
@@ -249,6 +249,12 @@ pub struct Seal {
     /// The claim that published it, if one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<String>,
+    /// If it is a reusable holdout: its state. Its sealed tasks then answer
+    /// questions through Thresholdout ([`sion_agent::holdout`]), its budget
+    /// spent only when they disagree with the tasks to choose on, instead
+    /// of a fixed number of confirmations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reusable: Option<sion_agent::holdout::Thresholdout>,
 }
 
 impl Seal {
@@ -460,6 +466,7 @@ pub fn seal(
         used: 0,
         at: now,
         claim: None,
+        reusable: None,
     };
     std::fs::create_dir_all(dir()).map_err(io(&dir()))?;
     for (path, bytes) in [
@@ -495,6 +502,11 @@ pub fn spend(profile: &str, sealed: &str) -> Result<Seal, CliError> {
             "the profile's tasks were sealed anew while this ran".into(),
         ));
     }
+    if seal.reusable.is_some() {
+        return Err(CliError::Usage(
+            "the profile's seal is a reusable holdout: it is asked, not spent".into(),
+        ));
+    }
     if seal.left() == 0 {
         return Err(CliError::Usage(format!(
             "the seal's {} confirmations are spent: seal fresh tasks (sion agent improve seal)",
@@ -504,6 +516,83 @@ pub fn spend(profile: &str, sealed: &str) -> Result<Seal, CliError> {
     seal.used += 1;
     save(&seal)?;
     Ok(seal)
+}
+
+/// A uniform draw in (0, 1) from the system's randomness.
+fn uniform() -> f64 {
+    let mut bytes = [0u8; 8];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+    ((u64::from_be_bytes(bytes) >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+}
+
+/// Makes `profile`'s seal, before anything is tried on it or it is
+/// published, a reusable holdout ([`sion_agent::holdout`]): its sealed tasks
+/// may disagree with the tasks to choose on as many times as the seal
+/// allowed confirmations.
+pub fn make_reusable(profile: &str) -> Result<Seal, CliError> {
+    let path = seal_path(profile);
+    let _held = crate::pairing::Held::take(&path.with_extension("lock"))?;
+    let mut seal = current(profile)?;
+    if seal.reusable.is_some() {
+        // Its noisy threshold is drawn once: drawn again, a questioner
+        // could keep the most lenient.
+        return Err(CliError::Usage(
+            "the seal is a reusable holdout already".into(),
+        ));
+    }
+    if seal.used > 0 || seal.claim.is_some() {
+        return Err(CliError::Usage(
+            "a seal becomes a reusable holdout before anything is tried on it or it is published"
+                .into(),
+        ));
+    }
+    seal.reusable = Some(sion_agent::holdout::Thresholdout::for_holdout(
+        seal.sealed_cases,
+        seal.budget,
+        &mut uniform,
+    ));
+    save(&seal)?;
+    Ok(seal)
+}
+
+/// Asks `profile`'s reusable holdout, under its lock, about a statistic
+/// measured as `train` on the tasks to choose on and as `holdout` on the
+/// sealed tasks whose digest is `sealed`: the answer, and the holdout as it
+/// now stands. An error once its budget is spent.
+pub fn ask(
+    profile: &str,
+    sealed: &str,
+    train: f64,
+    holdout: f64,
+) -> Result<
+    (
+        sion_agent::holdout::Answer,
+        sion_agent::holdout::Thresholdout,
+    ),
+    CliError,
+> {
+    let path = seal_path(profile);
+    let _held = crate::pairing::Held::take(&path.with_extension("lock"))?;
+    let mut seal = current(profile)?;
+    if seal.sealed != sealed {
+        return Err(CliError::Usage(
+            "the profile's tasks were sealed anew while this ran".into(),
+        ));
+    }
+    let mut state = seal
+        .reusable
+        .clone()
+        .ok_or_else(|| CliError::Usage("the profile's seal is not a reusable holdout".into()))?;
+    let answer = state.answer(train, holdout, &mut uniform).ok_or_else(|| {
+        CliError::Usage(format!(
+            "the reusable holdout disagreed {} times, all its budget: seal fresh tasks (sion agent improve seal)",
+            state.budget
+        ))
+    })?;
+    seal.used = state.used;
+    seal.reusable = Some(state.clone());
+    save(&seal)?;
+    Ok((answer, state))
 }
 
 /// What a seal's claim says.
@@ -529,6 +618,9 @@ pub struct SealClaim {
     pub canaries: usize,
     /// The confirmations it allows.
     pub budget: u32,
+    /// If it is a reusable holdout: its threshold and noise, in millionths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reusable: Option<(u64, u64)>,
 }
 
 impl SealClaim {
@@ -545,6 +637,12 @@ impl SealClaim {
             sealed_cases: seal.sealed_cases,
             canaries: seal.canaries,
             budget: seal.budget,
+            reusable: seal.reusable.as_ref().map(|r| {
+                (
+                    (r.threshold * 1e6).round() as u64,
+                    (r.sigma * 1e6).round() as u64,
+                )
+            }),
         }
     }
 }

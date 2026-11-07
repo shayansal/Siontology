@@ -781,8 +781,9 @@ pub enum ImproveCommand {
     },
     /// Seal a set of tasks for the profile: a share held apart to confirm
     /// changes on, which no proposer is shown, with canary cases among them
-    /// and a number of confirmations. With --wallet, the seal's digests
-    /// are published on the ledger before anything is tried on it.
+    /// and a number of confirmations (with --reusable, a reusable holdout
+    /// instead). With --wallet, the seal's digests are published on the
+    /// ledger before anything is tried on it.
     Seal {
         /// The profile.
         profile: String,
@@ -793,7 +794,8 @@ pub enum ImproveCommand {
         #[arg(long, default_value_t = crate::sealed::SHARE)]
         share: u32,
         /// The confirmations the seal allows; each is held to 5% split
-        /// among them all.
+        /// among them all. For a reusable holdout: how many times its
+        /// sealed tasks may disagree with the tasks to choose on.
         #[arg(long, default_value_t = crate::sealed::BUDGET)]
         confirmations: u32,
         /// Canary cases added to the sealed tasks.
@@ -802,6 +804,14 @@ pub enum ImproveCommand {
         /// A seed mixed into the split (default: drawn).
         #[arg(long)]
         seed: Option<u64>,
+        /// Make the sealed tasks a reusable holdout (Thresholdout): a
+        /// change's gain is answered from the tasks to choose on while the
+        /// sealed tasks agree, and from the sealed tasks with noise when
+        /// they do not, its budget spent only then. It answers many more
+        /// changes than fixed confirmations, each more coarsely: it suits
+        /// hundreds of sealed tasks.
+        #[arg(long)]
+        reusable: bool,
         /// Publish the seal as this wallet's claim.
         #[arg(long)]
         wallet: Option<String>,
@@ -1133,9 +1143,18 @@ pub fn run_with(
             confirmations,
             canaries,
             seed,
+            reusable,
             wallet: Some(wallet),
         } => {
-            seal_command(&profile, &tasks, share, confirmations, canaries, seed)?;
+            seal_command(
+                &profile,
+                &tasks,
+                share,
+                confirmations,
+                canaries,
+                seed,
+                reusable,
+            )?;
             let claim = crate::sealed::publish(session, &wallet, &profile)?;
             println!(
                 "published as claim {}, before anything was tried on it",
@@ -1401,6 +1420,12 @@ fn code_command(
     mut publishing: Option<(&mut crate::session::Session<'_>, &str)>,
 ) -> Result<(), CliError> {
     let seal = crate::sealed::current(&profile.name)?;
+    if seal.reusable.is_some() {
+        return Err(CliError::Usage(
+            "changes to code are confirmed by fixed confirmations: seal tasks for them without --reusable"
+                .into(),
+        ));
+    }
     let (train, _) = seal.train_set()?;
     let (sealed, _) = seal.sealed_set()?;
     let problem = crate::improve_loop::Problem {
@@ -1409,6 +1434,7 @@ fn code_command(
         sealed: &sealed,
         sealed_digest: crate::code_improve::digest_of(&seal.sealed)?,
         z: seal.z(),
+        reusable: false,
     };
     let model = crate::runtime::model(coder, 0)?;
     let name = profile.name.clone();
@@ -1452,11 +1478,12 @@ fn seal_command(
     confirmations: u32,
     canaries: usize,
     seed: Option<u64>,
+    reusable: bool,
 ) -> Result<(), CliError> {
     let found = crate::profiles::get(profile)?;
     let bytes =
         std::fs::read(tasks).map_err(|e| CliError::Usage(format!("{}: {e}", tasks.display())))?;
-    let seal = crate::sealed::seal(
+    let mut seal = crate::sealed::seal(
         &found,
         &bytes,
         share,
@@ -1465,14 +1492,29 @@ fn seal_command(
         seed.unwrap_or_else(drawn),
         now(),
     )?;
-    println!(
-        "sealed {} of {} tasks for profile {profile} (with {} canaries), {} left to choose changes on; {} confirmations allowed",
-        seal.sealed_cases,
-        seal.sealed_cases + seal.train_cases,
-        seal.canaries,
-        seal.train_cases,
-        seal.budget
-    );
+    if reusable {
+        seal = crate::sealed::make_reusable(profile)?;
+    }
+    match &seal.reusable {
+        Some(holdout) => println!(
+            "sealed {} of {} tasks for profile {profile} (with {} canaries), {} left to choose changes on, as a reusable holdout: a change is kept when the gain it answers is above {:.1}% (its noise {:.1}%), and its sealed tasks may disagree with the tasks to choose on {} times",
+            seal.sealed_cases,
+            seal.sealed_cases + seal.train_cases,
+            seal.canaries,
+            seal.train_cases,
+            holdout.threshold * 100.0,
+            holdout.sigma * 100.0,
+            holdout.budget
+        ),
+        None => println!(
+            "sealed {} of {} tasks for profile {profile} (with {} canaries), {} left to choose changes on; {} confirmations allowed",
+            seal.sealed_cases,
+            seal.sealed_cases + seal.train_cases,
+            seal.canaries,
+            seal.train_cases,
+            seal.budget
+        ),
+    }
     println!("tasks to choose on: {}", seal.train_path().display());
     println!(
         "sealed tasks: {} (no proposer is shown them)",
@@ -1498,10 +1540,16 @@ fn run_loop(
     let sealed_digest = sion_core::hash::Hash32::from_hex(&seal.sealed)
         .map_err(|e| CliError::Usage(format!("the seal's digest: {e}")))?;
     if seal.left() == 0 {
-        return Err(CliError::Usage(format!(
-            "the seal's {} confirmations are spent: seal fresh tasks (sion agent improve seal)",
-            seal.budget
-        )));
+        return Err(CliError::Usage(match seal.reusable {
+            Some(_) => format!(
+                "the reusable holdout disagreed {} times, all its budget: seal fresh tasks (sion agent improve seal)",
+                seal.budget
+            ),
+            None => format!(
+                "the seal's {} confirmations are spent: seal fresh tasks (sion agent improve seal)",
+                seal.budget
+            ),
+        }));
     }
     let improver = crate::improve_loop::improver(&profile.name)?;
     let model = crate::runtime::model(proposer, 0)?;
@@ -1511,6 +1559,7 @@ fn run_loop(
         sealed: &sealed,
         sealed_digest,
         z: seal.z(),
+        reusable: seal.reusable.is_some(),
     };
     let name = profile.name.clone();
     let sealed_now = seal.sealed.clone();
@@ -1518,6 +1567,10 @@ fn run_loop(
     let mut spend = || -> Result<(u32, u32), CliError> {
         let spent = crate::sealed::spend(&name, &sealed_now)?;
         Ok((spent.used, spent.budget))
+    };
+    let mut ask = |train: f64, holdout: f64| -> Result<crate::improve_loop::Asked, CliError> {
+        let (answer, state) = crate::sealed::ask(&name, &sealed_now, train, holdout)?;
+        Ok((answer, state.used, state.budget, state.threshold))
     };
     let mut record = |step: &mut crate::improve_loop::Step| -> Result<Vec<String>, CliError> {
         if step.seal_claim.is_none() {
@@ -1533,6 +1586,7 @@ fn run_loop(
     let stopped = || crate::runtime::kill_switch().exists();
     let mut sinks = crate::improve_loop::Sinks {
         spend: &mut spend,
+        ask: &mut ask,
         kept: &mut record,
         stopped: &stopped,
         now: &now,
@@ -1570,7 +1624,7 @@ fn print_lineage(profile: &str) -> Result<(), CliError> {
     let steps = crate::improve_loop::lineage(profile)?;
     for step in &steps {
         println!(
-            "{} step {}: {} — {}/{} up from {}/{} on the tasks to choose on, {}/{} up from {}/{} on sealed tasks (confirmation {} of {}){}",
+            "{} step {}: {} — {}/{} up from {}/{} on the tasks to choose on, {}/{} up from {}/{} on sealed tasks ({}){}",
             sion_agent::schedule::rfc3339(step.at),
             step.id,
             step.change,
@@ -1582,8 +1636,15 @@ fn print_lineage(profile: &str) -> Result<(), CliError> {
             step.sealed_after.total,
             step.sealed_before.passed,
             step.sealed_before.total,
-            step.confirmation,
-            step.budget,
+            match &step.answered {
+                Some(answer) => format!(
+                    "a gain of {:+.0}% answered by the reusable holdout, its budget {} of {} used",
+                    answer.value * 100.0,
+                    step.confirmation,
+                    step.budget
+                ),
+                None => format!("confirmation {} of {}", step.confirmation, step.budget),
+            },
             match &step.claim {
                 Some(claim) => format!("; claim {}", &claim[..16.min(claim.len())]),
                 None => String::new(),
@@ -1660,9 +1721,18 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
             confirmations,
             canaries,
             seed,
+            reusable,
             wallet: None,
         } => {
-            seal_command(&profile, &tasks, share, confirmations, canaries, seed)?;
+            seal_command(
+                &profile,
+                &tasks,
+                share,
+                confirmations,
+                canaries,
+                seed,
+                reusable,
+            )?;
             println!("(kept on this machine only: with --wallet, its digests are published on the ledger first)");
             Ok(())
         }

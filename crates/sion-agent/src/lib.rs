@@ -80,6 +80,7 @@ pub mod evolve;
 pub mod graph;
 pub mod guard;
 pub mod harvest;
+pub mod holdout;
 pub mod hooks;
 pub mod imitation;
 pub mod journal;

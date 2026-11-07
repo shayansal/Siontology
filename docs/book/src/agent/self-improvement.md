@@ -80,6 +80,38 @@ published as claim 540b86ad299a45ad28d18e16afb9d0ac4a2ed19b51e758d81ce6b93c36742
   shown the sealed tasks can check that they are the ones sealed, and
   that the seal came first.
 
+### A reusable holdout
+
+A seal's confirmations go quickly: each change confirmed spends one,
+whether it holds up or not. `--reusable` makes the sealed tasks a
+reusable holdout instead (Thresholdout, from Dwork, Feldman, Hardt,
+Pitassi, Reingold and Roth, "The reusable holdout", *Science*, 2015):
+
+```text
+$ sion agent improve seal lead --tasks work.json --share 50 --confirmations 3 --reusable
+sealed 80 of 160 tasks for profile lead (with 2 canaries), 80 left to choose changes on, as a reusable holdout: a change is kept when the gain it answers is above 22.4% (its noise 5.6%), and its sealed tasks may disagree with the tasks to choose on 3 times
+```
+
+- **Asked, not spent.** A change's gain is measured on both parts. While
+  the two agree, within a threshold that has noise added, the answer is
+  the gain on the tasks to choose on, and nothing is spent. When they
+  disagree, the answer is the sealed tasks' gain with Laplace noise
+  added, and one of the budget goes. `--confirmations` sets the budget.
+- **Kept on the answer alone.** A change is kept when the gain answered is
+  above the threshold. No sealed task's own result decides it, as that
+  would tell more about the sealed tasks than the noisy answer does. So
+  the rule that a change must fail no sealed task the agent passes is not
+  applied here.
+- **Coarser than a confirmation.** The noise is 1/(2√n) for n sealed
+  tasks, and the threshold four times that, as in the paper: 22% with 80
+  sealed tasks, 10% with 400. A reusable holdout suits hundreds of sealed
+  tasks.
+- **Drawn once.** A seal becomes a reusable holdout when it is made,
+  before anything is tried on it or it is published, and its claim then
+  holds its threshold and noise. The noise is drawn from the system's
+  randomness. The threshold's noise is not drawn again until the sealed
+  tasks disagree.
+
 ## The loop
 
 `sion agent improve run <profile> --proposer <model>` lets the agent
@@ -120,7 +152,9 @@ improve itself on its seal. Each round goes like this:
    beyond chance, on the tasks to choose on.
 6. **Confirmation.** It must also be better on the sealed tasks, at the
    seal's corrected level. It must fail no sealed task the agent passes
-   and pass no canary. Each confirmation spends one of the seal's.
+   and pass no canary. Each confirmation spends one of the seal's. On a
+   reusable holdout, the gain it answers must be above its threshold
+   instead, and only a disagreement spends.
 
 Here the agent pays whoever an invoice names. The proposer tries three
 things: a change that does nothing, one that repeats a task word for word,
@@ -369,7 +403,8 @@ agent's changes with.
   proposer's history says only whether a change was confirmed.
 - **A seal's confirmations** are counted in its file under a lock that
   holds across processes. The level each is held to is fixed by their
-  number when the seal is made.
+  number when the seal is made. A reusable holdout's budget and noisy
+  threshold are kept the same way.
 - **Canaries and the leak check** stop proposals that carry what they
   should not know.
 - **The operator's words** are never rewritten. The agent's policy,
@@ -394,7 +429,9 @@ leave open is named in the trust model (`agent:self-improvement`,
   its attester's signature.
 - The sealed tasks are not kept secret from whoever holds this machine's
   files.
-- There is no reusable holdout beyond a seal's fixed confirmations.
+- A reusable holdout's noise and threshold follow the paper's
+  proportions, but nothing here works out how accurate its answers are
+  for a given budget and number of tasks.
 - The agent does not write tasks for itself.
 - No challenger rewrites tasks to expose shortcuts.
 - Nothing here trains a model: export writes what to train on, and the

@@ -661,10 +661,16 @@ pub struct Step {
     pub confirm: (f64, f64),
     /// The z of that level.
     pub z: f64,
-    /// Which of the seal's confirmations this was.
+    /// Which of the seal's confirmations this was; for a reusable holdout,
+    /// how much of its budget was used when it was kept.
     pub confirmation: u32,
     /// Of how many.
     pub budget: u32,
+    /// If the sealed tasks were a reusable holdout
+    /// ([`sion_agent::holdout`]): the gain it answered. `confirm` is then
+    /// that gain twice, and `z` 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<sion_agent::holdout::Answer>,
     /// When it was kept (seconds since the epoch).
     pub at: u64,
     /// The claim that published it, if one did.
@@ -947,13 +953,26 @@ pub struct Problem<'a> {
     pub sealed_digest: Hash32,
     /// The z each confirmation is held to.
     pub z: f64,
+    /// Whether the sealed tasks are a reusable holdout
+    /// ([`sion_agent::holdout`]): a change is then kept when the gain it
+    /// is answered exceeds the holdout's threshold, and the budget is
+    /// spent only when the sealed tasks disagree with the tasks to choose
+    /// on, instead of a confirmation each.
+    pub reusable: bool,
 }
+
+/// What a reusable holdout answered: the answer, how much of its budget
+/// is used and how much it had, and its threshold.
+pub type Asked = (sion_agent::holdout::Answer, u32, u32, f64);
 
 /// What a loop does with its confirmations and the changes it keeps.
 pub struct Sinks<'a> {
     /// Spends a confirmation: returns which it is and of how many, or an
     /// error when none is left.
     pub spend: &'a mut dyn FnMut() -> Result<(u32, u32), CliError>,
+    /// Asks a reusable holdout about a gain measured on the tasks to choose
+    /// on and on the sealed tasks; an error when its budget is spent.
+    pub ask: &'a mut dyn FnMut(f64, f64) -> Result<Asked, CliError>,
     /// Records a kept change (publishing it, making it the profile's).
     pub kept: &'a mut dyn FnMut(&mut Step) -> Result<Vec<String>, CliError>,
     /// Whether to stop before the next model is asked (the kill switch).
@@ -1315,11 +1334,17 @@ pub fn improve(
                     scored
                 }
             };
-            let (confirmation, budget) = match (sinks.spend)() {
-                Ok(spent) => spent,
-                Err(why) => {
-                    report.stopped = Some(why.to_string());
-                    break 'rounds;
+            // A fixed confirmation is spent before the sealed tasks are run;
+            // a reusable holdout spends only when it disagrees, after.
+            let spent = if problem.reusable {
+                None
+            } else {
+                match (sinks.spend)() {
+                    Ok(spent) => Some(spent),
+                    Err(why) => {
+                        report.stopped = Some(why.to_string());
+                        break 'rounds;
+                    }
                 }
             };
             let after = score(
@@ -1337,27 +1362,83 @@ pub fn improve(
                 ));
                 break 'rounds;
             }
-            let confirm = newcombe_with(
-                (after.outcome.passed, after.outcome.total),
-                (before.outcome.passed, before.outcome.total),
-                problem.z,
-            );
-            let regressed = before
-                .cases
-                .iter()
-                .zip(&after.cases)
-                .position(|(b, a)| *b && !a);
-            if confirm.0 <= 0.0 || regressed.is_some() {
-                let why = match regressed {
-                    Some(at) => format!("it fails sealed task {} that the agent passes", at + 1),
-                    None => format!(
-                        "{}/{} against {}/{} on the sealed tasks (interval at the seal's level {:+.0}% to {:+.0}%): not better beyond chance",
-                        after.outcome.passed, after.outcome.total, before.outcome.passed, before.outcome.total,
-                        confirm.0 * 100.0, confirm.1 * 100.0
-                    ),
+            let rate = |o: &Outcome| o.passed as f64 / o.total.max(1) as f64;
+            // A reusable holdout decides on its answer alone: no sealed
+            // task's own result is looked at, as that would tell more of
+            // them than the noisy answer does.
+            let (confirm, z, confirmation, budget, verdict, answered) = match spent {
+                Some((confirmation, budget)) => {
+                    let confirm = newcombe_with(
+                        (after.outcome.passed, after.outcome.total),
+                        (before.outcome.passed, before.outcome.total),
+                        problem.z,
+                    );
+                    let regressed = before
+                        .cases
+                        .iter()
+                        .zip(&after.cases)
+                        .position(|(b, a)| *b && !a);
+                    let verdict = match regressed {
+                        Some(at) => Err(format!("it fails sealed task {} that the agent passes", at + 1)),
+                        None if confirm.0 <= 0.0 => Err(format!(
+                            "{}/{} against {}/{} on the sealed tasks (interval at the seal's level {:+.0}% to {:+.0}%): not better beyond chance",
+                            after.outcome.passed, after.outcome.total, before.outcome.passed, before.outcome.total,
+                            confirm.0 * 100.0, confirm.1 * 100.0
+                        )),
+                        None => Ok(format!(
+                            "interval at the seal's level {:+.0}% to {:+.0}%; confirmation {confirmation} of {budget}",
+                            confirm.0 * 100.0, confirm.1 * 100.0
+                        )),
+                    };
+                    (confirm, problem.z, confirmation, budget, verdict, None)
+                }
+                None => {
+                    let train_gain = rate(&trained.outcome) - rate(&incumbent_train);
+                    let sealed_gain = rate(&after.outcome) - rate(&before.outcome);
+                    let (answer, used, budget, threshold) =
+                        match (sinks.ask)(train_gain, sealed_gain) {
+                            Ok(asked) => asked,
+                            Err(why) => {
+                                report.stopped = Some(why.to_string());
+                                break 'rounds;
+                            }
+                        };
+                    let from = match answer.source {
+                        sion_agent::holdout::Source::Train => {
+                            "from the tasks to choose on, as the sealed tasks agreed"
+                        }
+                        sion_agent::holdout::Source::Holdout => {
+                            "from the sealed tasks with noise, as they disagreed"
+                        }
+                    };
+                    let (gain, threshold_said) = (answer.value * 100.0, threshold * 100.0);
+                    let verdict = if answer.value > threshold {
+                        Ok(format!(
+                            "answered by the reusable holdout as a gain of {gain:+.0}%, above its threshold of {threshold_said:.0}%: {from}; its budget {used} of {budget} used"
+                        ))
+                    } else {
+                        Err(format!(
+                            "the reusable holdout answered a gain of {gain:+.0}%, not above its threshold of {threshold_said:.0}%: {from}; its budget {used} of {budget} used"
+                        ))
+                    };
+                    (
+                        (answer.value, answer.value),
+                        0.0,
+                        used,
+                        budget,
+                        verdict,
+                        Some(answer),
+                    )
+                }
+            };
+            if let Err(why) = &verdict {
+                let why = if spent.is_some() {
+                    format!("{why} (confirmation {confirmation} of {budget})")
+                } else {
+                    why.clone()
                 };
                 report.lines.push(format!(
-                    "  tried {change}: better on the tasks to choose on ({}/{} against {}/{}), but not confirmed: {why} (confirmation {confirmation} of {budget})",
+                    "  tried {change}: better on the tasks to choose on ({}/{} against {}/{}), but not confirmed: {why}",
                     trained.outcome.passed, trained.outcome.total, incumbent_train.passed, incumbent_train.total
                 ));
                 history.push(told(&change, &format!(
@@ -1383,19 +1464,20 @@ pub fn improve(
                 sealed_before: before.outcome,
                 sealed_after: after.outcome,
                 confirm,
-                z: problem.z,
+                z,
                 confirmation,
                 budget,
+                answered,
                 at: (sinks.now)(),
                 claim: None,
             };
             step.identify();
             let lines = (sinks.kept)(&mut step)?;
             report.lines.push(format!(
-                "  kept {change}: {}/{} against {}/{} on the tasks to choose on, and {}/{} against {}/{} on the sealed tasks (interval at the seal's level {:+.0}% to {:+.0}%; confirmation {confirmation} of {budget}), as step {}",
+                "  kept {change}: {}/{} against {}/{} on the tasks to choose on, and {}/{} against {}/{} on the sealed tasks ({}), as step {}",
                 trained.outcome.passed, trained.outcome.total, incumbent_train.passed, incumbent_train.total,
                 after.outcome.passed, after.outcome.total, before.outcome.passed, before.outcome.total,
-                confirm.0 * 100.0, confirm.1 * 100.0, step.id
+                verdict.as_deref().unwrap_or_default(), step.id
             ));
             report
                 .lines
@@ -1583,8 +1665,15 @@ pub fn grade(
             Ok((used, budget))
         };
         let mut kept = |_: &mut Step| -> Result<Vec<String>, CliError> { Ok(Vec::new()) };
+        // The improver's problems hold fixed confirmations.
+        let mut ask = |_: f64, _: f64| -> Result<Asked, CliError> {
+            Err(CliError::Usage(
+                "an improver's problem is not a reusable holdout".into(),
+            ))
+        };
         let mut sinks = Sinks {
             spend: &mut spend,
+            ask: &mut ask,
             kept: &mut kept,
             stopped,
             now,
@@ -1595,6 +1684,7 @@ pub fn grade(
             sealed: &problem.held,
             sealed_digest: problem.held_digest,
             z: sion_agent::compare::z_for(crate::sealed::ALPHA / f64::from(budget)),
+            reusable: false,
         };
         let report = improve(
             profile,
