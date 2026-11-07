@@ -509,8 +509,9 @@ const STATE_CERTIFICATE_WAIT: std::time::Duration = std::time::Duration::from_se
 /// each proof against the header's state root. Waits up to 20 seconds for
 /// the Pulse to be certified. The proofs must be fresh: from no more than
 /// [`STALE_TOLERANCE`] Pulses before the latest certified Pulse the client
-/// knows of, whether this process verified it, the node says it has
-/// certified it, or the caller knows it from elsewhere (`min_pulse`).
+/// knows of as it begins checking them, whether this process verified it,
+/// the node says it has certified it, or the caller knows it from
+/// elsewhere (`min_pulse`).
 pub fn verify_state(
     ledger: &dyn Ledger,
     pinned: Option<Hash32>,
@@ -523,6 +524,20 @@ pub fn verify_state(
     let chain_id = chain
         .verify(pinned.as_ref())
         .map_err(|e| CliError::Verification(e.to_string()))?;
+    // Fresh enough: not far behind a later certified Pulse this process
+    // verified, nor behind the node's own account of its certified Pulse
+    // (a mirror that serves an old state while it follows the chain). Both
+    // are taken now, as the answer is checked: Pulses certified while this
+    // client waits for and checks the certificate came after the node
+    // answered, and are not held against it.
+    let claimed: Option<Pulse> = ledger
+        .status()
+        .ok()
+        .and_then(|status| serde_json::from_value(status["certified_pulse"].clone()).ok());
+    let known = [seen_pulse(&chain_id), claimed, min_pulse]
+        .into_iter()
+        .flatten()
+        .max();
     let deadline = std::time::Instant::now() + STATE_CERTIFICATE_WAIT;
     let certificate = loop {
         let view = ledger.pulse_view(Some(pulse))?;
@@ -543,17 +558,6 @@ pub fn verify_state(
         ));
     }
     let signed = verify_header_certificate(ledger, &chain, &certificate)?;
-    // Fresh enough: not far behind a later certified Pulse this process
-    // verified, nor behind the node's own account of its certified Pulse
-    // (a mirror that serves an old state while it follows the chain).
-    let claimed: Option<Pulse> = ledger
-        .status()
-        .ok()
-        .and_then(|status| serde_json::from_value(status["certified_pulse"].clone()).ok());
-    let known = [seen_pulse(&chain_id), claimed, min_pulse]
-        .into_iter()
-        .flatten()
-        .max();
     if let Some(known) = known {
         if pulse.0.saturating_add(STALE_TOLERANCE) < known.0 {
             return Err(CliError::Verification(format!(
