@@ -47,6 +47,7 @@ rand_core.workspace = true
 chacha20poly1305.workspace = true
 chacha20.workspace = true
 k256.workspace = true
+sha3.workspace = true
 zeroize.workspace = true
 nnnoiseless.workspace = true
 

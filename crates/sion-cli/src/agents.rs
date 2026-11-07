@@ -665,6 +665,12 @@ pub enum AgentCommand {
     /// plays), the transcript written as it goes, and the profile's agent
     /// writing up the decisions, the action items and what is still open.
     Meeting(crate::meeting::MeetingArgs),
+    /// The agent in ERC-8004's registries on EVM chains: its registration
+    /// file, naming its Siontology DID; the calls that register it, bind
+    /// its wallet, give it feedback and answer a validation, written out
+    /// for a wallet to send.
+    #[command(subcommand)]
+    Erc8004(crate::erc8004::Erc8004Command),
     /// Run scheduled jobs as they fall due.
     Scheduler {
         /// Run the jobs due now, then stop.
@@ -1000,6 +1006,10 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Work(command) if !command.needs_ledger() => crate::work::run_local(command),
         AgentCommand::Waiting => waiting(),
         AgentCommand::Up { command, for_secs } => crate::up::command(command, for_secs),
+        AgentCommand::Erc8004(command) => match crate::erc8004::local(command) {
+            Ok(done) => done,
+            Err(back) => return Err(Box::new(AgentCommand::Erc8004(*back))),
+        },
         other => return Err(Box::new(other)),
     })
 }
@@ -1408,6 +1418,7 @@ pub fn run(
         AgentCommand::Sell(command) => crate::acp_cli::sell(shared, command),
         AgentCommand::Buy(args) => crate::acp_cli::buy(shared, args),
         AgentCommand::Commerce(command) => crate::acp_cli::commerce(command),
+        AgentCommand::Erc8004(command) => crate::erc8004::run(ledger, command),
         AgentCommand::Scheduler { once, poll } => {
             crate::screens::keep_between_runs();
             crate::schedules::scheduler(shared, once, poll)

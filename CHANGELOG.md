@@ -10,6 +10,20 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### ERC-8004: the agent in Ethereum's registries
+
+- **`sion agent erc8004 card <profile>`** writes the agent's ERC-8004
+  registration file, naming its Siontology DID among its services;
+  `check <file>` reads one.
+- **`register`, `wallet`, `feedback` and `validate`** write the calls the
+  Identity, Reputation and Validation Registries take (`register`,
+  `setAgentWallet` with the wallet's EIP-712 signature from
+  `EVM_PRIVATE_KEY`, `giveFeedback` with its feedback file and digest,
+  `validationResponse`) as transactions for a wallet to send. Nothing is
+  sent from here.
+
+Checked byte for byte against eth-account and eth-abi.
+
 ### Attestations on a bond
 
 - **`sion agent improve attest … --adjudicator <atom> [--bond <USD>]`**

@@ -49,6 +49,7 @@ pub mod doctor;
 pub mod documents;
 pub mod drafts;
 pub mod email;
+pub mod erc8004;
 pub mod error;
 pub mod feishu;
 pub mod files;

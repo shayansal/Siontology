@@ -820,6 +820,7 @@ Commands:
   buy            Buy from a merchant that serves ACP's checkout: make a checkout session, check its total, pay it on Siontology or by a card delegated to the merchant's PSP (with 3-D Secure if asked)
   commerce       The services around an ACP checkout: a PSP's delegate payment vault, a 3-D Secure provider, an agent's Feed API, a webhook receiver
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
+  erc8004        The agent in ERC-8004's registries on EVM chains: its registration file, naming its Siontology DID; the calls that register it, bind its wallet, give it feedback and answer a validation, written out for a wallet to send
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
   waiting        Everything that waits for a person: work items' questions, approvals and failures, messages that could not be sent, sessions waiting for approval, and chats waiting to be let in
@@ -3539,6 +3540,148 @@ Options:
 ```
 
 See [Selling and buying: ACP and AP2](../agent/commerce.md).
+
+## `sion agent erc8004`
+
+```text
+The agent in ERC-8004's registries on EVM chains: its registration file, naming its Siontology DID; the calls that register it, bind its wallet, give it feedback and answer a validation, written out for a wallet to send
+
+Usage: sion agent erc8004 [OPTIONS] <COMMAND>
+
+Commands:
+  card      Write the agent's registration file: its name, what it does, its services (an A2A card, an MCP server, a web page) and its Siontology DID, and its entry in a registry once it has one. With --data-uri, the file as a data: URI too, to register wholly on chain
+  register  The call that registers an agent in the Identity Registry, its registration file at a URI (https://, ipfs:// or data:), for its owner to send
+  wallet    Sign, as the wallet whose key is in EVM_PRIVATE_KEY, that it is an agent's wallet (EIP-712, as setAgentWallet checks), and write the call the agent's owner sends
+  feedback  Feedback for an agent, as a client gives it: its file, to put at a URI, and the call (giveFeedback) the client sends, naming the file by that URI and its Keccak digest
+  validate  A validator's answer to a validation request: the call (validationResponse) the validator sends, naming what it found by its URI and Keccak digest
+  check     Check a registration file: its type, its name and its entries
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent erc8004 card`
+
+```text
+Write the agent's registration file: its name, what it does, its services (an A2A card, an MCP server, a web page) and its Siontology DID, and its entry in a registry once it has one. With --data-uri, the file as a data: URI too, to register wholly on chain
+
+Usage: sion agent erc8004 card [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --description <DESCRIPTION>  What the agent does, in a sentence or two (public)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --a2a <URL>                  Its A2A card's address (…/.well-known/agent-card.json)
+      --mcp <URL>                  Its MCP server's address
+      --web <URL>                  Its web page
+      --image <URL>                A picture of it [default: ""]
+      --x402                       Say that it takes x402 payments
+      --agent-id <AGENT_ID>        Its id in the Identity Registry, once registered
+      --chain <CHAIN>              The chain (EIP-155 id) [default: 1]
+      --registry <REGISTRY>        The Identity Registry (default: the one deployed on that chain)
+      --out <FILE>                 Where to write it (default: standard output)
+      --data-uri                   Also print it as a data: URI
+  -h, --help                       Print help
+```
+
+## `sion agent erc8004 register`
+
+```text
+The call that registers an agent in the Identity Registry, its registration file at a URI (https://, ipfs:// or data:), for its owner to send
+
+Usage: sion agent erc8004 register [OPTIONS] --uri <URI>
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --uri <URI>            The registration file's URI
+      --chain <CHAIN>        The chain (EIP-155 id) [default: 1]
+      --registry <REGISTRY>  The Identity Registry (default: the one deployed on that chain)
+  -h, --help                 Print help
+```
+
+## `sion agent erc8004 wallet`
+
+```text
+Sign, as the wallet whose key is in EVM_PRIVATE_KEY, that it is an agent's wallet (EIP-712, as setAgentWallet checks), and write the call the agent's owner sends
+
+Usage: sion agent erc8004 wallet [OPTIONS] --owner <OWNER> <AGENT_ID>
+
+Arguments:
+  <AGENT_ID>  The agent's id in the Identity Registry
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --owner <OWNER>        The agent's owner, who sends the call
+      --within <WITHIN>      Seconds the signature is good for (at most 300) [default: 300]
+      --chain <CHAIN>        The chain (EIP-155 id) [default: 1]
+      --registry <REGISTRY>  The Identity Registry (default: the one deployed on that chain)
+  -h, --help                 Print help
+```
+
+## `sion agent erc8004 feedback`
+
+```text
+Feedback for an agent, as a client gives it: its file, to put at a URI, and the call (giveFeedback) the client sends, naming the file by that URI and its Keccak digest
+
+Usage: sion agent erc8004 feedback [OPTIONS] --value <VALUE> --client <CLIENT> <AGENT_ID>
+
+Arguments:
+  <AGENT_ID>  The agent's id in the Identity Registry
+
+Options:
+      --node <NODE>              The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --value <VALUE>            The value, a decimal (99.77, -3.2, 1)
+      --tag1 <TAG1>              What it is about (`starred`, `uptime`, …) [default: ""]
+      --tag2 <TAG2>              More of what it is about [default: ""]
+      --endpoint <ENDPOINT>      The endpoint it is about [default: ""]
+      --client <CLIENT>          The client's address
+      --uri <URI>                Where the file will be (default: none, and no digest)
+      --chain <CHAIN>            The chain (EIP-155 id) [default: 1]
+      --registry <REGISTRY>      The Identity Registry the agent is in (default: the one deployed on that chain)
+      --reputation <REPUTATION>  The Reputation Registry (default: the one deployed there)
+      --out <FILE>               Where to write the file
+  -h, --help                     Print help
+```
+
+## `sion agent erc8004 validate`
+
+```text
+A validator's answer to a validation request: the call (validationResponse) the validator sends, naming what it found by its URI and Keccak digest
+
+Usage: sion agent erc8004 validate [OPTIONS] --request <REQUEST> --response <RESPONSE> --registry <REGISTRY>
+
+Options:
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --request <REQUEST>    The request's digest (0x and 64 hex digits)
+      --response <RESPONSE>  The answer, 0 (failed) to 100 (passed)
+      --uri <URI>            Where what was found is [default: ""]
+      --found <FILE>         The file of what was found, whose digest the call names
+      --tag <TAG>            A tag for the answer [default: ""]
+      --chain <CHAIN>        The chain (EIP-155 id) [default: 1]
+      --registry <REGISTRY>  The Validation Registry (no address is listed as deployed yet)
+  -h, --help                 Print help
+```
+
+## `sion agent erc8004 check`
+
+```text
+Check a registration file: its type, its name and its entries
+
+Usage: sion agent erc8004 check [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  The file
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [On Ethereum's agent registries: ERC-8004](../agent/erc8004.md).
 
 ## `sion agent commerce`
 

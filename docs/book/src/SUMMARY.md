@@ -39,6 +39,7 @@
 - [Subagents and hired help](agent/teams.md)
 - [Renting your agent out](agent/renting.md)
 - [Selling and buying: ACP and AP2](agent/commerce.md)
+- [On Ethereum's agent registries: ERC-8004](agent/erc8004.md)
 - [Graphs of agents](agent/graphs.md)
 
 # Build on the ledger

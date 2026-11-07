@@ -47,7 +47,7 @@ live.
 | Privacy: encrypted payloads, viewing keys, sealed orders | Built |
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
-| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated) |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated; ERC-8004's registration file and calls, written for a wallet to send) |
 | Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
@@ -1253,7 +1253,27 @@ delegation from a user credential, wallet handlers other than the ledger,
 ACP's discounts, fulfillment other than digital, and a refund API at the
 PSP (ACP defines none).
 
-**Not built:** adapters for ERC-8004 and C2PA.
+**ERC-8004: built (the agent's side; nothing sent to a chain).**
+`crate::erc8004` and `sion agent erc8004` write an agent's ERC-8004
+registration file (`registration-v1`: its name, description, services,
+and always its Siontology DID; `supportedTrust` of `reputation` and
+`crypto-economic`), check any registration file's type, name and entries,
+and write the calls the registries take as transactions for a wallet to
+send: `register(agentURI)` to the Identity Registry; `setAgentWallet`
+with the wallet's EIP-712 `AgentWalletSet` signature (secp256k1, the key
+read from `EVM_PRIVATE_KEY` and kept nowhere, good for at most five
+minutes as the registry allows); `giveFeedback` with the spec's feedback
+file and its Keccak digest; and `validationResponse`. The default
+addresses are the reference deployment's (mainnets and five testnets).
+Checked against eth-account 0.13.4 and eth-abi: the digest, the
+signature and the four calls are the same bytes, and a signature made
+through the binary recovers to its wallet; the card tested on a devnet
+with the DID the node gives. Not built: reading a registry (no RPC is
+called, so nothing here knows what a registry holds), an ERC-1271 smart
+wallet's signature, and Siontology's record or bonds published to the
+Reputation or Validation Registry by themselves.
+
+**Not built:** an adapter for C2PA.
 
 **The app: partly built.** `sion-app-core` turns a device into a light
 node: it keeps the device's key (`key.seed`, mode 0600), verifies the
