@@ -205,8 +205,17 @@ What is enforced, and where:
   beyond chance on the sealed tasks, which nothing that writes changes is
   shown. The improver improves itself the same way. Changes to the agent's
   own code are built, tested and scored in a sandbox, released on the
-  ledger, rebuilt and attested by others, and installed only by you.
-  Tested with scripted models. [Improving itself](docs/book/src/agent/self-improvement.md)
+  ledger, rebuilt and attested by others (on a bond an adjudicator can rule
+  against, when they choose), and installed only by you. The sealed tasks
+  can be a reusable holdout, a model can write practice tasks to choose
+  changes on, and a challenger can write variants of what a change newly
+  passes to catch a shortcut before it is confirmed. Tested with scripted
+  models. [Improving itself](docs/book/src/agent/self-improvement.md)
+- **On Ethereum and in what it makes**: the agent's ERC-8004 registration
+  file, naming its DID, and the calls that register it and bind its wallet,
+  written for a wallet to send; Content Credentials (C2PA) for the files it
+  makes, signed with your certificate.
+  [ERC-8004](docs/book/src/agent/erc8004.md), [C2PA](docs/book/src/agent/c2pa.md)
 - **Facts shared between owners**: a log another owner curates, kept in
   mind, each fact vouched for on someone's bond or revoked by its writer (a
   voucher withdraws only its own vouching); a revoked fact, and whatever
@@ -393,9 +402,10 @@ implementation adds. In short:
   this repository's own code).
 - **Partly built**: the agent runtime (tested with scripted models and
   stand-ins for the services it talks to); the adapters for outside protocols
-  (x402, ACP and AP2 are built, with card networks simulated; ERC-8004 and
-  C2PA are not); the app (the desktop shell is built and run; mobile is
-  configured, not built).
+  (x402, ACP and AP2 are built, with card networks simulated; ERC-8004's
+  registration file and calls are written for a wallet to send, and C2PA
+  manifests are sidecars signed ES256); the app (the desktop shell is built
+  and run; mobile is configured, not built).
 - **Simplified**: consensus is a certified DAG, not an uncertified one;
   forced inclusion replaces a censoring committee but does not freeze the
   shard; data retention and archival; networking between machines (QUIC
@@ -405,8 +415,8 @@ implementation adds. In short:
   real bindings to the state, receipts, data and certificates
   (`impl:replay-proofs`).
 - **Not built**: personhood claims, a proving market, confidential amounts
-  and zero-knowledge compliance, ERC-8004 and C2PA adapters, payments to
-  provers and the value-in-flight cap.
+  and zero-knowledge compliance, payments to provers and the
+  value-in-flight cap.
 
 <details>
 <summary>The status of every section of the architecture</summary>
@@ -441,7 +451,7 @@ implementation adds. In short:
 | Privacy: encrypted payloads, viewing keys, sealed orders | Built |
 | Privacy: confidential amounts, zero-knowledge compliance | Not built |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
-| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated) |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated; ERC-8004's registration file and calls, written for a wallet to send; C2PA sidecar manifests, ES256) |
 | Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
