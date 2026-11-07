@@ -809,6 +809,9 @@ Commands:
   schedule       Scheduled jobs: a task a profile works on at a time, every interval or on a cron expression, each run a session whose answer goes to a channel
   import         Bring an OpenClaw or Hermes Agent over to a profile: its persona and memories into the profile's instructions, its jobs as schedules, and with --models, --keys and --bridges its models, its model keys and its chats; its skills listed, to import through the audit. Shows the plan; --apply does it
   routes         Routes that choose a profile's models for each task: pictures, work items and long tasks by rule, other tasks sorted by a model among routes that say what they are for; what each route was given, and its models compared on a set of tasks
+  improve        Improve the agent itself, keeping only what measurably helps: words added to its instructions, the models it reaches for, a vote, each tried on a set of tasks against the agent as it is and kept only when better beyond chance and failing no held-out task it passes
+  find           Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
+  project        Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
   x-mentions     Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
   browser        Browser profiles you sign in with, for agents' browsers to use (--browser-profile): your cookies and sessions, kept here
   hooks          The operator's hooks: commands of your own run before and after agents' tool calls (a hook before may block one, with a reason the model is given) and before and after their runs
@@ -2854,6 +2857,89 @@ Options:
   -h, --help                           Print help
 ```
 
+## `sion agent improve`
+
+```text
+Improve the agent itself, keeping only what measurably helps: words added to its instructions, the models it reaches for, a vote, each tried on a set of tasks against the agent as it is and kept only when better beyond chance and failing no held-out task it passes
+
+Usage: sion agent improve [OPTIONS] <COMMAND>
+
+Commands:
+  try   Try changes to a profile's agent on a set of tasks: words added to its instructions, the models a route reaches for, a vote. Each is run against the agent as it is and kept only if it is better beyond chance (Newcombe's 95% interval above zero) and fails no held-out task the agent passes; what is kept is recorded with its evidence
+  kept  The changes a profile's agent has kept, each with the evidence for keeping it
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+Each change is tried on its own against the agent as it is, on the same cases and budget; what is kept is recorded in `$SION_HOME/agents/routes/<profile>-improvements.jsonl`. See [Improving the agent, not only a skill](../agent/skill-improvement.md#improving-the-agent-not-only-a-skill).
+
+## `sion agent improve try`
+
+```text
+Try changes to a profile's agent on a set of tasks: words added to its instructions, the models a route reaches for, a vote. Each is run against the agent as it is and kept only if it is better beyond chance (Newcombe's 95% interval above zero) and fails no held-out task the agent passes; what is kept is recorded with its evidence
+
+Usage: sion agent improve try [OPTIONS] --tasks <FILE> --held-out <FILE> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --tasks <FILE>                   The tasks the changes are tried on: a set of tasks, as `sion agent routes eval --set` takes (a name and cases with checks)
+      --held-out <FILE>                Tasks held out: none of the changes is chosen on them, and a change that fails one the agent passes is turned down
+      --instructions <TEXT>            Words to add after what the operator tells it (repeat to try several, each on its own)
+      --route <ROUTE=MODELS>           Models to try, best first: `<route>=<model>,<model>`, the route `default` for the profile's own models (repeat to try several)
+      --vote <SAMPLES>                 Answer by a vote of this many runs, the answer given most often winning (2 to 9; repeat to try several)
+      --from <FILE>                    Changes to try from a file: a JSON list of `{"instructions": {"words": …}}`, `{"route": {"task": …, "models": […]}}` and `{"working": {"arm": "vote-3"}}`
+      --runs <RUNS>                    How many times each task is run by each way of working [default: 4]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+      --apply                          Make what was kept the profile's: the best words kept added to its instructions, the best models kept for a route that route's
+  -h, --help                           Print help
+```
+
+## `sion agent improve kept`
+
+```text
+The changes a profile's agent has kept, each with the evidence for keeping it
+
+Usage: sion agent improve kept [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent find`
+
+```text
+Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
+
+Usage: sion agent find [OPTIONS] <TASK>...
+
+Arguments:
+  <TASK>...  The task, in words
+
+Options:
+      --listing <OWNER/NAME>      A rental listing to consider: `<owner>/<name>`, the owner an account (64 hex digits) or a devnet wallet's name (repeat for more). Its offer is its description, its price what it charges per thousand output tokens
+      --node <NODE>               The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --agent <AGENT=OFFER>       An agent to consider, with a line of what it offers: `<agent>=<offer>`, the agent's id in 64 hex digits (repeat for more)
+      --enclave                   Only agents in an enclave whose attestation checks out
+      --max-per-1k-output <USD>   At most this USD per thousand output tokens: an agent with no price is left out
+      --measurement <HEX>         The measurement of the enclave code you trust (48 bytes in hex); without it, each listing's own is taken and only the rest checked
+      --simulated-platform <HEX>  Take a simulated enclave with this platform key (hex): for devnets, where there is no SEV-SNP hardware
+      --from <FROM>               Read the records from this Pulse on [default: 0]
+      --limit <LIMIT>             How many to show, best first [default: 5]
+  -h, --help                      Print help
+```
+
+Records are read from the node's events, unproven (`agent:agent-record`); a listing's attestation is checked here. See [An agent's record, and finding one for a task](../agent/teams.md#an-agents-record-and-finding-one-for-a-task).
+
 ## `sion agent x-mentions`
 
 ```text
@@ -3268,6 +3354,8 @@ Options:
       --deliver <CHANNEL>    Where the notes are sent too, as a schedule's are (telegram:<chat>, file:<path>, …)
       --diarize <PROVIDER>   Record what is heard here (or by the guest), and at the end have it heard again by a transcriber that tells speakers apart: openai:<model> (gpt-4o-transcribe-diarize), deepgram:<model> or elevenlabs:<model>. The notes then say who said what
       --keep-recording       Keep the recordings beside the notes, rather than removing them once they are heard
+      --speak <SPEECH>       Give the guest that joins by the link a voice, and what speaks for it: openai:<model>:<voice>, elevenlabs:<voice id>[:<model>], deepgram:<voice model>, command:<program>, or on this machine piper:<model file> or local:<model>:<voice>. It answers a line that names it and asks it something, by the profile's agent from the transcript alone, into the meeting (a PulseAudio microphone of its own) and into the transcript. Such a guest has no camera
+      --answer-to <PHRASES>  The words that name the guest, `|` between alternatives (default: its --name, and its --name without what is in brackets)
   -h, --help                 Print help
 ```
 
@@ -3494,6 +3582,220 @@ Usage: sion agent work retry [OPTIONS] <PROFILE> <ITEM>
 Arguments:
   <PROFILE>  The agent profile
   <ITEM>     The item
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project`
+
+```text
+Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
+
+Usage: sion agent project [OPTIONS] <COMMAND>
+
+Commands:
+  start    Start a project for a profile's agent: its goal, the USD its payments for it may come to, how long it runs, and how often it reports where it stands
+  list     A profile's projects, a line each
+  show     Where a project stands, as its next report would say it (without marking it reported)
+  work     Have the agent work on a project now: one session on its goal, its milestones and what was done lately, with tools to record what it does; its payments are held to what the project has left
+  note     Note something done for a project, as its operator, with what it cost if it spent from the project's budget
+  reached  Mark a milestone reached (added if the project did not list it)
+  report   Make the report now and send it where the project's reports go
+  pause    Set a project aside: it takes no work until it is resumed
+  resume   Take a paused project up again
+  done     Mark a project's goal reached: it takes no more work
+  stop     Give a project up: it takes no more work
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+A project is kept in `$SION_HOME/agents/routes/<profile>-projects.json`; its budget is counted there, not escrowed on the ledger (`agent:project-budget`). `sion agent scheduler` makes its check-ins. See [Projects that run for weeks](../agent/work.md#projects-that-run-for-weeks).
+
+## `sion agent project start`
+
+```text
+Start a project for a profile's agent: its goal, the USD its payments for it may come to, how long it runs, and how often it reports where it stands
+
+Usage: sion agent project start [OPTIONS] --goal <GOAL> --budget <USD> --for <DURATION> <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile whose agent owns it
+  <NAME>     Its name (lowercase letters, digits and hyphens)
+
+Options:
+      --goal <GOAL>          What it is for, in words
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --budget <USD>         The USD it may spend in all
+      --for <DURATION>       How long it runs: 30d, 12h
+      --check-in <INTERVAL>  How often it reports where it stands: 1d, 12h [default: 1d]
+      --milestone <TEXT>     A milestone to work towards (repeat for more)
+      --deliver <DELIVER>    Where its reports go, as a schedule's do: file:<path>, webhook:<url>, telegram:<chat id>, or <messenger>:<chat>
+      --work-at-check-in     At each check-in, have the agent work on it once before the report is made (with `sion agent scheduler` running)
+  -h, --help                 Print help
+```
+
+## `sion agent project list`
+
+```text
+A profile's projects, a line each
+
+Usage: sion agent project list [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project show`
+
+```text
+Where a project stands, as its next report would say it (without marking it reported)
+
+Usage: sion agent project show [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project work`
+
+```text
+Have the agent work on a project now: one session on its goal, its milestones and what was done lately, with tools to record what it does; its payments are held to what the project has left
+
+Usage: sion agent project work [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
+
+Options:
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --steer <STEER>  What to work on now, in words
+  -h, --help           Print help
+```
+
+## `sion agent project note`
+
+```text
+Note something done for a project, as its operator, with what it cost if it spent from the project's budget
+
+Usage: sion agent project note [OPTIONS] <PROFILE> <NAME> <WHAT>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
+  <WHAT>     What was done, in a line
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --spent <USD>  The USD it cost
+  -h, --help         Print help
+```
+
+## `sion agent project reached`
+
+```text
+Mark a milestone reached (added if the project did not list it)
+
+Usage: sion agent project reached [OPTIONS] <PROFILE> <NAME> <MILESTONE>
+
+Arguments:
+  <PROFILE>    The profile
+  <NAME>       The project
+  <MILESTONE>  The milestone, as listed
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project report`
+
+```text
+Make the report now and send it where the project's reports go
+
+Usage: sion agent project report [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project pause`
+
+```text
+Set a project aside: it takes no work until it is resumed
+
+Usage: sion agent project pause [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project resume`
+
+```text
+Take a paused project up again
+
+Usage: sion agent project resume [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project done`
+
+```text
+Mark a project's goal reached: it takes no more work
+
+Usage: sion agent project done [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent project stop`
+
+```text
+Give a project up: it takes no more work
+
+Usage: sion agent project stop [OPTIONS] <PROFILE> <NAME>
+
+Arguments:
+  <PROFILE>  The profile
+  <NAME>     The project
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -4089,6 +4391,9 @@ Commands:
   dream        Dream over an agent's memory: the sessions of the episodes recorded since the last dream, those on this machine, each read whole by a reader of its own, which proposes facts, procedures and preferences with the words of the session that show them. A note is kept only if its session says those words (a session that read content from outside, facts only), then as consolidation keeps it, and the log is committed
   archive      Archive a log for safekeeping: every atom the ledger holds, encrypted for the writer, named on the ledger as the log's manifest and kept by a storage provider under a deal
   restore      Restore a log's local store from its latest archive, checked against the head on the ledger before anything is replaced
+  vouch        Vouch for an atom of a log, as you: a claim on your bond `memory-voucher`, which the adjudicator can rule against, named in your index so that readers find it. Readers who keep the log in mind see who vouched for each fact
+  revoke       Revoke an atom of a log, as its writer: readers leave it out, and whatever was derived from it or assumes it, however deep. Someone who vouched for it withdraws their vouching the same way. Nothing is deleted from the log
+  standing     Where each atom of a log stands for a reader here, once what is known of its vouchings and revocations is brought up to date from the ledger: revoked, resting on a revoked atom, vouched for and by whom, or its writer's word alone
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -4275,6 +4580,63 @@ Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --deal <DEAL>  With a provider: the deal that keeps the archive (default: your latest accepted deal for the log's manifest)
       --replace      Restore over the local store there is
+  -h, --help         Print help
+```
+
+## `sion memory vouch`
+
+```text
+Vouch for an atom of a log, as you: a claim on your bond `memory-voucher`, which the adjudicator can rule against, named in your index so that readers find it. Readers who keep the log in mind see who vouched for each fact
+
+Usage: sion memory vouch [OPTIONS] --adjudicator <ADJUDICATOR> <WALLET> <LOG> <SEQ>
+
+Arguments:
+  <WALLET>  Your wallet
+  <LOG>     The log (its id, or a unique prefix of it)
+  <SEQ>     The atom's place in the log
+
+Options:
+      --adjudicator <ADJUDICATOR>  The adjudicator who can rule against your vouching (its atom's id, 64 hex digits)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --bond <USD>                 Post your bond `memory-voucher` with this many USD first
+      --note <NOTE>                What you say of it, in a line [default: ""]
+      --valid-for <VALID_FOR>      How many Pulses the vouching stands for [default: 1000000]
+  -h, --help                       Print help
+```
+
+See [Facts from other owners](../agent/memory.md#facts-from-other-owners-who-vouched-and-pulling-one-back).
+
+## `sion memory revoke`
+
+```text
+Revoke an atom of a log, as its writer: readers leave it out, and whatever was derived from it or assumes it, however deep. Someone who vouched for it withdraws their vouching the same way. Nothing is deleted from the log
+
+Usage: sion memory revoke [OPTIONS] <WALLET> <LOG> <SEQ>
+
+Arguments:
+  <WALLET>  Your wallet
+  <LOG>     The log (its id, or a unique prefix of it)
+  <SEQ>     The atom's place in the log
+
+Options:
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --note <NOTE>            Why, in a line [default: ""]
+      --valid-for <VALID_FOR>  How many Pulses the revocation stands for [default: 1000000]
+  -h, --help                   Print help
+```
+
+## `sion memory standing`
+
+```text
+Where each atom of a log stands for a reader here, once what is known of its vouchings and revocations is brought up to date from the ledger: revoked, resting on a revoked atom, vouched for and by whom, or its writer's word alone
+
+Usage: sion memory standing [OPTIONS] <LOG>
+
+Arguments:
+  <LOG>  The log (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
 

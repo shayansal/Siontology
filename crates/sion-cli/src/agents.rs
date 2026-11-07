@@ -598,6 +598,21 @@ pub enum AgentCommand {
     /// its models compared on a set of tasks.
     #[command(subcommand)]
     Routes(crate::model_routes::RoutesCommand),
+    /// Improve the agent itself, keeping only what measurably helps: words
+    /// added to its instructions, the models it reaches for, a vote, each
+    /// tried on a set of tasks against the agent as it is and kept only
+    /// when better beyond chance and failing no held-out task it passes.
+    #[command(subcommand)]
+    Improve(crate::self_improve::ImproveCommand),
+    /// Find the best agent for a task among those you name: how well each
+    /// one's offer fits the task (BM25), weighed against its record on the
+    /// ledger, held to what you need (an enclave that checks out, a price).
+    Find(crate::reputation::FindArgs),
+    /// Projects a profile's agent owns, running for weeks: a goal, a
+    /// budget its payments for the project are held to, milestones, and
+    /// check-ins that report where it stands.
+    #[command(subcommand)]
+    Project(crate::projects::ProjectCommand),
     /// Answer the posts on X that mention your account, in their threads:
     /// each answer from the posts it replies to or quotes and the web
     /// search's results for its words, citing them, with their addresses
@@ -946,6 +961,10 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Routes(command) => crate::model_routes::run(command),
+        AgentCommand::Improve(command) => crate::self_improve::run(command),
+        AgentCommand::Project(command) if !command.needs_ledger() => {
+            crate::projects::run_local(command)
+        }
         AgentCommand::Hooks(command) => crate::hooks::command(command),
         AgentCommand::Browser(command) => crate::browser_profiles::command(command),
         AgentCommand::Import(args) => crate::agent_import::run(args),
@@ -1346,6 +1365,9 @@ pub fn run(
         AgentCommand::Mcp(command) => crate::agent_mcp::run(command),
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Routes(command) => crate::model_routes::run(command),
+        AgentCommand::Improve(command) => crate::self_improve::run(command),
+        AgentCommand::Find(args) => crate::reputation::find_command(ledger, args),
+        AgentCommand::Project(command) => crate::projects::run(shared, command),
         AgentCommand::Hooks(command) => crate::hooks::command(command),
         AgentCommand::Browser(command) => crate::browser_profiles::command(command),
         AgentCommand::Import(args) => crate::agent_import::run(args),

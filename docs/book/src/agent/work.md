@@ -385,24 +385,52 @@ The other commands: `answer` (tell an item something, as its operator),
 
 ## Projects that run for weeks
 
-> **In the library, not yet a command.** Projects are written and
-> unit-tested (`projects` in `sion-cli`), and no `sion` command reaches
-> them yet.
-
 A work item is one piece of work, taken on and finished. A project is the
 longer thing: it gives a profile's agent a goal it keeps returning to,
 money it may spend on the way, milestones to work towards, and a standing
-arrangement to tell you where it stands. The agent writes
-to the project's log as it works; a check-in reports what it did since the
-last one — and says so plainly when that is nothing — what is still to do,
-and when the next report is due. Reports go wherever a schedule's do.
+arrangement to tell you where it stands.
+
+```text
+sion agent project start lead launch --goal "Get the launch page reviewed" \
+    --budget 8 --for 30d --check-in 1d --milestone "Draft reviewed" \
+    --deliver telegram:-100123
+sion agent project work lead launch --steer "the review"
+sion agent project show lead launch
+```
+
+`work` runs one session of the agent on the project: it is told the goal,
+what is left of the budget and the time, the milestones still to reach and
+what was done lately, and given two tools, `project_note` to record what
+it does and `project_milestone` to mark one reached. A payment it makes in
+that session is held to what the project has left: counted before it is
+sent, so that two at once cannot pass the budget together, refused if the
+project has less left, and given back if it is not sent or the ledger
+refuses it. One whose outcome is unknown stays counted until the runtime
+finds what the ledger did, or a person settles it (`sion agent settle`):
+given back if it was never made, and never counted twice for one call. A
+project's session spawns no subagents, posts no tasks and makes no storage
+deals, so its money moves only by payments held to the budget. Each
+session is noted in the project's log.
+
+A check-in reports what was done since the last one — and says so plainly
+when that is nothing — what is still to do, and when the next report is
+due; `sion agent scheduler` makes them as they fall due, and a project
+started with `--work-at-check-in` is worked on once first. Reports go
+wherever a schedule's do; one that could not be sent is made again at the
+next check-in, with all since the last one that was. `report` makes one now; `note` and
+`reached` are the operator's own entries; `pause`, `resume`, `done` and
+`stop` change where it stands.
 
 A project is somewhere to keep a long task honest, not new permission: the
 agent still acts under its charter, its autonomy level and its budget. A
 project that is paused or stopped, that has run past its end, or that has
-spent its budget takes no more work, and the budget holds whatever the
-agent tries to spend against it. A project's log keeps its newest
-entries, so months of work do not grow without end.
+spent its budget takes no more work, and none of its payments go out. Its
+budget is counted in the file that holds it, not escrowed on the ledger
+(`agent:project-budget`), changed under a lock that holds across
+processes. A project's log keeps its newest entries, so months of work do
+not grow without end. Tested on a devnet with a scripted
+model (`crates/sion-cli/tests/agent_colleagues.rs`): a second payment the
+budget did not hold was refused before it was sent.
 
 ## Its record, for anyone to read
 

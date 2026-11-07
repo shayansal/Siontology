@@ -540,32 +540,52 @@ the session that searched, as reading that content again would.
 
 ## Facts from other owners: who vouched, and pulling one back
 
-> **In the library, not yet a command.** Keeping another owner's log in
-> mind works today; vouching, revocation and leaving revoked facts out
-> are written and unit-tested (`vouching` in `sion-cli`), and no `sion`
-> command or session reaches them yet.
-
 An agent can keep another owner's curated log in mind
 (`--shared-memory`), and every atom already carries where it came from: its
 sources, the spans in them, the model that read them. Two more things make
 someone else's facts usable.
 
-**Vouching.** An account publishes a claim that it stands behind an atom,
-on a bond of its own, under an adjudicator who can rule against it. So
-"who says so" is on the ledger and costs something, and a reader weighs a
-fact by who vouched for it rather than by whose log it sits in.
+**Vouching.** `sion memory vouch <wallet> <log> <seq> --adjudicator <atom>`
+publishes a claim that the wallet stands behind the atom, on its bond
+`memory-voucher` (`--bond <USD>` posts it first), under an adjudicator who
+can rule against it, and names the claim in its index
+(`memory-vouched:<atom>`). So "who says so" is on the ledger and costs
+something, and a reader weighs a fact by who vouched for it rather than by
+whose log it sits in. The adjudicator must be an atom the ledger knows (a
+bond someone posted); a vouching it refuses is said with the ledger's
+reason.
 
-**Revocation.** The writer, or a voucher, publishes that an atom is not to
-be relied on any more, named in its index so a reader proves against a
-certified header whether a revocation stands.
+**Revocation.** `sion memory revoke <wallet> <log> <seq>` publishes that an
+atom is not to be relied on any more, named under `memory-revoked:<atom>`
+in the revoker's index. Only the log's writer's revocation pulls a fact
+for every reader. Someone who vouched for it revokes to withdraw their own
+vouching, and only that: a vouching costs a bond, but a small one would
+otherwise buy the power to pull anyone's fact. Anyone else's revocation
+counts for nothing, and the command refuses to publish it. A vouching
+shows only while its claim stands: one that expired or was shown false
+vouches for nothing.
 
 Nothing on the ledger is deleted, and a revoked fact is no exception —
 but neither it nor anything drawn from it is kept in mind. A fact that was
 derived from, or assumes, a revoked one rests on it, and so does anything
 resting on those, however deep. All of them are left out, so a poisoned
-fact can be traced and pulled rather than only marked. A reader is told of
-each fact whether it is revoked, rests on something revoked, is vouched
-for and by whom, or is its writer's word alone.
+fact can be traced and pulled rather than only marked. Before each run, a
+session that keeps a log in mind brings what it knows of the log's
+vouchings and revocations up to date from the ledger's events (kept
+beside its copy of the log); a fact revoked since its prompt was made
+leaves it, and a vouched one says who vouched. `sion memory standing <log>`
+says of each atom whether it is revoked, rests on something revoked, is
+vouched for and by whom, or is its writer's word alone. Tested on a devnet
+(`crates/sion-cli/tests/agent_colleagues.rs`): a revocation by someone who
+neither wrote nor vouched for the fact changed nothing; the writer's took
+the fact and the one drawn from it out of a running session's prompt; a
+voucher's withdrew its vouching and left the fact in mind.
+
+The events are read from the node without proof, so a node that leaves a
+revocation out keeps the fact in mind (`agent:vouched-memory`). If the node
+cannot be reached, the reader keeps what it found before and says so;
+nothing is passed over. A Pulse with more events than a node answers at
+once (5,000) is read only as far as that, and `standing` says which.
 
 Content addresses make this terminate: an atom's name is the hash of its
 contents, so no atom can name one that names it back, and the links hold

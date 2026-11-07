@@ -463,22 +463,47 @@ the HTTP channel, a messenger, a schedule or a gateway's host.
 
 ## Improving the agent, not only a skill
 
-> **In the library, not yet a command.** What this section describes is
-> written and unit-tested (`self_improve` in `sion-cli`), and no `sion`
-> command reaches it yet.
-
 A skill's instructions are not the only thing that can be made better.
-Changes to the agent itself can be tried too: the words its operator
-gives it, which models a kind of task reaches for, and how it works a task
-(alone, voting, or as a graph). Each change is scored against the agent as
-it is on a set of tasks, and kept only if it clears two bars:
+`sion agent improve try` tries changes to the agent itself: words added to
+what its operator tells it (`--instructions`), the models a route reaches
+for (`--route <route>=<model>,<model>`, the route `default` for the
+profile's own models), and answering by a vote of several runs
+(`--vote <samples>`); `--from` takes a list of them from a file. Each
+change is run on a set of tasks against the agent as it is, with the same
+cases and budget, and kept only if it clears two bars:
 
 1. It is **better beyond chance** on the tasks tried — Newcombe's 95%
    interval for the difference in pass rate has its lower end above zero,
    the same bar a model must clear to earn first place in a route
    ([Models](models.md)).
-2. It **does not regress** on tasks it never saw: it fails no held-out
-   task the agent already passes.
+2. It **does not regress** on tasks it never saw (`--held-out`): it fails
+   no held-out task the agent already passes, a task counted as passed
+   when more than half of its runs pass.
+
+Both sets are sets of tasks as `sion agent routes eval --set` takes them:
+a name, and cases with their checks. Here the clerk does not answer a sum,
+and greets; words that tell it to work out sums make it answer and still
+greet, words that tell it always to answer 42 answer the sum and break the
+greeting, and a model that does both is tried for its `math` route:
+
+```text
+$ sion agent improve try clerk --tasks sums.json --held-out greetings.json \
+    --instructions "Work out sums and answer with the number alone." \
+    --instructions "Always answer 42." --route math=script:both.json --vote 3 \
+    --runs 8 --apply
+the agent as it is: 0/8 tasks passed
+route math as it is: 0/8 tasks passed
+kept its instructions, adding "Work out sums and answer with the number alone.": 8/8 passed, up from 0/8 (95% interval +54% to +100%), and no held-out task it passed now fails
+kept the models for math: script:both.json: 8/8 passed, up from 0/8 (95% interval +54% to +100%), and no held-out task it passed now fails
+turned down its instructions, adding "Always answer 42.": better on the tasks tried, but it fails held-out task 1 that the agent passes
+turned down how it works a task: vote-3: 0/8 passed against 0/8: not better beyond chance (95% interval -32% to +32%)
+recorded in /home/you/.sion/agents/routes/clerk-improvements.jsonl
+profile clerk now has its instructions, adding "Work out sums and answer with the number alone."
+route math of profile clerk now has script:both.json
+$ sion agent improve kept clerk
+2026-11-07T01:50:20Z: its instructions, adding "Work out sums and answer with the number alone.": 8/8 passed, up from 0/8 (95% interval +54% to +100%); held-out 1/1
+2026-11-07T01:50:20Z: the models for math: script:both.json: 8/8 passed, up from 0/8 (95% interval +54% to +100%); held-out 1/1
+```
 
 A change that clears both is recorded with its evidence: what it changed,
 the counts on both sets, and the interval. So every change the agent keeps
@@ -486,9 +511,21 @@ can be read back with the reason it was kept, and a change that only
 looked better on a handful of tasks is turned down and said so. When
 nothing clears the bars, the agent is left as it is.
 
+A route's models are tried against that route's models as they are; the
+other changes against the agent as it is, on its own models. `--apply`
+makes what was kept the profile's, as it is when the run ends: of the
+words kept, those that passed the most tasks are added to its
+instructions, and of the models kept for a route, the best become that
+route's. Each change was
+measured on its own against the agent as it was, not together with the
+others. How it works a task is not a profile's setting, so a vote that is
+kept is recorded only. Each run of a task starts with the set's system
+prompt, then the operator's instructions; the tasks' tools are the
+set's stand-ins, as in an evaluation.
+
 What this rests on is the task set: a change is only as well tested as the
 tasks it was tried on, and tasks the operator wrote to flatter a change
-would pass it. Nothing here chooses the tasks.
+would pass it. Nothing here chooses the tasks (`agent:measured-improvement`).
 
 ## What this does not do yet
 

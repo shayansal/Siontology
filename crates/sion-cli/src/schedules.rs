@@ -288,12 +288,17 @@ pub fn run_due(ledger: SharedLedger, now: u64) -> Result<Vec<String>, CliError> 
         job.next = job.when.next_after(now);
     }
     save_all(&jobs)?;
+    // Projects' check-ins fall due as jobs do ([`crate::projects`]).
+    match crate::projects::check_ins(ledger, now) {
+        Ok(more) => lines.extend(more),
+        Err(e) => lines.push(format!("projects' check-ins not made: {e}")),
+    }
     Ok(lines)
 }
 
-/// Runs jobs as they fall due, until stopped; with `once`, only those due
-/// now. Between runs it sleeps until the next job, checking at least every
-/// `poll` seconds for jobs added meanwhile.
+/// Runs jobs, and projects' check-ins, as they fall due, until stopped;
+/// with `once`, only those due now. Between runs it sleeps until the next
+/// one, checking at least every `poll` seconds for jobs added meanwhile.
 pub fn scheduler(ledger: SharedLedger, once: bool, poll: u64) -> Result<(), CliError> {
     loop {
         for line in run_due(ledger.clone(), now())? {
@@ -302,7 +307,11 @@ pub fn scheduler(ledger: SharedLedger, once: bool, poll: u64) -> Result<(), CliE
         if once {
             return Ok(());
         }
-        let next = all()?.values().filter_map(|j| j.next).min();
+        let next = all()?
+            .values()
+            .filter_map(|j| j.next)
+            .chain(crate::projects::next_check_in())
+            .min();
         let wait = match next {
             Some(next) => next.saturating_sub(now()).clamp(1, poll.max(1)),
             None => poll.max(1),

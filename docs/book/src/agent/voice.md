@@ -331,15 +331,26 @@ Meet, Zoom and Teams themselves were not reached.
 
 ### Speaking when it is spoken to
 
-> **In the library, not yet a command.** The guest's voice is written and
-> unit-tested (`meeting_voice` in `sion-cli`), and `sion agent meeting`
-> does not use it yet: a guest today only listens.
-
 A guest that only listens says nothing: its microphone plays a second of
-silence. Given a voice, it answers when it is addressed. A microphone of
-its own is made out of PulseAudio parts — a sink nothing listens to, whose
-monitor is remapped into a source the browser takes as its microphone — so
-whatever is played into that sink is what the meeting hears it say.
+silence. Given a voice, it answers when it is addressed:
+
+```text
+sion agent meeting notes --join https://meet.example/abc --name Notes \
+    --hear openai:gpt-4o-transcribe --speak openai:gpt-4o-mini-tts:alloy
+```
+
+`--speak` names what speaks for it, as for voice notes
+(`openai:<model>:<voice>`, `elevenlabs:<voice id>[:<model>]`,
+`deepgram:<voice model>`, `command:<program>`, or on the machine
+`piper:<model file>` or `local:<model>:<voice>`), and `--answer-to` the
+words that name it (`|` between alternatives) if they are not its
+`--name`, or its name without what is in brackets ("Notes (sion)" answers
+to "Notes"). A microphone of its own is
+made out of PulseAudio parts — a sink nothing listens to, whose monitor is
+remapped into a source the browser is given as its microphone
+(`PULSE_SOURCE`) — so whatever is played into that sink is what the
+meeting hears it say. A guest with a voice has no camera: the browser's
+fake devices go together, and its microphone is a real one.
 
 It speaks only when spoken to. A line of the transcript that names it is
 a question for it, and the name is found anywhere in the line rather than
@@ -351,11 +362,17 @@ goes to the profile's agent in a session with none of the owner's reach,
 tainted as a meeting's words always are, and what the agent says is spoken
 into the meeting and written into the transcript as the guest's own line.
 
+The agent is shown the question and the transcript's last 40 lines, as
+what was said rather than instructions, and asked for one to three short
+sentences from the transcript alone.
+
 A name that is also an ordinary word will be answered when someone happens
 to say it, so a guest is better given a name of its own. Making the
 microphone and having the browser take it need PulseAudio or PipeWire and
-a meeting: those were not run where these pages were made, and only the
-parts that need no sound card are tested.
+a meeting: those were not run where these pages were made. What is tested
+is what needs no sound card: which lines are answered, the answer said and
+written as the guest's line, and what the agent is asked
+(`agent:meeting-voice`).
 
 ### Who said what
 

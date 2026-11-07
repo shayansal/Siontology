@@ -28,7 +28,7 @@ live.
 | Agents: a runtime that lets a model work as an agent identity, within its charter (beyond the paper) | Partly built (runtime with providers and a scripted model, memory, the agent's own skills, skills from others installed through bonds and audits, self-improvement with verified promotion, subagents, hiring, schedules and channels, a sandboxed shell, skills' scripts with the permissions their skills declare, MCP servers over standard input and output or HTTP with OAuth, a browser and a desktop with tabs, downloads and files to upload, storage deals, web search, tools to change code and check it, MCP resources, prompts, input and sampling, sion's own mail, calendar and documents servers, skills imported from folders, repositories and registries (ClawHub, skills.sh, a site's well-known index) through the audit, a model chosen for each task, OpenClaw and Hermes agents imported, tasks taught by doing them once in a browser, X's mentions answered with their sources and its posts searched, everything kept running on a server, live voice with a wake word, a model of speech, echo cancellation and a realtime model that asks the agent, meeting notes by phone or on the machine) |
 | Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
 | Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
-| Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Partly built (in the library and unit-tested; no command reaches them yet) |
+| Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Built (devnet scale; tested with scripted models; the meeting guest's voice wired and tested in units, its microphone and a meeting not run) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -667,11 +667,13 @@ exactly that. No AMD hardware, and no model provider, was reached. An
 agent's record is read from the ledger's own events (tasks delivered and
 what they earned, tasks released, delivered results later proven false)
 and turned into one number to trust it by, served to anyone at
-`GET /v1/trust/agents/<account>` (below). Finding an agent for a task
-weighs how well each candidate's offer fits the task (BM25) against that
-record, held to what is needed (an enclave, a price); that is in the
-library (`reputation::rank`) and unit-tested, and no command reaches it
-yet. Trust atoms
+`GET /v1/trust/agents/<account>` (below). `sion agent find` finds an
+agent for a task among those named (rental listings, and agents with a
+line of what they offer): it weighs how well each one's offer fits the
+task (BM25) against that record, held to what is needed (an enclave whose
+attestation checks out, a price), the records read from the node's events
+page by page. Tested on a devnet with a listing in a simulated enclave and
+two agents, and the paging against a stand-in node. Trust atoms
 `agent:rented-enclave`, `agent:metered-tokens`, `agent:agent-record`. Not
 built: checking Intel TDX quotes (collected, then refused); AMD's
 revocation lists; Turin's layout of firmware versions in a report; a
@@ -681,35 +683,55 @@ a rented session; enumerating every agent or listing on the chain to search
 through.
 
 **Improving the whole agent, shared memory, projects and a speaking
-guest: partly built (beyond the paper).** Each is written in `sion-cli`'s
-library (`self_improve`, `vouching`, `projects`, `meeting_voice`) and
-unit-tested, and no command reaches any of them yet: `sion agent meeting`
-joins as a guest that only listens, and a session that keeps another
-owner's log in mind does not yet leave revoked facts out. Changes to the
-agent itself — the words its operator gives it, the models a kind of task
-reaches for, how it works a task — are scored against the agent as it is
-and kept only when better beyond chance on the tasks tried (Newcombe's 95%
-interval above zero) and regressing on no held-out task it already
-passes; each kept change is recorded with its evidence, and one that only
-looked better is turned down and said so (trust atom
-`agent:measured-improvement`). Memory shared between owners carries who
-vouched for a fact (a claim on the voucher's bond, under an adjudicator)
-and whether it was revoked (a claim named under the atom in the index); a
-revoked fact and everything derived from or assuming it, however deep, are
-left out, the walk ending because content addresses admit no circle
-(`agent:vouched-memory`). A project gives an agent a goal over weeks, a
-budget it may spend, milestones and a check-in that reports what it did
-since the last one; a project paused, ended or out of budget takes no more
-work, and the budget holds whatever it tries to spend
-(`agent:project-budget`). A meeting's guest can be given a voice: a
-PulseAudio sink whose monitor is remapped into a source the browser takes
-as its microphone, and it answers only lines that name it, found anywhere
-in the line (`agent:meeting-voice`). The guest's microphone needs
-PulseAudio and a meeting and was not run, and no change was measured
-against a real model. Not built: the commands that reach these; choosing
-the tasks an improvement is measured on (a set written to flatter a change
-would pass it); a project that spends from its own allotment on the ledger
-rather than being counted against a budget kept here.
+guest: built (beyond the paper), the guest's voice not run.** `sion agent
+improve try` tries changes to the agent itself — words added to its
+operator's instructions, the models a route reaches for, a vote — each run
+on a set of tasks against the agent as it is and kept only when better
+beyond chance (Newcombe's 95% interval above zero) and failing no held-out
+task it already passes; each kept change is recorded with its evidence,
+one that only looked better is turned down and said so, and `--apply`
+makes the best of the words and of each route's models the profile's
+(trust atom `agent:measured-improvement`). Tested with scripted models,
+through the command too. Memory shared between owners carries who vouched
+for a fact (`sion memory vouch`: a claim on the voucher's bond, under an
+adjudicator the ledger knows, named in the voucher's index) and whether it
+was revoked (`sion memory revoke`: a claim named under the atom in the
+revoker's index): only the writer's revocation pulls a fact, a voucher's
+withdraws its own vouching, and a vouching shows only while its claim
+stands; before each run a session that keeps a
+log in mind brings what it knows of these up to date from the ledger's
+events, and a revoked fact and everything derived from or assuming it,
+however deep, leave its prompt, the walk ending because content addresses
+admit no circle (`agent:vouched-memory`). Tested on a devnet: a stranger's
+revocation changed nothing, the writer's took a fact and the one drawn
+from it out of a running session's prompt, and a voucher's withdrew its
+vouching. `sion agent project` gives an
+agent a goal over weeks, a budget, milestones and check-ins that report
+what was done since the last one, made by `sion agent scheduler` (a
+project may be worked on once at each); a session on a project records
+with `project_note` and `project_milestone`, and each of its payments is
+held to what the project has left before it is sent, given back if it is
+not sent or the ledger refuses it; one whose outcome is unknown stays
+counted until the runtime or a person settles it, given back if it was
+never made and never held twice for one call. A project's session spawns
+no subagents, posts no tasks and makes no storage deals. A project paused,
+ended or out of budget takes no more work
+(`agent:project-budget`). Tested on a devnet with a scripted model: a
+second payment the budget did not hold was refused before it was sent.
+A meeting's guest can be given a voice (`sion agent meeting --speak`): a
+PulseAudio sink whose monitor is remapped into a source the browser is
+given as its microphone, so it joins without a camera, and it answers
+only lines that name it, found anywhere in the line, by the profile's
+agent from the transcript alone, into the meeting and the transcript
+(`agent:meeting-voice`). What needs no sound card is tested (which lines
+are answered, what is said and written, what the agent is asked); the
+microphone, the browser taking it and a meeting were not run, and no
+change was measured against a real model. Not built: choosing the tasks
+an improvement is measured on (a set written to flatter a change would
+pass it); trying several changes together; a way of working kept as a
+profile's setting; a project that spends from its own allotment on the
+ledger rather than being counted against a budget kept here; proofs of
+the vouchings and revocations a reader finds.
 
 **Reads for agents on other frameworks: built (beyond the paper).** The
 HTTP channel serves three public reads, without a token: an agent's
@@ -1486,8 +1508,8 @@ the architecture's own:
 | `agent:metered-tokens` | What a renter pays is the token count the enclave signed with the key its attestation binds, so the owner cannot inflate it; but the count is the enclave's own reading of what its model provider reported, and a renter cannot check it against the provider. Payment runs one request behind, so the owner carries one request's tokens as credit, and a renter carries the risk that a request it paid for was served badly. |
 | `agent:agent-record` | An agent's record is what the ledger's events show: tasks settled to it, tasks it was named for and released, and its delivered results later proven false. Work done off the ledger is not in it, a result nobody challenged counts as good, and the number a record is turned into, and the ranking built on it, are a reader's own weighing rather than the ledger's. |
 | `agent:measured-improvement` | A change the agent keeps was better beyond chance on the tasks it was tried on and regressed on no held-out task it already passed. Both bars are only as good as those tasks: a set that does not cover what the agent is used for, or one written to flatter a change, passes it, and nothing here chooses the tasks. The evidence recorded is the counts and the interval, not the runs themselves. |
-| `agent:vouched-memory` | A vouching is a claim on the voucher's bond, so who stands behind a shared fact costs something and can be ruled against; it says the voucher stands behind the fact, not that the fact is true. A revocation rests on the revoker's signature alone. A revoked fact and whatever rests on it are left out by the reader, not removed from any log, and only links the atoms actually carry (derived-from, assumes) are followed: a fact drawn from another without saying so is not pulled with it. |
-| `agent:project-budget` | A project's budget is counted here, in the file that holds the project, not escrowed on the ledger: it bounds what the agent records spending against the project, and the charter and its allotments are what actually bound what it can spend. A project that is ended or out of budget takes no more work through the project, which is not the same as the agent stopping. |
+| `agent:vouched-memory` | A vouching is a claim on the voucher's bond, so who stands behind a shared fact costs something and can be ruled against; it says the voucher stands behind the fact, not that the fact is true. A revocation rests on the revoker's signature alone. A revoked fact and whatever rests on it are left out by the reader, not removed from any log, and only links the atoms actually carry (derived-from, assumes) are followed: a fact drawn from another without saying so is not pulled with it. Only the log's writer's revocation pulls a fact; a voucher's withdraws its own vouching, and a vouching shows only while its claim stands. A reader finds revocations and vouchings in the node's events, unproven: a node that leaves one out keeps a revoked fact in mind or a vouching unshown, and a Pulse with more events than a node answers at once is read only in part. |
+| `agent:project-budget` | A project's budget is counted here, in the file that holds the project, not escrowed on the ledger: it bounds the payments the agent makes in the project's sessions, each counted before it is sent, and the charter and its allotments are what actually bound what it can spend. Payments made in other sessions are not counted against the project (a project's own session has no subagents, tasks or storage deals). The file is changed under a lock file that holds across processes; a lock left by a process that stopped is taken over once stale, and two processes taking it over at once could both hold it. A project that is ended or out of budget takes no more work through the project, which is not the same as the agent stopping. |
 | `agent:acp-checkout` | An ACP order paid on the ledger is made only once the payment for the session's total has executed and its receipt verifies against the chain the merchant pinned, so a merchant is not paid in words; what was bought is the merchant's to deliver, and nothing on the ledger says it was. A buyer is bounded by its cap and by its Agent Charter, not by the merchant. The handler is Siontology's own: the ACP specification names handlers as an extension point, and no other ACP party is known to speak it. Who is asking is a bearer token, and a signature only for clients made to sign. Webhooks are signed with a secret the merchant and the platform share, and are delivered at least once: a receiver keeps the `Request-Id`s it has seen. |
 | `agent:acp-card` | A card payment is the PSP's word: the order is made when the PSP says the charge succeeded, and nothing here can check that money moved; a 3-D Secure result is the authentication provider's word, passed to the PSP as it came. The PSP and provider served here simulate the acquirer and the issuer: they move no money and authenticate no one, and say so. A PSP's allowance is checked by that PSP, not by the merchant. |
 | `agent:acp-signing` | ACP names request signatures but not what is signed, so a signature is checked as one of two profiles chosen here (ES256 or Ed25519 over the RFC 8785 canonical body, the timestamp only checked for freshness; or HMAC-SHA256 over `timestamp.body`): another implementation's signatures verify only if it signs the same way. A signature binds the body and, in the HMAC profile, the time; it does not bind the method or the path. |

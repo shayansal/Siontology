@@ -242,6 +242,243 @@ fn fit(wanted: &[String], words: &[String], offers: &[Vec<String>]) -> f64 {
     }
 }
 
+/// Every agent's record from the events from Pulse `from` on, read page
+/// by page to the latest, so no event is missed or counted twice; a Pulse
+/// with more events than a node answers at once (5,000) is read only as
+/// far as one page of it.
+pub fn records_since(
+    ledger: &dyn Ledger,
+    from: sion_core::ids::Pulse,
+) -> Result<BTreeMap<AccountId, Record>, CliError> {
+    const PAGE: usize = 5_000;
+    let mut events: Vec<Event> = Vec::new();
+    let mut from = from;
+    loop {
+        let mut page = ledger.events(from, PAGE)?;
+        let full = page.len() >= PAGE;
+        let (Some(first), Some(last)) = (
+            page.first().map(|view| view.pulse),
+            page.last().map(|view| view.pulse),
+        ) else {
+            break;
+        };
+        if full && first != last {
+            // A full page may end inside a Pulse: that Pulse is read
+            // again, whole, with the next page.
+            page.retain(|view| view.pulse != last);
+            events.extend(page.into_iter().map(|view| view.event));
+            from = last;
+            continue;
+        }
+        events.extend(page.into_iter().map(|view| view.event));
+        if !full {
+            break;
+        }
+        from = last.next();
+    }
+    Ok(records_from(events.iter()))
+}
+
+/// A candidate from `owner`'s rental listing `name`: its offer the
+/// listing's description, its price what it charges per thousand output
+/// tokens, and in an enclave only if its attestation checks out against
+/// `trusted` measurements (the listing's own, if none are given) and
+/// `simulated` platform keys.
+pub fn listing_candidate(
+    ledger: &dyn Ledger,
+    owner: AccountId,
+    name: &str,
+    trusted: &[[u8; 48]],
+    simulated: &[Vec<u8>],
+) -> Result<Candidate, CliError> {
+    let (listing, _) = crate::rentals::latest(ledger, None, None, owner, name)?;
+    let measurements = if trusted.is_empty() {
+        listing
+            .attestation
+            .measurement()
+            .map(|m| vec![m])
+            .unwrap_or_default()
+    } else {
+        trusted.to_vec()
+    };
+    let expected = sion_enclave::Expectation {
+        measurements,
+        simulated_platforms: simulated.to_vec(),
+        now: ledger.pulse()?.0,
+    };
+    let attested = sion_enclave::verify(&listing.attestation, &expected).is_ok();
+    Ok(Candidate {
+        agent: listing.agent,
+        account: owner,
+        offer: listing.description.clone(),
+        per_1k_output: Some(listing.per_1k_output),
+        attested,
+    })
+}
+
+/// A candidate from an agent identity and a line of what it offers: its
+/// record is its account's.
+pub fn agent_candidate(
+    ledger: &dyn Ledger,
+    agent: ObjectId,
+    offer: &str,
+) -> Result<Candidate, CliError> {
+    let charter = crate::agents::identity(ledger, agent)?;
+    Ok(Candidate {
+        agent,
+        account: charter.agent,
+        offer: offer.to_string(),
+        per_1k_output: None,
+        attested: false,
+    })
+}
+
+/// `sion agent find …`
+#[derive(Debug, clap::Args)]
+pub struct FindArgs {
+    /// The task, in words.
+    #[arg(required = true)]
+    pub task: Vec<String>,
+    /// A rental listing to consider: `<owner>/<name>`, the owner an
+    /// account (64 hex digits) or a devnet wallet's name (repeat for
+    /// more). Its offer is its description, its price what it charges per
+    /// thousand output tokens.
+    #[arg(long = "listing", value_name = "OWNER/NAME")]
+    pub listings: Vec<String>,
+    /// An agent to consider, with a line of what it offers:
+    /// `<agent>=<offer>`, the agent's id in 64 hex digits (repeat for
+    /// more).
+    #[arg(long = "agent", value_name = "AGENT=OFFER")]
+    pub agents: Vec<String>,
+    /// Only agents in an enclave whose attestation checks out.
+    #[arg(long)]
+    pub enclave: bool,
+    /// At most this USD per thousand output tokens: an agent with no price
+    /// is left out.
+    #[arg(long = "max-per-1k-output", value_name = "USD")]
+    pub max_per_1k_output: Option<String>,
+    /// The measurement of the enclave code you trust (48 bytes in hex);
+    /// without it, each listing's own is taken and only the rest checked.
+    #[arg(long, value_name = "HEX")]
+    pub measurement: Option<String>,
+    /// Take a simulated enclave with this platform key (hex): for devnets,
+    /// where there is no SEV-SNP hardware.
+    #[arg(long, value_name = "HEX")]
+    pub simulated_platform: Option<String>,
+    /// Read the records from this Pulse on.
+    #[arg(long, default_value_t = 0)]
+    pub from: u64,
+    /// How many to show, best first.
+    #[arg(long, default_value_t = 5)]
+    pub limit: usize,
+}
+
+/// The candidates `args` names, and what they must be.
+pub fn candidates_of(
+    ledger: &dyn Ledger,
+    args: &FindArgs,
+) -> Result<(Vec<Candidate>, Need), CliError> {
+    if args.listings.is_empty() && args.agents.is_empty() {
+        return Err(CliError::Usage(
+            "name the agents to choose among: --listing <owner>/<name> or --agent <agent>=<offer>"
+                .into(),
+        ));
+    }
+    let trusted = match &args.measurement {
+        Some(hex) => vec![crate::rent_cli::measurement_bytes(hex)?],
+        None => Vec::new(),
+    };
+    let simulated = match &args.simulated_platform {
+        Some(text) => {
+            vec![hex::decode(text).map_err(|e| CliError::Usage(format!("the platform key: {e}")))?]
+        }
+        None => Vec::new(),
+    };
+    let mut candidates = Vec::new();
+    for listing in &args.listings {
+        let (owner, name) = listing
+            .split_once('/')
+            .ok_or_else(|| CliError::Usage(format!("{listing:?}: a listing is <owner>/<name>")))?;
+        let owner = crate::rent_cli::account_of(ledger, owner)?;
+        candidates.push(listing_candidate(
+            ledger, owner, name, &trusted, &simulated,
+        )?);
+    }
+    for agent in &args.agents {
+        let (id, offer) = agent
+            .split_once('=')
+            .ok_or_else(|| CliError::Usage(format!("{agent:?}: an agent is <agent>=<offer>")))?;
+        let id = sion_core::hash::Hash32::from_hex(id.trim())
+            .map(ObjectId::from_hash)
+            .map_err(|_| CliError::Usage(format!("{id:?}: an agent is its 64-digit hex id")))?;
+        candidates.push(agent_candidate(ledger, id, offer.trim())?);
+    }
+    let need = Need {
+        attested_only: args.enclave,
+        max_per_1k_output: args
+            .max_per_1k_output
+            .as_deref()
+            .map(crate::agents::parse_amount)
+            .transpose()?,
+    };
+    Ok((candidates, need))
+}
+
+/// A line for a match, ranked `place`, with the record it was weighed by.
+pub fn match_line(place: usize, found: &Match, record: &Record) -> String {
+    let price = match found.candidate.per_1k_output {
+        Some(price) => format!("; {price} USD per 1k output tokens"),
+        None => String::new(),
+    };
+    let enclave = if found.candidate.attested {
+        "; in an enclave that checks out"
+    } else {
+        ""
+    };
+    format!(
+        "{place}. agent {} (account {}): score {:.2}, fit {:.2}, trust {:.2} ({} delivered, {} USD earned, {} proven false, {} released){price}{enclave}\n   offers: {}",
+        found.candidate.agent.short(),
+        found.candidate.account.short(),
+        found.score,
+        found.fit,
+        found.trust,
+        record.delivered,
+        record.earned,
+        record.failed,
+        record.released,
+        found.candidate.offer
+    )
+}
+
+/// Runs `sion agent find …`: the candidates ranked for the task, best
+/// first.
+pub fn find_command(ledger: &dyn Ledger, args: FindArgs) -> Result<(), CliError> {
+    let task = args.task.join(" ");
+    let (candidates, need) = candidates_of(ledger, &args)?;
+    let records = records_since(ledger, sion_core::ids::Pulse(args.from))?;
+    let matches = rank(&task, &candidates, &records, &need);
+    if matches.is_empty() {
+        println!(
+            "No agent of the {} named fits: none offers a word of the task{}.",
+            candidates.len(),
+            if need.attested_only || need.max_per_1k_output.is_some() {
+                ", or none is what is needed"
+            } else {
+                ""
+            }
+        );
+        return Ok(());
+    }
+    for (at, found) in matches.iter().take(args.limit.max(1)).enumerate() {
+        let record = records
+            .get(&found.candidate.account)
+            .cloned()
+            .unwrap_or_default();
+        println!("{}", match_line(at + 1, found, &record));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +672,84 @@ mod tests {
         );
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].candidate.agent, agent(b"a"));
+    }
+
+    /// A ledger that answers only for events, from a list, as a node does:
+    /// those from a Pulse on, at most `limit` of them, cut where the limit
+    /// falls even inside a Pulse.
+    struct Events(Vec<sion_node::view::EventView>);
+
+    impl Ledger for Events {
+        fn query(&self, query: sion_node::Query) -> Result<serde_json::Value, CliError> {
+            match query {
+                sion_node::Query::Events { from, limit } => Ok(serde_json::to_value(
+                    self.0
+                        .iter()
+                        .filter(|view| view.pulse >= from)
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+                .expect("events as JSON")),
+                _ => Err(CliError::Usage("only events here".into())),
+            }
+        }
+        fn submit(
+            &self,
+            _: &sion_exec::SignedTransaction,
+        ) -> Result<sion_node::view::SubmitReceipt, CliError> {
+            Err(CliError::Usage("only events here".into()))
+        }
+        fn tx(&self, _: sion_core::ids::TxDigest) -> Result<crate::ledger::TxState, CliError> {
+            Err(CliError::Usage("only events here".into()))
+        }
+        fn faucet(
+            &self,
+            _: AccountId,
+            _: sion_core::ids::AssetId,
+            _: Amount,
+        ) -> Result<(), CliError> {
+            Err(CliError::Usage("only events here".into()))
+        }
+        fn force(
+            &self,
+            _: &sion_exec::SignedTransaction,
+        ) -> Result<sion_node::view::SubmitReceipt, CliError> {
+            Err(CliError::Usage("only events here".into()))
+        }
+        fn censor(&self, _: &[AccountId], _: bool, _: usize) -> Result<(), CliError> {
+            Err(CliError::Usage("only events here".into()))
+        }
+        fn describe(&self) -> String {
+            "a list of events".into()
+        }
+    }
+
+    #[test]
+    fn records_are_read_page_by_page_and_no_event_twice() {
+        use sion_core::ids::{ClaimId, Pulse};
+        let coder = account(b"coder");
+        // 12,000 deliveries, eleven to a Pulse: a page of 5,000 ends inside
+        // a Pulse, which the next page reads again, whole.
+        let events: Vec<sion_node::view::EventView> = (0..12_000u64)
+            .map(|n| sion_node::view::EventView {
+                pulse: Pulse(n / 11),
+                tx: None,
+                event: Event::TaskSettled {
+                    task: ObjectId::from_hash(sion_core::hash::hash_domain("t", &n.to_le_bytes())),
+                    worker: coder,
+                    result: ClaimId::from_hash(sion_core::hash::hash_domain("r", &n.to_le_bytes())),
+                    amount: Amount(1),
+                    reservation: sion_core::hash::Hash32::ZERO,
+                },
+            })
+            .collect();
+        let ledger = Events(events);
+        let records = records_since(&ledger, Pulse(0)).unwrap();
+        assert_eq!(records[&coder].delivered, 12_000);
+        assert_eq!(records[&coder].earned, Amount(12_000));
+        // From a later Pulse, only what came after.
+        let later = records_since(&ledger, Pulse(1_000)).unwrap();
+        assert_eq!(later[&coder].delivered, 12_000 - 11_000);
     }
 }

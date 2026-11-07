@@ -140,6 +140,26 @@ fn black(dir: &std::path::Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The browser's arguments for the guest's microphone and camera: a file
+/// of silence (`quiet`) and a black picture (`dark`), or, given
+/// `microphone`'s arguments ([`crate::meeting_voice::browser_arguments`]),
+/// that microphone and no camera, since the fake devices go together.
+pub fn media_arguments(
+    quiet: &std::path::Path,
+    dark: &std::path::Path,
+    microphone: Option<&[String]>,
+) -> Vec<String> {
+    match microphone {
+        Some(arguments) => arguments.to_vec(),
+        None => vec![
+            "--use-fake-ui-for-media-stream".into(),
+            "--use-fake-device-for-media-stream".into(),
+            format!("--use-file-for-fake-audio-capture={}", quiet.display()),
+            format!("--use-file-for-fake-video-capture={}", dark.display()),
+        ],
+    }
+}
+
 /// Whether this process runs as root.
 fn running_as_root() -> bool {
     #[cfg(target_os = "linux")]
@@ -164,6 +184,20 @@ impl Bot {
         sink: Option<&str>,
         own_sandbox: bool,
     ) -> Result<Bot, String> {
+        Bot::open_with(program, link, sink, own_sandbox, None)
+    }
+
+    /// [`Bot::open`], the guest's microphone `microphone`
+    /// ([`crate::meeting_voice::Microphone`]) rather than a file of silence:
+    /// what is played into it is what the meeting hears the guest say. Such
+    /// a guest has no camera.
+    pub fn open_with(
+        program: &std::path::Path,
+        link: &str,
+        sink: Option<&str>,
+        own_sandbox: bool,
+        microphone: Option<&crate::meeting_voice::Microphone>,
+    ) -> Result<Bot, String> {
         if !(link.starts_with("https://") || link.starts_with("http://")) {
             return Err(format!("{link:?} is not a meeting's link (https://…)"));
         }
@@ -185,7 +219,7 @@ impl Bot {
             let _ = std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700));
         }
         // However the start fails, the browser and its profile go.
-        Bot::start(program, link, sink, own_sandbox, &profile).inspect_err(|_| {
+        Bot::start(program, link, sink, own_sandbox, &profile, microphone).inspect_err(|_| {
             let _ = std::fs::remove_dir_all(&profile);
         })
     }
@@ -196,9 +230,11 @@ impl Bot {
         sink: Option<&str>,
         own_sandbox: bool,
         profile: &std::path::Path,
+        microphone: Option<&crate::meeting_voice::Microphone>,
     ) -> Result<Bot, String> {
         let quiet = silence(profile)?;
         let dark = black(profile)?;
+        let speaking = microphone.map(crate::meeting_voice::browser_arguments);
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
@@ -213,20 +249,11 @@ impl Bot {
                 "--disable-extensions",
                 "--password-store=basic",
                 "--use-mock-keychain",
-                "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
                 "--autoplay-policy=no-user-gesture-required",
                 "--window-size=1280,800",
             ])
             .arg(format!("--user-data-dir={}", profile.display()))
-            .arg(format!(
-                "--use-file-for-fake-audio-capture={}",
-                quiet.display()
-            ))
-            .arg(format!(
-                "--use-file-for-fake-video-capture={}",
-                dark.display()
-            ))
+            .args(media_arguments(&quiet, &dark, speaking.as_deref()))
             .arg("about:blank")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
@@ -235,6 +262,11 @@ impl Bot {
             Ok(log) => command.stderr(log),
             Err(_) => command.stderr(Stdio::null()),
         };
+        // The guest's voice, if it has one: the source it is played into
+        // is the browser's microphone.
+        if let Some(microphone) = microphone {
+            command.env("PULSE_SOURCE", microphone.source());
+        }
         if let Some(sink) = sink {
             command.env("PULSE_SINK", sink);
         }

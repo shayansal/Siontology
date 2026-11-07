@@ -10,6 +10,60 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Improving the agent, projects, shared facts, a speaking guest and finding an agent, as commands
+
+The five pieces that were only in the library now have commands, and
+the documentation says so.
+
+- **`sion agent improve try`** tries words added to a profile's
+  instructions (`--instructions`), the models a route reaches for
+  (`--route <route>=<models>`, `default` for its own) and a vote
+  (`--vote`), each on a set of tasks against the agent as it is; one is
+  kept only when better beyond chance and failing no held-out task
+  (`--held-out`) it passed, recorded with its evidence, and `--apply`
+  makes the best words and models the profile's. A route's models are
+  tried against that route's. `sion agent improve kept` reads them back.
+- **`sion agent project`** starts, works on, shows, reports, pauses,
+  resumes, finishes and stops a project. A session on a project has
+  `project_note` and `project_milestone`, and each of its payments is held
+  to what the project has left before it is sent, given back if it is not
+  sent or the ledger refuses it, or if a payment whose outcome was unknown
+  turns out never to have been made; never held twice for one call. A
+  project's session has no subagents, tasks or storage deals, and the
+  project's file is changed under a lock across processes. `sion agent scheduler` makes the
+  check-ins (working on a project once first with `--work-at-check-in`);
+  a report that could not be sent is made again at the next check-in.
+- **`sion memory vouch`, `revoke` and `standing`.** A vouching is now
+  named in the voucher's index (`memory-vouched:<atom>`), and a claim the
+  ledger does not issue is said with its reason. A session that keeps
+  another owner's log in mind brings what it knows of the log's vouchings
+  and revocations up to date from the ledger's events before each run: a
+  fact its writer revoked, and whatever was drawn from it, leave its
+  prompt; a vouched one says who vouched, while its vouching stands. A
+  voucher's revocation withdraws only its own vouching, and anyone else's
+  counts for nothing.
+- **`sion agent meeting --speak`** gives the guest that joins by a link a
+  voice and a PulseAudio microphone of its own (`--answer-to` for the
+  words that name it; by default its name, and its name without what is
+  in brackets): it answers a line that asks it something by name,
+  from the transcript alone, into the meeting and the transcript. Its
+  microphone and a meeting were not run here; such a guest has no camera.
+- **`sion agent find`** ranks the rental listings and agents named for a
+  task by the fit of their offers and their records, held to an enclave
+  that checks out (`--enclave`) or a price (`--max-per-1k-output`), the
+  records read from the node's events page by page.
+
+- **Payments**: a node's answer to a payment that could not be read now
+  leaves its outcome unknown, to be found from the ledger by its noted
+  transaction, rather than counting it as not sent.
+
+Tested with scripted models: `crates/sion-cli/tests/agent_improve.rs`, and
+on a devnet `crates/sion-cli/tests/agent_colleagues.rs`. A review by an
+agent that had not written the code found holds that could leak, a
+voucher able to pull any fact for a small bond, route models compared
+with the wrong baseline and reports that could repeat entries; all are
+fixed here.
+
 ### Documentation: the agent first, and what no command reaches yet
 
 - **The README** now leads with the agent: where it is reached, what it

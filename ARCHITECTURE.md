@@ -192,9 +192,12 @@ are `sion_cli::acp` (ACP's merchant and buyer, cards, 3-D Secure, feeds,
 webhooks and request signatures) and `sion_cli::ap2` (mandates);
 renting is `sion_cli::rentals`, over `sion_enclave` for attestation, and
 `sion_cli::trust` serves the reads other frameworks check an agent by.
-`sion_cli::self_improve`, `projects`, `vouching`, `meeting_voice` and
-`reputation::rank` are in the library and unit-tested, and no command
-reaches them yet. The book's
+`sion_cli::self_improve` is `sion agent improve`, `projects` is
+`sion agent project` (its sessions' payments held to the project's budget
+in `runtime`'s payment tool), `vouching` is `sion memory vouch` and
+`revoke` and what a session keeps in mind of another owner's log,
+`meeting_voice` is the meeting guest's voice, and `reputation` is
+`sion agent find`. The book's
 [Your agent](docs/book/src/agent/index.md) pages describe each part from
 the outside.
 

@@ -177,10 +177,55 @@ impl Profile {
             confidential: self.confidential,
             confidential_files: self.confidential_files.clone(),
             // A work item's session is started by the work runner
-            // ([`Profile::start_work`]).
+            // ([`Profile::start_work`]), a project's by its own
+            // ([`Profile::start_project`]).
             work: None,
+            project: None,
             session: None,
         }
+    }
+
+    /// Starts a session on project `link`: `task` is what it is asked to
+    /// do for it. Its project tools note there, and its payments are held
+    /// to what the project has left; it spawns no subagents, posts no tasks
+    /// and makes no storage deals, which would move money past the budget.
+    pub fn start_project(
+        &self,
+        ledger: SharedLedger,
+        task: &str,
+        link: crate::projects::ProjectLink,
+        hooks: crate::runtime::Hooks<'_>,
+    ) -> Result<(Saved, Vec<String>), CliError> {
+        let choice = crate::model_routes::choose_for(
+            self,
+            &crate::model_routes::Task {
+                text: task,
+                pictures: 0,
+                work: true,
+            },
+        );
+        let started = crate::runtime::start_watched(
+            ledger,
+            &self.wallet,
+            self.agent,
+            task,
+            &[],
+            choice.models.clone(),
+            self.policy(),
+            // Its money moves only by payments held to the project's
+            // budget: no subagents, tasks or storage deals of its own.
+            Equipment {
+                project: Some(link),
+                delegate: false,
+                storage: false,
+                ..self.equipment()
+            },
+            hooks,
+        );
+        if let Ok((saved, _)) = &started {
+            crate::model_routes::note(self, &choice, &choice.models, saved);
+        }
+        started
     }
 
     /// Starts session `session` (its id, fixed before it runs) on a work

@@ -568,7 +568,7 @@ fn rent(ledger: SharedLedger, rent: Rent) -> Result<(), CliError> {
     Ok(())
 }
 
-fn measurement_bytes(text: &str) -> Result<[u8; 48], CliError> {
+pub(crate) fn measurement_bytes(text: &str) -> Result<[u8; 48], CliError> {
     let bytes = hex::decode(text).map_err(|e| CliError::Usage(format!("the measurement: {e}")))?;
     let mut measurement = [0u8; 48];
     if bytes.len() != 48 {
@@ -581,7 +581,7 @@ fn measurement_bytes(text: &str) -> Result<[u8; 48], CliError> {
 }
 
 /// An account from 64 hex digits, or a devnet wallet's name.
-fn account_of(ledger: &dyn Ledger, text: &str) -> Result<AccountId, CliError> {
+pub(crate) fn account_of(ledger: &dyn Ledger, text: &str) -> Result<AccountId, CliError> {
     if text.len() == 64 && text.chars().all(|c| c.is_ascii_hexdigit()) {
         return Ok(AccountId::from_hash(parse_hash(text, "the owner")?));
     }

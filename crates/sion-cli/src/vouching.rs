@@ -35,7 +35,7 @@ use sion_exec::TxKind;
 use sion_memory::atom::{LinkKind, MemoryAtom, MemoryAtomId};
 
 use crate::error::CliError;
-use crate::ledger::Ledger;
+use crate::ledger::{Ledger, LedgerExt};
 use crate::session::Session;
 
 /// The schema of a claim vouching for an atom.
@@ -117,14 +117,44 @@ fn publish(
     key: Option<String>,
 ) -> Result<ClaimId, CliError> {
     let id = claim_id(&session.id(wallet), &body);
-    session.send(wallet, TxKind::IssueClaim { claim: body }, Vec::new())?;
+    // Each must succeed: a claim the ledger refused, or one it never
+    // named, is no vouching or revocation for a reader to find.
+    let view = session.must(wallet, TxKind::IssueClaim { claim: body }, Vec::new())?;
+    issued(session.ledger, view.pulse, id)?;
     if let Some(key) = key {
-        session.send(wallet, TxKind::IndexClaim { key, claim: id }, Vec::new())?;
+        session.must(wallet, TxKind::IndexClaim { key, claim: id }, Vec::new())?;
     }
     Ok(id)
 }
 
-/// Vouches for an atom as `wallet`: a claim on the voucher's bond.
+/// Whether the ledger issued claim `id`, submitted in the Pulse `at`:
+/// claims are issued at the end of their Pulse, and one it rejects (its
+/// adjudicator or a bond it rests on unknown) is said with the reason.
+fn issued(ledger: &dyn Ledger, at: sion_core::ids::Pulse, id: ClaimId) -> Result<(), CliError> {
+    for view in ledger.events(at, 1_000)? {
+        if view.pulse > at {
+            break;
+        }
+        if let sion_exec::execute::Event::ClaimRejected { claim, reason } = &view.event {
+            if *claim == id {
+                return Err(CliError::Transaction(format!(
+                    "the ledger did not issue claim {}: {reason}",
+                    id.short()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The index key a vouching is named under, so a reader finds who
+/// vouched: `memory-vouched:<atom>`.
+pub fn vouched_key(atom: &MemoryAtomId) -> String {
+    format!("memory-vouched:{}", hex::encode(&atom.as_hash().0[..16]))
+}
+
+/// Vouches for an atom as `wallet`: a claim on the voucher's bond, named
+/// in the voucher's index so a reader finds it.
 pub fn vouch(
     session: &mut Session<'_>,
     wallet: &str,
@@ -134,7 +164,272 @@ pub fn vouch(
 ) -> Result<ClaimId, CliError> {
     let voucher = session.id(wallet);
     let body = vouch_body(&voucher, about, adjudicator, valid_for)?;
-    publish(session, wallet, body, None)
+    publish(session, wallet, body, Some(vouched_key(&about.atom)))
+}
+
+/// A revocation a reader found.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Revocation {
+    /// The atom revoked.
+    pub atom: MemoryAtomId,
+    /// Who revoked it.
+    pub by: AccountId,
+    /// What they said.
+    pub why: String,
+    /// The claim.
+    pub claim: ClaimId,
+}
+
+/// A vouching a reader found.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vouching {
+    /// The atom vouched for.
+    pub atom: MemoryAtomId,
+    /// Who vouched.
+    pub by: AccountId,
+    /// The claim.
+    pub claim: ClaimId,
+    /// Whether the claim stood when last looked at: a vouching that
+    /// expired or was shown false vouches for nothing.
+    #[serde(default = "standing_by_default")]
+    pub active: bool,
+}
+
+fn standing_by_default() -> bool {
+    true
+}
+
+/// What a reader has found of the vouchings and revocations of one
+/// shared log's atoms, kept beside its copy of the log and brought up to
+/// date from the ledger's events ([`refresh`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Found {
+    /// Whose log it is.
+    pub writer: Option<AccountId>,
+    /// The next Pulse whose events are to be read.
+    pub next: u64,
+    /// The revocations found, whoever made them.
+    pub revocations: Vec<Revocation>,
+    /// The vouchings found.
+    pub vouchings: Vec<Vouching>,
+    /// Pulses with more events than a node answers at once, read only as
+    /// far as one page of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partial: Vec<u64>,
+}
+
+impl Found {
+    /// Who vouches for each atom: whoever's vouching still stands and who
+    /// has not withdrawn it (a voucher's revocation withdraws its own
+    /// vouching, and only that).
+    pub fn vouches(&self) -> BTreeMap<MemoryAtomId, Vec<AccountId>> {
+        let mut vouches: BTreeMap<MemoryAtomId, Vec<AccountId>> = BTreeMap::new();
+        for vouching in self.vouchings.iter().filter(|v| v.active) {
+            let withdrawn = self
+                .revocations
+                .iter()
+                .any(|r| r.atom == vouching.atom && r.by == vouching.by);
+            if withdrawn {
+                continue;
+            }
+            let by = vouches.entry(vouching.atom).or_default();
+            if !by.contains(&vouching.by) {
+                by.push(vouching.by);
+            }
+        }
+        vouches
+    }
+
+    /// The revocations that pull a fact, by atom: the log's writer's.
+    /// Anyone may publish a revocation; a voucher's withdraws its own
+    /// vouching ([`Found::vouches`]), and anyone else's counts for nothing.
+    pub fn revoked(&self) -> BTreeMap<MemoryAtomId, (AccountId, String)> {
+        let mut revoked = BTreeMap::new();
+        for revocation in &self.revocations {
+            if Some(revocation.by) == self.writer {
+                revoked
+                    .entry(revocation.atom)
+                    .or_insert((revocation.by, revocation.why.clone()));
+            }
+        }
+        revoked
+    }
+
+    /// Where each of `atoms` stands by what was found.
+    pub fn standings(&self, atoms: &[MemoryAtom]) -> Vec<Standing> {
+        standings(atoms, &self.revoked(), &self.vouches())
+    }
+
+    /// Takes in the claim `claim`, which `owner` named under `key`: kept
+    /// if it is a vouching or revocation of an atom of this writer's log,
+    /// by that owner, named under the key that atom's vouching or
+    /// revocation is named under.
+    /// A claim that is not one is passed over; one that could not be read
+    /// (the node out of reach) is an error, so that nothing is skipped.
+    fn take(
+        &mut self,
+        ledger: &dyn Ledger,
+        owner: AccountId,
+        key: &str,
+        claim: ClaimId,
+    ) -> Result<(), CliError> {
+        let (about, schema, issuer) = match read_about(ledger, &claim.to_string()) {
+            Ok(read) => read,
+            Err(CliError::Usage(_) | CliError::Protocol(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if issuer != owner || Some(about.writer) != self.writer {
+            return Ok(());
+        }
+        if schema == REVOKE_SCHEMA && key == revoked_key(&about.atom) {
+            let revocation = Revocation {
+                atom: about.atom,
+                by: owner,
+                why: about.note,
+                claim,
+            };
+            if !self.revocations.contains(&revocation) {
+                self.revocations.push(revocation);
+            }
+        } else if schema == VOUCH_SCHEMA
+            && key == vouched_key(&about.atom)
+            && !self.vouchings.iter().any(|v| v.claim == claim)
+        {
+            self.vouchings.push(Vouching {
+                atom: about.atom,
+                by: owner,
+                claim,
+                active: true,
+            });
+        }
+        Ok(())
+    }
+
+    /// Looks again at whether each vouching's claim still stands.
+    pub fn recheck(&mut self, ledger: &dyn Ledger) -> Result<(), CliError> {
+        for vouching in &mut self.vouchings {
+            let value = ledger.claim(vouching.claim)?;
+            vouching.active = value["status"].as_str() == Some("Active");
+        }
+        Ok(())
+    }
+
+    /// Reads the ledger's events from where it left off to the latest,
+    /// taking in each claim named under a vouching's or revocation's key.
+    /// A Pulse with more events than a node answers at once is read only
+    /// as far as one page of it, and noted in [`Found::partial`]. On an
+    /// error it stops where the page it was reading began.
+    pub fn scan(&mut self, ledger: &dyn Ledger) -> Result<(), CliError> {
+        // As many as a node answers at once.
+        const PAGE: usize = 5_000;
+        loop {
+            let mut page = ledger.events(sion_core::ids::Pulse(self.next), PAGE)?;
+            let full = page.len() >= PAGE;
+            let (Some(first), Some(last)) = (
+                page.first().map(|view| view.pulse),
+                page.last().map(|view| view.pulse),
+            ) else {
+                return Ok(());
+            };
+            // A full page may end inside a Pulse: that Pulse is read again,
+            // whole, with the next page.
+            let whole = !(full && first != last);
+            if !whole {
+                page.retain(|view| view.pulse != last);
+            } else if full && !self.partial.contains(&last.0) {
+                self.partial.push(last.0);
+            }
+            for view in &page {
+                if let sion_exec::execute::Event::ClaimIndexed {
+                    owner, key, claim, ..
+                } = &view.event
+                {
+                    if key.starts_with("memory-revoked:") || key.starts_with("memory-vouched:") {
+                        self.take(ledger, *owner, key, *claim)?;
+                    }
+                }
+            }
+            if !whole {
+                self.next = last.0;
+                continue;
+            }
+            self.next = last.0.saturating_add(1);
+            if !full {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Where a reader keeps what it found of `log`'s vouchings and
+/// revocations: beside its copy of the log.
+pub fn found_path(log: &sion_core::ids::ObjectId) -> std::path::PathBuf {
+    crate::memory::store_dir(log).with_extension("standing.json")
+}
+
+/// What was found of `log`'s vouchings and revocations when it was last
+/// brought up to date (nothing, if never).
+pub fn found(log: &sion_core::ids::ObjectId) -> Found {
+    std::fs::read_to_string(found_path(log))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Brings what this reader knows of `log`'s vouchings and revocations up
+/// to date from the ledger's events, and keeps it.
+pub fn refresh(ledger: &dyn Ledger, log: &sion_core::ids::ObjectId) -> Result<Found, CliError> {
+    let writer = crate::memory::committed(ledger, log)?.writer;
+    let mut kept = found(log);
+    if kept.writer != Some(writer) {
+        kept = Found {
+            writer: Some(writer),
+            ..Found::default()
+        };
+    }
+    kept.scan(ledger)?;
+    kept.recheck(ledger)?;
+    crate::profiles::write_json(&found_path(log), &kept)?;
+    Ok(kept)
+}
+
+/// The atom at `seq` of `log`, from this machine's copy of it, with whom
+/// it is about.
+pub fn about_atom(
+    ledger: &dyn Ledger,
+    log: &sion_core::ids::ObjectId,
+    seq: u64,
+    note: &str,
+) -> Result<About, CliError> {
+    let writer = crate::memory::committed(ledger, log)?.writer;
+    let store = sion_memory::LogStore::open(crate::memory::store_dir(log)).map_err(|e| {
+        CliError::Usage(format!(
+            "this machine has no copy of log {}: {e}",
+            log.0.short()
+        ))
+    })?;
+    let atom = store
+        .log()
+        .atoms()
+        .iter()
+        .find(|atom| atom.seq == seq)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "this machine's copy of log {} has no atom {seq}",
+                log.0.short()
+            ))
+        })?;
+    if atom.writer != writer {
+        return Err(CliError::Usage(format!(
+            "atom {seq} of the copy is not the log's writer's"
+        )));
+    }
+    Ok(About {
+        atom: atom.id(),
+        writer,
+        seq,
+        note: note.to_string(),
+    })
 }
 
 /// Revokes an atom as `wallet`, naming it in the revoker's index so a
@@ -418,5 +713,61 @@ mod tests {
         // 16 bytes of the atom, so the key fits the index's 64.
         assert!(key.len() <= 64);
         assert_ne!(key, revoked_key(&atom(writer, 1, "b", &[]).id()));
+    }
+
+    #[test]
+    fn only_the_writer_pulls_a_fact_and_a_voucher_withdraws_only_its_own() {
+        let writer = account(b"writer");
+        let dana = account(b"dana");
+        let carol = account(b"carol");
+        let eve = account(b"eve");
+        let first = atom(writer, 0, "a", &[]);
+        let drawn = atom(writer, 1, "b", &[first.id()]);
+        let own = atom(writer, 2, "c", &[]);
+        let atoms = [first.clone(), drawn.clone(), own.clone()];
+        let claim = |seed: &[u8]| ClaimId::from_hash(sion_core::hash::hash_domain("c", seed));
+        let revocation = |atom: &MemoryAtom, by: AccountId, seed: &[u8]| Revocation {
+            atom: atom.id(),
+            by,
+            why: "no".into(),
+            claim: claim(seed),
+        };
+        let vouching = |atom: &MemoryAtom, by: AccountId, seed: &[u8], active: bool| Vouching {
+            atom: atom.id(),
+            by,
+            claim: claim(seed),
+            active,
+        };
+        let mut found = Found {
+            writer: Some(writer),
+            // eve, who has a vouching of her own for the first, revokes it:
+            // that withdraws her vouching, and pulls nothing.
+            revocations: vec![revocation(&first, eve, b"r1")],
+            vouchings: vec![
+                vouching(&first, eve, b"v1", true),
+                vouching(&own, dana, b"v2", true),
+                vouching(&drawn, carol, b"v3", false),
+            ],
+            ..Found::default()
+        };
+        assert_eq!(
+            found.standings(&atoms),
+            vec![
+                Standing::Plain,
+                // carol's vouching no longer stands.
+                Standing::Plain,
+                Standing::Vouched { by: vec![dana] }
+            ]
+        );
+        // dana withdraws hers: the fact is her writer's word again, still
+        // kept in mind.
+        found.revocations.push(revocation(&own, dana, b"r2"));
+        assert_eq!(found.standings(&atoms)[2], Standing::Plain);
+        // The writer revokes the first: it is out, and what was drawn from it.
+        found.revocations.push(revocation(&first, writer, b"r3"));
+        let standings = found.standings(&atoms);
+        assert!(matches!(standings[0], Standing::Revoked { by, .. } if by == writer));
+        assert_eq!(standings[1], Standing::RestsOnRevoked { atom: first.id() });
+        assert!(standings[2].kept());
     }
 }

@@ -44,6 +44,9 @@ pub struct Acting {
     /// The claim its payments name as their evidence: the mandate of the
     /// work they are made for ([`crate::work`]), if they are made for some.
     pub evidence: Option<sion_core::ids::ClaimId>,
+    /// The project its payments are made for ([`crate::projects`]), if
+    /// they are: each is held to what the project has left.
+    pub project: Option<crate::projects::ProjectLink>,
 }
 
 impl std::fmt::Debug for Acting {
@@ -173,8 +176,18 @@ impl Tool for PayTool {
         pay(&self.0, input, key, note)
     }
 
-    fn reconcile(&self, _input: &Value, _key: &str, notes: &[String]) -> Option<Outcome> {
-        reconcile_payment(&self.0, notes)
+    /// What a payment whose outcome was lost did, from the ledger; for a
+    /// project's payment, its hold is settled or given back by it.
+    fn reconcile(&self, _input: &Value, key: &str, notes: &[String]) -> Option<Outcome> {
+        let outcome = reconcile_payment(&self.0, notes)?;
+        if let Some(link) = &self.0.project {
+            let _ = if outcome.is_error {
+                crate::projects::release(link, crate::projects::now(), key, "never made")
+            } else {
+                crate::projects::settle(link, key)
+            };
+        }
+        Some(outcome)
     }
 }
 
@@ -284,6 +297,26 @@ fn pay(acting: &Acting, input: &Value, key: &str, note: &mut dyn FnMut(&str)) ->
         Err(e) => return Outcome::error(format!("not sent: {e}")),
     };
     let payee = session.id(to);
+    // A payment made for a project is held to what the project has left:
+    // counted before it is sent, so that two at once cannot pass its budget
+    // together, and given back if it is not sent or the ledger refuses it.
+    // One whose outcome is unknown stays counted.
+    let give_back = |why: &str| {
+        if let Some(link) = &acting.project {
+            let _ = crate::projects::release(link, crate::projects::now(), key, why);
+        }
+    };
+    if let Some(link) = &acting.project {
+        if let Err(e) = crate::projects::hold(
+            link,
+            crate::projects::now(),
+            amount,
+            &format!("{amount} USD to {to}: {purpose}"),
+            key,
+        ) {
+            return Outcome::error(format!("not sent: {e}"));
+        }
+    }
     // The receipt records which call of the runtime made the payment.
     let call = &key[..key.len().min(12)];
     let kind = TxKind::AgentPay {
@@ -325,8 +358,18 @@ fn pay(acting: &Acting, input: &Value, key: &str, note: &mut dyn FnMut(&str)) ->
                  may not have been sent"
             ));
         }
+        // An answer that could not be read may follow a submission the
+        // node took: what the ledger did is found from the noted digest.
+        Err(CliError::Protocol(e)) => {
+            session.settle_all();
+            return Outcome::uncertain(format!(
+                "the node's answer to the payment could not be read ({e}); it may or may not \
+                 have been sent"
+            ));
+        }
         Err(e) => {
             session.settle_all();
+            give_back("not sent");
             return Outcome::error(format!("not sent: {e}"));
         }
     };
@@ -335,25 +378,34 @@ fn pay(acting: &Acting, input: &Value, key: &str, note: &mut dyn FnMut(&str)) ->
     let names = session.names();
     match result {
         Ok(view) => match &view.status {
-            ExecStatus::Success => Outcome::ok(format!(
-                "Pulse {}: {} Transaction {digest}.{}",
-                view.pulse.0,
-                crate::describe::receipt(&names, &view.effects),
-                match &acting.evidence {
-                    Some(claim) => format!(
-                        " It names claim {} as its evidence: the mandate of your work.",
-                        claim.short()
-                    ),
-                    None => String::new(),
+            ExecStatus::Success => {
+                if let Some(link) = &acting.project {
+                    let _ = crate::projects::settle(link, key);
                 }
-            )),
-            _ => Outcome::error(format!(
-                "refused by the ledger at Pulse {}: {}",
-                view.pulse.0,
-                crate::describe::receipt(&names, &view.effects)
-            )),
+                Outcome::ok(format!(
+                    "Pulse {}: {} Transaction {digest}.{}",
+                    view.pulse.0,
+                    crate::describe::receipt(&names, &view.effects),
+                    match &acting.evidence {
+                        Some(claim) => format!(
+                            " It names claim {} as its evidence: the mandate of your work.",
+                            claim.short()
+                        ),
+                        None => String::new(),
+                    }
+                ))
+            }
+            _ => {
+                give_back("refused by the ledger");
+                Outcome::error(format!(
+                    "refused by the ledger at Pulse {}: {}",
+                    view.pulse.0,
+                    crate::describe::receipt(&names, &view.effects)
+                ))
+            }
         },
         Err(CliError::Transaction(reason)) if reason.starts_with("not certified") => {
+            give_back("not executed");
             Outcome::error(format!("not executed: {reason}"))
         }
         Err(e) => Outcome::uncertain(format!(
@@ -412,16 +464,29 @@ pub fn settle(
             )))
         }
     };
+    // A project's payment held against its budget is settled with it.
+    let project = saved.project.clone();
     match (done, not_done) {
         (Some(what), false) => {
             saved
                 .state
                 .journal
                 .settle(&key, Outcome::ok(format!("settled by a person: {what}")));
+            if let Some(link) = &project {
+                crate::projects::settle(link, &key)?;
+            }
             println!("{key}: done; the agent is told what it did when it calls it again");
         }
         (None, true) => {
             saved.state.journal.forget(&key);
+            if let Some(link) = &project {
+                crate::projects::release(
+                    link,
+                    crate::projects::now(),
+                    &key,
+                    "settled by a person as not done",
+                )?;
+            }
             println!("{key}: not done; it may be made again");
         }
         _ => {
@@ -798,6 +863,16 @@ pub struct Saved {
     /// name the item's mandate as their evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<crate::work::WorkLink>,
+    /// The project it works on, if it was started for one
+    /// ([`crate::projects`]): its project tools note there, and its
+    /// payments are held to what the project has left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<crate::projects::ProjectLink>,
+    /// The shared logs' facts as its system prompt last had them: when a
+    /// vouching or revocation found since changes them, the prompt is
+    /// made again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_seen: Vec<String>,
 }
 
 /// What an agent knew of itself, as a session's system prompt keeps it
@@ -1269,11 +1344,37 @@ impl Saved {
         ledger: SharedLedger,
         hooks: Hooks<'_>,
     ) -> Result<Vec<String>, CliError> {
+        // What is known of the shared logs' vouchings and revocations is
+        // brought up to date first: a fact revoked since the prompt was made
+        // leaves it, with whatever rests on it.
+        let mut standing_notes = Vec::new();
+        if !self.shared_memory.is_empty() {
+            for log in &self.shared_memory {
+                if let Err(e) = crate::vouching::refresh(ledger.as_ref(), log) {
+                    standing_notes.push(format!(
+                        "(what is known of log {}'s vouchings and revocations is as it was: {e})",
+                        log.short()
+                    ));
+                }
+            }
+            let shared: Vec<String> = self
+                .shared_memory
+                .iter()
+                .map(crate::agent_memory::shared_core)
+                .collect();
+            // A session saved before it kept what it had seen makes its
+            // prompt again too, once.
+            if shared != self.shared_seen {
+                self.known = None;
+                self.shared_seen = shared;
+            }
+        }
         let acting = Acting {
             ledger,
             wallet: self.wallet.clone(),
             agent: self.agent,
             evidence: self.work.as_ref().and_then(crate::work::WorkLink::evidence),
+            project: self.project.clone(),
         };
         let mut tools = Toolbox::new();
         for tool in ledger_tools(&acting) {
@@ -1281,6 +1382,11 @@ impl Saved {
         }
         if let Some(link) = &self.work {
             for tool in crate::work::tools(link) {
+                tools.add_boxed(tool);
+            }
+        }
+        if let Some(link) = &self.project {
+            for tool in crate::projects::tools(link) {
                 tools.add_boxed(tool);
             }
         }
@@ -1618,7 +1724,8 @@ impl Saved {
         }
         self.positions = models.iter().map(|m| m.position()).collect();
         self.save()?;
-        let mut lines = quarantined;
+        let mut lines = standing_notes;
+        lines.extend(quarantined);
         lines.extend(notes);
         // A call that waited for a decision is answered in place: show how.
         if let Some(waiting) = waiting {
@@ -2570,6 +2677,8 @@ pub struct Equipment {
     pub shared_memory: Vec<ObjectId>,
     /// The work item it does ([`Saved::work`]).
     pub work: Option<crate::work::WorkLink>,
+    /// The project it works on ([`Saved::project`]).
+    pub project: Option<crate::projects::ProjectLink>,
     /// The id its session takes, if it is fixed before it runs (a work
     /// item's, so that a run a restart interrupted goes on in it); else a
     /// new one.
@@ -2645,6 +2754,7 @@ pub fn start_watched(
         confidential,
         confidential_files,
         work,
+        project,
         session: session_id,
     } = equipment;
     if models.is_empty() {
@@ -2759,6 +2869,8 @@ pub fn start_watched(
         image_model,
         home_assistant,
         work,
+        project,
+        shared_seen: Vec::new(),
     };
     saved.from_outside(hooks.outside);
     saved.hold_confidential(hooks.confidential || confidential);

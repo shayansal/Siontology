@@ -205,6 +205,57 @@ pub enum MemoryCommand {
         #[arg(long)]
         replace: bool,
     },
+    /// Vouch for an atom of a log, as you: a claim on your bond
+    /// `memory-voucher`, which the adjudicator can rule against, named in
+    /// your index so that readers find it. Readers who keep the log in
+    /// mind see who vouched for each fact.
+    Vouch {
+        /// Your wallet.
+        wallet: String,
+        /// The log (its id, or a unique prefix of it).
+        log: String,
+        /// The atom's place in the log.
+        seq: u64,
+        /// The adjudicator who can rule against your vouching (its atom's
+        /// id, 64 hex digits).
+        #[arg(long)]
+        adjudicator: String,
+        /// Post your bond `memory-voucher` with this many USD first.
+        #[arg(long, value_name = "USD")]
+        bond: Option<String>,
+        /// What you say of it, in a line.
+        #[arg(long, default_value = "")]
+        note: String,
+        /// How many Pulses the vouching stands for.
+        #[arg(long = "valid-for", default_value_t = 1_000_000)]
+        valid_for: u64,
+    },
+    /// Revoke an atom of a log, as its writer: readers leave it out, and
+    /// whatever was derived from it or assumes it, however deep. Someone
+    /// who vouched for it withdraws their vouching the same way. Nothing is
+    /// deleted from the log.
+    Revoke {
+        /// Your wallet.
+        wallet: String,
+        /// The log (its id, or a unique prefix of it).
+        log: String,
+        /// The atom's place in the log.
+        seq: u64,
+        /// Why, in a line.
+        #[arg(long, default_value = "")]
+        note: String,
+        /// How many Pulses the revocation stands for.
+        #[arg(long = "valid-for", default_value_t = 1_000_000)]
+        valid_for: u64,
+    },
+    /// Where each atom of a log stands for a reader here, once what is
+    /// known of its vouchings and revocations is brought up to date from
+    /// the ledger: revoked, resting on a revoked atom, vouched for and by
+    /// whom, or its writer's word alone.
+    Standing {
+        /// The log (its id, or a unique prefix of it).
+        log: String,
+    },
 }
 
 /// Nanoseconds per second.
@@ -217,6 +268,102 @@ pub fn run(
     command: MemoryCommand,
 ) -> Result<(), CliError> {
     match command {
+        MemoryCommand::Vouch {
+            wallet,
+            log,
+            seq,
+            adjudicator,
+            bond,
+            note,
+            valid_for,
+        } => {
+            let id = find_log(ledger, &log)?;
+            let about = crate::vouching::about_atom(ledger, &id, seq, &note)?;
+            let adjudicator = sion_core::ids::AtomId(parse_hash(&adjudicator, "adjudicator")?);
+            if let Some(amount) = bond {
+                let view = session.must(
+                    &wallet,
+                    sion_exec::TxKind::PostBond {
+                        class: sion_assurance::AtomClass::Economic,
+                        label: crate::vouching::VOUCHER_BOND.into(),
+                        amount: crate::agents::parse_amount(&amount)?,
+                    },
+                    Vec::new(),
+                )?;
+                crate::agents::print_receipt(session, &view);
+            }
+            let claim = crate::vouching::vouch(session, &wallet, &about, adjudicator, valid_for)?;
+            println!(
+                "vouched for atom {seq} of log {} ({}): claim {claim}, on your bond {}",
+                id.0.short(),
+                about.atom.short(),
+                crate::vouching::VOUCHER_BOND
+            );
+            Ok(())
+        }
+        MemoryCommand::Revoke {
+            wallet,
+            log,
+            seq,
+            note,
+            valid_for,
+        } => {
+            let id = find_log(ledger, &log)?;
+            let about = crate::vouching::about_atom(ledger, &id, seq, &note)?;
+            let found = crate::vouching::refresh(ledger, &id)?;
+            let me = session.id(&wallet);
+            let vouched = found
+                .vouches()
+                .get(&about.atom)
+                .is_some_and(|by| by.contains(&me));
+            if me != about.writer && !vouched {
+                return Err(CliError::Usage(format!(
+                    "only the log's writer revokes atom {seq}, and someone who vouched for it withdraws their vouching: readers pass over anyone else's revocation"
+                )));
+            }
+            let claim = crate::vouching::revoke(session, &wallet, &about, valid_for)?;
+            if me == about.writer {
+                println!(
+                    "revoked atom {seq} of log {} ({}): claim {claim}; readers leave it out, and whatever rests on it",
+                    id.0.short(),
+                    about.atom.short()
+                );
+            } else {
+                println!(
+                    "withdrew your vouching for atom {seq} of log {} ({}): claim {claim}; readers no longer show it as vouched for by you",
+                    id.0.short(),
+                    about.atom.short()
+                );
+            }
+            Ok(())
+        }
+        MemoryCommand::Standing { log } => {
+            let id = find_log(ledger, &log)?;
+            let found = crate::vouching::refresh(ledger, &id)?;
+            let store = sion_memory::LogStore::open(store_dir(&id)).map_err(|e| {
+                CliError::Usage(format!(
+                    "this machine has no copy of log {}: {e}",
+                    id.0.short()
+                ))
+            })?;
+            let atoms = store.log().atoms();
+            if atoms.is_empty() {
+                println!("this machine's copy of log {} holds no atom", id.0.short());
+            }
+            for pulse in &found.partial {
+                println!("(Pulse {pulse} has more events than a node answers at once: read only in part)");
+            }
+            for (atom, standing) in atoms.iter().zip(found.standings(atoms)) {
+                println!(
+                    "{:>4} {} {}: {}",
+                    atom.seq,
+                    atom.id().short(),
+                    statement_text(&atom.statement),
+                    standing.describe()
+                );
+            }
+            Ok(())
+        }
         MemoryCommand::Open { wallet, agent } => {
             let agent = agent
                 .as_deref()

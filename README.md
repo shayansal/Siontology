@@ -139,10 +139,12 @@ What is enforced, and where:
   (a profile as the model), and A2A.
   [Channels](docs/book/src/agent/channels.md)
 - **Meetings**: it takes notes by phone, on your machine, or as a guest
-  that joins by the meeting's link and listens, with who said what when a
-  transcriber that tells speakers apart is given (`--diarize`). Tested
+  that joins by the meeting's link, with who said what when a transcriber
+  that tells speakers apart is given (`--diarize`). Given a voice
+  (`--speak`), the guest answers what is asked of it by name. Tested
   against stand-in meeting pages and services: Meet, Zoom, Teams and
-  Twilio were not reached.
+  Twilio were not reached, and the guest's voice was not run with a sound
+  server.
   [Voice](docs/book/src/agent/voice.md#meeting-notes)
 
 ### What it works with
@@ -189,6 +191,15 @@ What is enforced, and where:
 - **Skills that get better**: measured against an evaluation set, evolved,
   and released again on the attestations of verifiers fixed in advance.
   [Skills that get better](docs/book/src/agent/skill-improvement.md)
+- **An agent that gets better**: `sion agent improve` tries changes to the
+  agent itself (words in its instructions, the models a route reaches for,
+  a vote) and keeps one only when it is better beyond chance on a set of
+  tasks and fails no held-out task the agent passed, with the evidence.
+  [Improving the agent](docs/book/src/agent/skill-improvement.md#improving-the-agent-not-only-a-skill)
+- **Facts shared between owners**: a log another owner curates, kept in
+  mind, each fact vouched for on someone's bond or revoked by its writer or
+  a voucher; a revoked fact, and whatever was drawn from it, leaves the
+  prompt. [Memory](docs/book/src/agent/memory.md#facts-from-other-owners-who-vouched-and-pulling-one-back)
 - **Models**: Claude, OpenAI, Gemini, your ChatGPT plan or a local model,
   with fallback, their reasoning kept across tool calls, how hard each
   thinks set per model, and a model for each kind of task, chosen by rule
@@ -208,6 +219,14 @@ What is enforced, and where:
   a mandate on the ledger, it follows its pull requests' reviews and
   failed checks, and what needs you waits on one list.
   [Work](docs/book/src/agent/work.md)
+- **Projects that run for weeks**: a goal, a budget each of its payments
+  is held to before it is sent, milestones, and check-ins that report what
+  was done since the last one, saying so when it was nothing.
+  [Projects](docs/book/src/agent/work.md#projects-that-run-for-weeks)
+- **Finding an agent for a task**, among those you name: how well each
+  one's offer fits, weighed against its record on the ledger, held to an
+  enclave that checks out or a price.
+  [Finding one](docs/book/src/agent/teams.md#an-agents-record-and-finding-one-for-a-task)
 - **Schedules and profiles**, and an agent brought over from OpenClaw or
   Hermes Agent: its persona, memories, jobs, models, keys and chats, with
   a plan shown first.
@@ -217,13 +236,6 @@ What is enforced, and where:
   that keeps everything running.
   [Run it on a server](docs/book/src/agent/server.md)
 
-**In the library, not yet a command.** Five pieces are written and
-unit-tested but no command reaches them yet: improving the whole agent
-(keeping a change only when it is better beyond chance and loses nothing
-on held-out tasks), projects that run for weeks, vouching for and revoking
-facts in memory shared between owners, a meeting guest that speaks when
-spoken to, and finding the best agent for a task. Wiring them into
-commands is the next step.
 
 ## Selling, buying and renting
 
@@ -360,10 +372,11 @@ implementation adds. In short:
   reconstruction and fraud proofs; payment streams, memory logs, Task
   Charters and storage deals; the CLI, the HTTP API and the MCP server;
   work the agent takes on by itself; renting an agent out and agents'
-  records.
+  records; improving the whole agent, projects, vouched and revoked shared
+  memory, and finding an agent for a task (with scripted models; the
+  meeting guest's voice is wired but its microphone was not run).
 - **Partly built**: the agent runtime (tested with scripted models and
-  stand-ins for the services it talks to); five agent features in the
-  library that no command reaches yet; the adapters for outside protocols
+  stand-ins for the services it talks to); the adapters for outside protocols
   (x402, ACP and AP2 are built, with card networks simulated; ERC-8004 and
   C2PA are not); the app (the desktop shell is built and run; mobile is
   configured, not built).
@@ -393,7 +406,7 @@ implementation adds. In short:
 | Agents: a runtime that lets a model work as an agent identity, within its charter: models, tools, autonomy and approvals, memory, skills, channels and voice (beyond the paper) | Partly built (tested with scripted models and stand-ins for the services it talks to) |
 | Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
 | Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
-| Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Partly built (in the library and unit-tested; no command reaches them yet) |
+| Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Built (devnet scale; tested with scripted models; the meeting guest's voice wired and tested in units, its microphone and a meeting not run) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |
@@ -537,9 +550,9 @@ deterministic consensus simulator with adversarial network phases; a
 scenario for every transaction kind; differential tests between the two
 proof stacks; end-to-end devnet tests with dual post-quantum signatures;
 the agent's runs against scripted models and stand-ins for the services it
-uses; and the demos. At the time of writing the crates hold about 215,000
-lines of Rust under their `src/` folders and 51,000 more in their `tests/`
-folders, with about 1,250 test functions besides the property tests.
+uses; and the demos. At the time of writing the crates hold about 217,000
+lines of Rust under their `src/` folders and 52,000 more in their `tests/`
+folders, with about 1,260 test functions besides the property tests.
 
 ## Security, contributing and licence
 

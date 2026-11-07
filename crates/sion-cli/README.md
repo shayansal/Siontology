@@ -6,7 +6,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 · Status: **Built** for the ledger's commands (the status file's "CLI, HTTP API, MCP server for agents"); the agent's commands belong to the agent runtime, which is **Partly built**, tested with a scripted model and stand-ins for providers and messengers (see
 [implementation status](../../docs/implementation-status.md)).
 
-105,661 lines of Rust under `src/` at the time of writing (`find crates/sion-cli/src -name '*.rs' -print0 | xargs -0 cat | wc -l`), the largest crate in the workspace.
+108,073 lines of Rust under `src/` at the time of writing (`find crates/sion-cli/src -name '*.rs' -print0 | xargs -0 cat | wc -l`), the largest crate in the workspace.
 
 ## From `sion <command>` to the module
 
@@ -23,7 +23,7 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `sion stream` | `stream.rs` (payer book, payee desk) |
 | `sion task` | `tasks.rs` |
 | `sion stake` | `stake.rs` |
-| `sion memory` (`open`, `remember`, `commit`, `recall`, `show`, `consolidate`, `dream`, `archive`, `restore`) | `memory.rs`, `consolidate.rs`, `archive.rs`, `recall.rs` |
+| `sion memory` (`open`, `remember`, `commit`, `recall`, `show`, `consolidate`, `dream`, `archive`, `restore`, `vouch`, `revoke`, `standing`) | `memory.rs`, `consolidate.rs`, `archive.rs`, `recall.rs`, `vouching.rs` |
 | `sion skill` | `skills.rs` (releases, audits, install, bounties), `skill_improve.rs` (eval, evolve), `skill_import.rs` (import, starter), `skill_registries.rs` (search, ClawHub, skills.sh, well-known indexes), `teach.rs` (teach) |
 | `sion storage` | `storage.rs` |
 | `sion demo` | `demos.rs` |
@@ -43,9 +43,12 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | `sessions` (and `sessions search`) | `agents.rs`, `recall.rs` |
 | `profile` | `profiles.rs` |
 | `routes` | `model_routes.rs` |
+| `improve` | `self_improve.rs` |
+| `find` | `reputation.rs`, over `rentals.rs` |
+| `project` | `projects.rs`; its sessions' payments held in `runtime.rs` |
 | `import` | `agent_import.rs` |
 | `x-mentions` | `x_mentions.rs`, over `x_api.rs` |
-| `meeting` | `meeting.rs`, `meeting_bot.rs` |
+| `meeting` | `meeting.rs`, `meeting_bot.rs`, `meeting_voice.rs` (`--speak`) |
 | `hooks` | `hooks.rs` |
 | `browser` (login, list, remove) | `browser_profiles.rs` |
 | `rent` (serve, use, show) | `rent_cli.rs`, `rentals.rs` |
@@ -72,12 +75,12 @@ Part of [Siontology](../../README.md) · [Architecture](../../ARCHITECTURE.md)
 | Messengers | `messengers`, `live`, `webhooks`, `drafts`, `showing`, `pairing`, `jwt`, and `dingtalk`, `feishu`, `google_chat`, `imessage`, `irc`, `mattermost`, `nextcloud`, `nostr`, `ntfy`, `qq`, `simplex`, `synology`, `teams`, `wecom`, `weixin`, `x_api`, `x_dm`, `x_mentions`, `zalo`, `phone`, `email` | The `Messenger` interface and one module per service; WebSocket and webhook intake; typing indicators and replies as they are written; X's mentions answered with their sources, and its posts searched. |
 | MCP and the first-party servers | `mcp`, `mcp_serve`, `email`, `calendar`, `documents`, `agent_mcp`, `mcp_auth`, `home_assistant` | The ledger's MCP server; a shared server loop for the mail (IMAP and SMTP), calendar (CalDAV) and documents servers; configuration and OAuth login for MCP servers an agent uses. |
 | Voice | `voice`, `talk`, `listening`, `sound`, `realtime`, `meeting`, `meeting_bot` | Voice notes heard and answered aloud, by services or on the machine (whisper.cpp, Piper, a local server); a terminal conversation; a conversation that listens all the time, with a wake phrase, a model of speech, turns told by what was said, and echo cancellation; one through a realtime speech model that asks the agent; meeting notes by phone, on the machine or as a guest by the meeting's link, with speakers told apart if asked. |
-| Long work and improvement | `projects`, `self_improve`, `vouching`, `meeting_voice` | Projects that run for weeks with a goal, a budget and check-ins; changes to the agent kept only when measurably better; who vouched for a shared fact and pulling one back; a meeting guest that speaks when named. In the library and unit-tested: no command reaches these yet. |
+| Long work and improvement | `projects`, `self_improve`, `vouching`, `meeting_voice` | Projects that run for weeks with a goal, a budget its sessions' payments are held to, and check-ins (`sion agent project`); changes to the agent kept only when measurably better (`sion agent improve`); who vouched for a shared fact and pulling one back (`sion memory vouch`, `revoke`, `standing`, and what a session keeps in mind); a meeting guest that speaks when named (`sion agent meeting --speak`). |
 | Work and GitHub | `work`, `github`, `github_hooks`, `github_tools` | The work runner, GitHub as a watch, its webhooks, and the tools a work session reads a repository with. |
 | Skills | `skills`, `skill_improve`, `skill_import`, `skill_registries`, `teach` | Releases, audits and installation; evaluation, evolution and bounties; import from folders, repositories and registries; skills taught by doing a task in a browser. |
 | Running on a server | `up`, `deploy`, `service`, `gateway` | One process that keeps a list running; sion copied to a server over SSH; systemd and launchd units; routing channels across machines. |
 | Setup and update | `setup`, `doctor`, `update`, `credentials`, `secrets`, `logins`, `chatgpt`, `agent_import`, `model_routes` | One-person setup, a check of the machine, signed self-update, sealed credentials; OpenClaw and Hermes agents imported; a model chosen for each task. |
-| Renting and records | `rentals`, `rent_cli`, `reputation`, `trust` | Listing an agent for rent by the token, sealed requests to its enclave, metered tokens it signs, payment by stream; agents' records from the ledger's events, served to anyone by `trust` (`GET /v1/trust`); finding an agent for a task (`reputation::rank`, in the library only: no command reaches it yet). |
+| Renting and records | `rentals`, `rent_cli`, `reputation`, `trust` | Listing an agent for rent by the token, sealed requests to its enclave, metered tokens it signs, payment by stream; agents' records from the ledger's events, served to anyone by `trust` (`GET /v1/trust`); finding an agent for a task among those named (`sion agent find`). |
 | Agentic commerce | `acp` (`merchant`, `buyer`, `signing`, `webhooks`, `card`, `psp`, `three_ds`, `feeds`, `state`, `http`), `acp_cli`, `ap2` | ACP (2026-04-17) served for a catalog: checkout, carts, orders and their signed webhooks, request signatures, product feeds, and its state kept across restarts; paid on the ledger through a handler of Siontology's own, or by a card delegated to a PSP or to Stripe, with 3-D Secure (the PSP's acquirer and the issuer are simulated); the buyer's side; AP2's mandates (SD-JWT, Delegate SD-JWT chains, roots from keys or x5c certificate chains, constraints, recurring limits, receipts), checked by the merchant before money moves. |
 | Interop | `a2a`, `openai_api` | Agent2Agent cards and tasks; an OpenAI-compatible endpoint. |
 
@@ -100,7 +103,7 @@ Depends on: `sion-core`, `sion-crypto`, `sion-assurance`, `sion-clearing`, `sion
 
 ## Tests
 
-376 `#[test]` functions (counted with `grep -c "#\[test\]"`), besides property tests: 294 under `src/` and 82 in `tests/`. Most `tests/` files are end-to-end runs on a real in-process devnet with a scripted model: `agent_runtime.rs`, `agent_tools.rs`, `agent_memory.rs`, `agent_recall.rs`, `agent_reach.rs`, `agent_work.rs` and `agent_takes_work.rs` (against a stand-in for GitHub), `skill_supply.rs`, `skill_improve.rs`, `streams.rs`, `memory_archive.rs`, `bridging.rs`, `channels_more.rs`, `channels_across.rs`, `channels_voice.rs` (11 tests, with stand-in microphones and transcribers), `agent_worktrees.rs` (subagents in worktrees, programs that call tools and the operator's hooks; skipped where bubblewrap does not work), `meeting.rs` and `meeting_bot.rs` (a guest joining stand-in meeting pages with Chromium, skipped where it is not found), `mcp_http.rs` (7), `network.rs` (processes), `always_on.rs` (`sion agent up` and `sion deploy` through a stand-in for SSH), `setup.rs`, `files.rs` and `chatgpt.rs`; `model_routes.rs`, `x_mentions.rs`, `realtime.rs`, `agent_import.rs` and `skill_registries.rs`; `rentals.rs` (renting by the token, with a simulated enclave); and `commerce.rs` and `commerce_cards.rs` (ACP and AP2 end to end, cards through a simulated PSP and 3-D Secure issuer and a stand-in for Stripe), with `commerce_properties.rs` (property tests), `ap2_vectors.rs` (AP2's own example tokens) and `interop.rs` (requests and answers written out for ACP's published JSON Schemas). No microphone, loudspeaker, messenger or model provider is reached.
+385 `#[test]` functions (counted with `grep -c "#\[test\]"`), besides property tests: 298 under `src/` and 87 in `tests/`. Most `tests/` files are end-to-end runs on a real in-process devnet with a scripted model: `agent_runtime.rs`, `agent_tools.rs`, `agent_memory.rs`, `agent_recall.rs`, `agent_reach.rs`, `agent_work.rs` and `agent_takes_work.rs` (against a stand-in for GitHub), `skill_supply.rs`, `skill_improve.rs`, `streams.rs`, `memory_archive.rs`, `bridging.rs`, `channels_more.rs`, `channels_across.rs`, `channels_voice.rs` (11 tests, with stand-in microphones and transcribers), `agent_worktrees.rs` (subagents in worktrees, programs that call tools and the operator's hooks; skipped where bubblewrap does not work), `meeting.rs` and `meeting_bot.rs` (a guest joining stand-in meeting pages with Chromium, skipped where it is not found), `mcp_http.rs` (7), `network.rs` (processes), `always_on.rs` (`sion agent up` and `sion deploy` through a stand-in for SSH), `setup.rs`, `files.rs` and `chatgpt.rs`; `model_routes.rs`, `x_mentions.rs`, `realtime.rs`, `agent_import.rs` and `skill_registries.rs`; `rentals.rs` (renting by the token, with a simulated enclave); `agent_improve.rs` (changes to the agent kept only when measurably better) and `agent_colleagues.rs` (projects held to their budgets, revoked shared facts leaving a prompt, finding an agent); and `commerce.rs` and `commerce_cards.rs` (ACP and AP2 end to end, cards through a simulated PSP and 3-D Secure issuer and a stand-in for Stripe), with `commerce_properties.rs` (property tests), `ap2_vectors.rs` (AP2's own example tokens) and `interop.rs` (requests and answers written out for ACP's published JSON Schemas). No microphone, loudspeaker, messenger or model provider is reached.
 
 Two tests in `tests/demos.rs` are `#[ignore]`: they run every demo and take minutes (one about a minute), so CI runs them nightly; locally use `cargo test --workspace -- --include-ignored`. The three in `tests/interop.rs` are too: they write or read the files `scripts/interop` checks, and skip without the variables that say where.
 

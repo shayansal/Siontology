@@ -129,7 +129,42 @@ pub fn core(log: &ObjectId) -> String {
 /// A curated log's core memory as prompt text, as [`core`] gives an
 /// agent's own, under [`SHARED_HEADER`].
 pub fn shared_core(log: &ObjectId) -> String {
-    core_under(log, SHARED_HEADER)
+    let Ok(store) = LogStore::open(store_dir(log)) else {
+        return String::new();
+    };
+    // What a reader here found of the log's vouchings and revocations
+    // ([`crate::vouching::refresh`], before each run): a revoked fact and
+    // whatever rests on it are left out; a vouched one says who vouched.
+    let found = crate::vouching::found(log);
+    let atoms = store.log().atoms();
+    let standings = found.standings(atoms);
+    let gone = withdrawn(&store);
+    let mut lines = Vec::new();
+    let mut used = 0;
+    for (atom, standing) in atoms.iter().zip(&standings).rev() {
+        if !CORE.contains(&atom.kind)
+            || gone.contains(&atom.id())
+            || !promptable(atom)
+            || !standing.kept()
+        {
+            continue;
+        }
+        if let Statement::Claim { .. } = atom.statement {
+            let mut text = core_line(atom.kind, &atom.statement);
+            if let crate::vouching::Standing::Vouched { .. } = standing {
+                text.push_str(&format!(" ({})", standing.describe()));
+            }
+            used += text.len() + 1;
+            if used > MAX_CORE_CHARS {
+                break;
+            }
+            lines.push(text);
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("{SHARED_HEADER}\n{}\n", lines.join("\n"))
 }
 
 /// The line a note is in a prompt's memory: its kind and its statement.

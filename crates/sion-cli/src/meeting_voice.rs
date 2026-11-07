@@ -168,12 +168,69 @@ pub fn heard(phrases: &[Vec<String>], line: &str) -> Heard {
 
 /// The arguments a browser is given to use `microphone` as its microphone
 /// rather than a file of silence: the fake device is left off, so the real
-/// PulseAudio source is taken, and permission is granted as before.
+/// source is taken (PulseAudio's, named to the browser by `PULSE_SOURCE`;
+/// ALSA's pulse device, by name, where the browser speaks ALSA), and
+/// permission is granted as before.
 pub fn browser_arguments(microphone: &Microphone) -> Vec<String> {
     vec![
         "--use-fake-ui-for-media-stream".to_string(),
         format!("--alsa-input-device=pulse:{}", microphone.source()),
     ]
+}
+
+/// What answers a question put to the guest, given the transcript so far.
+pub type Answering<'a> = Box<dyn Fn(&str, &[crate::meeting::Line]) -> Result<String, String> + 'a>;
+
+/// What says an answer into the meeting.
+pub type Saying<'a> = Box<dyn Fn(&str) -> Result<(), String> + 'a>;
+
+/// A guest given a voice ([`crate::meeting::MeetingArgs::speak`]): the
+/// words that name it, its name as its lines are written, how a question
+/// put to it is answered, and how an answer is said into the meeting.
+pub struct Voice<'a> {
+    /// The phrases that name it ([`crate::listening::phrases_of`]).
+    pub phrases: Vec<Vec<String>>,
+    /// Its name, as the transcript writes its lines.
+    pub name: String,
+    /// What the agent answers a question with.
+    pub answer: Answering<'a>,
+    /// Says an answer into the meeting.
+    pub say: Saying<'a>,
+}
+
+impl std::fmt::Debug for Voice<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Voice")
+            .field("phrases", &self.phrases)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Voice<'_> {
+    /// What the guest does with `line`, just heard, the newest line of
+    /// `transcript`: nothing, unless it names the guest and asks something;
+    /// then the agent's answer, said into the meeting, is the guest's line
+    /// to write (or why it is not).
+    pub fn hear(
+        &self,
+        line: &str,
+        transcript: &[crate::meeting::Line],
+    ) -> Option<Result<String, String>> {
+        match heard(&self.phrases, line) {
+            Heard::Asked(question) => {
+                Some((self.answer)(&question, transcript).and_then(|answer| {
+                    let answer = answer.trim().to_string();
+                    if answer.is_empty() {
+                        return Err("the agent said nothing".into());
+                    }
+                    (self.say)(&answer)?;
+                    Ok(answer)
+                }))
+            }
+            Heard::NotForIt | Heard::NamedOnly => None,
+        }
+    }
 }
 
 #[cfg(test)]
