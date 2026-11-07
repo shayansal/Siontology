@@ -75,7 +75,7 @@ chacha20poly1305 = "0.10"
 # Nostr: BIP-340 signatures and secp256k1's ECDH (NIP-04, NIP-44), and
 # the ChaCha20 NIP-44 encrypts with.
 k256 = { version = "0.13.4", default-features = false, features = ["ecdh", "ecdsa", "schnorr", "std"] }
-chacha20 = "0.9"
+chacha20 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 
 # Randomness (rand_core 0.6 matches the FIPS crates)
