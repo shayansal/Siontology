@@ -131,6 +131,10 @@ pub struct Limits {
     pub processes: u32,
     /// CPUs (Docker).
     pub cpus: u32,
+    /// The most seconds a command in a terminal may be given
+    /// ([`crate::terminal`]), when the model asks for more than
+    /// [`Limits::timeout_secs`].
+    pub terminal_secs: u64,
 }
 
 impl Default for Limits {
@@ -143,6 +147,7 @@ impl Default for Limits {
             file_mib: 512,
             processes: 256,
             cpus: 2,
+            terminal_secs: 3_600,
         }
     }
 }

@@ -1166,6 +1166,8 @@ Options:
           A directory its commands may read, at its own path (a toolchain, say); with bubblewrap, its bin directory goes on the PATH. Repeat for more
       --sandbox-timeout <SECONDS>
           Seconds a command may run before it is stopped [default: 120]
+      --terminal-timeout <SECONDS>
+          The most seconds the agent may give a command in one of its terminals (terminal_run's timeout), for long builds and runs [default: 3600]
       --mcp <SERVER>
           Give it the reviewed tools of this MCP server (see `sion agent mcp add`). Repeat for more
       --storage
@@ -1440,6 +1442,8 @@ Options:
           A directory its commands may read, at its own path (a toolchain, say); with bubblewrap, its bin directory goes on the PATH. Repeat for more
       --sandbox-timeout <SECONDS>
           Seconds a command may run before it is stopped [default: 120]
+      --terminal-timeout <SECONDS>
+          The most seconds the agent may give a command in one of its terminals (terminal_run's timeout), for long builds and runs [default: 3600]
       --mcp <SERVER>
           Give it the reviewed tools of this MCP server. Repeat for more
       --storage

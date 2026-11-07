@@ -126,6 +126,44 @@ error: the workspace ~/.sion/.. and ~/.sion (wallets, sessions, skills) overlap:
 - The sandbox must work: a trivial command runs before the session starts.
 - Subagents get no shell of their parent's.
 
+### Terminals that stay open
+
+With `--shell` the agent also has terminals: shells kept running in the
+same sandbox between its calls, for work that a command at a time does
+not fit (a server and the tests that call it, a build of half an hour, a
+training run checked on now and then).
+
+- `terminal_run` runs a command in a terminal (`main` unless it names one
+  of up to four), opened at its first use, with bash if the sandbox has
+  it. The directory it moves to and the variables it exports carry over
+  to the next command: each command runs in a child shell that leaves its
+  working directory and exported variables for the terminal to read back,
+  so a shell variable it sets without `export`, a function or an alias
+  does not. A command reads no input (`/dev/null`) and is stopped after
+  `timeout` seconds, by default the sandbox's (`--sandbox-timeout`), at
+  most `--terminal-timeout` (an hour by default): `timeout` stops the
+  command, not the terminal. It returns what the command printed (cut at
+  64 KiB, its start and its end kept), its exit status and the directory
+  the terminal is in.
+- What a command leaves in the background (`server &`, `nohup make >
+  build.log 2>&1 &`) keeps running, with the network namespace and `/tmp`
+  later commands see, so a server started in one command answers the
+  next. What such a job prints between commands comes with the next
+  command's output, marked as printed meanwhile, or with `terminal_read`,
+  which waits up to a minute for something new.
+- `terminal_close` closes a terminal and stops what runs in it.
+
+A terminal lasts as long as the run that opened it: a session continued
+later starts new ones. A command that does not end even when `timeout`
+stops it (15 seconds after its time) closes its terminal, and the model is
+told. Interactive programs get no keyboard: a program that reads its
+input runs with input from a file or a here-document, or under a
+terminal multiplexer the sandbox has (`tmux new -d`, `tmux send-keys`,
+`tmux capture-pane -p`). A terminal has the sandbox's limits on memory,
+file size and output but no CPU-time limit, so that a background job may
+run as long as its terminal does; each command's time is held by its
+`timeout`.
+
 ## Changing code
 
 With a workspace, a session has tools for changing code, besides reading

@@ -105,6 +105,7 @@ pub mod session;
 pub mod skills;
 pub mod takeover;
 pub mod teach;
+pub mod terminal;
 pub mod tools;
 pub mod trace;
 pub mod verify;

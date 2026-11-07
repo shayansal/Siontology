@@ -10,6 +10,16 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Terminals that stay open
+
+- With `--shell`, the agent has terminals (`terminal_run`,
+  `terminal_read`, `terminal_close`): shells kept running in its sandbox
+  between calls. The directory and exported variables carry over, jobs
+  left in the background keep running (a server answers later commands),
+  what they print is read later, and a command may be given up to
+  `--terminal-timeout` seconds (an hour by default) without closing its
+  terminal.
+
 ### Riding out busy models
 
 - When every model is busy, limited or unreachable, a run pauses and asks

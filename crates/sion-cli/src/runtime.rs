@@ -1487,6 +1487,15 @@ impl Saved {
                 root: root.clone(),
                 sandbox: sandbox.clone(),
             });
+            // Terminals that stay open between its calls, for as long as
+            // this run lasts.
+            let terminals = std::sync::Arc::new(sion_agent::terminal::Terminals::new(
+                root.clone(),
+                sandbox.clone(),
+            ));
+            for tool in sion_agent::terminal::tools(terminals) {
+                tools.add_boxed(tool);
+            }
             for tool in sion_agent::code::checking(root, sandbox) {
                 tools.add_boxed(tool);
             }
@@ -2653,6 +2662,10 @@ pub struct ShellArgs {
     /// Seconds a command may run before it is stopped.
     #[arg(long, default_value_t = 120, value_name = "SECONDS")]
     pub sandbox_timeout: u64,
+    /// The most seconds the agent may give a command in one of its
+    /// terminals (terminal_run's timeout), for long builds and runs.
+    #[arg(long, default_value_t = 3_600, value_name = "SECONDS")]
+    pub terminal_timeout: u64,
 }
 
 impl ShellArgs {
@@ -2673,7 +2686,10 @@ impl ShellArgs {
                 self.sandbox_read,
                 self.sandbox_timeout,
             )
-            .map(Some),
+            .map(|mut sandbox| {
+                sandbox.limits.terminal_secs = self.terminal_timeout;
+                Some(sandbox)
+            }),
         }
     }
 }
