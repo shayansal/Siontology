@@ -96,6 +96,7 @@ fn setup(name: &str) -> (std::path::PathBuf, Arc<Devnet>, SharedLedger, Profile)
         hear: None,
         rules: None,
         rules_model: None,
+        embed: None,
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

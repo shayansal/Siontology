@@ -357,6 +357,19 @@ each stream of a PDF and each file of an archive inflates to 32 MiB at
 most, and all of a document to 128 MiB, so that a file made to break a
 reader runs out of room instead.
 
+### Searching documents
+
+A session with a workspace has `document_search`: the passages of its
+files that answer a question, ranked by the words they share with it
+(BM25) and, with `--embed` ([search by meaning](memory.md#searching-by-meaning)),
+by what they mean, the two fused. Text files are searched, and PDFs,
+Excel workbooks, Word documents and slide decks as the text read from
+them, in passages of 30 lines, each given with its file and first line
+(`notes/house.md:12`) to read on with `read_file`. Build output and
+dependencies (`target/`, `node_modules/`, `.git/`…) are left out, as are
+files over 32 MiB. A passage of a confidential file holds the session as
+reading the file would.
+
 ### Audio and video
 
 With `--hear` (on `sion agent run` and on profiles), a session with a

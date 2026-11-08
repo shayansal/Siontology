@@ -179,6 +179,7 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
         hear: None,
         rules: None,
         rules_model: None,
+        embed: None,
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

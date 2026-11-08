@@ -7,7 +7,8 @@
 //! - `memory_recall` answers for a subject and a relation with every atom
 //!   the committed log holds, proved complete against the index root on the
 //!   ledger, and lists what is recorded but not committed yet.
-//! - `memory_search` scans the local store by words.
+//! - `memory_search` ranks the local store by words (BM25) and, with an
+//!   embedder (`--embed`), by meaning as well, the two rankings fused.
 //! - `memory_forget` records a retraction: nothing is deleted, and recall
 //!   and search leave retracted atoms out.
 //!
@@ -225,6 +226,8 @@ pub struct Memory {
     pub acting: Acting,
     /// The agent's memory log.
     pub log: ObjectId,
+    /// What searches it by meaning, if anything does.
+    pub meaning: Option<crate::embeddings::Meaning>,
 }
 
 impl Memory {
@@ -474,29 +477,37 @@ impl Tool for Search {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "memory_search".into(),
-            description: "Search your memory by words in subjects, relations and values; newest \
-                          first, at most 20."
+            description: "Search your memory: subjects, relations and values ranked by the \
+                          words they share with yours and, where search by meaning is set up, \
+                          by what they mean, best first, at most 20. Each says how it was found."
                 .into(),
             input_schema: schema(json!({"words": {"type": "string"}}), &["words"]),
         }
     }
 
     fn effect(&self) -> Effect {
-        Effect::Read
+        // An embedder elsewhere is sent what is searched, and the query.
+        match &self.0.meaning {
+            Some(meaning) if !meaning.embedder.is_local() => Effect::External,
+            _ => Effect::Read,
+        }
     }
 
     fn call(&self, input: &Json, _key: &str) -> Outcome {
-        let words: Vec<String> = input["words"]
+        let query = input["words"]
             .as_str()
             .unwrap_or_default()
-            .split_whitespace()
-            .map(|w| w.to_lowercase())
-            .collect();
+            .trim()
+            .to_string();
         let result = (|| -> Result<Json, CliError> {
+            if query.is_empty() {
+                return Err(CliError::Usage("give the words to look for".into()));
+            }
             let store = self.0.store()?;
             let state = committed(self.0.acting.ledger.as_ref(), &self.0.log)?;
             let gone = withdrawn(&store);
-            let found: Vec<Json> = store
+            // Newest first, so that a tie goes to the newer.
+            let atoms: Vec<&MemoryAtom> = store
                 .log()
                 .atoms()
                 .iter()
@@ -504,14 +515,32 @@ impl Tool for Search {
                 .filter(|a| {
                     !gone.contains(&a.id()) && matches!(a.statement, Statement::Claim { .. })
                 })
-                .filter(|a| {
-                    let text = statement_text(&a.statement).to_lowercase();
-                    words.iter().all(|w| text.contains(w))
-                })
-                .take(20)
-                .map(|a| line(a, state.size))
                 .collect();
-            Ok(json!({"found": found}))
+            let texts: Vec<String> = atoms.iter().map(|a| statement_text(&a.statement)).collect();
+            let (ranked, note) = match &self.0.meaning {
+                Some(meaning) => meaning.search(&texts, &query, 20),
+                None => (
+                    sion_agent::meaning::search(&texts, &query, 20, None, 0.0).0,
+                    None,
+                ),
+            };
+            let found: Vec<Json> = ranked
+                .iter()
+                .map(|(i, _, how)| {
+                    let mut value = line(atoms[*i], state.size);
+                    value["found_by"] = json!(match how {
+                        sion_agent::meaning::Found::Words => "words",
+                        sion_agent::meaning::Found::Meaning => "meaning",
+                        sion_agent::meaning::Found::Both => "words and meaning",
+                    });
+                    value
+                })
+                .collect();
+            let mut answer = json!({"found": found});
+            if let Some(note) = note {
+                answer["note"] = json!(note);
+            }
+            Ok(answer)
         })();
         match result {
             Ok(value) => Outcome::ok(value.to_string()),

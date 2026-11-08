@@ -316,6 +316,7 @@ fn an_agent_searches_edits_and_answers_what_mcp_servers_ask() {
         hear: None,
         rules: None,
         rules_model: None,
+        embed: None,
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

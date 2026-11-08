@@ -88,6 +88,7 @@ pub mod judge;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mcp_input;
+pub mod meaning;
 pub mod model;
 pub mod oauth;
 pub mod permissions;

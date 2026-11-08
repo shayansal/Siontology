@@ -492,6 +492,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         runtime::Equipment {
             rules: Some("Refunds are at most 5 USD.".into()),
             rules_model: Some(judge),
+            embed: None,
             ..Default::default()
         },
     )

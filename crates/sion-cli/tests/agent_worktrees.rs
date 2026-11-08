@@ -401,6 +401,7 @@ fn subagents_change_code_in_worktrees_and_programs_and_hooks_work_around_calls()
         hear: None,
         rules: None,
         rules_model: None,
+        embed: None,
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

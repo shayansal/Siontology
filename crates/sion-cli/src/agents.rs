@@ -440,6 +440,14 @@ pub enum AgentCommand {
         /// first --model that is not a script).
         #[arg(long, value_name = "MODEL", requires = "rules")]
         rules_model: Option<String>,
+        /// Search by meaning as well as by words, in its memory and in the
+        /// documents of its workspace (`document_search`): openai:<model>,
+        /// voyage:<model>, local:<model> (a server on this machine that
+        /// speaks OpenAI's embeddings API, at SION_LOCAL_EMBED_URL, Ollama's
+        /// by default) or command:<program>. Vectors are kept, so a text is
+        /// embedded once.
+        #[arg(long, value_name = "SPEC")]
+        embed: Option<String>,
         /// A call that always waits for you, whatever the autonomy level
         /// says, as `allowed-tools` rules are written: ledger_pay,
         /// shell(git push:*). Commands that cannot be undone (a forced
@@ -1132,6 +1140,7 @@ pub fn run(
             hear,
             rules,
             rules_model,
+            embed,
             always_ask,
             no_ask,
             quarantine,
@@ -1217,6 +1226,7 @@ pub fn run(
                         None => None,
                     },
                     rules_model,
+                    embed,
                     verify,
                     verify_files,
                     shared_memory,

@@ -10,6 +10,18 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Search by meaning
+
+- `--embed <spec>` (on `sion agent run` and on profiles): the agent's
+  memory and its workspace's documents are searched by meaning as well as
+  by words, the two rankings fused by reciprocal rank; `openai:`,
+  `voyage:`, `local:` (a server on this machine, Ollama's by default) or
+  `command:` embedders, vectors kept on disk by model.
+- `memory_search` ranks by BM25 (and meaning) instead of requiring every
+  word, and says how each atom was found.
+- `document_search`: passages of the workspace's files, PDFs, workbooks,
+  Word documents and decks included, with their file and line.
+
 ### Asking, written rules, and calls that always ask
 
 - `ask_person`: the agent asks the person a question, answered then and

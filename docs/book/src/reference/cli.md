@@ -1216,6 +1216,8 @@ Options:
           A file of written rules (a refund policy, who may be sent what): each call that changes something is checked against them by a model first, and not made if it breaks one; a check that cannot be made holds the call too
       --rules-model <MODEL>
           The model that checks calls against the rules (by default the first --model that is not a script)
+      --embed <SPEC>
+          Search by meaning as well as by words, in its memory and in the documents of its workspace (`document_search`): openai:<model>, voyage:<model>, local:<model> (a server on this machine that speaks OpenAI's embeddings API, at SION_LOCAL_EMBED_URL, Ollama's by default) or command:<program>. Vectors are kept, so a text is embedded once
       --always-ask <RULE>
           A call that always waits for you, whatever the autonomy level says, as `allowed-tools` rules are written: ledger_pay, shell(git push:*). Commands that cannot be undone (a forced push, `rm -rf` of the workspace) always wait. Repeat for more
       --no-ask
@@ -1516,6 +1518,8 @@ Options:
           A file of written rules (a refund policy, who may be sent what): each call that changes something is checked against them by a model first, and not made if it breaks one. Read now: add the profile again after changing them
       --rules-model <MODEL>
           The model that checks calls against the rules (by default the first that is not a script)
+      --embed <SPEC>
+          Search by meaning as well as by words, in its memory and its workspace's documents: openai:<model>, voyage:<model>, local:<model> or command:<program>
       --always-ask <RULE>
           A call that always waits for a person, whatever the autonomy level says, as `allowed-tools` rules are written: ledger_pay, shell(git push:*). Repeat for more
       --quarantine

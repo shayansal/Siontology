@@ -912,7 +912,7 @@ pub fn glob(pattern: &str) -> Result<Regex, String> {
 /// The files under `start` (a directory of the workspace `root`), as paths
 /// relative to `start`, sorted, skipping [`SKIPPED`] directories below it
 /// and never following a symbolic link; at most [`MAX_VISITED`].
-fn walk(start: &Path) -> (Vec<(String, PathBuf)>, bool) {
+pub(crate) fn walk(start: &Path) -> (Vec<(String, PathBuf)>, bool) {
     let mut found = Vec::new();
     let mut stack = vec![start.to_path_buf()];
     let mut cut = false;

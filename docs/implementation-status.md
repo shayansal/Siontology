@@ -236,7 +236,11 @@ find read as text (web pages, PDFs through their fonts' maps, Excel
 workbooks, Word documents, slide decks; encrypted PDFs, PDFs with no map
 from their fonts to letters and ZIP64 archives are refused, and other
 formats are not read), pictures shown, and audio and videos written down
-by the operator's speech-to-text; a plan the agent
+by the operator's speech-to-text; search of the agent's memory and of
+its workspace's documents by words (BM25) and, with an embedder the
+operator names, by meaning, fused by reciprocal rank (tested with
+stand-in embedders on this machine; the providers' APIs are not exercised
+by the tests); a plan the agent
 keeps (`plan_update`), each step done only with how it was checked, and a
 reminder, once a run, of steps still open, or of code changed and not run
 since, when the agent says it is done (a reminder asks the model; it does

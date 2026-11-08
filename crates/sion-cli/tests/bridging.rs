@@ -379,6 +379,7 @@ fn profile(home: &Path, name: &str, agent: ObjectId, scripts: &[Value]) -> Profi
         hear: None,
         rules: None,
         rules_model: None,
+        embed: None,
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

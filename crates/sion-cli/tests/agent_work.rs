@@ -303,6 +303,7 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         hear: None,
         rules: None,
         rules_model: None,
+        embed: None,
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

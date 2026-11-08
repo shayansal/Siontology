@@ -191,7 +191,7 @@ fn env(name: &str) -> Option<String> {
 }
 
 /// A command line split on whitespace.
-fn command_line(text: &str) -> Result<Vec<String>, String> {
+pub(crate) fn command_line(text: &str) -> Result<Vec<String>, String> {
     let argv: Vec<String> = text.split_whitespace().map(str::to_string).collect();
     if argv.is_empty() {
         return Err("command: names no program".into());

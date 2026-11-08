@@ -79,7 +79,7 @@ The memory tools:
 |---|---|---|
 | `memory_remember` | write | Records a subject, a relation and a value, of a kind: fact, episode, procedure, preference, goal, plan or reflection |
 | `memory_recall` | read | With a relation, every atom of the committed log about the subject, proved complete, and what is recorded but not committed yet; without one, a local scan |
-| `memory_search` | read | Atoms whose subject, relation or value contain the words, newest first |
+| `memory_search` | read | Atoms ranked by the words their subject, relation and value share with the query (BM25) and, with `--embed`, by what they mean, the two fused; each says how it was found |
 | `memory_forget` | write | Retracts an atom with a reason: the atom stays in the log, and recall and search leave it out |
 | `memory_commit` | write | Commits the head now rather than when the session ends |
 | `session_search` | read | The agent's past sessions on this machine that match the words, each checked against the episode its memory log recorded |
@@ -87,6 +87,33 @@ The memory tools:
 Nothing the agent recorded can be rewritten once committed: the ledger
 refuses a head that does not extend the last one. That includes the
 episodes, so what an agent did, and the digest of how, stays on record.
+
+### Searching by meaning
+
+By words alone, a question put in other words than the memory's finds
+nothing: "when do we settle bills" does not share a word with "acme terms
+net 30". With `--embed` (on `sion agent run` and on profiles), the agent's
+memory and the documents of its workspace are also searched by meaning:
+each text and the query are turned into vectors by the embedder named, and
+ranked by how alike they are; the ranking by words and the ranking by
+meaning are fused by reciprocal rank (k = 60), so what both find comes
+first, and each hit says whether it was found by words, by meaning or by
+both.
+
+| `--embed` | What embeds |
+|---|---|
+| `openai:<model>` | OpenAI's embeddings API (`OPENAI_API_KEY`; `OPENAI_BASE_URL` for another that speaks it) |
+| `voyage:<model>` | Voyage AI's (`VOYAGE_API_KEY`), told which text is the query and which the documents |
+| `local:<model>` | A server on this machine that speaks OpenAI's embeddings API, at `SION_LOCAL_EMBED_URL` (Ollama's, `http://127.0.0.1:11434/v1`, by default) |
+| `command:<program>` | A program on this machine, given the texts as JSON lines on its standard input, which prints a vector for each, a line each |
+
+Vectors are kept under `$SION_HOME/agents/embeddings`, a file per model,
+keyed by each text's digest, so a text is embedded once; at most 512 new
+texts are embedded in one search, and the rest are ranked by words. If
+the embedder fails, the search is by words, and says so. Embedded by a
+service, what is searched and the query leave the machine, so the search
+reaches outside and waits for a person where the autonomy level says; a
+program or a server on this machine does not.
 
 ### Searching past sessions
 

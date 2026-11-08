@@ -143,6 +143,7 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
             project: None,
         },
         log,
+        meaning: None,
     };
     let tools = memory.tools();
     let tool = |name: &str| tools.iter().find(|t| t.spec().name == name).unwrap();
@@ -160,6 +161,60 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
     let atom = value["committed"][0]["id"].as_str().unwrap().to_string();
     let episode = tool("memory_search").call(&json!({"words": "episode trajectory"}), "k");
     assert!(episode.content.contains("session-"), "{episode:?}");
+    // By words, a question in other words finds nothing; by meaning, with
+    // an embedder on this machine (a program that knows that settling
+    // bills is about payment terms), it finds the terms.
+    let asked = json!({"words": "when do we settle bills"});
+    let by_words = tool("memory_search").call(&asked, "k");
+    assert!(!by_words.content.contains("net 30"), "{by_words:?}");
+    let script = home.join("embed.py");
+    std::fs::write(
+        &script,
+        "import sys, json\n\
+         money = {'pay', 'paid', 'invoice', 'invoices', 'terms', 'net', 'settle', 'bills', 'owe'}\n\
+         for line in sys.stdin:\n\
+         \x20   words = set(json.loads(line).lower().replace('\"', ' ').split())\n\
+         \x20   print(json.dumps([len(words & money), 0.1]))\n",
+    )
+    .unwrap();
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        let by_meaning = Memory {
+            acting: memory.acting.clone(),
+            log,
+            meaning: Some(sion_cli::embeddings::Meaning {
+                embedder: sion_cli::embeddings::parse(&format!(
+                    "command:python3 {}",
+                    script.display()
+                ))
+                .unwrap()
+                .embedder,
+                dir: home.join("embeddings"),
+            }),
+        };
+        let tools = by_meaning.tools();
+        let search = tools
+            .iter()
+            .find(|t| t.spec().name == "memory_search")
+            .unwrap();
+        assert_eq!(search.effect(), sion_agent::Effect::Read, "embedded here");
+        let found = search.call(&asked, "k");
+        let value: Value = serde_json::from_str(&found.content).unwrap();
+        let terms = value["found"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["kind"] != "episode" && f.to_string().contains("net 30"))
+            .unwrap_or_else(|| panic!("the terms are found by meaning: {value}"));
+        assert_eq!(terms["found_by"], "meaning", "{value}");
+        assert!(
+            std::fs::read_dir(home.join("embeddings")).unwrap().count() > 0,
+            "the vectors are kept"
+        );
+    }
 
     // A retraction hides the atom from recall and search; the log keeps it.
     let forgot = tool("memory_forget").call(
@@ -173,10 +228,8 @@ fn an_agent_remembers_learns_a_skill_and_recalls_with_proof() {
     );
     let value: Value = serde_json::from_str(&after.content).unwrap();
     assert!(value["committed"].as_array().unwrap().is_empty(), "{value}");
-    assert!(tool("memory_search")
-        .call(&json!({"words": "supplier-acme"}), "k")
-        .content
-        .contains("[]"));
+    let searched = tool("memory_search").call(&json!({"words": "supplier-acme terms"}), "k");
+    assert!(!searched.content.contains(&atom), "{searched:?}");
     let committed = tool("memory_commit").call(&json!({}), "k");
     assert!(committed.content.contains("Done"), "{committed:?}");
     assert_eq!(

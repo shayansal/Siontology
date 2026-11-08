@@ -997,6 +997,9 @@ pub struct Saved {
     /// The model that checks calls against the rules, if not the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules_model: Option<String>,
+    /// What searches by meaning, as the operator named it (`--embed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed: Option<String>,
 }
 
 /// What an agent knew of itself, as a session's system prompt keeps it
@@ -1538,6 +1541,16 @@ impl Saved {
             if let Some(spec) = &self.image_model {
                 tools.add(crate::files::ImageMaker::new(spec, root)?);
             }
+            // Its documents, searched by words and, if set up, by meaning.
+            tools.add(sion_agent::meaning::DocumentSearch {
+                root: root.clone(),
+                embedder: match &self.embed {
+                    Some(spec) => Some(crate::embeddings::parse(spec)?.embedder),
+                    None => None,
+                },
+                cache_dir: self.embed.as_ref().map(|_| crate::embeddings::dir()),
+                confidential: self.confidential_files.clone(),
+            });
             // What its audio and videos say, heard as the operator named.
             if let Some(spec) = &self.hear {
                 tools.add(crate::transcribe::Transcribe {
@@ -1677,9 +1690,14 @@ impl Saved {
                 tools.add_boxed(tool);
             }
         }
+        let meaning = match &self.embed {
+            Some(spec) => Some(crate::embeddings::parse(spec)?),
+            None => None,
+        };
         let memory = self.memory.map(|log| crate::agent_memory::Memory {
             acting: acting.clone(),
             log,
+            meaning: meaning.clone(),
         });
         if let Some(memory) = &memory {
             for tool in memory.tools() {
@@ -2973,6 +2991,8 @@ pub struct Equipment {
     pub rules: Option<String>,
     /// The model that checks calls against them ([`Saved::rules_model`]).
     pub rules_model: Option<String>,
+    /// What searches by meaning ([`Saved::embed`]).
+    pub embed: Option<String>,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
@@ -3062,6 +3082,7 @@ pub fn start_watched(
         ask,
         rules,
         rules_model,
+        embed,
         verify,
         verify_files,
         shared_memory,
@@ -3248,6 +3269,7 @@ pub fn start_watched(
         hear,
         rules,
         rules_model,
+        embed,
     };
     saved.from_outside(hooks.outside);
     saved.hold_confidential(hooks.confidential || confidential);

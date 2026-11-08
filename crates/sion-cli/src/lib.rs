@@ -50,6 +50,7 @@ pub mod doctor;
 pub mod documents;
 pub mod drafts;
 pub mod email;
+pub mod embeddings;
 pub mod erc8004;
 pub mod error;
 pub mod feishu;

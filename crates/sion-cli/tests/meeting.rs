@@ -148,6 +148,7 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
         hear: None,
         rules: None,
         rules_model: None,
+        embed: None,
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

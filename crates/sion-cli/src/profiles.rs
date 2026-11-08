@@ -116,6 +116,9 @@ pub struct Profile {
     /// The model that checks calls against the rules, if not the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules_model: Option<String>,
+    /// What searches by meaning in its sessions (`--embed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed: Option<String>,
     /// Calls that always wait for a person in its sessions, whatever the
     /// autonomy level says (`ledger_pay`, `shell(git push:*)`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -228,6 +231,7 @@ impl Profile {
             ask: false,
             rules: self.rules.clone(),
             rules_model: self.rules_model.clone(),
+            embed: self.embed.clone(),
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
@@ -593,6 +597,11 @@ pub enum ProfileCommand {
         /// first that is not a script).
         #[arg(long, value_name = "MODEL", requires = "rules")]
         rules_model: Option<String>,
+        /// Search by meaning as well as by words, in its memory and its
+        /// workspace's documents: openai:<model>, voyage:<model>,
+        /// local:<model> or command:<program>.
+        #[arg(long, value_name = "SPEC")]
+        embed: Option<String>,
         /// A call that always waits for a person, whatever the autonomy
         /// level says, as `allowed-tools` rules are written: ledger_pay,
         /// shell(git push:*). Repeat for more.
@@ -705,6 +714,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             hear,
             rules,
             rules_model,
+            embed,
             always_ask,
             quarantine,
             shared_memory,
@@ -792,6 +802,13 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                     None => None,
                 },
                 rules_model,
+                embed: match embed {
+                    Some(spec) => {
+                        crate::embeddings::parse(&spec)?;
+                        Some(spec)
+                    }
+                    None => None,
+                },
                 always_ask: crate::runtime::checked_rules(always_ask)?,
                 quarantine,
                 shared_memory,
