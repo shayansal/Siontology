@@ -90,6 +90,7 @@ impl Written {
             task: self.task.trim().to_string(),
             tools: self.tools.clone(),
             checks: self.checks.clone(),
+            person: None,
         }
     }
 }

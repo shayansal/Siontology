@@ -430,6 +430,26 @@ pub enum AgentCommand {
         /// command:<program>.
         #[arg(long, value_name = "SPEC")]
         hear: Option<String>,
+        /// A file of written rules (a refund policy, who may be sent what):
+        /// each call that changes something is checked against them by a
+        /// model first, and not made if it breaks one; a check that cannot
+        /// be made holds the call too.
+        #[arg(long, value_name = "FILE")]
+        rules: Option<std::path::PathBuf>,
+        /// The model that checks calls against the rules (by default the
+        /// first --model that is not a script).
+        #[arg(long, value_name = "MODEL", requires = "rules")]
+        rules_model: Option<String>,
+        /// A call that always waits for you, whatever the autonomy level
+        /// says, as `allowed-tools` rules are written: ledger_pay,
+        /// shell(git push:*). Commands that cannot be undone (a forced
+        /// push, `rm -rf` of the workspace) always wait. Repeat for more.
+        #[arg(long = "always-ask", value_name = "RULE")]
+        always_ask: Vec<String>,
+        /// Give it no `ask_person`: it decides what it cannot ask, and says
+        /// what it assumed.
+        #[arg(long)]
+        no_ask: bool,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -1110,6 +1130,10 @@ pub fn run(
             no_plan,
             no_change_check,
             hear,
+            rules,
+            rules_model,
+            always_ask,
+            no_ask,
             quarantine,
             verify,
             verify_files,
@@ -1143,6 +1167,10 @@ pub fn run(
                 autonomy: autonomy.parse().map_err(CliError::Usage)?,
                 skill_approvals: !no_skill_approvals,
                 quarantine,
+                always_ask: crate::runtime::checked_rules(always_ask)?
+                    .iter()
+                    .filter_map(|rule| sion_agent::permissions::ToolRule::parse(rule).ok())
+                    .collect(),
                 ..sion_agent::Policy::default()
             };
             let system = system
@@ -1183,6 +1211,12 @@ pub fn run(
                     no_plan,
                     no_change_check,
                     hear,
+                    ask: !no_ask,
+                    rules: match &rules {
+                        Some(path) => Some(crate::runtime::read_rules(path)?),
+                        None => None,
+                    },
+                    rules_model,
                     verify,
                     verify_files,
                     shared_memory,

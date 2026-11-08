@@ -193,6 +193,61 @@ it never goes past what the autonomy level refuses
 the same, `/allowed` lists what the session may do without asking, and
 `/allowed off` withdraws it.
 
+### Calls that always wait
+
+Some calls wait for a person whatever the autonomy level, a skill or an
+allowance says, unless a person approved that very call:
+
+- Commands that cannot be undone, in the shell and in terminals: a push
+  that rewrites or deletes what a remote holds (`git push --force`,
+  `--delete`, `+branch`, `:branch`), `git reset --hard`, `git clean -f`,
+  `git branch -D`, `rm -rf` of the workspace, a home or the root, `dd` onto
+  a device, `mkfs`, `shred`, `wipefs`, SQL that drops or empties a table
+  (`DELETE` without `WHERE`), `terraform destroy`, `kubectl delete`, a
+  repository or a bucket deleted. What is quoted as text (`echo 'git push
+  --force'`) is not a command run. The list is of commands: a script that
+  deletes files is not seen in it.
+- What the operator names with `--always-ask <rule>` (on `sion agent run`
+  and on profiles, repeated for more), a rule as `allowed-tools` writes
+  it: `ledger_pay`, `shell(git push:*)`, `send_email`.
+
+The call's wait says why: `it cannot be undone: it rewrites or deletes
+what a remote holds`, or `the operator has ledger_pay always wait for a
+person`.
+
+### Written rules
+
+`--rules <file>` (on `sion agent run`, and on profiles, which keep the
+rules as they were when the profile was added) gives a session the
+operator's rules in words: a refund policy, who may be sent what. Before
+each call that changes something (a write, an external call, a payment)
+is made, a model checks it against them, told the rules, the task, what
+the person has said since, word for word, and the call with its input,
+and answers `{"allowed": …, "rule": …, "why": …}`. A call it finds against
+a rule is not made: the agent is told `not made: it breaks the operator's
+rules: "Refunds are at most 5 USD." (9 USD is more)`, and does otherwise
+or asks. A check that cannot be made (the model fails, its answer is not
+clear, the budget leaves no room) holds the call too. The checking model
+is `--rules-model`, or the session's first that is not a script; what it
+uses counts against the run's budget, and each check is a step of the
+trace. Calls that only read are not checked. A model's reading of rules
+is a model's: it can be wrong both ways, which is why the autonomy level
+and the charter bound what any call can do.
+
+### Asking you
+
+A session started from the command line or a chat has `ask_person`: the
+agent asks you a question when the task needs what only you can say (a
+choice of yours, a detail that is missing), with choices if there are a
+few. In a chat or a conversation in the terminal, the question is put to
+you then and there and your answer comes back to the agent as you said
+it; otherwise the run ends with it, `session …: asks you: Which size? (S /
+M / L); answer with sion agent continue … --say <answer>`, and goes on
+from your answer. What you answer is kept word for word in every summary
+([What a model is sent](models.md#what-a-model-is-sent)). Sessions
+started by a schedule, for work or as a graph's node have no one to ask
+and no such tool; `--no-ask` leaves it out of a run.
+
 `sion agent continue <session> --say "…"` tells a finished session more
 and lets it go on. `sion agent sessions` lists the sessions on this
 machine; `sion agent trace <session>` prints one as a single JSON line in

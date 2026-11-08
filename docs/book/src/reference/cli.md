@@ -1212,6 +1212,14 @@ Options:
           Let it finish after changing code without running anything since: otherwise, with a shell and no --verify, it is asked once to check the change first
       --hear <SPEC>
           What hears the workspace's audio and videos, for `transcribe` (a video's sound is taken out in the sandbox, with --shell): openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>
+      --rules <FILE>
+          A file of written rules (a refund policy, who may be sent what): each call that changes something is checked against them by a model first, and not made if it breaks one; a check that cannot be made holds the call too
+      --rules-model <MODEL>
+          The model that checks calls against the rules (by default the first --model that is not a script)
+      --always-ask <RULE>
+          A call that always waits for you, whatever the autonomy level says, as `allowed-tools` rules are written: ledger_pay, shell(git push:*). Commands that cannot be undone (a forced push, `rm -rf` of the workspace) always wait. Repeat for more
+      --no-ask
+          Give it no `ask_person`: it decides what it cannot ask, and says what it assumed
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --verify <COMMAND>
@@ -1504,6 +1512,12 @@ Options:
           Let it finish after changing code without running anything since
       --hear <SPEC>
           What hears its workspace's audio and videos (`transcribe`), as voice notes are heard: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>
+      --rules <FILE>
+          A file of written rules (a refund policy, who may be sent what): each call that changes something is checked against them by a model first, and not made if it breaks one. Read now: add the profile again after changing them
+      --rules-model <MODEL>
+          The model that checks calls against the rules (by default the first that is not a script)
+      --always-ask <RULE>
+          A call that always waits for a person, whatever the autonomy level says, as `allowed-tools` rules are written: ledger_pay, shell(git push:*). Repeat for more
       --quarantine
           Hold what tools return from outside out of the conversation: the agent reads it through a reader without tools, its answers held to a schema, and the session is not tainted by values
       --shared-memory <LOG>

@@ -538,6 +538,10 @@ impl Tool for RunTool {
         false
     }
 
+    fn irreversible(&self, input: &Value) -> Option<String> {
+        crate::policy::irreversible_command(input["command"].as_str().unwrap_or_default())
+    }
+
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         let command = input["command"].as_str().unwrap_or_default();
         if command.trim().is_empty() {

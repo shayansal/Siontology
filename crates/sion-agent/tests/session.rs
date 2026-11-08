@@ -2802,3 +2802,224 @@ fn the_files_a_patch_changes_are_known_and_code_is_told_from_prose() {
         assert!(!is_code(prose), "{prose}");
     }
 }
+
+/// A person who answers every question with `reply`, and keeps them.
+struct Answering {
+    reply: Option<String>,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl sion_agent::mcp_input::Asker for Answering {
+    fn ask(&self, question: &str) -> Option<String> {
+        self.asked.lock().unwrap().push(question.to_string());
+        self.reply.clone()
+    }
+}
+
+#[test]
+fn an_agent_asks_the_person_and_hears_them_now_or_when_they_answer() {
+    let (order, ordered) = counted("order", Effect::Write, |_| Outcome::ok("ordered"));
+    let mut tools = Toolbox::new();
+    tools.add(order);
+    let script = || {
+        Scripted::new("m")
+            .calls(
+                "ask_person",
+                json!({"question": "Which size?", "choices": ["S", "M", "L"]}),
+            )
+            .calls("order", json!({"size": "L"}))
+            .says("Ordered a large one.")
+    };
+
+    // No one there now: the run ends with the question.
+    let model = script();
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.ask = true;
+    let mut state = State::start("s-ask", "Order me a shirt", &rt.limits);
+    assert!(model.requests().is_empty());
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Asked {
+            question: "Which size? (S / M / L)".into()
+        }
+    );
+    assert!(model.requests()[0]
+        .tools
+        .iter()
+        .any(|t| t.name == "ask_person"));
+    assert_eq!(ordered.load(Ordering::SeqCst), 0);
+    // They answer, and the run goes on from the question.
+    state.tell("Large, please.", &rt.limits);
+    assert_eq!(
+        rt.run(&mut state),
+        Ended::Done {
+            text: "Ordered a large one.".into()
+        }
+    );
+    assert_eq!(ordered.load(Ordering::SeqCst), 1);
+    assert_eq!(state.told, vec!["Large, please."]);
+    every_result_answers_a_call(&state);
+
+    // Someone there: answered then and there.
+    let model = script();
+    let person = Answering {
+        reply: Some("L".into()),
+        asked: std::sync::Mutex::new(Vec::new()),
+    };
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.ask = true;
+    rt.extras.asker = Some(&person);
+    let mut state = State::start("s-ask-now", "Order me a shirt", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert_eq!(
+        *person.asked.lock().unwrap(),
+        vec!["Which size? (S / M / L)"]
+    );
+    assert!(matches!(
+        &model.requests()[1].messages[2].content[0],
+        Block::ToolResult { content, .. } if content == "The person answered: L"
+    ));
+    assert_eq!(state.told, vec!["L"]);
+
+    // Without asking allowed, there is no such tool.
+    let model = script();
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("s-no-ask", "Order me a shirt", &rt.limits);
+    rt.run(&mut state);
+    assert!(!model.requests()[0]
+        .tools
+        .iter()
+        .any(|t| t.name == "ask_person"));
+}
+
+/// A tool whose calls with `"force": true` cannot be undone.
+struct Pushing;
+
+impl sion_agent::Tool for Pushing {
+    fn spec(&self) -> sion_agent::ToolSpec {
+        sion_agent::ToolSpec {
+            name: "push".into(),
+            description: "Push the branch.".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    fn effect(&self) -> Effect {
+        Effect::Write
+    }
+
+    fn call(&self, _input: &Value, _key: &str) -> Outcome {
+        Outcome::ok("pushed")
+    }
+
+    fn irreversible(&self, input: &Value) -> Option<String> {
+        (input["force"] == true).then(|| "it rewrites the remote's history".to_string())
+    }
+}
+
+#[test]
+fn what_cannot_be_undone_or_the_operator_names_waits_for_a_person_at_any_level() {
+    let (pay, paid) = counted("pay", Effect::Spend, |_| Outcome::ok("paid"));
+    let mut tools = Toolbox::new();
+    tools.add(pay);
+    tools.add(Pushing);
+    let model = Scripted::new("m")
+        .calls("push", json!({"force": false}))
+        .calls("push", json!({"force": true}))
+        .says("Pushed.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L6);
+    let mut state = State::start("s-undo", "Push it", &rt.limits);
+    let ended = rt.run(&mut state);
+    let Ended::NeedsApproval { reason, input, .. } = &ended else {
+        panic!("{ended:?}");
+    };
+    assert_eq!(input, &json!({"force": true}));
+    assert!(
+        reason.contains("it cannot be undone: it rewrites the remote's history"),
+        "{reason}"
+    );
+
+    // A payment the operator always has asked about waits at L6 too.
+    let model = Scripted::new("m")
+        .calls("pay", json!({"to": "bob", "amount": "5"}))
+        .says("Paid.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L6);
+    rt.policy.always_ask = vec![sion_agent::permissions::ToolRule::parse("pay").unwrap()];
+    let mut state = State::start("s-always", "Pay bob", &rt.limits);
+    let ended = rt.run(&mut state);
+    let Ended::NeedsApproval { reason, .. } = &ended else {
+        panic!("{ended:?}");
+    };
+    assert!(
+        reason.contains("the operator has pay always wait for a person"),
+        "{reason}"
+    );
+    assert_eq!(paid.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_change_against_the_operators_written_rules_is_not_made() {
+    let (refund, refunded) = counted("refund", Effect::Write, |_| Outcome::ok("refunded"));
+    let (look, _) = counted("look", Effect::Read, |_| Outcome::ok("order 7: 80 USD"));
+    let mut tools = Toolbox::new();
+    tools.add(refund);
+    tools.add(look);
+    let model = Scripted::new("m")
+        .calls("look", json!({"order": 7}))
+        .calls("refund", json!({"order": 7, "amount": 80}))
+        .calls("refund", json!({"order": 7, "amount": 40}))
+        .says("Refunded 40 USD, the most allowed.");
+    let judge = Scripted::new("judge")
+        .says(r#"{"allowed": false, "rule": "Never refund more than 50 USD.", "why": "the refund is 80 USD"}"#)
+        .says(r#"{"allowed": true, "rule": "", "why": "40 USD is within the limit"}"#);
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L6);
+    rt.extras.rules = Some(sion_agent::session::Rules {
+        text: "Never refund more than 50 USD.",
+        judge: &judge,
+    });
+    let mut state = State::start("s-rules", "Refund order 7", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    // The reading was not checked; the first refund was refused, the second
+    // made.
+    let asked = judge.requests();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0].system, sion_agent::session::RULES_SYSTEM);
+    let shown = asked[0].messages[0].text();
+    assert!(
+        shown.contains("The operator's rules:\nNever refund more than 50 USD."),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(r#"refund with the input {"amount":80,"order":7}"#),
+        "{shown}"
+    );
+    assert_eq!(refunded.load(Ordering::SeqCst), 1);
+    let refused = &model.requests()[2].messages[4].content[0];
+    assert!(
+        matches!(refused, Block::ToolResult { content, is_error: true, .. }
+            if content.contains("not made: it breaks the operator's rules: \"Never refund more than 50 USD.\" (the refund is 80 USD)")),
+        "{refused:?}"
+    );
+    assert!(state
+        .steps
+        .iter()
+        .any(|s| s.outcome.as_deref() == Some("rules")));
+
+    // A check that cannot be made holds the call.
+    let model = Scripted::new("m")
+        .calls("refund", json!({"order": 7, "amount": 10}))
+        .says("Could not refund.");
+    let judge = Scripted::new("judge").fails(ModelError::Busy("HTTP 503".into()));
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L6);
+    rt.extras.rules = Some(sion_agent::session::Rules {
+        text: "Never refund more than 50 USD.",
+        judge: &judge,
+    });
+    let mut state = State::start("s-rules-down", "Refund order 7", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { .. }));
+    assert_eq!(
+        refunded.load(Ordering::SeqCst),
+        1,
+        "the second run refunded nothing"
+    );
+}

@@ -28,6 +28,14 @@
 //! else, at autonomy L6: stand-ins change nothing, so nothing waits for a
 //! person unless an answer marked `outside` taints the session. What the
 //! agent did is what it asked for: every tool call the model made, in order.
+//!
+//! A case may have a person the agent works with (`person`), as τ-bench
+//! has a simulated user: what they want and know, told to a model that
+//! plays them, or their replies written out. The agent may ask them
+//! (`ask_person`), and after each answer it gives they may say more, until
+//! they are satisfied (the model answers `###DONE###`), their replies or
+//! turns run out, or the agent stops; the checks are of the whole
+//! conversation.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -81,6 +89,137 @@ pub struct Case {
     pub tools: Vec<Fixture>,
     /// What must hold of the run.
     pub checks: Vec<Check>,
+    /// The person the agent works with in the case, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<Person>,
+}
+
+/// A person the agent works with in a case: played by a model told who
+/// they are, what they want and what they know, or by replies written out.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Person {
+    /// Who they are, what they want, what they know and will say, as the
+    /// model that plays them is told.
+    #[serde(default)]
+    pub instructions: String,
+    /// What they say, in turn, instead of a model's words: to each question
+    /// the agent asks them, and after each answer it gives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<String>,
+    /// The most times they speak after the task.
+    #[serde(default = "default_turns")]
+    pub turns: u32,
+}
+
+fn default_turns() -> u32 {
+    5
+}
+
+/// What the model playing a case's person is told.
+pub const PERSON_SYSTEM: &str = "You play a person working with an AI agent, to test the agent. \
+     Stay in the part: say only what the person would say, briefly, one message at a time, as \
+     they would type it. Give what the agent asks for when the person knows it; never make up \
+     what you were not told; never do the agent's work for it. When what the person wanted is \
+     done, or the agent says it cannot be done, answer exactly ###DONE###.";
+
+/// What the person says when they are satisfied.
+pub const DONE: &str = "###DONE###";
+
+/// A case's person as played in a run: their replies written out, then the
+/// model's, and the conversation so far.
+pub struct Played<'a> {
+    person: &'a Person,
+    model: Option<&'a dyn Model>,
+    task: String,
+    state: std::sync::Mutex<PlayedState>,
+}
+
+#[derive(Default)]
+struct PlayedState {
+    heard: Vec<(bool, String)>,
+    next_reply: usize,
+    spoke: u32,
+}
+
+impl std::fmt::Debug for Played<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Played").field("task", &self.task).finish()
+    }
+}
+
+impl<'a> Played<'a> {
+    /// `person`, given the task `task`, played by `model` where their
+    /// replies are not written out.
+    pub fn new(person: &'a Person, model: Option<&'a dyn Model>, task: &str) -> Played<'a> {
+        Played {
+            person,
+            model,
+            task: task.to_string(),
+            state: std::sync::Mutex::new(PlayedState::default()),
+        }
+    }
+
+    /// What the person says to what the agent said (`said`): none once they
+    /// are satisfied, have nothing more to say, or have spoken their turns.
+    pub fn reply(&self, said: &str) -> Option<String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.heard.push((true, said.trim().to_string()));
+        if state.spoke >= self.person.turns {
+            return None;
+        }
+        let reply = if let Some(reply) = self.person.replies.get(state.next_reply) {
+            state.next_reply += 1;
+            reply.clone()
+        } else if let (Some(model), false) =
+            (self.model, self.person.instructions.trim().is_empty())
+        {
+            let dialogue: Vec<String> = state
+                .heard
+                .iter()
+                .map(|(agent, text)| {
+                    format!("{}: {text}", if *agent { "The agent" } else { "You" })
+                })
+                .collect();
+            let request = crate::model::Request {
+                system: PERSON_SYSTEM.to_string(),
+                messages: vec![crate::model::Message::user(format!(
+                    "Who you are and what you want:\n{}\n\nWhat you first asked the agent:\n{}\n\nThe conversation since:\n{}\n\nWhat do you say now?",
+                    self.person.instructions.trim(),
+                    self.task,
+                    dialogue.join("\n")
+                ))],
+                tools: Vec::new(),
+                max_tokens: 500,
+                images: std::collections::BTreeMap::new(),
+            };
+            let response = model.complete(&request).ok()?;
+            crate::model::Message {
+                role: crate::model::Role::Assistant,
+                content: response.content,
+            }
+            .text()
+        } else {
+            return None;
+        };
+        let reply = reply.trim().to_string();
+        if reply.is_empty() || reply.contains(DONE) {
+            return None;
+        }
+        state.spoke += 1;
+        state.heard.push((false, reply.clone()));
+        Some(reply)
+    }
+
+    /// How many times the person spoke.
+    pub fn spoke(&self) -> u32 {
+        self.state.lock().map(|s| s.spoke).unwrap_or_default()
+    }
+}
+
+impl crate::mcp_input::Asker for Played<'_> {
+    fn ask(&self, question: &str) -> Option<String> {
+        self.reply(question)
+    }
 }
 
 /// A stand-in tool: it answers from a list and changes nothing.
@@ -158,6 +297,8 @@ pub enum Check {
     AtMostCalls(usize),
     /// The run stopped to ask a person before calling this tool.
     Asked(String),
+    /// The agent asked the person something (`ask_person`).
+    AskedPerson,
 }
 
 /// The digest of an evaluation set's exact bytes.
@@ -386,6 +527,13 @@ pub fn check(check: &Check, calls: &[(String, Value)], ended: &Ended) -> Option<
             Ended::NeedsApproval { tool: asked, .. } if asked == tool => None,
             _ => Some(format!("the run did not stop to ask before calling {tool}")),
         },
+        Check::AskedPerson => {
+            if calls.iter().any(|(n, _)| n == crate::session::ASK_PERSON) {
+                None
+            } else {
+                Some("the agent asked the person nothing".into())
+            }
+        }
     }
 }
 
@@ -396,6 +544,19 @@ pub fn run_case(
     models: &[&dyn Model],
     system: &str,
     limits: &Limits,
+) -> CaseRun {
+    run_case_playing(case, skills_root, models, system, limits, None)
+}
+
+/// [`run_case`], the case's person (if it has one whose replies are not
+/// all written out) played by `person`.
+pub fn run_case_playing(
+    case: &Case,
+    skills_root: &Path,
+    models: &[&dyn Model],
+    system: &str,
+    limits: &Limits,
+    person: Option<&dyn Model>,
 ) -> CaseRun {
     let mut tools = Toolbox::new();
     tools.add(skills::SkillRead {
@@ -410,22 +571,41 @@ pub fn run_case(
     } else {
         format!("{system}\n\n{}", catalog.trim_end())
     };
-    run_case_with(case, tools, models, &system, limits)
+    run_case_with_person(case, tools, models, &system, limits, person)
 }
 
 /// Runs one case with `tools` besides its stand-ins, and `system` as it
 /// is: the run, its calls, and the checks that did not hold.
 pub fn run_case_with(
     case: &Case,
+    tools: Toolbox,
+    models: &[&dyn Model],
+    system: &str,
+    limits: &Limits,
+) -> CaseRun {
+    run_case_with_person(case, tools, models, system, limits, None)
+}
+
+/// [`run_case_with`], the case's person played by `person` where their
+/// replies are not written out: they answer the agent's questions, and
+/// speak again after each answer it gives, until they are satisfied or
+/// have no more to say.
+pub fn run_case_with_person(
+    case: &Case,
     mut tools: Toolbox,
     models: &[&dyn Model],
     system: &str,
     limits: &Limits,
+    person: Option<&dyn Model>,
 ) -> CaseRun {
     for fixture in &case.tools {
         tools.add(FixtureTool(fixture.clone()));
     }
     let system = system.to_string();
+    let played = case
+        .person
+        .as_ref()
+        .map(|p| Played::new(p, person, &case.task));
     let runtime = Runtime {
         models: models.to_vec(),
         tools: &tools,
@@ -433,7 +613,10 @@ pub fn run_case_with(
             autonomy: Autonomy::L6,
             ..Policy::default()
         },
-        limits: limits.clone(),
+        limits: Limits {
+            ask: limits.ask || played.is_some(),
+            ..limits.clone()
+        },
         system: system.clone(),
         now: &|| 0,
         stopped: &|| false,
@@ -443,10 +626,28 @@ pub fn run_case_with(
         verify: None,
         code: None,
         hooks: None,
-        extras: Default::default(),
+        extras: crate::session::Extras {
+            asker: played.as_ref().map(|p| p as &dyn crate::mcp_input::Asker),
+            ..Default::default()
+        },
     };
     let mut state = State::start(&format!("eval-{}", case.id), &case.task, limits);
-    let ended = runtime.run(&mut state);
+    let mut ended = runtime.run(&mut state);
+    // The person speaks again after each answer, until they are done.
+    if let Some(played) = &played {
+        loop {
+            let said = match &ended {
+                Ended::Done { text } => text.clone(),
+                Ended::Asked { question } => question.clone(),
+                _ => break,
+            };
+            let Some(reply) = played.reply(&said) else {
+                break;
+            };
+            state.tell(&reply, &runtime.limits);
+            ended = runtime.run(&mut state);
+        }
+    }
     let calls = calls_of(&state);
     let failures: Vec<String> = case
         .checks
@@ -512,7 +713,20 @@ pub fn evaluate(
     for case in &set.cases {
         let fresh = models()?;
         let refs: Vec<&dyn Model> = fresh.iter().map(|m| m.as_ref()).collect();
-        runs.push(run_case(case, skills_root, &refs, set.system(), limits));
+        // A case's person is played by a model of its own: the first of
+        // another set of fresh ones.
+        let playing = match &case.person {
+            Some(person) if !person.instructions.trim().is_empty() => models()?,
+            _ => Vec::new(),
+        };
+        runs.push(run_case_playing(
+            case,
+            skills_root,
+            &refs,
+            set.system(),
+            limits,
+            playing.first().map(|m| m.as_ref()),
+        ));
     }
     Ok(Report { runs })
 }
@@ -570,6 +784,69 @@ mod tests {
         let root = std::env::temp_dir().join(format!("sion-evals-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         root
+    }
+
+    #[test]
+    fn a_case_s_person_answers_questions_and_speaks_until_done() {
+        let case: Case = serde_json::from_value(json!({
+            "id": "order-shirt",
+            "task": "Order me a shirt.",
+            "tools": [{"name": "order", "effect": "write", "otherwise": "ordered"}],
+            "person": {"replies": ["Large, please.", "Blue."], "instructions": ""},
+            "checks": ["asked_person", {"called": {"tool": "order", "with": {"size": "L", "colour": "blue"}}}, "done"]
+        }))
+        .unwrap();
+        let agent = Scripted::from_json(
+            "agent",
+            r#"[
+              {"call": "ask_person", "input": {"question": "Which size?", "choices": ["S", "M", "L"]}},
+              {"when": "Large", "say": "Which colour?"},
+              {"when": "Blue", "call": "order", "input": {"size": "L", "colour": "blue"}},
+              {"say": "Ordered a large blue shirt."}
+            ]"#,
+        )
+        .unwrap();
+        let run = run_case_with(&case, Toolbox::new(), &[&agent], "", &Limits::default());
+        assert!(run.passed, "{:?}", run.failures);
+        // The question was answered then and there; the person's next word
+        // came after the agent's answer, and then they had no more to say.
+        let first = &agent.requests()[1];
+        let answered = first.messages.iter().flat_map(|m| &m.content).any(|b| {
+            matches!(b, crate::model::Block::ToolResult { content, .. }
+                if content == "The person answered: Large, please.")
+        });
+        assert!(answered, "{:?}", first.messages);
+        assert_eq!(run.state.told, vec!["Large, please.", "Blue."]);
+        assert_eq!(run.answer(), "Ordered a large blue shirt.");
+
+        // A person played by a model, who is done when the model says so.
+        let case: Case = serde_json::from_value(json!({
+            "id": "greet",
+            "task": "Say hello.",
+            "person": {"instructions": "You want a greeting, nothing more."},
+            "checks": ["done", {"says": "hello"}]
+        }))
+        .unwrap();
+        let agent = Scripted::new("agent").says("Hello!").says("Hello again!");
+        let person = Scripted::new("person").says("###DONE###");
+        let run = run_case_with_person(
+            &case,
+            Toolbox::new(),
+            &[&agent],
+            "",
+            &Limits::default(),
+            Some(&person),
+        );
+        assert!(run.passed, "{:?}", run.failures);
+        assert_eq!(run.answer(), "Hello!");
+        let asked = &person.requests()[0];
+        assert_eq!(asked.system, PERSON_SYSTEM);
+        assert!(asked.messages[0].text().contains("The agent: Hello!"));
+        // Without a question asked, `asked_person` fails.
+        assert_eq!(
+            check(&Check::AskedPerson, &run.calls, &run.ended),
+            Some("the agent asked the person nothing".into())
+        );
     }
 
     #[test]

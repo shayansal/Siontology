@@ -243,7 +243,14 @@ since, when the agent says it is done (a reminder asks the model; it does
 not make the work right); a system prompt that stays the same through a session,
 for providers' caches, and the tokens read from and written to those
 caches counted; a check of the task, if given, run each time the model
-says it is done, and an end for a task it cannot complete; a kill switch;
+says it is done, and an end for a task it cannot complete; a question to
+the person (`ask_person`), answered then and there or ending the run with
+it; each change checked against the operator's written rules by a model
+before it is made (a model's reading, which can be wrong; tested with
+scripted models only); commands that cannot be undone (a listed set:
+forced pushes, hard resets, wide deletes, dropped tables and the like)
+and the calls an operator names always waiting for a person; evaluation
+cases with a person played by written replies or a model; a kill switch;
 sessions that serialise, pause for approval and resume; trajectories
 in chat format; and graphs of a profile's agent (fan-out, work-check,
 draft-review, self-consistency, orchestrator, attempts, research or one's

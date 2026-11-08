@@ -231,6 +231,7 @@ mod tests {
                     then: "pay".into(),
                 },
             ],
+            person: None,
         }
     }
 

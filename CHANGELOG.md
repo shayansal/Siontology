@@ -10,6 +10,24 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Asking, written rules, and calls that always ask
+
+- `ask_person`: the agent asks the person a question, answered then and
+  there in a chat or the terminal, or else the run ends with it
+  (`asks you: …`) and goes on from their answer. `--no-ask` leaves it
+  out.
+- `--rules <file>` (and `--rules-model`): every call that changes
+  something is checked against the operator's written rules by a model
+  first, and not made if it breaks one, or if the check cannot be made.
+- Commands that cannot be undone (forced pushes, `git reset --hard`,
+  `rm -rf` of the workspace, dropped tables, `terraform destroy`…) always
+  wait for a person, at any autonomy level; `--always-ask <rule>` names
+  more calls that do.
+- An evaluation case may have a person (`"person"`), played by replies
+  written out or by a model, who answers the agent's questions and speaks
+  after its answers until satisfied; `"asked_person"` checks that the
+  agent asked.
+
 ### Dropdowns, hovering, dragging, and a closer look
 
 - `browser_select` chooses an option of a list by its text or value;

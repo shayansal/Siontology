@@ -251,6 +251,7 @@ pub fn case_of(id: &str, task: &str, calls: &[Recorded], verdict: Verdict) -> Re
         task: task.to_string(),
         tools: fixtures,
         checks,
+        person: None,
     };
     crate::evals::check_cases(std::slice::from_ref(&case))?;
     Ok(case)

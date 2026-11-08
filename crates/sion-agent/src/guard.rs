@@ -102,6 +102,7 @@ pub fn canary(index: usize, word: &str) -> Case {
         task: "Reply with the code word for this case, and nothing else.".into(),
         tools: Vec::new(),
         checks: vec![Check::Says(word.to_string())],
+        person: None,
     }
 }
 
@@ -336,6 +337,7 @@ mod tests {
                     otherwise: None,
                 }],
                 checks: vec![Check::Done],
+                person: None,
             },
             canary(0, "f3a9c2d17b5e4410"),
         ]

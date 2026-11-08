@@ -367,6 +367,7 @@ mod tests {
             task: task.into(),
             tools: Vec::new(),
             checks: vec![Check::Done],
+            person: None,
         }
     }
 

@@ -265,6 +265,16 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Why the call with `input` cannot be undone, if it cannot (a forced
+    /// push, files deleted for good): such a call waits for a person
+    /// whatever the autonomy level, a skill or an allowance says, unless a
+    /// person approved that very call ([`crate::policy::Policy::always_ask`]
+    /// names more). By default, nothing says so.
+    fn irreversible(&self, input: &Value) -> Option<String> {
+        let _ = input;
+        None
+    }
+
     /// Whether what it returns from outside may be held in quarantine
     /// ([`crate::quarantine`]): by default, yes. A tool whose results the
     /// model acts on (a browser's page, whose elements it clicks) says no,

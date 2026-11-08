@@ -108,6 +108,18 @@ pub struct Profile {
     /// What hears its workspace's audio and videos (`transcribe`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hear: Option<String>,
+    /// The operator's written rules, as they were when the profile was
+    /// added: each call of its sessions that changes something is checked
+    /// against them first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<String>,
+    /// The model that checks calls against the rules, if not the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_model: Option<String>,
+    /// Calls that always wait for a person in its sessions, whatever the
+    /// autonomy level says (`ledger_pay`, `shell(git push:*)`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub always_ask: Vec<String>,
     /// Whether its sessions hold what tools return from outside in
     /// quarantine ([`sion_agent::quarantine`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -169,6 +181,11 @@ impl Profile {
             autonomy: self.autonomy,
             skill_approvals: self.skill_approvals,
             quarantine: self.quarantine,
+            always_ask: self
+                .always_ask
+                .iter()
+                .filter_map(|rule| sion_agent::permissions::ToolRule::parse(rule).ok())
+                .collect(),
             ..Policy::default()
         }
     }
@@ -206,6 +223,11 @@ impl Profile {
             no_plan: self.no_plan,
             no_change_check: self.no_change_check,
             hear: self.hear.clone(),
+            // A person is there to answer in a chat ([`Profile::start_in`]),
+            // not in a session started by a schedule or for work.
+            ask: false,
+            rules: self.rules.clone(),
+            rules_model: self.rules_model.clone(),
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
@@ -373,6 +395,7 @@ impl Profile {
             crate::runtime::Equipment {
                 chat_instructions: settings.instructions.clone(),
                 only_tools: settings.tools.clone(),
+                ask: true,
                 ..self.equipment()
             },
             hooks,
@@ -560,6 +583,21 @@ pub enum ProfileCommand {
         /// local:<model> or command:<program>.
         #[arg(long, value_name = "SPEC")]
         hear: Option<String>,
+        /// A file of written rules (a refund policy, who may be sent what):
+        /// each call that changes something is checked against them by a
+        /// model first, and not made if it breaks one. Read now: add the
+        /// profile again after changing them.
+        #[arg(long, value_name = "FILE")]
+        rules: Option<PathBuf>,
+        /// The model that checks calls against the rules (by default the
+        /// first that is not a script).
+        #[arg(long, value_name = "MODEL", requires = "rules")]
+        rules_model: Option<String>,
+        /// A call that always waits for a person, whatever the autonomy
+        /// level says, as `allowed-tools` rules are written: ledger_pay,
+        /// shell(git push:*). Repeat for more.
+        #[arg(long = "always-ask", value_name = "RULE")]
+        always_ask: Vec<String>,
         /// Hold what tools return from outside out of the conversation: the
         /// agent reads it through a reader without tools, its answers held
         /// to a schema, and the session is not tainted by values.
@@ -665,6 +703,9 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             no_plan,
             no_change_check,
             hear,
+            rules,
+            rules_model,
+            always_ask,
             quarantine,
             shared_memory,
             confidential,
@@ -746,6 +787,12 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                     }
                     None => None,
                 },
+                rules: match &rules {
+                    Some(path) => Some(crate::runtime::read_rules(path)?),
+                    None => None,
+                },
+                rules_model,
+                always_ask: crate::runtime::checked_rules(always_ask)?,
                 quarantine,
                 shared_memory,
                 confidential,
@@ -921,6 +968,15 @@ pub fn describe(profile: &Profile) -> String {
     }
     if let Some(spec) = &profile.hear {
         extras.push(format!("hears files with {spec}"));
+    }
+    if let Some(rules) = &profile.rules {
+        extras.push(format!("written rules ({} lines)", rules.lines().count()));
+    }
+    if !profile.always_ask.is_empty() {
+        extras.push(format!(
+            "always asks before {}",
+            profile.always_ask.join(", ")
+        ));
     }
     if profile.quarantine {
         extras.push("quarantine".to_string());

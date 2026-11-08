@@ -460,6 +460,139 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         told.ended
     );
 
+    // Written rules: a refund against them is not made, one within them
+    // is; a payment the operator always has asked about waits at L6.
+    let model = script(
+        &home,
+        "rules.json",
+        json!([
+            {"call": "ledger_pay", "input": {"to": "bob", "amount": "9", "purpose": "a refund"}},
+            {"call": "ledger_pay", "input": {"to": "bob", "amount": "2", "purpose": "a refund"}},
+            {"say": "Refunded 2 USD."}
+        ]),
+    );
+    let judge = script(
+        &home,
+        "judge.json",
+        json!([
+            {"say": "{\"allowed\": false, \"rule\": \"Refunds are at most 5 USD.\", \"why\": \"9 USD is more\"}"},
+            {"say": "{\"allowed\": true, \"rule\": \"\", \"why\": \"within the limit\"}"}
+        ]),
+    );
+    let (ruled, _) = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "Refund bob for the broken mug.",
+        vec![model.clone()],
+        Policy {
+            autonomy: Autonomy::L6,
+            ..Policy::default()
+        },
+        runtime::Equipment {
+            rules: Some("Refunds are at most 5 USD.".into()),
+            rules_model: Some(judge),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(ruled.ended, Some(Ended::Done { .. })),
+        "{:?}",
+        ruled.ended
+    );
+    let results: Vec<String> = ruled
+        .state
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            sion_agent::Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        results[0].contains("not made: it breaks the operator's rules: \"Refunds are at most 5 USD.\" (9 USD is more)"),
+        "{results:?}"
+    );
+    assert!(results[1].contains("paid"), "{results:?}");
+    // Rules without a model to check them are refused at the start.
+    let unchecked = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "Refund bob.",
+        vec![model.clone()],
+        Policy::default(),
+        runtime::Equipment {
+            rules: Some("Refunds are at most 5 USD.".into()),
+            ..Default::default()
+        },
+    );
+    assert!(unchecked.is_err_and(|e| e.to_string().contains("--rules-model")));
+    let (held, _) = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "Refund bob for the broken mug.",
+        vec![model],
+        Policy {
+            autonomy: Autonomy::L6,
+            always_ask: vec![sion_agent::permissions::ToolRule::parse("ledger_pay").unwrap()],
+            ..Policy::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(&held.ended, Some(Ended::NeedsApproval { reason, .. }) if reason.contains("the operator has ledger_pay always wait for a person")),
+        "{:?}",
+        held.ended
+    );
+
+    // A question for the person ends the run with it; their answer goes on.
+    let model = script(
+        &home,
+        "ask.json",
+        json!([
+            {"call": "ask_person", "input": {"question": "How much was the mug?"}},
+            {"say": "Then I will refund 4 USD."}
+        ]),
+    );
+    let (mut asking, lines) = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "Refund bob for the broken mug.",
+        vec![model],
+        Policy::default(),
+        runtime::Equipment {
+            ask: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        asking.ended,
+        Some(Ended::Asked {
+            question: "How much was the mug?".into()
+        })
+    );
+    let text = lines.join("\n");
+    assert!(
+        text.contains(&format!(
+            "session {}: asks you: How much was the mug?; answer with `sion agent continue {} --say <answer>`",
+            asking.state.id, asking.state.id
+        )),
+        "{text}"
+    );
+    assert_eq!(runtime::last_words(&asking), "How much was the mug?");
+    asking.state.tell("4 USD.", &asking.limits);
+    asking.run(ledger.clone()).unwrap();
+    assert!(
+        matches!(&asking.ended, Some(Ended::Done { text }) if text == "Then I will refund 4 USD.")
+    );
+
     // The kill switch stops a run before its first call.
     std::fs::create_dir_all(runtime::kill_switch().parent().unwrap()).unwrap();
     std::fs::write(runtime::kill_switch(), "stop").unwrap();

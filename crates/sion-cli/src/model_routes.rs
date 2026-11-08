@@ -416,6 +416,7 @@ pub fn ended_kind(ended: &Ended) -> &'static str {
         Ended::OutOfBudget { .. } => "out-of-budget",
         Ended::Unverified { .. } => "unverified",
         Ended::CannotComplete { .. } => "cannot-complete",
+        Ended::Asked { .. } => "asked",
     }
 }
 

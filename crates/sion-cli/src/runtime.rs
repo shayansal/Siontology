@@ -625,6 +625,34 @@ pub fn thinking_of<'a>(
 /// for the models that take one (Anthropic's before Claude 4.6, Gemini 2.5:
 /// `gemini:gemini-2.5-flash#4096`). It is given room to think besides its
 /// answer ([`sion_agent::model::most_tokens`]).
+/// The written rules in the file at `path` (`--rules`).
+pub fn read_rules(path: &std::path::Path) -> Result<String, CliError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?;
+    if text.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "{} holds no rules",
+            path.display()
+        )));
+    }
+    if text.len() > 32 << 10 {
+        return Err(CliError::Usage(format!(
+            "{} is longer than the 32 KiB of rules each call is checked against",
+            path.display()
+        )));
+    }
+    Ok(text)
+}
+
+/// `rules` (`--always-ask`), each checked to be a rule.
+pub fn checked_rules(rules: Vec<String>) -> Result<Vec<String>, CliError> {
+    for rule in &rules {
+        sion_agent::permissions::ToolRule::parse(rule)
+            .map_err(|e| CliError::Usage(format!("--always-ask {rule}: {e}")))?;
+    }
+    Ok(rules)
+}
+
 /// The tools that read the web: a session that may use only the tools that
 /// read may use them too if it reads the web ([`Saved::reads_web`]).
 pub const WEB_READERS: [&str; 2] = ["web_search", "fetch_url"];
@@ -961,6 +989,14 @@ pub struct Saved {
     /// `--hear` names it ([`crate::voice::Hearing`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hear: Option<String>,
+    /// The operator's written rules, as they were when the session began:
+    /// each call that changes something is checked against them first
+    /// ([`sion_agent::session::Rules`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<String>,
+    /// The model that checks calls against the rules, if not the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_model: Option<String>,
 }
 
 /// What an agent knew of itself, as a session's system prompt keeps it
@@ -1287,6 +1323,9 @@ pub fn last_words(saved: &Saved) -> String {
     let ending = match &saved.ended {
         Some(Ended::Done { text }) if saved.said.is_empty() => return text.clone(),
         Some(Ended::Done { .. }) => return saved.said.clone(),
+        // The question is what the person is to answer.
+        Some(Ended::Asked { question }) if saved.said.is_empty() => return question.clone(),
+        Some(Ended::Asked { question }) => return format!("{}\n\n{question}", saved.said),
         Some(Ended::NeedsApproval {
             key,
             tool,
@@ -1693,6 +1732,23 @@ impl Saved {
                 model(spec, skip)
             })
             .collect::<Result<_, _>>()?;
+        // What checks each change against the operator's written rules.
+        let judge: Option<Box<dyn Model>> = match (&self.rules, self.rules_model.as_deref()) {
+            (None, _) => None,
+            (Some(_), Some(spec)) => Some(model(spec, 0)?),
+            (Some(_), None) => self
+                .models
+                .iter()
+                .find(|spec| !spec.starts_with("script:"))
+                .map(|spec| model(spec, 0))
+                .transpose()?,
+        };
+        if self.rules.is_some() && judge.is_none() {
+            return Err(CliError::Usage(
+                "the written rules need a model to check calls against them: give --rules-model"
+                    .into(),
+            ));
+        }
         // What writes a long conversation's summary when it is compacted.
         let summarizer: Option<Box<dyn Model>> = match self.summary_model.as_deref() {
             Some("none") => None,
@@ -1792,6 +1848,14 @@ impl Saved {
             extras: sion_agent::session::Extras {
                 prices: Some(&prices),
                 summarizer: summarizer.as_deref(),
+                asker: hooks
+                    .asker
+                    .map(|asker| asker.as_ref() as &dyn sion_agent::mcp_input::Asker),
+                rules: self
+                    .rules
+                    .as_deref()
+                    .zip(judge.as_deref())
+                    .map(|(text, judge)| sion_agent::session::Rules { text, judge }),
                 ..Default::default()
             },
         };
@@ -2520,6 +2584,9 @@ fn ending(ended: &Ended, state: &State) -> String {
         Ended::OutOfBudget { .. } => format!(
             "session {id}: its run's budget is spent; `sion agent continue {id} --say <more>` to go on with another"
         ),
+        Ended::Asked { question } => format!(
+            "session {id}: asks you: {question}; answer with `sion agent continue {id} --say <answer>`"
+        ),
     }
 }
 
@@ -2899,6 +2966,13 @@ pub struct Equipment {
     pub no_change_check: bool,
     /// What hears its workspace's audio and videos ([`Saved::hear`]).
     pub hear: Option<String>,
+    /// Whether it may ask the person a question ([`Limits::ask`]): someone
+    /// is there to answer, now or later.
+    pub ask: bool,
+    /// The operator's written rules ([`Saved::rules`]).
+    pub rules: Option<String>,
+    /// The model that checks calls against them ([`Saved::rules_model`]).
+    pub rules_model: Option<String>,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
@@ -2985,6 +3059,9 @@ pub fn start_watched(
         no_plan,
         no_change_check,
         hear,
+        ask,
+        rules,
+        rules_model,
         verify,
         verify_files,
         shared_memory,
@@ -3066,8 +3143,17 @@ pub fn start_watched(
         budget_micros,
         plan: !no_plan,
         check_changes: !no_change_check,
+        ask,
         ..Limits::default()
     };
+    if rules.as_deref().is_some_and(|r| r.trim().is_empty()) {
+        return Err(CliError::Usage("the written rules are empty".into()));
+    }
+    if rules.is_some() && rules_model.is_none() && models.iter().all(|m| m.starts_with("script:")) {
+        return Err(CliError::Usage(
+            "the written rules need a model to check calls against them: give --rules-model".into(),
+        ));
+    }
     if let Some(most) = max_turns {
         if most == 0 {
             return Err(CliError::Usage("--max-turns is at least 1".into()));
@@ -3160,6 +3246,8 @@ pub fn start_watched(
         shared_seen: Vec::new(),
         summary_model,
         hear,
+        rules,
+        rules_model,
     };
     saved.from_outside(hooks.outside);
     saved.hold_confidential(hooks.confidential || confidential);
