@@ -1,4 +1,4 @@
-# Benchmarks
+# Agent benchmarks
 
 `sion agent bench` runs suites of tasks that an agent must get right,
 with your models and stand-in tools, and keeps a record of each run that

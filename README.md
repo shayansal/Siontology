@@ -177,12 +177,18 @@ What is enforced, and where:
   [Checked before it is done](docs/book/src/agent/checks.md)
 - A charter on the ledger for its money: payees, largest payment, rate of
   spending, expiry. [A run, within its limits](docs/book/src/agent/run.md)
+- Benchmark suites built in, for paying over x402, attacks on an agent
+  that pays, confirming before paying and prompt injection, run with your
+  models and stand-in tools; a run can be published on the ledger as a
+  signed claim and checked against its log. Tested with stand-in models
+  only. [Agent benchmarks](docs/book/src/agent/benchmarks.md)
 
 ### What it knows, and how it gets better
 
 - **Memory**: a log whose head the ledger keeps, search over past
-  sessions, consolidation, and dreaming whose results are kept only when
-  they pass. [Memory](docs/book/src/agent/memory.md)
+  sessions, search by meaning with an embedder you name, consolidation,
+  and dreaming whose results are kept only when they pass.
+  [Memory](docs/book/src/agent/memory.md)
 - **Skills** in the Agent Skills format: its own, written as it works or
   taught by doing a task once in a browser; others', installed when bonds
   and audits cover what they could cost, or imported from a folder, a
