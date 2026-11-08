@@ -2056,11 +2056,15 @@ impl Runtime<'_> {
             QUARANTINE_READ,
             CANNOT_COMPLETE,
             PLAN_UPDATE,
-            ASK_PERSON,
         ]
         .contains(&tool)
         {
             return Outcome::error(format!("{tool} is not called from code"));
+        }
+        if tool == ASK_PERSON {
+            return Outcome::error(format!(
+                "{tool} waits for a person: it is not called from code; call it yourself"
+            ));
         }
         match self.tools.get(tool) {
             None => return Outcome::error(format!("there is no tool named {tool}")),
