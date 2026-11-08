@@ -61,6 +61,7 @@
 //! the work goes on, and what it says to people keeps to limits.
 
 pub mod archive;
+pub mod bench;
 pub mod browser;
 pub mod builtin;
 pub mod canvas;

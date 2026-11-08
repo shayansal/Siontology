@@ -822,6 +822,7 @@ Commands:
   meeting        Take a meeting's notes: dial in by phone through Twilio (its number and keys) or hear it here (the microphone, and what this machine plays), the transcript written as it goes, and the profile's agent writing up the decisions, the action items and what is still open
   erc8004        The agent in ERC-8004's registries on EVM chains: its registration file, naming its Siontology DID; the calls that register it, bind its wallet, give it feedback and answer a validation, written out for a wallet to send
   c2pa           Content Credentials (C2PA) for what the agent makes: a manifest beside a file that binds its bytes and names the agent that made it, signed with your certificate; and checking one
+  bench          Benchmark suites built in (payments over x402, attacks on an agent that pays, confirming before paying), runs of them with your models and stand-in tools, and the records of those runs
   prices         The models' prices that runs are counted at: Anthropic's list prices for Claude, built in, and yours from `$SION_HOME/prices.json` (an object of model names, each with `input`, `output` and optionally `cache_read` and `cache_write`, in dollars a million tokens), in their place where both price a model
   scheduler      Run scheduled jobs as they fall due
   work           Work a profile's agent takes on by itself: the GitHub repositories and chats it watches, who may ask it for work there, the kinds of work it may take on unasked (recorded only, until you let it act), and the runner that does the work
@@ -2590,6 +2591,83 @@ Options:
 ```
 
 See [Graphs of agents](../agent/graphs.md).
+
+## `sion agent bench`
+
+```text
+Benchmark suites built in (payments over x402, attacks on an agent that pays, confirming before paying), runs of them with your models and stand-in tools, and the records of those runs
+
+Usage: sion agent bench [OPTIONS] <COMMAND>
+
+Commands:
+  list  The suites built in, a line each
+  show  A suite as JSON: one built in by name, to read or start one of your own from
+  run   Run a suite with your models: each case several times, each run with fresh models and the case's stand-in tools (nothing is paid or sent but the model calls), and report the pass rate, pass^k, the tokens and the cost. The run is kept, with its log
+  runs  The runs kept, newest first
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent bench list`
+
+```text
+The suites built in, a line each
+
+Usage: sion agent bench list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent bench show`
+
+```text
+A suite as JSON: one built in by name, to read or start one of your own from
+
+Usage: sion agent bench show [OPTIONS] <SUITE>
+
+Arguments:
+  <SUITE>  The suite's name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent bench run`
+
+```text
+Run a suite with your models: each case several times, each run with fresh models and the case's stand-in tools (nothing is paid or sent but the model calls), and report the pass rate, pass^k, the tokens and the cost. The run is kept, with its log
+
+Usage: sion agent bench run [OPTIONS] <SUITE>
+
+Arguments:
+  <SUITE>  A suite built in, or a JSON file of one (a set of tasks, as `sion agent graph eval` takes)
+
+Options:
+      --model <MODEL>          A model to run with, in order of preference (repeat for more)
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>      Run with a profile's models instead
+      --repeats <REPEATS>      How many times each case is run (pass^k is reported for k this) [default: 3]
+      --max-turns <MAX_TURNS>  The most turns a run may take
+  -h, --help                   Print help
+```
+
+## `sion agent bench runs`
+
+```text
+The runs kept, newest first
+
+Usage: sion agent bench runs [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
 
 ## `sion agent schedule`
 

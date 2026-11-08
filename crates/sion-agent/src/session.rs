@@ -1685,7 +1685,9 @@ impl Runtime<'_> {
                     Outcome::ok(format!("The person answered: {}", reply.trim()))
                 }
                 _ => Outcome::error(
-                    "no answer came: go on with what you can, and say what you assumed",
+                    "no answer came: go on with what you can without it, and say what you \
+                     assumed; do not make a payment or another change the question was to \
+                     confirm",
                 ),
             }
         };

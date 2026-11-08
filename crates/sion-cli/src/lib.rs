@@ -30,6 +30,7 @@ pub mod ap2;
 pub mod archive;
 pub mod batcher;
 pub mod bench;
+pub mod bench_cli;
 pub mod bridge;
 pub mod browser_profiles;
 pub mod c2pa;

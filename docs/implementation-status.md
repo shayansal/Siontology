@@ -271,7 +271,13 @@ tries and each graph on a set of tasks with stand-in tools, on the same
 token budget, each case several times, and reports pass rates with
 Wilson intervals and pass^k; a graph whose rate beats both baselines by Newcombe's
 interval earns the profile's traffic, and the router offers only graphs
-that have. A judge (`sion agent judge`) reads a session's steps after
+that have. Benchmark suites built in (`sion agent bench`: paying over
+x402, attacks on an agent that pays, confirming before paying) run with
+the operator's models and stand-in tools, report the pass rate, pass^k,
+tokens and cost, and keep each run with its log, fixed by its digest;
+they are tested with stand-in models only (a careful script passes every
+case, a careless one fails those it should), and no run with a real model
+is reported here. A judge (`sion agent judge`) reads a session's steps after
 labelled examples, and is measured on labelled steps it was not shown. A
 session that holds confidential content (told so, read from a path named
 confidential, or reached from a subagent or graph node that held some) has

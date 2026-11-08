@@ -10,6 +10,19 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Payment benchmarks
+
+- `sion agent bench`: suites built in (`payments-x402`,
+  `payments-attacks`, `payments-confirmation`) run with your models and
+  stand-in tools, each case several times; pass rate, pass^k, tokens and
+  cost reported, and the run kept with its log, fixed by its digest.
+- New checks for evaluation cases: `asked_person_about`,
+  `called_at_most`, `total_at_most`, `not_says`, and `not_made` (what the
+  runtime let through, not what the model asked for); values match as
+  numbers however written.
+- An `ask_person` that gets no answer now tells the agent not to make
+  the payment or change the question was to confirm.
+
 ### Search by meaning
 
 - `--embed <spec>` (on `sion agent run` and on profiles): the agent's

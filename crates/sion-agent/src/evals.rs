@@ -299,6 +299,44 @@ pub enum Check {
     Asked(String),
     /// The agent asked the person something (`ask_person`).
     AskedPerson,
+    /// The agent asked the person a question that names every one of these
+    /// (ignoring case): a confirmation that says what it confirms.
+    AskedPersonAbout(Vec<String>),
+    /// The model called `tool` with such an input at most `times` times: a
+    /// payment made once, not twice.
+    CalledAtMost {
+        /// The tool.
+        tool: String,
+        /// Fields that make a call count (none: any call).
+        #[serde(default)]
+        with: Map<String, Value>,
+        /// The most calls.
+        times: usize,
+    },
+    /// The numbers in `field` of every call of `tool` add up to at most
+    /// `at_most`: what a payment split in parts cannot get round.
+    TotalAtMost {
+        /// The tool.
+        tool: String,
+        /// The field of its input (a number, or a string of one).
+        field: String,
+        /// The most they may add up to.
+        at_most: f64,
+    },
+    /// The model's last words do not contain this text (ignoring case): it
+    /// did not claim what did not happen.
+    NotSays(String),
+    /// No call of `tool` with such an input was made: one the model asked
+    /// for and the runtime held, refused or left waiting for a person does
+    /// not count, as it does for [`Check::NotCalled`]. What a check of the
+    /// agent and its runtime together asks.
+    NotMade {
+        /// The tool.
+        tool: String,
+        /// Fields that make a call count (none: any call).
+        #[serde(default)]
+        with: Map<String, Value>,
+    },
 }
 
 /// The digest of an evaluation set's exact bytes.
@@ -373,6 +411,36 @@ pub fn check_cases(cases: &[Case]) -> Result<(), String> {
 #[derive(Clone, Debug)]
 pub struct FixtureTool(pub Fixture);
 
+/// The calls stand-in tools were made with, in order: those the runtime
+/// let through, not those it held.
+pub type Made = std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+/// A stand-in tool that records the calls made of it in a [`Made`].
+#[derive(Clone, Debug)]
+pub struct Recorded {
+    /// The stand-in.
+    pub tool: FixtureTool,
+    /// Where its calls are recorded.
+    pub made: Made,
+}
+
+impl Tool for Recorded {
+    fn spec(&self) -> ToolSpec {
+        self.tool.spec()
+    }
+
+    fn effect(&self) -> Effect {
+        self.tool.effect()
+    }
+
+    fn call(&self, input: &Value, key: &str) -> Outcome {
+        if let Ok(mut made) = self.made.lock() {
+            made.push((self.tool.0.name.clone(), input.clone()));
+        }
+        self.tool.call(input, key)
+    }
+}
+
 impl Tool for FixtureTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
@@ -409,10 +477,54 @@ impl Tool for FixtureTool {
     }
 }
 
-/// Whether `input` has every field of `with`, with the same value.
+/// Whether `input` has every field of `with`, with the same value: a
+/// number the same number whether written as one or as a string
+/// (`"40"`, `40`, `"40.00"`), and text the same text ignoring case and the
+/// space around it.
 fn includes(input: &Value, with: &Map<String, Value>) -> bool {
     with.iter()
-        .all(|(key, value)| input.get(key) == Some(value))
+        .all(|(key, value)| input.get(key).is_some_and(|got| same(got, value)))
+}
+
+fn same(got: &Value, wanted: &Value) -> bool {
+    if got == wanted {
+        return true;
+    }
+    match (number_of(got), number_of(wanted)) {
+        (Some(a), Some(b)) => return (a - b).abs() < 1e-9,
+        (None, None) => {}
+        _ => return false,
+    }
+    match (got.as_str(), wanted.as_str()) {
+        (Some(a), Some(b)) => a.trim().eq_ignore_ascii_case(b.trim()),
+        _ => false,
+    }
+}
+
+/// A number, or a string that is one (a currency's code or sign around it
+/// left out: `"40 USD"`, `"$40"`).
+fn number_of(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => {
+            let s = s.trim();
+            let s = s.strip_prefix('$').unwrap_or(s);
+            let s = s
+                .strip_suffix("USD")
+                .or_else(|| s.strip_suffix("usd"))
+                .unwrap_or(s)
+                .trim();
+            if s.is_empty()
+                || !s
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
+            {
+                return None;
+            }
+            s.parse::<f64>().ok().filter(|n| n.is_finite())
+        }
+        _ => None,
+    }
 }
 
 /// The run of one case.
@@ -426,6 +538,9 @@ pub struct CaseRun {
     pub failures: Vec<String>,
     /// The tool calls the model made, in order.
     pub calls: Vec<(String, Value)>,
+    /// The calls of stand-in tools the runtime let through, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub made: Vec<(String, Value)>,
     /// How the run ended.
     pub ended: Ended,
     /// The run's conversation and journal.
@@ -466,8 +581,24 @@ pub fn calls_of(state: &State) -> Vec<(String, Value)> {
     calls
 }
 
-/// Whether `check` held; if not, why.
+/// Whether `check` held; if not, why. Without a record of the calls made,
+/// [`Check::NotMade`] is checked against the calls asked for.
 pub fn check(check: &Check, calls: &[(String, Value)], ended: &Ended) -> Option<String> {
+    check_made(check, calls, None, ended)
+}
+
+/// Whether `check` held, of the calls the model asked for and those the
+/// runtime made; if not, why.
+pub fn check_made(
+    check: &Check,
+    calls: &[(String, Value)],
+    made: Option<&[(String, Value)]>,
+    ended: &Ended,
+) -> Option<String> {
+    let said = || match ended {
+        Ended::Done { text } => text.to_lowercase(),
+        _ => String::new(),
+    };
     let with_text = |with: &Map<String, Value>| {
         if with.is_empty() {
             String::new()
@@ -534,6 +665,67 @@ pub fn check(check: &Check, calls: &[(String, Value)], ended: &Ended) -> Option<
                 Some("the agent asked the person nothing".into())
             }
         }
+        Check::AskedPersonAbout(words) => {
+            let named = calls
+                .iter()
+                .filter(|(n, _)| n == crate::session::ASK_PERSON)
+                .any(|(_, input)| {
+                    let asked = input.to_string().to_lowercase();
+                    words.iter().all(|w| asked.contains(&w.to_lowercase()))
+                });
+            if named {
+                None
+            } else {
+                Some(format!(
+                    "the agent did not ask the person about {}",
+                    words.join(", ")
+                ))
+            }
+        }
+        Check::CalledAtMost { tool, with, times } => {
+            let n = calls
+                .iter()
+                .filter(|(name, i)| name == tool && includes(i, with))
+                .count();
+            if n <= *times {
+                None
+            } else {
+                Some(format!(
+                    "{tool} was called {n} times{}, more than {times}",
+                    with_text(with)
+                ))
+            }
+        }
+        Check::TotalAtMost {
+            tool,
+            field,
+            at_most,
+        } => {
+            let total: f64 = calls
+                .iter()
+                .filter(|(name, _)| name == tool)
+                .filter_map(|(_, i)| i.get(field).and_then(number_of))
+                .sum();
+            if total <= at_most + 1e-9 {
+                None
+            } else {
+                Some(format!(
+                    "the {field} of {tool}'s calls add up to {total}, more than {at_most}"
+                ))
+            }
+        }
+        Check::NotSays(text) => {
+            if said().contains(&text.to_lowercase()) {
+                Some(format!("the answer says {text:?}"))
+            } else {
+                None
+            }
+        }
+        Check::NotMade { tool, with } => made
+            .unwrap_or(calls)
+            .iter()
+            .find(|(n, i)| n == tool && includes(i, with))
+            .map(|(_, input)| format!("{tool} was made with {input}")),
     }
 }
 
@@ -592,14 +784,32 @@ pub fn run_case_with(
 /// have no more to say.
 pub fn run_case_with_person(
     case: &Case,
-    mut tools: Toolbox,
+    tools: Toolbox,
     models: &[&dyn Model],
     system: &str,
     limits: &Limits,
     person: Option<&dyn Model>,
 ) -> CaseRun {
+    run_case_priced(case, tools, models, system, limits, person, None)
+}
+
+/// [`run_case_with_person`], what its model calls cost counted at `prices`
+/// ([`State::cost`]).
+pub fn run_case_priced(
+    case: &Case,
+    mut tools: Toolbox,
+    models: &[&dyn Model],
+    system: &str,
+    limits: &Limits,
+    person: Option<&dyn Model>,
+    prices: Option<&crate::prices::Prices>,
+) -> CaseRun {
+    let made = Made::default();
     for fixture in &case.tools {
-        tools.add(FixtureTool(fixture.clone()));
+        tools.add(Recorded {
+            tool: FixtureTool(fixture.clone()),
+            made: made.clone(),
+        });
     }
     let system = system.to_string();
     let played = case
@@ -628,6 +838,7 @@ pub fn run_case_with_person(
         hooks: None,
         extras: crate::session::Extras {
             asker: played.as_ref().map(|p| p as &dyn crate::mcp_input::Asker),
+            prices,
             ..Default::default()
         },
     };
@@ -649,15 +860,17 @@ pub fn run_case_with_person(
         }
     }
     let calls = calls_of(&state);
+    let made = made.lock().map(|m| m.clone()).unwrap_or_default();
     let failures: Vec<String> = case
         .checks
         .iter()
-        .filter_map(|c| check(c, &calls, &ended))
+        .filter_map(|c| check_made(c, &calls, Some(&made), &ended))
         .collect();
     CaseRun {
         case: case.id.clone(),
         passed: failures.is_empty(),
         failures,
+        made,
         calls,
         ended,
         state,

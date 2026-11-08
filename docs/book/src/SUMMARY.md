@@ -42,6 +42,7 @@
 - [On Ethereum's agent registries: ERC-8004](agent/erc8004.md)
 - [Content Credentials: C2PA](agent/c2pa.md)
 - [Graphs of agents](agent/graphs.md)
+- [Benchmarks](agent/benchmarks.md)
 
 # Build on the ledger
 

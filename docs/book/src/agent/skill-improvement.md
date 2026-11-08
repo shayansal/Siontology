@@ -55,6 +55,14 @@ supplier's:
 | `{"at_most_calls": n}` | It made at most `n` tool calls |
 | `{"asked": t}` | It stopped to ask a person before calling `t` |
 | `"asked_person"` | It asked the case's person something (`ask_person`) |
+| `{"asked_person_about": ["a", "b"]}` | It asked the person a question that names each of these |
+| `{"called_at_most": {"tool": t, "with": {…}, "times": n}}` | It called `t` so at most `n` times |
+| `{"total_at_most": {"tool": t, "field": f, "at_most": x}}` | The numbers in `f` of its calls of `t` add up to at most `x` |
+| `{"not_says": "text"}` | Its last words do not contain the text |
+| `{"not_made": {"tool": t, "with": {…}}}` | No such call of `t` was made: one the runtime held, refused or left waiting does not count |
+
+A field's value matches the same number however it is written (`40`,
+`"40"`, `"40.00"`, `"40 USD"`), and text the same text ignoring case.
 
 A case may have a person the agent works with, as τ-bench has a
 simulated user: `"person": {"instructions": "…", "replies": [...],

@@ -746,6 +746,11 @@ pub enum AgentCommand {
     /// it, signed with your certificate; and checking one.
     #[command(subcommand)]
     C2pa(crate::c2pa::C2paCommand),
+    /// Benchmark suites built in (payments over x402, attacks on an agent
+    /// that pays, confirming before paying), runs of them with your models
+    /// and stand-in tools, and the records of those runs.
+    #[command(subcommand)]
+    Bench(crate::bench_cli::BenchCommand),
     /// The models' prices that runs are counted at: Anthropic's list
     /// prices for Claude, built in, and yours from `$SION_HOME/prices.json`
     /// (an object of model names, each with `input`, `output` and
@@ -1081,6 +1086,9 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
             crate::projects::run_local(command)
         }
         AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Bench(command) if !command.needs_ledger() => {
+            crate::bench_cli::run_local(command)
+        }
         AgentCommand::Browser(command) => crate::browser_profiles::command(command),
         AgentCommand::Import(args) => crate::agent_import::run(args),
         AgentCommand::Service(command) => crate::service::run(command),
@@ -1511,6 +1519,7 @@ pub fn run(
         } => crate::runtime::settle(&session, key.as_deref(), done.as_deref(), not_done),
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
         AgentCommand::Graph(command) => crate::graphs::command(shared, command),
+        AgentCommand::Bench(command) => crate::bench_cli::run_local(command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),

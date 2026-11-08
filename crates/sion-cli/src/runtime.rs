@@ -2648,7 +2648,7 @@ fn model_name(spec: &str) -> &str {
 }
 
 /// This machine's Siontology home: its wallets, sessions and skills.
-fn sion_home() -> PathBuf {
+pub(crate) fn sion_home() -> PathBuf {
     wallet_dir()
         .parent()
         .map(Path::to_path_buf)
