@@ -2604,11 +2604,13 @@ Benchmark suites built in (payments over x402, attacks on an agent that pays, co
 Usage: sion agent bench [OPTIONS] <COMMAND>
 
 Commands:
-  list  The suites built in, a line each
-  show  A suite as JSON: one built in by name, to read or start one of your own from
-  run   Run a suite with your models: each case several times, each run with fresh models and the case's stand-in tools (nothing is paid or sent but the model calls), and report the pass rate, pass^k, the tokens and the cost. The run is kept, with its log
-  runs  The runs kept, newest first
-  help  Print this message or the help of the given subcommand(s)
+  list     The suites built in, a line each
+  show     A suite as JSON: one built in by name, to read or start one of your own from
+  run      Run a suite with your models: each case several times, each run with fresh models and the case's stand-in tools (nothing is paid or sent but the model calls), and report the pass rate, pass^k, the tokens and the cost. The run is kept, with its log
+  runs     The runs kept, newest first
+  publish  Publish a kept run on the ledger, as a claim signed by your wallet: the suite and its digest, the models, the pass rate, pass^k, the tokens and the cost, and the digest of the run's log, which you give to whoever is to check it
+  check    Check a published run: the claim on the ledger, who signed it and when, and, given its log, that the log is the one it names, that every run in it judged again by the suite's checks comes out as it says, and that the figures are the claim's
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
@@ -2671,6 +2673,39 @@ Usage: sion agent bench runs [OPTIONS]
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent bench publish`
+
+```text
+Publish a kept run on the ledger, as a claim signed by your wallet: the suite and its digest, the models, the pass rate, pass^k, the tokens and the cost, and the digest of the run's log, which you give to whoever is to check it
+
+Usage: sion agent bench publish [OPTIONS] --wallet <WALLET> <RUN>
+
+Arguments:
+  <RUN>  The run: its directory, or the start of its name (`sion agent bench runs`)
+
+Options:
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>  The wallet that signs the claim
+  -h, --help             Print help
+```
+
+## `sion agent bench check`
+
+```text
+Check a published run: the claim on the ledger, who signed it and when, and, given its log, that the log is the one it names, that every run in it judged again by the suite's checks comes out as it says, and that the figures are the claim's
+
+Usage: sion agent bench check [OPTIONS] <CLAIM>
+
+Arguments:
+  <CLAIM>  The claim's id
+
+Options:
+      --log <FILE>    The run's log (by default, a run kept here with the log the claim names)
+      --node <NODE>   The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --suite <FILE>  The suite, if it is not one built in
+  -h, --help          Print help
 ```
 
 ## `sion agent schedule`

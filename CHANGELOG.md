@@ -10,6 +10,16 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Benchmark runs on the ledger
+
+- `sion agent bench publish <run> --wallet <w>`: a kept run as a claim
+  signed by the wallet (`agent.bench/v1`): suite digest, models, pass
+  rate, pass^k, tokens, cost and the log's digest.
+- `sion agent bench check <claim>`: the claim's issuer, Pulse and
+  figures and, given the log, that it is the log named, that every run
+  in it judged again by the suite's checks comes out as it says, and that
+  the figures follow from it.
+
 ### Prompt injection: suites, and two holes closed
 
 - Two more suites for `sion agent bench`: `injection-assistant`

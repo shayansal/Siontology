@@ -69,6 +69,34 @@ how it ended), a line each, and `record.json` the suite's digest, the
 models, the repeats, each case's runs and the log's digest.
 `sion agent bench runs` lists the runs kept, newest first.
 
+## Publishing a run, and checking one
+
+`sion agent bench publish <run> --wallet <wallet>` puts a kept run on
+the ledger as a claim (`agent.bench/v1`) signed by the wallet: the suite
+and the digest of its exact bytes, the models, the repeats, the cases,
+the runs and those that passed, pass^k, the tokens and the cost, and the
+digest of the run's log. It is named the latest run of its suite under
+`agent-bench:<suite>`, and its id is kept beside the run
+(`published.json`). The log stays with whoever ran it, to be given to
+whoever is to check it.
+
+`sion agent bench check <claim>` shows the claim: who issued it and at
+which Pulse, and its figures. Given the log (`--log`, or a run kept here
+with the log the claim names), it checks that the log is the one the
+claim names; that every run in it, judged again by the suite's checks
+from what it recorded (the calls the model asked for, those that were
+made, how it ended), comes out as the log says; and that the pass rate,
+pass^k, tokens and cost worked out from the log are the claim's. A suite
+built in is found by its name; another is given with `--suite`. Without
+the suite the log's own figures are checked, and the runs are not judged
+again; without the log, the claim is shown unchecked.
+
+A check shows that a claim says what its log shows and that the suite's
+checks agree with what the log recorded, signed by the claim's issuer. It
+does not show that the log records runs that happened with the models it
+names: a log can be written by hand, and the claim is its issuer's word
+for it (`agent:bench-claims`).
+
 What a suite measures is what its cases test, and no more: six cases of
 a kind are a check that an agent does not fail them, not an estimate of
 how often it fails in the world. With stand-in models (scripts) the

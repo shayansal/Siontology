@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use sion_core::hash::{hash_domain, Hash32};
 
 use crate::compare::{pass_hat_k, wilson, TaskSet};
-use crate::evals::{run_case_priced, Models};
+use crate::evals::{check_made, run_case_priced, CaseRun, Models};
 use crate::model::Usage;
 use crate::prices::Prices;
 use crate::session::{Ended, Limits};
@@ -277,24 +277,7 @@ pub fn run(
                 playing.first().map(|m| m.as_ref()),
                 prices,
             );
-            let ended = serde_json::to_value(&ran.ended)
-                .ok()
-                .and_then(|v| v["ended"].as_str().map(str::to_string))
-                .unwrap_or_else(|| match ran.ended {
-                    Ended::Done { .. } => "done".into(),
-                    _ => "other".into(),
-                });
-            trials.push(Trial {
-                case: case.id.clone(),
-                repeat,
-                passed: ran.passed,
-                failures: ran.failures.clone(),
-                ended,
-                calls: ran.calls.len(),
-                usage: ran.state.usage,
-                cost_micros: ran.state.cost.micros,
-                unpriced: ran.state.cost.unpriced.total(),
-            });
+            trials.push(trial_of(&case.id, repeat, &ran));
             let line = serde_json::json!({"case": case.id, "repeat": repeat, "run": ran});
             log.extend(serde_json::to_vec(&line).map_err(|e| e.to_string())?);
             log.push(b'\n');
@@ -312,6 +295,206 @@ pub fn run(
         },
         log,
     ))
+}
+
+/// What a run of a case, `repeat`, came to.
+fn trial_of(case: &str, repeat: u32, ran: &CaseRun) -> Trial {
+    let ended = serde_json::to_value(&ran.ended)
+        .ok()
+        .and_then(|v| v["ended"].as_str().map(str::to_string))
+        .unwrap_or_else(|| match ran.ended {
+            Ended::Done { .. } => "done".into(),
+            _ => "other".into(),
+        });
+    Trial {
+        case: case.to_string(),
+        repeat,
+        passed: ran.passed,
+        failures: ran.failures.clone(),
+        ended,
+        calls: ran.calls.len(),
+        usage: ran.state.usage,
+        cost_micros: ran.state.cost.micros,
+        unpriced: ran.state.cost.unpriced.total(),
+    }
+}
+
+/// The schema of a claim that publishes a benchmark run.
+pub const CLAIM_SCHEMA: &str = "agent.bench/v1";
+
+/// What a claim of a benchmark run says: what was run, with what, how it
+/// went, and the digest of the log that shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchClaim {
+    /// The suite's name.
+    pub suite: String,
+    /// The digest of its exact bytes.
+    pub suite_digest: Hash32,
+    /// The models, in order of preference.
+    pub models: Vec<String>,
+    /// Runs of each case.
+    pub repeats: u32,
+    /// Cases.
+    pub cases: usize,
+    /// Runs in all.
+    pub runs: usize,
+    /// Runs that passed.
+    pub passed: usize,
+    /// pass^k for k the repeats, in millionths.
+    pub pass_k_millionths: Option<u64>,
+    /// Input tokens.
+    pub input_tokens: u64,
+    /// Output tokens.
+    pub output_tokens: u64,
+    /// What the model calls cost, in micro-dollars.
+    pub cost_micros: u64,
+    /// Tokens of calls to models without a price.
+    pub unpriced_tokens: u64,
+    /// The date of the prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prices_as_of: Option<String>,
+    /// The digest of the run's log.
+    pub log: Hash32,
+}
+
+impl BenchClaim {
+    /// What a claim of `run` says.
+    pub fn of(run: &BenchRun) -> BenchClaim {
+        let usage = run.usage();
+        let (cost_micros, unpriced_tokens) = run.cost();
+        BenchClaim {
+            suite: run.suite.clone(),
+            suite_digest: run.suite_digest,
+            models: run.models.clone(),
+            repeats: run.repeats,
+            cases: run.by_case().len(),
+            runs: run.total(),
+            passed: run.passed(),
+            pass_k_millionths: run
+                .pass_k(run.repeats as usize)
+                .map(|p| (p * 1e6).round() as u64),
+            input_tokens: usage.input,
+            output_tokens: usage.output,
+            cost_micros,
+            unpriced_tokens,
+            prices_as_of: run.prices_as_of.clone(),
+            log: run.log,
+        }
+    }
+
+    /// Its figures, a line.
+    pub fn line(&self) -> String {
+        let mut line = format!(
+            "{}: {} of {} runs passed ({} cases, {} runs each)",
+            self.suite, self.passed, self.runs, self.cases, self.repeats
+        );
+        if let Some(p) = self.pass_k_millionths {
+            line.push_str(&format!(", pass^{} {:.1}%", self.repeats, p as f64 / 1e4));
+        }
+        line.push_str(&format!(
+            "; {} tokens in, {} out; cost {}",
+            self.input_tokens,
+            self.output_tokens,
+            crate::prices::dollars(self.cost_micros)
+        ));
+        if self.unpriced_tokens > 0 {
+            line.push_str(&format!(
+                " and {} tokens without a price",
+                self.unpriced_tokens
+            ));
+        }
+        line.push_str(&format!("; models {}", self.models.join(", ")));
+        line
+    }
+}
+
+/// Checks a claim of a run against the run's `log` and, given them, its
+/// suite's exact bytes `suite`: the log is the one the claim names, the
+/// suite the one it names, every run in the log judged again by the
+/// suite's checks from what it recorded (the calls asked for and made, how
+/// it ended) comes out as the log says, and the figures worked out from
+/// the log are the claim's. The run as the log shows it, or why not.
+pub fn check_claim(
+    claim: &BenchClaim,
+    log: &[u8],
+    suite: Option<&[u8]>,
+) -> Result<BenchRun, String> {
+    if log_digest(log) != claim.log {
+        return Err(format!(
+            "the log's digest is {}, not the {} the claim names",
+            log_digest(log).to_hex(),
+            claim.log.to_hex()
+        ));
+    }
+    let set = match suite {
+        Some(bytes) if crate::evals::digest(bytes) != claim.suite_digest => {
+            return Err("the suite is not the one the claim was run on".into())
+        }
+        Some(bytes) => Some(TaskSet::parse(bytes)?),
+        None => None,
+    };
+    let mut trials = Vec::new();
+    for (n, line) in log
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .enumerate()
+    {
+        let value: serde_json::Value =
+            serde_json::from_slice(line).map_err(|e| format!("line {} of the log: {e}", n + 1))?;
+        let case = value["case"]
+            .as_str()
+            .ok_or_else(|| format!("line {} of the log names no case", n + 1))?;
+        let repeat = value["repeat"]
+            .as_u64()
+            .and_then(|r| u32::try_from(r).ok())
+            .ok_or_else(|| format!("line {} of the log names no repeat", n + 1))?;
+        let ran: CaseRun = serde_json::from_value(value["run"].clone())
+            .map_err(|e| format!("line {} of the log: {e}", n + 1))?;
+        if ran.case != case {
+            return Err(format!("line {} of the log is of two cases", n + 1));
+        }
+        if let Some(set) = &set {
+            let Some(spec) = set.cases.iter().find(|c| c.id == case) else {
+                return Err(format!("case {case} is not in the suite"));
+            };
+            let failures: Vec<String> = spec
+                .checks
+                .iter()
+                .filter_map(|c| check_made(c, &ran.calls, Some(&ran.made), &ran.ended))
+                .collect();
+            if failures != ran.failures || failures.is_empty() != ran.passed {
+                return Err(format!(
+                    "run {repeat} of case {case}, judged again by the suite's checks, does not \
+                     come out as the log says"
+                ));
+            }
+        }
+        trials.push(trial_of(case, repeat, &ran));
+    }
+    let run = BenchRun {
+        suite: claim.suite.clone(),
+        suite_digest: claim.suite_digest,
+        models: claim.models.clone(),
+        repeats: claim.repeats,
+        prices_as_of: claim.prices_as_of.clone(),
+        log: claim.log,
+        trials,
+    };
+    if let Some(set) = &set {
+        let expected = set.cases.len() * claim.repeats as usize;
+        if run.total() != expected {
+            return Err(format!(
+                "the log has {} runs, not the {expected} of {} cases run {} times",
+                run.total(),
+                set.cases.len(),
+                claim.repeats
+            ));
+        }
+    }
+    if BenchClaim::of(&run) != *claim {
+        return Err("the figures worked out from the log are not the claim's".into());
+    }
+    Ok(run)
 }
 
 /// Checks `record` against `log` (the bytes it claims) and `bytes` (its
@@ -949,5 +1132,59 @@ mod tests {
         assert!(verify(&record, &changed, None).is_err());
         // And another suite.
         assert!(verify(&record, &log, Some(b"{}")).is_err());
+    }
+
+    #[test]
+    fn a_claim_is_checked_against_the_log_and_the_suite() {
+        let paris = "https://api.weather.example/paris";
+        let scripts = [
+            script(&[
+                get(paris),
+                pay("weather-co", "0.05", "x402:n-71"),
+                paid_get(paris, "tx-9f3c"),
+                say("Tomorrow in Paris: 14°C, light rain."),
+            ]),
+            script(&[say("I cannot.")]),
+            script(&[say("I cannot.")]),
+            script(&[say("I cannot.")]),
+            script(&[say("I cannot.")]),
+            script(&[say("I cannot.")]),
+        ];
+        let refs: Vec<&str> = scripts.iter().map(String::as_str).collect();
+        let (record, log) = bench("payments-x402", &refs);
+        let claim = BenchClaim::of(&record);
+        assert_eq!((claim.passed, claim.runs, claim.cases), (1, 6, 6));
+        assert!(
+            claim.line().contains("1 of 6 runs passed"),
+            "{}",
+            claim.line()
+        );
+        let suite = builtin("payments-x402").unwrap().as_bytes();
+        let checked = check_claim(&claim, &log, Some(suite)).unwrap();
+        assert_eq!(checked.passed(), 1);
+        // A claim of more passes than the log shows is refused.
+        let mut more = claim.clone();
+        more.passed = 6;
+        assert!(check_claim(&more, &log, Some(suite)).is_err());
+        // So is a log whose run was marked passed after the fact, with its
+        // digest made to match: judged again by the suite, it failed.
+        let text = String::from_utf8(log.clone()).unwrap();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let mut second: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+        second["run"]["passed"] = serde_json::json!(true);
+        second["run"]["failures"] = serde_json::json!([]);
+        lines[1] = second.to_string();
+        let forged = format!("{}\n", lines.join("\n")).into_bytes();
+        let mut forged_claim = claim.clone();
+        forged_claim.log = log_digest(&forged);
+        forged_claim.passed = 2;
+        forged_claim.pass_k_millionths = Some(333_333);
+        let refused = check_claim(&forged_claim, &forged, Some(suite)).unwrap_err();
+        assert!(refused.contains("judged again"), "{refused}");
+        // Without the suite, only the log's own figures are checked.
+        assert!(check_claim(&forged_claim, &forged, None).is_ok());
+        // Another suite is refused.
+        let other = builtin("payments-attacks").unwrap().as_bytes();
+        assert!(check_claim(&claim, &log, Some(other)).is_err());
     }
 }

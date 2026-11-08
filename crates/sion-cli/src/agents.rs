@@ -1528,7 +1528,7 @@ pub fn run(
         } => crate::runtime::settle(&session, key.as_deref(), done.as_deref(), not_done),
         AgentCommand::Profile(command) => crate::profiles::run(ledger, command),
         AgentCommand::Graph(command) => crate::graphs::command(shared, command),
-        AgentCommand::Bench(command) => crate::bench_cli::run_local(command),
+        AgentCommand::Bench(command) => crate::bench_cli::run_ledger(session, ledger, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),

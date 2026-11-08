@@ -277,7 +277,10 @@ the operator's models and stand-in tools, report the pass rate, pass^k,
 tokens and cost, and keep each run with its log, fixed by its digest;
 they are tested with stand-in models only (a careful script passes every
 case, a careless one fails those it should), and no run with a real model
-is reported here. A judge (`sion agent judge`) reads a session's steps after
+is reported here. A run can be published as a claim signed by a wallet
+(`sion agent bench publish`: the suite's digest, the models, the figures
+and the log's digest) and checked (`sion agent bench check`) against its
+log, each run judged again by the suite's checks, tested on a devnet. A judge (`sion agent judge`) reads a session's steps after
 labelled examples, and is measured on labelled steps it was not shown. A
 session that holds confidential content (told so, read from a path named
 confidential, or reached from a subagent or graph node that held some) has
@@ -1715,6 +1718,7 @@ the architecture's own:
 | `agent:outside-files` | A workspace file taints the session only as far as it is known to be from outside: under `downloads/`, sent in a chat, under a path named with `--outside`, or with the content of a file marked so. A file the operator put there unnamed is read as theirs; the shell's output is checked for lines of such files as written, so output that changes them (counted, encoded, cut) is not caught; and only the first 64 files from outside, a megabyte of each, are looked for in it. Marks are kept on this machine, so a workspace moved to another loses them. |
 | `agent:signed-decisions` | A signed decision shows that the wallet's keys signed it as recorded, not who held them; decisions made in chat apps are not signed, and a signature names the call by its key and the digest of its input, which a compacted session may no longer show. |
 | `agent:imitated-notes` | Only the runtime's notes as it writes them are marked in a tool's result, case aside; other words that claim the same are not. The mark informs the model: what holds a call is the policy, and approvals are kept in the session's state, never read from text. |
+| `agent:bench-claims` | A published benchmark run is its issuer's account: a check shows that the claim says what its log shows and that the suite's checks agree with the calls the log records, not that the log records runs that happened, with the models it names, at the cost it says. Re-judging uses the suite's checks only; a suite whose checks are weak passes runs that are not what its cases intend. |
 | `agent:attack-tests` | The attacks tested are the ones listed, against a scripted model that obeys every instruction it reads: they show what the runtime enforces without the model, not that no other attack gets through, and what got through in them gets through. |
 | `agent:a2a-webhooks` | An A2A task's updates go to the webhooks its client registered, which the server checks only for being HTTPS addresses that resolve to public ones (unless the operator allows this machine's network): whoever holds a token that reaches the profile can have its tasks' states sent anywhere public, and a webhook is told the task as it stands, its reply included. |
 | `agent:dream-quote` | A note a dream keeps rests on the words of its session it quotes: that they are in the session's transcript, as they are written there, shows that they were said in it (by the person, a tool or the agent itself), not that the note is true, nor that it says what they meant. |
