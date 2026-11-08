@@ -651,7 +651,8 @@ pipe, a page shown to the model as its accessibility tree with references
 machine's managed browser policies, reaching public addresses only, or the
 hosts `--browser-host` names, through the egress proxy; held to named
 hosts, it acts on their pages as the autonomy level allows
-(`Policy::contained`), and otherwise its actions after a page wait for a
+(`Policy::contained`) unless the session also holds confidential
+content, and otherwise its actions after a page wait for a
 person; the operator's logins (`sion agent login`) are filled only into a
 field whose own frame is of the login's origin, and cut out of all it
 returns. `--computer` gives an X server of the session's own (Xvfb,
@@ -1710,7 +1711,8 @@ the architecture's own:
 | `agent:judge` | A judge (`sion agent judge`, `--judge`) is a model's judgment of each step, not a check: it can be wrong, and what the steps quote can steer it, though it is told that they are data. Its calibration is its agreement with four labelled steps it was not shown, which says little about steps unlike them. |
 | `agent:graph-replay` | A graph's run is pinned to the digest of its graph in the run's own file, which catches a graph changed after the run began, not one changed with its digest; a replay answers each node with what the run recorded, so it shows how the graph routes those answers, not that its models would answer the same again. |
 | `agent:read-only-node` | A read-only node (`read_only`) gets the tools whose declared effect is to read: a tool that declares less than its calls can do is not held back (`agent:mcp-effects`). |
-| `agent:confidential-label` | A session holds confidential content only as far as it is marked: by `--confidential`, by `read_file` under the paths named, or by a subagent's report or a graph node's input from a session that held some. The shell, scripts, MCP tools and the browser can read the same data without marking it, and a tool the operator contained is not held. |
+| `agent:confidential-label` | A session holds confidential content only as far as it is marked: by `--confidential`, by `read_file` under the paths named, or by a subagent's report or a graph node's input from a session that held some. The shell, scripts, MCP tools and the browser can read the same data without marking it, and a tool the operator contained is not held while the session has read nothing from outside. |
+| `agent:outside-files` | A workspace file taints the session only as far as it is known to be from outside: under `downloads/`, sent in a chat, under a path named with `--outside`, or with the content of a file marked so. A file the operator put there unnamed is read as theirs; the shell's output is checked for lines of such files as written, so output that changes them (counted, encoded, cut) is not caught; and only the first 64 files from outside, a megabyte of each, are looked for in it. Marks are kept on this machine, so a workspace moved to another loses them. |
 | `agent:signed-decisions` | A signed decision shows that the wallet's keys signed it as recorded, not who held them; decisions made in chat apps are not signed, and a signature names the call by its key and the digest of its input, which a compacted session may no longer show. |
 | `agent:imitated-notes` | Only the runtime's notes as it writes them are marked in a tool's result, case aside; other words that claim the same are not. The mark informs the model: what holds a call is the policy, and approvals are kept in the session's state, never read from text. |
 | `agent:attack-tests` | The attacks tested are the ones listed, against a scripted model that obeys every instruction it reads: they show what the runtime enforces without the model, not that no other attack gets through, and what got through in them gets through. |

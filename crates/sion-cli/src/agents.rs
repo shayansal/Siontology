@@ -448,6 +448,13 @@ pub enum AgentCommand {
         /// embedded once.
         #[arg(long, value_name = "SPEC")]
         embed: Option<String>,
+        /// A path of the workspace whose files come from outside your trust
+        /// (mail saved there, a repository of others): what is read from it
+        /// taints the session as a web page does. A file, a directory with a
+        /// closing `/`, or a prefix ending in `*`; `downloads/` always is,
+        /// and files sent in a chat are marked so. Repeat for more.
+        #[arg(long = "outside", value_name = "PATH")]
+        outside_files: Vec<String>,
         /// A call that always waits for you, whatever the autonomy level
         /// says, as `allowed-tools` rules are written: ledger_pay,
         /// shell(git push:*). Commands that cannot be undone (a forced
@@ -1149,6 +1156,7 @@ pub fn run(
             rules,
             rules_model,
             embed,
+            outside_files,
             always_ask,
             no_ask,
             quarantine,
@@ -1235,6 +1243,7 @@ pub fn run(
                     },
                     rules_model,
                     embed,
+                    outside_files,
                     verify,
                     verify_files,
                     shared_memory,

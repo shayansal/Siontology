@@ -97,6 +97,16 @@ impl Tool for Transcribe {
             Err(e) => return Outcome::error(e),
         };
         let held = sion_agent::builtin::confidential_in(&self.confidential, &self.root, relative);
+        // What a recording from outside says is from outside.
+        let outside = sion_agent::provenance::is_outside(
+            &self.root,
+            relative,
+            std::fs::metadata(&path)
+                .ok()
+                .filter(|meta| meta.len() <= 64 << 20)
+                .and_then(|_| std::fs::read(&path).ok())
+                .as_deref(),
+        );
         let extension = path
             .extension()
             .map(|x| x.to_string_lossy().to_ascii_lowercase())
@@ -140,6 +150,11 @@ impl Tool for Transcribe {
                 text.trim()
             )),
             Err(why) => Outcome::error(format!("{relative} could not be heard: {why}")),
+        };
+        let outcome = if outside {
+            outcome.from_outside()
+        } else {
+            outcome
         };
         if held {
             outcome.held_confidential()

@@ -718,11 +718,23 @@ impl Browser {
             std::fs::remove_file(&from)
         });
         match moved {
-            Ok(()) => format!(
-                "downloaded {DOWNLOADS}/{name} ({size} bytes, from {}) into your workspace: it is \
-                 from outside",
-                d.url
-            ),
+            Ok(()) => {
+                // Marked by its content too, so that a copy of it under
+                // another name is from outside as well.
+                if let Ok(bytes) = std::fs::read(&to) {
+                    let _ = crate::provenance::mark(
+                        workspace,
+                        &format!("{DOWNLOADS}/{name}"),
+                        &bytes,
+                        &format!("a download from {}", d.url),
+                    );
+                }
+                format!(
+                    "downloaded {DOWNLOADS}/{name} ({size} bytes, from {}) into your workspace: \
+                     it is from outside",
+                    d.url
+                )
+            }
             Err(e) => format!("{} could not be kept: {e}", shown_name(&d.name)),
         }
     }

@@ -97,6 +97,7 @@ pub mod plan;
 pub mod policy;
 pub mod practice;
 pub mod prices;
+pub mod provenance;
 pub mod providers;
 pub mod quarantine;
 pub mod reading;

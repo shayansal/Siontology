@@ -320,7 +320,8 @@ impl Terminals {
     }
 
     fn outcome(&self, outcome: Outcome) -> Outcome {
-        if self.reaches_out() {
+        // What it prints of a file from outside is from outside too.
+        if self.reaches_out() || crate::provenance::echoes_outside(&self.root, &outcome.content) {
             outcome.from_outside()
         } else {
             outcome

@@ -37,7 +37,11 @@ gives a subagent are content from outside too.
 A browser or a desktop held to the hosts the operator names is the one
 exception: it acts on their pages as the level allows, while the
 session's other external calls, and all spending, still wait ([A browser
-and a desktop](browser.md#where-it-acts-on-its-own)).
+and a desktop](browser.md#where-it-acts-on-its-own)), until the session
+holds confidential content as well: then it waits too. A file in the
+workspace that came from outside (a download, a file sent in a chat, a
+path named with `--outside`) taints the session when it is read
+([Files from outside](security.md#files-from-outside)).
 
 ### Quarantine
 

@@ -209,8 +209,10 @@ mod tests {
                         says: "acme-ltd".into(),
                         error: false,
                         outside: false,
+                        confidential: false,
                     }],
                     otherwise: Some("no such supplier".into()),
+                    command_field: None,
                 },
                 Fixture {
                     name: "pay".into(),
@@ -218,6 +220,7 @@ mod tests {
                     effect: Effect::Spend,
                     answers: Vec::new(),
                     otherwise: Some("paid".into()),
+                    command_field: None,
                 },
             ],
             checks: vec![

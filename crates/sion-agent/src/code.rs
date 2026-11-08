@@ -173,12 +173,25 @@ impl Tool for EditFile {
         let new = input["new_string"].as_str().unwrap_or_default();
         let all = input["replace_all"].as_bool().unwrap_or(false);
         let held = confidential_in(&self.confidential, &self.root, relative);
-        let outcome = edit(&self.root, relative, old, new, all);
-        match outcome {
-            Ok(text) if held => Outcome::ok(text).held_confidential(),
+        // The lines it shows of a file from outside are from outside.
+        let outside = crate::provenance::is_outside(
+            &self.root,
+            relative,
+            std::fs::read(self.root.join(relative)).ok().as_deref(),
+        );
+        let outcome = match edit(&self.root, relative, old, new, all) {
             Ok(text) => Outcome::ok(text),
-            Err(e) if held => Outcome::error(e).held_confidential(),
             Err(e) => Outcome::error(e),
+        };
+        let outcome = if outside {
+            outcome.from_outside()
+        } else {
+            outcome
+        };
+        if held {
+            outcome.held_confidential()
+        } else {
+            outcome
         }
     }
 }
@@ -1072,10 +1085,23 @@ impl Tool for SearchFiles {
                 let held = names
                     .iter()
                     .any(|name| confidential_in(&self.confidential, &self.root, name));
-                if held {
-                    Outcome::ok(text).held_confidential()
+                // Lines of a file from outside are from outside.
+                let outside = names.iter().any(|name| {
+                    crate::provenance::is_outside(
+                        &self.root,
+                        name,
+                        std::fs::read(self.root.join(name)).ok().as_deref(),
+                    )
+                });
+                let outcome = if outside {
+                    Outcome::ok(text).from_outside()
                 } else {
                     Outcome::ok(text)
+                };
+                if held {
+                    outcome.held_confidential()
+                } else {
+                    outcome
                 }
             }
             Err(e) => Outcome::error(e),

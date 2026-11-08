@@ -239,6 +239,11 @@ pub struct Fixture {
     /// The answer when none matches (default: `ok`).
     #[serde(default)]
     pub otherwise: Option<String>,
+    /// The field of its input that holds a shell command, judged as the
+    /// runtime judges a command it runs: one that cannot be undone waits
+    /// for a person, whatever the autonomy level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_field: Option<String>,
 }
 
 fn read_effect() -> Effect {
@@ -260,6 +265,10 @@ pub struct Answer {
     /// page): it taints the session.
     #[serde(default)]
     pub outside: bool,
+    /// Whether it is confidential (a file the operator named so): the
+    /// session holds confidential content from then on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confidential: bool,
 }
 
 /// Something that must hold of a run.
@@ -433,6 +442,10 @@ impl Tool for Recorded {
         self.tool.effect()
     }
 
+    fn irreversible(&self, input: &Value) -> Option<String> {
+        self.tool.irreversible(input)
+    }
+
     fn call(&self, input: &Value, key: &str) -> Outcome {
         if let Ok(mut made) = self.made.lock() {
             made.push((self.tool.0.name.clone(), input.clone()));
@@ -458,6 +471,11 @@ impl Tool for FixtureTool {
         self.0.effect
     }
 
+    fn irreversible(&self, input: &Value) -> Option<String> {
+        let field = self.0.command_field.as_deref()?;
+        crate::policy::irreversible_command(input[field].as_str().unwrap_or_default())
+    }
+
     fn call(&self, input: &Value, _key: &str) -> Outcome {
         match self.0.answers.iter().find(|a| includes(input, &a.when)) {
             Some(answer) => {
@@ -466,8 +484,13 @@ impl Tool for FixtureTool {
                 } else {
                     Outcome::ok(answer.says.clone())
                 };
-                if answer.outside {
+                let outcome = if answer.outside {
                     outcome.from_outside()
+                } else {
+                    outcome
+                };
+                if answer.confidential {
+                    outcome.held_confidential()
                 } else {
                     outcome
                 }
@@ -479,8 +502,9 @@ impl Tool for FixtureTool {
 
 /// Whether `input` has every field of `with`, with the same value: a
 /// number the same number whether written as one or as a string
-/// (`"40"`, `40`, `"40.00"`), and text the same text ignoring case and the
-/// space around it.
+/// (`"40"`, `40`, `"40.00"`), text the same text ignoring case and the
+/// space around it, and `{"contains": "text"}` any value whose text
+/// contains it, ignoring case.
 fn includes(input: &Value, with: &Map<String, Value>) -> bool {
     with.iter()
         .all(|(key, value)| input.get(key).is_some_and(|got| same(got, value)))
@@ -489,6 +513,18 @@ fn includes(input: &Value, with: &Map<String, Value>) -> bool {
 fn same(got: &Value, wanted: &Value) -> bool {
     if got == wanted {
         return true;
+    }
+    if let Some(part) = wanted
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.get("contains"))
+        .and_then(Value::as_str)
+    {
+        let text = match got {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        return text.to_lowercase().contains(&part.to_lowercase());
     }
     match (number_of(got), number_of(wanted)) {
         (Some(a), Some(b)) => return (a - b).abs() < 1e-9,

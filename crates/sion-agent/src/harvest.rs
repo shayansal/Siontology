@@ -178,6 +178,7 @@ pub fn case_of(id: &str, task: &str, calls: &[Recorded], verdict: Verdict) -> Re
                     effect: call.effect,
                     answers: Vec::new(),
                     otherwise: None,
+                    command_field: None,
                 });
                 fixtures.len() - 1
             }
@@ -191,6 +192,7 @@ pub fn case_of(id: &str, task: &str, calls: &[Recorded], verdict: Verdict) -> Re
                 says: cut(&call.content),
                 error: call.is_error,
                 outside: call.outside,
+                confidential: false,
             });
         }
     }
@@ -201,6 +203,7 @@ pub fn case_of(id: &str, task: &str, calls: &[Recorded], verdict: Verdict) -> Re
                 says: NO_RECORDING.into(),
                 error: true,
                 outside: false,
+                confidential: false,
             });
         }
     }

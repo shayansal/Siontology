@@ -180,6 +180,7 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
         rules: None,
         rules_model: None,
         embed: None,
+        outside_files: Vec::new(),
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

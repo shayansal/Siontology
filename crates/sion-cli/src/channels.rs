@@ -2046,6 +2046,7 @@ mod tests {
             rules: None,
             rules_model: None,
             embed: None,
+            outside_files: Vec::new(),
             always_ask: Vec::new(),
             quarantine: false,
             shared_memory: Vec::new(),

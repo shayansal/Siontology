@@ -396,7 +396,13 @@ impl Policy {
             return Decision::Deny(format!("{tool} is not granted to this agent"));
         }
         let mut decision = self.autonomy.decide(effect);
-        let contained = effect == Effect::External && self.contained.contains(tool);
+        // A tool held to where the operator named acts on what it read,
+        // unless the session also holds confidential content: then what
+        // came from outside could have it carried to a place the operator
+        // allowed (a form, a comment, a post) and read there by others.
+        let contained = effect == Effect::External
+            && self.contained.contains(tool)
+            && !(standing.tainted(now) && standing.confidential);
         if decision == Decision::Run
             && effect >= Effect::External
             && !contained
@@ -626,6 +632,52 @@ mod tests {
             lower.decide(&standing, "browser_click", Effect::External, "c", 101),
             Decision::Deny(_)
         ));
+    }
+
+    #[test]
+    fn a_contained_tool_waits_once_the_session_holds_confidential_content_too() {
+        let policy = Policy {
+            autonomy: Autonomy::L5,
+            contained: ["browser_type".to_string()].into(),
+            ..Policy::default()
+        };
+        // Confidential content alone: it goes only where the operator
+        // allowed, steered by nothing from outside.
+        let mut standing = Standing::default();
+        standing.hold_confidential();
+        assert_eq!(
+            policy.decide(&standing, "browser_type", Effect::External, "t", 101),
+            Decision::Run
+        );
+        // Content from outside alone: there is nothing confidential to carry.
+        let mut tainted = Standing::default();
+        tainted.taint(&policy, 100);
+        assert_eq!(
+            policy.decide(&tainted, "browser_type", Effect::External, "t", 101),
+            Decision::Run
+        );
+        // Both, in either order: a person decides.
+        standing.taint(&policy, 100);
+        assert!(matches!(
+            policy.decide(&standing, "browser_type", Effect::External, "t", 101),
+            Decision::Ask(_)
+        ));
+        tainted.hold_confidential();
+        assert!(matches!(
+            policy.decide(&tainted, "browser_type", Effect::External, "t", 101),
+            Decision::Ask(_)
+        ));
+        // Once the taint expires, the confidential content alone is left.
+        assert_eq!(
+            policy.decide(
+                &tainted,
+                "browser_type",
+                Effect::External,
+                "t",
+                100 + policy.taint_ttl
+            ),
+            Decision::Run
+        );
     }
 
     #[test]

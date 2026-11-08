@@ -1000,6 +1000,10 @@ pub struct Saved {
     /// What searches by meaning, as the operator named it (`--embed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed: Option<String>,
+    /// The paths of the workspace whose files come from outside
+    /// ([`sion_agent::provenance`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside_files: Vec<String>,
 }
 
 /// What an agent knew of itself, as a session's system prompt keeps it
@@ -1524,6 +1528,10 @@ impl Saved {
             check_workspace(root)?;
             check_apart(root, self.skills.as_deref())?;
             std::fs::create_dir_all(root).map_err(|e| CliError::Usage(e.to_string()))?;
+            // Its files from outside: those the operator names, and those
+            // marked as they came in, kept beside the other agents' state.
+            sion_agent::provenance::keep_in(provenance_dir());
+            sion_agent::provenance::declare(root, &self.outside_files);
             for tool in sion_agent::builtin::workspace_holding(root, &self.confidential_files) {
                 tools.add_boxed(tool);
             }
@@ -2647,6 +2655,12 @@ fn model_name(spec: &str) -> &str {
     spec.split(['#', ' ']).next().unwrap_or(spec)
 }
 
+/// Where the marks of workspace files from outside are kept
+/// ([`sion_agent::provenance`]): outside every workspace.
+pub fn provenance_dir() -> PathBuf {
+    sion_home().join("agents").join("provenance")
+}
+
 /// This machine's Siontology home: its wallets, sessions and skills.
 pub(crate) fn sion_home() -> PathBuf {
     wallet_dir()
@@ -2993,6 +3007,9 @@ pub struct Equipment {
     pub rules_model: Option<String>,
     /// What searches by meaning ([`Saved::embed`]).
     pub embed: Option<String>,
+    /// The paths of the workspace whose files come from outside
+    /// ([`Saved::outside_files`]).
+    pub outside_files: Vec<String>,
     /// The command that checks its task ([`Saved::verify`]).
     pub verify: Option<String>,
     /// The check's own files ([`Saved::verify_files`]).
@@ -3083,6 +3100,7 @@ pub fn start_watched(
         rules,
         rules_model,
         embed,
+        outside_files,
         verify,
         verify_files,
         shared_memory,
@@ -3270,6 +3288,7 @@ pub fn start_watched(
         rules,
         rules_model,
         embed,
+        outside_files,
     };
     saved.from_outside(hooks.outside);
     saved.hold_confidential(hooks.confidential || confidential);

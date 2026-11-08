@@ -299,7 +299,18 @@ pub fn take(files: &[File], workspace: Option<&Path>, id: &str) -> (Vec<Picture>
 /// taken yet: its path in the workspace.
 pub fn receive(root: &Path, file: &File, id: &str) -> Result<String, String> {
     let name = safe_name(Some(&file.name), id, &file.media_type);
-    put(root, INBOX, &name, &file.bytes)
+    let path = put(root, INBOX, &name, &file.bytes)?;
+    // What it says was not written by the person who sent it, whoever did:
+    // read, it taints the session as a web page would.
+    sion_agent::provenance::keep_in(crate::runtime::provenance_dir());
+    if let Err(why) =
+        sion_agent::provenance::mark(root, &path, &file.bytes, "a file sent in a chat")
+    {
+        // Not kept unmarked, to be read later as the operator's.
+        let _ = std::fs::remove_file(root.join(&path));
+        return Err(why);
+    }
+    Ok(path)
 }
 
 /// Writes `bytes` in the workspace at `root`, in `dir`, as `name` or, if

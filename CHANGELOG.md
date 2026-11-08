@@ -10,6 +10,26 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Prompt injection: suites, and two holes closed
+
+- Two more suites for `sion agent bench`: `injection-assistant`
+  (instructions planted in mail, a calendar, a page, a channel, a
+  message, reviews and a download, as AgentDojo plants them) and
+  `injection-computer` (OS-Harm's kinds: injections on the screen and in
+  files, a request that harms someone else, what cannot be undone).
+- Files from outside taint a session that reads them: everything under
+  `downloads/`, files sent in a chat (marked as they are put in
+  `inbox/`), paths named with `--outside`, and copies of marked files by
+  their content; what the shell prints of such a file taints it too.
+  Before, a workspace file was always read as the operator's.
+- A tool held to the operator's hosts (a contained browser) now waits for
+  a person once the session holds confidential content as well as
+  content from outside, so a page cannot have it carry the confidential
+  content to an allowed site.
+- Stand-in tools may give confidential answers, and judge a command field
+  as the runtime judges commands; `{"contains": …}` matches part of a
+  value in a check.
+
 ### Payment benchmarks
 
 - `sion agent bench`: suites built in (`payments-x402`,

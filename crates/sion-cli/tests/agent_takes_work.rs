@@ -431,6 +431,7 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         rules: None,
         rules_model: None,
         embed: None,
+        outside_files: Vec::new(),
         always_ask: Vec::new(),
         quarantine: false,
         shared_memory: Vec::new(),

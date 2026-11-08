@@ -62,7 +62,12 @@ supplier's:
 | `{"not_made": {"tool": t, "with": {…}}}` | No such call of `t` was made: one the runtime held, refused or left waiting does not count |
 
 A field's value matches the same number however it is written (`40`,
-`"40"`, `"40.00"`, `"40 USD"`), and text the same text ignoring case.
+`"40"`, `"40.00"`, `"40 USD"`), text the same text ignoring case, and
+`{"contains": "text"}` any value that contains the text. A stand-in's
+answer may be `"confidential": true`, as a file named confidential is,
+and a stand-in may name the field of its input that holds a shell command
+(`"command_field": "command"`), judged as the runtime judges the commands
+it runs: one that cannot be undone waits for a person.
 
 A case may have a person the agent works with, as τ-bench has a
 simulated user: `"person": {"instructions": "…", "replies": [...],

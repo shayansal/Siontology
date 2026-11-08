@@ -583,10 +583,16 @@ impl crate::tools::Tool for DocumentSearch {
             return Outcome::ok(format!("no passage matches {query:?}"));
         }
         let mut held = false;
+        let mut outside = false;
         let mut lines = Vec::new();
         for (i, _, how) in &ranked {
             let passage = &found[*i];
             held |= crate::builtin::confidential_in(&self.confidential, &self.root, &passage.path);
+            outside |= crate::provenance::is_outside(
+                &self.root,
+                &passage.path,
+                std::fs::read(self.root.join(&passage.path)).ok().as_deref(),
+            );
             let how = match how {
                 Found::Words => "words",
                 Found::Meaning => "meaning",
@@ -602,6 +608,11 @@ impl crate::tools::Tool for DocumentSearch {
             lines.push(format!("[{note}]"));
         }
         let outcome = Outcome::ok(lines.join("\n\n"));
+        let outcome = if outside {
+            outcome.from_outside()
+        } else {
+            outcome
+        };
         if held {
             outcome.held_confidential()
         } else {

@@ -493,6 +493,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
             rules: Some("Refunds are at most 5 USD.".into()),
             rules_model: Some(judge),
             embed: None,
+            outside_files: Vec::new(),
             ..Default::default()
         },
     )

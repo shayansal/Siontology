@@ -119,6 +119,9 @@ pub struct Profile {
     /// What searches by meaning in its sessions (`--embed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed: Option<String>,
+    /// The paths of its workspace whose files come from outside (`--outside`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside_files: Vec<String>,
     /// Calls that always wait for a person in its sessions, whatever the
     /// autonomy level says (`ledger_pay`, `shell(git push:*)`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -232,6 +235,7 @@ impl Profile {
             rules: self.rules.clone(),
             rules_model: self.rules_model.clone(),
             embed: self.embed.clone(),
+            outside_files: self.outside_files.clone(),
             // A check is given to a run (`sion agent run --verify`), not to
             // a profile's sessions.
             verify: None,
@@ -602,6 +606,11 @@ pub enum ProfileCommand {
         /// local:<model> or command:<program>.
         #[arg(long, value_name = "SPEC")]
         embed: Option<String>,
+        /// A path of its workspace whose files come from outside: what is
+        /// read from it taints the session as a web page does. Repeat for
+        /// more.
+        #[arg(long = "outside", value_name = "PATH")]
+        outside_files: Vec<String>,
         /// A call that always waits for a person, whatever the autonomy
         /// level says, as `allowed-tools` rules are written: ledger_pay,
         /// shell(git push:*). Repeat for more.
@@ -715,6 +724,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             rules,
             rules_model,
             embed,
+            outside_files,
             always_ask,
             quarantine,
             shared_memory,
@@ -802,6 +812,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                     None => None,
                 },
                 rules_model,
+                outside_files,
                 embed: match embed {
                     Some(spec) => {
                         crate::embeddings::parse(&spec)?;

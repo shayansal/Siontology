@@ -165,7 +165,10 @@ Name hosts (`--browser-host docs.rs`; repeat for more; `*` for every
 public host) and the browser reaches those alone, and acts on their pages
 on its own, as the autonomy level allows, as in the first session above;
 the session's other external calls (a payment, a message, a fetch) still
-wait (`agent:browser-hosts`). A host it may not open is refused by the
+wait (`agent:browser-hosts`). Once the session holds confidential content
+as well as what it read from outside, its actions on those hosts wait too:
+what a page says could have it type the confidential content into a form
+there, for others to read. A host it may not open is refused by the
 proxy:
 
 ```text

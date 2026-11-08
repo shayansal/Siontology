@@ -1219,6 +1219,8 @@ Options:
           The model that checks calls against the rules (by default the first --model that is not a script)
       --embed <SPEC>
           Search by meaning as well as by words, in its memory and in the documents of its workspace (`document_search`): openai:<model>, voyage:<model>, local:<model> (a server on this machine that speaks OpenAI's embeddings API, at SION_LOCAL_EMBED_URL, Ollama's by default) or command:<program>. Vectors are kept, so a text is embedded once
+      --outside <PATH>
+          A path of the workspace whose files come from outside your trust (mail saved there, a repository of others): what is read from it taints the session as a web page does. A file, a directory with a closing `/`, or a prefix ending in `*`; `downloads/` always is, and files sent in a chat are marked so. Repeat for more
       --always-ask <RULE>
           A call that always waits for you, whatever the autonomy level says, as `allowed-tools` rules are written: ledger_pay, shell(git push:*). Commands that cannot be undone (a forced push, `rm -rf` of the workspace) always wait. Repeat for more
       --no-ask
@@ -1521,6 +1523,8 @@ Options:
           The model that checks calls against the rules (by default the first that is not a script)
       --embed <SPEC>
           Search by meaning as well as by words, in its memory and its workspace's documents: openai:<model>, voyage:<model>, local:<model> or command:<program>
+      --outside <PATH>
+          A path of its workspace whose files come from outside: what is read from it taints the session as a web page does. Repeat for more
       --always-ask <RULE>
           A call that always waits for a person, whatever the autonomy level says, as `allowed-tools` rules are written: ledger_pay, shell(git push:*). Repeat for more
       --quarantine
