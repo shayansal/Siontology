@@ -93,8 +93,11 @@ The tools:
 | `browser_press` | Presses a key: Enter, Tab, Escape, Backspace, Delete, Space, the arrows, PageUp, PageDown, Home, End | external |
 | `browser_scroll` | Scrolls about a screen, down or up | external |
 | `browser_back` | Goes back a page | external |
-| `browser_screenshot` | A picture of the page; with `marks`, each element of the last tree that is in view boxed and named on it (`e12`) | read |
+| `browser_screenshot` | A picture of the page; with `marks`, each element of the last tree that is in view boxed and named on it (`e12`); with `zoom` (`x`, `y`, `width`, `height`, in a screenshot's pixels), a closer picture of that region at `scale` times its size (2 unless said, at most 4) | read |
 | `browser_click_at` | Clicks at a point of the page as a screenshot shows it, for what has no reference (a canvas, a map), then returns the page | external |
+| `browser_select` | Chooses an option of a list (a `<select>`) by its text or its value, the page told as when a person picks it (`input`, `change`); an option not there is refused with the options there are | external |
+| `browser_hover` | Moves the pointer over an element, for what shows on hover (a menu, a tip), then returns the page | external |
+| `browser_drag` | Drags from an element or a point to another, the button held down and moved in twelve steps: a slider, a card to another list; a drag the page handles as HTML's drag and drop is dropped where it ends, with what the page put in it | external |
 | `browser_type_focused` | Types into whatever has the focus (after `browser_click_at`, say); with `submit`, presses Enter after | external |
 | `browser_ask_person` | Hands the page to you, for what only you can do ([below](#handed-to-you)) | read |
 | `browser_fill_login` | Fills one of your logins into a field ([below](#logins)) | external |
@@ -295,10 +298,12 @@ The tool is `computer`, with the actions computer-use models are trained
 on: `screenshot`; `left_click`, `right_click`, `middle_click`,
 `double_click`, `triple_click` and `mouse_move` at a coordinate;
 `left_click_drag`; `type`; `key` (`ctrl+l`, `Return`); `scroll`; `wait`;
-`cursor_position`; and `launch`, which starts an allowed program. Two more
-read the desktop as a program would: `windows` lists the windows open,
-each with its id, name, place and size, and `focus` brings one forward by
-its id. Every action answers with a screenshot. Here the desktop's program
+`cursor_position`; `zoom`, which shows a region (`[x0, y0, x1, y1]`) as
+large as the screen holds it, for small text; and `launch`, which starts
+an allowed program. Two more read the desktop as a program would:
+`windows` lists the windows open, each with its id, name, place and size,
+and `focus` brings one forward by its id. Every action answers with a
+screenshot. Here the desktop's program
 is Chrome, which the agent opens on serde_json's page:
 
 ```text

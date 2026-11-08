@@ -662,7 +662,11 @@ cookie set on a page on this machine and found by the next session's
 browser (trust atom `agent:signed-in-browser`). Where the tree says too
 little, a screenshot marks the last tree's references on the page, and
 `browser_click_at` and `browser_type_focused` act on a point and on the
-focus. `browser_ask_person` hands the page to the person the session can
+focus; `browser_select` chooses from a list, `browser_hover` shows what
+hovering shows, `browser_drag` drags (HTML's drag and drop included,
+through the browser's drag interception), and a screenshot may be a closer
+picture of a region (the desktop's `zoom` too; all tested against Chromium
+and Xvfb in bubblewrap). `browser_ask_person` hands the page to the person the session can
 ask: a page served on 127.0.0.1, by a token of 128 bits and answering only
 to its own host name, a few requests at a time and each bounded, shows the
 browser's page and passes the person's clicks, text, eight keys and

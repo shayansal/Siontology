@@ -1578,6 +1578,147 @@ impl Browser {
         Ok(())
     }
 
+    /// Moves the pointer over the element `reference`, as a hand does: what
+    /// shows on hover (a menu, a tip) shows.
+    pub fn hover(&mut self, reference: &str) -> Result<(), String> {
+        let backend = self.node(reference)?;
+        self.forget();
+        let (x, y) = self.center(backend)?;
+        self.page(
+            "Input.dispatchMouseEvent",
+            json!({"type": "mouseMoved", "x": x, "y": y}),
+        )?;
+        self.settle();
+        Ok(())
+    }
+
+    /// Chooses `choice` (an option's text, or its value) in the list
+    /// `reference` (a `<select>`), as a person picks from a dropdown, the
+    /// page told as when they do: the option's text.
+    pub fn select(&mut self, reference: &str, choice: &str) -> Result<String, String> {
+        let backend = self.node(reference)?;
+        self.forget();
+        let object = self.page("DOM.resolveNode", json!({"backendNodeId": backend}))?;
+        let id = object["object"]["objectId"]
+            .as_str()
+            .ok_or("the element is no longer on the page: take a snapshot")?;
+        let chosen = self.page(
+            "Runtime.callFunctionOn",
+            json!({"objectId": id, "functionDeclaration": CHOOSE, "arguments": [{"value": choice}],
+                   "returnByValue": true}),
+        )?;
+        let value = &chosen["result"]["value"];
+        if let Some(error) = value["error"].as_str() {
+            return Err(error.to_string());
+        }
+        self.settle();
+        Ok(value["chosen"].as_str().unwrap_or(choice).to_string())
+    }
+
+    /// The center of the element `reference`, or the point (`x`, `y`) of
+    /// the page as it shows, in its CSS pixels.
+    pub fn point(
+        &self,
+        reference: Option<&str>,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> Result<(f64, f64), String> {
+        match (reference, x, y) {
+            (Some(reference), _, _) => self.center(self.node(reference)?),
+            (None, Some(x), Some(y)) => {
+                let (width, height) = (f64::from(self.size.0), f64::from(self.size.1));
+                if !(0.0..width).contains(&x) || !(0.0..height).contains(&y) {
+                    return Err(format!(
+                        "({x}, {y}) is not on the page, which shows {width} by {height}"
+                    ));
+                }
+                Ok((x, y))
+            }
+            _ => Err("give an element's reference, or a point: x and y".into()),
+        }
+    }
+
+    /// Drags from `from` to `to`, the button held down and the pointer moved
+    /// in steps, as a hand drags: a slider's knob, a card to another list, a
+    /// file onto a drop zone. A drag the page handles as HTML's drag and drop
+    /// is dropped where it ends, with what the page put in it.
+    pub fn drag(&mut self, from: (f64, f64), to: (f64, f64)) -> Result<(), String> {
+        self.forget();
+        let _ = self.page("Input.setInterceptDrags", json!({"enabled": true}));
+        let mouse = |kind: &str, (x, y): (f64, f64), buttons: u32| json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1});
+        let result = (|| -> Result<(), String> {
+            self.page("Input.dispatchMouseEvent", mouse("mouseMoved", from, 0))?;
+            self.page("Input.dispatchMouseEvent", mouse("mousePressed", from, 1))?;
+            for step in 1..=DRAG_STEPS {
+                let t = f64::from(step) / f64::from(DRAG_STEPS);
+                let at = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+                self.page("Input.dispatchMouseEvent", mouse("mouseMoved", at, 1))?;
+            }
+            // The page began a drag and drop of its own: dropped here.
+            let intercepted = self.cdp.wait_for(
+                |e| e["method"] == "Input.dragIntercepted" && self.mine(e),
+                Duration::from_millis(200),
+            );
+            if let Some(event) = intercepted {
+                let data = event["params"]["data"].clone();
+                for kind in ["dragEnter", "dragOver", "drop"] {
+                    self.page(
+                        "Input.dispatchDragEvent",
+                        json!({"type": kind, "x": to.0, "y": to.1, "data": data}),
+                    )?;
+                }
+            }
+            self.page("Input.dispatchMouseEvent", mouse("mouseReleased", to, 0))?;
+            Ok(())
+        })();
+        let _ = self.page("Input.setInterceptDrags", json!({"enabled": false}));
+        result?;
+        self.settle();
+        Ok(())
+    }
+
+    /// A closer picture of part of what the page shows: the region from
+    /// (`x`, `y`), `width` by `height` in a screenshot's pixels, at `scale`
+    /// times its size (1 to 4), for small text and fine detail (PNG,
+    /// base64).
+    pub fn screenshot_zoomed(
+        &mut self,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        scale: f64,
+    ) -> Result<String, String> {
+        let (shown_w, shown_h) = (f64::from(self.size.0), f64::from(self.size.1));
+        if !(0.0..shown_w).contains(&x) || !(0.0..shown_h).contains(&y) {
+            return Err(format!(
+                "({x}, {y}) is not on the page, which shows {shown_w} by {shown_h}"
+            ));
+        }
+        let width = width.min(shown_w - x);
+        let height = height.min(shown_h - y);
+        if width < 4.0 || height < 4.0 {
+            return Err("the region is too small: at least 4 by 4".into());
+        }
+        // The clip is the document's; the region is what shows of it.
+        let scrolled = self.page(
+            "Runtime.evaluate",
+            json!({"expression": "[window.visualViewport ? visualViewport.pageLeft : scrollX, window.visualViewport ? visualViewport.pageTop : scrollY]",
+                   "returnByValue": true}),
+        )?;
+        let dx = scrolled["result"]["value"][0].as_f64().unwrap_or(0.0);
+        let dy = scrolled["result"]["value"][1].as_f64().unwrap_or(0.0);
+        let shot = self.page(
+            "Page.captureScreenshot",
+            json!({"format": "png", "clip": {"x": x + dx, "y": y + dy, "width": width,
+                   "height": height, "scale": scale.clamp(1.0, 4.0)}}),
+        )?;
+        shot["data"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "the browser gave no picture".to_string())
+    }
+
     /// Types `text` into what has the focus on the page, and presses Enter
     /// after if `submit`.
     pub fn type_focused(&mut self, text: &str, submit: bool) -> Result<(), String> {
@@ -1711,6 +1852,27 @@ const MARK: &str = r#"(id, marks) => {
   document.documentElement.appendChild(layer);
   return true;
 }"#;
+
+/// The steps a drag moves the pointer in.
+const DRAG_STEPS: u32 = 12;
+
+/// What chooses an option of a list (`<select>`) by its text or its value.
+const CHOOSE: &str = "function(choice) {
+  if (this.tagName !== 'SELECT') return {error: 'it is not a list of options (a <select>): click it, then click the option'};
+  const wanted = String(choice).trim().toLowerCase();
+  const options = Array.from(this.options);
+  const found = options.find(o => o.text.trim().toLowerCase() === wanted)
+    || options.find(o => o.value.trim().toLowerCase() === wanted)
+    || options.find(o => o.text.trim().toLowerCase().includes(wanted));
+  if (!found) return {error: 'there is no option ' + JSON.stringify(String(choice)) + '; the options: ' + options.map(o => o.text.trim()).join(', ')};
+  if (found.disabled || this.disabled) return {error: 'the option ' + JSON.stringify(found.text.trim()) + ' cannot be chosen now'};
+  this.focus();
+  this.value = found.value;
+  found.selected = true;
+  this.dispatchEvent(new Event('input', {bubbles: true}));
+  this.dispatchEvent(new Event('change', {bubbles: true}));
+  return {chosen: found.text.trim()};
+}";
 
 /// The most references marked on a screenshot.
 pub const MAX_MARKS: usize = 80;
@@ -2062,6 +2224,9 @@ impl Shared {
             Action::TabClose,
             Action::ClickAt,
             Action::TypeFocused,
+            Action::Select,
+            Action::Hover,
+            Action::Drag,
         ];
         if self.config.workspace.is_some() {
             actions.push(Action::Choose);
@@ -2107,6 +2272,9 @@ enum Action {
     ClickAt,
     TypeFocused,
     AskPerson,
+    Select,
+    Hover,
+    Drag,
 }
 
 /// One action on the shared browser, as a tool.
@@ -2171,8 +2339,48 @@ impl Tool for BrowserTool {
                 "browser_screenshot",
                 "A picture of what the page shows now; with marks, each element of the last \
                  browser_snapshot that is in view boxed and named on it (e12), to tell what is \
-                 where when the tree says too little.",
-                schema(json!({"marks": {"type": "boolean"}}), &[]),
+                 where when the tree says too little; with zoom (x, y, width, height, in a \
+                 screenshot's pixels), a closer picture of that region, at scale times its size \
+                 (2 unless said, at most 4), for small text and fine detail.",
+                schema(
+                    json!({"marks": {"type": "boolean"},
+                           "zoom": {"type": "object", "properties": {
+                               "x": {"type": "number"}, "y": {"type": "number"},
+                               "width": {"type": "number"}, "height": {"type": "number"}},
+                               "required": ["x", "y", "width", "height"]},
+                           "scale": {"type": "number", "minimum": 1, "maximum": 4}}),
+                    &[],
+                ),
+            ),
+            Action::Select => (
+                "browser_select",
+                "Choose an option of a list on the page (a <select>, a dropdown), by the \
+                 option's text or its value, as a person picks one. Returns the page.",
+                schema(
+                    json!({"ref": {"type": "string", "description": refs},
+                           "option": {"type": "string"}}),
+                    &["ref", "option"],
+                ),
+            ),
+            Action::Hover => (
+                "browser_hover",
+                "Move the pointer over an element of the page, for what shows on hover (a \
+                 menu, a tip). Returns the page.",
+                schema(json!({"ref": {"type": "string", "description": refs}}), &["ref"]),
+            ),
+            Action::Drag => (
+                "browser_drag",
+                "Drag from an element (ref) or a point (x, y, in a screenshot's pixels) to \
+                 another (to_ref, or to_x and to_y), the button held down, as a hand drags: a \
+                 slider's knob, a card to another list, an item onto a drop zone. Returns the \
+                 page.",
+                schema(
+                    json!({"ref": {"type": "string", "description": refs},
+                           "x": {"type": "number"}, "y": {"type": "number"},
+                           "to_ref": {"type": "string"},
+                           "to_x": {"type": "number"}, "to_y": {"type": "number"}}),
+                    &[],
+                ),
             ),
             Action::ClickAt => (
                 "browser_click_at",
@@ -2422,6 +2630,58 @@ impl Tool for BrowserTool {
                     page(
                         browser,
                         format!("chose {} for {reference}", chosen.join(", ")),
+                    )
+                }
+                Action::Screenshot if input["zoom"].is_object() => {
+                    let zoom = &input["zoom"];
+                    let get = |key: &str| zoom[key].as_f64().unwrap_or(-1.0);
+                    let scale = input["scale"].as_f64().unwrap_or(2.0);
+                    let data = browser.screenshot_zoomed(
+                        get("x"),
+                        get("y"),
+                        get("width"),
+                        get("height"),
+                        scale,
+                    )?;
+                    let (url, title, _) = browser.location()?;
+                    Ok(Outcome::ok(format!(
+                        "a closer picture of {url} ({title:?}): the region at ({}, {}), {} by {}, \
+                         at {}× its size",
+                        get("x"),
+                        get("y"),
+                        get("width"),
+                        get("height"),
+                        scale.clamp(1.0, 4.0)
+                    ))
+                    .with_picture("image/png", data))
+                }
+                Action::Select => {
+                    let option = input["option"].as_str().unwrap_or_default();
+                    let chosen = browser.select(reference, option)?;
+                    page(browser, format!("chose {chosen:?} in {reference}"))
+                }
+                Action::Hover => {
+                    browser.hover(reference)?;
+                    page(browser, format!("the pointer is over {reference}"))
+                }
+                Action::Drag => {
+                    let from_ref = Some(reference).filter(|r| !r.is_empty());
+                    let to_ref = input["to_ref"].as_str().filter(|r| !r.is_empty());
+                    let from = browser.point(from_ref, input["x"].as_f64(), input["y"].as_f64())?;
+                    let to =
+                        browser.point(to_ref, input["to_x"].as_f64(), input["to_y"].as_f64())?;
+                    browser.drag(from, to)?;
+                    let name = |r: Option<&str>, (x, y): (f64, f64)| match r {
+                        Some(r) => r.to_string(),
+                        None => format!("({x:.0}, {y:.0})"),
+                    };
+                    page(
+                        browser,
+                        format!(
+                            "dragged from {} to {}",
+                            name(from_ref, from),
+                            name(to_ref, to)
+                        ),
                     )
                 }
                 Action::Screenshot if input["marks"] == true => {

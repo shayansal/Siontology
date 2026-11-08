@@ -552,6 +552,133 @@ fn a_browser_keeps_tabs_downloads_into_the_workspace_and_chooses_files() {
     let _ = std::fs::remove_dir_all(&workspace);
 }
 
+const CONTROLS: &str = r#"<html><head><title>Controls</title></head><body>
+<label>Size <select onchange="document.getElementById('picked').textContent='picked '+this.value">
+<option value="s">Small</option><option value="m">Medium</option><option value="l">Large</option></select></label>
+<p id="picked">nothing picked</p>
+<button onmouseover="document.getElementById('menu').style.display='block'">Products</button>
+<ul id="menu" style="display:none"><li><a href="/apples">Apples</a></li></ul>
+<div draggable="true" role="button" aria-label="Card" ondragstart="event.dataTransfer.setData('text/plain','card 7')"
+ style="width:80px;height:40px;background:#ccc">Card</div>
+<div role="region" aria-label="Drop zone" ondragover="event.preventDefault()"
+ ondrop="event.preventDefault(); document.getElementById('dropped').textContent='dropped '+event.dataTransfer.getData('text/plain')"
+ style="width:200px;height:100px;border:1px solid black">Drop here</div>
+<p id="dropped">nothing dropped</p>
+<p style="font-size:6px">tiny print 42</p>
+</body></html>"#;
+
+#[test]
+fn a_browser_chooses_from_lists_hovers_drags_and_looks_closer() {
+    let (Some(program), Some(sandbox)) = (browser::find_program(), bubblewrap()) else {
+        eprintln!("skipped: no Chromium, or bubblewrap does not work here");
+        return;
+    };
+    let port = site(vec![("/", CONTROLS.to_string())]);
+    let config = browser::Config {
+        program,
+        sandbox: Some(sandbox),
+        bridge: Some(vec![env!("CARGO_BIN_EXE_sion-sandbox-bridge").to_string()]),
+        network: ScriptNetwork::Hosts(vec![HostRule::parse(&format!("127.0.0.1:{port}")).unwrap()]),
+        egress: sion_agent::egress::Options {
+            allow_private: true,
+            upstream: None,
+        },
+        size: (1024, 768),
+        workspace: None,
+        confidential: Vec::new(),
+        profile: None,
+    };
+    let shared = Shared::new(config, None);
+    let tools = shared.tools();
+    let page = call(
+        &tools,
+        "browser_open",
+        json!({"url": format!("http://127.0.0.1:{port}/")}),
+    );
+    assert!(!page.is_error, "{}", page.content);
+
+    // A dropdown, chosen from by an option's text; one that is not there
+    // is refused with the options there are.
+    let list = reference(&page.content, &["combobox"]);
+    let chosen = call(
+        &tools,
+        "browser_select",
+        json!({"ref": list, "option": "large"}),
+    );
+    assert!(!chosen.is_error, "{}", chosen.content);
+    assert!(
+        chosen.content.contains("chose \"Large\""),
+        "{}",
+        chosen.content
+    );
+    assert!(chosen.content.contains("picked l"), "{}", chosen.content);
+    let list = reference(&chosen.content, &["combobox"]);
+    let missing = call(
+        &tools,
+        "browser_select",
+        json!({"ref": list, "option": "huge"}),
+    );
+    assert!(
+        missing.is_error
+            && missing
+                .content
+                .contains("the options: Small, Medium, Large"),
+        "{}",
+        missing.content
+    );
+    let button = reference(&chosen.content, &["button", "Products"]);
+    let not_a_list = call(
+        &tools,
+        "browser_select",
+        json!({"ref": button, "option": "x"}),
+    );
+    assert!(not_a_list.is_error && not_a_list.content.contains("not a list of options"));
+
+    // What shows on hover shows.
+    assert!(!chosen.content.contains("Apples"));
+    let hovered = call(&tools, "browser_hover", json!({"ref": button}));
+    assert!(!hovered.is_error, "{}", hovered.content);
+    assert!(
+        hovered.content.contains("link \"Apples\""),
+        "{}",
+        hovered.content
+    );
+
+    // A card dragged onto a drop zone, as HTML's drag and drop has it.
+    let card = reference(&hovered.content, &["Card"]);
+    let zone = reference(&hovered.content, &["Drop zone"]);
+    let dragged = call(&tools, "browser_drag", json!({"ref": card, "to_ref": zone}));
+    assert!(!dragged.is_error, "{}", dragged.content);
+    assert!(
+        dragged.content.contains("dropped card 7"),
+        "{}",
+        dragged.content
+    );
+    let nowhere = call(&tools, "browser_drag", json!({"ref": card}));
+    assert!(nowhere.is_error, "{}", nowhere.content);
+
+    // A closer picture of a corner of the page, three times its size.
+    let closer = call(
+        &tools,
+        "browser_screenshot",
+        json!({"zoom": {"x": 0, "y": 0, "width": 200, "height": 100}, "scale": 3}),
+    );
+    assert!(!closer.is_error, "{}", closer.content);
+    assert!(
+        closer.content.contains("at 3× its size"),
+        "{}",
+        closer.content
+    );
+    let png = sion_agent::encoding::from_base64(&closer.pictures[0].base64).unwrap();
+    assert_eq!(sion_agent::reading::picture_size(&png), Some((600, 300)));
+    let off = call(
+        &tools,
+        "browser_screenshot",
+        json!({"zoom": {"x": 5000, "y": 0, "width": 10, "height": 10}}),
+    );
+    assert!(off.is_error, "{}", off.content);
+}
+
 #[test]
 fn a_desktop_is_seen_and_used_with_the_pointer() {
     let Some(sandbox) = bubblewrap() else {
@@ -583,6 +710,19 @@ fn a_desktop_is_seen_and_used_with_the_pointer() {
     assert!(shot.untrusted, "the screen is content from outside");
     assert_eq!(shot.pictures.len(), 1);
     assert!(shot.pictures[0].base64.starts_with("iVBORw0KGgo"));
+
+    // A closer look at a corner: as large as the screen holds it.
+    let closer = computer.call(&json!({"action": "zoom", "region": [0, 0, 200, 150]}), "k");
+    assert!(!closer.is_error, "{}", closer.content);
+    assert!(
+        closer.content.contains("at 4.0× its size"),
+        "{}",
+        closer.content
+    );
+    let png = sion_agent::encoding::from_base64(&closer.pictures[0].base64).unwrap();
+    assert_eq!(sion_agent::reading::picture_size(&png), Some((800, 600)));
+    let bad = computer.call(&json!({"action": "zoom", "region": [0, 0]}), "k");
+    assert!(bad.is_error, "{}", bad.content);
 
     let moved = computer.call(
         &json!({"action": "mouse_move", "coordinate": [321, 123]}),

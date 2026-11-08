@@ -10,6 +10,14 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Dropdowns, hovering, dragging, and a closer look
+
+- `browser_select` chooses an option of a list by its text or value;
+  `browser_hover` shows what a page shows on hover; `browser_drag` drags
+  between elements or points, HTML's drag and drop included.
+- `browser_screenshot` takes `zoom` (a region) and `scale`, for a closer
+  picture of small text; the desktop's `computer` tool has `zoom` too.
+
 ### Reading what it finds
 
 - `fetch_url` reads what it fetches: a web page as its text, headings,
