@@ -83,10 +83,15 @@ whoever is to check it.
 `sion agent bench check <claim>` shows the claim: who issued it and at
 which Pulse, and its figures. Given the log (`--log`, or a run kept here
 with the log the claim names), it checks that the log is the one the
-claim names; that every run in it, judged again by the suite's checks
+claim names; that each case of the suite is in it as many times as the
+claim says, each repeat once; that the calls each run lists are those of
+its conversation; that every run, judged again by the suite's checks
 from what it recorded (the calls the model asked for, those that were
 made, how it ended), comes out as the log says; and that the pass rate,
-pass^k, tokens and cost worked out from the log are the claim's. A suite
+pass^k, tokens, cost and the models that answered (as their providers
+named them in the log) worked out from the log are the claim's. Publishing
+makes the same check of the kept record against its log first, so a
+record changed after the run is not published. A suite
 built in is found by its name; another is given with `--suite`. Without
 the suite the log's own figures are checked, and the runs are not judged
 again; without the log, the claim is shown unchecked.

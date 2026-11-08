@@ -216,6 +216,12 @@ impl Sessions<'_> {
         let run: String = self.run.chars().take(8).collect();
         let name = format!("graph-{run}-{}-{}", node.id, index + 1);
         let worktree = crate::worktrees::create(repo, &name)?;
+        // Its files from outside are the repository's.
+        sion_agent::provenance::keep_in(crate::runtime::provenance_dir());
+        if let Err(e) = sion_agent::provenance::inherit(repo, &worktree.dir) {
+            worktree.remove();
+            return Err(e);
+        }
         let mut models = profile.models.clone();
         if let Some(model) = &node.model {
             models.retain(|m| m != model);
@@ -251,6 +257,8 @@ impl Sessions<'_> {
                 return Err(e.to_string());
             }
         };
+        // What it brought in from outside stays marked in the repository.
+        let _ = sion_agent::provenance::inherit(&worktree.dir, repo);
         let subject = format!("Attempt {} of graph run {run}: {}", index + 1, node.id);
         let finished = worktree
             .finish(&subject, &profile.name)

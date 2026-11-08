@@ -64,19 +64,29 @@ knows where it came from:
   `--confidential-file` is: a file, a directory with a closing `/`, or a
   prefix ending in `*`) names more;
 - a copy of a marked file under another name is marked too, by its
-  content, so a `cp` or `mv` in the shell does not wash it.
+  content, so a `cp` or `mv` in the shell does not wash it;
+- a git worktree of the workspace, where a subagent or a graph's attempt
+  works, has the workspace's marks, and gives back those it made.
 
 `read_file`, `edit_file`, `search_files`, `document_search` and
 `transcribe` taint the session when what they return is from such a file.
-The shell may read anything, so what it prints is checked instead: output
-that holds a line of a file from outside (24 characters or more, of the
-first 64 such files, a megabyte of each) is from outside too. Marks are
+The shell may read anything, so what it prints (in the shell, a terminal,
+`run_tests` and `diagnostics`) is checked instead: output that holds a
+line of a file from outside, 16 characters or more, is from outside too.
+The lines of a marked file are remembered when it is marked, so they are
+known wherever the file goes, printed as they are or after a `path:` or
+`path:line:` as grep prints them; the files under `downloads/` and the
+operator's paths are looked through as they are (the first 64, a
+megabyte of each). Output that holds a line of a file named confidential
+holds the session as reading the file does. Marks are
 kept under `$SION_HOME/agents/provenance`, outside every workspace, where
-the agent's tools cannot change them. A file the operator put in the
-workspace without naming it is theirs, and is read as such; a file from
-outside whose content the shell changed before it was read, or that the
-shell printed in other words (counted, encoded, a line cut short), is not
-known for what it is (`agent:outside-files`).
+the agent's tools cannot change them, under a lock; if they cannot be
+read, every file is taken for one from outside. A file the operator put
+in the workspace without naming it is theirs, and is read as such; a file
+from outside whose content the shell changed before it was read, or that
+the shell printed in other words (counted, encoded, a line cut short, or
+lines under 16 characters), is not known for what it is
+(`agent:outside-files`).
 
 ## Signed decisions
 

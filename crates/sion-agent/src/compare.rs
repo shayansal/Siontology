@@ -748,8 +748,11 @@ fn session(
         autonomy: Autonomy::L6,
         ..Policy::default()
     };
+    // Never compacted: the checks are of every call the model asked for.
     let limits = Limits {
         budget_tokens: Some(budget),
+        compact_messages: usize::MAX,
+        compact_chars: usize::MAX,
         ..limits.clone()
     };
     let runtime = Runtime {

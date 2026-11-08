@@ -10,6 +10,33 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### What an independent review of the benchmark work found, fixed
+
+- Documents made to break the readers no longer do: dictionaries nested
+  deep, lengths past any number, objects never closed, forms that draw
+  themselves over and over (bounded to four million operators), and
+  workbooks with cells far apart (kept sparse, a sheet's cells at most a
+  million).
+- Subagents are held to the operator's written rules and confidential
+  and outside paths, and worktrees carry the workspace's marks both ways.
+- `run_tests` and `diagnostics` given a command judge it as the shell's
+  are judged, and what they and the shell print of a confidential file
+  holds the session; a marked file's lines are known wherever it is moved.
+- More commands that cannot be undone are known (`git -C … push -f`,
+  `/bin/rm -rf /`, `rm -rf ${HOME}`, `find / -delete`, a `DELETE` without
+  `WHERE` beside another statement).
+- A call whose input is too long to show the rules' checker whole is not
+  made; a confidential file's passages are not sent to an embedder
+  elsewhere; marks are written under a lock, and marks that cannot be
+  read take every file for one from outside.
+- Benchmark claims are checked for each case's runs, once each, for the
+  calls of each conversation and for the models that answered; a record
+  is checked against its log before it is published; a suite of the same
+  name but another digest is said to be so.
+- `total_at_most` fails on an amount it cannot read or one below zero,
+  and amounts are read with commas, exponents and currency codes;
+  evaluation runs are not compacted, so their checks see every call.
+
 ### Benchmark runs on the ledger
 
 - `sion agent bench publish <run> --wallet <w>`: a kept run as a claim

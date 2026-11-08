@@ -1532,6 +1532,7 @@ impl Saved {
             // marked as they came in, kept beside the other agents' state.
             sion_agent::provenance::keep_in(provenance_dir());
             sion_agent::provenance::declare(root, &self.outside_files);
+            sion_agent::provenance::declare_confidential(root, &self.confidential_files);
             for tool in sion_agent::builtin::workspace_holding(root, &self.confidential_files) {
                 tools.add_boxed(tool);
             }
@@ -1625,6 +1626,10 @@ impl Saved {
                 adjudicator: self.adjudicator,
                 workspace: self.workspace.clone(),
                 shell: self.shell.clone(),
+                rules: self.rules.clone(),
+                rules_model: self.rules_model.clone(),
+                confidential_files: self.confidential_files.clone(),
+                outside_files: self.outside_files.clone(),
             };
             for tool in delegation.tools() {
                 tools.add_boxed(tool);

@@ -726,6 +726,10 @@ pub struct Rules<'a> {
 /// The tool with which the agent asks the person a question.
 pub const ASK_PERSON: &str = "ask_person";
 
+/// The longest input of a call checked against the operator's rules; a
+/// longer one is not made.
+pub const RULES_INPUT_CHARS: usize = 24_000;
+
 /// What a rules check is told it is for.
 pub const RULES_SYSTEM: &str = "You check one action an AI agent is about to take against the \
      rules its operator wrote. Judge by the rules as written: an action breaks a rule when the \
@@ -1730,6 +1734,15 @@ impl Runtime<'_> {
                 told.join("\n")
             ),
         };
+        // The judge sees the input whole, or the call is not made: what it
+        // was not shown, it could not have checked.
+        let input = ready.input.to_string();
+        if input.chars().count() > RULES_INPUT_CHARS {
+            return Some(Outcome::error(format!(
+                "not made: its input is longer than the {RULES_INPUT_CHARS} characters checked \
+                 against the operator's rules whole; do it in smaller steps"
+            )));
+        }
         let ask = format!(
             "The operator's rules:\n{}\n\nThe task the agent was given:\n{}\n\n{said}The \
              action it is about to take: {} with the input {}\n\nDoes this action break any of \
@@ -1738,7 +1751,7 @@ impl Runtime<'_> {
             rules.text.trim(),
             clipped(&task, 4_000),
             ready.tool,
-            clipped(&ready.input.to_string(), 4_000)
+            input
         );
         let request = Request {
             system: RULES_SYSTEM.to_string(),

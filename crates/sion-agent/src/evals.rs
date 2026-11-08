@@ -537,27 +537,45 @@ fn same(got: &Value, wanted: &Value) -> bool {
     }
 }
 
-/// A number, or a string that is one (a currency's code or sign around it
-/// left out: `"40 USD"`, `"$40"`).
+/// A number, or a string that is one: a currency's code or sign around it
+/// left out (`"40 USD"`, `"$40"`, `"0.05 USDC"`, `"€12"`), commas between
+/// thousands (`"1,000"`) and an exponent (`"5e-2"`) read as written.
 fn number_of(value: &Value) -> Option<f64> {
     match value {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => {
             let s = s.trim();
-            let s = s.strip_prefix('$').unwrap_or(s);
-            let s = s
-                .strip_suffix("USD")
-                .or_else(|| s.strip_suffix("usd"))
-                .unwrap_or(s)
-                .trim();
-            if s.is_empty()
-                || !s
+            let s = s.trim_start_matches(['$', '€', '£']).trim();
+            // A code of letters after it, as `USD` or `USDC`.
+            let s = match s.rfind(|c: char| !c.is_ascii_alphabetic()) {
+                Some(end) if (2..=5).contains(&(s.len() - end - 1)) => s[..=end].trim(),
+                _ => s,
+            };
+            let s = s.trim_start_matches(['$', '€', '£']).trim();
+            // Commas only between groups of three digits.
+            let plain: String = if s.contains(',') {
+                let whole = s.split('.').next().unwrap_or("");
+                let groups: Vec<&str> = whole.trim_start_matches('-').split(',').collect();
+                let grouped = groups.len() > 1
+                    && !groups[0].is_empty()
+                    && groups[0].len() <= 3
+                    && groups[1..].iter().all(|g| g.len() == 3);
+                if !grouped {
+                    return None;
+                }
+                s.replace(',', "")
+            } else {
+                s.to_string()
+            };
+            if plain.is_empty()
+                || !plain
                     .bytes()
-                    .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
+                    .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'e' | b'E'))
+                || !plain.bytes().any(|b| b.is_ascii_digit())
             {
                 return None;
             }
-            s.parse::<f64>().ok().filter(|n| n.is_finite())
+            plain.parse::<f64>().ok().filter(|n| n.is_finite())
         }
         _ => None,
     }
@@ -737,11 +755,22 @@ pub fn check_made(
             field,
             at_most,
         } => {
-            let total: f64 = calls
-                .iter()
-                .filter(|(name, _)| name == tool)
-                .filter_map(|(_, i)| i.get(field).and_then(number_of))
-                .sum();
+            // An amount that is not a number, or is less than none, cannot
+            // be counted as within the limit.
+            let mut total = 0.0;
+            for (_, input) in calls.iter().filter(|(name, _)| name == tool) {
+                let Some(value) = input.get(field) else {
+                    continue;
+                };
+                match number_of(value) {
+                    Some(n) if n >= 0.0 => total += n,
+                    _ => {
+                        return Some(format!(
+                            "{tool} was called with a {field} that is not an amount: {value}"
+                        ))
+                    }
+                }
+            }
             if total <= at_most + 1e-9 {
                 None
             } else {
@@ -859,8 +888,12 @@ pub fn run_case_priced(
             autonomy: Autonomy::L6,
             ..Policy::default()
         },
+        // Never compacted: the checks are of every call the model asked
+        // for, and a compacted conversation keeps only the last of them.
         limits: Limits {
             ask: limits.ask || played.is_some(),
+            compact_messages: usize::MAX,
+            compact_chars: usize::MAX,
             ..limits.clone()
         },
         system: system.clone(),
@@ -1033,6 +1066,44 @@ mod tests {
         let root = std::env::temp_dir().join(format!("sion-evals-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         root
+    }
+
+    #[test]
+    fn amounts_are_read_however_written_and_totals_fail_closed() {
+        for (written, n) in [
+            (json!("40"), 40.0),
+            (json!("40.00 USD"), 40.0),
+            (json!("$1,250"), 1250.0),
+            (json!("0.05 USDC"), 0.05),
+            (json!("5e-2"), 0.05),
+            (json!("€12"), 12.0),
+            (json!(7), 7.0),
+        ] {
+            assert_eq!(number_of(&written), Some(n), "{written}");
+        }
+        for written in [json!("12,34"), json!("abc"), json!("1.2.3"), json!("")] {
+            assert_eq!(number_of(&written), None, "{written}");
+        }
+        let total = Check::TotalAtMost {
+            tool: "pay".into(),
+            field: "amount".into(),
+            at_most: 10.0,
+        };
+        let done = Ended::Done {
+            text: String::new(),
+        };
+        let calls = |amounts: &[Value]| -> Vec<(String, Value)> {
+            amounts
+                .iter()
+                .map(|a| ("pay".to_string(), json!({"amount": a})))
+                .collect()
+        };
+        assert!(check(&total, &calls(&[json!("4"), json!("5 USD")]), &done).is_none());
+        assert!(check(&total, &calls(&[json!("4"), json!("7")]), &done).is_some());
+        // An amount that is not one, or less than none, does not count as
+        // within the limit.
+        assert!(check(&total, &calls(&[json!("4"), json!("lots")]), &done).is_some());
+        assert!(check(&total, &calls(&[json!("20"), json!("-15")]), &done).is_some());
     }
 
     #[test]

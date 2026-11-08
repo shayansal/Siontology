@@ -176,9 +176,9 @@ impl Tool for EditFile {
         // The lines it shows of a file from outside are from outside.
         let outside = crate::provenance::is_outside(
             &self.root,
-            relative,
+            &crate::builtin::resolved_name(&self.root, relative),
             std::fs::read(self.root.join(relative)).ok().as_deref(),
-        );
+        ) || crate::provenance::is_outside(&self.root, relative, None);
         let outcome = match edit(&self.root, relative, old, new, all) {
             Ok(text) => Outcome::ok(text),
             Err(e) => Outcome::error(e),
@@ -1711,6 +1711,11 @@ fn run_in(
 }
 
 impl Tool for Diagnostics {
+    fn irreversible(&self, input: &Value) -> Option<String> {
+        // A command given in place of the project's own runs as the shell's.
+        crate::policy::irreversible_command(input["command"].as_str()?)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "diagnostics".into(),
@@ -1779,11 +1784,14 @@ impl Tool for Diagnostics {
                 } else {
                     Outcome::ok(text)
                 };
-                if self.sandbox.network.reaches_out() {
+                let outcome = if self.sandbox.network.reaches_out() {
                     outcome.from_outside()
                 } else {
                     outcome
-                }
+                };
+                // What it prints of a file from outside or a confidential
+                // one is so.
+                crate::provenance::marked(&self.root, outcome)
             }
             Err(e) => Outcome::error(e),
         }
@@ -1791,6 +1799,11 @@ impl Tool for Diagnostics {
 }
 
 impl Tool for RunTests {
+    fn irreversible(&self, input: &Value) -> Option<String> {
+        // A command given in place of the project's own runs as the shell's.
+        crate::policy::irreversible_command(input["command"].as_str()?)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "run_tests".into(),
@@ -1892,11 +1905,13 @@ impl Tool for RunTests {
         } else {
             Outcome::ok(text)
         };
-        if self.sandbox.network.reaches_out() {
+        let outcome = if self.sandbox.network.reaches_out() {
             outcome.from_outside()
         } else {
             outcome
-        }
+        };
+        // What it prints of a file from outside or a confidential one is so.
+        crate::provenance::marked(&self.root, outcome)
     }
 }
 

@@ -25,6 +25,13 @@ pub const MAX_PAGES: usize = 2_000;
 /// The most rows of a spreadsheet's sheet read.
 pub const MAX_ROWS: usize = 10_000;
 
+/// The most cells of a sheet kept.
+pub const MAX_CELLS: usize = 1_000_000;
+
+/// The widest row shown as a table, a tab for each column; a row with a
+/// cell further right shows its cells named by their columns.
+pub const MAX_COLUMNS_SHOWN: usize = 256;
+
 /// What a file or a fetched page is, as far as reading it goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -1137,7 +1144,13 @@ pub fn xlsx_to_text(bytes: &[u8]) -> Result<String, String> {
             continue;
         };
         let rows = sheet_rows(&xml, &shared);
-        let widest = rows.values().map(|r| r.len()).max().unwrap_or(0);
+        // The header's columns: as far as the widest row shown as a table.
+        let widest = rows
+            .values()
+            .filter_map(|r| r.keys().next_back().copied())
+            .filter(|last| *last <= MAX_COLUMNS_SHOWN)
+            .max()
+            .unwrap_or(0);
         let counted = match rows.len() {
             1 => "1 row".to_string(),
             n => format!("{n} rows"),
@@ -1148,7 +1161,22 @@ pub fn xlsx_to_text(bytes: &[u8]) -> Result<String, String> {
             lines.push(format!("row\t{}", header.join("\t")));
         }
         for (number, cells) in rows.iter().take(MAX_ROWS) {
-            lines.push(format!("{number}\t{}", cells.join("\t").trim_end()));
+            let last = cells.keys().next_back().copied().unwrap_or(0);
+            let line = if last <= MAX_COLUMNS_SHOWN {
+                // As a table: a tab for each column, empty ones too.
+                (1..=last)
+                    .map(|c| cells.get(&c).map(String::as_str).unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            } else {
+                // Cells far apart: each named by its column.
+                cells
+                    .iter()
+                    .map(|(c, v)| format!("{}: {v}", column_name(*c)))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            };
+            lines.push(format!("{number}\t{}", line.trim_end()));
         }
         if rows.len() > MAX_ROWS {
             lines.push(format!("[… {} rows more]", rows.len() - MAX_ROWS));
@@ -1159,8 +1187,9 @@ pub fn xlsx_to_text(bytes: &[u8]) -> Result<String, String> {
 }
 
 /// A sheet's rows by their numbers, each its cells' values by column.
-fn sheet_rows(xml: &str, shared: &[String]) -> BTreeMap<usize, Vec<String>> {
-    let mut rows: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+fn sheet_rows(xml: &str, shared: &[String]) -> BTreeMap<usize, BTreeMap<usize, String>> {
+    let mut rows: BTreeMap<usize, BTreeMap<usize, String>> = BTreeMap::new();
+    let mut kept = 0usize;
     let mut row = 0usize;
     let mut column = 0usize;
     let mut kind = String::new();
@@ -1212,12 +1241,14 @@ fn sheet_rows(xml: &str, shared: &[String]) -> BTreeMap<usize, Vec<String>> {
                         _ => value.clone(),
                     };
                     let shown = shown.replace(['\t', '\n', '\r'], " ");
-                    if !shown.is_empty() && row > 0 && column > 0 && column <= 16_384 {
-                        let cells = rows.entry(row).or_default();
-                        if cells.len() < column {
-                            cells.resize(column, String::new());
-                        }
-                        cells[column - 1] = shown;
+                    if !shown.is_empty()
+                        && row > 0
+                        && column > 0
+                        && column <= 16_384
+                        && kept < MAX_CELLS
+                    {
+                        kept += 1;
+                        rows.entry(row).or_default().insert(column, shown);
                     }
                 }
                 _ => {}
@@ -1481,8 +1512,11 @@ impl<'a> Parser<'a> {
                             map.insert(key, value);
                         }
                         Some(_) => {
-                            // Not a key: step over it.
-                            if self.value(depth.saturating_sub(1)).is_none() {
+                            // Not a key: step over it, as deep as a value.
+                            if depth == 0 {
+                                return None;
+                            }
+                            if self.value(depth - 1).is_none() {
                                 self.at += 1;
                             }
                         }
@@ -1705,6 +1739,10 @@ fn pdf_objects(bytes: &[u8]) -> (BTreeMap<u32, Object>, Vec<Pdf>) {
     let mut objects = BTreeMap::new();
     let mut trailers = Vec::new();
     let mut search = 0;
+    // Where the next `endobj` is: an object's body is read up to it, so
+    // that a body never closed is not read to the end of the file for
+    // every object after it.
+    let mut next_end = 0usize;
     while let Some(found) = find(bytes, b"obj", search) {
         search = found + 3;
         let after_ok = bytes
@@ -1742,7 +1780,14 @@ fn pdf_objects(bytes: &[u8]) -> (BTreeMap<u32, Object>, Vec<Pdf>) {
             continue;
         };
         let body_start = found + 3;
-        let mut parser = Parser::new(&bytes[body_start..]);
+        if next_end < body_start {
+            next_end = find(bytes, b"endobj", body_start).unwrap_or(bytes.len());
+        }
+        // Nor past the next object's start, where no `endobj` came first.
+        let stop = find(bytes, b"obj", body_start)
+            .unwrap_or(bytes.len())
+            .min(next_end);
+        let mut parser = Parser::new(&bytes[body_start..stop]);
         let value = parser.value(32).unwrap_or(Pdf::Null);
         let end = body_start + parser.at;
         let mut stream = None;
@@ -1759,9 +1804,12 @@ fn pdf_objects(bytes: &[u8]) -> (BTreeMap<u32, Object>, Vec<Pdf>) {
             let declared = value
                 .get("Length")
                 .and_then(Pdf::num)
+                .filter(|n| *n >= 0.0 && *n <= bytes.len() as f64)
                 .map(|n| n as usize)
                 .filter(|&n| {
-                    let mut tail = start + n;
+                    let Some(mut tail) = start.checked_add(n) else {
+                        return false;
+                    };
                     while tail < bytes.len() && is_white(bytes[tail]) {
                         tail += 1;
                     }
@@ -2225,7 +2273,14 @@ struct Reader<'a> {
     budget: Budget,
     fonts: BTreeMap<u32, std::rc::Rc<Font>>,
     unknown: usize,
+    /// The operators of content streams left to work through, forms drawn
+    /// within others included: a form drawn by itself many times over is
+    /// cut short, not followed for ever.
+    operators_left: usize,
 }
+
+/// The most operators of content streams a PDF is read through.
+pub const MAX_OPERATORS: usize = 4_000_000;
 
 impl Reader<'_> {
     /// `value`, followed if it is a reference.
@@ -2373,6 +2428,10 @@ impl Reader<'_> {
         let mut operands: Vec<Pdf> = Vec::new();
         let mut pen = Pen::default();
         while let Some(token) = parser.value(16) {
+            if self.operators_left == 0 {
+                return;
+            }
+            self.operators_left -= 1;
             let Pdf::Op(op) = token else {
                 operands.push(token);
                 if operands.len() > 64 {
@@ -2661,6 +2720,7 @@ pub fn pdf_to_text(bytes: &[u8]) -> Result<String, String> {
         budget,
         fonts: BTreeMap::new(),
         unknown: 0,
+        operators_left: MAX_OPERATORS,
     };
     // The pages in order: from the catalog's page tree, else every page.
     let root = trailers
@@ -3043,6 +3103,91 @@ mod tests {
         );
         let text = pdf_to_text(&bytes).unwrap();
         assert_eq!(text, "[page 1]\nPacked away");
+    }
+
+    /// Runs `read` on another thread with a deep stack's worth of room
+    /// taken away: it must come back within `seconds`.
+    fn quickly<T: Send + 'static>(seconds: u64, read: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || {
+                let _ = tx.send(read());
+            })
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(seconds))
+            .expect("reading took too long or crashed")
+    }
+
+    #[test]
+    fn a_pdf_made_to_break_the_reader_does_not() {
+        // Dictionaries opened a hundred thousand deep.
+        let mut deep = b"%PDF-1.7\n1 0 obj\n".to_vec();
+        deep.extend(std::iter::repeat(b"<< ").take(100_000).flatten());
+        let _ = quickly(20, move || pdf_to_text(&deep));
+        // A length past any number.
+        let huge = pdf(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Length 99999999999999999999999 >>\nstream\nBT ET\nendstream".to_vec(),
+        ]);
+        let _ = quickly(20, move || pdf_to_text(&huge));
+        // Arrays never closed, one per object.
+        let mut open = b"%PDF-1.7\n".to_vec();
+        for i in 1..30_000 {
+            open.extend_from_slice(format!("{i} 0 obj [ ").as_bytes());
+        }
+        let _ = quickly(20, move || pdf_to_text(&open));
+        // A form that draws itself eighty times over.
+        let draws = "/X Do ".repeat(80);
+        let looped = pdf(&[
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /X 5 0 R >> /Font << /F1 6 0 R >> >> >>".to_vec(),
+            stream("", format!("BT /F1 12 Tf (top) Tj ET {draws}").as_bytes()),
+            stream(
+                "/Type /XObject /Subtype /Form /Resources << /XObject << /X 5 0 R >> /Font << /F1 6 0 R >> >>",
+                format!("BT /F1 12 Tf (again) Tj ET {draws}").as_bytes(),
+            ),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        ]);
+        let text = quickly(60, move || pdf_to_text(&looped)).unwrap();
+        assert!(
+            text.starts_with("[page 1]\ntop"),
+            "{}",
+            &text[..40.min(text.len())]
+        );
+    }
+
+    #[test]
+    fn a_workbook_with_cells_far_apart_stays_small() {
+        let mut rows = String::new();
+        for r in 1..=20_000 {
+            rows.push_str(&format!(r#"<row r="{r}"><c r="XFD{r}"><v>1</v></c></row>"#));
+        }
+        let book = zip(&[
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns:r="r"><sheets><sheet name="Wide" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+                false,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#,
+                false,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                &format!("<worksheet><sheetData>{rows}</sheetData></worksheet>"),
+                true,
+            ),
+        ]);
+        let text = quickly(30, move || xlsx_to_text(&book)).unwrap();
+        assert!(
+            text.contains("\n1\tXFD: 1\n"),
+            "{}",
+            &text[..200.min(text.len())]
+        );
+        assert!(text.len() < 2_000_000, "{}", text.len());
     }
 
     #[test]

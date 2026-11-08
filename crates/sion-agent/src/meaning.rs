@@ -258,10 +258,22 @@ pub fn embedded(
     cache: &mut Cache,
     texts: &[String],
 ) -> Result<Vec<Option<Vec<f32>>>, String> {
+    embedded_except(embedder, cache, texts, &[])
+}
+
+/// [`embedded`], the texts `kept[i]` says are kept here neither embedded
+/// nor given a vector: they are found by words alone.
+pub fn embedded_except(
+    embedder: &dyn Embedder,
+    cache: &mut Cache,
+    texts: &[String],
+    kept: &[bool],
+) -> Result<Vec<Option<Vec<f32>>>, String> {
+    let held = |i: usize| kept.get(i).copied().unwrap_or(false);
     let model = embedder.id().to_string();
     let keys: Vec<[u8; 32]> = texts.iter().map(|t| digest(&model, t)).collect();
     let mut missing: Vec<usize> = (0..texts.len())
-        .filter(|i| !cache.vectors.contains_key(&keys[*i]))
+        .filter(|i| !held(*i) && !cache.vectors.contains_key(&keys[*i]))
         .collect();
     // The same text once.
     let mut seen = std::collections::BTreeSet::new();
@@ -279,7 +291,14 @@ pub fn embedded(
     }
     Ok(keys
         .iter()
-        .map(|key| cache.vectors.get(key).cloned())
+        .enumerate()
+        .map(|(i, key)| {
+            if held(i) {
+                None
+            } else {
+                cache.vectors.get(key).cloned()
+            }
+        })
         .collect())
 }
 
@@ -375,6 +394,19 @@ pub fn search(
     meaning: Option<(&dyn Embedder, &mut Cache)>,
     floor: f64,
 ) -> (Vec<(usize, f64, Found)>, Option<String>) {
+    search_except(texts, query, limit, meaning, floor, &[])
+}
+
+/// [`search`], the texts `kept[i]` says are kept here (confidential, with
+/// an embedder elsewhere) never sent to the embedder: found by words alone.
+pub fn search_except(
+    texts: &[String],
+    query: &str,
+    limit: usize,
+    meaning: Option<(&dyn Embedder, &mut Cache)>,
+    floor: f64,
+    kept: &[bool],
+) -> (Vec<(usize, f64, Found)>, Option<String>) {
     let words: Vec<usize> = bm25(texts, query).into_iter().map(|(i, _)| i).collect();
     let mut note = None;
     let mut near: Vec<usize> = Vec::new();
@@ -386,7 +418,9 @@ pub fn search(
                     .next()
                     .ok_or_else(|| "no vector for the query".to_string())
             })
-            .and_then(|q| embedded(embedder, cache, texts).map(|vectors| (q, vectors)));
+            .and_then(|q| {
+                embedded_except(embedder, cache, texts, kept).map(|vectors| (q, vectors))
+            });
         match found {
             Ok((query, vectors)) => {
                 let mut alike: Vec<(usize, f64)> = vectors
@@ -578,7 +612,15 @@ impl crate::tools::Tool for DocumentSearch {
             .as_ref()
             .map(|e| Cache::open(self.cache_dir.clone(), e.id()));
         let meaning = self.embedder.as_deref().zip(cache.as_mut());
-        let (ranked, note) = search(&texts, query, limit, meaning, 0.35);
+        // A confidential file's passages go to no embedder elsewhere.
+        let remote = self.embedder.as_ref().is_some_and(|e| !e.is_local());
+        let kept: Vec<bool> = found
+            .iter()
+            .map(|p| {
+                remote && crate::builtin::confidential_in(&self.confidential, &self.root, &p.path)
+            })
+            .collect();
+        let (ranked, note) = search_except(&texts, query, limit, meaning, 0.35, &kept);
         if ranked.is_empty() {
             return Outcome::ok(format!("no passage matches {query:?}"));
         }
@@ -776,6 +818,53 @@ mod tests {
             "{}",
             none.content
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// An embedder elsewhere that writes down every text it is sent.
+    struct Away(std::sync::Mutex<Vec<String>>);
+
+    impl Embedder for Away {
+        fn id(&self) -> &str {
+            "away"
+        }
+
+        fn embed(&self, texts: &[String], _: Purpose) -> Result<Vec<Vec<f32>>, String> {
+            self.0.lock().unwrap().extend(texts.iter().cloned());
+            Ok(texts.iter().map(|t| vec![t.len() as f32, 1.0]).collect())
+        }
+    }
+
+    #[test]
+    fn a_confidential_files_passages_are_not_sent_to_an_embedder_elsewhere() {
+        use crate::tools::Tool;
+        let root = std::env::temp_dir().join(format!("sion-docaway-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("private")).unwrap();
+        std::fs::write(
+            root.join("private/keys.md"),
+            "The deploy key is sk-live-42.\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("plan.md"), "The deploy is on Tuesday.\n").unwrap();
+        let away = std::sync::Arc::new(Away(std::sync::Mutex::new(Vec::new())));
+        let tool = DocumentSearch {
+            root: root.clone(),
+            embedder: Some(away.clone()),
+            cache_dir: None,
+            confidential: vec!["private/".into()],
+        };
+        assert_eq!(tool.effect(), crate::tools::Effect::External);
+        let found = tool.call(&json!({"query": "deploy key"}), "k");
+        assert!(
+            found.content.contains("private/keys.md:1"),
+            "{}",
+            found.content
+        );
+        assert!(found.confidential);
+        let sent = away.0.lock().unwrap().clone();
+        assert!(sent.iter().any(|t| t.contains("Tuesday")), "{sent:?}");
+        assert!(!sent.iter().any(|t| t.contains("sk-live")), "{sent:?}");
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -79,6 +79,21 @@ pub struct ReadFile {
     pub confidential: Vec<String>,
 }
 
+/// `relative`, a path of the workspace `root`, named as the file it
+/// resolves to there (through links, `..` and other spellings), or as it is
+/// if it does not resolve inside the workspace.
+pub fn resolved_name(root: &Path, relative: &str) -> String {
+    std::fs::canonicalize(root)
+        .ok()
+        .zip(std::fs::canonicalize(root.join(relative)).ok())
+        .and_then(|(root, real)| {
+            real.strip_prefix(&root)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        })
+        .unwrap_or_else(|| relative.to_string())
+}
+
 /// Whether `relative` (a path in the workspace, `/` between its parts) is
 /// one that `patterns` name: a path itself, everything under a directory
 /// written with a closing `/`, or every path that begins as one ending in
@@ -733,14 +748,14 @@ impl Tool for Shell {
                 } else {
                     Outcome::ok(run.render())
                 };
-                // What it prints of a file from outside is from outside too.
-                if self.sandbox.network.reaches_out()
-                    || crate::provenance::echoes_outside(&self.root, &outcome.content)
-                {
+                let outcome = if self.sandbox.network.reaches_out() {
                     outcome.from_outside()
                 } else {
                     outcome
-                }
+                };
+                // What it prints of a file from outside is from outside
+                // too, and of a confidential file, confidential.
+                crate::provenance::marked(&self.root, outcome)
             }
             Err(e) => Outcome::error(format!("the sandbox could not run the command: {e}")),
         }

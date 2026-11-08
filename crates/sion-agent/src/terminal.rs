@@ -320,12 +320,14 @@ impl Terminals {
     }
 
     fn outcome(&self, outcome: Outcome) -> Outcome {
-        // What it prints of a file from outside is from outside too.
-        if self.reaches_out() || crate::provenance::echoes_outside(&self.root, &outcome.content) {
+        let outcome = if self.reaches_out() {
             outcome.from_outside()
         } else {
             outcome
-        }
+        };
+        // What it prints of a file from outside is from outside too, and of
+        // a confidential file, confidential.
+        crate::provenance::marked(&self.root, outcome)
     }
 
     fn run(&self, name: &str, command: &str, seconds: u64) -> Outcome {

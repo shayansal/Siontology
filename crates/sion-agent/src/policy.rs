@@ -158,6 +158,51 @@ pub fn irreversible_command(command: &str) -> Option<String> {
     if !word.is_empty() {
         words.push(word);
     }
+    // A program named by its path, or escaped from an alias (`/bin/rm`,
+    // `\rm`), is the program.
+    for w in words.iter_mut() {
+        let bare = w.trim_start_matches('\\');
+        let base = if bare.starts_with('/') || bare.starts_with("./") {
+            bare.rsplit('/').next().unwrap_or(bare)
+        } else {
+            bare
+        };
+        if base != w.as_str()
+            && matches!(
+                base,
+                "git"
+                    | "rm"
+                    | "dd"
+                    | "find"
+                    | "mkfs"
+                    | "shred"
+                    | "wipefs"
+                    | "terraform"
+                    | "kubectl"
+            )
+        {
+            *w = base.to_string();
+        }
+    }
+    // Git's own options before its command (`git -C repo push`) are not
+    // its command.
+    let mut i = 0;
+    while i < words.len() {
+        if words[i] == "git" {
+            let j = i + 1;
+            while j < words.len() && words[j].starts_with('-') {
+                let takes_value = matches!(
+                    words[j].as_str(),
+                    "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+                );
+                words.remove(j);
+                if takes_value && j < words.len() {
+                    words.remove(j);
+                }
+            }
+        }
+        i += 1;
+    }
     let lower = command.to_ascii_lowercase();
     let has = |w: &str| words.iter().any(|x| x == w);
     let flag = |short: char, long: &str| {
@@ -195,13 +240,7 @@ pub fn irreversible_command(command: &str) -> Option<String> {
         return Some("it deletes a branch whatever it holds (git branch -D)".into());
     }
     if starts("rm", "") && flag('r', "--recursive") && flag('f', "--force") {
-        let wide = words.iter().any(|w| {
-            matches!(
-                w.as_str(),
-                "/" | "/*" | "~" | "~/" | "~/*" | "." | "./" | "./*" | "*" | ".*" | ".." | "../*"
-            ) || w.starts_with("$HOME")
-                || w.starts_with("/workspace")
-        });
+        let wide = words.iter().any(|w| wide_path(w));
         if wide {
             return Some("it deletes a whole directory tree for good (rm -rf)".into());
         }
@@ -217,6 +256,17 @@ pub fn irreversible_command(command: &str) -> Option<String> {
         {
             return Some(why.into());
         }
+    }
+    if starts("find", "")
+        && (has("-delete") || words.windows(2).any(|p| p[0] == "-exec" && p[1] == "rm"))
+        && words
+            .iter()
+            .skip_while(|w| *w != "find")
+            .skip(1)
+            .take_while(|w| !w.starts_with('-'))
+            .any(|w| wide_path(w))
+    {
+        return Some("it deletes a whole directory tree for good (find -delete)".into());
     }
     if starts("dd", "") && words.iter().any(|w| w.starts_with("of=/dev/")) {
         return Some("it writes over a device (dd of=/dev/…)".into());
@@ -245,10 +295,37 @@ pub fn irreversible_command(command: &str) -> Option<String> {
             return Some(why.into());
         }
     }
-    if lower.contains("delete from") && !lower.contains(" where ") {
+    // Each statement on its own: a WHERE in the next does not limit it.
+    if lower
+        .split(';')
+        .any(|statement| statement.contains("delete from") && !statement.contains(" where "))
+    {
         return Some("it deletes every row of a table (DELETE without WHERE)".into());
     }
     None
+}
+
+/// Whether deleting `path` with all under it would take a whole tree: the
+/// root or a directory just under it, the home directory, the workspace,
+/// the directory a command runs in, or everything in one of those.
+fn wide_path(path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    if matches!(
+        path,
+        "" | "/*" | "~" | "~/*" | "." | "./*" | "*" | ".*" | ".." | "../*"
+    ) || path.starts_with("$HOME")
+        || path.starts_with("${HOME")
+        || path == "/workspace"
+        || path == "/workspace/*"
+    {
+        return true;
+    }
+    // An absolute path of at most one part: `/home`, `/etc`, `/usr/*`.
+    if let Some(rest) = path.strip_prefix('/') {
+        let rest = rest.trim_end_matches("/*");
+        return !rest.contains('/');
+    }
+    false
 }
 
 /// A session's standing: the approvals it was given and its taint.
@@ -469,6 +546,19 @@ mod tests {
             ("sqlite3 db \"delete from users\"", "DELETE without WHERE"),
             ("terraform destroy -auto-approve", "terraform"),
             ("kubectl delete deployment web", "cluster"),
+            ("git -C repo push --force origin main", "git push --force"),
+            ("git -c core.x=y --no-pager push -f", "git push --force"),
+            ("/usr/bin/git reset --hard", "git reset --hard"),
+            ("/bin/rm -rf /", "rm -rf"),
+            ("\\rm -rf /", "rm -rf"),
+            ("rm -rf ${HOME}", "rm -rf"),
+            ("rm -rf /home", "rm -rf"),
+            ("find / -delete", "find -delete"),
+            ("find ~ -name '*' -exec rm {} +", "find -delete"),
+            (
+                "psql -c \"DELETE FROM users; select 1 where 1=1\"",
+                "DELETE without WHERE",
+            ),
         ] {
             let why = irreversible_command(command).unwrap_or_else(|| panic!("{command}"));
             assert!(why.contains(word), "{command}: {why}");
@@ -481,6 +571,11 @@ mod tests {
             "cargo test",
             "sqlite3 db \"delete from users where id = 3\"",
             "echo 'git push --force is bad'",
+            "git -C repo push origin main",
+            "find . -name '*.o' -print",
+            "find build -name '*.o' -delete",
+            "rm -rf /workspace-other/x/y",
+            "rm -rf /tmp/build/cache",
         ] {
             assert_eq!(irreversible_command(command), None, "{command}");
         }

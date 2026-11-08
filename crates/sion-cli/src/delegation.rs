@@ -67,6 +67,16 @@ pub struct Delegation {
     /// The sandbox its commands run in, if it has a shell: a subagent in a
     /// worktree runs its commands in one like it.
     pub shell: Option<sion_agent::sandbox::Sandbox>,
+    /// The operator's written rules and the model that checks calls against
+    /// them: a subagent is held to them as its parent is.
+    pub rules: Option<String>,
+    /// The model that checks them, if not the first.
+    pub rules_model: Option<String>,
+    /// The paths of the workspace that are confidential, and those from
+    /// outside: a subagent's worktree has the same paths.
+    pub confidential_files: Vec<String>,
+    /// See [`Delegation::confidential_files`].
+    pub outside_files: Vec<String>,
 }
 
 impl Delegation {
@@ -558,10 +568,20 @@ fn work(
     // A subagent that works on code gets a worktree of its own, a shell
     // like its parent's and the editing tools that come with a workspace.
     let worktree = match (order.worktree, delegation.repository()) {
-        (true, Some(repo)) => Some(
-            crate::worktrees::create(repo, &order.name)
-                .map_err(|e| format!("spawned agent {}, but no worktree: {e}", child.short()))?,
-        ),
+        (true, Some(repo)) => {
+            let worktree = crate::worktrees::create(repo, &order.name)
+                .map_err(|e| format!("spawned agent {}, but no worktree: {e}", child.short()))?;
+            // Its files from outside are the repository's.
+            sion_agent::provenance::keep_in(crate::runtime::provenance_dir());
+            if let Err(e) = sion_agent::provenance::inherit(repo, &worktree.dir) {
+                worktree.remove();
+                return Err(format!(
+                    "spawned agent {}, but no worktree: {e}",
+                    child.short()
+                ));
+            }
+            Some(worktree)
+        }
         _ => None,
     };
     let started = crate::runtime::start_watched(
@@ -581,6 +601,11 @@ fn work(
             budget_tokens: budget,
             workspace: worktree.as_ref().map(|w| w.dir.clone()),
             shell: worktree.as_ref().and(delegation.shell.clone()),
+            // Held to the operator's rules and paths as its parent is.
+            rules: delegation.rules.clone(),
+            rules_model: delegation.rules_model.clone(),
+            confidential_files: delegation.confidential_files.clone(),
+            outside_files: delegation.outside_files.clone(),
             ..Equipment::default()
         },
         crate::runtime::Hooks {
@@ -601,6 +626,11 @@ fn work(
             ));
         }
     };
+    // What it brought in from outside stays marked in the repository its
+    // branch is merged into.
+    if let (Some(worktree), Some(repo)) = (&worktree, delegation.repository()) {
+        let _ = sion_agent::provenance::inherit(&worktree.dir, repo);
+    }
     // What it changed, committed on its branch.
     let committed = worktree.as_ref().map(|worktree| {
         let subject: String = order

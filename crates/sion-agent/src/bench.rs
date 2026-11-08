@@ -107,6 +107,9 @@ pub struct Trial {
     /// The tokens of its model calls no price was known for.
     #[serde(default)]
     pub unpriced: u64,
+    /// The models that answered, as their providers named them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answered_by: Vec<String>,
 }
 
 /// A run of a suite: what was run, with what, and how each case went.
@@ -183,6 +186,16 @@ impl BenchRun {
             all.add(&trial.usage);
         }
         all
+    }
+
+    /// The models that answered in any run, as their providers named them.
+    pub fn answered_by(&self) -> Vec<String> {
+        self.trials
+            .iter()
+            .flat_map(|t| t.answered_by.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// What every run cost, in micro-dollars, and the tokens of model calls
@@ -316,6 +329,15 @@ fn trial_of(case: &str, repeat: u32, ran: &CaseRun) -> Trial {
         usage: ran.state.usage,
         cost_micros: ran.state.cost.micros,
         unpriced: ran.state.cost.unpriced.total(),
+        answered_by: ran
+            .state
+            .steps
+            .iter()
+            .filter(|s| s.kind == "model")
+            .map(|s| s.name.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -330,8 +352,11 @@ pub struct BenchClaim {
     pub suite: String,
     /// The digest of its exact bytes.
     pub suite_digest: Hash32,
-    /// The models, in order of preference.
+    /// The models, in order of preference, as the operator named them.
     pub models: Vec<String>,
+    /// The models that answered, as their providers named them in the log.
+    #[serde(default)]
+    pub answered_by: Vec<String>,
     /// Runs of each case.
     pub repeats: u32,
     /// Cases.
@@ -366,6 +391,7 @@ impl BenchClaim {
             suite: run.suite.clone(),
             suite_digest: run.suite_digest,
             models: run.models.clone(),
+            answered_by: run.answered_by(),
             repeats: run.repeats,
             cases: run.by_case().len(),
             runs: run.total(),
@@ -404,6 +430,9 @@ impl BenchClaim {
             ));
         }
         line.push_str(&format!("; models {}", self.models.join(", ")));
+        if !self.answered_by.is_empty() {
+            line.push_str(&format!(" (answered by {})", self.answered_by.join(", ")));
+        }
         line
     }
 }
@@ -434,6 +463,7 @@ pub fn check_claim(
         None => None,
     };
     let mut trials = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for (n, line) in log
         .split(|b| *b == b'\n')
         .filter(|l| !l.is_empty())
@@ -452,6 +482,16 @@ pub fn check_claim(
             .map_err(|e| format!("line {} of the log: {e}", n + 1))?;
         if ran.case != case {
             return Err(format!("line {} of the log is of two cases", n + 1));
+        }
+        // The calls it says were asked for are the conversation's.
+        if crate::evals::calls_of(&ran.state) != ran.calls {
+            return Err(format!(
+                "run {repeat} of case {case}: the calls the log lists are not those of its \
+                 conversation"
+            ));
+        }
+        if !seen.insert((case.to_string(), repeat)) {
+            return Err(format!("run {repeat} of case {case} is in the log twice"));
         }
         if let Some(set) = &set {
             let Some(spec) = set.cases.iter().find(|c| c.id == case) else {
@@ -480,14 +520,33 @@ pub fn check_claim(
         log: claim.log,
         trials,
     };
-    if let Some(set) = &set {
-        let expected = set.cases.len() * claim.repeats as usize;
-        if run.total() != expected {
+    // Every case run as many times as the claim says, each repeat once.
+    let wanted: Vec<u32> = (1..=claim.repeats).collect();
+    let mut repeats: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
+    for trial in &run.trials {
+        repeats
+            .entry(trial.case.as_str())
+            .or_default()
+            .push(trial.repeat);
+    }
+    for (case, got) in repeats.iter_mut() {
+        got.sort_unstable();
+        if *got != wanted {
             return Err(format!(
-                "the log has {} runs, not the {expected} of {} cases run {} times",
-                run.total(),
-                set.cases.len(),
+                "case {case} is not run {} times, once each, in the log",
                 claim.repeats
+            ));
+        }
+    }
+    if let Some(set) = &set {
+        if let Some(missing) = set
+            .cases
+            .iter()
+            .find(|c| !repeats.contains_key(c.id.as_str()))
+        {
+            return Err(format!(
+                "case {} of the suite is not in the log",
+                missing.id
             ));
         }
     }
@@ -1186,5 +1245,29 @@ mod tests {
         // Another suite is refused.
         let other = builtin("payments-attacks").unwrap().as_bytes();
         assert!(check_claim(&claim, &log, Some(other)).is_err());
+        // A passing run put in twice, in place of a failing one, is refused.
+        let mut twice: Vec<String> = text.lines().map(str::to_string).collect();
+        twice[1] = twice[0].clone();
+        let twice = format!("{}\n", twice.join("\n")).into_bytes();
+        let mut twice_claim = claim.clone();
+        twice_claim.log = log_digest(&twice);
+        let refused = check_claim(&twice_claim, &twice, None).unwrap_err();
+        assert!(refused.contains("twice"), "{refused}");
+        // So is a run whose calls were cut from the list but not from the
+        // conversation.
+        let mut cut: Vec<String> = text.lines().map(str::to_string).collect();
+        let mut first: serde_json::Value = serde_json::from_str(&cut[0]).unwrap();
+        first["run"]["calls"] = serde_json::json!([]);
+        cut[0] = first.to_string();
+        let cut = format!("{}\n", cut.join("\n")).into_bytes();
+        let mut cut_claim = claim.clone();
+        cut_claim.log = log_digest(&cut);
+        let refused = check_claim(&cut_claim, &cut, None).unwrap_err();
+        assert!(
+            refused.contains("not those of its conversation"),
+            "{refused}"
+        );
+        // The models that answered are in the claim, from the log.
+        assert_eq!(claim.answered_by, vec!["scripted".to_string()]);
     }
 }

@@ -213,7 +213,16 @@ pub fn claim_key(suite: &str) -> String {
 pub fn publish(session: &mut Session<'_>, wallet: &str, run: &str) -> Result<String, CliError> {
     let (record, log, at) = kept(run)?;
     bench::verify(&record, &log, None).map_err(CliError::Usage)?;
+    // What is published is what the log shows: the record's figures are
+    // checked against it, its runs judged again by the suite if it is one
+    // built in.
     let claim = bench::BenchClaim::of(&record);
+    let suite = bench::builtin(&record.suite)
+        .map(str::as_bytes)
+        .filter(|bytes| sion_agent::evals::digest(bytes) == record.suite_digest);
+    bench::check_claim(&claim, &log, suite).map_err(|why| {
+        CliError::Usage(format!("the run's record does not match its log: {why}"))
+    })?;
     let payload = serde_json::to_vec(&claim).map_err(|e| CliError::Usage(e.to_string()))?;
     let body = sion_exec::claim::ClaimBody {
         schema: bench::CLAIM_SCHEMA.into(),
@@ -297,20 +306,34 @@ pub fn check(
         Some(path) => Some(
             std::fs::read(path).map_err(|e| CliError::Usage(format!("{}: {e}", path.display())))?,
         ),
-        None => bench::builtin(&claim.suite)
-            .map(|s| s.as_bytes().to_vec())
-            .filter(|bytes| sion_agent::evals::digest(bytes) == claim.suite_digest),
+        None => match bench::builtin(&claim.suite) {
+            Some(bytes) if sion_agent::evals::digest(bytes.as_bytes()) == claim.suite_digest => {
+                Some(bytes.as_bytes().to_vec())
+            }
+            Some(_) => {
+                lines.push(format!(
+                    "the claim's suite is not the {} built in here (another version, or one of \
+                     its own by that name): give it with --suite to judge its runs again",
+                    claim.suite
+                ));
+                None
+            }
+            None => None,
+        },
     };
     match bench::check_claim(&claim, &log_bytes, suite_bytes.as_deref()) {
         Ok(run) => {
             lines.push(if suite_bytes.is_some() {
                 format!(
-                    "checked: the log is the one the claim names, its {} runs judged again by                      the suite's checks come out as it says, and its figures are the claim's",
+                    "checked: the log is the one the claim names, its {} runs judged again by \
+                     the suite's checks come out as it says, and its figures are the claim's",
                     run.total()
                 )
             } else {
                 format!(
-                    "checked against the log: it is the one the claim names and its {} runs                      come to the claim's figures; the suite was not at hand to judge them again                      (give --suite)",
+                    "checked against the log: it is the one the claim names and its {} runs \
+                     come to the claim's figures; the suite was not at hand to judge them \
+                     again (give --suite)",
                     run.total()
                 )
             });
