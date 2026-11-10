@@ -6,7 +6,7 @@
 //! in micro-dollars: $3 a million tokens is `3_000_000`.
 //!
 //! The prices built in ([`Prices::builtin`]) are Anthropic's list prices for
-//! Claude models as its pricing page gave them on 8 November 2026, with
+//! Claude models as its pricing page gave them on 11 November 2026, with
 //! prompt caching's five-minute writes (what the runtime asks for). Other
 //! models are priced from a file ([`Prices::from_json`]); a model with no
 //! price is counted apart ([`Cost::unpriced`]), never guessed.
@@ -129,7 +129,7 @@ const fn claude(input: u64, output: u64, read: u64) -> Price {
 }
 
 /// The date of the prices built in.
-pub const BUILTIN_AS_OF: &str = "2026-11-08";
+pub const BUILTIN_AS_OF: &str = "2026-11-11";
 
 impl Prices {
     /// Anthropic's list prices for Claude models (see the module's notes).
@@ -140,6 +140,10 @@ impl Prices {
                 models.insert((*name).to_string(), pricing);
             }
         };
+        put(
+            &["claude-fable-5-2", "claude-mythos-5-2"],
+            Pricing::flat(claude(usd(8, 0), usd(40, 0), usd(0, 20))),
+        );
         put(
             &["claude-opus-5-5"],
             Pricing::flat(claude(usd(4, 0), usd(20, 0), usd(0, 20))),

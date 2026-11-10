@@ -406,6 +406,7 @@ mod tests {
                 stop: crate::model::Stop::EndTurn,
                 usage: Usage::default(),
                 model: "reader".into(),
+                forgot_reasoning: false,
             })
         };
         let model = Scripted::new("reader").then(answer).then(answer);

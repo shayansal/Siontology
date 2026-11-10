@@ -381,6 +381,7 @@ fn turns_grow_with_progress_up_to_a_cap() {
                 stop: sion_agent::Stop::ToolUse,
                 usage: Default::default(),
                 model: "m".into(),
+                forgot_reasoning: false,
             })
         });
     }
@@ -407,6 +408,7 @@ fn turns_grow_with_progress_up_to_a_cap() {
                 stop: sion_agent::Stop::ToolUse,
                 usage: Default::default(),
                 model: "m2".into(),
+                forgot_reasoning: false,
             })
         });
     }
@@ -1041,10 +1043,13 @@ fn a_person_s_album_stays_in_view_while_the_agent_takes_screenshots() {
     for picture in &album {
         assert!(last.images.contains_key(&picture.image().digest));
     }
-    assert_eq!(last.images.len(), 8 + sion_agent::session::MAX_IMAGES_KEPT);
+    // Of fifteen pictures, those from the tenth on are still shown: the
+    // last five screenshots.
+    assert_eq!(sion_agent::model::images_floor(15), 10);
+    assert_eq!(last.images.len(), 8 + 5);
     // The model sees the album whole, and the last screenshots.
     let shown = sion_agent::model::images_shown(&last.messages, &last.images);
-    assert_eq!(shown.len(), 8 + sion_agent::model::MAX_IMAGES_SHOWN);
+    assert_eq!(shown.len(), 8 + 5);
     assert!((0..8).all(|at| shown.contains(&at)));
     let body = sion_agent::providers::Anthropic::new(
         sion_http::Client::new(sion_http::Options::default()).unwrap(),
@@ -1053,7 +1058,7 @@ fn a_person_s_album_stays_in_view_while_the_agent_takes_screenshots() {
     )
     .body(&last)
     .to_string();
-    assert_eq!(body.matches(r#""type":"image""#).count(), 11);
+    assert_eq!(body.matches(r#""type":"image""#).count(), 13);
 }
 
 /// A paying tool that notes its transaction while it runs, and says what a
@@ -1550,6 +1555,7 @@ fn used(content: Vec<Block>, stop: sion_agent::Stop) -> sion_agent::Response {
             cache_write: 0,
         },
         model: "m".into(),
+        forgot_reasoning: false,
     }
 }
 
@@ -3022,4 +3028,172 @@ fn a_change_against_the_operators_written_rules_is_not_made() {
         1,
         "the second run refunded nothing"
     );
+}
+
+/// An answer of `content` that stopped as `stop`, for a script.
+fn answer(
+    content: Vec<Block>,
+    stop: sion_agent::model::Stop,
+) -> Result<sion_agent::model::Response, ModelError> {
+    Ok(sion_agent::model::Response {
+        content,
+        stop,
+        usage: Default::default(),
+        model: "scripted".into(),
+        forgot_reasoning: false,
+    })
+}
+
+fn thought() -> Block {
+    Block::Reasoning {
+        from: "anthropic test".into(),
+        data: json!({"type": "thinking", "thinking": "hm", "signature": "s"}),
+    }
+}
+
+#[test]
+fn an_answer_cut_off_before_it_was_whole_is_asked_again_with_more_room() {
+    use sion_agent::model::Stop;
+    let (write, writes) = counted("write", Effect::Read, |input| {
+        Outcome::ok(format!("wrote {}", input["path"].as_str().unwrap_or("?")))
+    });
+    let mut tools = Toolbox::new();
+    tools.add(write);
+    let model = Scripted::new("m")
+        // Out of room in the middle of a call: its input is not whole.
+        .then(|_| {
+            answer(
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "write".into(),
+                    input: json!({"_unparsed": "{\"path\": \"a"}),
+                    signature: None,
+                }],
+                Stop::MaxTokens,
+            )
+        })
+        // Out of room before a word: its thinking took it all.
+        .then(|_| answer(vec![thought()], Stop::MaxTokens))
+        .calls("write", json!({"path": "a.txt"}))
+        .says("Written.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("cut", "Write a.txt.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { text } if text == "Written."));
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        1,
+        "the cut-off call is not made"
+    );
+    let requests = model.requests();
+    let most = |i: usize| requests[i].max_tokens;
+    assert_eq!(most(1), most(0) * 2);
+    assert_eq!(most(2), (most(0) * 4).min(sion_agent::model::MOST_TOKENS));
+    // Neither cut-off answer is in the conversation.
+    assert_eq!(requests[2].messages.len(), 1);
+    assert!(!format!("{:?}", state.messages).contains("_unparsed"));
+    every_result_answers_a_call(&state);
+}
+
+#[test]
+fn a_conversation_the_model_no_longer_takes_is_made_shorter_and_asked_again() {
+    use sion_agent::model::Stop;
+    let (read, _) = counted("read", Effect::Read, |_| Outcome::ok("x".repeat(2_000)));
+    let mut tools = Toolbox::new();
+    tools.add(read);
+    let mut model = Scripted::new("m");
+    for n in 0..8 {
+        model = model.calls("read", json!({"n": n}));
+    }
+    let model = model
+        // Refused as too long, then cut off as the window filled.
+        .fails(ModelError::TooLong("HTTP 400: prompt is too long".into()))
+        .then(|_| answer(vec![Block::text("The ans")], Stop::ContextFull))
+        .says("Read all eight.");
+    let mut rt = runtime(vec![&model], &tools, Autonomy::L3);
+    rt.limits.turns = 20;
+    rt.limits.max_turns = 20;
+    let mut state = State::start("long", "Read the eight parts.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { text } if text == "Read all eight."));
+    let requests = model.requests();
+    let chars = |i: usize| -> usize { requests[i].messages.iter().map(|m| m.chars()).sum() };
+    // Asked 8 times for the reads, then: too long, shorter, shorter again.
+    assert!(chars(9) < chars(8), "{} then {}", chars(8), chars(9));
+    assert!(chars(10) < chars(9), "{} then {}", chars(9), chars(10));
+    assert!(state.compactions >= 2);
+    assert!(!format!("{:?}", state.messages).contains("The ans"));
+    every_result_answers_a_call(&state);
+
+    // A model that takes nothing however short ends the run, saying why.
+    let stuck =
+        Scripted::new("m").fails(ModelError::TooLong("HTTP 400: prompt is too long".into()));
+    let rt = runtime(vec![&stuck], &tools, Autonomy::L3);
+    let mut state = State::start("stuck", "Read.", &rt.limits);
+    assert!(matches!(
+        rt.run(&mut state),
+        Ended::ModelsFailed { error } if error.contains("too long")
+    ));
+}
+
+#[test]
+fn a_model_that_declines_hands_over_to_the_next_one() {
+    use sion_agent::model::Stop;
+    let tools = Toolbox::new();
+    let declines = || Scripted::new("first").then(|_| answer(Vec::new(), Stop::Refusal));
+    let first = declines();
+    let second = Scripted::new("second").says("Here it is.");
+    let rt = runtime(vec![&first, &second], &tools, Autonomy::L3);
+    let mut state = State::start("declined", "Explain this.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { text } if text == "Here it is."));
+    assert_eq!(second.requests().len(), 1);
+    // With no other model, the run ends as declined.
+    let alone = declines();
+    let rt = runtime(vec![&alone], &tools, Autonomy::L3);
+    let mut state = State::start("declined-2", "Explain this.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Refused));
+}
+
+#[test]
+fn an_empty_answer_is_asked_again_and_forgotten_reasoning_is_let_go() {
+    use sion_agent::model::Stop;
+    let (look, _) = counted("look", Effect::Read, |_| Outcome::ok("seen"));
+    let mut tools = Toolbox::new();
+    tools.add(look);
+    let call = |id: &str| Block::ToolUse {
+        id: id.into(),
+        name: "look".into(),
+        input: json!({"at": id}),
+        signature: None,
+    };
+    let model = Scripted::new("m")
+        .then(move |_| answer(vec![thought(), call("t1")], Stop::ToolUse))
+        // Nothing at all: asked to go on.
+        .then(|_| answer(Vec::new(), Stop::EndTurn))
+        // The provider would not take the thinking kept: it is let go.
+        .then(move |_| {
+            answer(vec![thought(), call("t2")], Stop::ToolUse).map(|mut response| {
+                response.forgot_reasoning = true;
+                response
+            })
+        })
+        .says("Looked twice.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("empty", "Look twice.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { text } if text == "Looked twice."));
+    let requests = model.requests();
+    let thoughts = |i: usize| {
+        requests[i]
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| matches!(b, Block::Reasoning { .. }))
+            .count()
+    };
+    assert_eq!(thoughts(1), 1, "kept and given back");
+    // The empty answer is not in the conversation; the model was told.
+    let told = format!("{:?}", requests[2].messages.last().unwrap());
+    assert!(told.contains("Your last answer was empty"), "{told}");
+    assert_eq!(requests[2].messages.len(), requests[1].messages.len());
+    // After the provider forgot it, only the thinking written since is sent.
+    assert_eq!(thoughts(3), 1);
+    every_result_answers_a_call(&state);
 }

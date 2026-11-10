@@ -305,9 +305,25 @@ pub struct Image {
     pub digest: String,
 }
 
-/// The most pictures a model is shown at once: the last ones of the
-/// conversation. Earlier ones are a line that says so.
-pub const MAX_IMAGES_SHOWN: usize = 3;
+/// The fewest pictures a model is shown, of those the conversation has:
+/// the last ones. Earlier ones are a line that says so.
+pub const MIN_IMAGES_SHOWN: usize = 3;
+
+/// How many pictures are let go at once. A picture let go changes what was
+/// sent before, which costs a provider's cache of the conversation from
+/// there on, and with some the reasoning kept since; so pictures are let go
+/// together, every so many, not one with each new one.
+pub const IMAGES_LET_GO: usize = 5;
+
+/// The most pictures a model is shown at once, besides the person's last.
+pub const MAX_IMAGES_SHOWN: usize = MIN_IMAGES_SHOWN + IMAGES_LET_GO - 1;
+
+/// The place of the first picture still shown, of `count` in a
+/// conversation: it moves [`IMAGES_LET_GO`] at a time, so that between
+/// [`MIN_IMAGES_SHOWN`] and [`MAX_IMAGES_SHOWN`] are.
+pub fn images_floor(count: usize) -> usize {
+    count.saturating_sub(MIN_IMAGES_SHOWN) / IMAGES_LET_GO * IMAGES_LET_GO
+}
 
 /// The digest a picture is named by: of its media type and its bytes in
 /// base64.
@@ -364,8 +380,8 @@ pub fn person_pictures(messages: &[Message]) -> Vec<usize> {
 }
 
 /// Which pictures of `messages`, by their place in [`images_of`], a model
-/// is shown, of those whose bytes `kept` has: the last
-/// [`MAX_IMAGES_SHOWN`], and the person's last ([`person_pictures`]).
+/// is shown, of those whose bytes `kept` has: those from
+/// [`images_floor`] on, and the person's last ([`person_pictures`]).
 pub fn images_shown(messages: &[Message], kept: &BTreeMap<String, String>) -> BTreeSet<usize> {
     let images = images_of(messages);
     let has = |at: &usize| {
@@ -373,10 +389,8 @@ pub fn images_shown(messages: &[Message], kept: &BTreeMap<String, String>) -> BT
             .get(*at)
             .is_some_and(|image| kept.contains_key(&image.digest))
     };
-    let mut shown: BTreeSet<usize> = (0..images.len())
-        .rev()
+    let mut shown: BTreeSet<usize> = (images_floor(images.len())..images.len())
         .filter(has)
-        .take(MAX_IMAGES_SHOWN)
         .collect();
     shown.extend(person_pictures(messages).into_iter().filter(has));
     shown
@@ -488,6 +502,10 @@ pub enum Stop {
     Refusal,
     /// The provider paused a long turn; send the conversation again to go on.
     PauseTurn,
+    /// The conversation and its answer no longer fit the model's context
+    /// window: the answer is cut off there. The conversation is to be made
+    /// shorter before it is asked again.
+    ContextFull,
     /// Its watcher cut it off while it wrote ([`Model::stream`]): the answer
     /// is the text it wrote so far, without its calls.
     Cut,
@@ -547,6 +565,9 @@ pub struct Response {
     pub usage: Usage,
     /// The model that answered.
     pub model: String,
+    /// Whether the provider would not take the reasoning kept from earlier
+    /// turns, and answered without it: it is of no use to send again.
+    pub forgot_reasoning: bool,
 }
 
 /// What went wrong calling a model.
@@ -576,6 +597,10 @@ pub enum ModelError {
     /// The answer could not be understood.
     #[error("protocol: {0}")]
     Protocol(String),
+    /// The conversation is longer than the model's context window takes:
+    /// made shorter, it may be asked again.
+    #[error("too long: {0}")]
+    TooLong(String),
 }
 
 impl ModelError {
@@ -645,6 +670,7 @@ pub fn cut_off(texts: impl IntoIterator<Item = String>, usage: Usage, model: Str
         stop: Stop::Cut,
         usage,
         model,
+        forgot_reasoning: false,
     }
 }
 

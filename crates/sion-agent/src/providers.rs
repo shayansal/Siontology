@@ -55,9 +55,15 @@ pub(crate) fn kept_or_not(
         Err(ModelError::Refused(why))
             if why.starts_with("HTTP 400") && keeps_reasoning(&request.messages, from) =>
         {
+            // Answered without it, the reasoning kept is of no use to send
+            // again: the session lets go of it.
             send(&Request {
                 messages: without_reasoning(&request.messages),
                 ..request.clone()
+            })
+            .map(|response| Response {
+                forgot_reasoning: true,
+                ..response
             })
         }
         answered => answered,
@@ -222,6 +228,26 @@ fn stream_error(error: &Value) -> ModelError {
     }
 }
 
+/// Whether a provider's refusal says the conversation is longer than the
+/// model's context window takes, as the providers word it.
+pub(crate) fn too_long(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    [
+        "prompt is too long",
+        "context_length_exceeded",
+        "context length",
+        "context window",
+        "maximum context",
+        "exceeds the maximum number of tokens",
+        "input token count",
+        "too many tokens",
+        "request_too_large",
+        "reduce the length",
+    ]
+    .iter()
+    .any(|said| body.contains(said))
+}
+
 pub(crate) fn http_error(error: sion_http::HttpError) -> ModelError {
     use sion_http::HttpError::*;
     match error {
@@ -237,6 +263,9 @@ pub(crate) fn http_error(error: sion_http::HttpError) -> ModelError {
                 },
                 None => ModelError::Busy(format!("HTTP {status}: {body}")),
             },
+            400 | 413 | 422 if too_long(&body) => {
+                ModelError::TooLong(format!("HTTP {status}: {body}"))
+            }
             _ => ModelError::Refused(format!("HTTP {status}: {body}")),
         },
         Transport(e) => ModelError::Transport(e),
@@ -384,6 +413,10 @@ pub struct Anthropic {
     pub cache: bool,
     /// How hard it is asked to think, if said.
     pub thinking: Option<Thinking>,
+    /// Whether the API is asked to let go of kept thinking that no longer
+    /// fits what was sent before it, rather than refuse the request
+    /// ([`CLAUDE_BINDING_BETA`]): off once the API has refused the asking.
+    bind: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for Anthropic {
@@ -404,6 +437,7 @@ impl Anthropic {
             version: "2026-10-21".into(),
             cache: true,
             thinking: None,
+            bind: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -417,9 +451,16 @@ impl Anthropic {
         )
     }
 
-    /// How hard it thinks, a budget at least the API's least (1,024).
-    fn thinks(&self) -> Option<Thinking> {
-        claude_thinks(self.thinking)
+    /// Whether the API is asked to let go of thinking that no longer fits.
+    fn binds(&self) -> bool {
+        self.bind.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Never asks that: for a platform that sends this request its own way,
+    /// without the beta the asking needs.
+    pub(crate) fn unbound(self) -> Anthropic {
+        self.bind.store(false, std::sync::atomic::Ordering::Relaxed);
+        self
     }
 
     /// The request body for `request`.
@@ -435,7 +476,7 @@ impl Anthropic {
         let messages: Vec<Value> = request
             .messages
             .iter()
-            .map(|m| anthropic_message(m, &mut pictures, from))
+            .filter_map(|m| anthropic_message(m, &mut pictures, from))
             .collect();
         let tools: Vec<Value> = request
             .tools
@@ -455,7 +496,7 @@ impl Anthropic {
         if self.cache {
             body["cache_control"] = json!({"type": "ephemeral"});
         }
-        for (field, value) in claude_thinking(self.thinking, most) {
+        for (field, value) in claude_thinking(&self.model, self.thinking, most, self.binds()) {
             body[field] = value;
         }
         body
@@ -471,45 +512,250 @@ pub(crate) fn claude_thinks(thinking: Option<Thinking>) -> Option<Thinking> {
     })
 }
 
-/// The fields of a request to Claude that say how hard it thinks
-/// (`thinking`, and `output_config` for an effort level) when it may write
-/// `most` tokens in all.
-pub(crate) fn claude_thinking(thinking: Option<Thinking>, most: u32) -> Vec<(&'static str, Value)> {
-    match claude_thinks(thinking) {
-        None => Vec::new(),
-        Some(Thinking::Effort(Effort::None) | Thinking::Budget(0)) => {
-            vec![("thinking", json!({"type": "disabled"}))]
-        }
-        Some(Thinking::Effort(level)) => vec![
-            ("thinking", json!({"type": "adaptive"})),
-            (
-                "output_config",
-                json!({"effort": match level {
-                    Effort::None | Effort::Minimal | Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                    Effort::Xhigh => "xhigh",
-                    Effort::Max => "max",
-                }}),
-            ),
-        ],
-        Some(Thinking::Budget(tokens)) => {
-            // Less than all it may write, as the API asks.
-            let budget = tokens.min(most.saturating_sub(1));
-            vec![(
-                "thinking",
-                json!({"type": "enabled", "budget_tokens": budget}),
-            )]
-        }
+/// How a Claude model's thinking is turned off, if it can be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaudeOff {
+    /// `thinking.type: "disabled"`.
+    Disabled,
+    /// `"between_tools"`: no thinking before it answers.
+    BetweenTools,
+    /// It always thinks: the least is the lowest effort.
+    Never,
+}
+
+/// What a Claude model takes of a request, by its name: the API answers
+/// 400 to what a model does not (the table of
+/// <https://platform.claude.com/docs/en/build-with-claude/thinking>, read
+/// 2026-11-11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClaudeTraits {
+    /// It thinks when a request says nothing of thinking.
+    pub thinks_unasked: bool,
+    /// It takes `thinking.type: "adaptive"`.
+    pub adaptive: bool,
+    /// It takes `"enabled"` with `budget_tokens`.
+    pub budget: bool,
+    /// How its thinking is turned off.
+    pub off: ClaudeOff,
+    /// It takes `output_config.effort`.
+    pub effort: bool,
+    /// It takes the effort `xhigh`.
+    pub xhigh: bool,
+    /// It takes the effort `max`.
+    pub max: bool,
+    /// It checks that thinking given back was written over the same
+    /// system prompt, tools and messages: thinking kept across a change to
+    /// those is refused, unless the request asks for it to be let go.
+    pub binds: bool,
+    /// The most tokens it writes in an answer.
+    pub most: u32,
+    /// Its context window, in tokens.
+    pub window: u64,
+}
+
+/// The traits of the Claude model `model` (a name as a provider, a cloud
+/// platform or a router writes it). A model newer than those known is
+/// taken for the newest of its line.
+pub fn claude_traits(model: &str) -> ClaudeTraits {
+    let name = crate::prices::normalized(model);
+    let rest = name.strip_prefix("claude-").unwrap_or(&name);
+    let mut parts = rest.split('-');
+    let line = parts.next().unwrap_or_default();
+    let number = |part: Option<&str>| {
+        part.and_then(|p| p.parse::<u32>().ok())
+            .filter(|n| *n < 100)
+    };
+    let major = number(parts.next());
+    let minor = major.and_then(|_| number(parts.next())).unwrap_or(0);
+    let version = (major.unwrap_or(u32::MAX), minor);
+    let newest = ClaudeTraits {
+        thinks_unasked: true,
+        adaptive: true,
+        budget: false,
+        off: ClaudeOff::Never,
+        effort: true,
+        xhigh: true,
+        max: true,
+        binds: true,
+        most: 128_000,
+        window: 1_000_000,
+    };
+    // Before adaptive thinking: a budget, no effort, 200k tokens of context.
+    let early = ClaudeTraits {
+        thinks_unasked: false,
+        adaptive: false,
+        budget: true,
+        off: ClaudeOff::Disabled,
+        effort: false,
+        xhigh: false,
+        max: false,
+        binds: false,
+        most: 64_000,
+        window: 200_000,
+    };
+    match line {
+        "fable" | "mythos" if rest.contains("preview") => ClaudeTraits {
+            budget: true,
+            xhigh: false,
+            binds: false,
+            ..newest
+        },
+        "fable" | "mythos" if version < (5, 1) => ClaudeTraits {
+            binds: false,
+            ..newest
+        },
+        "fable" | "mythos" => newest,
+        "opus" if version >= (5, 5) => newest,
+        "opus" if version >= (5, 0) => ClaudeTraits {
+            off: ClaudeOff::Disabled,
+            binds: false,
+            ..newest
+        },
+        "opus" if version >= (4, 7) => ClaudeTraits {
+            thinks_unasked: false,
+            off: ClaudeOff::Disabled,
+            binds: false,
+            ..newest
+        },
+        "opus" if version >= (4, 6) => ClaudeTraits {
+            thinks_unasked: false,
+            budget: true,
+            off: ClaudeOff::Disabled,
+            xhigh: false,
+            binds: false,
+            ..newest
+        },
+        "opus" if version >= (4, 5) => ClaudeTraits {
+            effort: true,
+            ..early
+        },
+        "opus" => ClaudeTraits {
+            most: 32_000,
+            ..early
+        },
+        "sonnet" if version >= (5, 5) => ClaudeTraits {
+            off: ClaudeOff::BetweenTools,
+            ..newest
+        },
+        "sonnet" if version >= (5, 0) => ClaudeTraits {
+            off: ClaudeOff::Disabled,
+            binds: false,
+            ..newest
+        },
+        "sonnet" if version >= (4, 6) => ClaudeTraits {
+            thinks_unasked: false,
+            budget: true,
+            off: ClaudeOff::Disabled,
+            xhigh: false,
+            binds: false,
+            ..newest
+        },
+        "sonnet" => early,
+        "haiku" if version >= (5, 5) => ClaudeTraits {
+            off: ClaudeOff::Disabled,
+            ..newest
+        },
+        "haiku" => early,
+        // Claude 3 and before, named with the number first.
+        _ if line.chars().all(|c| c.is_ascii_digit()) && !line.is_empty() => ClaudeTraits {
+            most: 8_192,
+            ..early
+        },
+        _ => newest,
     }
 }
 
-fn anthropic_message(message: &Message, pictures: &mut Pictures<'_>, from: &str) -> Value {
+/// The beta that lets a request say what the API does with kept thinking
+/// that no longer fits what was sent before it.
+pub const CLAUDE_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+
+/// The fields of a request to the Claude model `model` that say how hard
+/// it thinks (`thinking`, and `output_config` for an effort level) when it
+/// may write `most` tokens in all, as that model takes them
+/// ([`claude_traits`]): an effort level a model does not have is the next
+/// one down; thinking that cannot be turned off is asked for at the lowest
+/// effort; a budget, where a model takes none, is the effort nearest it.
+/// With `bind`, a model that checks kept thinking against what was sent
+/// before it is asked to let go of thinking that no longer fits, rather
+/// than refuse the request (which needs [`CLAUDE_BINDING_BETA`]).
+pub(crate) fn claude_thinking(
+    model: &str,
+    thinking: Option<Thinking>,
+    most: u32,
+    bind: bool,
+) -> Vec<(&'static str, Value)> {
+    let traits = claude_traits(model);
+    let adaptive = || {
+        if bind && traits.binds {
+            json!({"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}})
+        } else {
+            json!({"type": "adaptive"})
+        }
+    };
+    let effort = |level: Effort| {
+        let name = match level {
+            Effort::None | Effort::Minimal | Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh if traits.xhigh => "xhigh",
+            Effort::Xhigh => "high",
+            Effort::Max if traits.max => "max",
+            Effort::Max if traits.xhigh => "xhigh",
+            Effort::Max => "high",
+        };
+        json!({"effort": name})
+    };
+    let budget = |tokens: u32| {
+        // Less than all it may write, as the API asks.
+        json!({"type": "enabled", "budget_tokens": tokens.max(1_024).min(most.saturating_sub(1))})
+    };
+    let with_effort = |level: Effort| {
+        let mut fields = vec![("thinking", adaptive())];
+        if traits.effort {
+            fields.push(("output_config", effort(level)));
+        }
+        fields
+    };
+    match claude_thinks(thinking) {
+        // Nothing said: the model's own way, and, where it checks kept
+        // thinking, the asking that it let go of what no longer fits.
+        None if bind && traits.binds && traits.thinks_unasked => vec![("thinking", adaptive())],
+        None => Vec::new(),
+        Some(Thinking::Effort(Effort::None) | Thinking::Budget(0)) => match traits.off {
+            ClaudeOff::Disabled => vec![("thinking", json!({"type": "disabled"}))],
+            ClaudeOff::BetweenTools => vec![("thinking", json!({"type": "between_tools"}))],
+            ClaudeOff::Never => with_effort(Effort::Low),
+        },
+        Some(Thinking::Effort(level)) if traits.adaptive => with_effort(level),
+        Some(Thinking::Effort(level)) => {
+            let mut fields = vec![("thinking", budget(Thinking::Effort(level).room()))];
+            if traits.effort {
+                // Opus 4.5 takes low to high.
+                fields.push(("output_config", effort(level.min(Effort::High))));
+            }
+            fields
+        }
+        Some(Thinking::Budget(tokens)) if traits.budget => vec![("thinking", budget(tokens))],
+        Some(Thinking::Budget(tokens)) => with_effort(match tokens {
+            0..=4_096 => Effort::Low,
+            4_097..=12_000 => Effort::Medium,
+            12_001..=24_000 => Effort::High,
+            24_001..=48_000 => Effort::Xhigh,
+            _ => Effort::Max,
+        }),
+    }
+}
+
+/// A message as the Messages API takes it; none if nothing of it is left to
+/// send (thinking of another model's only, or empty text: the API refuses
+/// an empty text block and a message without content).
+fn anthropic_message(message: &Message, pictures: &mut Pictures<'_>, from: &str) -> Option<Value> {
     let content: Vec<Value> = message
         .content
         .iter()
         .filter_map(|b| {
             Some(match b {
+            Block::Text { text } if text.trim().is_empty() => return None,
             Block::Text { text } => json!({"type": "text", "text": text}),
             // Its thinking, as it came: only its own.
             Block::Reasoning { .. } => kept_from(b, from)?.clone(),
@@ -524,6 +770,7 @@ fn anthropic_message(message: &Message, pictures: &mut Pictures<'_>, from: &str)
                 is_error,
                 images,
             } if images.is_empty() => {
+                let content = if content.is_empty() { "(no output)" } else { content.as_str() };
                 json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": is_error})
             }
             // A result with pictures is a list of blocks: its text, then
@@ -555,7 +802,12 @@ fn anthropic_message(message: &Message, pictures: &mut Pictures<'_>, from: &str)
             })
         })
         .collect();
-    json!({"role": match message.role { Role::User => "user", Role::Assistant => "assistant" }, "content": content})
+    if content.is_empty() {
+        return None;
+    }
+    Some(
+        json!({"role": match message.role { Role::User => "user", Role::Assistant => "assistant" }, "content": content}),
+    )
 }
 
 /// A thinking block of Anthropic's, kept if it can be given back: a
@@ -600,6 +852,17 @@ pub fn anthropic_response(answer: &Value) -> Result<Response, ModelError> {
         stop: anthropic_stop(answer["stop_reason"].as_str()),
         usage: anthropic_usage(&answer["usage"]),
         model: answer["model"].as_str().unwrap_or_default().to_string(),
+        forgot_reasoning: let_go(&answer["input_transformations"]),
+    })
+}
+
+/// Whether the API let go of kept thinking because what was sent before it
+/// had changed (`input_transformations`, under [`CLAUDE_BINDING_BETA`]):
+/// that thinking, and all after it, is of no use to send again.
+fn let_go(transformations: &Value) -> bool {
+    transformations.as_array().is_some_and(|all| {
+        all.iter()
+            .any(|t| t["type"] == "thinking_dropped" && t["reason"] == "prefix_binding_mismatch")
     })
 }
 
@@ -610,6 +873,7 @@ fn anthropic_stop(reason: Option<&str>) -> Stop {
         Some("max_tokens") => Stop::MaxTokens,
         Some("refusal") => Stop::Refusal,
         Some("pause_turn") => Stop::PauseTurn,
+        Some("model_context_window_exceeded") => Stop::ContextFull,
         other => Stop::Other(other.unwrap_or("none").to_string()),
     }
 }
@@ -647,6 +911,7 @@ pub fn anthropic_stream<R: Read>(
     let mut usage = Usage::default();
     let mut stop: Option<String> = None;
     let mut ended = false;
+    let mut forgot = false;
     // Whether the watcher cut the answer off.
     let mut cut = false;
     while let Some(event) = events.next_event() {
@@ -660,6 +925,7 @@ pub fn anthropic_stream<R: Read>(
                 let message = &data["message"];
                 model = message["model"].as_str().unwrap_or_default().to_string();
                 usage = anthropic_usage(&message["usage"]);
+                forgot |= let_go(&message["input_transformations"]);
             }
             "content_block_start" => {
                 let block = &data["content_block"];
@@ -723,6 +989,7 @@ pub fn anthropic_stream<R: Read>(
                 if let Some(reason) = data["delta"]["stop_reason"].as_str() {
                     stop = Some(reason.to_string());
                 }
+                forgot |= let_go(&data["input_transformations"]);
                 let more = &data["usage"];
                 if let Some(output) = more["output_tokens"].as_u64() {
                     usage.output = output;
@@ -789,6 +1056,7 @@ pub fn anthropic_stream<R: Read>(
         stop: anthropic_stop(stop.as_deref()),
         usage,
         model,
+        forgot_reasoning: forgot,
     })
 }
 
@@ -799,25 +1067,50 @@ impl Anthropic {
 }
 
 impl Anthropic {
+    /// The `anthropic-beta` header `body` needs, if any.
+    fn beta(body: &Value) -> Option<&'static str> {
+        body["thinking"]["block_binding"]
+            .is_object()
+            .then_some(CLAUDE_BINDING_BETA)
+    }
+
+    /// Sends what `send` sends; if the API refuses the asking that it let go
+    /// of thinking that no longer fits (an API or a platform without that
+    /// beta), sends again without it, and no longer asks.
+    fn bound<T>(&self, mut send: impl FnMut() -> Result<T, ModelError>) -> Result<T, ModelError> {
+        match send() {
+            Err(ModelError::Refused(why))
+                if self.binds()
+                    && why.starts_with("HTTP 400")
+                    && (why.contains("block_binding") || why.contains("anthropic-beta")) =>
+            {
+                self.bind.store(false, std::sync::atomic::Ordering::Relaxed);
+                send()
+            }
+            answered => answered,
+        }
+    }
+
     fn complete_once(&self, request: &Request) -> Result<Response, ModelError> {
-        let body = serde_json::to_vec(&self.body(request))
-            .map_err(|e| ModelError::Protocol(e.to_string()))?;
-        let answer = self.keys.send(|key| {
-            self.client
-                .post_json(
-                    &self.url(),
-                    &[
-                        ("x-api-key", key.unwrap_or_default()),
-                        ("anthropic-version", &self.version),
-                    ],
-                    &body,
-                    MAX_ANSWER,
-                )
-                .map_err(http_error)
-        })?;
-        let value: Value = serde_json::from_slice(&answer.body)
-            .map_err(|e| ModelError::Protocol(format!("answer is not JSON: {e}")))?;
-        anthropic_response(&value)
+        self.bound(|| {
+            let body = self.body(request);
+            let beta = Self::beta(&body);
+            let body =
+                serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
+            let answer = self.keys.send(|key| {
+                let mut headers = vec![
+                    ("x-api-key", key.unwrap_or_default()),
+                    ("anthropic-version", self.version.as_str()),
+                ];
+                headers.extend(beta.map(|beta| ("anthropic-beta", beta)));
+                self.client
+                    .post_json(&self.url(), &headers, &body, MAX_ANSWER)
+                    .map_err(http_error)
+            })?;
+            let value: Value = serde_json::from_slice(&answer.body)
+                .map_err(|e| ModelError::Protocol(format!("answer is not JSON: {e}")))?;
+            anthropic_response(&value)
+        })
     }
 
     fn stream_once(
@@ -825,25 +1118,46 @@ impl Anthropic {
         request: &Request,
         seen: &mut dyn FnMut(Delta) -> bool,
     ) -> Result<Response, ModelError> {
-        let mut body = self.body(request);
-        body["stream"] = json!(true);
-        let body = serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
-        let mut response = self.keys.send(|key| {
-            post_stream(
-                &self.client,
-                &self.url(),
-                &[
+        let mut response = self.bound(|| {
+            let mut body = self.body(request);
+            body["stream"] = json!(true);
+            let beta = Self::beta(&body);
+            let body =
+                serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
+            self.keys.send(|key| {
+                let mut headers = vec![
                     ("x-api-key", key.unwrap_or_default()),
-                    ("anthropic-version", &self.version),
-                ],
-                &body,
-            )
+                    ("anthropic-version", self.version.as_str()),
+                ];
+                headers.extend(beta.map(|beta| ("anthropic-beta", beta)));
+                post_stream(&self.client, &self.url(), &headers, &body)
+            })
         })?;
         if !streams(&response) {
             return whole(response, anthropic_response, seen);
         }
         anthropic_stream(&mut Events::new(response.body(), MAX_EVENT), seen)
     }
+}
+
+/// The most tokens the Claude model `model` may write when it is asked for
+/// at most `max_tokens` and to think as `thinking` says: room for its
+/// thinking besides ([`most_tokens`]), also when nothing is said of
+/// thinking and the model thinks anyway, up to what the model writes at
+/// most.
+pub(crate) fn claude_most(model: &str, thinking: Option<Thinking>, max_tokens: u32) -> u32 {
+    let traits = claude_traits(model);
+    let thinking = match claude_thinks(thinking) {
+        None if traits.thinks_unasked => Some(Thinking::Effort(Effort::High)),
+        // Thinking that cannot be turned off runs at the lowest effort.
+        Some(Thinking::Effort(Effort::None) | Thinking::Budget(0))
+            if traits.off == ClaudeOff::Never =>
+        {
+            Some(Thinking::Effort(Effort::Low))
+        }
+        other => other,
+    };
+    most_tokens(thinking, max_tokens).min(traits.most)
 }
 
 impl Model for Anthropic {
@@ -868,7 +1182,7 @@ impl Model for Anthropic {
     }
 
     fn most_tokens(&self, max_tokens: u32) -> u32 {
-        most_tokens(self.thinks(), max_tokens)
+        claude_most(&self.model, self.thinking, max_tokens)
     }
 }
 
@@ -1125,6 +1439,7 @@ pub fn openai_response(answer: &Value) -> Result<Response, ModelError> {
         stop: openai_stop(choice["finish_reason"].as_str()),
         usage: openai_usage(&answer["usage"]),
         model: answer["model"].as_str().unwrap_or_default().to_string(),
+        forgot_reasoning: false,
     })
 }
 
@@ -1254,6 +1569,7 @@ pub fn openai_stream<R: Read>(
         stop: openai_stop(finish.as_deref()),
         usage,
         model,
+        forgot_reasoning: false,
     })
 }
 
@@ -1733,6 +2049,7 @@ pub fn gemini_response(answer: &Value) -> Result<Response, ModelError> {
             stop: Stop::Refusal,
             usage,
             model,
+            forgot_reasoning: false,
         });
     }
     let candidate = &answer["candidates"][0];
@@ -1755,6 +2072,7 @@ pub fn gemini_response(answer: &Value) -> Result<Response, ModelError> {
         stop,
         usage,
         model,
+        forgot_reasoning: false,
     })
 }
 
@@ -1833,6 +2151,7 @@ pub fn gemini_stream<R: Read>(
                 stop: Stop::Refusal,
                 usage,
                 model,
+                forgot_reasoning: false,
             });
         }
         let candidate = &chunk["candidates"][0];
@@ -1867,6 +2186,7 @@ pub fn gemini_stream<R: Read>(
         stop,
         usage,
         model,
+        forgot_reasoning: false,
     })
 }
 
@@ -2246,6 +2566,7 @@ pub fn responses_response(answer: &Value) -> Result<Response, ModelError> {
             cache_write: 0,
         },
         model: answer["model"].as_str().unwrap_or_default().to_string(),
+        forgot_reasoning: false,
     })
 }
 

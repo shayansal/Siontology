@@ -331,7 +331,7 @@ impl Bedrock {
             .iter()
             .map(|m| converse_message(m, &mut pictures, &from))
             .collect();
-        let most = most_tokens(self.thinks(), request.max_tokens);
+        let most = self.most_tokens(request.max_tokens);
         let mut system = Vec::new();
         if !request.system.trim().is_empty() {
             system.push(json!({"text": request.system}));
@@ -369,10 +369,11 @@ impl Bedrock {
                 .collect();
             body["toolConfig"] = json!({ "tools": tools });
         }
-        let fields: serde_json::Map<String, Value> = claude_thinking(self.thinks(), most)
-            .into_iter()
-            .map(|(field, value)| (field.to_string(), value))
-            .collect();
+        let fields: serde_json::Map<String, Value> =
+            claude_thinking(&self.model, self.thinks(), most, false)
+                .into_iter()
+                .map(|(field, value)| (field.to_string(), value))
+                .collect();
         if !fields.is_empty() {
             body["additionalModelRequestFields"] = Value::Object(fields);
         }
@@ -554,6 +555,7 @@ pub fn converse_response(answer: &Value, model: &str) -> Result<Response, ModelE
             cache_write: written,
         },
         model: model.to_string(),
+        forgot_reasoning: false,
     })
 }
 
@@ -569,7 +571,11 @@ impl Model for Bedrock {
     }
 
     fn most_tokens(&self, max_tokens: u32) -> u32 {
-        most_tokens(self.thinks(), max_tokens)
+        if bedrock_claude(&self.model) {
+            crate::providers::claude_most(&self.model, self.thinking, max_tokens)
+        } else {
+            most_tokens(self.thinks(), max_tokens)
+        }
     }
 }
 
@@ -907,7 +913,7 @@ impl Vertex {
     pub fn body(&self, request: &Request) -> Value {
         let from = self.source();
         if self.claude() {
-            let mut shaped = Anthropic::new(self.client.clone(), &self.model, "");
+            let mut shaped = Anthropic::new(self.client.clone(), &self.model, "").unbound();
             shaped.thinking = self.thinking;
             shaped.cache = false;
             let mut body = shaped.body_from(request, &from);
@@ -1032,7 +1038,7 @@ impl Model for Vertex {
 
     fn most_tokens(&self, max_tokens: u32) -> u32 {
         if self.claude() {
-            most_tokens(claude_thinks(self.thinking), max_tokens)
+            crate::providers::claude_most(&self.model, self.thinking, max_tokens)
         } else {
             most_tokens(self.thinking, max_tokens)
         }

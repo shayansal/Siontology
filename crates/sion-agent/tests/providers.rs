@@ -92,10 +92,10 @@ fn conversation() -> Request {
 }
 
 /// A conversation of four screenshots, the bytes of all of them kept.
-fn screenshots() -> Request {
+fn screenshots(count: usize) -> Request {
     let mut request = conversation();
     request.messages.truncate(1);
-    for i in 0..4 {
+    for i in 0..count {
         let data = format!("cGljdHVyZS{i}=");
         let digest = sion_agent::model::image_digest("image/png", &data);
         request.images.insert(digest.clone(), data);
@@ -124,9 +124,35 @@ fn screenshots() -> Request {
     request
 }
 
+/// Which of a request's tool results show their picture to Claude.
+fn shown(request: &Request) -> Vec<bool> {
+    let body = Anthropic::new(client(), "claude-opus-5-5", "k").body(request);
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["content"][0]["type"] == "tool_result")
+        .map(|m| m["content"][0]["content"][1]["type"] == "image")
+        .collect()
+}
+
 #[test]
-fn pictures_go_to_both_providers_the_last_three_shown() {
-    let request = screenshots();
+fn pictures_go_to_both_providers_and_are_let_go_several_at_once() {
+    // Up to seven are all shown: letting one go changes what was sent
+    // before, which costs the provider's cache from there on.
+    for count in 1..=7 {
+        assert_eq!(shown(&screenshots(count)), vec![true; count], "{count}");
+    }
+    // The eighth lets five go at once, and the next four change nothing
+    // already sent.
+    for count in 8..=12 {
+        let shown = shown(&screenshots(count));
+        assert_eq!(shown[..5], [false; 5], "{count}");
+        assert!(shown[5..].iter().all(|s| *s), "{count}");
+    }
+    assert_eq!(shown(&screenshots(13))[..10], [false; 10]);
+
+    let request = screenshots(8);
     let anthropic = Anthropic::new(client(), "claude-opus-5-5", "k").body(&request);
     let results: Vec<&Value> = anthropic["messages"]
         .as_array()
@@ -135,15 +161,15 @@ fn pictures_go_to_both_providers_the_last_three_shown() {
         .filter(|m| m["content"][0]["type"] == "tool_result")
         .map(|m| &m["content"][0])
         .collect();
-    assert_eq!(results.len(), 4);
-    // The first picture is a line; the last three are pictures.
+    assert_eq!(results.len(), 8);
+    // The first five pictures are a line; the last three are pictures.
     assert_eq!(results[0]["content"][0]["text"], "screen 0");
     assert_eq!(results[0]["content"][1]["type"], "text");
     assert_eq!(
         results[0]["content"][1]["text"],
         sion_agent::providers::IMAGE_NOT_SHOWN
     );
-    for (i, result) in results.iter().enumerate().skip(1) {
+    for (i, result) in results.iter().enumerate().skip(5) {
         let picture = &result["content"][1];
         assert_eq!(picture["type"], "image");
         assert_eq!(picture["source"]["media_type"], "image/png");
@@ -166,28 +192,14 @@ fn pictures_go_to_both_providers_the_last_three_shown() {
     assert_eq!(pictures.len(), 3);
     assert_eq!(
         pictures[2]["content"][1]["image_url"]["url"],
-        "data:image/png;base64,cGljdHVyZS3="
+        "data:image/png;base64,cGljdHVyZS7="
     );
 
-    // A picture whose bytes are let go is a line too, and the last three of
-    // those kept are shown.
-    let mut fewer = screenshots();
+    // A picture whose bytes are let go is a line too.
+    let mut fewer = screenshots(4);
     let last = sion_agent::model::image_digest("image/png", "cGljdHVyZS3=");
     fewer.images.remove(&last);
-    let body = Anthropic::new(client(), "claude-opus-5-5", "k").body(&fewer);
-    let kinds: Vec<String> = body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|m| m["content"][0]["type"] == "tool_result")
-        .map(|m| {
-            m["content"][0]["content"][1]["type"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
-        .collect();
-    assert_eq!(kinds, ["image", "image", "image", "text"]);
+    assert_eq!(shown(&fewer), [true, true, true, false]);
 }
 
 #[test]

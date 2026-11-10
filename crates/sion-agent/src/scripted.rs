@@ -216,6 +216,7 @@ fn reply(content: Vec<Block>, stop: Stop) -> Response {
         stop,
         usage: Usage::default(),
         model: "scripted".into(),
+        forgot_reasoning: false,
     }
 }
 

@@ -115,7 +115,7 @@ impl Default for Limits {
             turns: 12,
             turns_per_progress: 4,
             max_turns: 32,
-            max_tokens: 4_096,
+            max_tokens: 16_384,
             failures_to_block: 2,
             compact_messages: 36,
             compact_chars: 120_000,
@@ -437,9 +437,10 @@ pub const TOLD_CHARS: usize = 4_000;
 /// circles.
 pub const RECENT_KEPT: usize = 16;
 
-/// The most pictures a session keeps the bytes of: the last ones. The
-/// conversation keeps every picture's digest.
-pub const MAX_IMAGES_KEPT: usize = 6;
+/// The most pictures a session keeps the bytes of, besides the person's
+/// last: those a model is still shown. The conversation keeps every
+/// picture's digest.
+pub const MAX_IMAGES_KEPT: usize = crate::model::MAX_IMAGES_SHOWN;
 
 /// The most steps a session keeps for its trace: the last ones.
 pub const MAX_STEPS: usize = 2_000;
@@ -639,6 +640,21 @@ pub enum Seen {
 /// limit, so that it goes on: its next answer continues the last.
 pub const CONTINUE: &str =
     "Your answer was cut off at the token limit. Continue from where it stopped.";
+
+/// The least room a model's answer is asked with when a budget does not
+/// leave it more: below that, the run wraps up.
+pub const LEAST_ANSWER: u32 = 4_096;
+
+/// What a model whose answer came empty is told, to go on.
+pub const EMPTY_ANSWER: &str = "[Your last answer was empty. Go on with the task: make the next \
+                                call, or say where it stands.]";
+
+/// The most empty answers in a run after which the model is asked to go on.
+pub const MAX_EMPTY_ANSWERS: u32 = 2;
+
+/// The most times in a run a conversation that no longer fits the model is
+/// made shorter and the model asked again.
+pub const MAX_SHORTENINGS: u32 = 3;
 
 /// What a session runs with, besides its state: models, tools, rules, a
 /// clock and a kill switch.
@@ -1160,6 +1176,13 @@ impl Runtime<'_> {
             self.save(state);
         }
         let start = RunStart::of(state);
+        // The most the model may write in an answer: more once an answer
+        // was cut off before it was whole.
+        let mut room = self.limits.max_tokens;
+        // Times the conversation was made shorter because it no longer fit
+        // the model, and answers that came empty, in this run.
+        let mut shortened = 0u32;
+        let mut empties = 0u32;
         loop {
             if (self.stopped)() {
                 return Ended::Stopped;
@@ -1199,12 +1222,21 @@ impl Runtime<'_> {
             self.compact(state, &start);
             // Within budget: what this call sends and the most it may
             // answer must fit in what is left, besides the reserve for a
-            // last answer.
+            // last answer. Where the room it would have does not fit, it
+            // has less, down to the least an answer is asked with.
+            let least = LEAST_ANSWER.min(self.limits.max_tokens);
+            let mut asked = room;
             if let Some(budget) = self.limits.budget_tokens {
                 let left = budget.saturating_sub(start.spent(state));
-                let need = self.request_tokens(state, self.limits.max_tokens);
-                if need.saturating_add(self.limits.reserve_tokens) > left {
-                    return self.wrap_up(state, left);
+                while self
+                    .request_tokens(state, asked)
+                    .saturating_add(self.limits.reserve_tokens)
+                    > left
+                {
+                    if asked <= least {
+                        return self.wrap_up(state, left);
+                    }
+                    asked = (asked / 2).max(least);
                 }
             }
             // Within the budget in dollars, the same way, at the price of
@@ -1214,21 +1246,32 @@ impl Runtime<'_> {
             {
                 let left = budget.saturating_sub(start.spent_micros(state));
                 let input = self.request_tokens(state, 0);
-                let output = self
-                    .request_tokens(state, self.limits.max_tokens)
-                    .saturating_sub(input);
-                let need = pricing.most(input, output);
                 let reserve = pricing.most(0, self.limits.reserve_tokens);
-                if need.saturating_add(reserve) > left {
-                    let answer = pricing
-                        .output_tokens_for(left.saturating_sub(pricing.most(input, 0)), input);
-                    return self.wrap_up(state, input.saturating_add(answer));
+                loop {
+                    let output = self.request_tokens(state, asked).saturating_sub(input);
+                    if pricing.most(input, output).saturating_add(reserve) <= left {
+                        break;
+                    }
+                    if asked <= least {
+                        let answer = pricing
+                            .output_tokens_for(left.saturating_sub(pricing.most(input, 0)), input);
+                        return self.wrap_up(state, input.saturating_add(answer));
+                    }
+                    asked = (asked / 2).max(least);
                 }
             }
             let start_ms = wall_ms();
             let tainted = state.standing.tainted((self.now)());
-            let response = match self.ask(state) {
+            let response = match self.ask_with(state, asked) {
                 Ok(response) => response,
+                // Longer than the model takes: made shorter, it is asked
+                // again, while making it shorter helps.
+                Err(ModelError::TooLong(_))
+                    if shortened < MAX_SHORTENINGS && self.shorten(state, &start) =>
+                {
+                    shortened += 1;
+                    continue;
+                }
                 Err(error) => {
                     return Ended::ModelsFailed {
                         error: error.to_string(),
@@ -1253,6 +1296,41 @@ impl Runtime<'_> {
             state.turns_left -= 1;
             state.turns_taken += 1;
             self.account(state, &response);
+            // The provider would not take the reasoning kept from earlier
+            // turns: it is let go, not sent to be refused or dropped again.
+            if response.forgot_reasoning {
+                forget_reasoning(state);
+            }
+            // The conversation and its answer no longer fit the model: the
+            // answer, cut off there, is not kept; made shorter, the model
+            // is asked again.
+            if response.stop == Stop::ContextFull {
+                if shortened < MAX_SHORTENINGS && self.shorten(state, &start) {
+                    shortened += 1;
+                    continue;
+                }
+                return Ended::ModelsFailed {
+                    error: "the conversation no longer fits the model's context window, and \
+                            could not be made shorter"
+                        .into(),
+                };
+            }
+            // Out of room before a call was whole, or before it said
+            // anything (its thinking took the room): the answer is not
+            // kept, and it is asked again with twice the room, up to the
+            // most a model writes.
+            let cut_short = response.stop == Stop::MaxTokens
+                && (response
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, Block::ToolUse { .. }))
+                    || !response.content.iter().any(
+                        |block| matches!(block, Block::Text { text } if !text.trim().is_empty()),
+                    ));
+            if cut_short && room < crate::model::MOST_TOKENS {
+                room = room.saturating_mul(2).min(crate::model::MOST_TOKENS);
+                continue;
+            }
             // Cut off by a stop while it wrote: what it wrote is kept, and
             // the run stops there.
             if response.stop == Stop::Cut {
@@ -1269,22 +1347,51 @@ impl Runtime<'_> {
                 }
                 return Ended::Stopped;
             }
-            let message = Message {
+            let mut message = Message {
                 role: Role::Assistant,
                 content: response.content,
             };
+            // A call cut off with no more room to give is not made: its
+            // input is not whole.
+            if cut_short {
+                message
+                    .content
+                    .retain(|block| !matches!(block, Block::ToolUse { .. }));
+            }
             let calls: Vec<(String, String, Value)> = message
                 .tool_uses()
                 .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
                 .collect();
             let text = message.text();
-            state.messages.push(message);
+            // An answer with nothing in it (no words, no calls) is not
+            // kept, and the model is asked to go on, twice at most: sent
+            // back as it is, an empty answer brings another.
+            let empty = calls.is_empty()
+                && text.trim().is_empty()
+                && matches!(response.stop, Stop::EndTurn | Stop::Other(_));
+            if empty && empties < MAX_EMPTY_ANSWERS {
+                empties += 1;
+                match state.messages.last_mut() {
+                    Some(last) if last.role == Role::User => {
+                        note_to_model(&mut last.content, EMPTY_ANSWER)
+                    }
+                    _ => state.messages.push(Message::user(EMPTY_ANSWER)),
+                }
+                continue;
+            }
+            if !message.content.is_empty() {
+                state.messages.push(message);
+            }
             if calls.is_empty() {
                 match response.stop {
                     Stop::Refusal => return Ended::Refused,
                     Stop::PauseTurn => continue,
                     Stop::MaxTokens => {
-                        state.messages.push(Message::user(CONTINUE));
+                        room = room.saturating_mul(2).min(crate::model::MOST_TOKENS);
+                        match state.messages.last() {
+                            Some(last) if last.role == Role::User => {}
+                            _ => state.messages.push(Message::user(CONTINUE)),
+                        }
                         continue;
                     }
                     _ => match self.checked(state, &text) {
@@ -2437,10 +2544,6 @@ impl Runtime<'_> {
         }
     }
 
-    fn ask(&self, state: &mut State) -> Result<Response, ModelError> {
-        self.ask_with(state, self.limits.max_tokens)
-    }
-
     /// Counts what a model's answer used, and what it cost at the
     /// runtime's prices.
     fn account(&self, state: &mut State, response: &Response) {
@@ -2525,6 +2628,8 @@ impl Runtime<'_> {
         let now = (self.now)();
         let mut last = ModelError::Refused("no model is configured".into());
         let mut asked = false;
+        // A model that declined, when another may yet answer.
+        let mut declined: Option<Response> = None;
         for (index, model) in self.models.iter().enumerate() {
             if !after_pause && state.cooling.get(&index).is_some_and(|until| now < *until) {
                 continue;
@@ -2556,6 +2661,17 @@ impl Runtime<'_> {
                     if response.model.is_empty() {
                         response.model = model.id().to_string();
                     }
+                    // Declined, for safety reasons, with another model
+                    // configured after it: that one is asked, as the
+                    // providers advise; what this one used is counted.
+                    if response.stop == Stop::Refusal && index + 1 < self.models.len() {
+                        self.account(state, &response);
+                        declined = Some(Response {
+                            usage: Usage::default(),
+                            ..response
+                        });
+                        continue;
+                    }
                     return Ok(response);
                 }
                 Err(error) if error.transient() => {
@@ -2569,6 +2685,11 @@ impl Runtime<'_> {
                 }
                 Err(error) => return Err(error),
             }
+        }
+        // Every other model failed or is resting: the answer is the one
+        // that declined.
+        if let Some(declined) = declined {
+            return Ok(declined);
         }
         if !asked {
             last = ModelError::Busy("every model is cooling down after a failure".into());
@@ -3066,6 +3187,37 @@ impl Runtime<'_> {
         compact_at(state, tail, body);
     }
 
+    /// Makes the conversation shorter than its limits ask, for a model it
+    /// no longer fits: old results are masked and all but the last messages
+    /// summarised, fewer kept each time it does not get a quarter shorter.
+    /// Whether it got shorter at all.
+    fn shorten(&self, state: &mut State, start: &RunStart) -> bool {
+        let chars = |state: &State| -> usize { state.messages.iter().map(Message::chars).sum() };
+        let before = chars(state);
+        let mut keep = self.limits.keep_last.max(2);
+        loop {
+            mask_old_results(state, keep);
+            if let Some(tail) = compact_tail(state, keep) {
+                let written = self
+                    .extras
+                    .summarizer
+                    .and_then(|model| self.summary_by(model, state, tail, start));
+                let body = written.unwrap_or_else(|| summarize(&state.messages[1..tail]));
+                compact_at(state, tail, body);
+            }
+            if chars(state) <= before / 4 * 3 || keep <= 2 {
+                break;
+            }
+            keep /= 2;
+        }
+        let shorter = chars(state) < before;
+        if shorter {
+            // Whatever reasoning was kept was written over what is gone.
+            forget_reasoning(state);
+        }
+        shorter
+    }
+
     /// The summary `model` writes of the messages before `tail`, if the
     /// run's budgets allow the call and it answers.
     fn summary_by(
@@ -3498,6 +3650,18 @@ fn compact_at(state: &mut State, tail: usize, body: String) {
     keep_last_images(state);
 }
 
+/// Lets go of the reasoning kept in `state`'s conversation: what a
+/// provider would no longer take, or what was written over messages since
+/// changed. A message left with nothing is dropped.
+pub fn forget_reasoning(state: &mut State) {
+    for message in &mut state.messages {
+        message
+            .content
+            .retain(|block| !matches!(block, Block::Reasoning { .. }));
+    }
+    state.messages.retain(|message| !message.content.is_empty());
+}
+
 fn is_results(message: &Message) -> bool {
     message
         .content
@@ -3537,20 +3701,16 @@ fn result_block(use_id: &str, outcome: &Outcome, images: &mut BTreeMap<String, S
     }
 }
 
-/// Lets go of the bytes of all but the last [`MAX_IMAGES_KEPT`] pictures
+/// Lets go of the bytes of all but the pictures a model is still shown
 /// the conversation names and the person's last
 /// ([`crate::model::person_pictures`]), and of any it no longer names.
 fn keep_last_images(state: &mut State) {
     let images = images_of(&state.messages);
-    let mut kept: Vec<String> = Vec::new();
-    for image in images.iter().rev() {
-        if kept.len() == MAX_IMAGES_KEPT {
-            break;
-        }
-        if !kept.contains(&image.digest) {
-            kept.push(image.digest.clone());
-        }
-    }
+    // Those a model is still shown ([`crate::model::images_floor`]).
+    let mut kept: Vec<String> = images[crate::model::images_floor(images.len())..]
+        .iter()
+        .map(|image| image.digest.clone())
+        .collect();
     for at in crate::model::person_pictures(&state.messages) {
         if let Some(image) = images.get(at) {
             kept.push(image.digest.clone());

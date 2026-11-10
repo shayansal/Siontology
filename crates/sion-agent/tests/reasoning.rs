@@ -325,47 +325,104 @@ fn reasoning_that_no_longer_checks_is_let_go_rather_than_failing_the_call() {
 #[test]
 fn how_hard_each_provider_is_asked_to_think() {
     let question = after(vec![call()]);
+    // Claude Opus 5.5 always thinks, takes no budget and cannot have its
+    // thinking turned off; it checks kept thinking against what was sent
+    // before it, so it is asked to let go of what no longer fits.
+    let bound =
+        json!({"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}});
     let mut anthropic = Anthropic::new(client(), "claude-opus-5-5", "k");
     let body = anthropic.body(&question);
-    assert!(body.get("thinking").is_none() && body.get("output_config").is_none());
+    assert_eq!(body["thinking"], bound);
+    assert!(body.get("output_config").is_none());
     assert_eq!(
-        body["max_tokens"], 512,
-        "the provider's default, and no more room"
+        body["max_tokens"],
+        512 + 16_384,
+        "it thinks unasked: room for that besides the answer"
     );
 
     anthropic.thinking = Some(Thinking::Effort(Effort::High));
     let body = anthropic.body(&question);
-    assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(body["thinking"], bound);
     assert_eq!(body["output_config"], json!({"effort": "high"}));
-    assert_eq!(
-        body["max_tokens"],
-        512 + 16_384,
-        "room to think besides the answer"
-    );
+    assert_eq!(body["max_tokens"], 512 + 16_384);
 
     anthropic.thinking = Some(Thinking::Effort(Effort::Max));
     let body = anthropic.body(&question);
     assert_eq!(body["output_config"], json!({"effort": "max"}));
     assert_eq!(body["max_tokens"], 60_512);
 
+    // Off, where it cannot be: the lowest effort.
     anthropic.thinking = Some(Thinking::Effort(Effort::None));
     let body = anthropic.body(&question);
-    assert_eq!(body["thinking"], json!({"type": "disabled"}));
-    assert!(body.get("output_config").is_none());
-    assert_eq!(body["max_tokens"], 512);
+    assert_eq!(body["thinking"], bound);
+    assert_eq!(body["output_config"], json!({"effort": "low"}));
+    assert_eq!(body["max_tokens"], 512 + 4_096);
 
+    // A budget, where none is taken: the effort nearest it.
     anthropic.thinking = Some(Thinking::Budget(8_000));
     let body = anthropic.body(&question);
+    assert_eq!(body["thinking"], bound);
+    assert_eq!(body["output_config"], json!({"effort": "medium"}));
+    assert_eq!(body["max_tokens"], 8_512);
+
+    // Each model as it takes them.
+    let asked = |model: &str, thinking: Option<Thinking>| {
+        let mut provider = Anthropic::new(client(), model, "k");
+        provider.thinking = thinking;
+        provider.body(&question)
+    };
+    let off = Some(Thinking::Effort(Effort::None));
+    assert_eq!(
+        asked("claude-sonnet-5-5", off)["thinking"],
+        json!({"type": "between_tools"})
+    );
+    assert_eq!(
+        asked("claude-haiku-5-5", off)["thinking"],
+        json!({"type": "disabled"})
+    );
+    assert_eq!(
+        asked("claude-fable-5-2", off)["output_config"]["effort"],
+        "low"
+    );
+    // Models before 5.5 do not check kept thinking: nothing is asked of it.
+    let body = asked("claude-opus-5", Some(Thinking::Effort(Effort::Xhigh)));
+    assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(body["output_config"]["effort"], "xhigh");
+    let body = asked("claude-opus-4-8", None);
+    assert!(body.get("thinking").is_none(), "off unless asked");
+    assert_eq!(body["max_tokens"], 512);
+    // An effort a model does not have is the next one down.
+    assert_eq!(
+        asked("claude-opus-4-6", Some(Thinking::Effort(Effort::Xhigh)))["output_config"]["effort"],
+        "high"
+    );
+    // Before adaptive thinking: a budget, as asked or as the effort takes.
+    let body = asked("claude-sonnet-4-5", Some(Thinking::Budget(8_000)));
     assert_eq!(
         body["thinking"],
         json!({"type": "enabled", "budget_tokens": 8_000})
     );
     assert_eq!(body["max_tokens"], 8_512);
+    let body = asked("claude-haiku-4-5", Some(Thinking::Effort(Effort::Medium)));
+    assert_eq!(
+        body["thinking"],
+        json!({"type": "enabled", "budget_tokens": 8_192})
+    );
+    assert!(body.get("output_config").is_none());
     // The API's least budget, and less than all it may write.
-    anthropic.thinking = Some(Thinking::Budget(100));
-    let body = anthropic.body(&question);
+    let body = asked("claude-sonnet-4-5", Some(Thinking::Budget(100)));
     assert_eq!(body["thinking"]["budget_tokens"], 1_024);
     assert!(body["max_tokens"].as_u64().unwrap() > 1_024);
+    // Names as platforms and routers write them are the same models.
+    for name in [
+        "us.anthropic.claude-opus-5-5-v1:0",
+        "anthropic/claude-opus-5.5",
+    ] {
+        assert!(sion_agent::providers::claude_traits(name).binds, "{name}");
+    }
+    assert!(!sion_agent::providers::claude_traits("claude-opus-4-8").thinks_unasked);
+    // A model newer than those known is taken for the newest of its line.
+    assert!(sion_agent::providers::claude_traits("claude-opus-6").binds);
 
     let mut chat = OpenAiCompatible::new(client(), "http://127.0.0.1:1/v1", "gpt-test", None);
     assert!(chat.body(&question).get("reasoning_effort").is_none());
@@ -751,6 +808,7 @@ impl Model for Thinks {
             stop: Stop::EndTurn,
             usage: Usage::default(),
             model: "thinks".into(),
+            forgot_reasoning: false,
         })
     }
 
