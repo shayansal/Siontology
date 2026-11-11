@@ -186,6 +186,7 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     };

@@ -408,6 +408,7 @@ fn subagents_change_code_in_worktrees_and_programs_and_hooks_work_around_calls()
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     };

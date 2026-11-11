@@ -323,6 +323,7 @@ fn an_agent_searches_edits_and_answers_what_mcp_servers_ask() {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     };

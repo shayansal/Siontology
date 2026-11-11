@@ -713,8 +713,23 @@ impl Tool for ApplyPatch {
             confidential_in(&self.confidential, &self.root, path)
                 || to.is_some_and(|to| confidential_in(&self.confidential, &self.root, to))
         });
+        // A confidential file moved is confidential where it went.
+        let moved: Vec<&String> = changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Update {
+                    path, to: Some(to), ..
+                } if confidential_in(&self.confidential, &self.root, path) => Some(to),
+                _ => None,
+            })
+            .collect();
         let outcome = match apply(&self.root, &changes) {
-            Ok(summary) => Outcome::ok(summary),
+            Ok(summary) => {
+                for to in moved {
+                    let _ = crate::provenance::keep_confidential(&self.root, to);
+                }
+                Outcome::ok(summary)
+            }
             Err(e) => Outcome::error(e),
         };
         if held {
@@ -1791,7 +1806,7 @@ impl Tool for Diagnostics {
                 };
                 // What it prints of a file from outside or a confidential
                 // one is so.
-                crate::provenance::marked(&self.root, outcome)
+                crate::provenance::marked_after(&self.root, &run.displaced, outcome)
             }
             Err(e) => Outcome::error(e),
         }
@@ -1911,7 +1926,7 @@ impl Tool for RunTests {
             outcome
         };
         // What it prints of a file from outside or a confidential one is so.
-        crate::provenance::marked(&self.root, outcome)
+        crate::provenance::marked_after(&self.root, &run.displaced, outcome)
     }
 }
 

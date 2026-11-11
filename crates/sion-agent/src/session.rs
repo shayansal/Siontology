@@ -731,7 +731,18 @@ pub struct Extras<'a> {
     /// The operator's written rules, each call that changes something
     /// checked against them before it is made ([`Rules`]).
     pub rules: Option<Rules<'a>>,
+    /// What a call's outcome holds besides what its tool says of it, told
+    /// from the tool's name and the outcome: content from outside,
+    /// confidential content. Asked of every call that ran, so that what
+    /// reaches the model is known for what it is whatever tool it came by
+    /// (an MCP server's, a skill's script, a browser), not only by the
+    /// tools that read files.
+    pub marks: Option<Marks<'a>>,
 }
+
+/// What looks at each outcome ([`Extras::marks`]): given the tool's name
+/// and the outcome, what the outcome holds besides what its tool said.
+pub type Marks<'a> = &'a (dyn Fn(&str, &Outcome) -> crate::tools::Held + Sync);
 
 /// The operator's written rules (a refund policy, what may be sent to
 /// whom), and the model that checks each call that changes something
@@ -1560,7 +1571,7 @@ impl Runtime<'_> {
                         .collect()
                 });
                 for ((at, ready), outcome) in group.iter().zip(outcomes) {
-                    let outcome = marked(ready, outcome);
+                    let outcome = self.marks(ready, marked(ready, outcome));
                     let outcome = self.hold(state, &ready.tool, outcome);
                     self.finish(state, ready, &outcome);
                     let step = self.call_step(
@@ -1649,7 +1660,7 @@ impl Runtime<'_> {
                                 let outcome = ran.next().unwrap_or_else(|| {
                                     Outcome::uncertain("the tool gave no outcome for this call")
                                 });
-                                let outcome = marked(ready, outcome);
+                                let outcome = self.marks(ready, marked(ready, outcome));
                                 let outcome = self.hold(state, &ready.tool, outcome);
                                 self.finish(state, ready, &outcome);
                                 self.hook_after(state, ready, outcome)
@@ -2824,7 +2835,7 @@ impl Runtime<'_> {
                     };
                     tool.call_noting(&ready.input, &ready.key, held.tainted, &mut note)
                 };
-                let outcome = marked(&ready, outcome);
+                let outcome = self.marks(&ready, marked(&ready, outcome));
                 let outcome = self.hold(state, &ready.tool, outcome);
                 self.finish(state, &ready, &outcome);
                 let outcome = self.hook_after(state, &ready, outcome);
@@ -3091,6 +3102,17 @@ impl Runtime<'_> {
             retried,
             pre_approved,
         })
+    }
+
+    /// `outcome`, marked besides as what the runtime's own look at it says
+    /// it holds ([`Extras::marks`]): whatever tool it came by.
+    fn marks(&self, ready: &Ready, mut outcome: Outcome) -> Outcome {
+        if let Some(marks) = self.extras.marks {
+            let held = marks(&ready.tool, &outcome);
+            outcome.untrusted |= held.tainted;
+            outcome.confidential |= held.confidential;
+        }
+        outcome
     }
 
     /// Records what a call that ran did: its taint, its failure, and, if it

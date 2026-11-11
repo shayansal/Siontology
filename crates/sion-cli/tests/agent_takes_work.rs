@@ -437,6 +437,7 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     };

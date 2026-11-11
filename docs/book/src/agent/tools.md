@@ -50,7 +50,7 @@ What a command sees:
 |---|---|---|
 | Programs | The machine's, read-only (`/usr`, `/bin`, `/lib`), and directories given with `--sandbox-read` | The image's, read-only |
 | Writable | The workspace at `/workspace`, a private `/tmp` | The workspace at `/workspace`, a private `/tmp` of 256 MiB |
-| Hidden | Everything else: the home directory, `$SION_HOME`, other users' files | Everything outside the image and the workspace |
+| Hidden | Everything else: the home directory, `$SION_HOME`, other users' files; and what the profile keeps confidential in the workspace, which reads as empty ([Hidden from commands](security.md#hidden-from-commands)) | Everything outside the image and the workspace, and what the profile keeps confidential in it |
 | User | 10001 inside, the runtime's user outside, no capabilities | The workspace's owner, no capabilities, no new privileges |
 | Network | None: only a loopback interface | `--network none` |
 | Limits | 120 s of wall-clock time (`--sandbox-timeout`), 120 CPU seconds, 4 GiB of address space and 512 MiB files a process, 64 KiB of output | The same, with 4 GiB of memory, 256 processes and 2 CPUs for the container |
@@ -436,6 +436,12 @@ itself. Calls that are neither read-only nor idempotent are journaled, so
 an identical call is not made twice. A call that got no answer (the server
 stopped, or took longer than `--timeout`) may have taken effect: it is
 uncertain, and not repeated.
+
+A server whose tools return what is confidential (customers' records, the
+team's notes) is named as such when the session starts:
+`--confidential-tool 'notes_*'` holds the session from the first result
+of any of them, so that what it sends outside afterwards waits for a
+person ([What other tools return](security.md#what-other-tools-return)).
 
 ### When a server changes a tool
 

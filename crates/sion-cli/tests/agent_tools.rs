@@ -201,6 +201,149 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
             std::fs::read_to_string(work.join("words.txt")).unwrap(),
             "one two three four"
         );
+
+        // 1b. What is confidential in the workspace is out of a command's
+        // sight: printed plainly or encoded, it is not there to print; a
+        // command that moves it elsewhere holds the session, and where it
+        // went stays hidden; a copy read by another tool holds the session
+        // by what it says; and so does a tool the operator named.
+        let vault = base.join("vault");
+        std::fs::create_dir_all(vault.join("private")).unwrap();
+        std::fs::create_dir_all(vault.join("deals/2026")).unwrap();
+        std::fs::create_dir_all(vault.join("notes")).unwrap();
+        const CODE: &str = "the launch code is 4242-aaaa-bbbb-cccc";
+        std::fs::write(vault.join("private/key.txt"), format!("{CODE}\n")).unwrap();
+        std::fs::write(
+            vault.join("deals/2026/terms.txt"),
+            "the price is 9 million\n",
+        )
+        .unwrap();
+        std::fs::write(vault.join("notes/copy.txt"), format!("kept: {CODE}\n")).unwrap();
+        std::fs::write(vault.join("readme.txt"), "nothing to see\n").unwrap();
+        let confidential: Vec<String> = vec!["private/".into(), "deals/2026/terms.txt".into()];
+        let run = |name: &str, steps: Value, equipment: Equipment| {
+            let (saved, lines) = runtime::start(
+                ledger.clone(),
+                "coder",
+                agent,
+                "Look at the vault.",
+                vec![script(&home, name, steps)],
+                policy(Autonomy::L3),
+                equipment,
+            )
+            .unwrap();
+            (saved, lines.join("\n"))
+        };
+        let vaulted = || Equipment {
+            workspace: Some(vault.clone()),
+            shell: Some(sandbox.clone()),
+            confidential_files: confidential.clone(),
+            ..Equipment::default()
+        };
+        let (saved, text) = run(
+            "peek.json",
+            json!([
+                {"call": "shell", "input": {"command": "cat private/key.txt; base64 private/key.txt; od -c deals/2026/terms.txt; ls private; cat readme.txt"}},
+                {"call": "terminal_run", "input": {"command": "cat private/key.txt deals/2026/terms.txt; echo seen-nothing"}},
+                {"say": "Nothing there."}
+            ]),
+            vaulted(),
+        );
+        assert!(matches!(saved.ended, Some(Ended::Done { .. })), "{text}");
+        let shown = results_of(&saved);
+        assert!(shown[0].0.contains("nothing to see"), "{text}");
+        assert!(shown[1].0.contains("seen-nothing"), "{text}");
+        for (result, _) in &shown {
+            assert!(
+                !result.contains("4242") && !result.contains("9 million"),
+                "{text}"
+            );
+            // "the launch code" in base64 begins dGhlIGxhdW5jaCBjb2Rl.
+            assert!(!result.contains("dGhlIGxhdW5jaCBjb2Rl"), "{text}");
+        }
+        assert!(
+            !saved.state.standing.confidential,
+            "nothing confidential reached the session:\n{text}"
+        );
+
+        // A directory above a hidden file moved: held, told, and hidden
+        // where it went, in this session and the next.
+        let (saved, text) = run(
+            "move.json",
+            json!([
+                {"call": "shell", "input": {"command": "mv deals offers && echo moved"}},
+                {"call": "shell", "input": {"command": "cat offers/2026/terms.txt; echo end"}},
+                {"say": "Moved."}
+            ]),
+            vaulted(),
+        );
+        let shown = results_of(&saved);
+        assert!(
+            shown[0]
+                .0
+                .contains("deals/2026/terms.txt (now offers/2026/terms.txt)")
+                && shown[0].0.contains("The session is held as having read it"),
+            "{text}"
+        );
+        assert!(!shown[1].0.contains("9 million"), "{text}");
+        assert!(saved.state.standing.confidential, "{text}");
+        let (saved, text) = run(
+            "after.json",
+            json!([
+                {"call": "shell", "input": {"command": "cat offers/2026/terms.txt; echo end"}},
+                {"call": "read_file", "input": {"path": "offers/2026/terms.txt"}},
+                {"say": "Read."}
+            ]),
+            vaulted(),
+        );
+        let shown = results_of(&saved);
+        assert!(!shown[0].0.contains("9 million"), "{text}");
+        assert!(shown[1].0.contains("9 million"), "{text}");
+        assert!(
+            saved.state.standing.confidential,
+            "read where it went, it is confidential still:\n{text}"
+        );
+
+        // A copy under another name, read by a tool that does not know it:
+        // what it says is known for what it is.
+        let (saved, text) = run(
+            "copy.json",
+            json!([
+                {"call": "read_file", "input": {"path": "notes/copy.txt"}},
+                {"say": "Read."}
+            ]),
+            vaulted(),
+        );
+        assert!(results_of(&saved)[0].0.contains("4242"), "{text}");
+        assert!(saved.state.standing.confidential, "{text}");
+        // A tool the operator named confidential, whatever it returns.
+        let (saved, text) = run(
+            "named.json",
+            json!([
+                {"call": "list_files", "input": {"path": ""}},
+                {"say": "Listed."}
+            ]),
+            Equipment {
+                confidential_tools: vec!["list_*".into()],
+                ..vaulted()
+            },
+        );
+        assert!(saved.state.standing.confidential, "{text}");
+        // A session that holds confidential content from the start works
+        // on those files with commands: nothing leaves it without a person.
+        let (saved, text) = run(
+            "held.json",
+            json!([
+                {"call": "shell", "input": {"command": "wc -c < private/key.txt; cat private/key.txt"}},
+                {"say": "Counted."}
+            ]),
+            Equipment {
+                confidential: true,
+                ..vaulted()
+            },
+        );
+        assert!(results_of(&saved)[0].0.contains("4242"), "{text}");
+        assert!(saved.state.standing.confidential, "{text}");
     }
 
     // 2. An MCP server, reviewed, then changed behind the review's back.

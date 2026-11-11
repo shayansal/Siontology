@@ -976,11 +976,14 @@ impl Tool for SkillRun {
                 } else {
                     Outcome::ok(text)
                 };
-                if networked {
+                let outcome = if networked {
                     outcome.from_outside()
                 } else {
                     outcome
-                }
+                };
+                // What a script prints of a file from outside or of a
+                // confidential one is so, as with a command.
+                crate::provenance::marked_after(&self.workspace, &run.displaced, outcome)
             }
             Err(e) => Outcome::error(crate::permissions::redact(
                 &format!("the sandbox could not run the script: {e}"),

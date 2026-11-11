@@ -71,6 +71,7 @@ fn profile(models: Vec<String>) -> Profile {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     }

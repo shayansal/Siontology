@@ -282,7 +282,9 @@ token budget, each case several times, and reports pass rates with
 Wilson intervals and pass^k; a graph whose rate beats both baselines by Newcombe's
 interval earns the profile's traffic, and the router offers only graphs
 that have. Benchmark suites built in (`sion agent bench`: paying over
-x402, attacks on an agent that pays, confirming before paying) run with
+x402, attacks on an agent that pays, confirming before paying, and prompt
+injection in what an assistant reads, at a computer, and in forms that do
+not look like one) run with
 the operator's models and stand-in tools, report the pass rate, pass^k,
 tokens and cost, and keep each run with its log, fixed by its digest;
 they are tested with stand-in models only (a careful script passes every
@@ -293,12 +295,16 @@ and the log's digest) and checked (`sion agent bench check`) against its
 log, each run judged again by the suite's checks, tested on a devnet. A judge (`sion agent judge`) reads a session's steps after
 labelled examples, and is measured on labelled steps it was not shown. A
 session that holds confidential content (told so, read from a path named
-confidential, or reached from a subagent or graph node that held some) has
-its external calls and spending wait for a person; decisions can be signed
+confidential, returned a line of such a file by any tool or anything by a
+tool the operator named confidential, or reached from a subagent or graph
+node that held some) has its external calls and spending wait for a
+person; commands in the sandbox are not shown files named confidential,
+which read there as empty, and a command that moves a directory above one
+is known to have; decisions can be signed
 with a wallet's keys and checked (`sion agent decisions`); the runtime's
 own notes are marked where a tool's result imitates them; and a test of
-nine attacks on a model that obeys everything it reads shows what holds,
-and that two get through, as built. Calls that only read run side by side
+attacks on a model that obeys everything it reads, seventeen rows of
+them, shows what holds, and that three get through, as built. Calls that only read run side by side
 in a turn, the latest of what a session read or changed outlives
 compaction, and A2A tasks push their updates to their clients' webhooks
 and can be subscribed to again. `sion agent run` gives it the
@@ -1733,7 +1739,7 @@ the architecture's own:
 | `agent:judge` | A judge (`sion agent judge`, `--judge`) is a model's judgment of each step, not a check: it can be wrong, and what the steps quote can steer it, though it is told that they are data. Its calibration is its agreement with four labelled steps it was not shown, which says little about steps unlike them. |
 | `agent:graph-replay` | A graph's run is pinned to the digest of its graph in the run's own file, which catches a graph changed after the run began, not one changed with its digest; a replay answers each node with what the run recorded, so it shows how the graph routes those answers, not that its models would answer the same again. |
 | `agent:read-only-node` | A read-only node (`read_only`) gets the tools whose declared effect is to read: a tool that declares less than its calls can do is not held back (`agent:mcp-effects`). |
-| `agent:confidential-label` | A session holds confidential content only as far as it is marked: by `--confidential`, by `read_file` under the paths named, or by a subagent's report or a graph node's input from a session that held some. The shell, scripts, MCP tools and the browser can read the same data without marking it, and a tool the operator contained is not held while the session has read nothing from outside. |
+| `agent:confidential-label` | A session holds confidential content only as far as it is marked: by `--confidential`, by a tool that reads a file under the paths named, by any tool's result that carries a line of such a file as written (16 characters or more, the first megabyte of each of the first 64 files), by a tool the operator named with `--confidential-tool`, or by a subagent's report or a graph node's input from a session that held some. Commands in the sandbox are not shown the files named, unless the session held confidential content when the run began; what is hidden is settled when a command starts (for a terminal, when it opens). Not known for what it is: what the model rewrites in its own words or encodes itself and saves, once a later session reads it; what a tool that runs outside the sandbox (an MCP server) returns of a confidential file in another form, unless the tool is named; and a tool the operator contained is not held while the session has read nothing from outside. |
 | `agent:outside-files` | A workspace file taints the session only as far as it is known to be from outside: under `downloads/`, sent in a chat, under a path named with `--outside`, or with the content of a file marked so. A file the operator put there unnamed is read as theirs; the shell's output is checked for lines of such files as written, 16 characters or more, so output that changes them (counted, encoded, cut) or lines shorter than that are not caught; files under `downloads/` or the operator's paths are looked through as they are, the first 64, a megabyte of each, so one moved out of them unmarked is not. Marks are kept on this machine, so a workspace moved to another loses them. |
 | `agent:signed-decisions` | A signed decision shows that the wallet's keys signed it as recorded, not who held them; decisions made in chat apps are not signed, and a signature names the call by its key and the digest of its input, which a compacted session may no longer show. |
 | `agent:imitated-notes` | Only the runtime's notes as it writes them are marked in a tool's result, case aside; other words that claim the same are not. The mark informs the model: what holds a call is the policy, and approvals are kept in the session's state, never read from text. |

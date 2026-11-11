@@ -202,6 +202,15 @@ pub struct Sandbox {
     /// the `PATH`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readable: Vec<PathBuf>,
+    /// The paths of the workspace that commands are not shown, if any are
+    /// hidden from them ([`hidden_paths`]): those named here, and those
+    /// kept as confidential for the workspace since
+    /// ([`crate::provenance::kept_confidential`]). A hidden file reads as
+    /// nothing and a hidden directory as empty, and neither can be moved or
+    /// removed. Set by whoever runs a session, for that session: it is not
+    /// kept with the sandbox.
+    #[serde(skip)]
+    pub hidden: Option<Vec<String>>,
 }
 
 /// What a command did.
@@ -217,6 +226,128 @@ pub struct Run {
     pub timed_out: bool,
     /// Whether output was cut.
     pub truncated: bool,
+    /// The hidden paths of the workspace that are no longer where they
+    /// were when it started ([`Watch::displaced`]): it moved or removed
+    /// what it was not shown.
+    pub displaced: Vec<Displaced>,
+}
+
+/// A hidden path of a workspace that a command displaced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Displaced {
+    /// Where it was, relative to the workspace.
+    pub path: String,
+    /// The device and inode it had there, to find where it went.
+    pub id: (u64, u64),
+}
+
+/// The most paths of a workspace a sandbox hides: with more, commands are
+/// not run, and the operator names the directories instead.
+pub const MAX_HIDDEN: usize = 512;
+
+/// What `patterns` name of the workspace `root` that is there now: each
+/// path, relative to the workspace, and whether it is a directory. The
+/// patterns are written as confidential paths are
+/// ([`crate::builtin::confidential_path`]): a path, a directory with a
+/// closing `/`, or a prefix ending in `*`. A symbolic link among them is
+/// left as it is, and what it leads to inside the workspace is named in
+/// its place. Nothing is named twice, and nothing under a directory that
+/// is itself named.
+pub fn hidden_paths(root: &Path, patterns: &[String]) -> Vec<(String, bool)> {
+    let Ok(real_root) = root.canonicalize() else {
+        return Vec::new();
+    };
+    let mut found: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    let mut name = |path: &Path| {
+        // Where it really is, if that is inside the workspace.
+        let Ok(real) = path.canonicalize() else {
+            return;
+        };
+        let Ok(relative) = real.strip_prefix(&real_root) else {
+            return;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if !relative.is_empty() {
+            found.insert(relative, real.is_dir());
+        }
+    };
+    for pattern in patterns {
+        let pattern = pattern.trim().trim_start_matches("./");
+        if pattern.split('/').any(|part| part == "..") {
+            continue;
+        }
+        match pattern.strip_suffix('*') {
+            Some(prefix) => {
+                // Every entry of the directory the prefix is in whose name
+                // begins as the prefix ends.
+                let (dir, start) = match prefix.rsplit_once('/') {
+                    Some((dir, start)) => (root.join(dir), start),
+                    None => (root.to_path_buf(), prefix),
+                };
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with(start) {
+                        name(&entry.path());
+                    }
+                }
+            }
+            None => {
+                let path = pattern.trim_end_matches('/');
+                if !path.is_empty() {
+                    name(&root.join(path));
+                }
+            }
+        }
+    }
+    // What is under a directory named is hidden with it.
+    let dirs: Vec<String> = found
+        .iter()
+        .filter(|(_, dir)| **dir)
+        .map(|(path, _)| format!("{path}/"))
+        .collect();
+    found
+        .into_iter()
+        .filter(|(path, _)| !dirs.iter().any(|dir| path.starts_with(dir.as_str())))
+        .collect()
+}
+
+/// The device and inode of the file or directory at `path`, itself, not
+/// what a link there leads to.
+#[cfg(unix)]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|m| (m.dev(), m.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    std::fs::symlink_metadata(path).ok().map(|_| (0, 0))
+}
+
+/// The hidden paths of a workspace as they were when a sandbox started
+/// with them hidden ([`Sandbox::watch`]): what is no longer there
+/// afterwards, the command displaced.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Watch {
+    root: PathBuf,
+    paths: Vec<Displaced>,
+}
+
+impl Watch {
+    /// The hidden paths that are no longer where they were: moved with a
+    /// directory above them, or removed with it. (A command cannot move or
+    /// remove a hidden path itself: it is a mount of its own.)
+    pub fn displaced(&self) -> Vec<Displaced> {
+        self.paths
+            .iter()
+            .filter(|was| file_id(&self.root.join(&was.path)) != Some(was.id))
+            .cloned()
+            .collect()
+    }
 }
 
 impl Run {
@@ -333,7 +464,58 @@ impl Sandbox {
             network: Network::None,
             limits: Limits::default(),
             readable: Vec::new(),
+            hidden: None,
         }
+    }
+
+    /// This sandbox, hiding from its commands the paths of the workspace
+    /// that `patterns` name ([`Sandbox::hidden`]).
+    pub fn hiding(mut self, patterns: &[String]) -> Sandbox {
+        self.hidden = Some(patterns.to_vec());
+        self
+    }
+
+    /// What of `mounts` is hidden from a command: for each workspace among
+    /// them, the path on the host, the path inside, and whether it is a
+    /// directory.
+    fn hides(&self, mounts: &[Mount]) -> Vec<(PathBuf, String, bool)> {
+        let Some(named) = &self.hidden else {
+            return Vec::new();
+        };
+        let mut hidden = Vec::new();
+        for mount in mounts.iter().filter(|m| m.inside == WORKSPACE) {
+            let mut patterns = named.clone();
+            patterns.extend(crate::provenance::kept_confidential(&mount.host));
+            for (relative, dir) in hidden_paths(&mount.host, &patterns) {
+                hidden.push((
+                    mount.host.join(&relative),
+                    format!("{}/{relative}", mount.inside),
+                    dir,
+                ));
+            }
+        }
+        hidden
+    }
+
+    /// The hidden paths of the workspace `root` as they are now, to tell
+    /// after a command which of them it displaced ([`Watch::displaced`]).
+    pub fn watch(&self, root: &Path) -> Watch {
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let paths = self
+            .hides(&[Mount::workspace(&root)])
+            .into_iter()
+            .filter_map(|(host, inside, _)| {
+                let path = inside
+                    .strip_prefix(WORKSPACE)?
+                    .trim_start_matches('/')
+                    .to_string();
+                Some(Displaced {
+                    path,
+                    id: file_id(&host)?,
+                })
+            })
+            .collect();
+        Watch { root, paths }
     }
 
     /// The sandbox in a few words, for the model and for people.
@@ -516,6 +698,15 @@ impl Sandbox {
             };
             cmd.arg(flag).arg(&mount.host).arg(&mount.inside);
         }
+        // What is hidden of the workspace: nothing in a file's place, an
+        // empty directory in a directory's.
+        for (_, inside, dir) in self.hides(mounts) {
+            if dir {
+                cmd.arg("--tmpfs").arg(inside);
+            } else {
+                cmd.arg("--ro-bind").arg("/dev/null").arg(inside);
+            }
+        }
         // Single files, read-only (the bridge program).
         for (host, inside) in files {
             cmd.arg("--ro-bind").arg(host).arg(inside);
@@ -592,6 +783,13 @@ impl Sandbox {
             cmd.arg("--volume")
                 .arg(format!("{}:{}:{mode}", mount.host.display(), mount.inside));
         }
+        for (_, inside, dir) in self.hides(mounts) {
+            if dir {
+                cmd.arg("--tmpfs").arg(inside);
+            } else {
+                cmd.arg("--volume").arg(format!("/dev/null:{inside}:ro"));
+            }
+        }
         cmd.args(["--workdir", workdir, image]);
         cmd.args(["/bin/sh", "-c", limits, "sandbox", script]);
         cmd
@@ -618,6 +816,13 @@ impl Sandbox {
                 host,
                 ..mount.clone()
             });
+        }
+        let hidden = self.hides(&absolute).len();
+        if hidden > MAX_HIDDEN {
+            return Err(format!(
+                "{hidden} paths of the workspace are to be hidden from commands, more than the \
+                 {MAX_HIDDEN} a sandbox hides: name their directories instead"
+            ));
         }
         let name = format!(
             "sion-sandbox-{}-{}",
@@ -742,6 +947,12 @@ impl Sandbox {
         };
         let (mounts, name) = this.ready(&mounts)?;
         let mounts = mounts.as_slice();
+        // The hidden paths as they are before the command.
+        let watches: Vec<Watch> = mounts
+            .iter()
+            .filter(|m| m.inside == WORKSPACE)
+            .map(|m| this.watch(&m.host))
+            .collect();
         let mut command = this.build(mounts, workdir, &script, &name, false, &files);
         if let Backend::Docker { .. } = this.backend {
             // `--env NAME` takes the value from the client's environment.
@@ -778,6 +989,7 @@ impl Sandbox {
             stderr,
             timed_out,
             truncated: cut_out || cut_err,
+            displaced: watches.iter().flat_map(Watch::displaced).collect(),
         })
     }
 
@@ -1094,6 +1306,114 @@ mod tests {
             std::fs::read_to_string(ws.join("made.txt")).unwrap(),
             "made\n"
         );
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[test]
+    fn hidden_paths_read_as_nothing_and_a_command_that_moves_one_is_known() {
+        let ws = temp("bwrap-hidden");
+        for (path, text) in [
+            ("secret.txt", "TOP SECRET LINE OF THE FILE\n"),
+            ("private/key.pem", "the private key\n"),
+            ("a/b/deep.txt", "a deep secret line\n"),
+            ("keys-1.txt", "key one\n"),
+            ("keys-2.txt", "key two\n"),
+            ("ok.txt", "hello\n"),
+        ] {
+            let file = ws.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        // A link to a hidden file hides what it leads to, not itself.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("secret.txt", ws.join("link")).unwrap();
+        let named: Vec<String> = [
+            "secret.txt",
+            "./private/",
+            "a/b/deep.txt",
+            "keys-*",
+            "private/key.pem",
+            "nothing-here",
+            "../outside",
+            "link",
+        ]
+        .map(String::from)
+        .to_vec();
+        let found = hidden_paths(&ws, &named);
+        assert_eq!(
+            found,
+            [
+                ("a/b/deep.txt", false),
+                ("keys-1.txt", false),
+                ("keys-2.txt", false),
+                ("private", true),
+                ("secret.txt", false),
+            ]
+            .map(|(path, dir)| (path.to_string(), dir))
+        );
+        assert!(hidden_paths(&ws, &[]).is_empty());
+
+        let Some(open) = bubblewrap() else { return };
+        let sandbox = open.clone().hiding(&named);
+        let run = sandbox
+            .run(
+                &[Mount::workspace(&ws)],
+                WORKSPACE,
+                "cat ok.txt; cat secret.txt link a/b/deep.txt keys-1.txt keys-2.txt; \
+                 od -c secret.txt; ls private; cat private/key.pem; \
+                 mv secret.txt s2; mv private p2; rm -rf private secret.txt; echo done",
+            )
+            .unwrap();
+        assert_eq!(run.stdout, "hello\ndone\n", "{}", run.render());
+        for secret in ["SECRET", "private key", "deep secret", "key one", "key two"] {
+            assert!(!run.render().contains(secret), "{}", run.render());
+        }
+        assert!(run.displaced.is_empty(), "{:?}", run.displaced);
+        // Nothing of them changed.
+        assert_eq!(
+            std::fs::read_to_string(ws.join("secret.txt")).unwrap(),
+            "TOP SECRET LINE OF THE FILE\n"
+        );
+        assert!(ws.join("private/key.pem").is_file());
+
+        // A directory above a hidden file can be moved: the command that
+        // does is known to have displaced it.
+        let run = sandbox
+            .run(&[Mount::workspace(&ws)], WORKSPACE, "mv a a2 && echo moved")
+            .unwrap();
+        assert_eq!(run.stdout, "moved\n", "{}", run.render());
+        assert_eq!(run.displaced.len(), 1, "{:?}", run.displaced);
+        assert_eq!(run.displaced[0].path, "a/b/deep.txt");
+        // Held, told, and kept as confidential where it went: hidden there
+        // from the next command, whatever the operator's names say.
+        let outcome = crate::provenance::marked_after(
+            &ws,
+            &run.displaced,
+            crate::tools::Outcome::ok(run.render()),
+        );
+        assert!(outcome.confidential, "{outcome:?}");
+        assert!(
+            outcome.content.contains("a/b/deep.txt (now a2/b/deep.txt)"),
+            "{}",
+            outcome.content
+        );
+        assert_eq!(crate::provenance::kept_confidential(&ws), ["a2/b/deep.txt"]);
+        assert!(crate::builtin::confidential_in(&[], &ws, "a2/b/deep.txt"));
+        let run = sandbox
+            .run(
+                &[Mount::workspace(&ws)],
+                WORKSPACE,
+                "cat a2/b/deep.txt; echo end",
+            )
+            .unwrap();
+        assert_eq!(run.stdout, "end\n", "{}", run.render());
+        assert!(run.displaced.is_empty());
+
+        // A sandbox that hides nothing shows them, as before.
+        let run = open
+            .run(&[Mount::workspace(&ws)], WORKSPACE, "cat secret.txt")
+            .unwrap();
+        assert_eq!(run.stdout, "TOP SECRET LINE OF THE FILE\n");
         std::fs::remove_dir_all(&ws).unwrap();
     }
 

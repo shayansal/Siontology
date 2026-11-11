@@ -595,6 +595,7 @@ impl Desktop {
                     stderr,
                     timed_out,
                     truncated: cut_out || cut_err,
+                    displaced: Vec::new(),
                 })
             }
         }
@@ -1012,6 +1013,7 @@ mod tests {
             stderr: String::new(),
             timed_out: false,
             truncated: false,
+            displaced: Vec::new(),
         };
         assert_eq!(code_report(&run), "it exited with 0\nprinted:\n42");
         let long = crate::sandbox::Run {
@@ -1020,6 +1022,7 @@ mod tests {
             stderr: "boom".into(),
             timed_out: false,
             truncated: false,
+            displaced: Vec::new(),
         };
         let report = code_report(&long);
         assert!(report.starts_with("it exited with 1\nprinted:\n"));
@@ -1035,6 +1038,7 @@ mod tests {
             stderr: String::new(),
             timed_out: true,
             truncated: false,
+            displaced: Vec::new(),
         };
         assert_eq!(code_report(&stopped), "it ran too long and was stopped");
     }

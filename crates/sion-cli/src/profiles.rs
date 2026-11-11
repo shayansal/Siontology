@@ -139,6 +139,10 @@ pub struct Profile {
     /// The paths of its workspace whose content is confidential.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub confidential_files: Vec<String>,
+    /// The tools whose results are confidential
+    /// ([`crate::runtime::confidential_tool`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confidential_tools: Vec<String>,
     /// Routes that choose its models for each task
     /// ([`crate::model_routes`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -245,6 +249,7 @@ impl Profile {
             reads_web: false,
             confidential: self.confidential,
             confidential_files: self.confidential_files.clone(),
+            confidential_tools: self.confidential_tools.clone(),
             // A work item's session is started by the work runner
             // ([`Profile::start_work`]), a project's by its own
             // ([`Profile::start_project`]).
@@ -638,6 +643,10 @@ pub enum ProfileCommand {
             requires = "workspace"
         )]
         confidential_files: Vec<String>,
+        /// A tool whose results are confidential, whatever they hold: its
+        /// name, or the start of names ending in `*`. Repeat for more.
+        #[arg(long = "confidential-tool", value_name = "TOOL")]
+        confidential_tools: Vec<String>,
     },
     /// The profiles on this machine.
     List,
@@ -730,6 +739,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             shared_memory,
             confidential,
             confidential_files,
+            confidential_tools,
         } => {
             let shell = shell.sandbox()?;
             let shared_memory = shared_memory
@@ -825,6 +835,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 shared_memory,
                 confidential,
                 confidential_files,
+                confidential_tools: crate::runtime::checked_confidential_tools(confidential_tools)?,
                 // A profile added again under its name keeps its routes.
                 routes: kept.as_ref().map(|k| k.routes.clone()).unwrap_or_default(),
                 sorter: kept.and_then(|k| k.sorter),
@@ -966,6 +977,12 @@ pub fn describe(profile: &Profile) -> String {
     }
     if profile.storage {
         extras.push("storage deals".to_string());
+    }
+    if !profile.confidential_tools.is_empty() {
+        extras.push(format!(
+            "confidential results from {}",
+            profile.confidential_tools.join(", ")
+        ));
     }
     if let Some(tokens) = profile.budget_tokens {
         extras.push(format!("a budget of {tokens} tokens a run"));

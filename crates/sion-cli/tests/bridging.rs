@@ -386,6 +386,7 @@ fn profile(home: &Path, name: &str, agent: ObjectId, scripts: &[Value]) -> Profi
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     }

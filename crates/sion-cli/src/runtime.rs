@@ -658,6 +658,64 @@ pub fn checked_rules(rules: Vec<String>) -> Result<Vec<String>, CliError> {
     Ok(rules)
 }
 
+/// `tools` (`--confidential-tool`), each checked to name some tools and
+/// not all of them: a session whose every result is confidential is one
+/// started with `--confidential`.
+pub fn checked_confidential_tools(tools: Vec<String>) -> Result<Vec<String>, CliError> {
+    for tool in &tools {
+        let name = tool.trim();
+        let start = name.strip_suffix('*').unwrap_or(name);
+        if start.is_empty() || start.contains('*') || start.contains(char::is_whitespace) {
+            return Err(CliError::Usage(format!(
+                "--confidential-tool {tool:?}: a tool's name, or the start of names ending in * \
+                 (crm_*); for a session that holds confidential content from the start, use \
+                 --confidential"
+            )));
+        }
+    }
+    Ok(tools.into_iter().map(|t| t.trim().to_string()).collect())
+}
+
+/// Whether the tool `name` is one `patterns` name as confidential: its
+/// name itself, or one that begins as a pattern ending in `*` does.
+pub fn confidential_tool(patterns: &[String], name: &str) -> bool {
+    patterns.iter().any(|pattern| {
+        let pattern = pattern.trim();
+        match pattern.strip_suffix('*') {
+            Some(start) => !start.is_empty() && name.starts_with(start),
+            None => !pattern.is_empty() && name == pattern,
+        }
+    })
+}
+
+/// What an outcome holds besides what its tool said of it
+/// ([`sion_agent::session::Extras::marks`]): confidential content, if the
+/// operator named the tool so, or if it carries a line of a confidential
+/// file of the workspace; content from outside, if it carries a line of a
+/// file from outside. So what a tool that does not read files itself
+/// returns of them (an MCP server's, a skill's script, a browser) holds a
+/// session as reading them does.
+pub fn held_by(
+    workspace: Option<&Path>,
+    confidential_tools: &[String],
+    tool: &str,
+    outcome: &Outcome,
+) -> sion_agent::tools::Held {
+    let mut held = sion_agent::tools::Held::default();
+    if !outcome.confidential && confidential_tool(confidential_tools, tool) {
+        held.confidential = true;
+    }
+    if let Some(root) = workspace {
+        if !outcome.untrusted {
+            held.tainted = sion_agent::provenance::echoes_outside(root, &outcome.content);
+        }
+        if !outcome.confidential && !held.confidential {
+            held.confidential = sion_agent::provenance::echoes_confidential(root, &outcome.content);
+        }
+    }
+    held
+}
+
 /// The tools that read the web: a session that may use only the tools that
 /// read may use them too if it reads the web ([`Saved::reads_web`]).
 pub const WEB_READERS: [&str; 2] = ["web_search", "fetch_url"];
@@ -1032,6 +1090,11 @@ pub struct Saved {
     /// ([`sion_agent::builtin::confidential_path`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub confidential_files: Vec<String>,
+    /// The tools whose results are confidential, whatever they return
+    /// ([`confidential_tool`]): a tool's name, or the start of names
+    /// ending in `*` (an MCP server's tools, `crm_*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confidential_tools: Vec<String>,
     /// The files of its workspace it shared in its last run
     /// (`share_file`), to go with its reply: their paths in the workspace.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1501,6 +1564,9 @@ pub struct Equipped {
     pub workspace: bool,
     /// A sandbox to run commands in.
     pub shell: bool,
+    /// Files the operator named confidential, which that sandbox does not
+    /// show its commands ([`sion_agent::sandbox::Sandbox::hidden`]).
+    pub hidden: bool,
     /// The web: pages to fetch, and a search if one is configured.
     pub web: bool,
     /// A memory log of its own.
@@ -1576,6 +1642,14 @@ pub fn system_for(did: &str, with: &Equipped) -> String {
             "- Commands run in a sandbox that writes only your workspace. Read, search and edit \
              files with the file tools rather than with commands. Use terminal_run for what \
              keeps state or runs long, shell for one command.",
+        );
+    }
+    if with.shell && with.hidden {
+        equipment.push(
+            "- Some files of your workspace are confidential, and commands are not shown them: \
+             to a command such a file is empty and such a directory holds nothing. That is not \
+             an error and the file is not empty: read it with read_file. Once you have read \
+             one, what you send outside and what you spend waits for your principal.",
         );
     }
     if with.web {
@@ -1714,6 +1788,22 @@ impl Saved {
         for tool in ledger_tools(&acting) {
             tools.add_boxed(tool);
         }
+        // Commands, scripts and the desktop's programs are not shown what
+        // is confidential in the workspace: what they print, encoded or
+        // not, cannot carry it. Unless the session held confidential
+        // content already when this run began: then nothing leaves it
+        // without a person, and its programs may work on those files.
+        let hides = !self.state.standing.confidential;
+        let hiding = |sandbox: &sion_agent::sandbox::Sandbox| {
+            if hides {
+                sandbox.clone().hiding(&self.confidential_files)
+            } else {
+                sandbox.clone()
+            }
+        };
+        let sandboxed = self.shell.as_ref().map(hiding);
+        let mut screen = self.screen.clone();
+        screen.computer = screen.computer.as_ref().map(hiding);
         if let Some(link) = &self.work {
             for tool in crate::work::tools(link) {
                 tools.add_boxed(tool);
@@ -1766,7 +1856,7 @@ impl Saved {
                     root: root.clone(),
                     hearing: crate::voice::Hearing::parse(spec).map_err(CliError::Usage)?,
                     spec: spec.clone(),
-                    sandbox: self.shell.clone(),
+                    sandbox: sandboxed.clone(),
                     confidential: self.confidential_files.clone(),
                 });
             }
@@ -1786,7 +1876,7 @@ impl Saved {
                     .map_err(CliError::Usage)?,
             );
         }
-        if let Some(sandbox) = &self.shell {
+        if let Some(sandbox) = &sandboxed {
             let root = self.workspace.as_ref().ok_or_else(|| {
                 CliError::Usage("a shell needs a workspace to work in: give --workspace".into())
             })?;
@@ -1834,6 +1924,7 @@ impl Saved {
                 rules: self.rules.clone(),
                 rules_model: self.rules_model.clone(),
                 confidential_files: self.confidential_files.clone(),
+                confidential_tools: self.confidential_tools.clone(),
                 outside_files: self.outside_files.clone(),
             };
             for tool in delegation.tools() {
@@ -1898,7 +1989,7 @@ impl Saved {
         }
         if !self.screen.is_empty() {
             for tool in crate::screens::tools(
-                &self.screen,
+                &screen,
                 &self.state.id,
                 self.workspace.as_deref(),
                 &self.confidential_files,
@@ -2023,7 +2114,7 @@ impl Saved {
         // The operator's check of the task, run in the agent's sandbox, in
         // its workspace, each time the model says it is done, with its own
         // files beside it if it has them.
-        let check = match (&self.verify, &self.shell, &self.workspace) {
+        let check = match (&self.verify, &sandboxed, &self.workspace) {
             (Some(command), Some(sandbox), Some(root)) => Some((
                 command.clone(),
                 sandbox.clone(),
@@ -2035,6 +2126,12 @@ impl Saved {
         let verifier = check.map(|(command, sandbox, root, files)| {
             move |_: &State, _: &str| run_check(&sandbox, &root, &command, files.as_deref())
         });
+        // What each outcome holds besides what its tool said of it.
+        let marked_root = self.workspace.clone();
+        let marked_tools = self.confidential_tools.clone();
+        let marks = move |tool: &str, outcome: &Outcome| {
+            held_by(marked_root.as_deref(), &marked_tools, tool, outcome)
+        };
         // The operator's hooks: around each call, and each run.
         let operator = crate::hooks::OperatorHooks::load(self.workspace.as_deref())?;
         let prices = prices()?;
@@ -2083,6 +2180,7 @@ impl Saved {
                 .then_some(&operator as &dyn sion_agent::hooks::ToolHooks),
             extras: sion_agent::session::Extras {
                 prices: Some(&prices),
+                marks: Some(&marks),
                 summarizer: summarizer.as_deref(),
                 asker: hooks
                     .asker
@@ -3134,6 +3232,7 @@ pub fn sandbox_from(
             ..Limits::default()
         },
         readable,
+        hidden: None,
     };
     sandbox.check().map_err(CliError::Usage)?;
     Ok(sandbox)
@@ -3197,6 +3296,9 @@ pub struct Equipment {
     /// The paths of its workspace whose content is confidential
     /// ([`Saved::confidential_files`]).
     pub confidential_files: Vec<String>,
+    /// The tools whose results are confidential
+    /// ([`Saved::confidential_tools`]).
+    pub confidential_tools: Vec<String>,
     /// What makes pictures for it ([`Saved::image_model`]).
     pub image_model: Option<String>,
     /// Whether it has Home Assistant's tools ([`Saved::home_assistant`]).
@@ -3334,6 +3436,7 @@ pub fn start_watched(
         reads_web,
         confidential,
         confidential_files,
+        confidential_tools,
         work,
         project,
         session: session_id,
@@ -3482,6 +3585,7 @@ pub fn start_watched(
                     &Equipped {
                         workspace: workspace.is_some(),
                         shell: shell.is_some(),
+                        hidden: !confidential_files.is_empty(),
                         web,
                         memory: memory.is_some(),
                         delegate,
@@ -3524,6 +3628,7 @@ pub fn start_watched(
         read_only,
         reads_web,
         confidential_files,
+        confidential_tools,
         shared: Vec::new(),
         image_model,
         home_assistant,
@@ -3559,6 +3664,87 @@ mod tests {
         assert_eq!(small.compact_chars, 24_000);
         assert_eq!(small.compact_messages, Limits::default().compact_messages);
         assert!(compact_at_tokens(&mut small, 100).is_err());
+    }
+
+    #[test]
+    fn a_tool_named_confidential_and_a_confidential_line_hold_an_outcome() {
+        let named = vec!["crm_*".to_string(), "payroll".to_string(), "*".to_string()];
+        assert!(confidential_tool(&named, "crm_lookup"));
+        assert!(confidential_tool(&named, "payroll"));
+        // A pattern that names every tool names none (and is refused when
+        // it is given), and a name is whole.
+        assert!(checked_confidential_tools(vec!["*".into()]).is_err());
+        assert!(checked_confidential_tools(vec!["a*b".into()]).is_err());
+        assert!(checked_confidential_tools(vec![" ".into()]).is_err());
+        assert_eq!(
+            checked_confidential_tools(vec![" crm_* ".into(), "payroll".into()]).unwrap(),
+            ["crm_*", "payroll"]
+        );
+        assert!(!confidential_tool(&named, "payroll_export"));
+        assert!(!confidential_tool(&named, "fetch_url"));
+        assert!(!confidential_tool(&[], "crm_lookup"));
+
+        let root = std::env::temp_dir().join(format!("sion-held-by-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("private")).unwrap();
+        std::fs::create_dir_all(root.join("downloads")).unwrap();
+        std::fs::write(
+            root.join("private/salaries.csv"),
+            "name,salary\nalice of accounting,8200\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("downloads/brief.txt"),
+            "a line of a page that was downloaded\n",
+        )
+        .unwrap();
+        sion_agent::provenance::declare_confidential(&root, &["private/".into()]);
+        let held = |tool: &str, text: &str| held_by(Some(&root), &named, tool, &Outcome::ok(text));
+        // A tool named so, whatever it says.
+        let lookup = held("crm_lookup", "dana ruiz");
+        assert!(lookup.confidential && !lookup.tainted);
+        // A line of a confidential file, from a tool that reads no files.
+        let search = held("notes_search", "1 hit: alice of accounting,8200");
+        assert!(search.confidential && !search.tainted);
+        // A line of a file from outside taints as reading it does.
+        let page = held("notes_search", "a line of a page that was downloaded");
+        assert!(page.tainted && !page.confidential);
+        // Anything else holds nothing, and so does every outcome without a
+        // workspace to know the files of.
+        assert_eq!(
+            held("notes_search", "nothing of either"),
+            Default::default()
+        );
+        assert_eq!(
+            held_by(
+                None,
+                &[],
+                "notes_search",
+                &Outcome::ok("alice of accounting,8200")
+            ),
+            Default::default()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_system_prompt_says_that_commands_are_not_shown_confidential_files() {
+        let with = |shell, hidden| {
+            system_for(
+                "did:sion:x",
+                &Equipped {
+                    workspace: true,
+                    shell,
+                    hidden,
+                    ..Default::default()
+                },
+            )
+        };
+        let line = "commands are not shown them";
+        assert!(with(true, true).contains(line));
+        // Not where nothing is hidden, nor where no command runs.
+        assert!(!with(true, false).contains(line));
+        assert!(!with(false, true).contains(line));
     }
 
     #[test]

@@ -155,6 +155,7 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     };

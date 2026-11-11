@@ -10,6 +10,47 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Confidential files, kept from commands and from other tools
+
+- Commands are not shown what a profile keeps confidential
+  (`--confidential-file`). In the sandbox of the shell, a terminal,
+  `run_tests`, `diagnostics`, a skill's scripts, `transcribe`, a task's
+  check and a desktop's programs, such a file is empty and such a
+  directory holds nothing, so a command cannot print one encoded, counted
+  or cut short, which the look at its output for the file's lines would
+  not have known. Until now only `read_file` and a line printed as
+  written held a session. The system prompt says that such files read as
+  empty to commands and are read with `read_file`.
+- A command that moves or removes a directory above a hidden file is
+  known to have: the session is held, the result says what was displaced,
+  and the file stays confidential where it went, for later sessions too.
+  A confidential file moved by `apply_patch` stays confidential.
+- What every tool returns is looked at for lines of a confidential file
+  or of a file from outside, not only what the shell prints: an MCP
+  server's tool, a skill's script or the browser that returns one holds
+  or taints the session as reading the file does.
+- `--confidential-tool <TOOL>`, on `sion agent run` and on profiles,
+  names a tool whose every result is confidential, or with a closing `*`
+  every tool whose name begins so (`crm_*`, an MCP server's tools).
+- Files are hidden unless the session held confidential content when the
+  run began. Still not known: what the model rewrites in its own words
+  and saves, once a later session reads it, and what a server outside the
+  sandbox returns of a file in another form (`agent:confidential-label`).
+- Four more rows in the table of attacks tried
+  (`crates/sion-agent/tests/attacks.rs`), and a sixth benchmark suite,
+  `injection-varied`: twelve injections that do not come as a line in a
+  document (in a tool's description, an error, two files that only
+  together give the order, an encoding, the look of the person's next
+  turn, the agent's memory, a file's name, a link in the answer). A
+  careful script passes all twelve; a careless one fails eleven, and the
+  twelfth is stopped by the runtime's hold.
+- `scripts/real-model-check.sh` registered its agent with an option that
+  no longer exists, and so stopped before its first check. It runs
+  again, asks for the key of the provider named (Anthropic, OpenAI or
+  Gemini), takes `context:` as a model to show what would be sent without
+  paying, and with `SUITE=<name>` runs a benchmark suite once a case
+  after its checks.
+
 ### Paying for a page: `fetch_paid`
 
 - An agent given the web has a tool of its own for what the web sells:

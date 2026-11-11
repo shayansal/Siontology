@@ -1237,6 +1237,8 @@ Options:
           The task is confidential: the session holds confidential content from the start, so its external calls and spending wait for a person, and nothing allowed before runs them unasked
       --confidential-file <PATH>
           A path of the workspace whose content is confidential: a file, a directory with a closing `/`, or a prefix ending in `*`. What read_file reads from it holds the session as --confidential does. Repeat for more
+      --confidential-tool <TOOL>
+          A tool whose results are confidential, whatever they hold: its name, or the start of names ending in `*` (an MCP server's tools: `crm_*`). What it returns holds the session as --confidential does. Repeat for more
   -h, --help
           Print help
 ```
@@ -1535,6 +1537,8 @@ Options:
           Its sessions hold confidential content from the start: their external calls and spending wait for a person
       --confidential-file <PATH>
           A path of its workspace whose content is confidential (a file, a directory with a closing `/`, or a prefix ending in `*`). Repeat for more
+      --confidential-tool <TOOL>
+          A tool whose results are confidential, whatever they hold: its name, or the start of names ending in `*`. Repeat for more
   -h, --help
           Print help
 ```

@@ -506,6 +506,12 @@ pub enum AgentCommand {
             requires = "workspace"
         )]
         confidential_files: Vec<String>,
+        /// A tool whose results are confidential, whatever they hold: its
+        /// name, or the start of names ending in `*` (an MCP server's
+        /// tools: `crm_*`). What it returns holds the session as
+        /// --confidential does. Repeat for more.
+        #[arg(long = "confidential-tool", value_name = "TOOL")]
+        confidential_tools: Vec<String>,
     },
     /// Continue a session: approve or decline the call it waits on, or tell
     /// it more.
@@ -1167,6 +1173,7 @@ pub fn run(
             shared_memory,
             confidential,
             confidential_files,
+            confidential_tools,
         } => {
             let agent = parse_id(&agent, "agent")?;
             let shared_memory = shared_memory
@@ -1251,6 +1258,9 @@ pub fn run(
                     shared_memory,
                     confidential,
                     confidential_files,
+                    confidential_tools: crate::runtime::checked_confidential_tools(
+                        confidential_tools,
+                    )?,
                     ..crate::runtime::Equipment::default()
                 },
             )?;

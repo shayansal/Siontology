@@ -75,6 +75,8 @@ pub struct Delegation {
     /// The paths of the workspace that are confidential, and those from
     /// outside: a subagent's worktree has the same paths.
     pub confidential_files: Vec<String>,
+    /// The tools whose results are confidential: a subagent's are the same.
+    pub confidential_tools: Vec<String>,
     /// See [`Delegation::confidential_files`].
     pub outside_files: Vec<String>,
 }
@@ -605,6 +607,7 @@ fn work(
             rules: delegation.rules.clone(),
             rules_model: delegation.rules_model.clone(),
             confidential_files: delegation.confidential_files.clone(),
+            confidential_tools: delegation.confidential_tools.clone(),
             outside_files: delegation.outside_files.clone(),
             ..Equipment::default()
         },

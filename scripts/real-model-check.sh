@@ -9,10 +9,17 @@
 # python3, and a key for the model's provider:
 #
 #   ANTHROPIC_API_KEY=... scripts/real-model-check.sh anthropic:claude-sonnet-5-5
-#   OPENAI_API_KEY=... scripts/real-model-check.sh openai:gpt-5
+#   OPENAI_API_KEY=... scripts/real-model-check.sh openai:gpt-6.1-terra
+#   GEMINI_API_KEY=... scripts/real-model-check.sh gemini:gemini-3.8-flash
 #
 # The key is read from the environment by `sion` and is never written to a
 # file. Exits 1 if any check fails.
+#
+# To see first what the model would be sent, and pay nothing, give
+# `context:` as the model. With SUITE set to a benchmark suite's name
+# (injection-varied, payments-x402, ...), that suite is run once a case
+# after the checks, and its pass rate and cost printed; it is not one of
+# the checks.
 set -uo pipefail
 
 MODEL=${1:-anthropic:claude-sonnet-5-5}
@@ -21,6 +28,8 @@ BIN=${SION_BIN:-$ROOT/target/release/sion}
 PORT=${PORT:-8797}
 case "$MODEL" in
   anthropic:*) : "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY for $MODEL}" ;;
+  openai:*|openai-chat:*) : "${OPENAI_API_KEY:?set OPENAI_API_KEY for $MODEL}" ;;
+  gemini:*) [ -n "${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}" ] || { echo "set GEMINI_API_KEY for $MODEL"; exit 2; } ;;
 esac
 [ -x "$BIN" ] || { echo "no sion binary at $BIN: cargo build --release -p sion-cli"; exit 2; }
 
@@ -45,7 +54,7 @@ ended_done() { grep -q "session [0-9a-f]*: done" "$1"; }
 
 "$BIN" keys new worker > /dev/null
 "$BIN" faucet worker 2 > /dev/null
-"$BIN" agent register alice worker --payees bob --max-payment 5 --max-window 20 --funding 20 > register.txt
+"$BIN" agent register alice worker --payees bob --max-payment 5 --burst 20 --funding 20 > register.txt
 AGENT=$(grep -o 'agent [0-9a-f]\{64\}' register.txt | head -n1 | cut -d' ' -f2)
 [ -n "$AGENT" ] || { echo "no agent registered: see $DIR/register.txt"; exit 2; }
 echo "agent $AGENT, model $MODEL, in $DIR"
@@ -85,4 +94,8 @@ check "4. three subagents were spawned" "[ \$(grep -c 'subagent worker-' 4.txt) 
 check "4. bob was paid 3 USD more" "gt '$BOB3' '$BOB2' 2.99"
 
 echo "transcripts: $DIR/{1,2,3,4}.txt"
+if [ -n "${SUITE:-}" ]; then
+  echo "suite $SUITE, once a case:"
+  "$BIN" agent bench run "$SUITE" --model "$MODEL" --repeats 1 2>&1 | tail -n 6
+fi
 exit $failed

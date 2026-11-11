@@ -422,6 +422,7 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
             workspace: Some(workspace.clone()),
             web: true,
             confidential_files: vec!["private/".into()],
+            confidential_tools: Vec::new(),
             ..Default::default()
         },
     )

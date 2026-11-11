@@ -119,12 +119,17 @@ pub fn confidential_path(patterns: &[String], relative: &str) -> bool {
 }
 
 /// Whether the file at `relative` in the workspace `root` is one that
-/// `patterns` name ([`confidential_path`]): as the path is written, or as
-/// the path in the workspace that symbolic links lead it to.
+/// `patterns` name ([`confidential_path`]), or one kept as confidential
+/// for the workspace since ([`crate::provenance::kept_confidential`]): as
+/// the path is written, or as the path in the workspace that symbolic
+/// links lead it to.
 pub fn confidential_in(patterns: &[String], root: &Path, relative: &str) -> bool {
-    if patterns.is_empty() {
+    let kept = crate::provenance::kept_confidential(root);
+    if patterns.is_empty() && kept.is_empty() {
         return false;
     }
+    let all: Vec<String> = patterns.iter().cloned().chain(kept).collect();
+    let patterns = all.as_slice();
     if confidential_path(patterns, relative) {
         return true;
     }
@@ -304,8 +309,7 @@ impl Tool for ReadFile {
                     .map(|p| p.to_string_lossy().replace('\\', "/"))
             })
             .unwrap_or_else(|| relative.to_string());
-        let held = confidential_path(&self.confidential, &named)
-            || confidential_path(&self.confidential, relative);
+        let held = confidential_in(&self.confidential, &self.root, relative);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(e) => return Outcome::error(format!("{relative}: {e}")),
@@ -764,8 +768,9 @@ impl Tool for Shell {
                     outcome
                 };
                 // What it prints of a file from outside is from outside
-                // too, and of a confidential file, confidential.
-                crate::provenance::marked(&self.root, outcome)
+                // too, and of a confidential file, confidential; so is a
+                // command that moved what was hidden from it.
+                crate::provenance::marked_after(&self.root, &run.displaced, outcome)
             }
             Err(e) => Outcome::error(format!("the sandbox could not run the command: {e}")),
         }

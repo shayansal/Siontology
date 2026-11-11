@@ -310,6 +310,7 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         shared_memory: Vec::new(),
         confidential: false,
         confidential_files: Vec::new(),
+        confidential_tools: Vec::new(),
         routes: Vec::new(),
         sorter: None,
     };
