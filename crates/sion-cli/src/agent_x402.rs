@@ -61,6 +61,9 @@ pub struct FetchPaid {
     /// The client its requests go through: public addresses only, unless
     /// the operator allowed this machine's own ([`allow_local`]).
     pub client: sion_http::Client,
+    /// What signs its requests, if the operator has a web identity
+    /// ([`crate::web_identity`]).
+    pub signer: Option<sion_agent::webbotauth::Signer>,
 }
 
 /// Whether the operator allowed paid fetches to reach this machine and its
@@ -80,8 +83,30 @@ impl FetchPaid {
             ..sion_http::Options::default()
         })
         .map_err(|e| e.to_string())?;
-        Ok(FetchPaid { acting, client })
+        Ok(FetchPaid {
+            acting,
+            client,
+            signer: None,
+        })
     }
+}
+
+/// `GET url` with `more` headers, signed if the operator has a web
+/// identity.
+fn get(
+    tool: &FetchPaid,
+    url: &str,
+    more: &[(&str, &str)],
+) -> Result<sion_http::Response, sion_http::HttpError> {
+    let signed = tool
+        .signer
+        .as_ref()
+        .and_then(|signer| signer.headers(url).ok())
+        .unwrap_or_default();
+    let mut headers = vec![("Accept", "*/*")];
+    headers.extend_from_slice(more);
+    headers.extend(signed.iter().map(|(n, v)| (*n, v.as_str())));
+    tool.client.send("GET", url, &headers, None)
 }
 
 impl Tool for FetchPaid {
@@ -309,7 +334,7 @@ fn fetch_paid(tool: &FetchPaid, input: &Value, key: &str, note: &mut dyn FnMut(&
         Err(e) => return Outcome::error(format!("not fetched: {e}")),
     };
     // 1. Asked without a payment: most of the web is free.
-    let first = match tool.client.send("GET", url, &[("Accept", "*/*")], None) {
+    let first = match get(tool, url, &[]) {
         Ok(response) => response,
         Err(e) => return Outcome::error(format!("{url}: {e}")),
     };
@@ -449,12 +474,7 @@ fn fetch_paid(tool: &FetchPaid, input: &Value, key: &str, note: &mut dyn FnMut(&
         payload: json!({ "transaction": hex::encode(sion_core::encode::encode(&signed)) }),
         extensions: None,
     });
-    let answered = tool.client.send(
-        "GET",
-        url,
-        &[("Accept", "*/*"), (PAYMENT_SIGNATURE, payment.as_str())],
-        None,
-    );
+    let answered = get(tool, url, &[(PAYMENT_SIGNATURE, payment.as_str())]);
     session.settle_all();
     let response = match answered {
         Ok(response) => response,

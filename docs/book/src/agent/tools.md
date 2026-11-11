@@ -166,6 +166,15 @@ run as long as its terminal does; each command's time is held by its
 
 ## Changing code
 
+A project may say how it wants to be worked on in an `AGENTS.md` at its
+top: how to build and test it, what to leave alone. An agent with a
+workspace is told to read one before it changes anything there, and to
+take it for what it is, the project's authors speaking and not its
+principal. It is read with `read_file` like any other file, so nothing in
+it changes what the agent may do, send or pay, and one that came from
+outside (a repository of someone else's, under a path named with
+`--outside`) taints the session as any file from there does.
+
 With a workspace, a session has tools for changing code, besides reading
 and writing whole files:
 
@@ -356,6 +365,54 @@ All of this is read in Rust, in the session's process, without `unsafe`:
 each stream of a PDF and each file of an archive inflates to 32 MiB at
 most, and all of a document to 128 MiB, so that a file made to break a
 reader runs out of room instead.
+
+### A web identity
+
+Sites treat automated requests by who sends them, when they can tell. A
+web identity lets them tell: an Ed25519 key, made on this machine, that
+what your agents fetch from the web is signed with, as the IETF's Web Bot
+Auth working group has it (HTTP Message Signatures, RFC 9421;
+`draft-ietf-webbotauth-httpsig-protocol-01` of 29 October 2026). You
+publish the key's public half at an HTTPS address of yours, and that
+address is what names your agents to a site.
+
+```text
+$ sion agent web-identity new --published-at https://agents.example.org/.well-known/http-message-signatures-directory
+web identity made, kept sealed in ~/.sion/agents/web-identity.bin
+key _GGMCuts4NWLWjZpcRkZ41PGJwj6qrS_i-KjENM5A08
+published at https://agents.example.org/.well-known/http-message-signatures-directory
+Publish this there, as application/http-message-signatures-directory+json, with no redirect on the way to it:
+{"keys":[{"crv":"Ed25519","kid":"_GGMCuts4NWLWjZpcRkZ41PGJwj6qrS_i-KjENM5A08","kty":"OKP","use":"sig","x":"lOiRiTWVGWfP0aVoBNbfBr49p-d6cbZB9r_83Q57uJE"}]}
+From now on what your agents fetch from the web is signed with it. Until the directory is published, sites cannot check the signature.
+```
+
+From then on every request of `fetch_url` and `fetch_paid` carries three
+headers: `Signature-Agent`, naming the address; `Signature-Input`, saying
+what was signed (the request's host, and that address), when, for how
+long (five minutes), with which key, and a nonce; and `Signature`. A
+site that knows the address fetches the directory from it and checks the
+signature; one that does not ignores the headers.
+`sion agent web-identity show` prints the directory again, and `remove`
+ends it. The key is kept sealed beside the [secrets](#skills-scripts), is
+never given to a model or a script, and is not the agent's key on the
+ledger: the two identities are not linked by anything a site is sent.
+
+What it is and is not (`agent:web-identity`):
+
+- It says who asks, to a site that chooses to check. It does not make a
+  site answer, and a site may as well refuse an agent it now recognises.
+- One identity signs for every agent on this machine: sites can tell
+  that requests come from the same operator, which is the point, and
+  which an operator who wants otherwise should weigh before making one.
+- The signature covers the host, not the path or the body, as the draft
+  asks at the least: whoever sees a signed request could send another to
+  the same host under it for five minutes. So only requests over HTTPS
+  are signed (and those to this machine itself, for testing).
+- What the browser and a desktop fetch, a search service's API and MCP
+  servers over HTTP are not signed.
+- The draft is a draft. What is built is the revision named above,
+  checked against its Ed25519 test vector; a later revision may change
+  the headers.
 
 ### Searching documents
 

@@ -115,6 +115,7 @@ pub mod terminal;
 pub mod tools;
 pub mod trace;
 pub mod verify;
+pub mod webbotauth;
 pub mod websearch;
 pub mod work;
 

@@ -164,12 +164,16 @@ What is enforced, and where:
 - Programs it writes that call its tools that only read, run in the
   sandbox; a search over a large toolbox; your hooks before and after its
   calls.
+- A web identity, if you make one: what it fetches from the web is signed
+  (Web Bot Auth, an IETF draft), so that a site can tell whose agent
+  asks. Tested against the draft's test vector, not against sites.
+  [A web identity](docs/book/src/agent/tools.md#a-web-identity)
 
 ### Within limits, and checked
 
 - Autonomy levels from L0 to L6, approvals, taint from what comes from
-  outside, quarantine, confidential files, signed decisions, and a journal
-  of everything it did.
+  outside, quarantine, confidential files that commands are not shown,
+  signed decisions, and a journal of everything it did.
   [What it does alone](docs/book/src/agent/autonomy.md),
   [Security](docs/book/src/agent/security.md)
 - Checks a run must pass before it is done, budgets for time and tokens,

@@ -798,6 +798,7 @@ Commands:
   kill-switch    The kill switch: `on` stops every agent run on this machine before its next call; `off` lets them run again
   profile        Agent profiles: how to run an agent, under a name, for schedules and channels
   secret         The secrets skills' scripts may receive (`sion-secrets` in a skill's metadata): kept encrypted on this machine, passed to a script as environment variables, and cut out of what it prints
+  web-identity   This machine's web identity: a key your agents' web requests are signed with, so that a site can tell whose agent asks (Web Bot Auth: HTTP Message Signatures, RFC 9421), and the key directory to publish for it
   credential     The credentials sion itself uses (models' keys and addresses, speech services' keys), kept sealed on this machine so that sion and its services find them without the environment; never given to skills' scripts
   login          Your logins agents' browsers may fill (`--login`): each bound to an origin, kept encrypted on this machine, filled only into fields of that origin, and never shown to the agent
   pairing        People a channel did not know who asked to talk to a profile: the codes waiting, approving one, letting a chat out again
@@ -1691,6 +1692,62 @@ Usage: sion agent secret remove [OPTIONS] <NAME>
 
 Arguments:
   <NAME>  Its name
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent web-identity`
+
+```text
+This machine's web identity: a key your agents' web requests are signed with, so that a site can tell whose agent asks (Web Bot Auth: HTTP Message Signatures, RFC 9421), and the key directory to publish for it
+
+Usage: sion agent web-identity [OPTIONS] <COMMAND>
+
+Commands:
+  new     Make this machine's web identity: an Ed25519 key, kept sealed here, that your agents' web requests (fetch_url, fetch_paid) are signed with from then on, as Web Bot Auth has it (HTTP Message Signatures, RFC 9421). Prints the key directory to publish
+  show    The identity: its key's id, where it is published, and the key directory to publish there
+  remove  Remove the identity: requests are no longer signed, and its key is gone for good
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent web-identity new`
+
+```text
+Make this machine's web identity: an Ed25519 key, kept sealed here, that your agents' web requests (fetch_url, fetch_paid) are signed with from then on, as Web Bot Auth has it (HTTP Message Signatures, RFC 9421). Prints the key directory to publish
+
+Usage: sion agent web-identity new [OPTIONS] --published-at <URL>
+
+Options:
+      --node <NODE>         The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --published-at <URL>  The HTTPS address you will publish the key directory at: sites fetch it to check a signature, and it is what names you to them. The well-known place is https://<your host>/.well-known/http-message-signatures-directory
+      --replace             Replace the identity there is: its key is gone for good, and sites that knew it no longer know your agents
+  -h, --help                Print help
+```
+
+## `sion agent web-identity show`
+
+```text
+The identity: its key's id, where it is published, and the key directory to publish there
+
+Usage: sion agent web-identity show [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent web-identity remove`
+
+```text
+Remove the identity: requests are no longer signed, and its key is gone for good
+
+Usage: sion agent web-identity remove [OPTIONS]
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]

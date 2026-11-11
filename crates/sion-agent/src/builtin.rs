@@ -560,6 +560,9 @@ pub struct Fetch {
     /// (`fetch_paid`): a page that answers HTTP 402 is then said to be
     /// fetched with it.
     pub paid: bool,
+    /// What signs its requests, if the operator has a web identity
+    /// ([`crate::webbotauth`]): a site can then tell whose agent asks.
+    pub signer: Option<crate::webbotauth::Signer>,
 }
 
 impl Tool for Fetch {
@@ -594,7 +597,15 @@ impl Tool for Fetch {
         // twice, after a pause of at most ten seconds.
         let from = input["from"].as_u64().unwrap_or(0) as usize;
         match sion_http::retrying(2, 10, &sion_http::sleep_seconds, &|| {
-            self.client.get(url, MAX_FETCH)
+            // Signed anew each time it is asked: a signature is for one
+            // request, for a few minutes.
+            let signed = self
+                .signer
+                .as_ref()
+                .and_then(|signer| signer.headers(url).ok())
+                .unwrap_or_default();
+            let headers: Vec<(&str, &str)> = signed.iter().map(|(n, v)| (*n, v.as_str())).collect();
+            self.client.request("GET", url, &headers, None, MAX_FETCH)
         }) {
             Ok(page) => read_fetched(url, &page.body, page.content_type.as_deref(), from),
             Err(sion_http::HttpError::Status { status: 402, .. }) if self.paid => {
@@ -1170,9 +1181,104 @@ mod tests {
         let fetch = Fetch {
             client,
             paid: false,
+            signer: None,
         };
         assert_eq!(fetch.effect(), Effect::External);
         let refused = fetch.call(&json!({"url": "http://127.0.0.1:9/"}), "k");
         assert!(refused.is_error && !refused.untrusted, "{refused:?}");
+    }
+
+    #[test]
+    fn a_fetch_with_a_web_identity_signs_what_it_asks() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let (seen, asked) = std::sync::mpsc::channel();
+        let serving = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let request = server.recv().unwrap();
+                let headers: Vec<(String, String)> = request
+                    .headers()
+                    .iter()
+                    .map(|h| {
+                        (
+                            h.field.as_str().as_str().to_ascii_lowercase(),
+                            h.value.to_string(),
+                        )
+                    })
+                    .collect();
+                seen.send(headers).unwrap();
+                request
+                    .respond(tiny_http::Response::from_string("hello from the shop"))
+                    .unwrap();
+            }
+        });
+        let client = sion_http::Client::new(sion_http::Options {
+            allow_private: true,
+            proxy_from_env: false,
+            ..sion_http::Options::default()
+        })
+        .unwrap();
+        let signer =
+            crate::webbotauth::Signer::new([5u8; 32], "https://agents.example.org/keys.json")
+                .unwrap();
+        let url = format!("http://127.0.0.1:{port}/page");
+        let signed = Fetch {
+            client: client.clone(),
+            paid: false,
+            signer: Some(signer.clone()),
+        };
+        let page = signed.call(&json!({"url": url}), "k");
+        assert!(
+            !page.is_error && page.content.contains("hello from the shop"),
+            "{page:?}"
+        );
+        let headers = asked.recv().unwrap();
+        let get = |name: &str| {
+            headers
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("no {name} in {headers:?}"))
+        };
+        assert_eq!(
+            get("signature-agent"),
+            "sig1=\"https://agents.example.org/keys.json\""
+        );
+        // What the site checks: the base rebuilt from the request it got,
+        // against the key the directory publishes.
+        let input = get("signature-input");
+        let params = input.strip_prefix("sig1=").unwrap();
+        let base = crate::webbotauth::signature_base(
+            &format!("127.0.0.1:{port}"),
+            "sig1",
+            signer.agent(),
+            params,
+        );
+        let signature = get("signature");
+        let signature = crate::encoding::from_base64(
+            signature
+                .strip_prefix("sig1=:")
+                .and_then(|s| s.strip_suffix(':'))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(sion_http::cipher::ed25519_verify(
+            signer.public(),
+            base.as_bytes(),
+            &signature
+        ));
+        // Without an identity, nothing is signed.
+        let plain = Fetch {
+            client,
+            paid: false,
+            signer: None,
+        };
+        assert!(!plain.call(&json!({"url": url}), "k").is_error);
+        let headers = asked.recv().unwrap();
+        assert!(
+            !headers.iter().any(|(n, _)| n.starts_with("signature")),
+            "{headers:?}"
+        );
+        serving.join().unwrap();
     }
 }

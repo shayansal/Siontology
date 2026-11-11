@@ -135,6 +135,13 @@ What is still not known for what it is (`agent:confidential-label`):
   file in another form: an MCP server runs as the operator set it up, and
   one that reads the workspace and answers encoded is not caught. Name
   its tools with `--confidential-tool`;
+- another copy of the file that is not named: one committed to the
+  workspace's git repository is in its history, which `git show` reads in
+  the sandbox like any command; so is a backup, a build's output or an
+  editor's swap file, and a second hard link to the same file. Printed as
+  written, such a copy is caught by its lines; printed encoded, it is
+  not. Keep confidential files out of the repository, as secrets are
+  kept, or name every place they are;
 - lines shorter than 16 characters, and files past the first megabyte of
   each of the first 64 under a path named.
 

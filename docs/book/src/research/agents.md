@@ -187,6 +187,46 @@ oversees ([The app](../getting-started/app.md)). Suspending an agent
 stops everything below it. Not built: its skills and memory in the tab,
 and one switch for all of the device's agents at once.
 
+## The field in November 2026
+
+Two open runtimes set the bar when this note was first written. Since
+then most of what moved came from the model makers' own agents (Claude
+Code and Anthropic's Managed Agents, OpenAI's Codex and Agents API,
+Google's Antigravity) and from the protocols around them, which now sit
+in one foundation: MCP, A2A, AGENTS.md and Agent Skills are projects of
+the Agentic AI Foundation, and x402 has a foundation of its own.
+
+This table was made on 11 November 2026 from the vendors' changelogs and
+the specifications themselves (sources at the end). It lists what bears
+on an agent that acts and pays, and where Siontology stands on each. It
+is a reading of changelogs, not a test of those products, and a row says
+"reported" where only someone else's account of a release was found.
+
+| What others ship | Where | Siontology |
+|---|---|---|
+| MCP revision 2026-07-28: no handshake and no session, `server/discover`, input asked for inside a result, client ids as metadata documents | The specification; Claude Code negotiates it for its cloud connectors since October | Built: [tools from MCP servers](../agent/tools.md#tools-from-mcp-servers) |
+| A2A 1.0, in the Agentic AI Foundation since August | The specification | Built for the JSON-RPC binding, versions 0.3 and 1.0 ([agents that talk A2A](../agent/channels.md#agents-that-talk-a2a)). Not built: signed agent cards, and the gRPC binding |
+| Agent Skills as an open format, given to the foundation in October | Anthropic; adopted by ChatGPT, Cursor, Copilot and others | Built, with what the format lacks: a release on bonds and audits ([Skills](../agent/skills.md)) |
+| x402 version 2 (`PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE`, `PAYMENT-RESPONSE`) | The specification; a foundation since July (reported) | Built for the `exact` scheme on Siontology's own ledger, and since this month in an agent's own runs ([`fetch_paid`](../guides/x402.md)). Not built: the usage-based `upto` scheme, and paying on other chains |
+| Programs that call tools, so that results need not pass through the model | Anthropic's API, OpenAI's Responses API | Built: `run_code`, for the tools that read ([Programs that call tools](../agent/tools.md#programs-that-call-tools)) |
+| A session paused at a spending cap | Anthropic's Managed Agents (August) | Built, in tokens and dollars; and what the agent pays others is capped by its charter on the ledger, which no setting of the runtime lifts |
+| A model that rules on calls in a person's place (auto mode, automatic review) | Claude Code, the default for new sessions on its paid plans since August; OpenAI's Agents API (October) | Partly: a model checks each changing call against the operator's rules and can only hold it ([Autonomy](../agent/autonomy.md)); what runs unasked is the autonomy level's and the charter's to say, not a model's |
+| Requests signed so that a site knows whose agent asks (Web Bot Auth) | An IETF working group's draft, October | Built this month: [a web identity](../agent/tools.md#a-web-identity) |
+| AGENTS.md, a project's notes for agents | The foundation; Codex, Grok Build and others read it | Built this month: read first, as the project's words and not the principal's ([Changing code](../agent/tools.md#changing-code)) |
+| Sandboxes for commands on every desktop system | Codex: bubblewrap, Seatbelt, containers on Windows | Linux only: bubblewrap and Docker. Not built: macOS and Windows |
+| Sandboxes and whole agent loops run by the vendor | Anthropic's Managed Agents, OpenAI's Agents API, Gemini's Managed Agents | Not the design: an agent runs on its operator's machines ([a server of yours](../agent/server.md)), and its limits are on the ledger |
+| A cheaper model that consults a stronger one in the middle of a task (an advisor) | Anthropic (August) | Not built. The nearest thing is a subagent on a stronger model |
+| A program the agent writes that runs many agents in phases | Anthropic's dynamic workflows (October) | Partly: [graphs of agents](../agent/graphs.md) are declared by the operator and earn their traffic by evaluation; an agent does not write one in the middle of a run |
+| Sites that offer tools to agents (WebMCP) | Chrome's origin trial; ChatGPT's "site tools" | Not built |
+| A tool's own interface shown in a frame (MCP Apps) | An MCP extension | Not built |
+| Sessions exported as OpenTelemetry | Anthropic (October), Google | Built: `gen_ai` spans, as OTLP's JSON |
+
+What the comparison does not show is the other direction. None of the
+agents above has its spending limits enforced by anyone but its own
+vendor's servers or its own configuration, an identity others can check
+and stop, memory with proofs, or skills on bonds: the table under [Where
+they are weak](#where-they-are-weak) still holds for them.
+
 ## What this does not claim
 
 - The runtime and the self-improvement loop are tested here with a scripted
@@ -207,3 +247,11 @@ and one switch for all of the device's agents at once.
 - [Turing Post: Hermes Agent and OpenClaw compared](https://www.turingpost.com/p/hermes)
 - [TechInformed: OpenClaw adds VirusTotal scanning for ClawHub skills](https://techinformed.com/openclaw-adds-virustotal-scanning-for-clawhub-skills/)
 - [Agent Skills specification](https://agentskills.io/specification)
+
+For the field in November 2026, read on 11 November 2026:
+
+- Anthropic: [Claude Code changelog](https://code.claude.com/docs/en/changelog) and [what's new](https://code.claude.com/docs/en/whats-new), [Claude Platform release notes](https://platform.claude.com/docs/en/release-notes/overview), [Agent Skills given to the Agentic AI Foundation](https://www.anthropic.com/news/donating-agent-skills-to-the-agentic-ai-foundation)
+- OpenAI: [API changelog](https://developers.openai.com/api/docs/changelog), [the Agents SDK's sandboxes](https://openai.com/index/the-next-evolution-of-the-agents-sdk/), [what's new in ChatGPT and Codex](https://learn.chatgpt.com/docs/whats-new)
+- Google: [Gemini CLI to Antigravity CLI](https://developers.googleblog.com/en/an-important-update-transitioning-gemini-cli-to-antigravity-cli/), [the I/O 2026 developer keynote](https://developers.googleblog.com/en/all-the-news-from-the-google-io-2026-developer-keynote/)
+- Protocols: [MCP 2026-07-28, its changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog), [A2A specification](https://a2a-protocol.org/latest/specification/) and [A2A joins the Agentic AI Foundation](https://aaif.io/md/blog/a2a-joins-aaif), [x402 version 2](https://github.com/coinbase/x402/blob/main/specs/x402-specification-v2.md), [Web Bot Auth: HTTP Message Signatures for automated traffic](https://datatracker.ietf.org/doc/html/draft-ietf-webbotauth-httpsig-protocol)
+- Reported by others, not read at the source: the x402 Foundation's start in July ([TFTC](https://www.tftc.io/x402-foundation-operational-launch-ai-agent-payments)); the `upto` scheme of x402, whose specification was not found

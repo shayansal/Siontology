@@ -131,6 +131,7 @@ pub mod update;
 pub mod verify;
 pub mod voice;
 pub mod vouching;
+pub mod web_identity;
 pub mod webhooks;
 pub mod wecom;
 pub mod weixin;

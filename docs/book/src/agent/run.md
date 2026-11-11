@@ -60,7 +60,7 @@ finish. The agent's tools:
 | `ledger_pay` | spend | Pays from the charter's budget; the receipt records which runtime call made the payment |
 | `ledger_transaction` | read | Whether a transaction executed, by digest, to check a payment whose outcome is unknown |
 | `read_file`, `write_file`, `list_files` | read, write | Files in the directory `--workspace` gives, and nowhere else |
-| `fetch_url` | external | Public web pages, with `--web`; local and private addresses are refused |
+| `fetch_url` | external | Public web pages, with `--web`; local and private addresses are refused. Signed, if the machine has [a web identity](tools.md#a-web-identity) |
 | `fetch_paid` | spend | With `--web`: a page that charges through x402 (HTTP 402), its quote paid from the budget under the charter, at most what the call allows, and the page fetched again with the payment ([x402](../guides/x402.md#in-an-agents-own-run-fetch_paid)) |
 | `agent_spawn` | spend | With `--delegate`: a subagent with a budget carved from the agent's, working on a task in a session of its own ([Subagents and hired help](teams.md)); those of one turn are spawned together and work at the same time |
 | `task_post`, `task_status`, `task_submit`, `task_release` | spend, read, external, external | With `--delegate`: hire another agent through a Task Charter (with a check its verifiers run, if you fix one), follow it, deliver one you were hired for (with the attestations it needs), or give one up that cannot be done |

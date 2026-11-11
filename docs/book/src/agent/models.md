@@ -341,13 +341,13 @@ would have been sent, with how large each part is. Nothing is sent to a
 provider, and no key is needed:
 
 ```text
-$ sion agent run agent-7 29fda4a1…9617 --task 'Summarise notes.txt and pay bob 2 USD for the review.' --model context: --workspace ws --web --shell bwrap --delegate
-session 9c05ebf828b60e78 for agent 29fda4a1
+$ sion agent run agent-7 b48aae7d…6ab8 --task 'Summarise notes.txt and pay bob 2 USD for the review.' --model context: --workspace ws --web --shell bwrap --delegate
+session 4735ca912f5694bd for agent b48aae7d
 agent: What a model is sent for this run (nothing was sent to a provider; sizes in tokens are estimates, a token for every three characters).
 
-System prompt: 3,144 characters, about 1,048 tokens
+System prompt: 3,476 characters, about 1,159 tokens
 --------
-You are an AI agent acting on the Siontology ledger as did:sion:9442…6e5a:29fd…9617. You work for your principal: whoever gave you this task.
+You are an AI agent acting on the Siontology ledger as did:sion:9442…6e5a:b48a…6ab8. You work for your principal: whoever gave you this task.
 …
 --------
 
@@ -360,8 +360,8 @@ Tools: 32, 15,570 characters, about 5,190 tokens
 Conversation: 1 message, 53 characters, about 18 tokens
   user: text (53)
 
-In all: 18,767 characters, about 6,256 tokens, before an answer of at most 16,384 tokens.
-session 9c05ebf828b60e78: done
+In all: 19,099 characters, about 6,367 tokens, before an answer of at most 16,384 tokens.
+session 4735ca912f5694bd: done
 ```
 
 `--model context:full` shows each tool's description and schema whole.

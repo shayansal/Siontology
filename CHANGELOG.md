@@ -10,6 +10,31 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Catching up with the field: a web identity, and AGENTS.md
+
+- `sion agent web-identity new --published-at <URL>` makes this
+  machine's web identity: an Ed25519 key, kept sealed here, that
+  `fetch_url` and `fetch_paid` sign their requests with from then on, as
+  the IETF's Web Bot Auth working group has it (HTTP Message Signatures,
+  RFC 9421; `draft-ietf-webbotauth-httpsig-protocol-01`). It prints the
+  key directory (a JWK Set) to publish at that address; `show` prints it
+  again and `remove` ends it. A site that checks can then tell whose
+  agent asks. Only requests over HTTPS are signed; the signature covers
+  the host, holds five minutes and has a nonce of its own. Checked
+  against the draft's Ed25519 test vector. Without a web identity,
+  nothing changes.
+- An agent with a workspace is told to read an `AGENTS.md` at its top
+  before it changes anything there, and to take it as the project's own
+  notes, not its principal's word: it is read with `read_file` like any
+  file, so one that came from outside taints the session as any other
+  does, and nothing in it changes what the agent may do, send or pay.
+- [Reliable, self-improving agents](docs/book/src/research/agents.md) has
+  a table of what the leading agents and protocols shipped by November
+  2026 that bears on an agent that acts and pays, and where Siontology
+  stands on each, with what is still not built: the `upto` scheme of
+  x402, sandboxes on macOS and Windows, an advisor model, WebMCP, MCP
+  Apps.
+
 ### Confidential files, kept from commands and from other tools
 
 - Commands are not shown what a profile keeps confidential

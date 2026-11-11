@@ -633,6 +633,12 @@ pub enum AgentCommand {
     /// script as environment variables, and cut out of what it prints.
     #[command(subcommand)]
     Secret(crate::secrets::SecretCommand),
+    /// This machine's web identity: a key your agents' web requests are
+    /// signed with, so that a site can tell whose agent asks (Web Bot
+    /// Auth: HTTP Message Signatures, RFC 9421), and the key directory to
+    /// publish for it.
+    #[command(subcommand, name = "web-identity")]
+    WebIdentity(crate::web_identity::WebIdentityCommand),
     /// The credentials sion itself uses (models' keys and addresses,
     /// speech services' keys), kept sealed on this machine so that sion and
     /// its services find them without the environment; never given to
@@ -1074,6 +1080,7 @@ fn waiting() -> Result<(), CliError> {
 pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<AgentCommand>> {
     Ok(match *command {
         AgentCommand::Secret(command) => crate::secrets::run(command),
+        AgentCommand::WebIdentity(command) => crate::web_identity::run(command),
         AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
@@ -1542,6 +1549,7 @@ pub fn run(
         AgentCommand::Graph(command) => crate::graphs::command(shared, command),
         AgentCommand::Bench(command) => crate::bench_cli::run_ledger(session, ledger, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
+        AgentCommand::WebIdentity(command) => crate::web_identity::run(command),
         AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
