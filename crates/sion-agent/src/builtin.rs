@@ -99,22 +99,27 @@ pub fn resolved_name(root: &Path, relative: &str) -> String {
 /// written with a closing `/`, or every path that begins as one ending in
 /// `*` does.
 pub fn confidential_path(patterns: &[String], relative: &str) -> bool {
-    // `a/./b` and `a//b` are `a/b`.
-    let relative = relative
-        .split(['/', '\\'])
-        .filter(|part| !part.is_empty() && *part != ".")
-        .collect::<Vec<_>>()
-        .join("/");
-    let relative = relative.as_str();
+    // `a/./b` and `a//b` are `a/b`; so is `a\b` where a backslash parts a
+    // path, and where it does not the name is also taken as it is written.
+    let parted = |separators: &[char]| {
+        relative
+            .split(separators)
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let spellings = [parted(&['/', '\\']), parted(&['/'])];
     patterns.iter().any(|pattern| {
         let pattern = pattern.trim_start_matches("./");
-        if let Some(prefix) = pattern.strip_suffix('*') {
-            relative.starts_with(prefix)
-        } else if pattern.ends_with('/') {
-            relative.starts_with(pattern)
-        } else {
-            relative == pattern || relative.starts_with(&format!("{pattern}/"))
-        }
+        spellings.iter().any(|relative| {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                relative.starts_with(prefix)
+            } else if pattern.ends_with('/') {
+                relative.starts_with(pattern)
+            } else {
+                relative == pattern || relative.starts_with(&format!("{pattern}/"))
+            }
+        })
     })
 }
 
@@ -124,13 +129,17 @@ pub fn confidential_path(patterns: &[String], relative: &str) -> bool {
 /// the path is written, or as the path in the workspace that symbolic
 /// links lead it to.
 pub fn confidential_in(patterns: &[String], root: &Path, relative: &str) -> bool {
+    // Where the confidential files are now: one moved since it was last
+    // seen is kept, by this, where it went.
+    crate::provenance::look(root);
     let kept = crate::provenance::kept_confidential(root);
     if patterns.is_empty() && kept.is_empty() {
         return false;
     }
-    let all: Vec<String> = patterns.iter().cloned().chain(kept).collect();
-    let patterns = all.as_slice();
-    if confidential_path(patterns, relative) {
+    let named = |relative: &str| {
+        confidential_path(patterns, relative) || crate::provenance::kept_holds(&kept, relative)
+    };
+    if named(relative) {
         return true;
     }
     let Ok(real_root) = root.canonicalize() else {
@@ -147,7 +156,7 @@ pub fn confidential_in(patterns: &[String], root: &Path, relative: &str) -> bool
             .ok()
             .map(|p| p.to_string_lossy().replace('\\', "/"))
     })
-    .is_some_and(|real| confidential_path(patterns, &real))
+    .is_some_and(|real| named(&real))
 }
 
 /// Writes `bytes` to `path` through a new file made beside it and renamed

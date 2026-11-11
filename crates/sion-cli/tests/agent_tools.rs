@@ -282,7 +282,7 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
             shown[0]
                 .0
                 .contains("deals/2026/terms.txt (now offers/2026/terms.txt)")
-                && shown[0].0.contains("The session is held as having read it"),
+                && shown[0].0.contains("the session is held as having read it"),
             "{text}"
         );
         assert!(!shown[1].0.contains("9 million"), "{text}");
@@ -303,6 +303,34 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
             saved.state.standing.confidential,
             "read where it went, it is confidential still:\n{text}"
         );
+
+        // Moved again by something left running in a terminal, after the
+        // command that started it had answered: the file is known by what
+        // it is, so it is found, hidden and held where it went, and the
+        // terminal's next answer says so.
+        let (saved, text) = run(
+            "background.json",
+            json!([
+                {"call": "terminal_run", "input": {"command": "(sleep 1; mv offers bids) >/dev/null 2>&1 & echo started"}},
+                {"call": "terminal_run", "input": {"command": "sleep 3; echo waited"}},
+                {"call": "shell", "input": {"command": "base64 bids/2026/terms.txt; echo end"}},
+                {"call": "read_file", "input": {"path": "bids/2026/terms.txt"}},
+                {"say": "Read."}
+            ]),
+            vaulted(),
+        );
+        let shown = results_of(&saved);
+        assert!(shown[0].0.contains("started"), "{text}");
+        assert!(
+            shown[1]
+                .0
+                .contains("offers/2026/terms.txt (now bids/2026/terms.txt)"),
+            "{text}"
+        );
+        // "the price" in base64 begins dGhlIHByaWNl.
+        assert!(!shown[2].0.contains("dGhlIHByaWNl"), "{text}");
+        assert!(shown[3].0.contains("9 million"), "{text}");
+        assert!(saved.state.standing.confidential, "{text}");
 
         // A copy under another name, read by a tool that does not know it:
         // what it says is known for what it is.

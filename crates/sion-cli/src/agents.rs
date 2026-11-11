@@ -544,6 +544,20 @@ pub enum AgentCommand {
         #[arg(long, value_name = "WALLET")]
         sign: Option<String>,
     },
+    /// What a workspace keeps confidential besides the paths you name
+    /// (--confidential-file): where a confidential file went when a
+    /// command or a patch moved it. Such a path stays hidden from commands
+    /// in later sessions until it is forgotten here.
+    Confidential {
+        /// The workspace.
+        workspace: std::path::PathBuf,
+        /// Forget a path kept, as it is listed. Repeat for more.
+        #[arg(long, value_name = "PATH")]
+        forget: Vec<String>,
+        /// Forget every path kept.
+        #[arg(long, conflicts_with = "forget")]
+        forget_all: bool,
+    },
     /// The decisions a session records: what was approved or declined, by
     /// whom, when, and whether a wallet signed it and its signature holds.
     Decisions {
@@ -1081,6 +1095,11 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
     Ok(match *command {
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::WebIdentity(command) => crate::web_identity::run(command),
+        AgentCommand::Confidential {
+            workspace,
+            forget,
+            forget_all,
+        } => crate::runtime::kept_confidential(&workspace, &forget, forget_all),
         AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),
@@ -1550,6 +1569,11 @@ pub fn run(
         AgentCommand::Bench(command) => crate::bench_cli::run_ledger(session, ledger, command),
         AgentCommand::Secret(command) => crate::secrets::run(command),
         AgentCommand::WebIdentity(command) => crate::web_identity::run(command),
+        AgentCommand::Confidential {
+            workspace,
+            forget,
+            forget_all,
+        } => crate::runtime::kept_confidential(&workspace, &forget, forget_all),
         AgentCommand::Credential(command) => crate::credentials::run(command),
         AgentCommand::Login(command) => crate::logins::run(command),
         AgentCommand::Pairing(command) => crate::pairing::run(command),

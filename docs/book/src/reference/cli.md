@@ -789,6 +789,7 @@ Commands:
   materialize    Materialize members of a cohort: their charters and allotments, at their lineage ids, with proofs of their leaves. The cohort parent's wallet signs, and signs for them afterwards
   run            Put an agent to work on a task: a model drives it, with the ledger (balance, payments under its charter, transactions), optionally files in a workspace and the web, as tools. The session is kept, so one waiting for your approval can resume
   continue       Continue a session: approve or decline the call it waits on, or tell it more
+  confidential   What a workspace keeps confidential besides the paths you name (--confidential-file): where a confidential file went when a command or a patch moved it. Such a path stays hidden from commands in later sessions until it is forgotten here
   decisions      The decisions a session records: what was approved or declined, by whom, when, and whether a wallet signed it and its signature holds
   evolve         Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
   sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
@@ -1245,6 +1246,23 @@ Options:
 ```
 
 See [Your agent](../agent/index.md), [Commands, scripts and MCP servers](../agent/tools.md) for `--shell`, `--mcp` and `--storage`, and [A browser and a desktop](../agent/browser.md) for `--browser`, `--login` and `--computer`.
+
+## `sion agent confidential`
+
+```text
+What a workspace keeps confidential besides the paths you name (--confidential-file): where a confidential file went when a command or a patch moved it. Such a path stays hidden from commands in later sessions until it is forgotten here
+
+Usage: sion agent confidential [OPTIONS] <WORKSPACE>
+
+Arguments:
+  <WORKSPACE>  The workspace
+
+Options:
+      --forget <PATH>  Forget a path kept, as it is listed. Repeat for more
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --forget-all     Forget every path kept
+  -h, --help           Print help
+```
 
 ## `sion agent decisions`
 

@@ -74,8 +74,6 @@ struct Terminal {
     input: ChildStdin,
     printed: Arc<(Mutex<Printed>, Condvar)>,
     commands: u64,
-    /// The workspace's hidden paths as they were when it opened.
-    watch: crate::sandbox::Watch,
 }
 
 impl Terminal {
@@ -87,7 +85,6 @@ impl Terminal {
             "exec 2>&1; if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -s; else exec /bin/sh -s; fi"
                 .to_string(),
         ];
-        let watch = sandbox.watch(root);
         let (mut child, container) =
             sandbox.spawn(&[Mount::workspace(root)], WORKSPACE, &argv, &[])?;
         let input = child
@@ -126,7 +123,6 @@ impl Terminal {
             input,
             printed,
             commands: 0,
-            watch,
         };
         terminal.send(&format!("mkdir -p {STATE}; __sion_sh=${{BASH:-/bin/sh}}\n"))?;
         Ok(terminal)
@@ -323,16 +319,20 @@ impl Terminals {
         self.sandbox.network.reaches_out()
     }
 
-    fn outcome(&self, outcome: Outcome, displaced: &[crate::sandbox::Displaced]) -> Outcome {
+    fn outcome(&self, outcome: Outcome) -> Outcome {
         let outcome = if self.reaches_out() {
             outcome.from_outside()
         } else {
             outcome
         };
         // What it prints of a file from outside is from outside too, and of
-        // a confidential file, confidential; so is a command that moved
-        // what was hidden from it.
-        crate::provenance::marked_after(&self.root, displaced, outcome)
+        // a confidential file, confidential. And what is confidential may
+        // have been moved, by this command or by one left running in a
+        // terminal since: looked for at every answer a terminal gives, not
+        // only when a command of its own ends.
+        crate::provenance::look(&self.root);
+        let displaced = crate::provenance::take_displaced(&self.root);
+        crate::provenance::marked_after(&self.root, &displaced, outcome)
     }
 
     fn run(&self, name: &str, command: &str, seconds: u64) -> Outcome {
@@ -390,21 +390,11 @@ impl Terminals {
                 }
                 // A command stopped for its time is a failure, so that a
                 // hang repeated is blocked; any other end is an answer.
-                let displaced = terminal.watch.displaced();
-                let outcome = self.outcome(
-                    if stopped {
-                        Outcome::error(text)
-                    } else {
-                        Outcome::ok(text)
-                    },
-                    &displaced,
-                );
-                if !displaced.is_empty() {
-                    // Told once: from now on they are watched where they
-                    // are kept.
-                    terminal.watch = self.sandbox.watch(&self.root);
-                }
-                outcome
+                self.outcome(if stopped {
+                    Outcome::error(text)
+                } else {
+                    Outcome::ok(text)
+                })
             }
             Err(why) => {
                 if let Some(terminal) = open.remove(name) {
@@ -439,7 +429,7 @@ impl Terminals {
             }
             said.push_str("\n[the terminal has ended]");
         }
-        self.outcome(Outcome::ok(said), &[])
+        self.outcome(Outcome::ok(said))
     }
 
     fn close(&self, name: &str) -> Outcome {
@@ -447,7 +437,9 @@ impl Terminals {
         match open.remove(name) {
             Some(terminal) => {
                 terminal.close(&self.sandbox);
-                Outcome::ok(format!("terminal {name} closed; what ran in it stopped"))
+                self.outcome(Outcome::ok(format!(
+                    "terminal {name} closed; what ran in it stopped"
+                )))
             }
             None => Outcome::error(format!("no terminal {name} is open")),
         }

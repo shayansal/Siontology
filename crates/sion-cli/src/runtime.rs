@@ -676,6 +676,56 @@ pub fn checked_confidential_tools(tools: Vec<String>) -> Result<Vec<String>, Cli
     Ok(tools.into_iter().map(|t| t.trim().to_string()).collect())
 }
 
+/// `sion agent confidential`: what the workspace keeps confidential
+/// besides the paths the operator names
+/// ([`sion_agent::provenance::kept_confidential`]), after forgetting
+/// `forget` of them, or all with `all`.
+pub fn kept_confidential(workspace: &Path, forget: &[String], all: bool) -> Result<(), CliError> {
+    if !workspace.is_dir() {
+        return Err(CliError::Usage(format!(
+            "{} is not a directory",
+            workspace.display()
+        )));
+    }
+    sion_agent::provenance::keep_in(provenance_dir());
+    let mut forgotten = Vec::new();
+    if all {
+        forgotten = sion_agent::provenance::forget_confidential(workspace, None)
+            .map_err(CliError::Usage)?;
+    }
+    for path in forget {
+        let gone = sion_agent::provenance::forget_confidential(workspace, Some(path))
+            .map_err(CliError::Usage)?;
+        if gone.is_empty() {
+            return Err(CliError::Usage(format!(
+                "{path} is not kept confidential in {} (sion agent confidential {} lists what is)",
+                workspace.display(),
+                workspace.display()
+            )));
+        }
+        forgotten.extend(gone);
+    }
+    for path in &forgotten {
+        println!("forgotten: {path}");
+    }
+    let kept = sion_agent::provenance::kept_confidential(workspace);
+    if kept.is_empty() {
+        println!(
+            "nothing is kept confidential in {} besides what you name with --confidential-file",
+            workspace.display()
+        );
+    } else {
+        println!(
+            "kept confidential in {}, and hidden from commands (--forget <PATH> forgets one):",
+            workspace.display()
+        );
+        for path in kept {
+            println!("  {path}");
+        }
+    }
+    Ok(())
+}
+
 /// Whether the tool `name` is one `patterns` name as confidential: its
 /// name itself, or one that begins as a pattern ending in `*` does.
 pub fn confidential_tool(patterns: &[String], name: &str) -> bool {
@@ -1654,9 +1704,11 @@ pub fn system_for(did: &str, with: &Equipped) -> String {
     if with.shell && with.hidden {
         equipment.push(
             "- Some files of your workspace are confidential, and commands are not shown them: \
-             to a command such a file is empty and such a directory holds nothing. That is not \
-             an error and the file is not empty: read it with read_file. Once you have read \
-             one, what you send outside and what you spend waits for your principal.",
+             a command is refused such a file (permission denied) or finds it empty, and finds \
+             nothing in such a directory. That is not an error to work around, and the file \
+             is not empty: read it with read_file. Leave such files out of what you commit: \
+             to git in a command they look changed or deleted. Once you have read one, what \
+             you send outside and what you spend waits for your principal.",
         );
     }
     if with.web {
@@ -1863,7 +1915,9 @@ impl Saved {
                     root: root.clone(),
                     hearing: crate::voice::Hearing::parse(spec).map_err(CliError::Usage)?,
                     spec: spec.clone(),
-                    sandbox: sandboxed.clone(),
+                    // It says itself what a confidential recording holds,
+                    // by its path: its decoder is shown the file.
+                    sandbox: self.shell.clone(),
                     confidential: self.confidential_files.clone(),
                 });
             }
@@ -3600,7 +3654,9 @@ pub fn start_watched(
                     &Equipped {
                         workspace: workspace.is_some(),
                         shell: shell.is_some(),
-                        hidden: !confidential_files.is_empty(),
+                        // Not in a session that holds confidential content
+                        // from its start: its commands are shown them.
+                        hidden: !confidential_files.is_empty() && !confidential,
                         web,
                         memory: memory.is_some(),
                         delegate,

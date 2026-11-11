@@ -75,6 +75,13 @@ pub struct Marks {
     /// no longer reach it.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub kept_confidential: BTreeSet<String>,
+    /// The confidential paths of the workspace as they were when last
+    /// looked at ([`look`]): each real path, relative to the workspace,
+    /// with the device and inode found there. A file is confidential for
+    /// what it is, not for what it is called: one no longer where it was
+    /// is looked for by these.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub seen_confidential: BTreeMap<String, (u64, u64)>,
     /// Whether the kept marks could not be read: then every file is taken
     /// for one from outside.
     #[serde(skip)]
@@ -116,6 +123,55 @@ fn digest(bytes: &[u8]) -> String {
     hash_domain(DOMAIN, bytes).to_hex()
 }
 
+/// What tells one writing of a kept file from the next: its length, when
+/// it was changed, and (it is renamed into place) its inode.
+type Stamp = (u64, Option<std::time::SystemTime>, u64);
+
+#[cfg(unix)]
+fn stamp(meta: &std::fs::Metadata) -> Stamp {
+    use std::os::unix::fs::MetadataExt;
+    (meta.len(), meta.modified().ok(), meta.ino())
+}
+
+#[cfg(not(unix))]
+fn stamp(meta: &std::fs::Metadata) -> Stamp {
+    (meta.len(), meta.modified().ok(), 0)
+}
+
+/// The marks kept for the workspace `root`, if any are: read again only
+/// when their file was written since, so that asking often costs a look
+/// at the file's stamp. An error if they are there and cannot be read.
+fn kept_marks(root: &Path) -> Result<Option<std::sync::Arc<Marks>>, ()> {
+    type Cache = Mutex<BTreeMap<PathBuf, (Stamp, std::sync::Arc<Marks>)>>;
+    static READ: OnceLock<Cache> = OnceLock::new();
+    let Some(path) = kept_file(root) else {
+        return Ok(None);
+    };
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let stamp = stamp(&meta);
+    let cache = READ.get_or_init(Mutex::default);
+    if let Some((was, marks)) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&path) {
+        if *was == stamp {
+            return Ok(Some(marks.clone()));
+        }
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let marks = std::sync::Arc::new(serde_json::from_slice::<Marks>(&bytes).map_err(|_| ())?);
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path, (stamp, marks.clone()));
+    Ok(Some(marks))
+}
+
 /// The marks of the workspace `root`: this process's and those kept.
 pub fn of(root: &Path) -> Marks {
     let mut all = marks()
@@ -124,23 +180,53 @@ pub fn of(root: &Path) -> Marks {
         .get(&key(root))
         .cloned()
         .unwrap_or_default();
-    match kept_file(root).map(std::fs::read) {
-        Some(Ok(bytes)) => match serde_json::from_slice::<Marks>(&bytes) {
-            Ok(kept) => {
-                all.patterns.extend(kept.patterns);
-                all.files.extend(kept.files);
-                all.digests.extend(kept.digests);
-                all.lines.extend(kept.lines);
-                all.kept_confidential.extend(kept.kept_confidential);
-            }
-            // Marks that cannot be read: nothing is known not to be from
-            // outside.
-            Err(_) => all.unreadable = true,
-        },
-        Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => all.unreadable = true,
-        _ => {}
+    match kept_marks(root) {
+        Ok(Some(kept)) => {
+            all.patterns.extend(kept.patterns.iter().cloned());
+            all.files
+                .extend(kept.files.iter().map(|(k, v)| (k.clone(), v.clone())));
+            all.digests.extend(kept.digests.iter().cloned());
+            all.lines.extend(kept.lines.iter().cloned());
+            all.kept_confidential
+                .extend(kept.kept_confidential.iter().cloned());
+            all.seen_confidential
+                .extend(kept.seen_confidential.iter().map(|(k, v)| (k.clone(), *v)));
+        }
+        Ok(None) => {}
+        // Marks that cannot be read: nothing is known not to be from
+        // outside.
+        Err(()) => all.unreadable = true,
     }
     all
+}
+
+/// What the workspace `root` holds as confidential, without the rest of
+/// its marks: the operator's names for this process, the paths kept
+/// since, and where each was last seen.
+type Confidential = (Vec<String>, Vec<String>, BTreeMap<String, (u64, u64)>);
+
+fn confidential_of(root: &Path) -> Confidential {
+    let (mut named, mut kept, mut seen) = {
+        let map = marks().lock().unwrap_or_else(|e| e.into_inner());
+        match map.get(&key(root)) {
+            Some(marks) => (
+                marks.confidential.clone(),
+                marks.kept_confidential.clone(),
+                marks.seen_confidential.clone(),
+            ),
+            None => Default::default(),
+        }
+    };
+    if let Ok(Some(marks)) = kept_marks(root) {
+        kept.extend(marks.kept_confidential.iter().cloned());
+        seen.extend(marks.seen_confidential.iter().map(|(k, v)| (k.clone(), *v)));
+    }
+    named.retain(|pattern| !pattern.trim().is_empty());
+    (
+        named.into_iter().collect(),
+        kept.into_iter().collect(),
+        std::mem::take(&mut seen),
+    )
 }
 
 /// Holds the lock on the kept marks at `path` while it lives.
@@ -257,6 +343,9 @@ pub fn declare_confidential(root: &Path, patterns: &[String]) {
             .confidential
             .extend(patterns.iter().cloned());
     }
+    // Where they are is noted now, to know them by later wherever they go;
+    // and what moved while no session was looking is found.
+    look(root);
 }
 
 /// Gives the workspace `to` the marks of the workspace `from`: a worktree
@@ -352,22 +441,51 @@ pub fn echoes_confidential(root: &Path, output: &str) -> bool {
     if output.len() < MIN_ECHOED_LINE {
         return false;
     }
-    let marks = of(root);
-    let patterns: Vec<String> = marks
-        .confidential
-        .into_iter()
-        .chain(marks.kept_confidential)
-        .collect();
-    if patterns.is_empty() {
+    look(root);
+    let (patterns, kept, _) = confidential_of(root);
+    if patterns.is_empty() && kept.is_empty() {
         return false;
     }
-    holds_a_line_of(root, &named(root, &patterns), output)
+    let mut paths = if patterns.is_empty() {
+        BTreeSet::new()
+    } else {
+        named(root, &patterns)
+    };
+    // What was kept since is a path as it is: the file, or every file
+    // under the directory.
+    for kept in kept {
+        let at = root.join(&kept);
+        if at.is_dir() {
+            for (path, _) in crate::code::walk(&at).0 {
+                paths.insert(normal(&format!("{kept}/{path}")));
+            }
+        } else if at.is_file() {
+            paths.insert(kept);
+        }
+    }
+    if paths.is_empty() {
+        return false;
+    }
+    holds_a_line_of(root, &paths, output)
 }
 
 /// The paths of the workspace `root` kept as confidential besides those
-/// the operator names ([`Marks::kept_confidential`]).
+/// the operator names ([`Marks::kept_confidential`]): each a path as it
+/// is, not a pattern.
 pub fn kept_confidential(root: &Path) -> Vec<String> {
-    of(root).kept_confidential.into_iter().collect()
+    confidential_of(root).1
+}
+
+/// Whether `relative` is one of the paths `kept`, or under one: by its
+/// very name, nothing in which is a pattern.
+pub fn kept_holds(kept: &[String], relative: &str) -> bool {
+    let relative = normal(relative);
+    kept.iter().any(|path| {
+        relative == *path
+            || relative
+                .strip_prefix(path.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 /// Keeps the path `relative` of the workspace `root` as confidential from
@@ -382,83 +500,293 @@ pub fn keep_confidential(root: &Path, relative: &str) -> Result<(), String> {
     })
 }
 
+/// Forgets paths kept as confidential for the workspace `root`
+/// ([`keep_confidential`]): `relative`, or every one if none is named,
+/// and then also where the confidential files were last seen. Returns
+/// those forgotten. What the operator names stays confidential: only what
+/// was kept since is forgotten.
+pub fn forget_confidential(root: &Path, relative: Option<&str>) -> Result<Vec<String>, String> {
+    let kept = kept_confidential(root);
+    let gone: Vec<String> = match relative {
+        Some(path) => {
+            let path = normal(path);
+            kept.into_iter().filter(|k| *k == path).collect()
+        }
+        None => kept,
+    };
+    if !gone.is_empty() || relative.is_none() {
+        update(root, |marks| {
+            for path in &gone {
+                marks.kept_confidential.remove(path);
+                marks.seen_confidential.remove(path);
+            }
+            if relative.is_none() {
+                marks.seen_confidential.clear();
+            }
+        })?;
+        told().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+    Ok(gone)
+}
+
 /// The most entries of a workspace looked through for where a displaced
 /// path went.
-pub const MAX_SOUGHT: usize = 200_000;
+pub const MAX_SOUGHT: usize = 2_000_000;
 
-/// Where in the workspace `root` the file or directory with the device
-/// and inode `id` is now, relative to the workspace, if it is anywhere
-/// (every place, for a file with several names).
+/// A confidential path of a workspace that is no longer where it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Displaced {
+    /// Where it was, relative to the workspace.
+    pub path: String,
+    /// Where it is now, every place of it; empty if it was not found.
+    pub now: Vec<String>,
+}
+
+/// What a look at a workspace found ([`look`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Looked {
+    /// What is confidential in the workspace and there now: each real
+    /// path, relative to the workspace, and whether it is a directory.
+    pub present: Vec<(PathBuf, bool)>,
+    /// A confidential path that is no longer where it was and was not
+    /// found, the workspace having more entries than are looked through
+    /// ([`MAX_SOUGHT`]): where it is, a command could read it.
+    pub lost: Option<String>,
+}
+
+/// The device and inode of what is at `relative` in `real_root`, reached
+/// through no symbolic link: a path one of whose parts became a link
+/// names something else than it did.
 #[cfg(unix)]
-fn sought(root: &Path, id: (u64, u64)) -> Vec<String> {
+fn real_id(real_root: &Path, relative: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
+    let mut at = real_root.to_path_buf();
+    let mut id = None;
+    for part in relative.components() {
+        at.push(part);
+        let meta = std::fs::symlink_metadata(&at).ok()?;
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+        id = Some((meta.dev(), meta.ino()));
+    }
+    id
+}
+
+#[cfg(not(unix))]
+fn real_id(real_root: &Path, relative: &Path) -> Option<(u64, u64)> {
+    std::fs::symlink_metadata(real_root.join(relative))
+        .ok()
+        .map(|_| (0, 0))
+}
+
+/// Where in the workspace `real_root` the file or directory with the
+/// device and inode `id` is now, relative to the workspace (every place,
+/// for a file with several names) and whether each is a directory; and
+/// whether all of the workspace was looked through. Nearer places are
+/// looked at first, and no symbolic link is followed.
+#[cfg(unix)]
+fn sought(real_root: &Path, id: (u64, u64)) -> (Vec<(PathBuf, bool)>, bool) {
+    use std::os::unix::fs::{DirEntryExt, MetadataExt};
     let mut found = Vec::new();
     let mut seen = 0usize;
-    let mut dirs = vec![(root.to_path_buf(), String::new())];
-    while let Some((dir, relative)) = dirs.pop() {
+    let mut dirs = std::collections::VecDeque::from([(real_root.to_path_buf(), PathBuf::new())]);
+    while let Some((dir, relative)) = dirs.pop_front() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
             seen += 1;
             if seen > MAX_SOUGHT {
-                return found;
+                return (found, false);
             }
-            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
-                continue;
-            };
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let path = if relative.is_empty() {
-                name
-            } else {
-                format!("{relative}/{name}")
-            };
-            if (meta.dev(), meta.ino()) == id {
-                found.push(path);
-            } else if meta.is_dir() {
-                dirs.push((entry.path(), path));
+            let path = relative.join(entry.file_name());
+            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            // The inode is in the directory's entry; the device is asked
+            // for only where the inode is the one sought.
+            if entry.ino() == id.1
+                && std::fs::symlink_metadata(entry.path()).is_ok_and(|m| m.dev() == id.0)
+            {
+                found.push((path, is_dir));
+            } else if is_dir {
+                dirs.push_back((entry.path(), path));
             }
         }
     }
-    found
+    (found, true)
 }
 
 #[cfg(not(unix))]
-fn sought(_root: &Path, _id: (u64, u64)) -> Vec<String> {
-    Vec::new()
+fn sought(_real_root: &Path, _id: (u64, u64)) -> (Vec<(PathBuf, bool)>, bool) {
+    (Vec::new(), true)
+}
+
+/// What each workspace's sessions have yet to be told was displaced.
+fn pending() -> &'static Mutex<BTreeMap<PathBuf, Vec<Displaced>>> {
+    static PENDING: OnceLock<Mutex<BTreeMap<PathBuf, Vec<Displaced>>>> = OnceLock::new();
+    PENDING.get_or_init(Mutex::default)
+}
+
+/// What was told already of a path that is still sought (one not found,
+/// or found where its name cannot be kept), so that it is told once.
+fn told() -> &'static Mutex<BTreeSet<Sought>> {
+    static TOLD: OnceLock<Mutex<BTreeSet<Sought>>> = OnceLock::new();
+    TOLD.get_or_init(Mutex::default)
+}
+
+/// What is still sought: its workspace, and its device and inode.
+type Sought = (PathBuf, (u64, u64));
+
+/// Looks at where what is confidential in the workspace `root` is now:
+/// what the operator named ([`declare_confidential`]) and what was kept
+/// since ([`keep_confidential`]).
+///
+/// A confidential file is known by what it is, its device and inode, as
+/// well as by its name. One that is no longer where it was last seen (a
+/// directory above it was moved, by a command or by something a command
+/// left running) is looked for through the workspace, kept as confidential
+/// where it is found, and noted for the session to be told
+/// ([`take_displaced`]). One whose place now holds another file, and that
+/// is nowhere else, was replaced or removed: nothing of it is left to keep.
+/// Called before anything asks whether a path is confidential, so that a
+/// file moved between two calls is known at the second.
+pub fn look(root: &Path) -> Looked {
+    let (named, kept, seen) = confidential_of(root);
+    if named.is_empty() && kept.is_empty() && seen.is_empty() {
+        return Looked::default();
+    }
+    let Ok(real_root) = root.canonicalize() else {
+        return Looked::default();
+    };
+    let mut present = crate::sandbox::hidden_paths(&real_root, &named, &kept);
+    let mut now: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for (path, _) in &present {
+        if let (Some(text), Some(id)) = (path.to_str(), real_id(&real_root, path)) {
+            now.insert(text.to_string(), id);
+        }
+    }
+    let mut keep = Vec::new();
+    let mut displaced = Vec::new();
+    let mut lost = None;
+    for (was, id) in &seen {
+        if now.get(was) == Some(id) {
+            continue;
+        }
+        // Not where it was, or not what it was there: where is it?
+        let (found, complete) = sought(&real_root, *id);
+        let mut places = Vec::new();
+        let mut unkept = false;
+        for (place, dir) in found {
+            match place.to_str() {
+                Some(text) => {
+                    if !crate::builtin::confidential_path(&named, text) && !kept_holds(&kept, text)
+                    {
+                        keep.push(text.to_string());
+                    }
+                    now.insert(text.to_string(), *id);
+                    places.push(text.to_string());
+                }
+                // A name that is not text cannot be kept: it is hidden
+                // now, and looked for again at the next look.
+                None => {
+                    unkept = true;
+                    places.push(place.to_string_lossy().into_owned());
+                }
+            }
+            if !present.iter().any(|(path, _)| *path == place) {
+                present.push((place, dir));
+            }
+        }
+        if places.is_empty() && complete {
+            // Nowhere: removed, or replaced where it was by another file.
+            continue;
+        }
+        // Where it was, in words: one still sought from an earlier look is
+        // kept under what it is, not under a path.
+        let shown = if was.starts_with('\0') {
+            "a confidential file".to_string()
+        } else {
+            was.clone()
+        };
+        if places.is_empty() || unkept {
+            // Still sought, at every look: under a key no path can be, so
+            // that a file now where it was does not take its place.
+            now.insert(format!("\0{}:{}", id.0, id.1), *id);
+            if places.is_empty() {
+                lost = Some(shown.clone());
+            }
+            let first = told()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert((real_root.clone(), *id));
+            if !first {
+                continue;
+            }
+        }
+        displaced.push(Displaced {
+            path: shown,
+            now: places,
+        });
+    }
+    if now != seen || !keep.is_empty() {
+        // Not kept, where it went is known for this look only.
+        let _ = update(root, |marks| {
+            marks.seen_confidential = now.clone();
+            marks.kept_confidential.extend(keep.iter().cloned());
+        });
+    }
+    if !displaced.is_empty() {
+        pending()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(real_root)
+            .or_default()
+            .extend(displaced);
+    }
+    Looked { present, lost }
+}
+
+/// What the workspace `root`'s sessions have not been told yet of
+/// confidential paths found elsewhere than where they were ([`look`]):
+/// taken, so that it is told once.
+pub fn take_displaced(root: &Path) -> Vec<Displaced> {
+    let Ok(real_root) = root.canonicalize() else {
+        return Vec::new();
+    };
+    pending()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&real_root)
+        .unwrap_or_default()
 }
 
 /// `outcome`, what a command printed in the workspace `root`, marked as
-/// what it holds ([`marked`]), the command having displaced the hidden
-/// paths `displaced` ([`crate::sandbox::Run::displaced`]): a command that
-/// moved a directory with a confidential file in it has put the file
-/// where its name no longer says what it is. The session is held as
-/// having read it, the model is told, and where the file went is kept as
-/// confidential from now on ([`keep_confidential`]).
+/// what it holds ([`marked`]), confidential paths having been found
+/// elsewhere than where they were (`displaced`,
+/// [`crate::sandbox::Run::displaced`]): something moved a directory with a
+/// confidential file in it, and put the file where its name no longer
+/// says what it is. Where it went is kept as confidential already
+/// ([`look`]); here the session is held as having read it, and the model
+/// is told.
 pub fn marked_after(
     root: &Path,
-    displaced: &[crate::sandbox::Displaced],
+    displaced: &[Displaced],
     outcome: crate::tools::Outcome,
 ) -> crate::tools::Outcome {
     let mut outcome = marked(root, outcome);
     if displaced.is_empty() {
         return outcome;
     }
-    let mut names = Vec::new();
-    for was in displaced {
-        let now = sought(root, was.id);
-        for path in &now {
-            // Not kept, it is hidden and held again only by the note below.
-            let _ = keep_confidential(root, path);
-        }
-        names.push(match now.as_slice() {
-            [] => format!("{} (gone)", was.path),
+    let names: Vec<String> = displaced
+        .iter()
+        .map(|was| match was.now.as_slice() {
+            [] => format!("{} (not found)", was.path),
             now => format!("{} (now {})", was.path, now.join(", ")),
-        });
-    }
+        })
+        .collect();
     outcome.content.push_str(&format!(
-        "\n[This command moved or removed what is confidential and was hidden from it: {}. \
-         The session is held as having read it.]",
+        "\n[What is confidential here, and kept from commands, was moved: {}. It is confidential \
+         where it is now, and the session is held as having read it.]",
         names.join("; ")
     ));
     outcome.held_confidential()

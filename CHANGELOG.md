@@ -39,17 +39,22 @@ Commit messages before the rename use the working name, Fold.
 
 - Commands are not shown what a profile keeps confidential
   (`--confidential-file`). In the sandbox of the shell, a terminal,
-  `run_tests`, `diagnostics`, a skill's scripts, `transcribe`, a task's
-  check and a desktop's programs, such a file is empty and such a
-  directory holds nothing, so a command cannot print one encoded, counted
+  `run_tests`, `diagnostics`, a skill's scripts, a task's check and a
+  desktop's programs, such a file cannot be opened (or,
+  under Docker, reads as empty) and such a directory holds nothing, so a
+  command cannot print one encoded, counted
   or cut short, which the look at its output for the file's lines would
   not have known. Until now only `read_file` and a line printed as
-  written held a session. The system prompt says that such files read as
-  empty to commands and are read with `read_file`.
-- A command that moves or removes a directory above a hidden file is
-  known to have: the session is held, the result says what was displaced,
-  and the file stays confidential where it went, for later sessions too.
-  A confidential file moved by `apply_patch` stays confidential.
+  written held a session. The system prompt says that commands are
+  refused such files and that they are read with `read_file`.
+- A confidential file is known by what it is, its device and inode, as
+  well as by its name. One moved with a directory above it, by a command
+  or by something left running in a terminal, is looked for before and
+  after every command, at every answer a terminal gives and whenever a
+  tool asks whether a path is confidential, and kept confidential where
+  it is found, for later sessions too; the next command's result says so
+  and holds the session. A link left in the old place does not cover the
+  move. A confidential file moved by `apply_patch` stays confidential.
 - What every tool returns is looked at for lines of a confidential file
   or of a file from outside, not only what the shell prints: an MCP
   server's tool, a skill's script or the browser that returns one holds
@@ -57,10 +62,24 @@ Commit messages before the rename use the working name, Fold.
 - `--confidential-tool <TOOL>`, on `sion agent run` and on profiles,
   names a tool whose every result is confidential, or with a closing `*`
   every tool whose name begins so (`crm_*`, an MCP server's tools).
+- `sion agent confidential <workspace>` lists the paths a workspace
+  keeps confidential since a file was moved there, and forgets them
+  (`--forget <PATH>`, `--forget-all`).
 - Files are hidden unless the session held confidential content when the
   run began. Still not known: what the model rewrites in its own words
-  and saves, once a later session reads it, and what a server outside the
-  sandbox returns of a file in another form (`agent:confidential-label`).
+  and saves, once a later session reads it; what a server outside the
+  sandbox returns of a file in another form; and another copy that is
+  not named, above all one in the workspace's git history, which
+  `git show` reads in the sandbox (`agent:confidential-label`). Keep
+  confidential files out of the repository: to git in the sandbox a
+  hidden tracked file looks changed or deleted.
+- An independent review of the first version of this found that a move
+  made in the background of a terminal, or covered by a link left in the
+  old place, was not noticed; that paths kept were read as patterns, so
+  that a file moved to a name like `*` hid the workspace; that names
+  with a backslash or a leading space were hidden under another name;
+  and that the guide said a hidden file reads as empty where bubblewrap
+  refuses it. All are fixed here, each with a test.
 - Four more rows in the table of attacks tried
   (`crates/sion-agent/tests/attacks.rs`), and a sixth benchmark suite,
   `injection-varied`: twelve injections that do not come as a line in a
