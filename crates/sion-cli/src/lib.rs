@@ -25,6 +25,7 @@ pub mod agent_import;
 pub mod agent_mcp;
 pub mod agent_memory;
 pub mod agent_storage;
+pub mod agent_x402;
 pub mod agents;
 pub mod ap2;
 pub mod archive;

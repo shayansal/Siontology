@@ -312,6 +312,207 @@ fn a_provider_that_asks_to_be_left_is_left_that_long() {
 }
 
 #[test]
+fn spent_credit_is_not_asked_again_soon_and_a_wait_said_in_the_answer_is_kept() {
+    // OpenAI: the account's quota is spent, which a minute does not mend.
+    let (base, _seen) = serve_once(
+        429,
+        json!({"error": {"message": "You exceeded your current quota, please check your plan and billing details.",
+            "type": "insufficient_quota", "code": "insufficient_quota"}}),
+    );
+    let provider = OpenAiCompatible::new(client(), &format!("{base}/v1"), "m", Some("k"));
+    let error = provider.complete(&conversation()).unwrap_err();
+    assert!(error.transient(), "another model may answer: {error}");
+    assert_eq!(error.retry_after(), Some(3_600));
+
+    // OpenAI: a rate limit that says when to come back, in its message.
+    let (base, _seen) = serve_once(
+        429,
+        json!({"error": {"message": "Rate limit reached for requests. Please try again in 6.5s.",
+            "type": "requests", "code": "rate_limit_exceeded"}}),
+    );
+    let provider = OpenAiCompatible::new(client(), &format!("{base}/v1"), "m", Some("k"));
+    assert_eq!(
+        provider
+            .complete(&conversation())
+            .unwrap_err()
+            .retry_after(),
+        Some(7)
+    );
+
+    // Google: its quota errors all read alike, and say how long to wait.
+    let (base, _seen) = serve_once(
+        429,
+        json!({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+            "message": "You exceeded your current quota, please check your plan and billing details.",
+            "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "33s"}]}}),
+    );
+    let mut gemini = sion_agent::providers::Gemini::new(client(), "gemini-3-pro-preview", "g");
+    gemini.base = base;
+    assert_eq!(
+        gemini.complete(&conversation()).unwrap_err().retry_after(),
+        Some(33)
+    );
+
+    // A key the provider does not take, or an account without credit: not
+    // transient, but another provider's model may answer.
+    for (status, body) in [
+        (
+            401,
+            json!({"error": {"message": "Incorrect API key provided"}}),
+        ),
+        (
+            400,
+            json!({"type": "error", "error": {"type": "invalid_request_error",
+                "message": "Your credit balance is too low to access the Anthropic API."}}),
+        ),
+    ] {
+        let (base, _seen) = serve_once(status, body);
+        let mut provider = Anthropic::new(client(), "claude-opus-5-5", "k");
+        provider.base = base;
+        let error = provider.complete(&conversation()).unwrap_err();
+        assert!(!error.transient() && error.locked_out(), "{error}");
+    }
+    let (base, _seen) = serve_once(400, json!({"error": {"message": "bad request"}}));
+    let mut provider = Anthropic::new(client(), "claude-opus-5-5", "k");
+    provider.base = base;
+    assert!(!provider.complete(&conversation()).unwrap_err().locked_out());
+}
+
+#[test]
+fn an_answer_cut_off_is_cut_off_whatever_it_had_begun_and_a_refusal_is_one() {
+    use sion_agent::providers::{openai_response, responses_response};
+    // Chat completions: out of room in the middle of a call.
+    let cut = openai_response(&json!({
+        "model": "m",
+        "choices": [{"index": 0, "finish_reason": "length", "message": {"role": "assistant",
+            "content": null, "tool_calls": [{"id": "call_1", "type": "function",
+                "function": {"name": "pay", "arguments": "{\"to\": \"bo"}}]}}],
+        "usage": {}
+    }))
+    .unwrap();
+    assert_eq!(cut.stop, Stop::MaxTokens);
+    assert!(matches!(&cut.content[0], Block::ToolUse { input, .. }
+        if sion_agent::model::unparsed(input) == Some("{\"to\": \"bo")));
+    // A server that says `stop` for an answer with calls.
+    let called = openai_response(&json!({
+        "model": "m",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant",
+            "content": "", "tool_calls": [{"id": "call_1", "type": "function",
+                "function": {"name": "balance", "arguments": ""}}]}}],
+        "usage": {}
+    }))
+    .unwrap();
+    assert_eq!(called.stop, Stop::ToolUse);
+    assert!(matches!(&called.content[0], Block::ToolUse { input, .. } if *input == json!({})));
+    // What it says in declining is the answer, and it is a refusal.
+    let declined = openai_response(&json!({
+        "model": "m",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant",
+            "content": null, "refusal": "I can't help with that."}}],
+        "usage": {}
+    }))
+    .unwrap();
+    assert_eq!(declined.stop, Stop::Refusal);
+    assert_eq!(
+        declined.content,
+        vec![Block::text("I can't help with that.")]
+    );
+
+    // The Responses API: incomplete with a call begun is cut off, not a
+    // call to make.
+    let cut = responses_response(&json!({
+        "model": "m", "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{"type": "function_call", "call_id": "call_1", "name": "pay",
+            "arguments": "{\"to\": \"bo"}],
+        "usage": {"input_tokens": 10, "output_tokens": 64,
+            "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 6}}
+    }))
+    .unwrap();
+    assert_eq!(cut.stop, Stop::MaxTokens);
+    assert_eq!((cut.usage.cache_read, cut.usage.cache_write), (4, 6));
+    let whole = responses_response(&json!({
+        "model": "m", "status": "completed",
+        "output": [{"type": "function_call", "call_id": "call_1", "name": "pay",
+            "arguments": "{\"to\": \"bob\"}"}],
+        "usage": {}
+    }))
+    .unwrap();
+    assert_eq!(whole.stop, Stop::ToolUse);
+}
+
+#[test]
+fn gemini_is_given_a_turn_s_results_together_and_their_pictures_after() {
+    use sion_agent::model::{image_digest, Image};
+    let mut images = std::collections::BTreeMap::new();
+    let mut picture = |n: u8| {
+        let data = format!("cGljdHVyZS{n}=");
+        let digest = image_digest("image/png", &data);
+        images.insert(digest.clone(), data);
+        Image {
+            media_type: "image/png".into(),
+            digest,
+        }
+    };
+    let (first, second) = (picture(1), picture(2));
+    let result = |id: &str, image: Image| Block::ToolResult {
+        id: id.into(),
+        content: format!("result of {id}"),
+        is_error: false,
+        images: vec![image],
+    };
+    let call = |id: &str| Block::ToolUse {
+        id: id.into(),
+        name: "look".into(),
+        input: json!({}),
+        signature: None,
+    };
+    let request = Request {
+        system: String::new(),
+        messages: vec![
+            Message::user("Look twice."),
+            Message {
+                role: Role::Assistant,
+                content: vec![call("a"), call("b")],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    result("a", first),
+                    Block::text("A note."),
+                    result("b", second),
+                ],
+            },
+        ],
+        tools: Vec::new(),
+        max_tokens: 64,
+        images,
+    };
+    let body = sion_agent::providers::gemini_body(&request, "gemini x y");
+    let kinds: Vec<&str> = body["contents"][2]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| {
+            ["functionResponse", "text", "inlineData"]
+                .into_iter()
+                .find(|kind| part.get(*kind).is_some())
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "functionResponse",
+            "functionResponse",
+            "text",
+            "inlineData",
+            "inlineData"
+        ]
+    );
+}
+
+#[test]
 fn openai_compatible_maps_tool_calls_both_ways() {
     let (base, seen) = serve_once(
         200,

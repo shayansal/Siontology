@@ -645,6 +645,14 @@ pub const CONTINUE: &str =
 /// leave it more: below that, the run wraps up.
 pub const LEAST_ANSWER: u32 = 4_096;
 
+/// How long, in seconds, a model is left alone whose provider turned the
+/// caller away (a key it does not take, an account without credit), while
+/// the session's other models answer.
+pub const LOCKED_OUT_REST: u64 = 3_600;
+
+/// What a model is told whose call's arguments were not JSON.
+pub const NOT_JSON: &str = "not called: the arguments of this call were not valid JSON (cut                             off, or malformed). Call it again, its arguments one JSON object.";
+
 /// What a model whose answer came empty is told, to go on.
 pub const EMPTY_ANSWER: &str = "[Your last answer was empty. Go on with the task: make the next \
                                 call, or say where it stands.]";
@@ -2329,19 +2337,29 @@ impl Runtime<'_> {
             }
             match model.complete(request) {
                 Ok(response) => return Ok(response),
-                Err(error) if error.transient() => {
-                    // Cooling as long as the provider asked, if longer.
-                    let cool = self
-                        .limits
-                        .cooldown
-                        .max(error.retry_after().unwrap_or_default());
-                    state.cooling.insert(index, now.saturating_add(cool));
+                Err(error) if error.transient() || error.locked_out() => {
+                    state
+                        .cooling
+                        .insert(index, now.saturating_add(self.cool_for(&error)));
                     last = error;
                 }
                 Err(error) => return Err(error),
             }
         }
         Err(last)
+    }
+
+    /// How long a model is left alone after `error`: as long as the
+    /// provider asked, if longer than the cooldown; an hour, if it turned
+    /// the caller away (a key it does not take, an account without
+    /// credit).
+    fn cool_for(&self, error: &ModelError) -> u64 {
+        if error.locked_out() {
+            return self.limits.cooldown.max(LOCKED_OUT_REST);
+        }
+        self.limits
+            .cooldown
+            .max(error.retry_after().unwrap_or_default())
     }
 
     /// Tokens the next model call may cost at most: what it is sent, as an
@@ -2652,7 +2670,10 @@ impl Runtime<'_> {
                     });
                     answered
                 }
-                None => model.complete(&request),
+                // Unwatched, it is asked the same way: an answer that
+                // streams keeps its connection alive however long it
+                // takes, and the kill switch stops it where it is.
+                None => model.stream(&request, &mut |_| !(self.stopped)()),
             };
             match answered {
                 Ok(mut response) => {
@@ -2674,14 +2695,17 @@ impl Runtime<'_> {
                     }
                     return Ok(response);
                 }
-                Err(error) if error.transient() => {
-                    // Cooling as long as the provider asked, if longer.
-                    let cool = self
-                        .limits
-                        .cooldown
-                        .max(error.retry_after().unwrap_or_default());
-                    state.cooling.insert(index, now.saturating_add(cool));
-                    last = error;
+                // Busy, or its provider turns this caller away: the next
+                // model is asked, and this one left alone a while.
+                Err(error) if error.transient() || error.locked_out() => {
+                    state
+                        .cooling
+                        .insert(index, now.saturating_add(self.cool_for(&error)));
+                    // What ends the run, if none answers, is a failure
+                    // that may pass rather than one that will not.
+                    if !(error.locked_out() && last.transient()) {
+                        last = error;
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -2698,6 +2722,9 @@ impl Runtime<'_> {
     }
 
     fn call(&self, state: &mut State, name: &str, input: &Value, left: Option<u64>) -> Called {
+        if crate::model::unparsed(input).is_some() {
+            return Called::Ran(Outcome::error(NOT_JSON));
+        }
         if name == QUARANTINE_READ && self.policy.quarantine {
             return Called::Ran(self.read_held(state, input, left));
         }
@@ -2870,6 +2897,9 @@ impl Runtime<'_> {
     /// the meta-tools, the journal, the policy and the kill switch. It
     /// changes nothing, so a call may be checked again.
     fn check(&self, state: &State, name: &str, input: &Value) -> Checked {
+        if crate::model::unparsed(input).is_some() {
+            return Checked::Answered(Outcome::error(NOT_JSON));
+        }
         // The meta-tools of a large toolbox.
         if name == TOOLS_SEARCH {
             let found = self.found(input);
@@ -2905,6 +2935,11 @@ impl Runtime<'_> {
         let Some(tool) = self.tools.get(name) else {
             return Checked::Answered(Outcome::error(format!("there is no tool named {name}")));
         };
+        // An input that does not fit the tool's schema is said so, in the
+        // same words for every tool, before anything is done with it.
+        if let Some(wrong) = crate::tools::input_error(&tool.spec().input_schema, input) {
+            return Checked::Answered(Outcome::error(wrong));
+        }
         if state.failures.get(&call_key).copied().unwrap_or(0) >= self.limits.failures_to_block {
             return Checked::Answered(Outcome::error(
                 "blocked: this exact call has failed repeatedly; change its input or the approach",
@@ -3658,6 +3693,12 @@ pub fn forget_reasoning(state: &mut State) {
         message
             .content
             .retain(|block| !matches!(block, Block::Reasoning { .. }));
+        // The signatures on its calls go with it.
+        for block in &mut message.content {
+            if let Block::ToolUse { signature, .. } = block {
+                *signature = None;
+            }
+        }
     }
     state.messages.retain(|message| !message.content.is_empty());
 }

@@ -179,8 +179,18 @@ OpenAI's API under their own names (OpenRouter, DeepSeek, Moonshot, xAI,
 Groq, Together, Fireworks, Mistral, Cerebras), or a scripted model, the
 cloud platforms tested against stand-ins of their APIs (the signatures
 against those AWS's SDK computes) and not run against AWS, Google Cloud
-or Azure (trust atom `agent:cloud-credentials`); fallback with
-a 30-second cooldown; a profile's routes choosing its models for each
+or Azure (trust atom `agent:cloud-credentials`); requests shaped as
+Anthropic's and OpenAI's documentation describes their APIs on
+11 November 2026 (which thinking each Claude model takes, OpenAI's own
+API asked through its Responses API, the effort levels its GPT-6 models
+take), a level a model refuses asked again at the nearest it takes, an
+answer cut off or declined read as that, a call's input checked against
+its tool's schema before it is made, and every run's answers streamed
+with no limit but on silence, all tested against stand-ins and none of it
+against a provider (`--model context:` shows what a model would be sent,
+and sends nothing); fallback with
+a 30-second cooldown, a provider that turns the caller away left for an
+hour while the next model answers; a profile's routes choosing its models for each
 task (pictures, work items and long tasks by rule, other tasks sorted by
 a model shown the task as data and allowed only to name a route, a
 model moved first in a route only by beating its first on a set of tasks
@@ -221,8 +231,8 @@ sets another most (`--max-turns`, and `--max-tokens` for each answer); a
 token budget per run, if given, held before each model call to an
 estimate of what it sends and the most it may answer, ending with a last
 answer within a reserve; a budget in dollars per run, if given, held the
-same way at the models' prices (Anthropic's list prices for Claude built
-in, others from the operator's file), and the cost of every run counted
+same way at the models' prices (Anthropic's list prices for Claude and
+OpenAI's for its GPT-6 models built in, others from the operator's file), and the cost of every run counted
 from the tokens providers report, calls to models without a price apart; pauses, of what a provider asked
 or growing up to a minute, when every model is busy or unreachable, for
 five minutes in all before the run ends;
@@ -1199,9 +1209,17 @@ light client would (committee certificate, certified order, inclusion
 proof). Each quote and each transaction pays for one request. `sion x402
 serve` and `sion x402 fetch` use it from the command line, and the MCP
 tool `sion_fetch_paid` lets an agent buy HTTP resources within a cap it
-sets and within its charter's limits. The adapter speaks the protocol's
+sets and within its charter's limits. An agent's own runs have
+`fetch_paid` for the same, with `--web`: a quote in USD on the agent's own
+ledger is paid under its charter, at most what the call allows and only
+for a purpose that is the quote's own nonce, the charter read before
+anything is signed, the payment noted before it is handed over so that a
+lost answer is settled from the ledger, and what the ledger says of the
+payment reported whatever the server says (trust atom
+`agent:paid-fetch`); tested on a devnet against this adapter's own
+server. The adapter speaks the protocol's
 headers and JSON; it has not been tested against third-party x402
-clients, and EVM schemes are out of scope.
+clients or servers, and EVM schemes are out of scope.
 
 **x402 `stream` scheme: built.** A client that opened a payment stream to a
 server pays each request with the next element of its hash chain instead
@@ -1705,7 +1723,8 @@ the architecture's own:
 | `agent:storage-from-account` | A storage deal an agent posts is paid from its account's balance, the money it pays fees with, not from its charter's budget: the charter's caveats do not bound it. |
 | `agent:skill-pre-approval` | A skill a session has read pre-approves the calls its `allowed-tools` names until the session ends: where the autonomy level would ask a person, they run. A rule naming a command's first words (`Bash(git:*)`) covers whatever that program can be told to do through its arguments, inside the sandbox. A pre-approval never covers a call the level refuses, spending, or a session that has read content from outside, and the agent cannot grant one, since it writes only a skill's name, description and instructions: it comes from whoever placed the skill, or from the operator's consent when installing its release. |
 | `agent:session-allowance` | A person who approves a call may allow, for the rest of the session, the same call again, or the calls of its tool a rule matches (`shell(git status:*)`, as a skill's `allowed-tools` writes it): those run without asking. A rule naming a command's first words covers whatever that program can be told to do through its arguments, inside the sandbox. An allowance never covers a call the level refuses, spending, or a session that has read content from outside (and none is given while it has); it is given only by someone who may decide, kept with the session with who gave it, and withdrawn with `/allowed off`. |
-| `agent:list-prices` | A run's cost, and its budget in dollars, are counted at list prices: Anthropic's for Claude as its pricing page gave them on 8 November 2026, and the operator's for other models. What a provider bills (a contract, a discount, a change of price, a region's surcharge) can differ, and a subagent's dollars count against the run once it reports. |
+| `agent:paid-fetch` | `fetch_paid` pays a server before it is served: the signed payment is handed to the server with the request, and a server that takes it and serves nothing, or something worthless, has been paid, up to the charter's limit per payment and what the call allowed. The tool reports what the ledger says of the payment, not what the server says, and takes the chain's identity from the node the agent runs against. It pays quotes of scheme `exact` in USD on that ledger only, sends `GET` requests, and has been tested against this repository's own x402 server, not third parties'. A payment handed over and not yet executed can still execute until its last Pulse; the session treats the call's outcome as unknown until the ledger says. |
+| `agent:list-prices` | A run's cost, and its budget in dollars, are counted at list prices: Anthropic's for Claude and OpenAI's standard prices for its GPT-6 models (thirty-minute cache writes; twice the input and cache prices and one and a half times the output price for a prompt over 272,000 tokens) as their pages gave them on 11 November 2026, and the operator's for other models. What a provider bills (a contract, a discount, a change of price, another service tier or cache retention, a region's surcharge) can differ, and a subagent's dollars count against the run once it reports. |
 | `agent:token-estimate` | A run's token budget is held to an estimate of what each model call sends (a token for every three bytes, pictures as some text would be) and the most it may answer; the tokens a provider reports are counted as it reports them. A provider that counts more tokens for the same request (some scripts, pictures) can take a run past its budget by the difference, and a subagent's tokens count once its run has ended. |
 | `agent:quarantine` | In quarantine, content from outside is held out of the agent's conversation and read by a reader that has no tools, whose answer is held to a schema the agent gives. An answer of values (booleans, numbers, strings from an enum, strings of a strict format) does not taint the session, though it is only what the content made the reader say, and can be false; an answer with free text taints it. The strings an answer gives are matched in arguments exactly as given (four characters or more), so an argument the agent writes from one in another form is not caught. A browser's pages, a desktop's screens and the shell's output are not held. |
 | `agent:verifier` | A check the operator gives (`--verify`) runs in the agent's sandbox, in its workspace, where the agent can change what the check reads or runs there (its tests, its scripts, a test runner's settings). The check's own files (`--verify-files`) are bound into the sandbox only while it runs, read-only, so the agent's commands neither see nor change them, though a tool that reads files outside the workspace (an MCP server of the agent's own) could. A check that passed shows that the command exited with status 0 then, not that the work is right, and a score is what the command printed. |

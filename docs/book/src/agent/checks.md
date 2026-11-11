@@ -157,6 +157,19 @@ the model once, and what the model does then is the model's.
   call succeeded, at most 32. A call that failed twice with the same input
   is blocked. Long conversations are cut down
   ([What a model is sent](models.md#what-a-model-is-sent)).
+- **An input that fits.** Before anything is done with a call, its input
+  is checked against the tool's JSON Schema, and one that does not fit is
+  not made: the model is told what is wrong, in the same words for every
+  tool (`not called: the input does not fit the tool's schema: path is
+  required; limit is "5" (string), not integer. Call it again with the
+  input corrected.`), and corrects it. Checked: that the input is an
+  object, has what the schema requires, each value of the type the schema
+  names and among its `enum`, as deep as the schema goes, and nothing more
+  where the schema allows nothing more; a part a schema says otherwise
+  (`anyOf`, `$ref`) is taken as it comes, and a null counts as left out.
+  A call whose arguments were not JSON at all (cut off, or malformed) is
+  answered the same way, and one cut off when the model ran out of room
+  is not made: the model is asked again with more room.
 - **Going round in circles.** When a call gives the same result three
   times in a row, or two calls take turns with the same results for three
   rounds, the model is told so with the last result; two more, and the run
@@ -201,10 +214,12 @@ the model once, and what the model does then is the model's.
   provider's cache, and the most it may answer, at the output price, must
   fit in what is left, besides the reserve's tokens at the output price.
   Every model the run may use needs a price, or the run does not start.
-  Anthropic's list prices for Claude models are built in, as its pricing
-  page gave them on 8 November 2026; others come from
-  `$SION_HOME/prices.json`, which takes the place of a built-in price for
-  the same model, and `sion agent prices` lists them. Subagents are held
+  Built in are Anthropic's list prices for Claude models and OpenAI's
+  standard prices for its GPT-6 models (GPT-6 Astra, GPT-6.1 Sol, GPT-6.1
+  Terra, GPT-6 Luna, with the higher price of a prompt over 272,000
+  tokens), as their own pages gave them on 11 November 2026; others come
+  from `$SION_HOME/prices.json`, which takes the place of a built-in price
+  for the same model, and `sion agent prices` lists them. Subagents are held
   to a token budget while they run, not to dollars: what they cost counts
   against the run's dollars when they report.
 - **What a run cost.** A run ends with a line of what its session has used
@@ -223,10 +238,13 @@ the model once, and what the model does then is the model's.
   under a contract or a discount (`agent:list-prices`).
 - **Longer runs.** A run takes at most 32 turns, starting with 12 and
   gaining 4 with each turn whose tool calls succeed; each answer has at
-  most 4,096 tokens, besides room to think. `--max-turns` and
+  most 16,384 tokens, besides room to think (less when a budget leaves
+  less, down to 4,096), and one cut off before it was whole is asked
+  again with twice the room. `--max-turns` and
   `--max-tokens` (on `sion agent run` and on profiles) raise or lower
-  both, for tasks of hundreds of steps. A model call may take 300 seconds;
-  `SION_MODEL_TIMEOUT` (seconds) changes that.
+  both, for tasks of hundreds of steps. A model call takes as long as its
+  answer keeps coming; one silent for 600 seconds is taken to have hung
+  (`SION_MODEL_TIMEOUT`, in seconds, changes that).
 - **The kill switch.** `sion agent kill-switch on` stops every agent run
   on this machine before its next model or tool call:
 

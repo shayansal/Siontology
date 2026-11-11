@@ -36,9 +36,9 @@ use std::time::{Duration, Instant};
 
 use crate::mcp_http::Events;
 use crate::model::{
-    cut_off, images_shown, keeps_reasoning, most_tokens, reasoning_from, tell_whole,
-    without_reasoning, Block, Delta, Effort, Image, Message, Model, ModelError, Request, Response,
-    Role, Stop, Thinking, Usage,
+    cut_off, images_shown, keeps_reasoning, keeps_signatures, most_tokens, reasoning_from,
+    tell_whole, without_reasoning, Block, Delta, Effort, Image, Message, Model, ModelError,
+    Request, Response, Role, Stop, Thinking, Usage,
 };
 
 /// Sends `request` with `send`, and, if the provider refuses it as
@@ -49,12 +49,32 @@ use crate::model::{
 pub(crate) fn kept_or_not(
     request: &Request,
     from: &str,
+    send: impl FnMut(&Request) -> Result<Response, ModelError>,
+) -> Result<Response, ModelError> {
+    let kept = keeps_reasoning(&request.messages, from);
+    kept_or_without(request, from, kept, send)
+}
+
+/// [`kept_or_not`], for a provider that is also sent the signatures on the
+/// conversation's calls (Gemini): a request that carries any is sent once
+/// more without them, whoever they came from.
+pub(crate) fn signed_or_not(
+    request: &Request,
+    from: &str,
+    send: impl FnMut(&Request) -> Result<Response, ModelError>,
+) -> Result<Response, ModelError> {
+    let kept = keeps_reasoning(&request.messages, from) || keeps_signatures(&request.messages);
+    kept_or_without(request, from, kept, send)
+}
+
+fn kept_or_without(
+    request: &Request,
+    from: &str,
+    kept: bool,
     mut send: impl FnMut(&Request) -> Result<Response, ModelError>,
 ) -> Result<Response, ModelError> {
     let answered = match send(request) {
-        Err(ModelError::Refused(why))
-            if why.starts_with("HTTP 400") && keeps_reasoning(&request.messages, from) =>
-        {
+        Err(ModelError::Refused(why)) if why.starts_with("HTTP 400") && kept => {
             // Answered without it, the reasoning kept is of no use to send
             // again: the session lets go of it.
             send(&Request {
@@ -96,16 +116,269 @@ fn task_start(messages: &[Message]) -> usize {
         .map_or(0, |at| at + 1)
 }
 
-/// An effort level as OpenAI names them (`none` to `xhigh`).
-fn openai_effort(level: Effort) -> &'static str {
-    match level {
-        Effort::None => "none",
-        Effort::Minimal => "minimal",
-        Effort::Low => "low",
-        Effort::Medium => "medium",
-        Effort::High => "high",
-        Effort::Xhigh | Effort::Max => "xhigh",
+/// The effort levels, least first.
+const EFFORTS: [Effort; 7] = [
+    Effort::None,
+    Effort::Minimal,
+    Effort::Low,
+    Effort::Medium,
+    Effort::High,
+    Effort::Xhigh,
+    Effort::Max,
+];
+
+/// What a provider is asked next, after it refused how hard it was asked
+/// to think ([`Asked`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Next {
+    /// This level instead.
+    Level(Effort),
+    /// Nothing about thinking: the model takes none of it.
+    Nothing,
+}
+
+/// Whether a refusal is about how hard the model was asked to think, as
+/// the providers word it (`reasoning.effort`, `reasoning_effort`,
+/// `thinkingLevel`, `thinking_level`, `thinkingBudget`).
+fn about_thinking(why: &str) -> bool {
+    let why = why.to_ascii_lowercase();
+    [
+        "effort",
+        "thinkinglevel",
+        "thinking_level",
+        "thinking level",
+        "thinkingbudget",
+        "thinking_budget",
+        "thinking budget",
+    ]
+    .iter()
+    .any(|said| why.contains(said))
+}
+
+/// What to ask after a provider refused `asked` with `why`: the nearest of
+/// the levels it says it takes, if it lists them (`Supported values are:
+/// 'low', 'medium', 'high'`); nothing, if it says the model takes no such
+/// parameter and names no level; or else the next level toward `medium`,
+/// and nothing after `medium`. `None`: the refusal is not about thinking.
+pub(crate) fn next_effort(why: &str, asked: Effort) -> Option<Next> {
+    if !about_thinking(why) {
+        return None;
     }
+    let said = why.to_ascii_lowercase();
+    let at = |level: Effort| EFFORTS.iter().position(|l| *l == level).unwrap_or(3);
+    // The levels it names, after "supported values" if it says that; the
+    // one refused is not among those it takes.
+    let listed = said.find("supported values").map_or(said.as_str(), |from| {
+        &said[from + "supported values".len()..]
+    });
+    let quoted = |level: Effort| {
+        ['\'', '"', '`']
+            .iter()
+            .any(|q| listed.contains(&format!("{q}{}{q}", level.name())))
+    };
+    let taken: Vec<Effort> = EFFORTS
+        .iter()
+        .copied()
+        .filter(|level| *level != asked && quoted(*level))
+        .collect();
+    if !taken.is_empty() {
+        // The nearest, and of two as near the higher: more thought rather
+        // than less.
+        let nearest = taken
+            .iter()
+            .copied()
+            .min_by_key(|level| (at(*level).abs_diff(at(asked)), usize::MAX - at(*level)));
+        return nearest.map(Next::Level);
+    }
+    // A level named as a word of its own: the refusal is of that level,
+    // not of the parameter.
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let names_level = EFFORTS.iter().any(|level| {
+        said.match_indices(level.name()).any(|(from, name)| {
+            !said[..from].chars().next_back().is_some_and(word)
+                && !said[from + name.len()..].chars().next().is_some_and(word)
+        })
+    });
+    let unknown = [
+        "unsupported parameter",
+        "unrecognized request argument",
+        "unknown parameter",
+        "unknown name",
+        "not supported with this model",
+        "not supported for this model",
+        "not supported by this model",
+        "does not support thinking",
+        "does not support reasoning",
+    ];
+    if !names_level && unknown.iter().any(|u| said.contains(u)) {
+        return Some(Next::Nothing);
+    }
+    Some(match asked {
+        Effort::None => Next::Level(Effort::Minimal),
+        Effort::Minimal => Next::Level(Effort::Low),
+        Effort::Low => Next::Level(Effort::Medium),
+        Effort::Max => Next::Level(Effort::Xhigh),
+        Effort::Xhigh => Next::Level(Effort::High),
+        Effort::High => Next::Level(Effort::Medium),
+        Effort::Medium => Next::Nothing,
+    })
+}
+
+/// How hard a provider's model is asked to think, once it refused what was
+/// configured: models of one provider take different levels (one takes
+/// `minimal`, another `none`, a third neither), and say so only by
+/// refusing the request. The level a model was found to take is asked from
+/// then on, so each is found once.
+#[derive(Debug, Default)]
+pub(crate) struct Asked(AtomicU8);
+
+impl Asked {
+    /// As configured.
+    const AS_SAID: u8 = 0;
+    /// Nothing about thinking.
+    const NOTHING: u8 = u8::MAX;
+    /// How often one call asks again at another level.
+    pub(crate) const TRIES: usize = 4;
+
+    /// What is asked now, for a model configured to think as `said`.
+    pub(crate) fn thinking(&self, said: Option<Thinking>) -> Option<Thinking> {
+        match self.0.load(Ordering::Relaxed) {
+            Self::AS_SAID => said,
+            Self::NOTHING => None,
+            level => EFFORTS
+                .get(usize::from(level) - 1)
+                .copied()
+                .map(Thinking::Effort),
+        }
+    }
+
+    /// Whether `why` refuses what is asked now, and something else is asked
+    /// from now on: the request is worth sending again.
+    pub(crate) fn refused(&self, why: &str, said: Option<Thinking>) -> bool {
+        if !why.starts_with("HTTP 400") && !why.starts_with("HTTP 422") {
+            return false;
+        }
+        let asked = match self.thinking(said) {
+            Some(Thinking::Effort(level)) => level,
+            // A budget refused is the level nearest to it.
+            Some(Thinking::Budget(tokens)) if about_thinking(why) => {
+                let level = match tokens {
+                    0 => Effort::None,
+                    1..=2_047 => Effort::Low,
+                    2_048..=11_999 => Effort::Medium,
+                    _ => Effort::High,
+                };
+                self.set(Next::Level(level));
+                return true;
+            }
+            _ => return false,
+        };
+        match next_effort(why, asked) {
+            Some(next) => {
+                self.set(next);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn set(&self, next: Next) {
+        let stored = match next {
+            Next::Nothing => Self::NOTHING,
+            Next::Level(level) => EFFORTS
+                .iter()
+                .position(|l| *l == level)
+                .map_or(Self::NOTHING, |at| at as u8 + 1),
+        };
+        self.0.store(stored, Ordering::Relaxed);
+    }
+}
+
+/// Sends with `send`, and again while the provider refuses how hard the
+/// model is asked to think and something else can be asked of it: `send`
+/// builds its request from what `asked` says each time.
+pub(crate) fn thought_as_taken<T>(
+    asked: &Asked,
+    said: Option<Thinking>,
+    mut send: impl FnMut() -> Result<T, ModelError>,
+) -> Result<T, ModelError> {
+    let mut answered = send();
+    for _ in 0..Asked::TRIES {
+        match &answered {
+            Err(ModelError::Refused(why)) if asked.refused(why, said) => answered = send(),
+            _ => break,
+        }
+    }
+    answered
+}
+
+/// An effort level as OpenAI names them (`none` to `max`): which of them a
+/// model takes differs by model ([`openai_thinking`], [`Asked`]).
+fn openai_effort(level: Effort) -> &'static str {
+    level.name()
+}
+
+/// The effort levels a model of OpenAI's takes, where its model page says
+/// (11 November 2026): GPT-6 Astra and GPT-6.1 Sol always reason (`low` to
+/// `max`); GPT-6.1 Terra and GPT-6 Luna also take `none`; none of them
+/// takes `minimal`. A model not known here is asked what is configured.
+pub fn openai_levels(model: &str) -> Option<&'static [Effort]> {
+    const REASONS: [Effort; 5] = [
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Xhigh,
+        Effort::Max,
+    ];
+    const OR_NOT: [Effort; 6] = [
+        Effort::None,
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Xhigh,
+        Effort::Max,
+    ];
+    let name = crate::prices::normalized(model);
+    let is = |family: &str| name == family || name.starts_with(&format!("{family}-"));
+    if is("gpt-6-astra") || is("gpt-6.1-sol") {
+        Some(&REASONS)
+    } else if is("gpt-6.1-terra") || is("gpt-6-luna") {
+        Some(&OR_NOT)
+    } else {
+        None
+    }
+}
+
+/// A model's context window, in tokens, where its provider's pages say
+/// (11 November 2026): Claude's models, and OpenAI's GPT-6 models
+/// (1,050,000). `None` for any other: nothing is assumed of it.
+pub fn window_of(model: &str) -> Option<u64> {
+    let name = crate::prices::normalized(model);
+    if name.starts_with("claude-") {
+        Some(claude_traits(model).window)
+    } else if openai_levels(model).is_some() {
+        Some(1_050_000)
+    } else {
+        None
+    }
+}
+
+/// How hard a model of OpenAI's is asked to think: the level configured,
+/// or the nearest the model takes where that is known
+/// ([`openai_levels`]), of two as near the higher.
+pub(crate) fn openai_thinking(model: &str, thinking: Option<Thinking>) -> Option<Thinking> {
+    let Thinking::Effort(level) = thinking? else {
+        return thinking;
+    };
+    let Some(levels) = openai_levels(model) else {
+        return thinking;
+    };
+    let at = |level: Effort| EFFORTS.iter().position(|l| *l == level).unwrap_or(3);
+    levels
+        .iter()
+        .copied()
+        .min_by_key(|taken| (at(*taken).abs_diff(at(level)), usize::MAX - at(*taken)))
+        .map(Thinking::Effort)
 }
 
 /// What stands in a conversation for a picture a model is no longer shown.
@@ -204,7 +477,7 @@ fn input_of(arguments: &str) -> Value {
     if arguments.trim().is_empty() {
         return json!({});
     }
-    serde_json::from_str(arguments).unwrap_or_else(|_| json!({ "_unparsed": arguments }))
+    serde_json::from_str(arguments).unwrap_or_else(|_| json!({ crate::model::UNPARSED: arguments }))
 }
 
 /// The error a stream reports partway, as the status it stands for: the
@@ -217,15 +490,79 @@ fn stream_error(error: &Value) -> ModelError {
     let message = error["message"].as_str().unwrap_or("no message");
     let said = format!("{kind} while streaming: {message}");
     match kind {
+        _ if spent(&said) => ModelError::Limited {
+            message: said,
+            retry_after: REFUSED_REST.as_secs(),
+        },
         "overloaded_error"
         | "rate_limit_error"
         | "api_error"
         | "timeout_error"
         | "server_error"
+        | "internal_server_error"
+        | "internal_error"
+        | "service_unavailable_error"
+        | "service_unavailable"
+        | "server_is_overloaded"
+        | "slow_down"
         | "rate_limit_exceeded"
         | "insufficient_capacity" => ModelError::Busy(said),
+        _ if too_long(&said) => ModelError::TooLong(said),
         _ => ModelError::Refused(said),
     }
+}
+
+/// Whether a provider says the account's credit or quota is spent, which
+/// asking again soon does not change: another key, or another model, may
+/// answer meanwhile.
+pub(crate) fn spent(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    [
+        "insufficient_quota",
+        "billing_hard_limit_reached",
+        "billing_not_active",
+        "credit balance is too low",
+        "exceeded your current quota, please check your plan and billing",
+    ]
+    .iter()
+    .any(|said| body.contains(said))
+}
+
+/// How long a provider asks to be left, in seconds, where it says so in
+/// what it answers rather than in a `Retry-After` header: Google's
+/// `"retryDelay": "33s"`, or OpenAI's `Please try again in 6.5s`. Rounded
+/// up; a wait of milliseconds is a second.
+pub(crate) fn asked_wait(body: &str) -> Option<u64> {
+    let number = |text: &str| -> Option<(f64, usize)> {
+        let end = text
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(text.len());
+        text[..end].parse::<f64>().ok().map(|n| (n, end))
+    };
+    let seconds = |text: &str| -> Option<u64> {
+        let (n, end) = number(text)?;
+        let unit = text[end..].trim_start();
+        let seconds = if unit.starts_with("ms") {
+            n / 1_000.0
+        } else if unit.starts_with('m') {
+            n * 60.0
+        } else if unit.starts_with('h') {
+            n * 3_600.0
+        } else {
+            n
+        };
+        (seconds.is_finite() && seconds >= 0.0).then(|| (seconds.ceil() as u64).clamp(1, 86_400))
+    };
+    if let Some(at) = body.find("\"retryDelay\"") {
+        let rest = body[at + "\"retryDelay\"".len()..].trim_start();
+        let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
+        if let Some(found) = seconds(rest.strip_prefix('"').unwrap_or(rest)) {
+            return Some(found);
+        }
+    }
+    let lower = body.to_ascii_lowercase();
+    let at = lower.find("try again in ")?;
+    seconds(&lower[at + "try again in ".len()..])
 }
 
 /// Whether a provider's refusal says the conversation is longer than the
@@ -256,13 +593,22 @@ pub(crate) fn http_error(error: sion_http::HttpError) -> ModelError {
             body,
             retry_after,
         } => match status {
-            408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 | 529 => match retry_after {
-                Some(retry_after) => ModelError::Limited {
-                    message: format!("HTTP {status}: {body}"),
-                    retry_after,
-                },
-                None => ModelError::Busy(format!("HTTP {status}: {body}")),
-            },
+            408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 | 529 => {
+                // Credit or quota spent is not over in a minute; else as
+                // long as the provider asks, in its header or its answer.
+                let wait = if status == 429 && spent(&body) && asked_wait(&body).is_none() {
+                    Some(retry_after.unwrap_or(0).max(REFUSED_REST.as_secs()))
+                } else {
+                    retry_after.or_else(|| asked_wait(&body))
+                };
+                match wait {
+                    Some(retry_after) => ModelError::Limited {
+                        message: format!("HTTP {status}: {body}"),
+                        retry_after,
+                    },
+                    None => ModelError::Busy(format!("HTTP {status}: {body}")),
+                }
+            }
             400 | 413 | 422 if too_long(&body) => {
                 ModelError::TooLong(format!("HTTP {status}: {body}"))
             }
@@ -1191,7 +1537,8 @@ impl Model for Anthropic {
 /// server returns (`reasoning_content`, or `reasoning`) is kept and given
 /// back, under the name it came by, within the task it was for, as servers
 /// that think between tool calls ask. An effort level is
-/// `reasoning_effort`; the most it may write is `max_tokens`, or
+/// `reasoning_effort`, the nearest the model takes once it refuses the one
+/// configured ([`Asked`]); the most it may write is `max_tokens`, or
 /// `max_completion_tokens` once the server asks for that instead.
 pub struct OpenAiCompatible {
     client: sion_http::Client,
@@ -1206,6 +1553,8 @@ pub struct OpenAiCompatible {
     /// `max_tokens` (OpenAI's reasoning models): learned when it refuses
     /// the one.
     completion_tokens: AtomicBool,
+    /// How hard it is asked to think, once it refused what is configured.
+    asked: Asked,
     /// The header the key goes in as it is (Azure's `api-key`); none: as
     /// `Authorization: Bearer <key>`.
     pub key_header: Option<String>,
@@ -1228,6 +1577,7 @@ impl OpenAiCompatible {
             keys: Keys::parse(key.unwrap_or_default()),
             thinking: None,
             completion_tokens: AtomicBool::new(false),
+            asked: Asked::default(),
             key_header: None,
         }
     }
@@ -1261,10 +1611,38 @@ impl OpenAiCompatible {
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
-        if let Some(Thinking::Effort(level)) = self.thinking {
-            body["reasoning_effort"] = json!(openai_effort(level));
-        }
+        self.effort_into(&mut body);
         body
+    }
+
+    /// How hard it is configured to think, as its model takes levels.
+    fn said(&self) -> Option<Thinking> {
+        openai_thinking(&self.model, self.thinking)
+    }
+
+    /// Says in `body` how hard the model thinks, as it is asked now.
+    fn effort_into(&self, body: &mut Value) {
+        match self.asked.thinking(self.said()) {
+            Some(Thinking::Effort(level)) => {
+                body["reasoning_effort"] = json!(openai_effort(level));
+            }
+            _ => {
+                if let Some(fields) = body.as_object_mut() {
+                    fields.remove("reasoning_effort");
+                }
+            }
+        }
+    }
+
+    /// Whether the server refused how hard the model was asked to think:
+    /// from now on it is asked the nearest it takes, and `body` is changed
+    /// to say it.
+    fn thinks_otherwise(&self, why: &str, body: &mut Value) -> bool {
+        if body.get("reasoning_effort").is_none() || !self.asked.refused(why, self.said()) {
+            return false;
+        }
+        self.effort_into(body);
+        true
     }
 }
 
@@ -1420,35 +1798,44 @@ pub fn openai_response(answer: &Value) -> Result<Response, ModelError> {
             content.push(Block::text(text));
         }
     }
+    // What it says in declining, in place of an answer.
+    let refusal = message["refusal"].as_str().filter(|said| !said.is_empty());
+    if let Some(said) = refusal {
+        content.push(Block::text(said));
+    }
+    let mut called = false;
     for call in message["tool_calls"].as_array().into_iter().flatten() {
-        let arguments = call["function"]["arguments"].as_str().unwrap_or("{}");
-        let input =
-            serde_json::from_str(arguments).unwrap_or_else(|_| json!({"_unparsed": arguments}));
+        called = true;
         content.push(Block::ToolUse {
             id: call["id"].as_str().unwrap_or_default().to_string(),
             name: call["function"]["name"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
-            input,
+            input: input_of(call["function"]["arguments"].as_str().unwrap_or_default()),
             signature: None,
         });
     }
     Ok(Response {
         content,
-        stop: openai_stop(choice["finish_reason"].as_str()),
+        stop: openai_stop(choice["finish_reason"].as_str(), called, refusal.is_some()),
         usage: openai_usage(&answer["usage"]),
         model: answer["model"].as_str().unwrap_or_default().to_string(),
         forgot_reasoning: false,
     })
 }
 
-fn openai_stop(reason: Option<&str>) -> Stop {
+/// Why a chat completion stopped: cut off (`length`) whatever it had
+/// begun, calls included; declined, if it says so; with calls, to have
+/// them made, whatever the server names that (some say `stop`).
+fn openai_stop(reason: Option<&str>, called: bool, refused: bool) -> Stop {
     match reason {
-        Some("stop") => Stop::EndTurn,
-        Some("tool_calls") | Some("function_call") => Stop::ToolUse,
         Some("length") => Stop::MaxTokens,
         Some("content_filter") => Stop::Refusal,
+        _ if refused => Stop::Refusal,
+        _ if called => Stop::ToolUse,
+        Some("stop") => Stop::EndTurn,
+        Some("tool_calls") | Some("function_call") => Stop::ToolUse,
         other => Stop::Other(other.unwrap_or("none").to_string()),
     }
 }
@@ -1476,6 +1863,8 @@ pub fn openai_stream<R: Read>(
     let mut thought: Option<(&'static str, String)> = None;
     let mut calls: BTreeMap<u64, Calling> = BTreeMap::new();
     let mut finish: Option<String> = None;
+    // What it says in declining.
+    let mut refusal = String::new();
     let mut usage = Usage::default();
     let mut model = String::new();
     let mut done = false;
@@ -1513,6 +1902,12 @@ pub fn openai_stream<R: Read>(
                     cut = cut || !seen(Delta::Text(more.to_string()));
                 }
             }
+            if let Some(more) = delta["refusal"].as_str() {
+                if !more.is_empty() {
+                    refusal.push_str(more);
+                    cut = cut || !seen(Delta::Text(more.to_string()));
+                }
+            }
             for call in delta["tool_calls"].as_array().into_iter().flatten() {
                 let at = call["index"].as_u64().unwrap_or(0);
                 let building = calls.entry(at).or_default();
@@ -1539,7 +1934,7 @@ pub fn openai_stream<R: Read>(
         }
     }
     if cut {
-        return Ok(cut_off([text], usage, model));
+        return Ok(cut_off([text, refusal], usage, model));
     }
     if !done && finish.is_none() {
         return Err(ModelError::Transport(
@@ -1556,6 +1951,11 @@ pub fn openai_stream<R: Read>(
     if !text.is_empty() {
         content.push(Block::text(text));
     }
+    let refused = !refusal.is_empty();
+    if refused {
+        content.push(Block::text(refusal));
+    }
+    let called = !calls.is_empty();
     for call in calls.into_values() {
         content.push(Block::ToolUse {
             id: call.id,
@@ -1566,7 +1966,7 @@ pub fn openai_stream<R: Read>(
     }
     Ok(Response {
         content,
-        stop: openai_stop(finish.as_deref()),
+        stop: openai_stop(finish.as_deref(), called, refused),
         usage,
         model,
         forgot_reasoning: false,
@@ -1621,20 +2021,31 @@ impl OpenAiCompatible {
                     .map_err(http_error)
             })
         };
-        let answer = match post(&body) {
-            Err(ModelError::Refused(why)) if self.takes_completion_tokens(&why, &mut body) => {
-                post(&body)?
-            }
-            answered => answered?,
-        };
+        let mut answered = post(&body);
+        // Each refusal it can be asked again without, once; how hard it
+        // thinks, until a level it takes is found.
+        for _ in 0..1 + Asked::TRIES {
+            answered = match answered {
+                Err(ModelError::Refused(why)) if self.takes_completion_tokens(&why, &mut body) => {
+                    post(&body)
+                }
+                Err(ModelError::Refused(why)) if self.thinks_otherwise(&why, &mut body) => {
+                    post(&body)
+                }
+                answered => answered,
+            };
+        }
+        let answer = answered?;
         let value: Value = serde_json::from_slice(&answer.body)
             .map_err(|e| ModelError::Protocol(format!("answer is not JSON: {e}")))?;
         openai_response(&value)
     }
 
     /// Streams, asking for the usage in the last chunk; a server that
-    /// refuses `stream_options` is asked again without it, and one that
-    /// refuses `max_tokens` with `max_completion_tokens`.
+    /// refuses `stream_options` is asked again without it, one that
+    /// refuses `max_tokens` with `max_completion_tokens`, and one that
+    /// refuses how hard the model is to think at the nearest level it
+    /// takes.
     fn stream_once(
         &self,
         request: &Request,
@@ -1656,8 +2067,9 @@ impl OpenAiCompatible {
             })
         };
         let mut answered = post(&body);
-        // Each refusal it can be asked again without, once.
-        for _ in 0..2 {
+        // Each refusal it can be asked again without, once; how hard it
+        // thinks, until a level it takes is found.
+        for _ in 0..2 + Asked::TRIES {
             answered = match answered {
                 Err(ModelError::Refused(why))
                     if why.contains("stream_options") && body.get("stream_options").is_some() =>
@@ -1668,6 +2080,9 @@ impl OpenAiCompatible {
                     post(&body)
                 }
                 Err(ModelError::Refused(why)) if self.takes_completion_tokens(&why, &mut body) => {
+                    post(&body)
+                }
+                Err(ModelError::Refused(why)) if self.thinks_otherwise(&why, &mut body) => {
                     post(&body)
                 }
                 answered => answered,
@@ -1719,8 +2134,10 @@ pub const GEMINI_NO_SIGNATURE: &str = "skip_thought_signature_validator";
 /// kept on the call and sent back with it, as its models since Gemini 3
 /// require within a turn, and the one it gives with its text is kept
 /// ([`Block::Reasoning`]) and sent back on the text, as it recommends. An
-/// effort level is `thinkingLevel` (Gemini 3 and later), a budget
-/// `thinkingBudget` (Gemini 2.5).
+/// effort level is `thinkingLevel` (Gemini 3 and later: `minimal`, `low`,
+/// `medium` or `high`, the nearest a model takes), a budget
+/// `thinkingBudget` (Gemini 2.5); a model that refuses either is asked the
+/// nearest it takes ([`Asked`]).
 pub struct Gemini {
     client: sion_http::Client,
     /// The API's base URL, `https://generativelanguage.googleapis.com` by
@@ -1731,6 +2148,39 @@ pub struct Gemini {
     keys: Keys,
     /// How hard it is asked to think, if said.
     pub thinking: Option<Thinking>,
+    /// How hard it is asked to think, once it refused what is configured.
+    asked: Asked,
+}
+
+/// How hard a Gemini model is asked to think, as Gemini names levels:
+/// `none` is its least (`minimal`, or `low` for the models that have no
+/// `minimal`), and anything above `high` is `high`.
+pub(crate) fn gemini_thinking(model: &str, thinking: Option<Thinking>) -> Option<Thinking> {
+    let name = crate::prices::normalized(model);
+    // Gemini 4 Argon and Gemini 3.8 Flash refuse `minimal`.
+    let least = if name.starts_with("gemini-4-argon") || name.starts_with("gemini-3.8-flash") {
+        Effort::Low
+    } else {
+        Effort::Minimal
+    };
+    Some(match thinking? {
+        Thinking::Effort(level) => Thinking::Effort(level.clamp(least, Effort::High)),
+        budget => budget,
+    })
+}
+
+/// Gemini's `thinkingConfig` for `thinking`, already as Gemini names
+/// levels ([`gemini_thinking`]).
+pub(crate) fn gemini_thinking_config(thinking: Thinking) -> Value {
+    match thinking {
+        Thinking::Effort(level) => json!({"thinkingLevel": match level {
+            Effort::None | Effort::Minimal => "minimal",
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High | Effort::Xhigh | Effort::Max => "high",
+        }}),
+        Thinking::Budget(tokens) => json!({ "thinkingBudget": tokens }),
+    }
 }
 
 impl std::fmt::Debug for Gemini {
@@ -1749,6 +2199,7 @@ impl Gemini {
             model: model.into(),
             keys: Keys::parse(key),
             thinking: None,
+            asked: Asked::default(),
         }
     }
 
@@ -1756,6 +2207,11 @@ impl Gemini {
     /// back: its kind, base URL and model.
     pub fn source(&self) -> String {
         format!("gemini {} {}", self.base.trim_end_matches('/'), self.model)
+    }
+
+    /// How hard it is configured to think, as Gemini names levels.
+    fn said(&self) -> Option<Thinking> {
+        gemini_thinking(&self.model, self.thinking)
     }
 
     fn url(&self, stream: bool) -> String {
@@ -1784,19 +2240,8 @@ impl Gemini {
     pub(crate) fn body_from(&self, request: &Request, from: &str) -> Value {
         let mut body = gemini_body(request, from);
         body["generationConfig"]["maxOutputTokens"] = json!(self.most_tokens(request.max_tokens));
-        match self.thinking {
-            None => {}
-            Some(Thinking::Effort(level)) => {
-                body["generationConfig"]["thinkingConfig"] = json!({"thinkingLevel": match level {
-                    Effort::None | Effort::Minimal => "minimal",
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High | Effort::Xhigh | Effort::Max => "high",
-                }});
-            }
-            Some(Thinking::Budget(tokens)) => {
-                body["generationConfig"]["thinkingConfig"] = json!({ "thinkingBudget": tokens });
-            }
+        if let Some(thinking) = self.asked.thinking(self.said()) {
+            body["generationConfig"]["thinkingConfig"] = gemini_thinking_config(thinking);
         }
         body
     }
@@ -1869,6 +2314,9 @@ fn gemini_content(
     });
     let mut stood_in = false;
     let mut parts = Vec::new();
+    // The pictures results returned, after the last of the results: a
+    // turn's function responses go together, nothing between them.
+    let mut shown = Vec::new();
     for block in &message.content {
         match block {
             Block::Text { text } if !text.is_empty() => {
@@ -1911,9 +2359,8 @@ fn gemini_content(
                 parts.push(
                     json!({"functionResponse": {"id": id, "name": name, "response": response}}),
                 );
-                // The pictures it returned, after it.
                 for image in images {
-                    parts.push(match pictures.next(image) {
+                    shown.push(match pictures.next(image) {
                         Some(data) => {
                             json!({"inlineData": {"mimeType": image.media_type, "data": data}})
                         }
@@ -1927,7 +2374,14 @@ fn gemini_content(
             }),
         }
     }
-    (!parts.is_empty()).then(|| json!({"role": role, "parts": parts}))
+    // The responses first, then what else the message says, then the
+    // pictures.
+    let (mut responses, rest): (Vec<Value>, Vec<Value>) = parts
+        .into_iter()
+        .partition(|part| part.get("functionResponse").is_some());
+    responses.extend(rest);
+    responses.extend(shown);
+    (!responses.is_empty()).then(|| json!({"role": role, "parts": responses}))
 }
 
 /// A call's id: Gemini's, or one made here, which names it uniquely in the
@@ -1973,15 +2427,14 @@ fn anthropic_usage(usage: &Value) -> Usage {
 }
 
 /// What a Chat Completions `usage` counts: the prompt's tokens, those read
-/// from the cache among them.
+/// from the cache and those written to it among them.
 fn openai_usage(usage: &Value) -> Usage {
+    let details = &usage["prompt_tokens_details"];
     Usage {
         input: usage["prompt_tokens"].as_u64().unwrap_or(0),
         output: usage["completion_tokens"].as_u64().unwrap_or(0),
-        cache_read: usage["prompt_tokens_details"]["cached_tokens"]
-            .as_u64()
-            .unwrap_or(0),
-        cache_write: 0,
+        cache_read: details["cached_tokens"].as_u64().unwrap_or(0),
+        cache_write: details["cache_write_tokens"].as_u64().unwrap_or(0),
     }
 }
 
@@ -2196,7 +2649,7 @@ impl Model for Gemini {
     }
 
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {
-        kept_or_not(request, &self.source(), |request| {
+        signed_or_not(request, &self.source(), |request| {
             self.complete_once(request)
         })
     }
@@ -2206,7 +2659,7 @@ impl Model for Gemini {
         request: &Request,
         seen: &mut dyn FnMut(Delta) -> bool,
     ) -> Result<Response, ModelError> {
-        kept_or_not(request, &self.source(), |request| {
+        signed_or_not(request, &self.source(), |request| {
             self.stream_once(request, seen)
         })
     }
@@ -2218,17 +2671,19 @@ impl Model for Gemini {
 
 impl Gemini {
     fn complete_once(&self, request: &Request) -> Result<Response, ModelError> {
-        let body = serde_json::to_vec(&self.body(request))
-            .map_err(|e| ModelError::Protocol(e.to_string()))?;
-        let answer = self.keys.send(|key| {
-            self.client
-                .post_json(
-                    &self.url(false),
-                    &[("x-goog-api-key", key.unwrap_or_default())],
-                    &body,
-                    MAX_ANSWER,
-                )
-                .map_err(http_error)
+        let answer = thought_as_taken(&self.asked, self.said(), || {
+            let body = serde_json::to_vec(&self.body(request))
+                .map_err(|e| ModelError::Protocol(e.to_string()))?;
+            self.keys.send(|key| {
+                self.client
+                    .post_json(
+                        &self.url(false),
+                        &[("x-goog-api-key", key.unwrap_or_default())],
+                        &body,
+                        MAX_ANSWER,
+                    )
+                    .map_err(http_error)
+            })
         })?;
         let value: Value = serde_json::from_slice(&answer.body)
             .map_err(|e| ModelError::Protocol(format!("answer is not JSON: {e}")))?;
@@ -2240,15 +2695,17 @@ impl Gemini {
         request: &Request,
         seen: &mut dyn FnMut(Delta) -> bool,
     ) -> Result<Response, ModelError> {
-        let body = serde_json::to_vec(&self.body(request))
-            .map_err(|e| ModelError::Protocol(e.to_string()))?;
-        let mut response = self.keys.send(|key| {
-            post_stream(
-                &self.client,
-                &self.url(true),
-                &[("x-goog-api-key", key.unwrap_or_default())],
-                &body,
-            )
+        let mut response = thought_as_taken(&self.asked, self.said(), || {
+            let body = serde_json::to_vec(&self.body(request))
+                .map_err(|e| ModelError::Protocol(e.to_string()))?;
+            self.keys.send(|key| {
+                post_stream(
+                    &self.client,
+                    &self.url(true),
+                    &[("x-goog-api-key", key.unwrap_or_default())],
+                    &body,
+                )
+            })
         })?;
         if !streams(&response) {
             return whole(response, gemini_response, seen);
@@ -2289,7 +2746,8 @@ const REASONING_REFUSED: u8 = 2;
 /// (`include: ["reasoning.encrypted_content"]`), kept, and given back as
 /// items before what followed them, without their ids, since nothing is
 /// stored; a model that refuses to give it is not asked again. An effort
-/// level is `reasoning.effort`.
+/// level is `reasoning.effort`, the nearest the model takes once it
+/// refuses the one configured ([`Asked`]).
 pub struct OpenAiResponses {
     client: sion_http::Client,
     /// The API's base URL, `https://api.openai.com/v1` by default.
@@ -2302,6 +2760,8 @@ pub struct OpenAiResponses {
     /// Whether it returns its reasoning ([`REASONING_UNKNOWN`] and the
     /// rest).
     reasoning: AtomicU8,
+    /// How hard it is asked to think, once it refused what is configured.
+    asked: Asked,
 }
 
 impl std::fmt::Debug for OpenAiResponses {
@@ -2320,6 +2780,7 @@ impl OpenAiResponses {
             bearer,
             thinking: None,
             reasoning: AtomicU8::new(REASONING_UNKNOWN),
+            asked: Asked::default(),
         }
     }
 
@@ -2342,10 +2803,15 @@ impl OpenAiResponses {
         if self.reasoning.load(Ordering::Relaxed) != REASONING_REFUSED {
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
-        if let Some(Thinking::Effort(level)) = self.thinking {
+        if let Some(Thinking::Effort(level)) = self.asked.thinking(self.said()) {
             body["reasoning"] = json!({ "effort": openai_effort(level) });
         }
         body
+    }
+
+    /// How hard it is configured to think, as its model takes levels.
+    fn said(&self) -> Option<Thinking> {
+        openai_thinking(&self.model, self.thinking)
     }
 
     fn url(&self) -> String {
@@ -2538,32 +3004,35 @@ pub fn responses_response(answer: &Value) -> Result<Response, ModelError> {
     if !text.is_empty() {
         content.insert(text_at.unwrap_or(0), Block::text(text));
     }
-    let stop = if refused {
-        Stop::Refusal
-    } else if called {
-        Stop::ToolUse
-    } else {
-        match (
-            answer["status"].as_str(),
-            answer["incomplete_details"]["reason"].as_str(),
-        ) {
-            (Some("incomplete"), Some("max_output_tokens")) => Stop::MaxTokens,
-            (Some("incomplete"), Some("content_filter")) => Stop::Refusal,
-            (Some("incomplete"), Some(other)) => Stop::Other(other.to_string()),
-            _ => Stop::EndTurn,
-        }
+    // Cut off (`incomplete`) whatever it had begun, calls included: a
+    // call it did not finish is not one to make.
+    let incomplete = (answer["status"] == "incomplete").then(|| {
+        answer["incomplete_details"]["reason"]
+            .as_str()
+            .unwrap_or("incomplete")
+    });
+    let stop = match incomplete {
+        Some("max_output_tokens") => Stop::MaxTokens,
+        Some("content_filter") => Stop::Refusal,
+        _ if refused => Stop::Refusal,
+        _ if called => Stop::ToolUse,
+        Some(other) => Stop::Other(other.to_string()),
+        None => Stop::EndTurn,
     };
     Ok(Response {
         content,
         stop,
         usage: Usage {
-            // Its input's tokens, those read from the cache among them.
+            // Its input's tokens, those read from the cache and those
+            // written to it among them.
             input: answer["usage"]["input_tokens"].as_u64().unwrap_or(0),
             output: answer["usage"]["output_tokens"].as_u64().unwrap_or(0),
             cache_read: answer["usage"]["input_tokens_details"]["cached_tokens"]
                 .as_u64()
                 .unwrap_or(0),
-            cache_write: 0,
+            cache_write: answer["usage"]["input_tokens_details"]["cache_write_tokens"]
+                .as_u64()
+                .unwrap_or(0),
         },
         model: answer["model"].as_str().unwrap_or_default().to_string(),
         forgot_reasoning: false,
@@ -2582,14 +3051,29 @@ fn responses_error(error: &Value) -> ModelError {
         "{code}: {}",
         error["message"].as_str().unwrap_or("no message")
     );
-    if code.contains("rate_limit")
+    if spent(&said) {
+        // Credit or quota spent is not over in a minute.
+        ModelError::Limited {
+            message: said,
+            retry_after: REFUSED_REST.as_secs(),
+        }
+    } else if code.contains("rate_limit")
         || code.contains("server_error")
         || code.contains("usage_limit")
         || code.contains("usage_unavailable")
         || code.contains("overloaded")
+        || code.contains("unavailable")
         || code.contains("timeout")
     {
-        ModelError::Busy(said)
+        match asked_wait(&said) {
+            Some(retry_after) => ModelError::Limited {
+                message: said,
+                retry_after,
+            },
+            None => ModelError::Busy(said),
+        }
+    } else if too_long(&said) {
+        ModelError::TooLong(said)
     } else {
         ModelError::Refused(said)
     }
@@ -2674,35 +3158,42 @@ impl Model for OpenAiResponses {
         self.stream(request, &mut |_| true)
     }
 
-    /// A request it refuses as malformed while it asks for the model's
-    /// reasoning, or carries it, is sent once more without either; if that
-    /// one goes through and none had before, the model is taken not to
-    /// return its reasoning, and not asked for it again.
+    /// A request it refuses for how hard the model is asked to think is
+    /// sent again at the nearest level the model takes. One it refuses as
+    /// malformed while it asks for the model's reasoning, or carries it,
+    /// is sent once more without either; if that one goes through and none
+    /// had before, the model is taken not to return its reasoning, and not
+    /// asked for it again, and the reasoning the conversation kept is let
+    /// go.
     fn stream(
         &self,
         request: &Request,
         seen: &mut dyn FnMut(Delta) -> bool,
     ) -> Result<Response, ModelError> {
         let from = self.source();
-        let body = self.body(request);
-        let asked = body.get("include").is_some();
-        let bytes = serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
-        let mut response = match self.post(&bytes) {
-            Err(ModelError::Refused(why))
-                if why.starts_with("HTTP 400")
-                    && (asked || keeps_reasoning(&request.messages, &from)) =>
-            {
+        let asked = self.reasoning.load(Ordering::Relaxed) != REASONING_REFUSED;
+        let kept = keeps_reasoning(&request.messages, &from);
+        let send = |request: &Request, bare: bool| {
+            thought_as_taken(&self.asked, self.said(), || {
+                let mut body = self.body(request);
+                if bare {
+                    if let Some(fields) = body.as_object_mut() {
+                        fields.remove("include");
+                    }
+                }
+                let bytes =
+                    serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
+                self.post(&bytes)
+            })
+        };
+        let mut forgot = false;
+        let mut response = match send(request, false) {
+            Err(ModelError::Refused(why)) if why.starts_with("HTTP 400") && (asked || kept) => {
                 let without = Request {
                     messages: without_reasoning(&request.messages),
                     ..request.clone()
                 };
-                let mut body = self.body(&without);
-                if let Some(fields) = body.as_object_mut() {
-                    fields.remove("include");
-                }
-                let bytes =
-                    serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
-                let response = self.post(&bytes)?;
+                let response = send(&without, true)?;
                 if asked {
                     let _ = self.reasoning.compare_exchange(
                         REASONING_UNKNOWN,
@@ -2711,6 +3202,7 @@ impl Model for OpenAiResponses {
                         Ordering::Relaxed,
                     );
                 }
+                forgot = kept;
                 response
             }
             answered => {
@@ -2731,7 +3223,13 @@ impl Model for OpenAiResponses {
         } else {
             responses_stream(&mut Events::new(response.body(), MAX_EVENT), seen)
         };
-        answered.map(|response| reasoning_from(response, &from))
+        answered.map(|response| {
+            let response = reasoning_from(response, &from);
+            Response {
+                forgot_reasoning: response.forgot_reasoning || forgot,
+                ..response
+            }
+        })
     }
 
     fn most_tokens(&self, max_tokens: u32) -> u32 {

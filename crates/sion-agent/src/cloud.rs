@@ -39,8 +39,9 @@ use crate::model::{
 };
 use crate::providers::{
     anthropic_response, anthropic_stream, claude_thinking, claude_thinks, gemini_response,
-    gemini_stream, http_error, kept_or_not, post_stream, streams, whole, Anthropic, Gemini, Keys,
-    Pictures, IMAGE_NOT_SHOWN, MAX_ANSWER, MAX_EVENT,
+    gemini_stream, gemini_thinking, http_error, kept_or_not, post_stream, signed_or_not, streams,
+    thought_as_taken, whole, Anthropic, Asked, Gemini, Keys, Pictures, IMAGE_NOT_SHOWN, MAX_ANSWER,
+    MAX_EVENT,
 };
 
 /// A provider that speaks OpenAI's chat completions under its own name.
@@ -836,6 +837,9 @@ pub struct Vertex {
     token: VertexToken,
     /// How hard it is asked to think, if said.
     pub thinking: Option<Thinking>,
+    /// How hard Gemini is asked to think, once it refused what is
+    /// configured.
+    asked: Asked,
 }
 
 /// The `anthropic_version` Vertex AI's Claude takes.
@@ -863,6 +867,31 @@ impl Vertex {
             model: model.into(),
             token,
             thinking: None,
+            asked: Asked::default(),
+        }
+    }
+
+    /// How hard Gemini is configured to think, as it names levels; none
+    /// for Claude, whose thinking is said per model.
+    fn said(&self) -> Option<Thinking> {
+        if self.claude() {
+            None
+        } else {
+            gemini_thinking(&self.model, self.thinking)
+        }
+    }
+
+    /// Sends with the reasoning kept, and without it if that is refused:
+    /// Gemini is also sent the signatures on the conversation's calls.
+    fn kept(
+        &self,
+        request: &Request,
+        send: impl FnMut(&Request) -> Result<Response, ModelError>,
+    ) -> Result<Response, ModelError> {
+        if self.claude() {
+            kept_or_not(request, &self.source(), send)
+        } else {
+            signed_or_not(request, &self.source(), send)
         }
     }
 
@@ -925,24 +954,25 @@ impl Vertex {
             body
         } else {
             let mut shaped = Gemini::new(self.client.clone(), &self.model, "");
-            shaped.thinking = self.thinking;
+            shaped.thinking = self.asked.thinking(self.said());
             shaped.body_from(request, &from)
         }
     }
 
     fn complete_once(&self, request: &Request) -> Result<Response, ModelError> {
-        let body = serde_json::to_vec(&self.body(request))
-            .map_err(|e| ModelError::Protocol(e.to_string()))?;
         let (name, value) = self.token.header()?;
-        let answer = self
-            .client
-            .post_json(
-                &self.url(false),
-                &[(name, value.as_str())],
-                &body,
-                MAX_ANSWER,
-            )
-            .map_err(http_error)?;
+        let answer = thought_as_taken(&self.asked, self.said(), || {
+            let body = serde_json::to_vec(&self.body(request))
+                .map_err(|e| ModelError::Protocol(e.to_string()))?;
+            self.client
+                .post_json(
+                    &self.url(false),
+                    &[(name, value.as_str())],
+                    &body,
+                    MAX_ANSWER,
+                )
+                .map_err(http_error)
+        })?;
         let value: Value = serde_json::from_slice(&answer.body)
             .map_err(|e| ModelError::Protocol(format!("answer is not JSON: {e}")))?;
         if self.claude() {
@@ -957,18 +987,21 @@ impl Vertex {
         request: &Request,
         seen: &mut dyn FnMut(Delta) -> bool,
     ) -> Result<Response, ModelError> {
-        let mut body = self.body(request);
-        if self.claude() {
-            body["stream"] = json!(true);
-        }
-        let body = serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
         let (name, value) = self.token.header()?;
-        let mut response = post_stream(
-            &self.client,
-            &self.url(true),
-            &[(name, value.as_str())],
-            &body,
-        )?;
+        let mut response = thought_as_taken(&self.asked, self.said(), || {
+            let mut body = self.body(request);
+            if self.claude() {
+                body["stream"] = json!(true);
+            }
+            let body =
+                serde_json::to_vec(&body).map_err(|e| ModelError::Protocol(e.to_string()))?;
+            post_stream(
+                &self.client,
+                &self.url(true),
+                &[(name, value.as_str())],
+                &body,
+            )
+        })?;
         if !streams(&response) {
             let read = if self.claude() {
                 anthropic_response
@@ -1021,9 +1054,7 @@ impl Model for Vertex {
     }
 
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {
-        kept_or_not(request, &self.source(), |request| {
-            self.complete_once(request)
-        })
+        self.kept(request, |request| self.complete_once(request))
     }
 
     fn stream(
@@ -1031,9 +1062,7 @@ impl Model for Vertex {
         request: &Request,
         seen: &mut dyn FnMut(Delta) -> bool,
     ) -> Result<Response, ModelError> {
-        kept_or_not(request, &self.source(), |request| {
-            self.stream_once(request, seen)
-        })
+        self.kept(request, |request| self.stream_once(request, seen))
     }
 
     fn most_tokens(&self, max_tokens: u32) -> u32 {

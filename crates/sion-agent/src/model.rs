@@ -230,7 +230,8 @@ pub fn readable_reasoning(data: &Value) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// `messages` without the reasoning kept in them ([`Block::Reasoning`]).
+/// `messages` without the reasoning kept in them ([`Block::Reasoning`]),
+/// and without the signatures a provider put on their calls.
 pub fn without_reasoning(messages: &[Message]) -> Vec<Message> {
     messages
         .iter()
@@ -241,9 +242,38 @@ pub fn without_reasoning(messages: &[Message]) -> Vec<Message> {
                 .iter()
                 .filter(|block| !matches!(block, Block::Reasoning { .. }))
                 .cloned()
+                .map(unsigned)
                 .collect(),
         })
         .collect()
+}
+
+/// `block` without the signature a provider put on it, if it is a call.
+pub fn unsigned(block: Block) -> Block {
+    match block {
+        Block::ToolUse {
+            id, name, input, ..
+        } => Block::ToolUse {
+            id,
+            name,
+            input,
+            signature: None,
+        },
+        other => other,
+    }
+}
+
+/// Whether `messages` keep a signature a provider put on a call.
+pub fn keeps_signatures(messages: &[Message]) -> bool {
+    messages.iter().flat_map(|m| m.content.iter()).any(|block| {
+        matches!(
+            block,
+            Block::ToolUse {
+                signature: Some(_),
+                ..
+            }
+        )
+    })
 }
 
 /// Whether `messages` keep reasoning that came from `from`.
@@ -460,6 +490,21 @@ impl Message {
     }
 }
 
+/// The one property of a call's input whose arguments, as the model wrote
+/// them, were not JSON: what it wrote, as text. Such a call is not made;
+/// the model is told to write it again.
+pub const UNPARSED: &str = "_unparsed";
+
+/// What a model wrote as a call's arguments, if it was not JSON
+/// ([`UNPARSED`]).
+pub fn unparsed(input: &Value) -> Option<&str> {
+    let fields = input.as_object()?;
+    if fields.len() != 1 {
+        return None;
+    }
+    fields.get(UNPARSED)?.as_str()
+}
+
 /// A tool as the model sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
@@ -610,6 +655,24 @@ impl ModelError {
             self,
             ModelError::Busy(_) | ModelError::Limited { .. } | ModelError::Transport(_)
         )
+    }
+
+    /// Whether the provider turned the caller away rather than the
+    /// request: its key is not taken (HTTP 401, 403), or its account has
+    /// no credit (HTTP 402, or said in so many words). Asking again does
+    /// not help, but a model of another provider may answer.
+    pub fn locked_out(&self) -> bool {
+        match self {
+            ModelError::Refused(why) => {
+                ["HTTP 401", "HTTP 402", "HTTP 403"]
+                    .iter()
+                    .any(|status| why.starts_with(status))
+                    || why
+                        .to_ascii_lowercase()
+                        .contains("credit balance is too low")
+            }
+            _ => false,
+        }
     }
 
     /// How long the provider asked to be left, in seconds, if it said.

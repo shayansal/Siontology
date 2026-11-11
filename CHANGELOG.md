@@ -10,6 +10,97 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Paying for a page: `fetch_paid`
+
+- An agent given the web has a tool of its own for what the web sells:
+  `fetch_paid` fetches a URL and, if the server asks for payment with
+  HTTP 402 (x402 version 2), pays the quote from the agent's budget,
+  under its charter, and fetches again with the payment. Until now an
+  agent's own runs could not; only `sion x402 fetch`, the MCP server's
+  `sion_fetch_paid` and the benchmark's stand-in did.
+- Nothing is paid above the `max_usd` the call names, on another ledger
+  than the agent's own, in another asset than USD, or for a quote whose
+  payment would have to say anything but `x402:<its nonce>`. The charter
+  is read first, so a payee or an amount it refuses is not signed at all;
+  the ledger would refuse it anyway.
+- The tool spends: where a payment waits for a person, it does, and the
+  person sees the address and the most it may pay. An identical call is
+  answered from the journal, not paid twice. The payment's digest and the
+  last Pulse it may execute in are noted before it is handed to the
+  server, so that if the answer is lost the ledger says whether it was
+  paid; what the ledger says of the payment is what the tool reports,
+  whatever the server says.
+- `fetch_url` on a page that charges says so and names `fetch_paid`.
+  Paid fetches reach public addresses only; `SION_X402_LOCAL=1` lets them
+  reach this machine's own servers, for a devnet.
+
+### Ready for real models
+
+What a model is actually sent and how its answers are read, gone through
+against the providers' documentation as it stood on 11 November 2026,
+before any money is spent finding out. Tested against stand-ins of each
+API; no provider has been called.
+
+- `--model context:` puts no model in a run's place of one and answers
+  with what one would be sent: the system prompt, each tool with the size
+  of its description and schema (`context:full`: each whole), the
+  conversation, and about how many tokens it comes to. Nothing is sent to
+  a provider.
+- The system prompt an agent starts with now says how to work, not only
+  who it is: keep at the task, find out before acting or saying, make
+  independent calls together, change the approach when a call fails,
+  check the work, keep a plan, when to ask a person and what to do when
+  no one answers, do nothing that cannot be undone unless asked, and a
+  line for each thing it is equipped with. The date is said after it, as
+  of when the conversation began or was last summarised.
+- Claude: each model is asked to think in the way it takes (adaptive
+  thinking and an effort for the current ones, a budget for those before
+  Claude 4.6, thinking turned off as each allows), with no sampling
+  parameters; thinking a model would refuse because the conversation
+  changed since is let go by the API rather than failing the call; an
+  answer cut off before a call was whole is asked again with more room,
+  and its call is not made; a conversation the model no longer takes is
+  made shorter and asked again; a model that declines hands over to the
+  next; an empty answer is asked again.
+- OpenAI: `openai:<model>` is now asked through the Responses API when it
+  is OpenAI's own API (its GPT-6 models call tools only there), and
+  through chat completions when `OPENAI_BASE_URL` is another server;
+  `openai-chat:<model>` asks chat completions whatever the address. The
+  effort level is sent by its name, `max` included, the nearest each
+  GPT-6 model takes. An answer that ran out of room in the middle of a
+  call is cut off, not a call to make; what a model says in declining is
+  a refusal; tokens written to the cache are counted.
+- Gemini: `none` and `minimal` become `low` for the models without
+  `minimal`; a turn's function responses go together, their pictures
+  after; signatures it refuses are let go and the call asked again.
+- A model that refuses the effort level it is asked is asked again at
+  the nearest it takes (one of those the refusal lists, or one level
+  nearer `medium` at a time, or none), and at that level from then on.
+- A key the provider does not take, or an account without credit, no
+  longer ends a run that has another model: the next is asked, and the
+  first left alone for an hour. Quota that is spent is not asked again in
+  a minute, and a wait a provider states in its answer (`retryDelay`,
+  `try again in 6.5s`) is kept.
+- Every run's answers are streamed, watched or not, and a model call is
+  bounded by silence (`SION_MODEL_TIMEOUT`, now 600 seconds without a
+  byte) rather than by how long it takes in all: a long answer at high
+  effort no longer times out at five minutes to be asked, and paid for,
+  again.
+- A call's input is checked against its tool's schema before anything is
+  done with it, and one that does not fit comes back saying what is
+  wrong (`limit is "5" (string), not integer`); a call whose arguments
+  were not JSON is answered, not passed to the tool.
+- A conversation is compacted at a length that suits the run's models
+  where their context windows are known (Claude's, OpenAI's GPT-6): six
+  tenths of the smallest window, at most 200,000 tokens, and below the
+  length at which a model's prompt costs more. Other models keep the
+  earlier default (120,000 characters, 36 messages), which summarised a
+  long task after seventeen calls whatever the model could hold.
+- OpenAI's standard prices for GPT-6 Astra, GPT-6.1 Sol, GPT-6.1 Terra
+  and GPT-6 Luna are built in beside Claude's, with the higher price of a
+  prompt over 272,000 tokens; dated model names (`-2026-09-15`) and
+  Bedrock's `openai.` prefix are read as the model they name.
+
 ### What an independent review of the benchmark work found, fixed
 
 - Documents made to break the readers no longer do: dictionaries nested

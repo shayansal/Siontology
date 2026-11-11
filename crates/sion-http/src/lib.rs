@@ -82,6 +82,11 @@ pub struct Options {
     pub connect_timeout: Duration,
     /// Overall timeout of one request, body included.
     pub timeout: Duration,
+    /// If set, a request has no overall deadline: each wait for bytes,
+    /// reading or writing, is at most this long instead. For answers that
+    /// stream for as long as they take (a model's), where what matters is
+    /// that the other side still sends, not how long it has been.
+    pub idle_timeout: Option<Duration>,
     /// Redirects followed (0: a redirect is an error).
     pub redirects: u32,
     /// Allow loopback, private and other local addresses.
@@ -97,6 +102,7 @@ impl Default for Options {
         Options {
             connect_timeout: Duration::from_secs(5),
             timeout: Duration::from_secs(30),
+            idle_timeout: None,
             redirects: 0,
             allow_private: false,
             proxy_from_env: true,
@@ -137,12 +143,14 @@ impl Client {
         });
         let build = |proxy: Option<(&str, ureq::Proxy)>| {
             let mut allowed = Vec::new();
-            let mut builder = ureq::AgentBuilder::new()
-                .timeout_connect(options.connect_timeout)
-                .timeout(options.timeout)
-                .redirects(options.redirects)
-                .user_agent(&options.user_agent)
-                .tls_connector(tls.clone());
+            let builder = ureq::AgentBuilder::new().timeout_connect(options.connect_timeout);
+            let mut builder = match options.idle_timeout {
+                Some(idle) => builder.timeout_read(idle).timeout_write(idle),
+                None => builder.timeout(options.timeout),
+            }
+            .redirects(options.redirects)
+            .user_agent(&options.user_agent)
+            .tls_connector(tls.clone());
             if let Some((netloc, proxy)) = proxy {
                 allowed.push(netloc.to_string());
                 builder = builder.proxy(proxy);
@@ -1337,6 +1345,63 @@ mod tests {
         assert_eq!(response.media_type().as_deref(), Some("application/json"));
         assert_eq!(response.read_all(2).unwrap(), b"{}");
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn an_idle_timeout_bounds_each_wait_for_bytes_not_the_whole_answer() {
+        use std::time::Instant;
+        // An answer that comes a piece at a time, for longer in all than
+        // the timeout, then one that stops coming.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+            for pieces in [12usize, 1] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let _ = stream.write_all(head.as_bytes());
+                for _ in 0..pieces {
+                    let _ = stream.write_all(b"data: x\n\n");
+                    let _ = stream.flush();
+                    std::thread::sleep(Duration::from_millis(125));
+                }
+                if pieces == 1 {
+                    // Nothing more, and the connection kept open.
+                    std::thread::sleep(Duration::from_secs(6));
+                }
+            }
+        });
+        let idle = Duration::from_millis(1_000);
+        let client = Client::new(Options {
+            allow_private: true,
+            proxy_from_env: false,
+            // An overall deadline this short would cut the first answer.
+            timeout: idle,
+            idle_timeout: Some(idle),
+            ..Options::default()
+        })
+        .unwrap();
+        let url = format!("http://127.0.0.1:{port}/stream");
+        let mut response = client.send("POST", &url, &[], Some(b"{}")).unwrap();
+        let mut whole = Vec::new();
+        response.body().read_to_end(&mut whole).unwrap();
+        assert_eq!(
+            whole.len(),
+            12 * "data: x\n\n".len(),
+            "an answer a second and a half long, read whole"
+        );
+        let started = Instant::now();
+        let mut response = client.send("POST", &url, &[], Some(b"{}")).unwrap();
+        let mut partial = Vec::new();
+        assert!(
+            response.body().read_to_end(&mut partial).is_err(),
+            "an answer that stops coming is a failure"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "known within the idle timeout, not when the server gives up"
+        );
     }
 
     #[test]

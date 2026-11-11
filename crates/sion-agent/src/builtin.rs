@@ -552,6 +552,10 @@ impl Tool for ListFiles {
 pub struct Fetch {
     /// The client.
     pub client: sion_http::Client,
+    /// Whether the agent has a tool that pays for a page that charges
+    /// (`fetch_paid`): a page that answers HTTP 402 is then said to be
+    /// fetched with it.
+    pub paid: bool,
 }
 
 impl Tool for Fetch {
@@ -589,6 +593,12 @@ impl Tool for Fetch {
             self.client.get(url, MAX_FETCH)
         }) {
             Ok(page) => read_fetched(url, &page.body, page.content_type.as_deref(), from),
+            Err(sion_http::HttpError::Status { status: 402, .. }) if self.paid => {
+                Outcome::error(format!(
+                    "{url} asks for payment (HTTP 402). If the task is worth its price, fetch \
+                     it with fetch_paid, saying the most you would pay (max_usd)."
+                ))
+            }
             Err(e) => Outcome::error(format!("{url}: {e}")),
         }
     }
@@ -1152,7 +1162,10 @@ mod tests {
             ..sion_http::Options::default()
         })
         .unwrap();
-        let fetch = Fetch { client };
+        let fetch = Fetch {
+            client,
+            paid: false,
+        };
         assert_eq!(fetch.effect(), Effect::External);
         let refused = fetch.call(&json!({"url": "http://127.0.0.1:9/"}), "k");
         assert!(refused.is_error && !refused.untrusted, "{refused:?}");

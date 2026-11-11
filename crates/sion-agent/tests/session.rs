@@ -3153,6 +3153,166 @@ fn a_model_that_declines_hands_over_to_the_next_one() {
 }
 
 #[test]
+fn a_model_whose_provider_turns_the_caller_away_hands_over_to_the_next_one() {
+    use sion_agent::model::ModelError;
+    let tools = Toolbox::new();
+    let locked = || {
+        Scripted::new("first").then(|_| {
+            Err(ModelError::Refused(
+                "HTTP 401: Incorrect API key provided".into(),
+            ))
+        })
+    };
+    let first = locked();
+    let second = Scripted::new("second").says("One.").says("Two.");
+    let rt = runtime(vec![&first, &second], &tools, Autonomy::L3);
+    let mut state = State::start("locked", "Count.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { text } if text == "One."));
+    // Left alone from then on: the next question goes to the second at once.
+    state
+        .messages
+        .push(sion_agent::model::Message::user("Go on."));
+    assert!(matches!(rt.run(&mut state), Ended::Done { text } if text == "Two."));
+    assert_eq!(first.requests().len(), 1, "not asked again within the hour");
+    // With no other model, the run ends on the refusal, without waiting.
+    let alone = locked();
+    let rt = runtime(vec![&alone], &tools, Autonomy::L3);
+    let mut state = State::start("locked-2", "Count.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::ModelsFailed { .. }));
+    assert_eq!(alone.requests().len(), 1);
+    // A request the provider refuses as malformed is not another model's
+    // to answer.
+    let malformed = Scripted::new("first")
+        .then(|_| Err(ModelError::Refused("HTTP 400: tools.0: bad schema".into())));
+    let other = Scripted::new("second").says("Never asked.");
+    let rt = runtime(vec![&malformed, &other], &tools, Autonomy::L3);
+    let mut state = State::start("malformed", "Count.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::ModelsFailed { .. }));
+    assert!(other.requests().is_empty());
+}
+
+#[test]
+fn a_call_whose_input_does_not_fit_its_tool_is_said_so_and_not_made() {
+    use sion_agent::tools::input_error;
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "limit": {"type": "integer"},
+            "mode": {"type": "string", "enum": ["read", "write"]},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "where": {"type": "object", "properties": {"line": {"type": "integer"}},
+                "required": ["line"], "additionalProperties": false},
+            "either": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+            "maybe": {"type": ["string", "null"]}
+        },
+        "required": ["path"]
+    });
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let made = seen.clone();
+    let mut tools = Toolbox::new();
+    tools.add(FnTool::new(
+        "open",
+        "opens a file",
+        schema.clone(),
+        Effect::Read,
+        move |input| {
+            made.lock().unwrap().push(input.clone());
+            Outcome::ok("opened")
+        },
+    ));
+    // What fits: as written, a whole number written with a fraction, a
+    // null for what is left out, a part the schema says otherwise.
+    for fits in [
+        json!({"path": "a.txt"}),
+        json!({"path": "a.txt", "limit": 5.0, "mode": "read", "tags": ["x"], "maybe": null}),
+        json!({"path": "a.txt", "limit": null, "either": 4, "where": {"line": 2}, "more": true}),
+    ] {
+        assert_eq!(input_error(&schema, &fits), None, "{fits}");
+    }
+    // What does not, each said so that it can be corrected.
+    for (wrong, says) in [
+        (json!({}), "path is required"),
+        (json!({"path": null}), "path is required"),
+        (json!({"path": 7}), "path is 7 (integer), not string"),
+        (
+            json!({"path": "a", "limit": "5"}),
+            "limit is \"5\" (string), not integer",
+        ),
+        (
+            json!({"path": "a", "limit": 1.5}),
+            "limit is 1.5 (number), not integer",
+        ),
+        (
+            json!({"path": "a", "mode": "append"}),
+            "mode is \"append\", not one of \"read\", \"write\"",
+        ),
+        (
+            json!({"path": "a", "tags": "x"}),
+            "tags is \"x\" (string), not array",
+        ),
+        (
+            json!({"path": "a", "tags": ["x", 2]}),
+            "tags[1] is 2 (integer), not string",
+        ),
+        (json!({"path": "a", "where": {}}), "where.line is required"),
+        (
+            json!({"path": "a", "where": {"line": 1, "col": 2}}),
+            "where.col is not a property of it (it has: line)",
+        ),
+        (
+            json!(["a.txt"]),
+            "the input is [\"a.txt\"] (array), not object",
+        ),
+    ] {
+        let said = input_error(&schema, &wrong).unwrap_or_default();
+        assert!(said.contains(says), "{wrong}: {said}");
+        assert!(said.starts_with("not called: ") && said.ends_with("corrected."));
+    }
+    // A schema that says nothing still takes an object only.
+    assert!(input_error(&json!({}), &json!("text")).is_some());
+    assert!(input_error(&json!({}), &json!({"any": 1})).is_none());
+
+    // In a run: told what is wrong, the model corrects the call; and a
+    // call whose arguments were not JSON is told that.
+    let model = Scripted::new("m")
+        .calls("open", json!({"file": "a.txt", "limit": "5"}))
+        .calls(
+            "open",
+            json!({"_unparsed": "{\"path\": \"a.txt\" \"limit\": 5}"}),
+        )
+        .calls("open", json!({"path": "a.txt", "limit": 5}))
+        .says("Opened.");
+    let rt = runtime(vec![&model], &tools, Autonomy::L3);
+    let mut state = State::start("fits", "Open a.txt.", &rt.limits);
+    assert!(matches!(rt.run(&mut state), Ended::Done { text } if text == "Opened."));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![json!({"path": "a.txt", "limit": 5})],
+        "only the call that fits is made"
+    );
+    let results: Vec<(String, bool)> = state
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|block| match block {
+            Block::ToolResult {
+                content, is_error, ..
+            } => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 3);
+    assert!(results[0].1 && results[0].0.contains("path is required"));
+    assert!(results[0]
+        .0
+        .contains("limit is \"5\" (string), not integer"));
+    assert!(results[1].1 && results[1].0.contains("not valid JSON"));
+    assert_eq!(results[2], ("opened".to_string(), false));
+    every_result_answers_a_call(&state);
+}
+
+#[test]
 fn an_empty_answer_is_asked_again_and_forgotten_reasoning_is_let_go() {
     use sion_agent::model::Stop;
     let (look, _) = counted("look", Effect::Read, |_| Outcome::ok("seen"));

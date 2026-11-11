@@ -462,10 +462,203 @@ fn how_hard_each_provider_is_asked_to_think() {
     let body = responses.body(&question);
     assert_eq!(
         body["reasoning"],
-        json!({"effort": "xhigh"}),
-        "OpenAI's most"
+        json!({"effort": "max"}),
+        "OpenAI's most, where a model takes it"
     );
     assert_eq!(body["max_output_tokens"], 60_512);
+
+    // Gemini's levels run from `minimal` to `high`; the models without
+    // `minimal` are asked `low`.
+    let level = |model: &str, effort: Effort| {
+        let mut gemini = Gemini::new(client(), model, "g");
+        gemini.thinking = Some(Thinking::Effort(effort));
+        gemini.body(&question)["generationConfig"]["thinkingConfig"]["thinkingLevel"].clone()
+    };
+    assert_eq!(level("gemini-3-pro-preview", Effort::None), "minimal");
+    assert_eq!(level("gemini-3-pro-preview", Effort::Max), "high");
+    assert_eq!(level("gemini-4-argon", Effort::None), "low");
+    assert_eq!(level("gemini-3.8-flash", Effort::Minimal), "low");
+    assert_eq!(level("gemini-4-argon", Effort::Medium), "medium");
+}
+
+#[test]
+fn a_model_that_refuses_a_level_is_asked_the_nearest_it_takes_from_then_on() {
+    // OpenAI names the levels a model takes.
+    let refusal = json!({"error": {"message": "Unsupported value: 'reasoning.effort' does not support 'max' with this model. Supported values are: 'none', 'low', 'medium', 'high', and 'xhigh'.",
+        "type": "invalid_request_error", "param": "reasoning.effort", "code": "unsupported_value"}});
+    let done = || {
+        events(&[(
+            "response.completed",
+            json!({"type": "response.completed", "response": {"model": "gpt-test", "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "Done."}]}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+        )])
+    };
+    let (base, seen) = serve_each(vec![
+        (400, "application/json", refusal.to_string()),
+        (200, "text/event-stream", done()),
+        (200, "text/event-stream", done()),
+    ]);
+    let mut provider = OpenAiResponses::new(
+        client(),
+        "gpt-test",
+        sion_agent::providers::Bearer::Keys(sion_agent::providers::Keys::parse("k")),
+    );
+    provider.base = base;
+    provider.thinking = Some(Thinking::Effort(Effort::Max));
+    let mut question = after(Vec::new());
+    question.messages.truncate(1);
+    assert_eq!(
+        provider.complete(&question).unwrap().content,
+        vec![Block::text("Done.")]
+    );
+    assert_eq!(seen.recv().unwrap()["reasoning"]["effort"], "max");
+    let second = seen.recv().unwrap();
+    assert_eq!(second["reasoning"]["effort"], "xhigh");
+    assert!(
+        second.get("include").is_some(),
+        "a level refused says nothing about the model's reasoning: still asked for"
+    );
+    provider.complete(&question).unwrap();
+    assert_eq!(
+        seen.recv().unwrap()["reasoning"]["effort"],
+        "xhigh",
+        "found once"
+    );
+
+    // A chat server that names no levels: the next toward the middle,
+    // one at a time.
+    let refusal = |level: &str| {
+        json!({"error": {"message": format!("reasoning_effort '{level}' is not available for this model"),
+            "type": "invalid_request_error"}})
+        .to_string()
+    };
+    let answer = json!({"model": "m", "choices": [{"index": 0, "finish_reason": "stop",
+        "message": {"role": "assistant", "content": "Done."}}], "usage": {}});
+    let (base, seen) = serve_each(vec![
+        (400, "application/json", refusal("none")),
+        (400, "application/json", refusal("minimal")),
+        (200, "application/json", answer.to_string()),
+    ]);
+    let mut chat = OpenAiCompatible::new(client(), &format!("{base}/v1"), "m", None);
+    chat.thinking = Some(Thinking::Effort(Effort::None));
+    assert!(chat.complete(&question).is_ok());
+    let asked: Vec<Value> = (0..3)
+        .map(|_| seen.recv().unwrap()["reasoning_effort"].clone())
+        .collect();
+    assert_eq!(asked, [json!("none"), json!("minimal"), json!("low")]);
+    assert_eq!(chat.body(&question)["reasoning_effort"], "low");
+
+    // A model that takes no such parameter is asked without it.
+    let refusal = json!({"error": {"message": "Unsupported parameter: 'reasoning_effort' is not supported with this model.",
+        "type": "invalid_request_error", "param": "reasoning_effort", "code": "unsupported_parameter"}});
+    let (base, seen) = serve_each(vec![
+        (400, "application/json", refusal.to_string()),
+        (200, "application/json", answer.to_string()),
+    ]);
+    let mut chat = OpenAiCompatible::new(client(), &format!("{base}/v1"), "m", None);
+    chat.thinking = Some(Thinking::Effort(Effort::High));
+    assert!(chat.complete(&question).is_ok());
+    assert_eq!(seen.recv().unwrap()["reasoning_effort"], "high");
+    assert!(seen.recv().unwrap().get("reasoning_effort").is_none());
+
+    // Gemini: a level a model does not have is the next one; a budget a
+    // model no longer takes is the level nearest to it.
+    let refusal = |said: &str| {
+        json!({"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": said}}).to_string()
+    };
+    let answer = json!({"candidates": [{"content": {"parts": [{"text": "Done."}]},
+        "finishReason": "STOP"}], "usageMetadata": {}});
+    let (base, seen) = serve_each(vec![
+        (
+            400,
+            "application/json",
+            refusal("Thinking level MINIMAL is not supported for this model."),
+        ),
+        (200, "application/json", answer.to_string()),
+        (
+            400,
+            "application/json",
+            refusal("thinking_budget is not supported for this model; use thinking_level."),
+        ),
+        (200, "application/json", answer.to_string()),
+    ]);
+    let config = |body: &Value| body["generationConfig"]["thinkingConfig"].clone();
+    let mut gemini = Gemini::new(client(), "gemini-next", "g");
+    gemini.base = base.clone();
+    gemini.thinking = Some(Thinking::Effort(Effort::None));
+    assert!(gemini.complete(&question).is_ok());
+    assert_eq!(
+        config(&seen.recv().unwrap()),
+        json!({"thinkingLevel": "minimal"})
+    );
+    assert_eq!(
+        config(&seen.recv().unwrap()),
+        json!({"thinkingLevel": "low"})
+    );
+    let mut gemini = Gemini::new(client(), "gemini-next", "g");
+    gemini.base = base;
+    gemini.thinking = Some(Thinking::Budget(4_096));
+    assert!(gemini.complete(&question).is_ok());
+    assert_eq!(
+        config(&seen.recv().unwrap()),
+        json!({"thinkingBudget": 4_096})
+    );
+    assert_eq!(
+        config(&seen.recv().unwrap()),
+        json!({"thinkingLevel": "medium"})
+    );
+
+    // A refusal that is not about thinking is not asked again.
+    let (base, seen) = serve_each(vec![(
+        400,
+        "application/json",
+        json!({"error": {"message": "Invalid schema for function 'balance'", "type": "invalid_request_error"}})
+            .to_string(),
+    )]);
+    let mut chat = OpenAiCompatible::new(client(), &format!("{base}/v1"), "m", None);
+    chat.thinking = Some(Thinking::Effort(Effort::Max));
+    assert!(matches!(
+        chat.complete(&question),
+        Err(ModelError::Refused(_))
+    ));
+    assert!(seen.recv().is_ok());
+    assert!(seen.try_recv().is_err());
+}
+
+#[test]
+fn gemini_is_asked_again_without_signatures_it_refuses() {
+    let refusal = json!({"error": {"code": 400, "status": "INVALID_ARGUMENT",
+        "message": "Corrupted thought signature."}});
+    let answer = json!({"candidates": [{"content": {"parts": [{"text": "12.5 USD."}]},
+        "finishReason": "STOP"}], "usageMetadata": {}});
+    let (base, seen) = serve_each(vec![
+        (400, "application/json", refusal.to_string()),
+        (200, "application/json", answer.to_string()),
+    ]);
+    let mut gemini = Gemini::new(client(), "gemini-3-pro-preview", "g");
+    gemini.base = base;
+    // A call signed by another model of Gemini's, and no reasoning kept
+    // from this one.
+    let request = after(vec![Block::ToolUse {
+        id: "toolu_1".into(),
+        name: "balance".into(),
+        input: json!({}),
+        signature: Some("c2lnbmVk".into()),
+    }]);
+    let response = gemini.complete(&request).unwrap();
+    assert_eq!(response.content, vec![Block::text("12.5 USD.")]);
+    assert!(
+        response.forgot_reasoning,
+        "the session lets go of what was refused"
+    );
+    let part = |body: &Value| body["contents"][1]["parts"][0].clone();
+    assert_eq!(part(&seen.recv().unwrap())["thoughtSignature"], "c2lnbmVk");
+    assert_eq!(
+        part(&seen.recv().unwrap())["thoughtSignature"],
+        sion_agent::providers::GEMINI_NO_SIGNATURE,
+        "asked again with what stands for a signature"
+    );
 }
 
 #[test]

@@ -303,7 +303,9 @@ pub enum AgentCommand {
         #[arg(long)]
         task: String,
         /// The model: anthropic:<model> (ANTHROPIC_API_KEY), openai:<model>
-        /// (OPENAI_BASE_URL, OPENAI_API_KEY), openai-responses:<model>,
+        /// (OPENAI_API_KEY; OpenAI's Responses API, or the chat completions
+        /// of another server at OPENAI_BASE_URL), openai-chat:<model>,
+        /// openai-responses:<model>,
         /// chatgpt:<model> (your ChatGPT plan, once signed in: `sion agent
         /// chatgpt login`), gemini:<model> (GEMINI_API_KEY), local:<model>
         /// (a model server on this machine or its network,

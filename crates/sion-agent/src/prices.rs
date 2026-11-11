@@ -5,11 +5,14 @@
 //! so that adding many calls loses nothing. A price is per million tokens,
 //! in micro-dollars: $3 a million tokens is `3_000_000`.
 //!
-//! The prices built in ([`Prices::builtin`]) are Anthropic's list prices for
-//! Claude models as its pricing page gave them on 11 November 2026, with
-//! prompt caching's five-minute writes (what the runtime asks for). Other
-//! models are priced from a file ([`Prices::from_json`]); a model with no
-//! price is counted apart ([`Cost::unpriced`]), never guessed.
+//! The prices built in ([`Prices::builtin`]) are list prices as the
+//! providers' own pages gave them on 11 November 2026: Anthropic's for
+//! Claude models, with prompt caching's five-minute writes (what the
+//! runtime asks for), and OpenAI's standard prices for its GPT-6 models,
+//! with its thirty-minute cache writes and the higher price of a prompt
+//! over 272,000 tokens. Other models are priced from a file
+//! ([`Prices::from_json`]); a model with no price is counted apart
+//! ([`Cost::unpriced`]), never guessed.
 
 use std::collections::BTreeMap;
 
@@ -131,8 +134,36 @@ const fn claude(input: u64, output: u64, read: u64) -> Price {
 /// The date of the prices built in.
 pub const BUILTIN_AS_OF: &str = "2026-11-11";
 
+/// The prompt length over which OpenAI's GPT-6 models cost more.
+pub const OPENAI_LONG_OVER: u64 = 272_000;
+
+/// OpenAI's pricing for a GPT-6 model from its input, cached-input and
+/// output prices, in micro-dollars a million tokens: cache writes
+/// (thirty-minute retention) at 1.25 times the input price, and a prompt
+/// of more than [`OPENAI_LONG_OVER`] tokens at twice the input and cache
+/// prices and one and a half times the output price, for the whole
+/// request.
+const fn openai(input: u64, read: u64, output: u64) -> Pricing {
+    Pricing {
+        price: Price {
+            input,
+            output,
+            cache_read: read,
+            cache_write: input + input / 4,
+        },
+        long_over: Some(OPENAI_LONG_OVER),
+        long: Some(Price {
+            input: input * 2,
+            output: output + output / 2,
+            cache_read: read * 2,
+            cache_write: (input + input / 4) * 2,
+        }),
+    }
+}
+
 impl Prices {
-    /// Anthropic's list prices for Claude models (see the module's notes).
+    /// The list prices built in: Claude's and OpenAI's GPT-6 models (see
+    /// the module's notes).
     pub fn builtin() -> Prices {
         let mut models = BTreeMap::new();
         let mut put = |names: &[&str], pricing: Pricing| {
@@ -199,6 +230,10 @@ impl Prices {
             &["claude-haiku-4-5"],
             Pricing::flat(claude(usd(1, 0), usd(5, 0), usd(0, 10))),
         );
+        put(&["gpt-6-astra"], openai(usd(10, 0), usd(1, 0), usd(50, 0)));
+        put(&["gpt-6.1-sol"], openai(usd(2, 0), usd(0, 10), usd(10, 0)));
+        put(&["gpt-6.1-terra"], openai(usd(1, 0), usd(0, 5), usd(5, 0)));
+        put(&["gpt-6-luna"], openai(usd(0, 10), usd(0, 1), usd(0, 50)));
         Prices { models }
     }
 
@@ -313,8 +348,9 @@ pub fn parse_dollars(text: &str) -> Option<u64> {
 
 /// A model's name as prices are kept: without the provider before a colon
 /// or a slash (`anthropic:`, `anthropic/`), the cloud's prefix
-/// (`us.anthropic.`), a version after `@` (Vertex AI), a Bedrock version
-/// (`-v1:0`) or a date (`-20261001`), in lower case.
+/// (`us.anthropic.`, `openai.`), a version after `@` (Vertex AI), a Bedrock
+/// version (`-v1:0`) or a date (`-20261001`, `-2026-10-01`), in lower
+/// case.
 pub fn normalized(model: &str) -> String {
     let mut name = model.trim().to_ascii_lowercase();
     if let Some((_, rest)) = name.rsplit_once('/') {
@@ -333,8 +369,10 @@ pub fn normalized(model: &str) -> String {
     if let Some(at) = name.find('@') {
         name.truncate(at);
     }
-    if let Some(dot) = name.rfind("anthropic.") {
-        name = name[dot + "anthropic.".len()..].to_string();
+    for cloud in ["anthropic.", "openai."] {
+        if let Some(dot) = name.rfind(cloud) {
+            name = name[dot + cloud.len()..].to_string();
+        }
     }
     // A Bedrock version, `-v1` (its `:0` went above).
     if let Some(v) = name.rfind("-v") {
@@ -342,11 +380,22 @@ pub fn normalized(model: &str) -> String {
             name.truncate(v);
         }
     }
-    // A date: eight digits at the end.
+    // A date: eight digits at the end, or a year, a month and a day.
     if let Some(dash) = name.rfind('-') {
         let tail = &name[dash + 1..];
         if tail.len() == 8 && tail.chars().all(|c| c.is_ascii_digit()) {
             name.truncate(dash);
+        }
+    }
+    let bytes = name.as_bytes();
+    if bytes.len() > 11 {
+        let tail = &bytes[bytes.len() - 11..];
+        let dated = tail.iter().enumerate().all(|(at, b)| match at {
+            0 | 5 | 8 => *b == b'-',
+            _ => b.is_ascii_digit(),
+        });
+        if dated {
+            name.truncate(name.len() - 11);
         }
     }
     // Routers write Claude's versions with dots (`claude-opus-5.5`).
@@ -448,6 +497,25 @@ mod tests {
         let haiku = prices.of("claude-haiku-5-5").unwrap();
         assert_eq!(haiku.cost(&usage(100_000, 0, 0, 0)), 10_000);
         assert_eq!(haiku.cost(&usage(100_001, 0, 0, 0)), 50_001);
+        // OpenAI's GPT-6 models: over 272,000 tokens of prompt, twice the
+        // input and cache prices and one and a half times the output's.
+        let sol = prices.of("openai:gpt-6.1-sol").unwrap();
+        assert_eq!(sol.price.cache_write, usd(2, 50));
+        // 200,000 input, 100,000 of it read from the cache and 50,000
+        // written, and 1,000 output: $0.10 + $0.01 + $0.125 + $0.01.
+        assert_eq!(
+            sol.cost(&usage(200_000, 1_000, 100_000, 50_000)),
+            100_000 + 10_000 + 125_000 + 10_000
+        );
+        assert_eq!(sol.cost(&usage(272_000, 0, 0, 0)), 544_000);
+        assert_eq!(
+            sol.cost(&usage(300_000, 1_000, 100_000, 0)),
+            800_000 + 20_000 + 15_000
+        );
+        let luna = prices.of("gpt-6-luna").unwrap();
+        assert_eq!(luna.price.cache_write, 125_000);
+        assert_eq!(prices.of("gpt-6-astra").unwrap().price.output, usd(50, 0));
+        assert_eq!(prices.of("gpt-6.1-terra").unwrap().price.cache_read, 50_000);
     }
 
     #[test]
@@ -467,7 +535,17 @@ mod tests {
         }
         assert_eq!(normalized("claude-opus-5"), "claude-opus-5");
         assert_eq!(normalized("openai:gpt-5.5"), "gpt-5.5");
+        for name in [
+            "gpt-6.1-sol",
+            "openai:gpt-6.1-sol-2026-09-15",
+            "openai.gpt-6.1-sol",
+            "azure:GPT-6.1-Sol",
+        ] {
+            assert_eq!(normalized(name), "gpt-6.1-sol", "{name}");
+        }
+        assert_eq!(normalized("m-2026-9-15"), "m-2026-9-15");
         assert!(Prices::builtin().of("claude-opus-5-6").is_none());
+        assert!(Prices::builtin().of("gpt-6.1-sol-mini").is_none());
     }
 
     #[test]

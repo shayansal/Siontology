@@ -178,6 +178,173 @@ impl Outcome {
     }
 }
 
+/// The most problems with a call's input that are told at once.
+const MOST_PROBLEMS: usize = 6;
+
+/// What is wrong with `input` as the input of a tool whose JSON Schema is
+/// `schema`, for the model to correct, or nothing: it is an object, gives
+/// what the schema requires, each value of the type the schema names and
+/// among its `enum`, and nothing more where the schema allows nothing
+/// more. Checked as deep as the schema says, and only what it says in
+/// those words: a part that says it otherwise (`anyOf`, `$ref`) is taken
+/// as it comes. A tool would refuse most of these itself, each in its own
+/// words and some only by doing something else (a number written as text,
+/// read as missing, is the default); told the same way before the call,
+/// the model corrects the input instead of guessing.
+pub fn input_error(schema: &Value, input: &Value) -> Option<String> {
+    let mut problems = Vec::new();
+    fits(schema, input, "", 0, &mut problems);
+    if problems.is_empty() {
+        return None;
+    }
+    let more = problems.len().saturating_sub(MOST_PROBLEMS);
+    problems.truncate(MOST_PROBLEMS);
+    let mut said = format!(
+        "not called: the input does not fit the tool's schema: {}",
+        problems.join("; ")
+    );
+    if more > 0 {
+        said.push_str(&format!("; and {more} more"));
+    }
+    said.push_str(". Call it again with the input corrected.");
+    Some(said)
+}
+
+/// A value, short, for a message.
+fn shown(value: &Value) -> String {
+    let text = value.to_string();
+    if text.chars().count() <= 60 {
+        return text;
+    }
+    let cut: String = text.chars().take(60).collect();
+    format!("{cut}…")
+}
+
+/// What kind of JSON value `value` is, as a schema names types.
+fn kind_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Whether `value` is of the type a schema names `named`.
+fn is_a(value: &Value, named: &str) -> bool {
+    match named {
+        "integer" => match value {
+            Value::Number(n) => {
+                n.is_i64() || n.is_u64() || n.as_f64().is_some_and(|f| f.fract() == 0.0)
+            }
+            _ => false,
+        },
+        "number" => value.is_number(),
+        "string" | "boolean" | "array" | "object" | "null" => kind_of(value) == named,
+        // A type this does not know is not checked.
+        _ => true,
+    }
+}
+
+fn fits(schema: &Value, value: &Value, at: &str, depth: usize, problems: &mut Vec<String>) {
+    let Some(fields) = schema.as_object() else {
+        return;
+    };
+    // Said otherwise than in the words checked here: taken as it comes.
+    let otherwise = ["anyOf", "oneOf", "allOf", "not", "$ref", "if", "const"];
+    if depth > 8 || otherwise.iter().any(|word| fields.contains_key(*word)) {
+        return;
+    }
+    let name = if at.is_empty() { "the input" } else { at };
+    let types: Vec<&str> = match &schema["type"] {
+        Value::String(one) => vec![one.as_str()],
+        Value::Array(several) => several.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    // An input is an object, whatever its schema leaves unsaid.
+    let types = if at.is_empty() && types.is_empty() {
+        vec!["object"]
+    } else {
+        types
+    };
+    if !types.is_empty() && !types.iter().any(|named| is_a(value, named)) {
+        problems.push(format!(
+            "{name} is {} ({}), not {}",
+            shown(value),
+            kind_of(value),
+            types.join(" or ")
+        ));
+        return;
+    }
+    if let Some(among) = schema["enum"].as_array() {
+        if !among.contains(value) {
+            let allowed: Vec<String> = among.iter().take(12).map(shown).collect();
+            problems.push(format!(
+                "{name} is {}, not one of {}",
+                shown(value),
+                allowed.join(", ")
+            ));
+            return;
+        }
+    }
+    match value {
+        Value::Object(given) => {
+            let below = |key: &str| {
+                if at.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{at}.{key}")
+                }
+            };
+            for required in schema["required"].as_array().into_iter().flatten() {
+                let Some(key) = required.as_str() else {
+                    continue;
+                };
+                if given.get(key).map_or(true, Value::is_null) {
+                    problems.push(format!("{} is required", below(key)));
+                }
+            }
+            let properties = schema["properties"].as_object();
+            for (key, inner) in given {
+                match properties.and_then(|p| p.get(key)) {
+                    // Left out, as far as a tool is concerned.
+                    Some(_) if inner.is_null() => {}
+                    Some(property) => fits(property, inner, &below(key), depth + 1, problems),
+                    None if schema["additionalProperties"] == false && properties.is_some() => {
+                        let known: Vec<&str> = properties
+                            .into_iter()
+                            .flat_map(|p| p.keys())
+                            .map(String::as_str)
+                            .take(16)
+                            .collect();
+                        problems.push(format!(
+                            "{} is not a property of it (it has: {})",
+                            below(key),
+                            known.join(", ")
+                        ));
+                    }
+                    None => {}
+                }
+            }
+        }
+        Value::Array(items) if schema["items"].is_object() => {
+            for (index, item) in items.iter().enumerate().take(64) {
+                fits(
+                    &schema["items"],
+                    item,
+                    &format!("{name}[{index}]"),
+                    depth + 1,
+                    problems,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A tool an agent can call.
 pub trait Tool: Send + Sync {
     /// How the model sees it.

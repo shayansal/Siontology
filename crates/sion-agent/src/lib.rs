@@ -107,6 +107,7 @@ pub mod schedule;
 pub mod scripted;
 pub mod search;
 pub mod session;
+pub mod shown;
 pub mod skills;
 pub mod takeover;
 pub mod teach;
