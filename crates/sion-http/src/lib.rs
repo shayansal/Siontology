@@ -1426,8 +1426,17 @@ mod tests {
             let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
             for pieces in [12usize, 1] {
                 let (mut stream, _) = listener.accept().unwrap();
+                // All of the request, its body too: a connection closed
+                // with some of it unread is reset, not ended, and the
+                // client then reads an error where the answer ends.
+                let mut asked = Vec::new();
                 let mut buffer = [0u8; 4096];
-                let _ = stream.read(&mut buffer);
+                while !asked.ends_with(b"{}") {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => asked.extend_from_slice(&buffer[..n]),
+                    }
+                }
                 let _ = stream.write_all(head.as_bytes());
                 for _ in 0..pieces {
                     let _ = stream.write_all(b"data: x\n\n");
@@ -1437,6 +1446,9 @@ mod tests {
                 if pieces == 1 {
                     // Nothing more, and the connection kept open.
                     std::thread::sleep(Duration::from_secs(6));
+                } else {
+                    // Ended, as a server ends an answer.
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
                 }
             }
         });
