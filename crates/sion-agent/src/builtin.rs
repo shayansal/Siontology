@@ -131,7 +131,16 @@ pub fn confidential_path(patterns: &[String], relative: &str) -> bool {
 pub fn confidential_in(patterns: &[String], root: &Path, relative: &str) -> bool {
     // Where the confidential files are now: one moved since it was last
     // seen is kept, by this, where it went.
-    crate::provenance::look(root);
+    let looked = crate::provenance::look(root);
+    // What is kept confidential is not known: nothing is taken not to be.
+    if crate::provenance::unreadable(root) {
+        return true;
+    }
+    // A confidential file is now where its name is not text, and no name
+    // tells it: a path that is not text either may be it.
+    if looked.astray && relative.contains(char::REPLACEMENT_CHARACTER) {
+        return true;
+    }
     let kept = crate::provenance::kept_confidential(root);
     if patterns.is_empty() && kept.is_empty() {
         return false;
@@ -166,9 +175,31 @@ pub fn confidential_in(patterns: &[String], root: &Path, relative: &str) -> bool
 /// that file, which the caller has checked.
 pub fn write_aside(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let (at, aside) = write_beside(path, bytes)?;
-    std::fs::rename(&aside, &at).inspect_err(|_| {
-        let _ = std::fs::remove_file(&aside);
-    })
+    put_in_place(&aside, &at)
+}
+
+/// [`write_aside`]'s second half: the new file `aside` takes the place of
+/// `at`. A file that is kept from commands
+/// ([`crate::provenance::is_seen`]) is written into instead, and stays the
+/// file it was: a sandbox that is running hides that file, not whatever is
+/// later called by its name, so a file renamed over it would be shown to
+/// what runs there.
+pub fn put_in_place(aside: &Path, at: &Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let put = if crate::provenance::is_seen(at) {
+        std::fs::read(aside).and_then(|bytes| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(at)
+                .and_then(|mut file| file.write_all(&bytes))
+        })
+    } else {
+        std::fs::rename(aside, at)
+    };
+    // Renamed, it is there no longer; written from, or failed, it goes.
+    let _ = std::fs::remove_file(aside);
+    put
 }
 
 /// [`write_aside`]'s first half: `bytes` in a new file beside `path`, with

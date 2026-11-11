@@ -841,7 +841,8 @@ pub fn apply(root: &Path, changes: &[Change]) -> Result<String, String> {
     }
     // Then each is put in its file's place, and what goes is removed.
     for (at, aside) in &ready {
-        std::fs::rename(aside, at).map_err(|e| format!("{}: {e}", relative_name(root, at)))?;
+        crate::builtin::put_in_place(aside, at)
+            .map_err(|e| format!("{}: {e}", relative_name(root, at)))?;
     }
     for path in removed {
         std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", relative_name(root, &path)))?;

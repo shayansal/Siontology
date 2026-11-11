@@ -706,7 +706,7 @@ pub fn kept_confidential(workspace: &Path, forget: &[String], all: bool) -> Resu
         forgotten.extend(gone);
     }
     for path in &forgotten {
-        println!("forgotten: {path}");
+        println!("forgotten: {path:?}");
     }
     let kept = sion_agent::provenance::kept_confidential(workspace);
     if kept.is_empty() {
@@ -720,7 +720,12 @@ pub fn kept_confidential(workspace: &Path, forget: &[String], all: bool) -> Resu
             workspace.display()
         );
         for path in kept {
-            println!("  {path}");
+            // As it is, unless it holds what a terminal would act on.
+            if path.chars().any(char::is_control) {
+                println!("  {path:?}");
+            } else {
+                println!("  {path}");
+            }
         }
     }
     Ok(())

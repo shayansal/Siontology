@@ -317,6 +317,39 @@ pub fn hidden_paths(root: &Path, patterns: &[String], literal: &[String]) -> Vec
         .collect()
 }
 
+/// The directories above what is `hidden` of the workspaces among
+/// `mounts`, between each workspace and each hidden path: on the host,
+/// inside, and whether their workspace is written to. Nearest the
+/// workspace first, each once.
+fn pins(mounts: &[Mount], hidden: &[(PathBuf, PathBuf, bool)]) -> Vec<(PathBuf, PathBuf, bool)> {
+    let mut above = std::collections::BTreeMap::new();
+    for mount in mounts.iter().filter(|m| m.inside == WORKSPACE) {
+        let inside_root = Path::new(&mount.inside);
+        for (host, inside, _) in hidden {
+            let (Ok(_), Ok(relative)) = (
+                host.strip_prefix(&mount.host),
+                inside.strip_prefix(inside_root),
+            ) else {
+                continue;
+            };
+            let mut at = PathBuf::new();
+            let parts: Vec<_> = relative.components().collect();
+            // Every part but the last, which is the hidden path itself.
+            for part in parts.iter().take(parts.len().saturating_sub(1)) {
+                at.push(part);
+                above.insert(
+                    inside_root.join(&at),
+                    (mount.host.join(&at), mount.writable),
+                );
+            }
+        }
+    }
+    above
+        .into_iter()
+        .map(|(inside, (host, writable))| (host, inside, writable))
+        .collect()
+}
+
 impl Run {
     /// Whether it exited with status 0.
     pub fn succeeded(&self) -> bool {
@@ -646,8 +679,15 @@ impl Sandbox {
             cmd.arg(flag).arg(&mount.host).arg(&mount.inside);
         }
         // What is hidden of the workspace: nothing in a file's place, an
-        // empty directory in a directory's.
-        for (_, inside, dir) in self.hides(mounts) {
+        // empty directory in a directory's. Every directory above one is
+        // mounted over itself first, which a command cannot move or
+        // remove: what is hidden stays where it was hidden.
+        let hidden = self.hides(mounts);
+        for (host, inside, writable) in pins(mounts, &hidden) {
+            let flag = if writable { "--bind" } else { "--ro-bind" };
+            cmd.arg(flag).arg(host).arg(inside);
+        }
+        for (_, inside, dir) in hidden {
             if dir {
                 cmd.arg("--tmpfs").arg(inside);
             } else {
@@ -732,7 +772,13 @@ impl Sandbox {
         }
         // (A name that is not text, or has a colon, was refused before
         // this: [`Sandbox::ready`].)
-        for (_, inside, dir) in self.hides(mounts) {
+        let hidden = self.hides(mounts);
+        for (host, inside, writable) in pins(mounts, &hidden) {
+            let mode = if writable { "rw" } else { "ro" };
+            cmd.arg("--volume")
+                .arg(format!("{}:{}:{mode}", host.display(), inside.display()));
+        }
+        for (_, inside, dir) in hidden {
             let inside = inside.to_string_lossy();
             if dir {
                 cmd.arg("--tmpfs").arg(inside.as_ref());
@@ -780,6 +826,7 @@ impl Sandbox {
         // wrong, and the path itself left shown. Not run, rather than run
         // with it shown.
         if matches!(self.backend, Backend::Docker { .. }) {
+            // (A directory above one is part of its own path.)
             if let Some((_, inside, _)) = hides
                 .iter()
                 .find(|(_, inside, _)| inside.to_str().map_or(true, |text| text.contains(':')))
@@ -797,11 +844,9 @@ impl Sandbox {
             for mount in absolute.iter().filter(|m| m.inside == WORKSPACE) {
                 if let Some(lost) = crate::provenance::look(&mount.host).lost {
                     return Err(format!(
-                        "{lost}, which is confidential, was moved and was not found among the \
-                         workspace's first {} files: commands are not run while it may be \
-                         shown to them. Put it back, or forget it (sion agent confidential \
-                         <workspace> --forget-all) if it is confidential no longer",
-                        crate::provenance::MAX_SOUGHT
+                        "{lost}. Commands are not run while it may be shown to them: put it \
+                         back or make the workspace readable, or, if it is confidential no \
+                         longer, forget it (sion agent confidential <workspace> --forget-all)"
                     ));
                 }
             }
@@ -1416,9 +1461,23 @@ mod tests {
         );
         assert!(ws.join("private/key.pem").is_file());
 
-        // A directory above a hidden file can be moved: the file is known
-        // by what it is, found where it went, and kept confidential there,
-        // hidden from the next command whatever the operator's names say.
+        // Nor can a directory above a hidden file be moved or removed by a
+        // command: each is a mount of its own.
+        let run = sandbox
+            .run(
+                &[Mount::workspace(&ws)],
+                WORKSPACE,
+                "mv a a2; mv a/b a/b2; rm -rf a; echo tried",
+            )
+            .unwrap();
+        assert_eq!(run.stdout, "tried\n", "{}", run.render());
+        assert!(run.displaced.is_empty(), "{:?}", run.displaced);
+        assert!(ws.join("a/b/deep.txt").is_file() && !ws.join("a2").exists());
+
+        // Moved by something that is in no sandbox (the operator, or a
+        // program of theirs): the file is known by what it is, found where
+        // it went, and kept confidential there, hidden from the next
+        // command whatever the operator's names say.
         let moved = |run: &Run, was: &str, now: &str| {
             assert_eq!(run.displaced.len(), 1, "{:?}", run.displaced);
             assert_eq!(run.displaced[0].path, was);
@@ -1442,32 +1501,38 @@ mod tests {
             assert!(run.displaced.is_empty(), "{:?}", run.displaced);
             run.render()
         };
-        let run = sandbox
-            .run(&[Mount::workspace(&ws)], WORKSPACE, "mv a a2 && echo moved")
-            .unwrap();
-        assert_eq!(run.stdout, "moved\n", "{}", run.render());
-        moved(&run, "a/b/deep.txt", "a2/b/deep.txt");
-        assert_eq!(crate::provenance::kept_confidential(&ws), ["a2/b/deep.txt"]);
-        assert!(crate::builtin::confidential_in(&[], &ws, "a2/b/deep.txt"));
-        assert!(!shown("cat a2/b/deep.txt | od -c; echo end").contains("d   e   e   p"));
-
-        // Moved and a link left where it was: the old name still leads to
-        // it, and it is still known to be elsewhere.
+        std::fs::rename(ws.join("a"), ws.join("a2")).unwrap();
         let run = sandbox
             .run(
                 &[Mount::workspace(&ws)],
                 WORKSPACE,
-                "mv a2 a3 && ln -s a3 a2 && echo linked",
+                "cat a2/b/deep.txt | od -c; echo end",
             )
             .unwrap();
-        assert_eq!(run.stdout, "linked\n", "{}", run.render());
-        moved(&run, "a2/b/deep.txt", "a3/b/deep.txt");
-        assert!(!shown("base64 a3/b/deep.txt a2/b/deep.txt; echo end").contains("YSBkZWVw"));
+        assert!(!run.render().contains("d   e   e   p"), "{}", run.render());
+        moved(&run, "a/b/deep.txt", "a2/b/deep.txt");
+        assert_eq!(crate::provenance::kept_confidential(&ws), ["a2/b/deep.txt"]);
+        assert!(crate::builtin::confidential_in(&[], &ws, "a2/b/deep.txt"));
 
-        // Moved by something no command of ours was waiting for (one left
-        // running in a terminal, say), to a name with a space before it:
-        // known the next time anything asks whether a path is confidential.
-        std::fs::remove_file(ws.join("a2")).unwrap();
+        // Moved and a link left where it was: the old name still leads to
+        // it, and it is still known to be elsewhere.
+        std::fs::rename(ws.join("a2"), ws.join("a3")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("a3", ws.join("a2")).unwrap();
+        let run = sandbox
+            .run(
+                &[Mount::workspace(&ws)],
+                WORKSPACE,
+                "base64 a3/b/deep.txt a2/b/deep.txt; echo end",
+            )
+            .unwrap();
+        assert!(!run.render().contains("YSBkZWVw"), "{}", run.render());
+        moved(&run, "a2/b/deep.txt", "a3/b/deep.txt");
+
+        // Moved between two calls of tools, to a name with a space before
+        // it: known the next time anything asks whether a path is
+        // confidential.
+        let _ = std::fs::remove_file(ws.join("a2"));
         std::fs::rename(ws.join("a3"), ws.join(" odd")).unwrap();
         assert!(crate::builtin::confidential_in(&[], &ws, " odd/b/deep.txt"));
         let late = crate::provenance::take_displaced(&ws);
@@ -1475,11 +1540,26 @@ mod tests {
         assert_eq!(late[0].now, [" odd/b/deep.txt"]);
         assert!(!shown("base64 ' odd/b/deep.txt'; echo end").contains("YSBkZWVw"));
 
-        // A file written anew where it was, as the runtime's own tools
-        // write, was not moved: nothing is told, and it stays hidden.
+        // A hidden file the runtime's own tools write anew stays the file
+        // it was: a sandbox that is running hides that file, and one put
+        // in its place by a rename would be shown there.
+        let before = std::fs::metadata(ws.join("secret.txt")).unwrap();
+        assert!(crate::provenance::is_seen(&ws.join("secret.txt")));
         crate::builtin::write_aside(&ws.join("secret.txt"), b"ANOTHER SECRET LINE\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let after = std::fs::metadata(ws.join("secret.txt")).unwrap();
+            assert_eq!(before.ino(), after.ino());
+        }
+        assert_eq!(
+            std::fs::read_to_string(ws.join("secret.txt")).unwrap(),
+            "ANOTHER SECRET LINE\n"
+        );
         assert!(!shown("cat secret.txt; echo end").contains("ANOTHER"));
         assert!(crate::provenance::take_displaced(&ws).is_empty());
+        // A file that is not hidden is still replaced whole.
+        assert!(!crate::provenance::is_seen(&ws.join("ok.txt")));
 
         // A name with a backslash in it is hidden under that name, and no
         // file of another name is made on the way.
@@ -1488,7 +1568,8 @@ mod tests {
         assert!(!ws.join("keys-").exists());
 
         // Moved to a name that is not text, which cannot be kept as a
-        // path: it is looked for again at every look, and hidden there.
+        // path: it is looked for again at every look, hidden there, and a
+        // path that is not text is taken for it.
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
@@ -1503,7 +1584,50 @@ mod tests {
             assert_eq!(run.displaced.len(), 1, "{:?}", run.displaced);
             assert_eq!(run.displaced[0].path, " odd/b/deep.txt");
             assert!(!shown(peek).contains("YSBkZWVw"));
+            assert!(crate::builtin::confidential_in(
+                &[],
+                &ws,
+                "n\u{fffd}o/b/deep.txt"
+            ));
+            assert!(crate::provenance::echoes_confidential(
+                &ws,
+                "1: a deep secret line"
+            ));
             std::fs::rename(ws.join(&odd), ws.join(" odd")).unwrap();
+            assert!(crate::builtin::confidential_in(&[], &ws, " odd/b/deep.txt"));
+            crate::provenance::take_displaced(&ws);
+        }
+
+        // Moved into a directory that cannot be read: it is somewhere a
+        // command could be shown it, and none is run until it is found.
+        // (Where the tests run as root, every directory can be read.)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir(ws.join("hold")).unwrap();
+            std::fs::rename(ws.join(" odd"), ws.join("hold/odd")).unwrap();
+            let shut = |mode| {
+                std::fs::set_permissions(ws.join("hold"), std::fs::Permissions::from_mode(mode))
+                    .unwrap()
+            };
+            shut(0o000);
+            if std::fs::read_dir(ws.join("hold")).is_err() {
+                let refused = sandbox
+                    .run(&[Mount::workspace(&ws)], WORKSPACE, "echo ran")
+                    .unwrap_err();
+                assert!(refused.contains("cannot be read"), "{refused}");
+                assert!(crate::provenance::look(&ws).lost.is_some());
+            }
+            shut(0o700);
+            assert!(crate::builtin::confidential_in(
+                &[],
+                &ws,
+                "hold/odd/b/deep.txt"
+            ));
+            assert!(crate::provenance::look(&ws).lost.is_none());
+            crate::provenance::take_displaced(&ws);
+            assert!(!shown("base64 hold/odd/b/deep.txt; echo end").contains("YSBkZWVw"));
+            std::fs::rename(ws.join("hold/odd"), ws.join(" odd")).unwrap();
             assert!(crate::builtin::confidential_in(&[], &ws, " odd/b/deep.txt"));
             crate::provenance::take_displaced(&ws);
         }

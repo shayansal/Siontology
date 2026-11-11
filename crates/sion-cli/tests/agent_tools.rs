@@ -266,18 +266,41 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
             "nothing confidential reached the session:\n{text}"
         );
 
-        // A directory above a hidden file moved: held, told, and hidden
-        // where it went, in this session and the next.
+        // A directory above a hidden file cannot be moved by a command, in
+        // the shell or by something left running in a terminal.
         let (saved, text) = run(
             "move.json",
             json!([
-                {"call": "shell", "input": {"command": "mv deals offers && echo moved"}},
-                {"call": "shell", "input": {"command": "cat offers/2026/terms.txt; echo end"}},
-                {"say": "Moved."}
+                {"call": "shell", "input": {"command": "mv deals offers; ls -d deals offers; echo tried"}},
+                {"call": "terminal_run", "input": {"command": "(sleep 1; mv deals bids) >/dev/null 2>&1 & echo started"}},
+                {"call": "terminal_run", "input": {"command": "sleep 2; ls -d deals bids; echo waited"}},
+                {"say": "It would not move."}
             ]),
             vaulted(),
         );
         let shown = results_of(&saved);
+        assert!(shown[0].0.contains("tried"), "{text}");
+        assert!(shown[2].0.contains("waited"), "{text}");
+        assert!(vault.join("deals/2026/terms.txt").is_file(), "{text}");
+        assert!(!vault.join("offers").exists() && !vault.join("bids").exists());
+        assert!(!saved.state.standing.confidential, "{text}");
+
+        // Moved by the operator between two sessions: the file is known by
+        // what it is, found where it went, hidden there, and the session
+        // told and held; read where it went, it is confidential still.
+        std::fs::rename(vault.join("deals"), vault.join("offers")).unwrap();
+        let (saved, text) = run(
+            "after.json",
+            json!([
+                {"call": "shell", "input": {"command": "base64 offers/2026/terms.txt; echo end"}},
+                {"call": "read_file", "input": {"path": "offers/2026/terms.txt"}},
+                {"say": "Read."}
+            ]),
+            vaulted(),
+        );
+        let shown = results_of(&saved);
+        // "the price" in base64 begins dGhlIHByaWNl.
+        assert!(!shown[0].0.contains("dGhlIHByaWNl"), "{text}");
         assert!(
             shown[0]
                 .0
@@ -285,52 +308,40 @@ fn an_agent_uses_a_shell_scripts_mcp_servers_storage_and_subagents() {
                 && shown[0].0.contains("the session is held as having read it"),
             "{text}"
         );
-        assert!(!shown[1].0.contains("9 million"), "{text}");
-        assert!(saved.state.standing.confidential, "{text}");
-        let (saved, text) = run(
-            "after.json",
-            json!([
-                {"call": "shell", "input": {"command": "cat offers/2026/terms.txt; echo end"}},
-                {"call": "read_file", "input": {"path": "offers/2026/terms.txt"}},
-                {"say": "Read."}
-            ]),
-            vaulted(),
-        );
-        let shown = results_of(&saved);
-        assert!(!shown[0].0.contains("9 million"), "{text}");
         assert!(shown[1].0.contains("9 million"), "{text}");
-        assert!(
-            saved.state.standing.confidential,
-            "read where it went, it is confidential still:\n{text}"
-        );
+        assert!(saved.state.standing.confidential, "{text}");
 
-        // Moved again by something left running in a terminal, after the
-        // command that started it had answered: the file is known by what
-        // it is, so it is found, hidden and held where it went, and the
-        // terminal's next answer says so.
+        // A file the runtime writes anew while a terminal is open stays
+        // behind the terminal's mounts; a confidential file made since the
+        // terminal opened is not behind them, so the terminal is closed
+        // before anything more runs in it.
         let (saved, text) = run(
-            "background.json",
+            "stale.json",
             json!([
-                {"call": "terminal_run", "input": {"command": "(sleep 1; mv offers bids) >/dev/null 2>&1 & echo started"}},
-                {"call": "terminal_run", "input": {"command": "sleep 3; echo waited"}},
-                {"call": "shell", "input": {"command": "base64 bids/2026/terms.txt; echo end"}},
-                {"call": "read_file", "input": {"path": "bids/2026/terms.txt"}},
-                {"say": "Read."}
+                {"call": "terminal_run", "input": {"command": "echo open"}},
+                {"call": "write_file", "input": {"path": "offers/2026/terms.txt", "content": "the price is 11 million\n"}},
+                {"call": "terminal_run", "input": {"command": "cat offers/2026/terms.txt; echo still-hidden"}},
+                {"call": "write_file", "input": {"path": "private-2.txt", "content": "nothing yet\n"}},
+                {"call": "terminal_run", "input": {"command": "echo same-terminal"}},
+                {"say": "Done."}
             ]),
-            vaulted(),
+            Equipment {
+                confidential_files: vec![
+                    "private/".into(),
+                    "deals/2026/terms.txt".into(),
+                    "private-*".into(),
+                ],
+                ..vaulted()
+            },
         );
         let shown = results_of(&saved);
-        assert!(shown[0].0.contains("started"), "{text}");
+        assert!(shown[2].0.contains("still-hidden"), "{text}");
+        assert!(!shown[2].0.contains("11 million"), "{text}");
         assert!(
-            shown[1]
-                .0
-                .contains("offers/2026/terms.txt (now bids/2026/terms.txt)"),
+            shown[4].0.contains("was closed") && shown[4].0.contains("same-terminal"),
             "{text}"
         );
-        // "the price" in base64 begins dGhlIHByaWNl.
-        assert!(!shown[2].0.contains("dGhlIHByaWNl"), "{text}");
-        assert!(shown[3].0.contains("9 million"), "{text}");
-        assert!(saved.state.standing.confidential, "{text}");
+        std::fs::remove_file(vault.join("private-2.txt")).unwrap();
 
         // A copy under another name, read by a tool that does not know it:
         // what it says is known for what it is.

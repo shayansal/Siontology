@@ -20,9 +20,13 @@ Commit messages before the rename use the working name, Fold.
   key directory (a JWK Set) to publish at that address; `show` prints it
   again and `remove` ends it. A site that checks can then tell whose
   agent asks. Only requests over HTTPS are signed; the signature covers
-  the host, holds five minutes and has a nonce of its own. Checked
-  against the draft's Ed25519 test vector. Without a web identity,
-  nothing changes.
+  the host, holds five minutes and has a nonce of its own. The host
+  signed is read by the parser the request is made with: a review found
+  that an address like `https://a.example\@b.example/` was signed for
+  one host and sent to the other, which could then have used the
+  signature. The same reading now decides which host a request through a
+  proxy may reach. Checked against the draft's Ed25519 test vector.
+  Without a web identity, nothing changes.
 - An agent with a workspace is told to read an `AGENTS.md` at its top
   before it changes anything there, and to take it as the project's own
   notes, not its principal's word: it is read with `read_file` like any
@@ -47,14 +51,21 @@ Commit messages before the rename use the working name, Fold.
   not have known. Until now only `read_file` and a line printed as
   written held a session. The system prompt says that commands are
   refused such files and that they are read with `read_file`.
-- A confidential file is known by what it is, its device and inode, as
-  well as by its name. One moved with a directory above it, by a command
-  or by something left running in a terminal, is looked for before and
-  after every command, at every answer a terminal gives and whenever a
-  tool asks whether a path is confidential, and kept confidential where
-  it is found, for later sessions too; the next command's result says so
-  and holds the session. A link left in the old place does not cover the
-  move. A confidential file moved by `apply_patch` stays confidential.
+- Neither a hidden file nor a directory above it can be moved or removed
+  by a command: each is a mount of its own in the sandbox.
+- A confidential file is also known by what it is: its device, its
+  inode and when it was made. One moved by the operator or a program of
+  theirs is looked for before and after every command, at every answer a
+  terminal gives and whenever a tool asks whether a path is
+  confidential, and kept confidential where it is found, for later
+  sessions too; the next command's result says so and holds the session.
+  A link left in the old place does not cover the move. One that cannot
+  be found (more than two million entries, or a directory that cannot be
+  read) stops commands until it is put back or forgotten. A confidential
+  file moved by `apply_patch` stays confidential.
+- The runtime's own tools write a hidden file in place, so that it stays
+  the file an open terminal hides; a terminal whose masks no longer match
+  what is confidential is closed before anything more runs in it.
 - What every tool returns is looked at for lines of a confidential file
   or of a file from outside, not only what the shell prints: an MCP
   server's tool, a skill's script or the browser that returns one holds
@@ -73,13 +84,19 @@ Commit messages before the rename use the working name, Fold.
   `git show` reads in the sandbox (`agent:confidential-label`). Keep
   confidential files out of the repository: to git in the sandbox a
   hidden tracked file looks changed or deleted.
-- An independent review of the first version of this found that a move
-  made in the background of a terminal, or covered by a link left in the
-  old place, was not noticed; that paths kept were read as patterns, so
-  that a file moved to a name like `*` hid the workspace; that names
-  with a backslash or a leading space were hidden under another name;
-  and that the guide said a hidden file reads as empty where bubblewrap
-  refuses it. All are fixed here, each with a test.
+- Two independent reviews of this went into it. The first found that a
+  move made in the background of a terminal, or covered by a link left
+  in the old place, was not noticed; that paths kept were read as
+  patterns, so that a file moved to a name like `*` hid the workspace;
+  that names with a backslash or a leading space were hidden under
+  another name; and that the guide said a hidden file reads as empty
+  where bubblewrap refuses it. The second found that a file moved into a
+  directory then made unreadable was taken for gone; that a file the
+  runtime wrote anew lost its mask in a terminal already open; that a
+  move could race a sandbox's start; that an inode's number given to
+  another file took that file for the confidential one; and that a file
+  no longer named was reported as moved. What is fixed is fixed here,
+  most of it with a test; what is not is in the guide's list of limits.
 - Four more rows in the table of attacks tried
   (`crates/sion-agent/tests/attacks.rs`), and a sixth benchmark suite,
   `injection-varied`: twelve injections that do not come as a line in a

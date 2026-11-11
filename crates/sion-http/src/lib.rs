@@ -902,23 +902,64 @@ fn proxy_authorization(url: &str) -> Option<String> {
     Some(format!("Basic {}", base64(&decoded)))
 }
 
-/// The host of an `http` or `https` URL, lower-cased, without brackets.
+/// Where a request to a URL goes: its scheme, its host, and its port if
+/// the URL names one that is not the scheme's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Destination {
+    /// `http` or `https`.
+    pub scheme: String,
+    /// The host in lower case, an IPv6 address in brackets.
+    pub host: String,
+    /// The port, unless it is the scheme's own.
+    pub port: Option<u16>,
+}
+
+impl Destination {
+    /// The host, and the port if there is one: what a request's `Host`
+    /// header says, and what a signature of the request's authority covers.
+    pub fn authority(&self) -> String {
+        match self.port {
+            Some(port) => format!("{}:{port}", self.host),
+            None => self.host.clone(),
+        }
+    }
+}
+
+/// Where a request to `url` goes, read by the parser the client's
+/// requests are made with. Whatever is checked or signed for a URL must
+/// be about the host the request reaches, and two readings of a URL can
+/// differ: a backslash is a slash to that parser, a host may be written
+/// as a number or with escapes, and what looks like the host before an
+/// `@` may be a user's name. Only `http` and `https` URLs go anywhere.
+pub fn destination(url: &str) -> Result<Destination, HttpError> {
+    let parsed = ureq::request("GET", url)
+        .request_url()
+        .map_err(|e| HttpError::Refused(format!("{url}: {e}")))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(HttpError::Refused(format!(
+            "{url}: only http and https URLs"
+        )));
+    }
+    Ok(Destination {
+        scheme: scheme.to_string(),
+        host: parsed.host().to_ascii_lowercase(),
+        port: parsed.port(),
+    })
+}
+
+/// The host of an `http` or `https` URL, lower-cased, without brackets:
+/// the one the request goes to ([`destination`]).
 fn check_url(url: &str) -> Result<String, HttpError> {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .ok_or_else(|| HttpError::Refused(format!("{url}: only http and https URLs")))?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit('@').next().unwrap_or("");
-    let host = if let Some(bracketed) = authority.strip_prefix('[') {
-        bracketed.split(']').next().unwrap_or("")
-    } else {
-        authority.split(':').next().unwrap_or("")
-    };
+    let host = destination(url)?.host;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(&host);
     if host.is_empty() {
         return Err(HttpError::Refused(format!("{url}: no host")));
     }
-    Ok(host.to_ascii_lowercase())
+    Ok(host.to_string())
 }
 
 /// Whether a host name or literal address may be reached when the name is
@@ -1209,7 +1250,34 @@ mod tests {
         assert_eq!(check_url("http://user@[::1]:80/").unwrap(), "::1");
         assert!(check_url("file:///etc/passwd").is_err());
         assert!(check_url("ftp://example.org/").is_err());
-        assert!(check_url("http:///nohost").is_err());
+        // The client's own reading: slashes too many are passed over, a
+        // backslash is a slash, a host written as a number is the address,
+        // and what stands before an @ is a user's name only where the
+        // client takes it for one.
+        assert_eq!(check_url("http:///nohost").unwrap(), "nohost");
+        assert_eq!(
+            check_url("https://evil.example\\@good.example/x").unwrap(),
+            "evil.example"
+        );
+        assert_eq!(check_url("http://0x7f.1/").unwrap(), "127.0.0.1");
+        assert_eq!(check_url("http://2130706433/").unwrap(), "127.0.0.1");
+        assert_eq!(
+            check_url("https://user:pw@good.example/@evil.example").unwrap(),
+            "good.example"
+        );
+        assert!(check_url("example.org/path").is_err());
+        assert_eq!(
+            destination("HTTPS://Example.org:443/a")
+                .unwrap()
+                .authority(),
+            "example.org"
+        );
+        assert_eq!(
+            destination("http://[2001:DB8::1]:8080/")
+                .unwrap()
+                .authority(),
+            "[2001:db8::1]:8080"
+        );
         assert!(!public_host("localhost"));
         assert!(!public_host("printer.local"));
         assert!(!public_host("intranet"));

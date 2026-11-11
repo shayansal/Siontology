@@ -202,45 +202,16 @@ pub fn directory(public: &[u8; 32]) -> serde_json::Value {
 }
 
 /// The authority of `url` as a signature covers it (RFC 9421, 2.2.3): the
-/// host in lower case, and the port unless it is the scheme's own.
+/// host in lower case, and the port unless it is the scheme's own. It is
+/// read by the parser the request is made with ([`sion_http::destination`]),
+/// so that what is signed is the host the request goes to and no other: a
+/// URL two parsers read differently (`https://a.example\@b.example/`)
+/// would otherwise be signed for one host and sent to another, which
+/// could then use the signature at the first.
 pub fn authority(url: &str) -> Result<String, String> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| format!("{url} is not an absolute address"))?;
-    let default = match scheme.to_ascii_lowercase().as_str() {
-        "https" => "443",
-        "http" => "80",
-        other => return Err(format!("{other} is not http or https")),
-    };
-    let host_port = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // What comes before an @ is not the host.
-    let host_port = host_port.rsplit('@').next().unwrap_or_default();
-    let (host, port) = match host_port.strip_prefix('[') {
-        // An IPv6 address, in brackets.
-        Some(v6) => {
-            let (address, after) = v6
-                .split_once(']')
-                .ok_or_else(|| format!("{url} has an address that does not close"))?;
-            (format!("[{address}]"), after.strip_prefix(':'))
-        }
-        None => match host_port.rsplit_once(':') {
-            Some((host, port)) => (host.to_string(), Some(port)),
-            None => (host_port.to_string(), None),
-        },
-    };
-    if host.is_empty() || host == "[]" {
-        return Err(format!("{url} names no host"));
-    }
-    let host = host.to_ascii_lowercase();
-    Ok(match port {
-        Some(port) if !port.is_empty() && port != default => {
-            if !port.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(format!("{url} has a port that is not a number"));
-            }
-            format!("{host}:{port}")
-        }
-        _ => host,
-    })
+    sion_http::destination(url)
+        .map(|to| to.authority())
+        .map_err(|e| e.to_string())
 }
 
 /// Whether `authority` is this machine itself: `localhost`, or a loopback
@@ -426,13 +397,18 @@ mod tests {
             ("https://[2001:DB8::1]:8443/x", "[2001:db8::1]:8443"),
             ("https://[2001:db8::1]/x", "[2001:db8::1]"),
             ("https://example.com?x=1", "example.com"),
+            // As the client reads them, which is where the request goes: a
+            // backslash ends the host, so what follows the @ is a path.
+            ("https://evil.example\\@good.example/x", "evil.example"),
+            ("https://good.example/@evil.example", "good.example"),
+            ("https://good.example?@evil.example", "good.example"),
+            ("http://0x7f.1:8080/", "127.0.0.1:8080"),
         ] {
             assert_eq!(authority(url).as_deref(), Ok(expected), "{url}");
         }
         for bad in [
             "example.com",
             "ftp://example.com/",
-            "https:///x",
             "https://example.com:x/",
             "https://[::1/x",
         ] {

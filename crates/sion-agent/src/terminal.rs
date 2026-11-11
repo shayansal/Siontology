@@ -74,10 +74,19 @@ struct Terminal {
     input: ChildStdin,
     printed: Arc<(Mutex<Printed>, Condvar)>,
     commands: u64,
+    /// What it hides of the workspace: what was confidential there when it
+    /// opened, each with what it was. Its mounts are of those files and of
+    /// no others.
+    hides: Vec<(std::path::PathBuf, crate::provenance::Identity)>,
 }
 
 impl Terminal {
     fn open(sandbox: &Sandbox, root: &std::path::Path) -> Result<Terminal, String> {
+        let hides = if sandbox.hidden.is_some() {
+            crate::provenance::hidden_now(root)
+        } else {
+            Vec::new()
+        };
         // bash if the sandbox has it; its standard error joins its output.
         let argv = vec![
             "/bin/sh".to_string(),
@@ -123,6 +132,7 @@ impl Terminal {
             input,
             printed,
             commands: 0,
+            hides,
         };
         terminal.send(&format!("mkdir -p {STATE}; __sion_sh=${{BASH:-/bin/sh}}\n"))?;
         Ok(terminal)
@@ -335,9 +345,35 @@ impl Terminals {
         crate::provenance::marked_after(&self.root, &displaced, outcome)
     }
 
+    /// Closes the terminal `name` if what it hides is no longer what is
+    /// confidential in the workspace: a file made or moved there since it
+    /// opened, or one written anew by something outside it, is not behind
+    /// its mounts, and what runs in it would be shown the file. Returns
+    /// whether it was closed.
+    fn closed_if_stale(&self, open: &mut BTreeMap<String, Terminal>, name: &str) -> bool {
+        if self.sandbox.hidden.is_none() {
+            return false;
+        }
+        let stale = open
+            .get(name)
+            .is_some_and(|terminal| terminal.hides != crate::provenance::hidden_now(&self.root));
+        if stale {
+            if let Some(terminal) = open.remove(name) {
+                terminal.close(&self.sandbox);
+            }
+        }
+        stale
+    }
+
     fn run(&self, name: &str, command: &str, seconds: u64) -> Outcome {
         let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
         let mut note = String::new();
+        if self.closed_if_stale(&mut open, name) {
+            note = format!(
+                "[terminal {name} was closed, and what ran in it stopped: what is kept from \
+                 commands in the workspace changed since it opened]\n"
+            );
+        }
         if !open.contains_key(name) {
             if open.len() >= MAX_TERMINALS {
                 return Outcome::error(format!(
@@ -348,7 +384,7 @@ impl Terminals {
             match Terminal::open(&self.sandbox, &self.root) {
                 Ok(terminal) => {
                     open.insert(name.to_string(), terminal);
-                    note = format!("[a new terminal, {name}, in {WORKSPACE}]\n");
+                    note.push_str(&format!("[a new terminal, {name}, in {WORKSPACE}]\n"));
                 }
                 Err(e) => return Outcome::error(format!("no terminal could be opened: {e}")),
             }
@@ -410,6 +446,15 @@ impl Terminals {
 
     fn read(&self, name: &str, seconds: u64) -> Outcome {
         let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if self.closed_if_stale(&mut open, name) {
+            // What it printed since may be of a file it should not have
+            // been shown: not passed on.
+            return self.outcome(Outcome::ok(format!(
+                "[terminal {name} was closed, and what ran in it stopped: what is kept from \
+                 commands in the workspace changed since it opened. What it printed since its \
+                 last answer is not shown]"
+            )));
+        }
         let Some(terminal) = open.get_mut(name) else {
             return Outcome::error(format!("no terminal {name} is open"));
         };

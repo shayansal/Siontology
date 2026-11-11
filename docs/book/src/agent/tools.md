@@ -404,6 +404,9 @@ What it is and is not (`agent:web-identity`):
 - One identity signs for every agent on this machine: sites can tell
   that requests come from the same operator, which is the point, and
   which an operator who wants otherwise should weigh before making one.
+- The host that is signed is read from the address by the parser the
+  request is made with, so that an address two parsers read differently
+  is not signed for one host and sent to another.
 - The signature covers the host, not the path or the body, as the draft
   asks at the least: whoever sees a signed request could send another to
   the same host under it for five minutes. So only requests over HTTPS
