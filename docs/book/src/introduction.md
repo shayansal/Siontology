@@ -125,6 +125,7 @@ summary.
 | Agents: work it takes on by itself from GitHub and chats, under mandates on the ledger, its pull requests' reviews and checks followed (beyond the paper) | Built (devnet scale; tested against stand-ins for GitHub and Telegram) |
 | Agents: renting by the token from an attested enclave, agents' records, public reads for other frameworks (beyond the paper) | Built (devnet scale; renting run end to end with a simulated enclave, no AMD hardware reached; the public reads tested in units) |
 | Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Built (devnet scale; tested with scripted models; the meeting guest's voice wired and tested in units, its microphone and a meeting not run) |
+| Agents: what an agent shows a third party — lessons and attack reports shared between owners, a record and a warranty, zero-knowledge proofs of rules kept, sealed exams, receipts for which model answered, a market for their work, a flight recorder for one that drives a machine, datasets of checked work (beyond the paper) | Built (devnet scale; tested with scripted models and a simulated enclave, not with a real model or AMD hardware) |
 | Agents: improving itself from its own work — changes it writes, tasks from its sessions sealed on the ledger, the improver improving itself, changes to its own code released and attested (beyond the paper) | Built (devnet scale; tested with scripted models, and for code with a small harness in Python in bubblewrap; not run on this repository's own code, nor with a real model) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
@@ -136,14 +137,14 @@ summary.
 | Ordering: two levels of finality | Built |
 | Execution: prove heavy, execute light | Simulated (replay proofs) |
 | Execution: N-version proving | Built (two independent replay stacks) |
-| Execution: proving market | Not built |
+| Execution: proving market | Partly built (off consensus: a request for a Pulse's proof is a Task Charter that pays whoever delivers it once the verifiers it names attest it on their bonds; replay proofs; no bidding or collateral, and the ledger checks no proof) |
 | The Fold: World Proof per Pulse | Simulated (replay proofs, real bindings) |
 | Knowledge layer: claims and the Assurance Algebra | Built |
 | Verifiable Clearing | Built |
 | Privacy: encrypted payloads, viewing keys, sealed orders | Built |
-| Privacy: confidential amounts, zero-knowledge compliance | Not built |
+| Privacy: confidential amounts, zero-knowledge compliance | Partly built (zero-knowledge proofs that committed payments and a record's figures keep rules, made and checked off the ledger; amounts on the ledger are public) |
 | Interfaces: CLI, HTTP API, MCP server for agents | Built |
-| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated) |
+| Interfaces: x402, AP2, ERC-8004, C2PA adapters | Partly built (x402; AP2 and ACP; card networks simulated; ERC-8004's registration file and calls, written for a wallet to send; C2PA sidecar manifests, ES256) |
 | Interfaces: the app, a light node on every device (beyond the paper) | Partly built (desktop shell built and run; mobile configured, not built) |
 | Payments: streams with checkpoint settlement (beyond the paper) | Built (devnet scale) |
 | Memory: logs for agents and robots, kept append-only by the ledger (beyond the paper) | Built (devnet scale) |
@@ -152,7 +153,7 @@ summary.
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
 | Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale) |
-| Economics: payments to provers, value-in-flight cap | Not built |
+| Economics: payments to provers, value-in-flight cap | Not built (the protocol pays no prover; a requester can, from its own escrow) |
 | Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
 
 The implementation also adds trust assumptions of its own, such as

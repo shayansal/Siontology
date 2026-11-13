@@ -132,7 +132,9 @@ The guide [Staking and epochs](../guides/staking.md) walks through both.
 - **Equivocation is reported by hand.** A validator that sees two headers
   from one author for one round logs it but does not submit the report;
   anyone holding the two signed messages can.
-- **Not built**: the value-in-flight cap and payments to provers.
+- **Not built**: the value-in-flight cap and payments to provers by the
+  protocol. A requester can pay for a Pulse's proof from its own escrow
+  ([A market for proofs](../guides/proving.md)).
 
 `sion_consensus::capture_probability(byzantine_fraction, seats)` computes
 the chance that a sampled committee is captured, as a binomial tail. It is

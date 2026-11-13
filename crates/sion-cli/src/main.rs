@@ -288,6 +288,11 @@ enum Command {
     /// posted; attest, submit and settle results; cancel.
     #[command(subcommand)]
     Task(sion_cli::tasks::TaskCommand),
+    /// A market for proofs of Pulses: ask for a Pulse's World Proof with a
+    /// payment in escrow, deliver one, and attest one as a verifier after
+    /// checking it under both proof stacks
+    #[command(subcommand)]
+    Proving(sion_cli::proving::ProvingCommand),
     /// Pooled stake: delegate to a validator without handing the stake
     /// over, collect rewards, leave; set a validator's commission.
     #[command(subcommand)]
@@ -1362,6 +1367,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             *command,
         )?,
         Command::Task(command) => sion_cli::tasks::run(&mut session, ledger, command)?,
+        Command::Proving(command) => sion_cli::proving::run(&mut session, ledger, command)?,
         Command::Stake(command) => sion_cli::stake::run(&mut session, ledger, command)?,
         Command::Memory(command) => sion_cli::memory::run(&mut session, ledger, command)?,
         Command::Skill(command) => sion_cli::skills::run(&mut session, ledger, command)?,

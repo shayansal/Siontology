@@ -99,6 +99,7 @@ pub mod phone;
 pub mod practice;
 pub mod profiles;
 pub mod projects;
+pub mod proving;
 pub mod qq;
 pub mod realtime;
 pub mod recall;

@@ -45,7 +45,12 @@ simulated:
 - **Succinct proofs.** World Proofs are replay proofs. A succinct,
   hash-based proof stack would plug into the existing `ProofStack`
   interface.
-- **A proving market**, and payments to provers.
+- **A proving market in the protocol**, and payments to provers. What
+  exists is beside consensus: a request for a Pulse's proof, paid from
+  the requester's escrow once the verifiers it names attest the proof
+  ([A market for proofs](../guides/proving.md)). Provers bidding,
+  collateral for a missed deadline, and the ledger checking a proof
+  itself are not built.
 - **Networking between machines**, beyond what is simplified today:
   `sion node` processes talk QUIC, tested on one machine, with peers from
   files; a validator that stops cannot rejoin.

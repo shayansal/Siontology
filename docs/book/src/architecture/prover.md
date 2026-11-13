@@ -71,5 +71,11 @@ chaining and bindings unchanged.
 
 ## Not built
 
-A proving market, payments to provers, recursion, and more than one
-prover. With `--no-prove` the devnet runs no prover at all.
+Recursion, more than one prover in a node, and payment of provers by the
+protocol. With `--no-prove` the devnet runs no prover at all.
+
+A market for proofs exists beside consensus: `sion proving` posts a
+request for the World Proof of a Pulse, and pays whoever delivers it once
+the verifiers the request names have checked and attested it. The proofs
+it trades are the replay proofs of this page, and the ledger checks none
+of them itself ([A market for proofs](../guides/proving.md)).

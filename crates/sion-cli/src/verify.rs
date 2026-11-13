@@ -91,6 +91,78 @@ pub fn verify_pulse(
     Ok(verify_pulse_report(ledger, pinned, pulse, samples, world)?.lines)
 }
 
+/// Checks a World Proof that someone delivered, not one this node serves:
+/// that the proof is of the header of its Pulse and verifies leaf by leaf
+/// under both proof stacks. With `samples`, the Pulse is first checked as
+/// a light client (its certified header, and that many shares of its
+/// data), and the proof's lane certificates after; without, the header is
+/// the node's word. Returns the checks, one line each.
+pub fn verify_delivered(
+    ledger: &dyn Ledger,
+    pinned: Option<Hash32>,
+    proof: &WorldProof,
+    samples: Option<usize>,
+) -> Result<Vec<String>, CliError> {
+    let checked = match samples {
+        Some(samples) => Some(verify_pulse_report(
+            ledger,
+            pinned,
+            Some(proof.pulse),
+            samples,
+            false,
+        )?),
+        None => None,
+    };
+    let mut lines = checked
+        .as_ref()
+        .map(|checked| checked.lines.clone())
+        .unwrap_or_default();
+    let header = ledger.pulse_view(Some(proof.pulse))?.header;
+    if proof.pulse != header.pulse
+        || proof.before != header.before
+        || proof.after != header.after
+        || proof.receipts_root != header.receipts_root
+        || proof.data_root != header.data_root
+        || proof.data_k != header.data_k
+        || proof.beacon() != header.beacon
+    {
+        return Err(CliError::Verification(
+            "the World Proof is not of the certified header of its Pulse".into(),
+        ));
+    }
+    let stacks: Vec<&dyn ProofStack> = vec![&ReplayStack, &SpecStack];
+    let report = verify_world_proof(proof, &stacks)
+        .map_err(|e| CliError::Verification(format!("the World Proof: {e}")))?;
+    lines.push(format!(
+        "world proof: {} leaves verified under stacks {:?}, {} KB{} \u{2713}",
+        report.leaves,
+        report.stacks,
+        report.bytes / 1024,
+        if report.simulated {
+            "; replay proofs simulate succinct ones"
+        } else {
+            ""
+        }
+    ));
+    let Some(checked) = checked else {
+        return Ok(lines);
+    };
+    let validators = ledger.query(Query::Validators)?;
+    let chain: ChainSpec = parse(validators["chain"].clone())?;
+    if chain.insecure_signatures {
+        lines.push("lane certificates: SKIPPED — insecure simulation signatures".into());
+    } else {
+        sion_prover::verify_certificates(proof, checked.chain, chain.shards, None)
+            .map_err(|e| CliError::Verification(e.to_string()))?;
+        lines.push(format!(
+            "lane certificates: all {} executed transactions locked their inputs with a quorum \
+             of their shard's committee \u{2713}",
+            proof.certificates.len()
+        ));
+    }
+    Ok(lines)
+}
+
 /// What [`verify_pulse_report`] established.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PulseReport {

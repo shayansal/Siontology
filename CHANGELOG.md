@@ -10,6 +10,32 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A market for proofs
+
+- `sion proving` asks for the World Proof of a Pulse and pays for it,
+  with no change to consensus. `request` posts a Task Charter that
+  escrows the payment, names the proof system and the verifiers who must
+  each attest the proof, and can name the prover. `fetch` takes the
+  proof from a proving node and checks it. `attest` checks a delivered
+  proof as a verifier (the Pulse's header as a light client checks one,
+  against the chain the request names; the proof's bindings to that
+  header; every leaf under both proof stacks; the lane certificates) and
+  attests it on the verifier's bond. `deliver` settles the request, and
+  the ledger pays the prover only if every attestation asked for is
+  there.
+- What it is not: the proofs are today's replay proofs, which simulate
+  succinct ones, and no succinct proof system is built; the ledger
+  checks the attestations and never the proof; provers do not bid and
+  post no collateral; the protocol itself still pays no prover
+  ([A market for proofs](docs/book/src/guides/proving.md),
+  `impl:proving-market`).
+- The README's and the book's status tables had fallen behind
+  `docs/implementation-status.md` on zero-knowledge compliance and on
+  what an agent shows a third party, and are brought in line with it.
+- A fast test of the work market, which checks that a round is refused
+  from a node that no longer keeps it, failed on slower machines. It no
+  longer depends on how fast transactions land.
+
 ### Datasets of checked work
 
 - `sion agent dataset` builds a dataset from sessions their owners

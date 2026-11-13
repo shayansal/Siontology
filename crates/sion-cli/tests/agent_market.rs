@@ -397,25 +397,24 @@ fn work_is_bid_for_sealed_cleared_at_one_price_and_paid_for_when_accepted() {
 }
 
 /// A node keeps the events of its last Pulses only. A round whose bids it
-/// no longer holds is not cleared from the part it does hold.
+/// no longer holds is not cleared from the part it does hold. Nothing is
+/// sent here, so the test keeps time by Pulses alone.
 #[test]
 fn a_round_is_not_read_from_a_node_that_no_longer_keeps_it() {
     let _one = ENVIRONMENT.lock().unwrap_or_else(|e| e.into_inner());
     let _home = home("agent-market-pruned");
+    const KEPT: u64 = 24;
     let devnet = Arc::new(
         Devnet::start(DevnetConfig {
             rounds_per_pulse: 2,
             prove_chunk: None,
-            history: 8,
+            history: KEPT as usize,
             ..DevnetConfig::default()
         })
         .unwrap(),
     );
     let ledger: SharedLedger = devnet.clone();
-    let mut session = Session::open(ledger.as_ref()).unwrap();
-    session
-        .fund("mona", AssetId::usd(), Amount::units(100))
-        .unwrap();
+    let session = Session::open(ledger.as_ref()).unwrap();
     let now = ledger.as_ref().pulse().unwrap().0;
     let terms = Market {
         name: "pruned".into(),
@@ -439,7 +438,9 @@ fn a_round_is_not_read_from_a_node_that_no_longer_keeps_it() {
         post_within: 100,
         deadline: 2_000,
     };
-    let claim = work_market::open(&mut session, "mona", &terms).unwrap();
+    // A round is read by its market's claim and terms: no bid was made, so
+    // there is nothing to wait for but the Pulses themselves.
+    let claim = ClaimId::derive(b"a market nobody bid in");
     // While the node keeps the round it is read, empty as it is.
     session.wait_until(Pulse(terms.closes(0))).unwrap();
     let (bids, cleared) = work_market::cleared(ledger.as_ref(), claim, &terms, 0)
@@ -447,7 +448,9 @@ fn a_round_is_not_read_from_a_node_that_no_longer_keeps_it() {
         .unwrap();
     assert!(bids.is_empty() && cleared.price.is_none() && cleared.pairs.is_empty());
     // Once it does not, the round is refused, not read in part.
-    session.wait_until(Pulse(terms.closes(0) + 20)).unwrap();
+    session
+        .wait_until(Pulse(terms.bids_from(0) + KEPT + 8))
+        .unwrap();
     let refused = work_market::bids(ledger.as_ref(), claim, &terms, 0)
         .unwrap_err()
         .to_string();

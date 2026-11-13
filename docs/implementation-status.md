@@ -41,7 +41,7 @@ live.
 | Ordering: two levels of finality | Built |
 | Execution: prove heavy, execute light | Simulated (replay proofs) |
 | Execution: N-version proving | Built (two independent replay stacks) |
-| Execution: proving market | Not built |
+| Execution: proving market | Partly built (off consensus: a request for a Pulse's proof is a Task Charter that pays whoever delivers it once the verifiers it names attest it on their bonds; replay proofs; no bidding or collateral, and the ledger checks no proof) |
 | The Fold: World Proof per Pulse | Simulated (replay proofs, real bindings) |
 | Knowledge layer: claims and the Assurance Algebra | Built |
 | Verifiable Clearing | Built |
@@ -57,7 +57,7 @@ live.
 | Economics: staking, rewards, equivocation slashing | Built |
 | Economics: pooled stake, delegation without custody (beyond the paper) | Built (devnet scale) |
 | Economics: storage deals, devices paid to keep data and prove it every round (beyond the paper) | Built (devnet scale) |
-| Economics: payments to provers, value-in-flight cap | Not built |
+| Economics: payments to provers, value-in-flight cap | Not built (the protocol pays no prover; a requester can, from its own escrow) |
 | Networking between machines | Simplified (QUIC between processes, peers from files; a stopped validator cannot rejoin) |
 
 ## By section
@@ -1192,7 +1192,28 @@ window near `u64::MAX` made the reference executor disagree with the
 specification. Both stacks share the hashing, Merkle, signature, Assurance
 Algebra and clearing-certificate code (`impl:shared-primitives`).
 
-**Proving market: not built.** The devnet runs one prover thread.
+**Proving market: partly built, off consensus.** A proving node runs one
+prover thread, and the protocol asks nobody for a proof and pays nobody
+for one. `sion proving` makes a market from what the ledger already has,
+with no change to consensus. A request is a Task Charter: it escrows a
+payment for the World Proof of one Pulse under a named proof system,
+names the verifiers who must each attest it, and can name its prover. A prover delivers the
+proof's bytes. Each verifier checks them (the Pulse's header as a light
+client checks one, the proof's bindings to that header, every leaf under
+both stacks, the lane certificates) and attests on its `verifier` bond.
+Settling pays the prover once every attestation the request asked for is
+there. The only proof system is `replay+spec/v1`, the two replay stacks;
+a request names its system so that a succinct one can be asked for the
+same way. **Not built:** provers bidding against each other, collateral
+forfeited for a missed deadline and the job auctioned again, latency
+classes, any check of a proof by the ledger itself, and a succinct proof
+system ([the plan](book/src/research/succinct-proofs.md))
+(`impl:proving-market`; tested on a devnet: a request, a proof of another
+Pulse and changed proofs refused, a chain other than the one pinned
+refused, an account that is not a verifier refused, one attestation of
+two not settling, the prover paid once, a request that names its prover.
+A challenge to a false attestation is the ledger's path for any bonded
+claim and is not run again in that test).
 
 **Verifiable AI inference: built as claims.** The three tiers (proof,
 attestation, bond) are expressed as claims whose formulas name their atoms
@@ -1705,7 +1726,9 @@ encryption in the tooling (proofs publish the challenged leaves: a client
 encrypts private data itself), and storage proofs aggregated across deals
 (each round's leaves go on the ledger: `storage:raw-proofs`).
 
-**Not built:** payments to provers, a value-in-flight cap.
+**Not built:** payments to provers by the protocol (a requester can pay
+for a Pulse's proof from its own escrow: `impl:proving-market`), a
+value-in-flight cap.
 
 ### Node and operations
 
@@ -1760,6 +1783,7 @@ the architecture's own:
 | Atom | What it means |
 |---|---|
 | `impl:replay-proofs` | World Proofs are checked by re-execution, so "proof finality" costs a verifier as much as executing; succinctness is assumed, not delivered. |
+| `impl:proving-market` | A request for a Pulse's proof is paid on its verifiers' word, not on the ledger's: the ledger checks that every verifier the request names attested the delivered bytes, and never the proof. An attestation is a claim on the verifier's bond, which the adjudicator the request names can rule against; a request that names none leaves nobody to rule. The requester chooses the verifiers, and all of them together with a prover can be paid for bytes that prove nothing. The proofs are replay proofs (`impl:replay-proofs`): a prover does no more than a proving node already does, and the proof system is a name in the request, so that a succinct one can be asked for the same way once there is one. An attestation is of the bytes for the task, not of who made them: in a request open to anyone, whoever settles first with the attested bytes is paid, which is why a request can name its prover. A verifier checks the Pulse's header as a light client does, against the chain the request names and, if it pins one, the chain it knows; that takes a node that still serves the Pulse's data (64 Pulses on a devnet), and a node keeps World Proofs for its last 32 Pulses, so a request is for a Pulse to come or a recent one. A requester can withdraw an open request before it is settled, and a prover whose proof was already attested is then not paid. A prover's own check before delivering takes the header on its node's word. Some of a proof's bytes (the validator set's witness) are bound only by the verifier's check of the lane certificates, not by the check a prover runs. The market makes nothing final: a Pulse's proof finality is its node's, as before. |
 | `impl:shared-primitives` | Both proof stacks use the same hashing, Merkle, signature, Assurance Algebra and clearing-certificate code; a bug there is common-mode. |
 | `impl:devnet-keys` | Devnet validator keys are derived from the chain name; anyone can derive them. A devnet secures nothing of value. |
 | `impl:in-process-network` | `sion devnet` only: validators share a machine and a process; network faults are exercised only through the in-process fault injector and the consensus simulator. A network of `sion node` processes does not carry this atom. |

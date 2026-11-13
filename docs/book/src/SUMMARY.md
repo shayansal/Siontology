@@ -66,6 +66,7 @@
 - [x402: selling and buying an API](guides/x402.md)
 - [Streams from the command line](guides/streams.md)
 - [Light-client verification](guides/light-client.md)
+- [A market for proofs](guides/proving.md)
 
 # Run a network
 

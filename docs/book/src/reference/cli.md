@@ -22,8 +22,9 @@ guides show the commands in use.
   sentence first (`dana signs: …`), then waits up to 90 seconds for it to
   execute and prints the outcome (`Pulse 5: Done: …`) and the digest.
 - **Pinning.** `--chain` (or `SION_CHAIN`) on `verify`, `receipt`, `x402
-  serve` and `x402 fetch` pins the chain identity. Without it, the node
-  vouches for itself, and the output says so.
+  serve`, `x402 fetch`, `proving attest` and `proving show` pins the chain
+  identity. Without it, the node vouches for itself, and the output says
+  so.
 - **Exit status.** 0 on success, 1 on any error, with the message on
   standard error as `error: …`. A transaction that executes but fails
   (`Failed (…)`) still exits 0: the transaction was processed, and you paid
@@ -42,6 +43,7 @@ guides show the commands in use.
 | Agents | `charter create`, `charter pay`, `charter revoke`, `agent register`, `agent spawn`, `agent show`, `agent card`, `agent card-template`, `agent suspend`, `agent resume`, `agent revoke`, `agent reclaim`, `agent run`, `agent continue`, `agent sessions`, `agent trace`, `agent kill-switch`, `agent profile add`, `agent profile list`, `agent profile remove`, `agent schedule add`, `agent schedule list`, `agent schedule remove`, `agent scheduler`, `agent serve`, `agent talk`, `agent meeting`, `agent rent serve`, `agent rent use`, `agent sell serve`, `agent sell orders`, `agent sell fulfill`, `agent sell refund`, `agent sell feed`, `agent buy`, `agent commerce psp`, `agent commerce three-ds`, `agent commerce feeds`, `agent commerce webhooks`, `agent commerce keygen`, `agent hooks add`, `agent browser login`, `agent telegram`, `agent mcp add`, `agent mcp sampling`, `agent mcp resources`, `agent mcp prompts`, `mcp`, `mcp mail`, `mcp calendar`, `mcp documents`, `x402 serve`, `x402 fetch` |
 | Skills | `skill import`, `skill starter`, `skill pack`, `skill audit`, `skill publish`, `skill show`, `skill install`, `skill eval`, `skill evolve`, `skill vouch`, `skill bounty`, `skill verify`, `skill submit`, `skill lineage` |
 | Work | `task post`, `task attest`, `task submit`, `task settle`, `task cancel`, `task show` |
+| Proving | `proving request`, `proving fetch`, `proving attest`, `proving deliver`, `proving show` |
 | Memory | `memory open`, `memory remember`, `memory commit`, `memory recall`, `memory show` |
 | Storage | `storage prepare`, `storage post`, `storage deals`, `storage show`, `storage accept`, `storage prove`, `storage settle`, `storage close`, `storage serve` |
 | Stake | `stake pools`, `stake delegate`, `stake show`, `stake claim`, `stake undelegate`, `stake withdraw`, `stake commission` |
@@ -89,6 +91,7 @@ Commands:
   charter    Agent Charters
   agent      Agent identities: register agents, launch subagents with their own identities, suspend, resume and revoke whole subtrees
   task       Task Charters: escrow work whose acceptance rule is fixed when it is posted; attest, submit and settle results; cancel
+  proving    A market for proofs of Pulses: ask for a Pulse's World Proof with a payment in escrow, deliver one, and attest one as a verifier after checking it under both proof stacks
   stake      Pooled stake: delegate to a validator without handing the stake over, collect rewards, leave; set a validator's commission
   memory     Memory logs for agents and robots: open a log, record atoms locally, commit heads the ledger keeps append-only, and recall with proofs of completeness
   skill      Skills with a supply chain: pack a skill, audit a bundle, publish a release on bonds and audits, show one, install one for an agent under the decision rule; evaluate a skill, evolve it, and have a better version verified by others through a bounty
@@ -6059,6 +6062,118 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion proving`
+
+```text
+A market for proofs of Pulses: ask for a Pulse's World Proof with a payment in escrow, deliver one, and attest one as a verifier after checking it under both proof stacks
+
+Usage: sion proving [OPTIONS] <COMMAND>
+
+Commands:
+  request  Ask for the World Proof of a Pulse: escrow a payment for whoever delivers it, and name the verifiers who must each check and attest it before it is paid
+  fetch    Fetch the World Proof a request wants from your node and check it, as a prover: the file is what you deliver
+  attest   Check a delivered proof against a request, and attest it, as one of the request's verifiers: that it is of the certified header of that Pulse and verifies under both proof stacks. The attestation rests on your `verifier` bond
+  deliver  Deliver a proof for a request with its verifiers' attestations, as its prover, and be paid
+  show     Where a request stands; with a proof, also whether it is what the request wants
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [A market for proofs](../guides/proving.md).
+
+## `sion proving request`
+
+```text
+Ask for the World Proof of a Pulse: escrow a payment for whoever delivers it, and name the verifiers who must each check and attest it before it is paid
+
+Usage: sion proving request [OPTIONS] --verifier <ACCOUNT> --wallet <WALLET> <PULSE> <AMOUNT>
+
+Arguments:
+  <PULSE>   The Pulse (one to come, or a recent one: a node keeps the proofs of its last Pulses only)
+  <AMOUNT>  What to pay for it, in USD
+
+Options:
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --verifier <ACCOUNT>         A verifier (a wallet or an account; repeat for more). Each must attest the proof
+      --prover <ACCOUNT>           The one prover who may deliver it (a wallet or an account). Without it anyone may, and whoever settles first with the attested proof is paid
+      --adjudicator <ADJUDICATOR>  The adjudicator atom the result and its attestations name (hex)
+      --deadline <DEADLINE>        How many Pulses the request stays open [default: 500]
+      --wallet <WALLET>            Your wallet
+  -h, --help                       Print help
+```
+
+## `sion proving fetch`
+
+```text
+Fetch the World Proof a request wants from your node and check it, as a prover: the file is what you deliver
+
+Usage: sion proving fetch [OPTIONS] --out <FILE> <TASK>
+
+Arguments:
+  <TASK>  The request (its task)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <FILE>   The file to write the proof to
+  -h, --help         Print help
+```
+
+## `sion proving attest`
+
+```text
+Check a delivered proof against a request, and attest it, as one of the request's verifiers: that it is of the certified header of that Pulse and verifies under both proof stacks. The attestation rests on your `verifier` bond
+
+Usage: sion proving attest [OPTIONS] --wallet <WALLET> <TASK> <PROOF>
+
+Arguments:
+  <TASK>   The request (its task)
+  <PROOF>  The proof
+
+Options:
+      --chain <CHAIN>    The chain identity you trust. Without it the request's chain is taken from the node, which vouches for itself [env: SION_CHAIN=]
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>  Your wallet
+  -h, --help             Print help
+```
+
+## `sion proving deliver`
+
+```text
+Deliver a proof for a request with its verifiers' attestations, as its prover, and be paid
+
+Usage: sion proving deliver [OPTIONS] --wallet <WALLET> <TASK> <PROOF>
+
+Arguments:
+  <TASK>   The request (its task)
+  <PROOF>  The proof
+
+Options:
+      --attestations <ATTESTATIONS>  The verifiers' attestations (comma-separated claims)
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>              Your wallet
+  -h, --help                         Print help
+```
+
+## `sion proving show`
+
+```text
+Where a request stands; with a proof, also whether it is what the request wants
+
+Usage: sion proving show [OPTIONS] <TASK>
+
+Arguments:
+  <TASK>  The request (its task)
+
+Options:
+      --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --proof <FILE>   A proof to check against it, as a verifier checks one
+      --chain <CHAIN>  The chain identity you trust, for checking a proof [env: SION_CHAIN=]
+  -h, --help           Print help
 ```
 
 ## `sion stake`

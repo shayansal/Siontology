@@ -6,6 +6,11 @@
 > how real succinct proofs replace them without giving up the rule that two
 > independent stacks must both accept every chunk.
 >
+> A market for proofs has been built beside consensus since
+> ([A market for proofs](../guides/proving.md)). It trades today's replay
+> proofs and builds no part of this plan. A request in it names its proof
+> system, so a succinct one can be asked for the same way.
+>
 > Every figure says what kind of number it is: **measured** (and by whom, on
 > what hardware), **claimed** (a vendor statement we could not check), or
 > **our arithmetic** (computed here from published parameters or from the
