@@ -199,8 +199,13 @@ pub fn solve(lp: &LinearProgram) -> Result<LpOutcome, LpError> {
     if artificial_count > 0 {
         // Phase I: maximize −Σ artificials, i.e. objective row +1 on each
         // artificial column, made canonical for the starting basis.
-        for column in structural..structural + artificial_count {
-            tableau.obj[column] = BigRational::from_integer(1.into());
+        for entry in tableau
+            .obj
+            .iter_mut()
+            .skip(structural)
+            .take(artificial_count)
+        {
+            *entry = BigRational::from_integer(1.into());
         }
         for i in 0..m {
             if tableau.basis[i] >= structural {
