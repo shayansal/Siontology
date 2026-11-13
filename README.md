@@ -195,6 +195,9 @@ What is enforced, and where:
 - Zero-knowledge proofs, off the ledger, that payments you do not show
   kept their limits and that a record's figures meet a threshold.
   [Proving rules were kept](docs/book/src/agent/proofs.md)
+- Sealed exams: tasks encrypted and committed to on the ledger, agents
+  entered before a threshold of trustees opens them, and results anyone
+  can run again. [Sealed exams](docs/book/src/agent/exams.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent
   that pays, confirming before paying and prompt injection, run with your
   models and stand-in tools; a run can be published on the ledger as a

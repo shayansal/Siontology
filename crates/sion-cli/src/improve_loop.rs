@@ -670,8 +670,35 @@ pub fn score(
             profile.name
         )));
     }
-    let instructions =
-        with_learned(profile.instructions.as_deref(), &variant.learned).unwrap_or_default();
+    score_as(
+        profile.instructions.as_deref(),
+        profile.expect,
+        variant,
+        set,
+        digest,
+        runs,
+        budget_tokens,
+    )
+}
+
+/// [`score`], for an agent described by what its operator tells it and
+/// whether it says what it expects, rather than by a profile on this
+/// machine: how another machine runs an agent someone else described.
+pub fn score_as(
+    operator: Option<&str>,
+    expect: bool,
+    variant: &Variant,
+    set: &TaskSet,
+    digest: Hash32,
+    runs: u32,
+    budget_tokens: u64,
+) -> Result<Scored, CliError> {
+    if variant.models.is_empty() {
+        return Err(CliError::Usage(
+            "the agent has no model to run the tasks with".into(),
+        ));
+    }
+    let instructions = with_learned(operator, &variant.learned).unwrap_or_default();
     let mut tasks = set.clone();
     tasks.system = Some(sion_agent::evolve::with_instructions(
         set.system(),
@@ -688,7 +715,7 @@ pub fn score(
         runs,
         // An agent that says what it expects does so on its tasks too.
         &Limits {
-            expect: profile.expect,
+            expect,
             ..Limits::default()
         },
     )

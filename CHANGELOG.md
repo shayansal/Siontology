@@ -10,6 +10,25 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Sealed exams
+
+- `sion agent exam` shows what an agent can do on tasks it could not
+  have seen. `seal` encrypts a set of tasks, publishes a claim with
+  their salted digest and splits the key among trustees (Shamir, any
+  threshold of them). `enter` fixes an agent in a claim: its models,
+  instructions and what it has learned, in full. `release` publishes a
+  trustee's share; with the threshold released the exam is open as of
+  that Pulse, and an entry issued at or after it does not count. `run`
+  runs an entry on the opened tasks, with the exam's stand-in tools
+  only, and publishes what it found; `results` shows each entry's
+  results by who ran it, the entrant's own apart, and with several
+  authors' exams sets an agent's results side by side.
+- What it is not: the author has read the tasks, a threshold of trustees
+  can read them early, a result is its runner's word (checkable because
+  the tasks are public afterwards), and an entry fixes a model's name,
+  not the model behind it. An exam is spent once opened
+  ([Sealed exams](docs/book/src/agent/exams.md), `agent:sealed-exams`).
+
 ### Zero-knowledge proofs that rules were kept
 
 - A new crate, `sion-zk`: zero-knowledge proofs about committed numbers,

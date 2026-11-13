@@ -816,6 +816,7 @@ Commands:
   immune         Attacks reported between operators: report the text an agent was attacked with, on a bond; vouch for a report; say whose reports your agents trust, and they hold back content from outside that holds the same text
   record         An agent's record, for whoever is asked to stand behind it or rely on it: what the ledger shows of what it may do and has done, which anyone can check, what its operator says of its sessions, and a warranty on a bond
   comply         Proof that payments kept your rules without showing the payments: commitments to each amount and payee, and zero-knowledge proofs that none was above a limit, that they came to no more than a total, and that each went to one of a list
+  exam           Sealed exams: tasks encrypted and committed to on the ledger, agents entered before a threshold of trustees opens them, and results that anyone can run again once they are open
   find           Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
   project        Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
   x-mentions     Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
@@ -3741,6 +3742,132 @@ Arguments:
 
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent exam`
+
+```text
+Sealed exams: tasks encrypted and committed to on the ledger, agents entered before a threshold of trustees opens them, and results that anyone can run again once they are open
+
+Usage: sion agent exam [OPTIONS] <COMMAND>
+
+Commands:
+  seal     Seal a set of tasks as an exam, as you: the tasks are encrypted, their digest published, and the key split among trustees. Writes the exam's file, which anyone may hold, and a file for each trustee with its share, which you hand to that trustee and no one else
+  enter    Enter a profile's agent in an exam, as you: a claim that fixes its models, what you tell it and what it has learned, in full. An entry counts only if it is made before the exam opens
+  release  Release your share of an exam's key, as one of its trustees. When enough trustees have, the tasks can be read by anyone and no further entry counts
+  run      Run an entry's agent on an opened exam's tasks, with your own access to its models; with --wallet, publish what you found
+  results  Where an exam stands: whether it is open, the entries and whether each counts, and what runs of each found, by whom. With several exams, by different authors, also each agent's results side by side: no author has read another's tasks
+  tasks    Write an opened exam's tasks to a file, for anyone to read and run
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent exam seal`
+
+```text
+Seal a set of tasks as an exam, as you: the tasks are encrypted, their digest published, and the key split among trustees. Writes the exam's file, which anyone may hold, and a file for each trustee with its share, which you hand to that trustee and no one else
+
+Usage: sion agent exam seal [OPTIONS] --tasks <FILE> --trustee <ACCOUNT> --threshold <THRESHOLD> --wallet <WALLET> <NAME>
+
+Arguments:
+  <NAME>  The exam's name (lowercase letters, digits and hyphens)
+
+Options:
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --tasks <FILE>                   The tasks (a set, as `sion agent improve harvest` writes)
+      --about <ABOUT>                  What it examines, in a line [default: ""]
+      --trustee <ACCOUNT>              A trustee (a wallet's name or an account's id; repeat for more)
+      --threshold <THRESHOLD>          How many trustees' shares open it
+      --runs <RUNS>                    How many times each task is run [default: 3]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+      --wallet <WALLET>                Your wallet
+      --out <DIR>                      The directory to write the files in [default: .]
+  -h, --help                           Print help
+```
+
+## `sion agent exam enter`
+
+```text
+Enter a profile's agent in an exam, as you: a claim that fixes its models, what you tell it and what it has learned, in full. An entry counts only if it is made before the exam opens
+
+Usage: sion agent exam enter [OPTIONS] --wallet <WALLET> <EXAM> <PROFILE>
+
+Arguments:
+  <EXAM>     The exam's file
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>  Your wallet
+  -h, --help             Print help
+```
+
+## `sion agent exam release`
+
+```text
+Release your share of an exam's key, as one of its trustees. When enough trustees have, the tasks can be read by anyone and no further entry counts
+
+Usage: sion agent exam release [OPTIONS] --wallet <WALLET> <EXAM> <SHARE>
+
+Arguments:
+  <EXAM>   The exam's file
+  <SHARE>  Your share's file
+
+Options:
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>  Your wallet
+  -h, --help             Print help
+```
+
+## `sion agent exam run`
+
+```text
+Run an entry's agent on an opened exam's tasks, with your own access to its models; with --wallet, publish what you found
+
+Usage: sion agent exam run [OPTIONS] <EXAM> <ENTRY>
+
+Arguments:
+  <EXAM>   The exam's file
+  <ENTRY>  The entry (its claim's id, or a unique prefix of it)
+
+Options:
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>  Publish what the run found as this wallet's claim
+  -h, --help             Print help
+```
+
+## `sion agent exam results`
+
+```text
+Where an exam stands: whether it is open, the entries and whether each counts, and what runs of each found, by whom. With several exams, by different authors, also each agent's results side by side: no author has read another's tasks
+
+Usage: sion agent exam results [OPTIONS] <EXAMS>...
+
+Arguments:
+  <EXAMS>...  The exam's file (repeat for several exams)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent exam tasks`
+
+```text
+Write an opened exam's tasks to a file, for anyone to read and run
+
+Usage: sion agent exam tasks [OPTIONS] --out <FILE> <EXAM>
+
+Arguments:
+  <EXAM>  The exam's file
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <FILE>   Where to write them
   -h, --help         Print help
 ```
 

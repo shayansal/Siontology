@@ -744,6 +744,11 @@ pub enum AgentCommand {
     /// total, and that each went to one of a list.
     #[command(subcommand)]
     Comply(crate::comply::ComplyCommand),
+    /// Sealed exams: tasks encrypted and committed to on the ledger, agents
+    /// entered before a threshold of trustees opens them, and results that
+    /// anyone can run again once they are open.
+    #[command(subcommand)]
+    Exam(crate::notary::ExamCommand),
     /// Run one case as a candidate that an improvement scores: the case,
     /// its model's answers and its tools' come from the harness over
     /// standard input and output (`sion agent improve code`).
@@ -1634,6 +1639,7 @@ pub fn run(
         AgentCommand::Immune(command) => crate::immune::run(session, ledger, command),
         AgentCommand::Record(command) => crate::record::run(session, ledger, command),
         AgentCommand::Comply(command) => crate::comply::run(Some((session, ledger)), command),
+        AgentCommand::Exam(command) => crate::notary::command(session, ledger, command),
         AgentCommand::Case { .. } => Err(CliError::Usage(
             "a case is run on its own, without a node".into(),
         )),

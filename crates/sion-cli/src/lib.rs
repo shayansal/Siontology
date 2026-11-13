@@ -90,6 +90,7 @@ pub mod model_routes;
 pub mod network;
 pub mod nextcloud;
 pub mod nostr;
+pub mod notary;
 pub mod ntfy;
 pub mod openai_api;
 pub mod pairing;
