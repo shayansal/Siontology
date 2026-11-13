@@ -145,6 +145,7 @@ fn a_meeting_is_dialled_transcribed_and_written_up() {
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        expect: false,
         hear: None,
         rules: None,
         rules_model: None,

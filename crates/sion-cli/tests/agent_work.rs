@@ -300,6 +300,7 @@ fn agents_hand_work_to_others_on_a_schedule_and_through_channels() {
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        expect: false,
         hear: None,
         rules: None,
         rules_model: None,

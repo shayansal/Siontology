@@ -105,6 +105,11 @@ pub struct Profile {
     /// anything since.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_change_check: bool,
+    /// Whether its sessions say what they expect of their calls and are
+    /// told where one went otherwise, and whether what they did not expect
+    /// is shown to what improves the profile.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expect: bool,
     /// What hears its workspace's audio and videos (`transcribe`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hear: Option<String>,
@@ -232,6 +237,7 @@ impl Profile {
             summary_model: self.summary_model.clone(),
             no_plan: self.no_plan,
             no_change_check: self.no_change_check,
+            expect: self.expect,
             hear: self.hear.clone(),
             // A person is there to answer in a chat ([`Profile::start_in`]),
             // not in a session started by a schedule or for work.
@@ -590,6 +596,11 @@ pub enum ProfileCommand {
         /// Let it finish after changing code without running anything since.
         #[arg(long)]
         no_change_check: bool,
+        /// Have it say, with a call, what it expects of it: where the call
+        /// goes otherwise it is told how, and `sion agent improve` is shown
+        /// what it did not expect.
+        #[arg(long)]
+        expect: bool,
         /// What hears its workspace's audio and videos (`transcribe`), as
         /// voice notes are heard: openai:<model>, groq:<model>,
         /// deepgram:<model>, elevenlabs:<model>, whisper:<model file>,
@@ -729,6 +740,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
             summary_model,
             no_plan,
             no_change_check,
+            expect,
             hear,
             rules,
             rules_model,
@@ -810,6 +822,7 @@ pub fn run(ledger: &dyn crate::ledger::Ledger, command: ProfileCommand) -> Resul
                 summary_model,
                 no_plan,
                 no_change_check,
+                expect,
                 hear: match hear {
                     Some(spec) => {
                         crate::voice::Hearing::parse(&spec).map_err(CliError::Usage)?;
@@ -1010,6 +1023,9 @@ pub fn describe(profile: &Profile) -> String {
     }
     if profile.no_change_check {
         extras.push("changes not checked".to_string());
+    }
+    if profile.expect {
+        extras.push("says what it expects".to_string());
     }
     if let Some(spec) = &profile.hear {
         extras.push(format!("hears files with {spec}"));

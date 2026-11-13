@@ -95,6 +95,7 @@ fn profile(home: &Path, agent: ObjectId, script: &Value) -> Profile {
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        expect: false,
         hear: None,
         rules: None,
         rules_model: None,

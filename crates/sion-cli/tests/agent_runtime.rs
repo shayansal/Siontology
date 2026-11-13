@@ -307,6 +307,28 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         forged[0].contains("its signature does not hold"),
         "{forged:?}"
     );
+    // A session whose agent says what it expects of its calls (`--expect`)
+    // keeps that with the call in its conversation, and the person decides
+    // the call as its tool is given it: the signature is still found to be
+    // over the call in the session.
+    let mut expecting = saved_again.clone();
+    for message in &mut expecting.state.messages {
+        for block in &mut message.content {
+            if let sion_agent::Block::ToolUse { name, input, .. } = block {
+                if name == "ledger_pay" {
+                    input["expect"] = json!({"outcome": "bob is paid"});
+                }
+            }
+        }
+    }
+    let unread = runtime::decision_lines(&expecting);
+    assert!(unread[0].contains("no longer in the session"), "{unread:?}");
+    expecting.state.expecting = true;
+    let read = runtime::decision_lines(&expecting);
+    assert!(
+        read[0].contains("the signature holds, over the call in the session"),
+        "{read:?}"
+    );
     assert_eq!(
         session.balance("bob", AssetId::usd()).unwrap().0 - bob_after.0,
         Amount::units(3).0

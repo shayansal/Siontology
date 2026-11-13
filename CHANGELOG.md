@@ -10,6 +10,43 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### What the agent expected, against what happened
+
+- `sion agent run --expect` (and `sion agent profile add --expect`) has
+  the agent say, with a call, what it expects the call to do. Every tool
+  the model is shown takes one more optional input, `expect`: a sentence
+  (`outcome`), whether the call will fail (`ok`), and words its result
+  will hold (`contains`). The tool is never given it. The runtime
+  compares it with what the call did, without a model: whether the call
+  failed, and whether the words are in its result. Where a call goes as
+  said, nothing is added; where it does not, its result ends with the
+  runtime's note of how (`[Not as you expected. You expected: … What
+  happened: ….]`), and the agent is told to work out what it believed
+  wrongly before going on. Off unless asked for: it adds about 75 tokens
+  to each tool shown and a paragraph to the system prompt.
+- A run's last lines say how it went (`what it expected: 1 of 2 calls
+  went as it said they would (2 of its expectations named something to
+  check)`), and `sion agent expected <session>` lists the calls that
+  went otherwise, the last 50. The second number is there because an
+  agent can be right every time by expecting little; neither number
+  decides anything.
+- `sion agent improve run` on a profile with `--expect` shows its
+  proposer, beside the tasks the agent failed, the calls on those tasks
+  that did not go as the agent expected: the tool, the agent's words and
+  how the call differed, once a task, at most 12. They are something the
+  proposer reads, not a score: a change is still kept only on passes and
+  failures, confirmed on the sealed tasks.
+- A person asked to approve a call, a signed decision, the record that
+  keeps a call from being made twice, and tasks harvested from sessions
+  all have the call as its tool was given it, without the expectation.
+  A call a person declined, one whose outcome is unknown and a
+  subagent's calls are not compared; a result held in quarantine is
+  compared only on whether the call failed.
+- Tested with scripted models only. What a real model's expectations are
+  worth, and whether a proposer writes better changes with them, is not
+  measured ([What it expected](docs/book/src/agent/checks.md#what-it-expected),
+  `agent:expectations`).
+
 ### Catching up with the field: a web identity, and AGENTS.md
 
 - `sion agent web-identity new --published-at <URL>` makes this

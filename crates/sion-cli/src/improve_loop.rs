@@ -429,6 +429,73 @@ pub(crate) fn failures_shown(set: &TaskSet, result: &ArmResult, most: usize) -> 
     (text, failed)
 }
 
+/// The calls that did not go as the agent expected that the proposer is
+/// shown, at most.
+pub const SURPRISES_SHOWN: usize = 12;
+
+/// What the proposer is shown of what the agent did not expect in its runs
+/// ([`sion_agent::expect`]): each call that went otherwise than it said,
+/// once for a task however many of the task's runs it came up in, those of
+/// runs that failed first, at most `most`. With them, how many there were.
+///
+/// A line holds the tool's name, the agent's expectation in its own words
+/// and how the call differed, which the runtime words itself: nothing of
+/// what a tool answered is in it.
+pub fn surprises_shown(set: &TaskSet, result: &ArmResult, most: usize) -> (String, usize) {
+    struct Seen<'a> {
+        case: &'a str,
+        line: &'a str,
+        runs: usize,
+        failed: usize,
+    }
+    let mut seen: Vec<Seen<'_>> = Vec::new();
+    for case in &set.cases {
+        for trial in result.trials.iter().filter(|t| t.case == case.id) {
+            let mut once = BTreeSet::new();
+            for line in &trial.surprises {
+                if !once.insert(line.as_str()) {
+                    continue;
+                }
+                let failed = usize::from(!trial.passed);
+                match seen
+                    .iter_mut()
+                    .find(|s| s.case == case.id && s.line == line)
+                {
+                    Some(entry) => {
+                        entry.runs += 1;
+                        entry.failed += failed;
+                    }
+                    None => seen.push(Seen {
+                        case: &case.id,
+                        line,
+                        runs: 1,
+                        failed,
+                    }),
+                }
+            }
+        }
+    }
+    let total = seen.len();
+    // Stable: within each half, the tasks' own order.
+    seen.sort_by_key(|s| s.failed == 0);
+    let mut text = String::new();
+    for entry in seen.iter().take(most) {
+        let runs = match (entry.runs, entry.failed) {
+            (1, 0) => "in a run that passed".to_string(),
+            (1, _) => "in a run that failed".to_string(),
+            (n, 0) => format!("in {n} runs, all passed"),
+            (n, failed) if failed == n => format!("in {n} runs, all failed"),
+            (n, failed) => format!("in {n} runs, {failed} failed"),
+        };
+        text.push_str(&format!(
+            "- Task {} ({runs}): {}\n",
+            entry.case,
+            clip(entry.line, 500)
+        ));
+    }
+    (text, total)
+}
+
 /// What the proposer is told about the agent and its failures.
 #[allow(clippy::too_many_arguments)]
 fn proposer_prompt(
@@ -461,6 +528,17 @@ fn proposer_prompt(
         result.passed(),
         result.total(),
     );
+    let (surprises, surprised) = surprises_shown(set, result, SURPRISES_SHOWN);
+    if surprised > 0 {
+        text.push_str(&format!(
+            "\nWhat it did not expect ({} of {surprised} shown). With a call, the agent says \
+             what it expects the call to do, and its runtime compares that with what the call \
+             did. Each of these is a call that went otherwise, with what the agent expected in \
+             its own words: something it believed about its tools or its task was wrong.\n\
+             {surprises}",
+            surprised.min(SURPRISES_SHOWN),
+        ));
+    }
     if improver.history && !history.is_empty() {
         text.push_str("\nWhat was tried before, and how it went:\n");
         for line in history.iter().rev().take(20).rev() {
@@ -569,7 +647,11 @@ pub fn score(
         None,
         budget_tokens,
         runs,
-        &Limits::default(),
+        // An agent that says what it expects does so on its tasks too.
+        &Limits {
+            expect: profile.expect,
+            ..Limits::default()
+        },
     )
     .map_err(CliError::Usage)?;
     let result = comparison
@@ -1338,6 +1420,14 @@ pub fn improve(
             archive.nodes[parent].passed,
             archive.nodes[parent].total
         ));
+        let (_, surprised) = surprises_shown(problem.train, &parent_result, 0);
+        if surprised > 0 {
+            report.lines.push(format!(
+                "  what it did not expect: {surprised} calls, each counted once a task; the \
+                 proposer is shown {}",
+                surprised.min(SURPRISES_SHOWN)
+            ));
+        }
         let (proposals, used) = propose(
             proposer,
             improver,

@@ -137,6 +137,9 @@ improve itself on its seal. Each round goes like this:
    - the models it may run on;
    - the tasks it failed among those changes are chosen on, with what went
      wrong;
+   - the calls that did not go as the agent expected on those tasks, if
+     its profile has it say what it expects
+     ([What it did not expect](#what-it-did-not-expect));
    - what was tried before and how it went.
 
    It proposes, with `propose_change`, the full new text of what the
@@ -195,6 +198,72 @@ the loop before it spent a confirmation:
 ```text
 stopped: a proposal holds the code word of canary-0: the sealed tasks have reached the proposer; seal fresh tasks
 ```
+
+### What it did not expect
+
+A failed task says that something went wrong. It does not say what the
+agent believed that was not so. A profile added with `--expect` has its
+agent say, with a call, what it expects the call to do
+([What it expected](checks.md#what-it-expected)), on its tasks as in its
+sessions. Each run of a task then records the calls that went otherwise,
+and the proposer is shown them beside the failures:
+
+```text
+What it did not expect (3 of 3 shown). With a call, the agent says what it expects the call to do, and its runtime compares that with what the call did. Each of these is a call that went otherwise, with what the agent expected in its own words: something it believed about its tools or its task was wrong.
+- Task total-9 (in 4 runs, all failed): get_total: expected "the total in USD"; the result does not hold "usd"
+- Task total-10 (in 4 runs, all failed): get_total: expected "the total in USD"; the result does not hold "usd"
+- Task total-12 (in 4 runs, all failed): get_total: expected "the total in USD"; the result does not hold "usd"
+```
+
+A call is shown once for a task, however many of the task's runs it came
+up in, those of runs that failed first, at most 12. A line holds the
+tool's name, the agent's expectation as it wrote it, and how the call
+differed in the runtime's words. Nothing a tool answered is in it. A call
+that surprised the agent in a run that passed is shown too: the task went
+well, and something it believed was still wrong.
+
+Here the agent keeps books. Half its tasks ask for an invoice's total in
+USD, and the tool that gives totals answers in cents, which nothing told
+the agent. Its answers are wrong by a factor of a hundred:
+
+```text
+$ sion agent profile add clerk agent-7 71680f6e… --model … --autonomy L6 --instructions "You keep Acme's books." --expect
+profile clerk: agent 71680f6e as agent-7, … at L6, with instructions, says what it expects
+$ sion agent improve seal clerk --tasks books.json --share 50 --confirmations 4 --seed 1
+sealed 6 of 12 tasks for profile clerk (with 2 canaries), 6 left to choose changes on; 4 confirmations allowed
+…
+$ sion agent improve run clerk --proposer … --rounds 1 --runs 4 --apply
+the agent as it is: 12/24 runs of the tasks to choose on passed
+round 1: building on variant 0 (the agent as it was), 12/24 runs passed
+  what it did not expect: 3 calls, each counted once a task; the proposer is shown 3
+  kept learns "get_total answers in cents: divide by 100 for USD.": 24/24 against 12/24 on the tasks to choose on, and 24/24 against 12/24 on the sealed tasks (interval at the seal's level +19% to +73%; confirmation 1 of 4), as step 08e0443ed4956a36
+  profile clerk now has learned what step 08e0443ed4956a36 kept
+0 tokens used
+recorded in ~/.sion/agents/routes/clerk-lineage.jsonl
+```
+
+The agent and the proposer are scripted here. The proposer's script
+writes the lesson when it reads the line about `get_total`, so this run
+shows that what the agent did not expect reaches the proposer and that a
+lesson written from it is tried and confirmed like any other. It does not
+show that a real proposer writes better lessons with these lines than
+without them: that has not been measured.
+
+What this changes and what it does not:
+
+- **A change is still kept on passes and failures alone.** What the
+  agent did not expect is something the proposer reads. It is not a
+  score, nothing is chosen or confirmed on it, and a variant that passes
+  every task is still not built on, whatever it did not expect.
+- **The agent's words reach the proposer.** An expectation is written by
+  the agent, which may have read content from outside in a task. The
+  proposer already reads the agent's answers, written the same way, and
+  what it proposes passes the same gates.
+- **Both sides of a comparison say what they expect.** A profile with
+  `--expect` is scored that way as it is and as each change would make
+  it, so the tokens it costs fall on both.
+- **Changing the agent's code** (`sion agent improve code`) scores a
+  candidate that runs as its own process, and records none of this.
 
 ### Tasks a model writes
 
@@ -547,3 +616,8 @@ leave open is named in the trust model (`agent:self-improvement`,
 - Nothing here trains a model: export writes what to train on, and the
   episodes to reinforce in, for a trainer of your own. None has been
   trained here.
+- What the agent did not expect is read by the proposer and by no one
+  else in the loop. It is not a score, the agent builds no model of what
+  its tools will do from it, and the misses of its own sessions, as
+  against those of its tasks, reach the proposer only once those
+  sessions are harvested as tasks and run again.

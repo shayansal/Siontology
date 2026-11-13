@@ -398,6 +398,7 @@ fn subagents_change_code_in_worktrees_and_programs_and_hooks_work_around_calls()
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        expect: false,
         hear: None,
         rules: None,
         rules_model: None,

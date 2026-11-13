@@ -149,6 +149,10 @@ pub struct Trial {
     /// What a judge said of its steps, if one was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<Counts>,
+    /// The calls that did not go as the agent said it expected, in words:
+    /// there are none unless it was asked to say ([`Limits::expect`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surprises: Vec<String>,
 }
 
 /// A way of working and its runs.
@@ -531,6 +535,7 @@ pub fn compare(
                     tokens: run.tokens,
                     answer: run.answer,
                     judged,
+                    surprises: run.surprises,
                 });
             }
         }
@@ -551,6 +556,12 @@ struct Run {
     tokens: u64,
     answer: String,
     steps: Vec<String>,
+    surprises: Vec<String>,
+}
+
+/// What a session's calls did that its agent did not expect, in words.
+fn surprises_of(state: &State) -> Vec<String> {
+    state.expected.missed.iter().map(|m| m.line()).collect()
 }
 
 fn run_arm(
@@ -580,6 +591,7 @@ fn run_arm(
                 tokens: session.tokens,
                 answer: done_text(&session.ended),
                 steps: judge::steps_of(&session.state, Some(&session.ended)),
+                surprises: surprises_of(&session.state),
             })
         }
         Arm::Vote { samples } => {
@@ -588,6 +600,7 @@ fn run_arm(
             let mut steps = Vec::new();
             let mut tokens = 0;
             let mut answers = Vec::new();
+            let mut surprises = Vec::new();
             let mut first_ended = None;
             for sample in 1..=*samples {
                 let ran = session(
@@ -608,6 +621,11 @@ fn run_arm(
                         .map(|s| format!("(sample {sample}) {s}")),
                 );
                 tokens += ran.tokens;
+                surprises.extend(
+                    surprises_of(&ran.state)
+                        .into_iter()
+                        .map(|s| format!("(sample {sample}) {s}")),
+                );
                 if let Ended::Done { text } = &ran.ended {
                     answers.push(text.clone());
                 }
@@ -624,6 +642,7 @@ fn run_arm(
                 tokens,
                 answer: done_text(&ended),
                 steps,
+                surprises,
             })
         }
         Arm::Graph { graph } => {
@@ -636,6 +655,7 @@ fn run_arm(
                 share: Mutex::new(budget),
                 calls: Mutex::new(Vec::new()),
                 steps: Mutex::new(Vec::new()),
+                surprises: Mutex::new(Vec::new()),
                 tokens: Mutex::new(0),
             };
             let mut run = GraphRun::start(graph, &case.task);
@@ -660,6 +680,7 @@ fn run_arm(
                 tokens: executor.tokens.into_inner().unwrap_or_default(),
                 answer: done_text(&ended),
                 steps,
+                surprises: executor.surprises.into_inner().unwrap_or_default(),
             })
         }
     }
@@ -798,6 +819,7 @@ struct Fixtures<'a> {
     share: Mutex<u64>,
     calls: Mutex<Vec<(String, Value)>>,
     steps: Mutex<Vec<String>>,
+    surprises: Mutex<Vec<String>>,
     tokens: Mutex<u64>,
 }
 
@@ -837,6 +859,14 @@ impl Executor for Fixtures<'_> {
                 .into_iter()
                 .map(|s| format!("({}) {s}", node.id)),
         );
+        self.surprises
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(
+                surprises_of(&ran.state)
+                    .into_iter()
+                    .map(|s| format!("({}) {s}", node.id)),
+            );
         match ran.ended {
             Ended::Done { text } => Ok(Answer {
                 text,
@@ -881,6 +911,7 @@ mod tests {
             tokens: 0,
             answer: String::new(),
             judged: None,
+            surprises: Vec::new(),
         };
         let arm = ArmResult {
             arm: Arm::Single,

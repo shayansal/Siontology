@@ -650,6 +650,7 @@ pub fn evaluate(
                     _ => String::new(),
                 },
                 judged: None,
+                surprises: Vec::new(),
             });
         }
     }

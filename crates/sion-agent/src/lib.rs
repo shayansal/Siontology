@@ -78,6 +78,7 @@ pub mod encoding;
 pub mod episode;
 pub mod evals;
 pub mod evolve;
+pub mod expect;
 pub mod graph;
 pub mod guard;
 pub mod harvest;

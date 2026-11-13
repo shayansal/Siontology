@@ -24,7 +24,9 @@ does, and how.
 - [What it does alone, and what it asks](autonomy.md): autonomy levels,
   taint and quarantine, approvals.
 - [Memory](memory.md): the memory log, searching past sessions, consolidation and dreaming.
-- [Checked before it is done](checks.md): checks a run must pass, budgets, and the nets under it.
+- [Checked before it is done](checks.md): checks a run must pass, what it
+  expected of its calls against what they did, budgets, and the nets
+  under it.
 - [Security](security.md): confidential content, signed decisions, imitated notes, attacks tried.
 - [Commands, scripts and MCP servers](tools.md), [a browser and a
   desktop](browser.md) and [a canvas](canvas.md): its tools.

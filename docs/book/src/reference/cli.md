@@ -791,6 +791,7 @@ Commands:
   continue       Continue a session: approve or decline the call it waits on, or tell it more
   confidential   What a workspace keeps confidential besides the paths you name (--confidential-file): where a confidential file went when a command or a patch moved it. Such a path stays hidden from commands in later sessions until it is forgotten here
   decisions      The decisions a session records: what was approved or declined, by whom, when, and whether a wallet signed it and its signature holds
+  expected       What a session's agent said it expected of its calls (`run --expect`), against what they did: how many went as it said, and each that did not
   evolve         Evolve a profile's instructions (what follows the fixed system prompt) against an evaluation set: a mutator proposes variants for the cases its agent fails, each is scored under gates (size, new, no regression), and with --apply the best becomes the profile's
   sessions       The agent sessions on this machine; `search` finds an agent's past sessions by words
   trace          A session as one JSON line in chat format with tool calls, with its outcome: for review, evaluation or training
@@ -1213,6 +1214,8 @@ Options:
           Give it no plan to keep (`plan_update`). With one, when it says it is done while steps are open, it is asked once to do them or drop them, saying why
       --no-change-check
           Let it finish after changing code without running anything since: otherwise, with a shell and no --verify, it is asked once to check the change first
+      --expect
+          Have it say, with a call, what it expects of it (every tool takes an `expect` input the runtime keeps to itself): where the call goes otherwise, it is told how, and the session keeps count
       --hear <SPEC>
           What hears the workspace's audio and videos, for `transcribe` (a video's sound is taken out in the sandbox, with --shell): openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>
       --rules <FILE>
@@ -1270,6 +1273,21 @@ Options:
 The decisions a session records: what was approved or declined, by whom, when, and whether a wallet signed it and its signature holds
 
 Usage: sion agent decisions [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent expected`
+
+```text
+What a session's agent said it expected of its calls (`run --expect`), against what they did: how many went as it said, and each that did not
+
+Usage: sion agent expected [OPTIONS] <SESSION>
 
 Arguments:
   <SESSION>  The session (its id, or a unique prefix of it)
@@ -1536,6 +1554,8 @@ Options:
           Give it no plan to keep (`plan_update`), nor hold it to one
       --no-change-check
           Let it finish after changing code without running anything since
+      --expect
+          Have it say, with a call, what it expects of it: where the call goes otherwise it is told how, and `sion agent improve` is shown what it did not expect
       --hear <SPEC>
           What hears its workspace's audio and videos (`transcribe`), as voice notes are heard: openai:<model>, groq:<model>, deepgram:<model>, elevenlabs:<model>, whisper:<model file>, local:<model> or command:<program>
       --rules <FILE>

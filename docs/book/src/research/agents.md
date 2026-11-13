@@ -176,6 +176,23 @@ they are.
    others as Task Charters. *Built: `sion agent trace` for sessions,
    `sion skill eval --trajectories` for evaluation runs labelled with their
    results.*
+6. **What it did not expect.** A task's end says pass or fail, once, and
+   little of why. An agent that says what it expects of a call before it
+   makes it, and is checked, has a signal at every call: the place where
+   what it believed of its tools or its task was not so, whether or not
+   the task then went well. Predict, act, compare, and change what led
+   to the prediction is how a planner with a model of its world corrects
+   itself; here it is done in words. *Built: with `--expect` every tool
+   takes an expectation its tool never sees, the runtime compares it
+   mechanically with what the call did (whether it failed, and words in
+   its result), tells the agent where the two differ, and
+   `sion agent improve run` shows the proposer what the agent did not
+   expect on its tasks
+   ([What it expected](../agent/checks.md#what-it-expected)). Not
+   built: any model of what a tool will do, learned from the misses. The
+   prediction is a sentence the model writes, and what is learned from a
+   miss is what the proposer writes as words and the sealed tasks
+   confirm.*
 
 ### 4. In the app
 

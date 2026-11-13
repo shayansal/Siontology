@@ -2362,6 +2362,10 @@ impl Saved {
         lines.extend(self.shared.iter().map(|path| format!("shared: {path}")));
         lines.push(ending(&ended, &self.state));
         lines.extend(spent(&self.state));
+        // How what it said its calls would do compared with what they did.
+        if let Some(line) = self.state.expected.line() {
+            lines.push(format!("what it expected: {line}"));
+        }
         if !self.state.plan.is_empty() {
             lines.push("its plan:".to_string());
             lines.extend(
@@ -2745,6 +2749,9 @@ pub fn checked_signature(
             .map_err(|e| {
                 format!("the signature does not hold for the decision as recorded: {e}")
             })?;
+        // A call is decided as its tool is given it: without what the agent
+        // said it expected of it, which the conversation keeps.
+        let expecting = saved.state.expecting;
         let in_session = saved
             .state
             .messages
@@ -2752,7 +2759,9 @@ pub fn checked_signature(
             .flat_map(|m| &m.content)
             .any(|block| {
                 matches!(block, sion_agent::model::Block::ToolUse { input: called, .. }
-                if input_digest(called) == input)
+                if input_digest(called) == input
+                    || (expecting
+                        && input_digest(&sion_agent::expect::without(called, true)) == input))
             });
         let who = format!(
             "signed by wallet {} (account {})",
@@ -2768,6 +2777,37 @@ pub fn checked_signature(
             )
         })
     })())
+}
+
+/// What a session's agent said it expected of its calls, against what they
+/// did ([`sion_agent::expect`]): the count, and a line for each call that
+/// went otherwise, oldest first.
+pub fn expected_lines(saved: &Saved) -> Vec<String> {
+    let id = &saved.state.id;
+    let expected = &saved.state.expected;
+    if !saved.state.expecting {
+        return vec![format!(
+            "session {id} was not asked to say what it expects (run --expect)"
+        )];
+    }
+    let Some(line) = expected.line() else {
+        return vec![format!(
+            "session {id}: it said what it expected of none of its calls"
+        )];
+    };
+    let mut lines = vec![format!("session {id}: {line}")];
+    let missed = expected.stated.saturating_sub(expected.held);
+    let kept = expected.missed.len() as u64;
+    if missed > kept {
+        lines.push(format!("the last {kept} of {missed} that went otherwise:"));
+    }
+    lines.extend(
+        expected
+            .missed
+            .iter()
+            .map(|miss| format!("  ✗ {}", miss.line())),
+    );
+    lines
 }
 
 /// The decisions a session records, a line each: what was decided, by
@@ -3398,6 +3438,9 @@ pub struct Equipment {
     /// Whether it may finish after changing code without running anything
     /// since ([`Limits::check_changes`]).
     pub no_change_check: bool,
+    /// Whether it says what it expects of its calls, and is told where one
+    /// went otherwise ([`Limits::expect`]).
+    pub expect: bool,
     /// What hears its workspace's audio and videos ([`Saved::hear`]).
     pub hear: Option<String>,
     /// Whether it may ask the person a question ([`Limits::ask`]): someone
@@ -3497,6 +3540,7 @@ pub fn start_watched(
         summary_model,
         no_plan,
         no_change_check,
+        expect,
         hear,
         ask,
         rules,
@@ -3586,6 +3630,7 @@ pub fn start_watched(
         plan: !no_plan,
         check_changes: !no_change_check,
         ask,
+        expect,
         ..Limits::default()
     };
     if rules.as_deref().is_some_and(|r| r.trim().is_empty()) {

@@ -177,8 +177,12 @@ What is enforced, and where:
   [What it does alone](docs/book/src/agent/autonomy.md),
   [Security](docs/book/src/agent/security.md)
 - Checks a run must pass before it is done, budgets for time and tokens,
-  and detection of a run that is stuck.
-  [Checked before it is done](docs/book/src/agent/checks.md)
+  and detection of a run that is stuck. With `--expect` the agent says
+  what it expects of a call before it makes it, is told where the call
+  went otherwise, and `sion agent improve` is shown what it did not
+  expect on its tasks; tested with scripted models only.
+  [Checked before it is done](docs/book/src/agent/checks.md),
+  [What it expected](docs/book/src/agent/checks.md#what-it-expected)
 - A charter on the ledger for its money: payees, largest payment, rate of
   spending, expiry. [A run, within its limits](docs/book/src/agent/run.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent

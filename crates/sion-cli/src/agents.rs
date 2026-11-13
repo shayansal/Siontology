@@ -425,6 +425,11 @@ pub enum AgentCommand {
         /// the change first.
         #[arg(long)]
         no_change_check: bool,
+        /// Have it say, with a call, what it expects of it (every tool takes
+        /// an `expect` input the runtime keeps to itself): where the call
+        /// goes otherwise, it is told how, and the session keeps count.
+        #[arg(long)]
+        expect: bool,
         /// What hears the workspace's audio and videos, for `transcribe`
         /// (a video's sound is taken out in the sandbox, with --shell):
         /// openai:<model>, groq:<model>, deepgram:<model>,
@@ -561,6 +566,13 @@ pub enum AgentCommand {
     /// The decisions a session records: what was approved or declined, by
     /// whom, when, and whether a wallet signed it and its signature holds.
     Decisions {
+        /// The session (its id, or a unique prefix of it).
+        session: String,
+    },
+    /// What a session's agent said it expected of its calls (`run
+    /// --expect`), against what they did: how many went as it said, and
+    /// each that did not.
+    Expected {
         /// The session (its id, or a unique prefix of it).
         session: String,
     },
@@ -1088,6 +1100,16 @@ fn waiting() -> Result<(), CliError> {
     Ok(())
 }
 
+/// Prints what a session's agent said it expected of its calls, against
+/// what they did.
+fn expected(session: &str) -> Result<(), CliError> {
+    let saved = crate::runtime::Saved::load(session)?;
+    for line in crate::runtime::expected_lines(&saved) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// Runs `command` if it needs no node (pairing, secrets, logins, MCP
 /// servers' settings, schedules, services, work that needs no ledger);
 /// gives it back otherwise.
@@ -1135,6 +1157,7 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
         AgentCommand::Service(command) => crate::service::run(command),
         AgentCommand::Work(command) if !command.needs_ledger() => crate::work::run_local(command),
         AgentCommand::Waiting => waiting(),
+        AgentCommand::Expected { session } => expected(&session),
         AgentCommand::Up { command, for_secs } => crate::up::command(command, for_secs),
         AgentCommand::Erc8004(command) => match crate::erc8004::local(command) {
             Ok(done) => done,
@@ -1186,6 +1209,7 @@ pub fn run(
             summary_model,
             no_plan,
             no_change_check,
+            expect,
             hear,
             rules,
             rules_model,
@@ -1270,6 +1294,7 @@ pub fn run(
                     summary_model,
                     no_plan,
                     no_change_check,
+                    expect,
                     hear,
                     ask: !no_ask,
                     rules: match &rules {
@@ -1351,6 +1376,7 @@ pub fn run(
             }
             Ok(())
         }
+        AgentCommand::Expected { session } => expected(&session),
         AgentCommand::Sessions {
             command:
                 Some(SessionsCommand::Search {

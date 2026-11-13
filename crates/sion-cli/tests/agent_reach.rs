@@ -313,6 +313,7 @@ fn an_agent_searches_edits_and_answers_what_mcp_servers_ask() {
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        expect: false,
         hear: None,
         rules: None,
         rules_model: None,

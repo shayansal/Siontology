@@ -625,10 +625,16 @@ pub fn calls_of(state: &State) -> Vec<(String, Value)> {
             if name == TOOLS_CALL {
                 calls.push((
                     input["name"].as_str().unwrap_or_default().to_string(),
-                    input.get("input").cloned().unwrap_or_else(|| json!({})),
+                    crate::expect::without(
+                        &input.get("input").cloned().unwrap_or_else(|| json!({})),
+                        state.expecting,
+                    ),
                 ));
             } else {
-                calls.push((name.to_string(), input.clone()));
+                calls.push((
+                    name.to_string(),
+                    crate::expect::without(input, state.expecting),
+                ));
             }
         }
     }

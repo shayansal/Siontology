@@ -1232,6 +1232,7 @@ mod tests {
                     tokens,
                     answer: String::new(),
                     judged: None,
+                    surprises: Vec::new(),
                 })
                 .collect(),
         }

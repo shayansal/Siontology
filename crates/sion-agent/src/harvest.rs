@@ -115,14 +115,22 @@ pub fn recorded(state: &State) -> Vec<Recorded> {
             let (tool, input) = if name == TOOLS_CALL {
                 (
                     input["name"].as_str().unwrap_or_default().to_string(),
-                    input.get("input").cloned().unwrap_or_else(json_object),
+                    crate::expect::without(
+                        &input.get("input").cloned().unwrap_or_else(json_object),
+                        state.expecting,
+                    ),
                 )
             } else {
-                (name.to_string(), input.clone())
+                (
+                    name.to_string(),
+                    crate::expect::without(input, state.expecting),
+                )
             };
             let Some((content, is_error)) = results.get(id).copied() else {
                 continue;
             };
+            // As the tool gave it, without the runtime's note of a miss.
+            let content = crate::expect::without_note(content);
             let key = crate::journal::key(&state.id, &tool, &input);
             let entry = state.journal.entries().get(&key);
             calls.push(Recorded {

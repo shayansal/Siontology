@@ -129,6 +129,88 @@ check does that, and there is no reminder; `--no-change-check` lets the
 agent finish without one. Neither reminder makes the work right: it asks
 the model once, and what the model does then is the model's.
 
+## What it expected
+
+An agent that only acts learns from how its task ends. With `--expect`
+(on `sion agent run` and on profiles) it also says, with a call, what it
+expects the call to do, and the runtime compares that with what the call
+did. Every tool the model is shown then takes one more input, `expect`,
+which is optional and which the tool itself is never given:
+
+- `outcome`: a sentence, in the agent's own words;
+- `ok`: `false` if it expects the call to fail. Left out, it expects the
+  call not to fail;
+- `contains`: words the result will hold, ignoring case and spacing
+  (at most 8).
+
+The agent is told to say what it expects of a call that changes
+something, or whose result it is not sure of, and to leave it out where
+there is nothing to predict. Where a call goes as it said, nothing is
+added. Where it does not, the call's result ends with the runtime's note
+of how, and the agent is told to work out what it believed wrongly before
+it goes on. Here it expects a payment its budget does not hold:
+
+```text
+$ sion agent run agent-7 71680f6e… --task "Pay invoice 7 from bob, 50 USD." --model … --autonomy 6 --expect
+session f364bbf559b16c99 for agent 71680f6e
+  → ledger_pay {"amount":"50","expect":{"contains":["paid 50 USD"],"outcome":"bob is paid 50 USD"},"purpose":"invoice 7","to":"bob"}
+  ✗ not sent: no part of your budget holds 50 USD
+    [Not as you expected. You expected: bob is paid 50 USD. What happened: the call failed.]
+  → ledger_balance {"expect":{"contains":["USD"],"outcome":"my budget is under 50 USD"}}
+  ← {"budget_remaining_usd":"20","burst_usd":"20","can_spend_now_usd":"20",…,"max_per_payment_usd":"5","payees":["bob"],…}
+agent: Not paid: my budget does not hold 50 USD. It needs funding before I can pay invoice 7.
+session f364bbf559b16c99: done
+what it expected: 1 of 2 calls went as it said they would (2 of its expectations named something to check)
+```
+
+The session keeps the count and the calls that went otherwise, the last
+50 of them. `sion agent expected <session>` prints them:
+
+```text
+$ sion agent expected f364bbf5
+session f364bbf559b16c99: 1 of 2 calls went as it said they would (2 of its expectations named something to check)
+  ✗ ledger_pay: expected "bob is paid 50 USD"; the call failed
+```
+
+A profile added with `--expect` has its sessions do the same, and
+`sion agent improve` then shows what the agent did not expect on its
+tasks to the model that proposes changes
+([What it did not expect](self-improvement.md#what-it-did-not-expect)).
+
+What it is and is not (`agent:expectations`):
+
+- **The comparison is mechanical.** Two things are compared, without a
+  model: whether the call failed, and whether the words are in its
+  result. The sentence is kept as the agent wrote it, on one line, and
+  is not judged.
+  A call that failed when it was expected not to, or the other way
+  round, is reported as that alone: the words are not looked for in a
+  result of the other kind.
+- **An agent can be right by expecting little.** An expectation that
+  names nothing to check holds whenever the call does not fail. That is
+  why the count says how many expectations named something to check, and
+  why neither number decides anything: no call is made, held or refused
+  because of what the agent said it expected.
+- **Only calls that were made are compared.** A call a person declined
+  was never made. A call whose outcome is unknown is not compared, and
+  a result held in quarantine is compared only on whether the call
+  failed, since the agent is not shown it.
+- **The tool does not see it.** The tool is given its input without
+  `expect`. So is the person asked to approve the call, a signed
+  decision, and the record that keeps a call from being made twice. The
+  conversation keeps what the model wrote, which is why the lines above
+  show it. A tool with an input of its own called `expect` keeps it, is
+  not shown the runtime's, and its calls carry no expectation.
+- **It costs tokens.** The input adds about 75 tokens to each tool the
+  model is shown, by the runtime's estimate, and a paragraph to the
+  system prompt. It is off unless asked for.
+- **Not everything says.** `plan_update`, `ask_person` and giving a task
+  up take no expectation, and a subagent's sessions do not state any.
+- **Not measured with a real model.** These runs are a scripted model's.
+  Whether a model's expectations are sharp enough to be useful, and
+  whether being told of a miss changes what it does next, has not been
+  measured here.
+
 ## Safety nets
 
 - **No accidental repeats.** A call that changed something is recorded

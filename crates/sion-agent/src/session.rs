@@ -91,6 +91,12 @@ pub struct Limits {
     /// with the question ([`Ended::Asked`]) and goes on when they answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ask: bool,
+    /// Whether the agent may say what it expects of a call before it makes
+    /// it ([`crate::expect`]): each tool it is shown then takes an
+    /// `expect`, compared with what happened, and it is told where the two
+    /// differ.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expect: bool,
 }
 
 fn default_patience() -> u64 {
@@ -130,6 +136,7 @@ impl Default for Limits {
             plan: false,
             check_changes: false,
             ask: false,
+            expect: false,
         }
     }
 }
@@ -219,6 +226,10 @@ pub struct Pending {
     /// What the call can do, as its tool declared it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect: Option<Effect>,
+    /// What the agent said it expected of the call, compared when it is
+    /// made ([`crate::expect`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<crate::expect::Expectation>,
 }
 
 impl Pending {
@@ -388,6 +399,15 @@ pub struct State {
     /// each reminder is given once, until the person speaks again.
     #[serde(default, skip_serializing_if = "Reminded::is_empty")]
     pub reminded: Reminded,
+    /// What the agent said it expected of its calls, and how that went
+    /// ([`Limits::expect`]).
+    #[serde(default, skip_serializing_if = "crate::expect::Expected::is_empty")]
+    pub expected: crate::expect::Expected,
+    /// Whether the session's calls may carry an expectation: set by its
+    /// first run with [`Limits::expect`], and kept, since the calls in its
+    /// conversation carry them from then on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expecting: bool,
 }
 
 /// What a run reminded the agent of when it said it was done
@@ -877,6 +897,9 @@ struct Ready {
     pre_approved: Option<String>,
 }
 
+/// A call a model made: its id, its tool's name and its input.
+type Call = (String, String, Value);
+
 /// An outcome as the model sees it: a pre-approved call's says so, and so
 /// does a call made again after its first outcome was lost.
 fn marked(ready: &Ready, mut outcome: Outcome) -> Outcome {
@@ -1148,6 +1171,8 @@ impl Runtime<'_> {
         if calls.is_empty() {
             return false;
         }
+        // As they were made: without what the agent said it expected.
+        let (calls, _) = self.expectations(state, &calls);
         let mut results = Vec::new();
         for (use_id, name, input) in &calls {
             let (inner, inner_input) = Self::inner(name, input);
@@ -1195,6 +1220,7 @@ impl Runtime<'_> {
             self.save(state);
         }
         let start = RunStart::of(state);
+        state.expecting |= self.limits.expect;
         // The most the model may write in an answer: more once an answer
         // was cut off before it was whole.
         let mut room = self.limits.max_tokens;
@@ -1226,6 +1252,8 @@ impl Runtime<'_> {
                     }
                     Called::Ran(outcome) => {
                         state.pending = None;
+                        let (inner, _) = Self::inner(&pending.tool, &pending.input);
+                        let outcome = self.compared(state, pending.expect.as_ref(), inner, outcome);
                         replace_result(state, &pending.use_id, &outcome);
                     }
                 }
@@ -1473,6 +1501,9 @@ impl Runtime<'_> {
         calls: &[(String, String, Value)],
         start: &RunStart,
     ) -> Option<Ended> {
+        // What the agent said it expected of each call, off its input.
+        let (calls, expected) = self.expectations(state, calls);
+        let calls = calls.as_slice();
         let mut results = Vec::new();
         let mut progress = false;
         let mut made: Vec<Made> = Vec::new();
@@ -1589,6 +1620,8 @@ impl Runtime<'_> {
                         tool: ready.tool.clone(),
                         gave: result_digest(&outcome),
                     });
+                    let outcome =
+                        self.compared(state, expected.get(&calls[*at].0), &ready.tool, outcome);
                     results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
                 }
                 self.save(state);
@@ -1681,6 +1714,8 @@ impl Runtime<'_> {
                             tool: ready.tool.clone(),
                             gave: result_digest(&outcome),
                         });
+                        let outcome =
+                            self.compared(state, expected.get(&calls[*at].0), &ready.tool, outcome);
                         results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
                     }
                     self.save(state);
@@ -1700,6 +1735,7 @@ impl Runtime<'_> {
                         tool: inner.to_string(),
                         gave: result_digest(&outcome),
                     });
+                    let outcome = self.compared(state, expected.get(use_id), inner, outcome);
                     results.push(result_block(use_id, &outcome, &mut state.images));
                 }
                 Called::Wait {
@@ -1733,6 +1769,7 @@ impl Runtime<'_> {
                         tool: name.clone(),
                         input: input.clone(),
                         effect: Some(effect),
+                        expect: expected.get(use_id).cloned(),
                     });
                     return Some(Ended::NeedsApproval {
                         key,
@@ -2079,7 +2116,119 @@ impl Runtime<'_> {
         if self.code.is_some() {
             shown.push(code_mode::spec(&self.callable_from_code()));
         }
+        if self.limits.expect {
+            shown = shown
+                .into_iter()
+                .map(|spec| {
+                    if Self::expects(&spec.name) {
+                        crate::expect::offered(spec)
+                    } else {
+                        spec
+                    }
+                })
+                .collect();
+        }
         shown
+    }
+
+    /// Whether a call of the tool `name` can be given an expectation: not
+    /// the tools that only speak to the runtime or the person, of which
+    /// there is nothing to predict.
+    fn expects(name: &str) -> bool {
+        ![PLAN_UPDATE, ASK_PERSON, CANNOT_COMPLETE].contains(&name)
+    }
+
+    /// The system prompt as the model is given it: with what it is told of
+    /// expectations, where it may state them.
+    fn system_shown(&self) -> String {
+        if self.limits.expect {
+            format!("{}{}", self.system, crate::expect::EXPECTING)
+        } else {
+            self.system.clone()
+        }
+    }
+
+    /// The calls of a turn as their tools are given them, and what the
+    /// agent said it expected of each, by the tool use it answers: with
+    /// [`Limits::expect`], the expectation is taken off the input of every
+    /// call that carries one, whether or not it says anything that can be
+    /// kept, so that no tool is given what it never asked for.
+    fn expectations(
+        &self,
+        state: &State,
+        calls: &[Call],
+    ) -> (Vec<Call>, BTreeMap<String, crate::expect::Expectation>) {
+        let mut expected = BTreeMap::new();
+        let calls = calls
+            .iter()
+            .map(|(use_id, name, input)| {
+                if !self.carries_expectation(state, name, input) {
+                    return (use_id.clone(), name.clone(), input.clone());
+                }
+                let (mut without, mut expectation) = crate::expect::taken(input);
+                // A tool called by name takes one as any other does: where
+                // the agent put it with that tool's own input, it is taken
+                // from there.
+                if name == TOOLS_CALL {
+                    let inner = without["name"].as_str().unwrap_or_default();
+                    let fits = self
+                        .tools
+                        .get(inner)
+                        .map_or(true, |tool| crate::expect::fits(&tool.spec()));
+                    if let Some(inner_input) = without.get("input").filter(|_| fits) {
+                        let (inner_without, inner_expectation) = crate::expect::taken(inner_input);
+                        without["input"] = inner_without;
+                        expectation = expectation.or(inner_expectation);
+                    }
+                }
+                if let Some(expectation) = expectation {
+                    expected.insert(use_id.clone(), expectation);
+                }
+                (use_id.clone(), name.clone(), without)
+            })
+            .collect();
+        (calls, expected)
+    }
+
+    /// Whether a call of the tool `name` may carry an expectation in its
+    /// input: the session's calls may, the tool is one that was shown with
+    /// the property (every tool but one with a property of that name of
+    /// its own), and the input was read.
+    fn carries_expectation(&self, state: &State, name: &str, input: &Value) -> bool {
+        (self.limits.expect || state.expecting)
+            && Self::expects(name)
+            && crate::model::unparsed(input).is_none()
+            && self
+                .tools
+                .get(name)
+                .map_or(true, |tool| crate::expect::fits(&tool.spec()))
+    }
+
+    /// `outcome` of a call of `tool`, compared with what the agent said it
+    /// expected of it: counted with the session, and where it went
+    /// otherwise, with the runtime's note of how.
+    fn compared(
+        &self,
+        state: &mut State,
+        expectation: Option<&crate::expect::Expectation>,
+        tool: &str,
+        mut outcome: Outcome,
+    ) -> Outcome {
+        let Some(expectation) = expectation else {
+            return outcome;
+        };
+        // What is held in quarantine is not shown: nor answered about.
+        let withheld = outcome.content.contains("[Held in quarantine as");
+        let Some(differs) = expectation.judge(&outcome, withheld) else {
+            return outcome;
+        };
+        state.expected.count(tool, expectation, &differs);
+        if !differs.is_empty() {
+            outcome
+                .content
+                .push_str(&crate::expect::note(expectation, &differs));
+        }
+        outcome
     }
 
     /// The tools a program may call ([`RUN_CODE`]): those that only read,
@@ -2648,7 +2797,7 @@ impl Runtime<'_> {
         after_pause: bool,
     ) -> Result<Response, ModelError> {
         let request = Request {
-            system: self.system.clone(),
+            system: self.system_shown(),
             messages: state.messages.clone(),
             tools: self.shown(state),
             max_tokens,

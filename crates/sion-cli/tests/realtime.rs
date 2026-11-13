@@ -176,6 +176,7 @@ fn a_realtime_model_hears_speaks_and_asks_the_agent() {
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        expect: false,
         hear: None,
         rules: None,
         rules_model: None,

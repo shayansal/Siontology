@@ -427,6 +427,7 @@ fn an_agent_takes_work_on_under_mandates_and_spends_attention_sparingly() {
         summary_model: None,
         no_plan: false,
         no_change_check: false,
+        expect: false,
         hear: None,
         rules: None,
         rules_model: None,
