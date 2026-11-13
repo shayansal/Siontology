@@ -125,3 +125,8 @@ warranty is a claim written for them.
   relied are compensated what they reserved, up to what the bond holds.
 - **A record is of one chain and one span.** It says nothing of what the
   agent did before the span, after it, or elsewhere.
+- **The ledger's part is added up from the node's events**, which a node
+  keeps for its last Pulses only (256 on a devnet). A span that starts
+  before what the node still holds is refused, both when a record is
+  written and when one is checked, so that nothing is counted in part.
+  Records of long spans take a node that kept its history.

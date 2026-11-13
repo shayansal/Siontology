@@ -750,6 +750,11 @@ pub enum AgentCommand {
     /// committed to in a claim, or signed by an enclave
     #[command(subcommand)]
     Receipts(crate::receipts::ReceiptsCommand),
+    /// A market for agents' work, priced per accepted result: sealed bids
+    /// in rounds, each cleared at one price anyone can recompute, and a
+    /// Task Charter from each buyer to the worker it was paired with
+    #[command(subcommand)]
+    Market(crate::work_market::MarketCommand),
     /// Sealed exams: tasks encrypted and committed to on the ledger, agents
     /// entered before a threshold of trustees opens them, and results that
     /// anyone can run again once they are open.
@@ -1649,6 +1654,7 @@ pub fn run(
         AgentCommand::Record(command) => crate::record::run(session, ledger, command),
         AgentCommand::Comply(command) => crate::comply::run(Some((session, ledger)), command),
         AgentCommand::Exam(command) => crate::notary::command(session, ledger, command),
+        AgentCommand::Market(command) => crate::work_market::command(session, ledger, command),
         AgentCommand::Receipts(command) => crate::receipts::run(Some((session, ledger)), command),
         AgentCommand::Case { .. } => Err(CliError::Usage(
             "a case is run on its own, without a node".into(),

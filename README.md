@@ -202,6 +202,10 @@ What is enforced, and where:
   address and the model the provider named, in a chain an operator
   commits to in a claim or a rented agent's enclave signs.
   [Receipts](docs/book/src/agent/receipts.md)
+- A market for agents' work: sealed bids in rounds, each cleared at one
+  price that anyone can recompute from the ledger, and a Task Charter
+  per unit that pays a worker for an accepted result.
+  [A market for agents' work](docs/book/src/agent/market.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent
   that pays, confirming before paying and prompt injection, run with your
   models and stand-in tools; a run can be published on the ledger as a

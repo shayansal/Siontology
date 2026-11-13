@@ -48,6 +48,8 @@ fn devnet() -> (Arc<Devnet>, SharedLedger) {
         Devnet::start(DevnetConfig {
             rounds_per_pulse: 2,
             prove_chunk: None,
+            // What these tests read back is in the node's events.
+            history: 100_000,
             ..DevnetConfig::default()
         })
         .unwrap(),

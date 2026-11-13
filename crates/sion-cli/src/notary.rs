@@ -449,7 +449,15 @@ impl Found {
 /// trustees released, the entries, and the results of runs.
 pub fn found(ledger: &dyn Ledger, claim: ClaimId, exam: &Exam) -> Result<Found, CliError> {
     let hex = claim.as_hash().to_hex();
-    let mut feed = Feed::default();
+    // Read in part, an exam would seem sealed when it is open, or an
+    // entry made in time would be missing.
+    let sealed_at =
+        feeds::read::<Exam>(ledger, claim, EXAM_SCHEMA)?.map_or(0, |read| read.issued_at);
+    feeds::need_since(ledger, sealed_at, "the exam's shares, entries and results")?;
+    let mut feed = Feed {
+        next: sealed_at,
+        ..Feed::default()
+    };
     feed.scan(ledger, &["exam-share:", "exam-entry:", "exam-result:"])?;
     let mut all = Found::default();
     let mut released: Vec<AccountId> = Vec::new();

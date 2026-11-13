@@ -522,6 +522,12 @@ pub fn on_ledger(
     let mut events: Vec<Event> = Vec::new();
     let step_key = crate::sealed::step_key(&agent);
     let seal_key = crate::sealed::seal_key(&agent);
+    // Counted from part of the span, a record would leave things out.
+    feeds::need_since(
+        ledger,
+        from,
+        &format!("what the ledger shows of the agent from Pulse {from}"),
+    )?;
     let mut next = from;
     'pages: loop {
         let mut page = ledger.events(Pulse(next), PAGE)?;

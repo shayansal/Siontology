@@ -116,6 +116,23 @@ impl Feed {
     }
 }
 
+/// An error unless the node still answers for Pulse `pulse`. A node keeps
+/// the events of its last Pulses only (256 on a devnet): what was named
+/// before then is not in what it answers, and a reader that needs
+/// everything since `pulse` cannot have it from this node. `what` says
+/// what is being read, for the error.
+pub fn need_since(ledger: &dyn Ledger, pulse: u64, what: &str) -> Result<(), CliError> {
+    // The first Pulse a node has anything for is 1.
+    let pulse = pulse.max(1);
+    if pulse > ledger.pulse()?.0 || ledger.pulse_view(Some(Pulse(pulse))).is_ok() {
+        return Ok(());
+    }
+    Err(CliError::Usage(format!(
+        "this node no longer answers for Pulse {pulse} (a node keeps the events of its last \
+         Pulses only): {what} cannot be read whole from it"
+    )))
+}
+
 /// A claim read back from the ledger as what its schema says it holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Read<T> {

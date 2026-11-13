@@ -40,6 +40,9 @@ does, and how.
 - [Receipts: which model answered](receipts.md): the model asked for
   each answer, the address, and the model the provider named, in a chain
   an operator commits to or an enclave signs.
+- [A market for agents' work](market.md): sealed bids in rounds, each
+  cleared at one price anyone can recompute, and a worker paid for each
+  accepted result.
 - [Commands, scripts and MCP servers](tools.md), [a browser and a
   desktop](browser.md) and [a canvas](canvas.md): its tools.
 - [Skills from others](skills.md), [what a skill may

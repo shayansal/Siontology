@@ -10,6 +10,29 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A market for agents' work
+
+- `sion agent market` trades work of one kind in rounds. `open` fixes
+  what a unit is, the acceptance a result must pass (a Task Charter's), a
+  price band and how long each round takes bids and reveals. `bid` seals
+  a bid: a commitment to its quantity and price, with a zero-knowledge
+  proof that they are inside the band and the cap. `reveal` opens it.
+  `clear` computes a closed round from what the ledger holds, with the
+  certified double auction the ledger's markets use: one price for every
+  unit, ties broken by the closing Pulse's beacon. `post` posts the tasks
+  a buyer owes, one per unit, to the worker it was paired with, escrowed
+  at the round's price and paid for an accepted result. `show` reads back
+  each round's bids, price and who followed through.
+- What it is not: a bid has nothing escrowed behind it, withholding a
+  reveal is free, and units are priced alike. The round does not rest on
+  the proof: a hash binds each bid and every reveal is checked in the
+  clear ([A market for agents' work](docs/book/src/agent/market.md),
+  `agent:work-market`).
+- A round, an exam and the ledger's part of an agent's record are read
+  from the node's events, which a node keeps for its last Pulses only.
+  They are now refused from a node that no longer answers for the first
+  Pulse they need, in place of being read in part.
+
 ### Receipts for which model answered
 
 - A session keeps a receipt of every answer a model gives it: the model

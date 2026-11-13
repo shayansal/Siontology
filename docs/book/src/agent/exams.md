@@ -191,7 +191,10 @@ An agent that does well only on one author's tasks shows in that line.
   ([what is proven with zero knowledge](proofs.md)).
 - Shares, entries and results are found in the node's events, which are
   not proven: a node that leaves one out hides it from that reader. Each
-  one found is read again from its claim.
+  one found is read again from its claim. A node keeps the events of its
+  last Pulses only (256 on a devnet). An exam is refused from a node that
+  no longer answers for the Pulse it was sealed in, so reading an exam
+  that ran for long takes a node that kept its history.
 
 This is tested on a devnet with scripted models (`agent_exam.rs`): an
 exam sealed, entered, refused while sealed, opened by two of three

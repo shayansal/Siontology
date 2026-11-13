@@ -143,6 +143,7 @@ pub mod webhooks;
 pub mod wecom;
 pub mod weixin;
 pub mod work;
+pub mod work_market;
 pub mod worktrees;
 pub mod x402;
 pub mod x_api;
