@@ -10,6 +10,27 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A flight recorder for an agent that acts
+
+- `sion agent recorder` keeps a device's events (a sensor's reading, a
+  command, a decision, a fault, a heartbeat) in a memory log. `record`
+  appends them with no network and drops nothing: what cannot be
+  recorded as it came is recorded as a fault. `commit` fixes what was
+  recorded as of a Pulse; `--seal` closes the log after an incident.
+  `show` reports stretches with no record and a clock that stepped back.
+- `extract` hands an investigator a run of records, whole, each with the
+  path that shows it is in the log the ledger holds; records of a
+  withheld channel are digests. `check` verifies it against the ledger
+  and says when each run of records was fixed.
+- Readings of a sealed channel are logged as commitments. `prove` adds a
+  zero-knowledge proof that every one in an extract keeps a bound,
+  without showing any.
+- What it is not: it shows what was recorded, not what happened; before
+  a commit a record is only the device's; times are the device's word;
+  the ledger holds the log's head, not its records
+  ([A flight recorder](docs/book/src/agent/recorder.md),
+  `agent:flight-recorder`).
+
 ### A market for agents' work
 
 - `sion agent market` trades work of one kind in rounds. `open` fixes

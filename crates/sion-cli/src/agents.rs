@@ -755,6 +755,12 @@ pub enum AgentCommand {
     /// Task Charter from each buyer to the worker it was paired with
     #[command(subcommand)]
     Market(crate::work_market::MarketCommand),
+    /// A flight recorder for an agent that acts in the world: a device's
+    /// events in a log the ledger keeps append-only, recorded without a
+    /// network and fixed by each commit, with extracts an investigator
+    /// checks and bounds proven of readings that are not shown
+    #[command(subcommand)]
+    Recorder(crate::recorder::RecorderCommand),
     /// Sealed exams: tasks encrypted and committed to on the ledger, agents
     /// entered before a threshold of trustees opens them, and results that
     /// anyone can run again once they are open.
@@ -1183,6 +1189,9 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
             crate::projects::run_local(command)
         }
         AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Recorder(command) if !command.needs_ledger() => {
+            crate::recorder::run(None, command)
+        }
         AgentCommand::Receipts(command) if !command.needs_ledger() => {
             crate::receipts::run(None, command)
         }
@@ -1654,6 +1663,7 @@ pub fn run(
         AgentCommand::Record(command) => crate::record::run(session, ledger, command),
         AgentCommand::Comply(command) => crate::comply::run(Some((session, ledger)), command),
         AgentCommand::Exam(command) => crate::notary::command(session, ledger, command),
+        AgentCommand::Recorder(command) => crate::recorder::run(Some((session, ledger)), command),
         AgentCommand::Market(command) => crate::work_market::command(session, ledger, command),
         AgentCommand::Receipts(command) => crate::receipts::run(Some((session, ledger)), command),
         AgentCommand::Case { .. } => Err(CliError::Usage(

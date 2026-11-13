@@ -103,6 +103,7 @@ pub mod realtime;
 pub mod recall;
 pub mod receipts;
 pub mod record;
+pub mod recorder;
 pub mod rent_cli;
 pub mod rentals;
 pub mod reputation;

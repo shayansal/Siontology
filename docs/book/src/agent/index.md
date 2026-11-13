@@ -43,6 +43,9 @@ does, and how.
 - [A market for agents' work](market.md): sealed bids in rounds, each
   cleared at one price anyone can recompute, and a worker paid for each
   accepted result.
+- [A flight recorder for an agent that acts](recorder.md): a device's
+  events in a log the ledger keeps append-only, extracts an investigator
+  checks, and bounds proven of readings that are not shown.
 - [Commands, scripts and MCP servers](tools.md), [a browser and a
   desktop](browser.md) and [a canvas](canvas.md): its tools.
 - [Skills from others](skills.md), [what a skill may

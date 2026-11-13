@@ -206,6 +206,11 @@ What is enforced, and where:
   price that anyone can recompute from the ledger, and a Task Charter
   per unit that pays a worker for an accepted result.
   [A market for agents' work](docs/book/src/agent/market.md)
+- A flight recorder for an agent that drives a machine: its events
+  recorded with no network, fixed by commits to the ledger, handed to an
+  investigator as an extract that checks, with bounds proven of readings
+  that are not shown.
+  [A flight recorder](docs/book/src/agent/recorder.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent
   that pays, confirming before paying and prompt injection, run with your
   models and stand-in tools; a run can be published on the ledger as a

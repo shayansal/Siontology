@@ -818,6 +818,7 @@ Commands:
   comply         Proof that payments kept your rules without showing the payments: commitments to each amount and payee, and zero-knowledge proofs that none was above a limit, that they came to no more than a total, and that each went to one of a list
   receipts       Receipts for which model answered: the model a session's runtime asked for each answer, at which address, and the model the provider said answered, in a chain; written for someone else to check, committed to in a claim, or signed by an enclave
   market         A market for agents' work, priced per accepted result: sealed bids in rounds, each cleared at one price anyone can recompute, and a Task Charter from each buyer to the worker it was paired with
+  recorder       A flight recorder for an agent that acts in the world: a device's events in a log the ledger keeps append-only, recorded without a network and fixed by each commit, with extracts an investigator checks and bounds proven of readings that are not shown
   exam           Sealed exams: tasks encrypted and committed to on the ledger, agents entered before a threshold of trustees opens them, and results that anyone can run again once they are open
   find           Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
   project        Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
@@ -4110,6 +4111,149 @@ Options:
       --node <NODE>    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --round <ROUND>  A round to show (every round so far, if not given)
   -h, --help           Print help
+```
+
+## `sion agent recorder`
+
+```text
+A flight recorder for an agent that acts in the world: a device's events in a log the ledger keeps append-only, recorded without a network and fixed by each commit, with extracts an investigator checks and bounds proven of readings that are not shown
+
+Usage: sion agent recorder [OPTIONS] <COMMAND>
+
+Commands:
+  open     Open a recorder: a log on the ledger that this wallet writes, and its store on this machine
+  record   Record events on this machine, with no network: lines of JSON, each {"t_ms": …, "kind": "sensor|command|decision|fault|heartbeat", "channel": …, "name": …, "value": a whole number or text}
+  commit   Commit the log to the ledger: every record made so far is fixed as of this Pulse and cannot be changed or left out afterwards
+  show     Where a recorder stands on this machine: how much is recorded and fixed, stretches with no record, and a clock that stepped back
+  extract  Make an extract for an investigator: every committed record from the first to the last whose device time is in a window, each with the path that shows it is in the log the ledger holds
+  prove    Prove a bound on every sealed reading of one kind in an extract, without showing the readings, and add the proof to the extract
+  check    Check an extract against the ledger, as an investigator: that its records are in the log the ledger holds, all of them and in order, by when they were fixed, what their own times show to be missing, and the bounds proven of its sealed readings
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent recorder open`
+
+```text
+Open a recorder: a log on the ledger that this wallet writes, and its store on this machine
+
+Usage: sion agent recorder open [OPTIONS] --wallet <WALLET> <NAME>
+
+Arguments:
+  <NAME>  The recorder's name (lowercase letters, digits and hyphens)
+
+Options:
+      --node <NODE>                  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>              The wallet that writes it
+      --heartbeat-ms <HEARTBEAT_MS>  How often the device records something, a heartbeat if nothing else, in milliseconds: a stretch of more than twice this with no record is reported [default: 1000]
+      --seal <CHANNEL>               A channel whose sensor readings are logged as commitments, not shown (it and the channels under it; repeat for more)
+  -h, --help                         Print help
+```
+
+## `sion agent recorder record`
+
+```text
+Record events on this machine, with no network: lines of JSON, each {"t_ms": …, "kind": "sensor|command|decision|fault|heartbeat", "channel": …, "name": …, "value": a whole number or text}
+
+Usage: sion agent recorder record [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The recorder
+
+Options:
+      --file <FILE>  The file of events (standard input, if not given)
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent recorder commit`
+
+```text
+Commit the log to the ledger: every record made so far is fixed as of this Pulse and cannot be changed or left out afterwards
+
+Usage: sion agent recorder commit [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The recorder
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --seal         Close the log for good: after an incident, so that an extract of it stays checkable
+  -h, --help         Print help
+```
+
+## `sion agent recorder show`
+
+```text
+Where a recorder stands on this machine: how much is recorded and fixed, stretches with no record, and a clock that stepped back
+
+Usage: sion agent recorder show [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The recorder
+
+Options:
+      --last <LAST>  List the last records too [default: 0]
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent recorder extract`
+
+```text
+Make an extract for an investigator: every committed record from the first to the last whose device time is in a window, each with the path that shows it is in the log the ledger holds
+
+Usage: sion agent recorder extract [OPTIONS] --from-ms <FROM_MS> --until-ms <UNTIL_MS> --out <FILE> <NAME>
+
+Arguments:
+  <NAME>  The recorder
+
+Options:
+      --from-ms <FROM_MS>    The window's start, in milliseconds since the Unix epoch
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --until-ms <UNTIL_MS>  The window's end (exclusive)
+      --withhold <CHANNEL>   A channel whose records are given as digests only (it and the channels under it; repeat for more)
+      --out <FILE>           The file to write
+  -h, --help                 Print help
+```
+
+## `sion agent recorder prove`
+
+```text
+Prove a bound on every sealed reading of one kind in an extract, without showing the readings, and add the proof to the extract
+
+Usage: sion agent recorder prove [OPTIONS] --channel <CHANNEL> --reading <READING> <NAME> <EXTRACT>
+
+Arguments:
+  <NAME>     The recorder
+  <EXTRACT>  The extract
+
+Options:
+      --channel <CHANNEL>    The channel
+      --node <NODE>          The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --reading <READING>    The reading's name
+      --at-most <AT_MOST>    What every reading is at most
+      --at-least <AT_LEAST>  What every reading is at least
+  -h, --help                 Print help
+```
+
+## `sion agent recorder check`
+
+```text
+Check an extract against the ledger, as an investigator: that its records are in the log the ledger holds, all of them and in order, by when they were fixed, what their own times show to be missing, and the bounds proven of its sealed readings
+
+Usage: sion agent recorder check [OPTIONS] <EXTRACT>
+
+Arguments:
+  <EXTRACT>  The extract
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --records      List the records shown
+  -h, --help         Print help
 ```
 
 ## `sion agent improve improver`
