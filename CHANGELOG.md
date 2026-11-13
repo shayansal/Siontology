@@ -10,6 +10,36 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Lessons shared between owners
+
+- `sion agent improve share <profile>` publishes a lesson the profile's
+  agent kept: what the kept change added to what the agent had learned
+  (at most 1,000 bytes) and the evidence it was kept on, as a claim on
+  the owner's bond `lesson-author`, under an adjudicator who can rule
+  against it, asking a price of whoever's agent keeps it, if the owner
+  names one.
+- `sion agent improve lessons` lists the lessons shared on the ledger:
+  their words, what the ledger holds of their evidence (whether the
+  change was published by the same account, on tasks sealed before), and
+  whose agents have kept each since.
+- `sion agent improve learn <profile>` has the profile's agent try them,
+  with no proposer: each is added to what the agent has learned, tried on
+  the agent as it is, and kept only when it is better beyond chance on
+  the profile's tasks to choose on and then on its own sealed tasks. With
+  `--wallet` a kept lesson is published with an adoption, a claim saying
+  whose lesson it was and what the adopter's sealed tasks showed; with
+  `--pay-up-to` the lesson's author is paid what it asks. `--by`,
+  `--lesson`, `--adoptions` and `--most` choose which are tried.
+- A run of `learn` neither builds on the archive of variants nor adds to
+  it: a stranger's lesson that was turned down is never what a later
+  change is built on.
+- Tested on a devnet with scripted models: a lesson kept by one owner's
+  agent kept by another's on its own sealed tasks, its author paid; a
+  lesson that does nothing turned down; a copy of a lesson earning its
+  copier nothing; a claim named under an adoption's key that is no
+  adoption left out ([Lessons shared between owners](docs/book/src/agent/self-improvement.md#lessons-shared-between-owners),
+  `agent:shared-lessons`).
+
 ### What the agent expected, against what happened
 
 - `sion agent run --expect` (and `sion agent profile add --expect`) has

@@ -3159,6 +3159,9 @@ Commands:
   lineage   The changes the agent kept from its own work, with their evidence; with --check, each held to its claim on the ledger
   adopt     Make a kept change the profile's
   undo      Take back the last change made the profile's
+  share     Share a lesson the profile's agent kept, as your claim: its words and the evidence it was kept on, on your bond `lesson-author`, which the adjudicator can rule against. Other owners' agents find it (`lessons`) and keep it only when their own sealed tasks confirm it (`learn`)
+  lessons   The lessons shared on this ledger, each with the evidence its author kept it on and whose agents have kept it since
+  learn     Have the profile's agent try lessons other owners shared. Each is added to what it has learned and kept only when that is better beyond chance on the profile's tasks to choose on and then on its sealed tasks, like any change; no model proposes anything. With --apply a kept lesson becomes the profile's; with --wallet it is published, with a claim saying whose lesson it was
   code      Let the agent change its own code: a coding agent edits a copy of the source, its commands in the sandbox; a change that keeps to the paths it may touch, builds, passes its tests, is better on the seal's tasks to choose on and is confirmed on the sealed tasks, the candidate scored by this harness, becomes a release (published with --wallet). Nothing is installed
   attest    Rebuild and score a release someone published: the source at its commit with its patch, and as it stood, each built and tested in the sandbox and scored by this harness on the sealed tasks it was confirmed on; publish what you found if it holds up
   install   Apply a release to a checkout of the source, only if its patch is the one published and verifiers you name attest it (or, with --undo, take it back out). Build and install the result as you build sion
@@ -3395,6 +3398,64 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent improve share`
+
+```text
+Share a lesson the profile's agent kept, as your claim: its words and the evidence it was kept on, on your bond `lesson-author`, which the adjudicator can rule against. Other owners' agents find it (`lessons`) and keep it only when their own sealed tasks confirm it (`learn`)
+
+Usage: sion agent improve share [OPTIONS] --wallet <WALLET> --adjudicator <ADJUDICATOR> <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --step <STEP>                The kept change whose lesson to share (its id, or a unique prefix of it; default: the latest that changed what the agent has learned)
+      --wallet <WALLET>            Your wallet
+      --adjudicator <ADJUDICATOR>  The adjudicator who can rule against the lesson (its atom's id, 64 hex digits)
+      --bond <USD>                 Post your bond `lesson-author` with this many USD first
+      --price <USD>                What you ask of an owner whose agent keeps it, in USD. Whether they pay is theirs to choose: a lesson's words are public [default: 0]
+      --valid-for <VALID_FOR>      How many Pulses the lesson stands for [default: 1000000]
+  -h, --help                       Print help
+```
+
+## `sion agent improve lessons`
+
+```text
+The lessons shared on this ledger, each with the evidence its author kept it on and whose agents have kept it since
+
+Usage: sion agent improve lessons [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent improve learn`
+
+```text
+Have the profile's agent try lessons other owners shared. Each is added to what it has learned and kept only when that is better beyond chance on the profile's tasks to choose on and then on its sealed tasks, like any change; no model proposes anything. With --apply a kept lesson becomes the profile's; with --wallet it is published, with a claim saying whose lesson it was
+
+Usage: sion agent improve learn [OPTIONS] <PROFILE>
+
+Arguments:
+  <PROFILE>  The profile
+
+Options:
+      --lesson <CLAIM>                 Only these lessons (a claim's id, or a prefix of it; repeat for more)
+      --node <NODE>                    The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --by <ACCOUNT>                   Only lessons by these authors (a wallet's name or an account's id; repeat for more)
+      --adoptions <ADOPTIONS>          Only lessons that at least this many other owners' agents kept [default: 0]
+      --most <MOST>                    Lessons to try, at most. A lesson that passes the tasks to choose on spends one of the seal's confirmations [default: 4]
+      --runs <RUNS>                    How many times each task is run by each variant [default: 4]
+      --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
+      --seed <SEED>                    The seed of the archive's draws (default: drawn)
+      --apply                          Make each kept lesson the profile's
+      --wallet <WALLET>                Publish each kept lesson as this wallet's claim, and a claim saying whose lesson it was (an adoption)
+      --pay-up-to <USD>                Pay the author of a kept lesson what it asks, if that is at most this many USD (with --wallet)
+  -h, --help                           Print help
 ```
 
 ## `sion agent improve improver`

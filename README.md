@@ -223,7 +223,9 @@ What is enforced, and where:
   against, when they choose), and installed only by you. The sealed tasks
   can be a reusable holdout, a model can write practice tasks to choose
   changes on, and a challenger can write variants of what a change newly
-  passes to catch a shortcut before it is confirmed. Tested with scripted
+  passes to catch a shortcut before it is confirmed. A lesson one owner's
+  agent kept can be shared on a bond, and another owner's agent keeps it
+  only when its own sealed tasks confirm it. Tested with scripted
   models. [Improving itself](docs/book/src/agent/self-improvement.md)
 - **On Ethereum and in what it makes**: the agent's ERC-8004 registration
   file, naming its DID, and the calls that register it and bind its wallet,

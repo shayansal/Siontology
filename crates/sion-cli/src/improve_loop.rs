@@ -314,6 +314,44 @@ pub struct Proposal {
     pub models: Option<Vec<String>>,
     /// Why it would help.
     pub why: String,
+    /// The claim of the shared lesson it comes from, if it is one
+    /// ([`crate::lessons`]) rather than a proposer's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lesson: Option<String>,
+}
+
+/// A lesson another owner shared, offered to the loop to try
+/// ([`crate::lessons`]): tried like a proposer's change, on what the agent
+/// has learned with the lesson added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offered {
+    /// Its claim, in hex.
+    pub claim: String,
+    /// The lesson.
+    pub text: String,
+    /// Where it comes from, in a line.
+    pub why: String,
+}
+
+impl Offered {
+    /// The change it would make to `parent`: the lesson added to what the
+    /// agent has learned. None where `parent` already holds its words.
+    pub fn proposal(&self, parent: &Variant) -> Option<Proposal> {
+        let (had, text) = (parent.learned.trim(), self.text.trim());
+        if had.contains(text) {
+            return None;
+        }
+        Some(Proposal {
+            learned: Some(if had.is_empty() {
+                text.to_string()
+            } else {
+                format!("{had}\n{text}")
+            }),
+            models: None,
+            why: self.why.clone(),
+            lesson: Some(self.claim.clone()),
+        })
+    }
 }
 
 impl Proposal {
@@ -382,6 +420,7 @@ impl Tool for ProposeChange {
             learned,
             models,
             why: input["why"].as_str().unwrap_or_default().to_string(),
+            lesson: None,
         });
         ToolOutcome::ok(
             "proposed: it will be tried on the tasks, then confirmed on tasks you are not shown",
@@ -767,6 +806,10 @@ pub struct Step {
     /// The claim that published it, if one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<String>,
+    /// The claim of the shared lesson it came from, if it came from one
+    /// ([`crate::lessons`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lesson: Option<String>,
 }
 
 impl Step {
@@ -1029,6 +1072,11 @@ pub struct Settings {
     pub models: Vec<String>,
     /// The seed of the archive's draws.
     pub seed: u64,
+    /// Lessons other owners shared, to try before anything a proposer
+    /// writes, each once ([`crate::lessons`]).
+    pub offered: Vec<Offered>,
+    /// Whether only those lessons are tried: no proposer is asked.
+    pub lessons_only: bool,
 }
 
 /// The tasks a loop chooses changes on and confirms them on.
@@ -1268,6 +1316,9 @@ pub struct Report {
     pub stopped: Option<String>,
     /// Every variant tried.
     pub archive: Option<Archive<Variant>>,
+    /// The shared lessons it tried, by claim ([`crate::lessons`]): each
+    /// one it reached, kept or not.
+    pub lessons: Vec<String>,
 }
 
 /// One round's attempt, as the proposer's history tells it: the change
@@ -1291,6 +1342,11 @@ pub fn improve(
     sinks: &mut Sinks<'_>,
 ) -> Result<Report, CliError> {
     improver.check().map_err(CliError::Usage)?;
+    if !settings.offered.is_empty() && !settings.lessons_only {
+        return Err(CliError::Usage(
+            "shared lessons are tried on their own, without a proposer".into(),
+        ));
+    }
     let mut report = Report::default();
     let mut allowed: Vec<String> = profile.models.clone();
     for model in &settings.models {
@@ -1347,6 +1403,8 @@ pub fn improve(
         .unwrap_or(0);
     results[start_id] = Some(first.result.clone());
     let mut tried: BTreeSet<Hash32> = archive.nodes.iter().map(|n| n.variant.digest()).collect();
+    let mut offered: std::collections::VecDeque<Offered> =
+        settings.offered.iter().cloned().collect();
     let mut history: Vec<String> = archive
         .nodes
         .iter()
@@ -1387,7 +1445,19 @@ pub fn improve(
             break;
         }
         let tau = temperature(round, settings.rounds);
-        let Some(parent) = archive.pick(&mut draws, tau, &|n| n.failing()) else {
+        let picked = if settings.lessons_only {
+            // A stranger's lesson is tried on the agent as it is, alone:
+            // never on a variant that holds a lesson that was turned down,
+            // whose words would then ride along with one that is kept.
+            archive
+                .nodes
+                .iter()
+                .position(|n| n.variant.digest() == incumbent.digest())
+                .filter(|at| archive.nodes[*at].failing())
+        } else {
+            archive.pick(&mut draws, tau, &|n| n.failing())
+        };
+        let Some(parent) = picked else {
             report.stopped = Some(
                 "every variant passes every task it was tried on: nothing left to learn from these tasks"
                     .into(),
@@ -1421,26 +1491,54 @@ pub fn improve(
             archive.nodes[parent].total
         ));
         let (_, surprised) = surprises_shown(problem.train, &parent_result, 0);
-        if surprised > 0 {
+        if surprised > 0 && !settings.lessons_only {
             report.lines.push(format!(
                 "  what it did not expect: {surprised} calls, each counted once a task; the \
                  proposer is shown {}",
                 surprised.min(SURPRISES_SHOWN)
             ));
         }
-        let (proposals, used) = propose(
-            proposer,
-            improver,
-            profile.instructions.as_deref(),
-            &parent_variant,
-            &allowed,
-            problem.train,
-            &parent_result,
-            &history,
-            round,
-        );
-        report.tokens += used;
+        // Lessons other owners shared come first, each tried once: as
+        // many as a proposer may propose a round.
+        let mut proposals: Vec<Proposal> = Vec::new();
+        while proposals.len() < improver.proposals as usize {
+            let Some(lesson) = offered.pop_front() else {
+                break;
+            };
+            match lesson.proposal(&parent_variant) {
+                Some(proposal) => proposals.push(proposal),
+                None => {
+                    report.lines.push(format!(
+                        "  passed over: lesson {}: the agent has learned its words already",
+                        &lesson.claim[..lesson.claim.len().min(8)]
+                    ));
+                    report.lessons.push(lesson.claim.clone());
+                }
+            }
+        }
+        if !settings.lessons_only {
+            let (written, used) = propose(
+                proposer,
+                improver,
+                profile.instructions.as_deref(),
+                &parent_variant,
+                &allowed,
+                problem.train,
+                &parent_result,
+                &history,
+                round,
+            );
+            report.tokens += used;
+            proposals.extend(written);
+        }
         if proposals.is_empty() {
+            if settings.lessons_only {
+                if offered.is_empty() {
+                    report.lines.push("  no lesson is left to try".into());
+                    break;
+                }
+                continue;
+            }
             report.lines.push("  the proposer proposed nothing".into());
             history.push(format!("round {}: nothing was proposed", round + 1));
             continue;
@@ -1449,6 +1547,9 @@ pub fn improve(
             if (sinks.stopped)() {
                 report.stopped = Some("the kill switch is on".into());
                 break 'rounds;
+            }
+            if let Some(lesson) = &proposal.lesson {
+                report.lessons.push(lesson.clone());
             }
             let child = proposal.applied_to(&parent_variant);
             let change = child.change_from(&parent_variant);
@@ -1819,6 +1920,7 @@ pub fn improve(
                 challenge: challenged,
                 at: (sinks.now)(),
                 claim: None,
+                lesson: proposal.lesson.clone(),
             };
             step.identify();
             let lines = (sinks.kept)(&mut step)?;

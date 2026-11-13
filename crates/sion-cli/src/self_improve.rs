@@ -911,6 +911,85 @@ pub enum ImproveCommand {
         /// The profile.
         profile: String,
     },
+    /// Share a lesson the profile's agent kept, as your claim: its words
+    /// and the evidence it was kept on, on your bond `lesson-author`, which
+    /// the adjudicator can rule against. Other owners' agents find it
+    /// (`lessons`) and keep it only when their own sealed tasks confirm it
+    /// (`learn`).
+    Share {
+        /// The profile.
+        profile: String,
+        /// The kept change whose lesson to share (its id, or a unique
+        /// prefix of it; default: the latest that changed what the agent
+        /// has learned).
+        #[arg(long)]
+        step: Option<String>,
+        /// Your wallet.
+        #[arg(long)]
+        wallet: String,
+        /// The adjudicator who can rule against the lesson (its atom's id,
+        /// 64 hex digits).
+        #[arg(long)]
+        adjudicator: String,
+        /// Post your bond `lesson-author` with this many USD first.
+        #[arg(long, value_name = "USD")]
+        bond: Option<String>,
+        /// What you ask of an owner whose agent keeps it, in USD. Whether
+        /// they pay is theirs to choose: a lesson's words are public.
+        #[arg(long, value_name = "USD", default_value = "0")]
+        price: String,
+        /// How many Pulses the lesson stands for.
+        #[arg(long = "valid-for", default_value_t = 1_000_000)]
+        valid_for: u64,
+    },
+    /// The lessons shared on this ledger, each with the evidence its author
+    /// kept it on and whose agents have kept it since.
+    Lessons,
+    /// Have the profile's agent try lessons other owners shared. Each is
+    /// added to what it has learned and kept only when that is better
+    /// beyond chance on the profile's tasks to choose on and then on its
+    /// sealed tasks, like any change; no model proposes anything. With
+    /// --apply a kept lesson becomes the profile's; with --wallet it is
+    /// published, with a claim saying whose lesson it was.
+    Learn {
+        /// The profile.
+        profile: String,
+        /// Only these lessons (a claim's id, or a prefix of it; repeat for
+        /// more).
+        #[arg(long = "lesson", value_name = "CLAIM")]
+        lessons: Vec<String>,
+        /// Only lessons by these authors (a wallet's name or an account's
+        /// id; repeat for more).
+        #[arg(long = "by", value_name = "ACCOUNT")]
+        by: Vec<String>,
+        /// Only lessons that at least this many other owners' agents kept.
+        #[arg(long, default_value_t = 0)]
+        adoptions: usize,
+        /// Lessons to try, at most. A lesson that passes the tasks to
+        /// choose on spends one of the seal's confirmations.
+        #[arg(long, default_value_t = 4)]
+        most: usize,
+        /// How many times each task is run by each variant.
+        #[arg(long, default_value_t = 4)]
+        runs: u32,
+        /// The tokens each run of a task may use.
+        #[arg(long = "budget-tokens", default_value_t = 20_000)]
+        budget_tokens: u64,
+        /// The seed of the archive's draws (default: drawn).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Make each kept lesson the profile's.
+        #[arg(long)]
+        apply: bool,
+        /// Publish each kept lesson as this wallet's claim, and a claim
+        /// saying whose lesson it was (an adoption).
+        #[arg(long)]
+        wallet: Option<String>,
+        /// Pay the author of a kept lesson what it asks, if that is at most
+        /// this many USD (with --wallet).
+        #[arg(long = "pay-up-to", value_name = "USD", requires = "wallet")]
+        pay_up_to: Option<String>,
+    },
     /// Let the agent change its own code: a coding agent edits a copy of
     /// the source, its commands in the sandbox; a change that keeps to the
     /// paths it may touch, builds, passes its tests, is better on the
@@ -1124,6 +1203,9 @@ impl ImproveCommand {
             ImproveCommand::Lineage { check, .. } => *check,
             ImproveCommand::Code { wallet, .. } => wallet.is_some(),
             ImproveCommand::Attest { .. } | ImproveCommand::Install { .. } => true,
+            ImproveCommand::Share { .. }
+            | ImproveCommand::Lessons
+            | ImproveCommand::Learn { .. } => true,
             _ => false,
         }
     }
@@ -1255,7 +1337,7 @@ pub fn run_with(
             run_loop(
                 &found,
                 &seal,
-                &proposer,
+                Some(&proposer),
                 crate::improve_loop::Settings {
                     rounds,
                     runs,
@@ -1263,6 +1345,8 @@ pub fn run_with(
                     total_tokens,
                     models,
                     seed: seed.unwrap_or_else(drawn),
+                    offered: Vec::new(),
+                    lessons_only: false,
                 },
                 &RunWith {
                     practice,
@@ -1271,6 +1355,199 @@ pub fn run_with(
                 make_it_so,
                 &mut publish,
             )
+            .map(|_| ())
+        }
+        ImproveCommand::Share {
+            profile,
+            step,
+            wallet,
+            adjudicator,
+            bond,
+            price,
+            valid_for,
+        } => {
+            let steps = crate::improve_loop::lineage(&profile)?;
+            let learned =
+                |s: &&crate::improve_loop::Step| s.to.learned.trim() != s.from.learned.trim();
+            let one = match &step {
+                Some(prefix) => {
+                    let found: Vec<_> = steps.iter().filter(|s| s.id.starts_with(prefix)).collect();
+                    match found.as_slice() {
+                        [one] => *one,
+                        [] => {
+                            return Err(CliError::Usage(format!(
+                                "profile {profile} kept no step {prefix}"
+                            )))
+                        }
+                        _ => {
+                            return Err(CliError::Usage(format!(
+                                "{prefix} names more than one step"
+                            )))
+                        }
+                    }
+                }
+                None => steps.iter().rev().find(learned).ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "profile {profile} has kept no change to what its agent has learned: \
+                         there is no lesson to share yet (sion agent improve run)"
+                    ))
+                })?,
+            };
+            // The tools of the tasks it was chosen on, if those are still
+            // the profile's seal's.
+            let tools = crate::sealed::current(&profile)
+                .ok()
+                .filter(|seal| seal.sealed == one.sealed)
+                .and_then(|seal| seal.train_set().ok())
+                .map(|(set, _)| crate::lessons::tools_of(&set))
+                .unwrap_or_default();
+            let lesson =
+                crate::lessons::Lesson::of(one, tools, crate::agents::parse_amount(&price)?)?;
+            let adjudicator = sion_core::ids::AtomId(
+                sion_core::hash::Hash32::from_hex(adjudicator.trim())
+                    .map_err(|e| CliError::Usage(format!("the adjudicator's id: {e}")))?,
+            );
+            if let Some(amount) = bond {
+                let view = session.must(
+                    &wallet,
+                    sion_exec::TxKind::PostBond {
+                        class: sion_assurance::AtomClass::Economic,
+                        label: crate::lessons::AUTHOR_BOND.into(),
+                        amount: crate::agents::parse_amount(&amount)?,
+                    },
+                    Vec::new(),
+                )?;
+                crate::agents::print_receipt(session, &view);
+            }
+            let claim = crate::lessons::share(session, &wallet, &lesson, adjudicator, valid_for)?;
+            println!(
+                "shared the lesson of step {}: claim {}, on your bond {}",
+                one.id,
+                claim.as_hash().to_hex(),
+                crate::lessons::AUTHOR_BOND
+            );
+            println!("  {}", lesson.text.replace('\n', "\n  "));
+            println!(
+                "  kept on {} sealed runs, {} on the tasks it was chosen on{}",
+                lesson.sealed.shown(),
+                lesson.chosen.shown(),
+                match lesson.price_micros {
+                    0 => String::new(),
+                    _ => format!(
+                        "; asks {} USD of an owner whose agent keeps it",
+                        lesson.price()
+                    ),
+                }
+            );
+            Ok(())
+        }
+        ImproveCommand::Lessons => {
+            for line in crate::lessons::lines(&crate::lessons::refresh(ledger)?) {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        ImproveCommand::Learn {
+            profile,
+            lessons,
+            by,
+            adoptions,
+            most,
+            runs,
+            budget_tokens,
+            seed,
+            apply: make_it_so,
+            wallet,
+            pay_up_to,
+        } => {
+            let found = crate::profiles::get(&profile)?;
+            let seal = crate::sealed::current(&profile)?;
+            let (train, _) = seal.train_set()?;
+            let known = crate::lessons::refresh(ledger)?;
+            let choice = crate::lessons::Choice {
+                by: by.iter().map(|name| session.id(name)).collect(),
+                only: lessons,
+                adoptions,
+                most,
+            };
+            let offered = crate::lessons::offered(
+                &known,
+                &found.agent,
+                &crate::lessons::tools_of(&train),
+                &crate::lessons::tried(&profile, &seal.sealed),
+                &choice,
+            );
+            if offered.is_empty() {
+                println!(
+                    "no shared lesson to try: of the {} on this ledger, none stands, is another \
+                     agent's, bears on a tool this profile's tasks use, fits what you asked for \
+                     and was not tried on this seal already (sion agent improve lessons)",
+                    known.len()
+                );
+                return Ok(());
+            }
+            for lesson in &offered {
+                println!(
+                    "to try: lesson {}: {}",
+                    &lesson.claim[..8],
+                    lesson.text.replace('\n', " / ")
+                );
+            }
+            let pay = match &pay_up_to {
+                Some(amount) => crate::agents::parse_amount(amount)?,
+                None => sion_core::Amount::ZERO,
+            };
+            let mut kept = |step: &mut crate::improve_loop::Step| -> Result<Vec<String>, CliError> {
+                let Some(wallet) = &wallet else {
+                    return Ok(Vec::new());
+                };
+                step.seal_claim = seal.claim.clone();
+                let subject = format!("agent {} kept a change: {}", found.agent, step.change);
+                let claim = crate::sealed::publish_step(
+                    session,
+                    wallet,
+                    &found.agent,
+                    step.claimed()?,
+                    subject,
+                )?;
+                step.claim = Some(claim.as_hash().to_hex());
+                let mut lines = vec![format!("published as claim {}", claim.as_hash().to_hex())];
+                let (adoption, paid) =
+                    crate::lessons::adopt(session, wallet, step, pay, 1_000_000)?;
+                lines.push(format!(
+                    "said whose lesson it was in claim {}{}",
+                    adoption.as_hash().to_hex(),
+                    if paid > sion_core::Amount::ZERO {
+                        format!(", and paid its author {paid} USD")
+                    } else {
+                        String::new()
+                    }
+                ));
+                Ok(lines)
+            };
+            let rounds = offered.len();
+            let report = run_loop(
+                &found,
+                &seal,
+                None,
+                crate::improve_loop::Settings {
+                    rounds,
+                    runs,
+                    budget_tokens,
+                    total_tokens: 0,
+                    models: Vec::new(),
+                    seed: seed.unwrap_or_else(drawn),
+                    offered,
+                    lessons_only: true,
+                },
+                &RunWith {
+                    practice: None,
+                    challenger: None,
+                },
+                make_it_so,
+                &mut kept,
+            )?;
+            crate::lessons::note_tried(&profile, &seal.sealed, &report.lessons)
         }
         ImproveCommand::Code {
             profile,
@@ -1698,12 +1975,12 @@ pub struct RunWith {
 fn run_loop(
     profile: &crate::profiles::Profile,
     seal: &crate::sealed::Seal,
-    proposer: &str,
+    proposer: Option<&str>,
     settings: crate::improve_loop::Settings,
     with: &RunWith,
     make_it_so: bool,
     kept: &mut dyn FnMut(&mut crate::improve_loop::Step) -> Result<Vec<String>, CliError>,
-) -> Result<(), CliError> {
+) -> Result<crate::improve_loop::Report, CliError> {
     let (train, _) = seal.train_set()?;
     let (sealed, _) = seal.sealed_set()?;
     // Practice tasks join the tasks to choose on, never the sealed ones.
@@ -1741,7 +2018,12 @@ fn run_loop(
         )));
     }
     let improver = crate::improve_loop::improver(&profile.name)?;
-    let model = crate::runtime::model(proposer, 0)?;
+    // Without a proposer only shared lessons are tried, and no model is
+    // asked: one that says nothing stands in its place.
+    let model: Box<dyn sion_agent::Model> = match proposer {
+        Some(spec) => crate::runtime::model(spec, 0)?,
+        None => Box::new(sion_agent::scripted::Scripted::new("no-proposer")),
+    };
     let problem = crate::improve_loop::Problem {
         train: &train,
         train_digest,
@@ -1784,8 +2066,16 @@ fn run_loop(
     };
     // The archive is of the tasks chosen on: the seal's, or the seal's with
     // the practice tasks, whose scores are not the seal's alone.
+    // A run that only tries shared lessons neither goes on from the archive
+    // nor adds to it: a stranger's lesson that was turned down is no
+    // variant for a later change to be built on.
+    let lessons_only = settings.lessons_only;
     let archived_on = train_digest.to_hex();
-    let archive = crate::improve_loop::archive_for(&profile.name, &archived_on);
+    let archive = if lessons_only {
+        None
+    } else {
+        crate::improve_loop::archive_for(&profile.name, &archived_on)
+    };
     let report = crate::improve_loop::improve(
         profile,
         &problem,
@@ -1798,7 +2088,7 @@ fn run_loop(
     for line in &report.lines {
         println!("{line}");
     }
-    if let Some(archive) = &report.archive {
+    if let Some(archive) = report.archive.as_ref().filter(|_| !lessons_only) {
         crate::improve_loop::keep_archive(&profile.name, &archived_on, archive)?;
     }
     println!("{} tokens used", report.tokens);
@@ -1811,7 +2101,7 @@ fn run_loop(
             println!("(--apply makes a kept change the profile's; or sion agent improve adopt)");
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 fn print_lineage(profile: &str) -> Result<(), CliError> {
@@ -1949,7 +2239,7 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
             run_loop(
                 &found,
                 &seal,
-                &proposer,
+                Some(&proposer),
                 crate::improve_loop::Settings {
                     rounds,
                     runs,
@@ -1957,6 +2247,8 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
                     total_tokens,
                     models,
                     seed: seed.unwrap_or_else(drawn),
+                    offered: Vec::new(),
+                    lessons_only: false,
                 },
                 &RunWith {
                     practice,
@@ -1965,6 +2257,7 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
                 make_it_so,
                 &mut |_| Ok(Vec::new()),
             )
+            .map(|_| ())
         }
         ImproveCommand::Practice {
             profile,
@@ -2066,6 +2359,8 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
                     total_tokens: 0,
                     models: Vec::new(),
                     seed: seed.unwrap_or_else(drawn),
+                    offered: Vec::new(),
+                    lessons_only: false,
                 },
                 inner_confirmations: 2,
                 rounds,
@@ -2131,7 +2426,10 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
         | ImproveCommand::Run { .. }
         | ImproveCommand::Code { .. }
         | ImproveCommand::Attest { .. }
-        | ImproveCommand::Install { .. } => Err(CliError::Usage(
+        | ImproveCommand::Install { .. }
+        | ImproveCommand::Share { .. }
+        | ImproveCommand::Lessons
+        | ImproveCommand::Learn { .. } => Err(CliError::Usage(
             "this needs a node: give --node, or leave out --wallet".into(),
         )),
         ImproveCommand::Try {

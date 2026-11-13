@@ -359,6 +359,114 @@ models it runs on. `sion agent improve adopt <profile> <step>` does the
 same later. `sion agent improve undo <profile>` takes back the last change
 made the profile's, restoring exactly what it replaced.
 
+## Lessons shared between owners
+
+A lesson an agent kept stays with its owner unless the owner shares it.
+`sion agent improve share <profile>` publishes it: a claim holding what
+the kept change added to what the agent had learned, and the evidence it
+was kept on, on the owner's bond `lesson-author`, under an adjudicator who
+can rule against it. A shared lesson is at most 1,000 bytes.
+
+Another owner's agent does not take a lesson on its author's word.
+`sion agent improve learn <profile>` tries the lessons found on the
+ledger the way the loop tries any change, with no model proposing
+anything: the lesson is added to what the agent has learned, run on the
+profile's tasks to choose on, and kept only when it is better beyond
+chance there and then on the profile's own sealed tasks, which the
+lesson's author never saw. With `--wallet` a kept lesson is published
+with a claim saying whose lesson it was (an adoption), and with
+`--pay-up-to` its author is paid what the lesson asks.
+
+Here alice's agent learned that a tool answers in cents
+([What it did not expect](#what-it-did-not-expect)). Bob's agent makes the
+same mistake on tasks of bob's own. Eve has shared two lessons with
+evidence nobody can check: one that does nothing, and a copy of alice's
+words at a higher price.
+
+```text
+$ sion agent improve share clerk --wallet alice --adjudicator 5d0c… --bond 50 --price 2
+shared the lesson of step ca9d6813272177b6: claim 8904f961…, on your bond lesson-author
+  get_total answers in cents: divide by 100 for USD.
+  kept on 24/24 against 8/24 sealed runs, 24/24 against 16/24 on the tasks it was chosen on; asks 2 USD of an owner whose agent keeps it
+
+$ sion agent improve learn teller --lesson 278bde88 --wallet bob --pay-up-to 5 --apply
+to try: lesson 278bde88: Answer in French.
+the agent as it is: 12/24 runs of the tasks to choose on passed
+round 1: building on variant 0 (the agent as it was), 12/24 runs passed
+  tried learns "Answer in French.": 12/24 against 12/24 (95% interval -26% to +26%): not better beyond chance
+nothing was confirmed better: the agent is left as it is
+
+$ sion agent improve learn teller --wallet bob --pay-up-to 5 --apply
+to try: lesson 8904f961: get_total answers in cents: divide by 100 for USD.
+to try: lesson b41ae203: get_total answers in cents: divide by 100 for USD.
+the agent as it is: 12/24 runs of the tasks to choose on passed
+round 1: building on variant 0 (the agent as it was), 12/24 runs passed
+  kept learns "get_total answers in cents: divide by 100 for USD.": 24/24 against 12/24 on the tasks to choose on, and 24/24 against 12/24 on the sealed tasks (interval at the seal's level +19% to +73%; confirmation 1 of 4), as step d6c29f75463c77e6
+  published as claim a396711b…
+  said whose lesson it was in claim 3dad5558…, and paid its author 2 USD
+  profile teller now has learned what step d6c29f75463c77e6 kept
+  turned down: learns "get_total answers in cents: divide by 100 for USD.": it was tried already
+stopped: every variant passes every task it was tried on: nothing left to learn from these tasks
+
+$ sion agent improve lessons
+lesson 8904f961 by 42424444: get_total answers in cents: divide by 100 for USD.
+  it says its agent bce61c3c kept it on 24/24 against 8/24 sealed runs, 24/24 against 16/24 on the tasks it was chosen on; asks 2 USD of an owner whose agent keeps it
+  evidence: its author published the change at Pulse 41, on tasks sealed at Pulse 34
+  its tasks' tools: count_open, get_total
+  kept by 1 other owner(s)' agents since:
+    a27e5e28: 24/24 against 12/24 on its sealed runs, paid 2 USD
+lesson 278bde88 by 41b4d9b9: Answer in French.
+  it says its agent 07070707 kept it on 24/24 against 0/24 sealed runs, 24/24 against 0/24 on the tasks it was chosen on; asks 9 USD of an owner whose agent keeps it
+  evidence: its author's word alone (it names no published change)
+  its tasks' tools: get_total
+  kept by no other owner's agent yet
+…
+```
+
+This is the end-to-end test's run (`tests/agent_lessons.rs`), its models
+scripted. The lesson that does nothing was tried and turned down before
+it reached the sealed tasks. Alice's, the older of the two with the same
+words, was tried first and kept on bob's sealed tasks, and alice was paid.
+Eve's copy changed nothing more and earned nothing.
+
+Which lessons are tried:
+
+- those whose claim still stands, by another owner's agent, that name a
+  tool the profile's tasks give the agent (or name none), and that were
+  not tried on this seal already;
+- only those by authors you name with `--by`, only the lessons you name
+  with `--lesson`, or only those at least `--adoptions` other owners'
+  agents kept, if you say so;
+- the most adopted first, then the oldest, at most `--most` (4).
+
+What `lessons` shows of a lesson's evidence is what the ledger holds of
+it: whether the change it comes from is a claim its author published, with
+these words and counts, on tasks sealed before. That shows when the author
+recorded the change. It does not show that the runs happened.
+
+What a shared lesson is and is not (`agent:shared-lessons`):
+
+- **It is a stranger's words in your agent's instructions.** What stands
+  between a harmful lesson and your agent is its length, the gates of the
+  loop, your own sealed tasks, the author's bond, your choice of whose
+  lessons to try, and `--apply`, without which a kept lesson waits for
+  `sion agent improve adopt`. A lesson that harms where your tasks do not
+  test is not caught by them.
+- **It is tried on the agent as it is, alone.** A run of `learn` neither
+  builds on the archive of variants nor adds to it, so a lesson that was
+  turned down is never what a later change is built on.
+- **A lesson that passes the tasks to choose on spends a confirmation**
+  of your seal, like any change.
+- **Paying and saying so are the adopter's choice.** A lesson's words are
+  public, so nothing forces an owner whose agent uses them to publish an
+  adoption or to pay. Nothing is paid without `--pay-up-to`, and never
+  more than the lesson asks.
+- **An adoption is its adopter's word.** It names the adopter's published
+  change and seal, and nothing stops an author from adopting its own
+  lesson under another account. Weigh adoptions by who made them.
+- **The bond is ruled on, not proven against.** An adjudicator decides a
+  challenge to a lesson; nothing reruns anything for it.
+
 ## Its lineage, on the ledger
 
 `sion agent improve lineage <profile>` lists the changes kept, each with
@@ -616,6 +724,9 @@ leave open is named in the trust model (`agent:self-improvement`,
 - Nothing here trains a model: export writes what to train on, and the
   episodes to reinforce in, for a trainer of your own. None has been
   trained here.
+- Shared lessons are found by reading the ledger's events from the
+  start; there is no index of them by tool or subject, and no way to try
+  a lesson before its words are shown.
 - What the agent did not expect is read by the proposer and by no one
   else in the loop. It is not a score, the agent builds no model of what
   its tools will do from it, and the misses of its own sessions, as
