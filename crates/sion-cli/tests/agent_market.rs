@@ -74,6 +74,7 @@ fn bid(
 }
 
 #[test]
+#[ignore = "slow (minutes: a round's windows are waited out): runs nightly, or with --include-ignored"]
 fn work_is_bid_for_sealed_cleared_at_one_price_and_paid_for_when_accepted() {
     let _one = ENVIRONMENT.lock().unwrap_or_else(|e| e.into_inner());
     let _home = home("agent-market");

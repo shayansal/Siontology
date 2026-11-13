@@ -819,6 +819,7 @@ Commands:
   receipts       Receipts for which model answered: the model a session's runtime asked for each answer, at which address, and the model the provider said answered, in a chain; written for someone else to check, committed to in a claim, or signed by an enclave
   market         A market for agents' work, priced per accepted result: sealed bids in rounds, each cleared at one price anyone can recompute, and a Task Charter from each buyer to the worker it was paired with
   recorder       A flight recorder for an agent that acts in the world: a device's events in a log the ledger keeps append-only, recorded without a network and fixed by each commit, with extracts an investigator checks and bounds proven of readings that are not shown
+  dataset        Datasets of checked work: sessions contributed by their owners on a dataset's terms, each with what checked the work in it, built into versions a trainer checks against the ledger
   exam           Sealed exams: tasks encrypted and committed to on the ledger, agents entered before a threshold of trustees opens them, and results that anyone can run again once they are open
   find           Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
   project        Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
@@ -4253,6 +4254,159 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --records      List the records shown
+  -h, --help         Print help
+```
+
+## `sion agent dataset`
+
+```text
+Datasets of checked work: sessions contributed by their owners on a dataset's terms, each with what checked the work in it, built into versions a trainer checks against the ledger
+
+Usage: sion agent dataset [OPTIONS] <COMMAND>
+
+Commands:
+  open        Open a dataset, as its curator: what it is for, the terms a contributor agrees to, and what counts as checked
+  contribute  Contribute a session to a dataset, on its terms: an example is written to a file for the curator, and a claim of yours commits to it, says what checked the work and agrees to the terms. Nothing of the example goes on the ledger
+  withdraw    Withdraw an example you contributed: versions built from now on leave it out. A version already built cannot be called back
+  build       Build a version, as the dataset's curator, from the example files in a directory: each is checked against its contribution and what it says checked it, and those taken are written as a file to train on, with a manifest, and committed to in a claim
+  check       Check a file of examples against its manifest and the ledger, as someone about to train on it: that the examples are the version's, that each was contributed on the dataset's terms, and what checked each
+  show        A dataset's card and its latest version
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent dataset open`
+
+```text
+Open a dataset, as its curator: what it is for, the terms a contributor agrees to, and what counts as checked
+
+Usage: sion agent dataset open [OPTIONS] --terms <FILE> --take <TAKES> --wallet <WALLET> <NAME>
+
+Arguments:
+  <NAME>
+          The dataset's name (lowercase letters, digits and hyphens)
+
+Options:
+      --about <ABOUT>
+          What it is for, in a line
+          
+          [default: ""]
+
+      --node <NODE>
+          The node's API
+          
+          [env: SION_NODE=]
+          [default: http://127.0.0.1:8730]
+
+      --terms <FILE>
+          A file with the terms a contributor agrees to
+
+      --take <TAKES>
+          What counts as checked (repeat for more): task (a settled Task Charter), check (the session's own check passed), marked (its operator marked it good)
+
+          Possible values:
+          - task:   A Task Charter settled on the ledger: the result was accepted under the rule its poster fixed
+          - check:  The session's own check passed (`--verify`): its operator's word
+          - marked: Its operator marked the session good: its operator's word
+
+      --outside
+          Take sessions that read content from outside too
+
+      --wallet <WALLET>
+          Your wallet
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `sion agent dataset contribute`
+
+```text
+Contribute a session to a dataset, on its terms: an example is written to a file for the curator, and a claim of yours commits to it, says what checked the work and agrees to the terms. Nothing of the example goes on the ledger
+
+Usage: sion agent dataset contribute [OPTIONS] --wallet <WALLET> <DATASET> <SESSION>
+
+Arguments:
+  <DATASET>  The dataset (its card's claim)
+  <SESSION>  The session
+
+Options:
+      --agree            Say that you agree to the dataset's terms: without it the terms are shown and nothing is contributed
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --task <TASK>      The Task Charter whose settlement checked this work
+      --output <FILE>    The file the task was settled with (the session's answer, if not given)
+      --redact <TEXT>    Text to take out of the example wherever it stands (repeat for more)
+      --withhold-system  Leave your system prompt out of the example
+      --out <DIR>        The directory to write the example in [default: .]
+      --wallet <WALLET>  Your wallet
+  -h, --help             Print help
+```
+
+## `sion agent dataset withdraw`
+
+```text
+Withdraw an example you contributed: versions built from now on leave it out. A version already built cannot be called back
+
+Usage: sion agent dataset withdraw [OPTIONS] --wallet <WALLET> <EXAMPLE>
+
+Arguments:
+  <EXAMPLE>  The example's file
+
+Options:
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --wallet <WALLET>  Your wallet
+  -h, --help             Print help
+```
+
+## `sion agent dataset build`
+
+```text
+Build a version, as the dataset's curator, from the example files in a directory: each is checked against its contribution and what it says checked it, and those taken are written as a file to train on, with a manifest, and committed to in a claim
+
+Usage: sion agent dataset build [OPTIONS] --from <DIR> --wallet <WALLET> <DATASET>
+
+Arguments:
+  <DATASET>  The dataset (its card's claim)
+
+Options:
+      --from <DIR>       The directory of example files
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <DIR>        The directory to write the version in [default: .]
+      --wallet <WALLET>  Your wallet
+  -h, --help             Print help
+```
+
+## `sion agent dataset check`
+
+```text
+Check a file of examples against its manifest and the ledger, as someone about to train on it: that the examples are the version's, that each was contributed on the dataset's terms, and what checked each
+
+Usage: sion agent dataset check [OPTIONS] <MANIFEST> <EXAMPLES>
+
+Arguments:
+  <MANIFEST>  The manifest
+  <EXAMPLES>  The examples
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent dataset show`
+
+```text
+A dataset's card and its latest version
+
+Usage: sion agent dataset show [OPTIONS] <DATASET>
+
+Arguments:
+  <DATASET>  The dataset (its card's claim)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
 ```
 

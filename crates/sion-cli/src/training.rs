@@ -91,7 +91,7 @@ fn record(profile: &str, digests: BTreeSet<String>) -> Result<(), CliError> {
 
 /// The secrets this machine keeps, at least 8 characters long: the
 /// credentials kept and set, and the logins' passwords.
-fn kept_secrets() -> Vec<Zeroizing<String>> {
+pub(crate) fn kept_secrets() -> Vec<Zeroizing<String>> {
     let mut secrets: Vec<Zeroizing<String>> = Vec::new();
     for name in crate::credentials::NAMES {
         if let Some(value) = crate::credentials::var(name) {
@@ -119,7 +119,7 @@ fn kept_secrets() -> Vec<Zeroizing<String>> {
 }
 
 /// Whether `text` holds any of `secrets`.
-fn holds_secret(text: &str, secrets: &[Zeroizing<String>]) -> bool {
+pub(crate) fn holds_secret(text: &str, secrets: &[Zeroizing<String>]) -> bool {
     secrets.iter().any(|secret| text.contains(secret.trim()))
 }
 
@@ -133,7 +133,7 @@ pub fn in_validation(id: &str, percent: u32) -> bool {
 
 /// The tools of a session as its model saw them; for a session kept before
 /// they were, the tools it called, by name.
-fn tools_of(saved: &crate::runtime::Saved) -> Vec<sion_agent::ToolSpec> {
+pub(crate) fn tools_of(saved: &crate::runtime::Saved) -> Vec<sion_agent::ToolSpec> {
     if !saved.tools.is_empty() {
         return saved.tools.clone();
     }

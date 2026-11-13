@@ -46,6 +46,9 @@ does, and how.
 - [A flight recorder for an agent that acts](recorder.md): a device's
   events in a log the ledger keeps append-only, extracts an investigator
   checks, and bounds proven of readings that are not shown.
+- [Datasets of checked work](dataset.md): sessions contributed by their
+  owners on a dataset's terms, each with what checked the work in it,
+  built into versions a trainer checks against the ledger.
 - [Commands, scripts and MCP servers](tools.md), [a browser and a
   desktop](browser.md) and [a canvas](canvas.md): its tools.
 - [Skills from others](skills.md), [what a skill may

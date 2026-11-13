@@ -211,6 +211,11 @@ What is enforced, and where:
   investigator as an extract that checks, with bounds proven of readings
   that are not shown.
   [A flight recorder](docs/book/src/agent/recorder.md)
+- Datasets of checked work: sessions their owners contribute on stated
+  terms, each with what checked the work in it (a Task Charter the
+  ledger settled, or the session's own check), built into versions that
+  whoever trains on them checks against the ledger.
+  [Datasets of checked work](docs/book/src/agent/dataset.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent
   that pays, confirming before paying and prompt injection, run with your
   models and stand-in tools; a run can be published on the ledger as a

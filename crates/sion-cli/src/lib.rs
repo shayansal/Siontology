@@ -44,6 +44,7 @@ pub mod cohorts;
 pub mod comply;
 pub mod consolidate;
 pub mod credentials;
+pub mod dataset;
 pub mod delegation;
 pub mod demos;
 pub mod deploy;

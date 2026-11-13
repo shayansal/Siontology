@@ -10,6 +10,30 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Datasets of checked work
+
+- `sion agent dataset` builds a dataset from sessions their owners
+  choose to contribute. `open` publishes a card: what the dataset is
+  for, the terms a contributor agrees to, and what counts as checked (a
+  settled Task Charter, the session's own check, its operator's mark).
+  `contribute --agree` writes an example for the curator and publishes a
+  claim that commits to it, says what checked it and agrees to the
+  terms; `--redact` takes text out, and nothing of the example goes on
+  the ledger. `build` checks each example against its contribution and
+  what it says checked it, and publishes a version: a count, the root of
+  the examples' digests, and how many each contributor gave. `check`
+  verifies a file of examples against a version. `withdraw` leaves an
+  example out of later versions.
+- What it is not: agreement is the contributing account's and says
+  nothing of whose the content was; a check and a mark are the
+  operator's word; the curator holds the examples; a withdrawal does not
+  reach a version already built; credit is a count that nothing pays by;
+  nothing is trained here
+  ([Datasets of checked work](docs/book/src/agent/dataset.md),
+  `agent:checked-dataset`).
+- The work market's main test, which waits out a round's windows for
+  minutes, is marked slow and runs nightly.
+
 ### A flight recorder for an agent that acts
 
 - `sion agent recorder` keeps a device's events (a sensor's reading, a

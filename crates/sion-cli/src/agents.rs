@@ -761,6 +761,11 @@ pub enum AgentCommand {
     /// checks and bounds proven of readings that are not shown
     #[command(subcommand)]
     Recorder(crate::recorder::RecorderCommand),
+    /// Datasets of checked work: sessions contributed by their owners on a
+    /// dataset's terms, each with what checked the work in it, built into
+    /// versions a trainer checks against the ledger
+    #[command(subcommand)]
+    Dataset(crate::dataset::DatasetCommand),
     /// Sealed exams: tasks encrypted and committed to on the ledger, agents
     /// entered before a threshold of trustees opens them, and results that
     /// anyone can run again once they are open.
@@ -1663,6 +1668,7 @@ pub fn run(
         AgentCommand::Record(command) => crate::record::run(session, ledger, command),
         AgentCommand::Comply(command) => crate::comply::run(Some((session, ledger)), command),
         AgentCommand::Exam(command) => crate::notary::command(session, ledger, command),
+        AgentCommand::Dataset(command) => crate::dataset::command(session, ledger, command),
         AgentCommand::Recorder(command) => crate::recorder::run(Some((session, ledger)), command),
         AgentCommand::Market(command) => crate::work_market::command(session, ledger, command),
         AgentCommand::Receipts(command) => crate::receipts::run(Some((session, ledger)), command),

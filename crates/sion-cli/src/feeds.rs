@@ -116,6 +116,21 @@ impl Feed {
     }
 }
 
+/// The claim `owner` last named under `key` in its own index, if any: read
+/// from the ledger's state, so it does not depend on how long a node
+/// keeps its events.
+pub fn indexed(
+    ledger: &dyn Ledger,
+    owner: &AccountId,
+    key: &str,
+) -> Result<Option<ClaimId>, CliError> {
+    let id = sion_exec::index::index_id(owner, key);
+    Ok(match ledger.object(id)?.map(|object| object.data) {
+        Some(sion_exec::object::ObjectData::IndexEntry(entry)) => Some(entry.claim),
+        _ => None,
+    })
+}
+
 /// An error unless the node still answers for Pulse `pulse`. A node keeps
 /// the events of its last Pulses only (256 on a devnet): what was named
 /// before then is not in what it answers, and a reader that needs
