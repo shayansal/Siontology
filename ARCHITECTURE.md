@@ -38,6 +38,7 @@ flowchart BT
   core[sion-core]
   lp[sion-lp]
   http[sion-http]
+  zk[sion-zk]
   crypto[sion-crypto] --> core
   assurance[sion-assurance] --> core
   clearing[sion-clearing] --> core
@@ -53,13 +54,13 @@ flowchart BT
   node[sion-node] --> prover & light & net
   agent[sion-agent] --> http & core
   enclave[sion-enclave] --> core
-  cli[sion-cli] --> node & memory & agent & enclave
+  cli[sion-cli] --> node & memory & agent & enclave & zk
   app[sion-app-core] --> cli
 ```
 
 | Layer | Crates | What it decides |
 |---|---|---|
-| Foundations | [`sion-core`](crates/sion-core), [`sion-crypto`](crates/sion-crypto), [`sion-lp`](crates/sion-lp), [`sion-http`](crates/sion-http) | How values are encoded and hashed, identifiers and money, logs and state trees; signatures and encryption; exact linear programming; outbound HTTPS |
+| Foundations | [`sion-core`](crates/sion-core), [`sion-crypto`](crates/sion-crypto), [`sion-lp`](crates/sion-lp), [`sion-http`](crates/sion-http), [`sion-zk`](crates/sion-zk) | How values are encoded and hashed, identifiers and money, logs and state trees; signatures and encryption; exact linear programming; outbound HTTPS; zero-knowledge proofs about committed numbers, off the ledger |
 | Mechanisms | [`sion-assurance`](crates/sion-assurance), [`sion-clearing`](crates/sion-clearing), [`sion-da`](crates/sion-da), [`sion-consensus`](crates/sion-consensus), [`sion-memory`](crates/sion-memory) | What a claim's evidence is worth; how a market clears; how data is coded and sampled; how owned objects are certified and contended ones ordered; how memory logs and their proofs work |
 | The state transition | [`sion-exec`](crates/sion-exec) (stack A), [`sion-spec`](crates/sion-spec) (stack B), [`sion-prover`](crates/sion-prover) | What a transaction and a Pulse do to the state, written twice, independently; World Proofs over both |
 | Verification | [`sion-light`](crates/sion-light) | What a client with only the genesis chain identity can check |

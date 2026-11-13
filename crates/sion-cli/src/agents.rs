@@ -738,6 +738,12 @@ pub enum AgentCommand {
     /// warranty on a bond.
     #[command(subcommand)]
     Record(crate::record::RecordCommand),
+    /// Proof that payments kept your rules without showing the payments:
+    /// commitments to each amount and payee, and zero-knowledge proofs
+    /// that none was above a limit, that they came to no more than a
+    /// total, and that each went to one of a list.
+    #[command(subcommand)]
+    Comply(crate::comply::ComplyCommand),
     /// Run one case as a candidate that an improvement scores: the case,
     /// its model's answers and its tools' come from the harness over
     /// standard input and output (`sion agent improve code`).
@@ -1161,6 +1167,9 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
             crate::projects::run_local(command)
         }
         AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Comply(command) if !command.needs_ledger() => {
+            crate::comply::run(None, command)
+        }
         AgentCommand::Bench(command) if !command.needs_ledger() => {
             crate::bench_cli::run_local(command)
         }
@@ -1624,6 +1633,7 @@ pub fn run(
         AgentCommand::Improve(command) => crate::self_improve::run_with(session, ledger, command),
         AgentCommand::Immune(command) => crate::immune::run(session, ledger, command),
         AgentCommand::Record(command) => crate::record::run(session, ledger, command),
+        AgentCommand::Comply(command) => crate::comply::run(Some((session, ledger)), command),
         AgentCommand::Case { .. } => Err(CliError::Usage(
             "a case is run on its own, without a node".into(),
         )),

@@ -69,6 +69,10 @@ command ends with an error. A charter that was suspended, narrowed or
 revoked since is said as `changed since`, which is not a failure: the
 record says what was so when it was written.
 
+The operator's part can be sealed instead of shown: each figure committed
+to, and rules about the figures proven to whoever asks, without the
+figures ([A record's figures, sealed](proofs.md#a-records-figures-sealed)).
+
 ## A warranty
 
 `sion agent record warrant <wallet> <agent> --covers "<what>"` is the

@@ -32,6 +32,7 @@ sion-spec.workspace = true
 sion-node.workspace = true
 sion-memory.workspace = true
 sion-http.workspace = true
+sion-zk.workspace = true
 sion-agent.workspace = true
 borsh.workspace = true
 serde.workspace = true

@@ -31,6 +31,9 @@ does, and how.
 - [Its record, and a warranty](record.md): what the ledger shows of an
   agent, checkable by whoever is asked to stand behind it, and a bond a
   counterparty is compensated from.
+- [Proving rules were kept, without showing what was done](proofs.md):
+  zero-knowledge proofs that payments stayed within limits and that a
+  record's figures meet a threshold.
 - [Commands, scripts and MCP servers](tools.md), [a browser and a
   desktop](browser.md) and [a canvas](canvas.md): its tools.
 - [Skills from others](skills.md), [what a skill may

@@ -20,6 +20,7 @@ members = [
     "crates/sion-http",
     "crates/sion-agent",
     "crates/sion-enclave",
+    "crates/sion-zk",
 ]
 
 [workspace.package]
@@ -51,6 +52,7 @@ sion-node = { path = "crates/sion-node" }
 sion-cli = { path = "crates/sion-cli" }
 sion-app-core = { path = "crates/sion-app-core" }
 sion-http = { path = "crates/sion-http" }
+sion-zk = { path = "crates/sion-zk" }
 sion-agent = { path = "crates/sion-agent" }
 sion-enclave = { path = "crates/sion-enclave" }
 

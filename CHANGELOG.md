@@ -10,6 +10,33 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Zero-knowledge proofs that rules were kept
+
+- A new crate, `sion-zk`: zero-knowledge proofs about committed numbers,
+  with no trusted setup. Linear rules over amounts (each a whole number
+  below 2⁶⁴, and any `a₁·v₁ + a₂·v₂ + … ≤ b`) by Pedersen commitments and
+  aggregated Bulletproofs range proofs, and membership of a committed
+  name in a public list by a one-of-many Schnorr proof. Every proof is
+  bound to what it was made for.
+- `sion agent comply prove` certifies that payments you do not show kept
+  your rules: none above `--max-payment`, no more than `--total` in all,
+  each to one of the `--payee`s if you give any. `sion agent comply
+  check` verifies a certificate from the file alone. There is no
+  certificate of payments that broke a rule; `--wallet` commits to one in
+  a claim.
+- `sion agent record write --seal` commits to the figures of what an
+  operator says of its sessions in place of showing them, and `sion agent
+  record prove <file> --rule "calls_failed*50 <= calls"` proves rules
+  about them to whoever asks. The proofs are added without changing what
+  the owner committed to, and `record check` verifies them.
+- What these proofs are not: they say nothing about whether the numbers
+  committed to are those of what happened; the ledger does not check
+  them; their soundness rests on discrete logarithms, so they are not
+  used for anything that creates or moves money on a ledger whose
+  accounts are post-quantum. Amounts on the ledger stay public
+  ([Proving rules were kept](docs/book/src/agent/proofs.md),
+  `agent:zk-proofs`).
+
 ### An agent's record, and a warranty
 
 - `sion agent record write <agent>` writes an agent's record in two

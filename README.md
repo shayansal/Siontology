@@ -192,6 +192,9 @@ What is enforced, and where:
   from what its operator says; and a warranty on a bond that a
   counterparty is compensated from.
   [Its record, and a warranty](docs/book/src/agent/record.md)
+- Zero-knowledge proofs, off the ledger, that payments you do not show
+  kept their limits and that a record's figures meet a threshold.
+  [Proving rules were kept](docs/book/src/agent/proofs.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent
   that pays, confirming before paying and prompt injection, run with your
   models and stand-in tools; a run can be published on the ledger as a
@@ -536,6 +539,7 @@ Lower crates know nothing of higher ones
 | [`sion-http`](crates/sion-http) | Outbound HTTPS for clients, X25519MLKEM768 offered first, refusing addresses that are not public |
 | [`sion-agent`](crates/sion-agent) | The agent runtime: models, tools with effects, autonomy and approvals, taint, the journal, budgets, the sandbox, the browser, MCP, skills, schedules, graphs |
 | [`sion-enclave`](crates/sion-enclave) | Attestation for agents in enclaves: AMD SEV-SNP reports checked against AMD's chain, the session's keys bound in them, a simulated platform for tests |
+| [`sion-zk`](crates/sion-zk) | Zero-knowledge proofs about committed numbers: linear rules over amounts and membership in a list, for showing third parties that rules were kept; not used by consensus |
 | [`sion-node`](crates/sion-node) | The devnet and `sion node`: validators, the gateway, the prover, the write-ahead log and snapshots, the HTTP API |
 | [`sion-cli`](crates/sion-cli) | The `sion` command: the devnet and nodes, wallets, the ledger's commands, the agent's channels, messengers, voice, work, renting, ACP and AP2, its own MCP servers, setup, deploying, demos |
 | [`sion-app-core`](crates/sion-app-core) | The app's core: the device's key, a light client for the device's own receipts, payments, storage provided from the device |

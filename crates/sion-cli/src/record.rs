@@ -173,18 +173,281 @@ pub struct Record {
     /// holds its sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported: Option<Reported>,
+    /// What its operator says, sealed: the same figures committed to and
+    /// not shown ([`Sealed`]), in place of [`Record::reported`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<Sealed>,
+    /// Rules the operator proved its sealed figures keep, without showing
+    /// them. Added after the record is written and committed to: they are
+    /// not part of its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proofs: Vec<Proven>,
 }
 
 impl Record {
-    /// The record's digest: what a claim commits to.
+    /// The record's digest: what a claim commits to. The proofs added to a
+    /// sealed record afterwards are not part of it.
     pub fn digest(&self) -> Result<Hash32, CliError> {
-        let bytes = serde_json::to_vec(self)
+        let bare = Record {
+            proofs: Vec::new(),
+            ..self.clone()
+        };
+        let bytes = serde_json::to_vec(&bare)
             .map_err(|e| CliError::Usage(format!("the record could not be written: {e}")))?;
         Ok(sion_core::hash::hash_domain(
             "sion-cli/agent-record/v1",
             &bytes,
         ))
     }
+}
+
+/// What an operator says of its sessions, committed to and not shown: a
+/// commitment to each figure of [`Reported`], by the figure's name
+/// ([`sion_zk`]). The operator keeps what opens them, and proves rules
+/// about them to whoever asks ([`prove_rules`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sealed {
+    /// A commitment to each figure.
+    pub figures: BTreeMap<String, sion_zk::Commitment>,
+    /// The digest of the sessions counted, as in [`Reported`].
+    pub sessions_digest: String,
+}
+
+/// A rule the operator proved its sealed figures keep.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Proven {
+    /// The rule, as written: figures' names, whole numbers, `*` and `+`,
+    /// compared with `<=`, `>=` or `==`.
+    pub rule: String,
+    /// The proof.
+    pub proof: sion_zk::Proof,
+}
+
+/// The figures of `said`, by name: what a sealed record commits to and a
+/// rule names.
+pub fn figures(said: &Reported) -> BTreeMap<String, u64> {
+    let mut figures: BTreeMap<String, u64> = [
+        ("sessions", said.sessions),
+        ("checked", said.checked),
+        ("calls", said.calls),
+        ("calls_failed", said.calls_failed),
+        ("payments_refused", said.payments_refused),
+        ("asked", said.asked),
+        ("approved", said.approved),
+        ("declined", said.declined),
+        ("signed", said.signed),
+        ("expected", said.expected),
+        ("expected_held", said.expected_held),
+        ("attacks_held", said.attacks_held),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_string(), value))
+    .collect();
+    figures.insert(
+        "done".to_string(),
+        said.ended.get("done").copied().unwrap_or(0),
+    );
+    figures
+}
+
+/// Seals `said`: the commitments to show, and what opens them, to keep.
+pub fn seal(said: &Reported) -> (Sealed, BTreeMap<String, sion_zk::Opening>) {
+    let mut commitments = BTreeMap::new();
+    let mut openings = BTreeMap::new();
+    for (name, value) in figures(said) {
+        let (commitment, opening) = sion_zk::commit(value);
+        commitments.insert(name.clone(), commitment);
+        openings.insert(name, opening);
+    }
+    (
+        Sealed {
+            figures: commitments,
+            sessions_digest: said.sessions_digest.clone(),
+        },
+        openings,
+    )
+}
+
+/// One side of a rule: the figures it names with what each is multiplied
+/// by, and the whole number added.
+fn side(text: &str, names: &[&String]) -> Result<(BTreeMap<usize, i64>, i64), String> {
+    let mut terms: BTreeMap<usize, i64> = BTreeMap::new();
+    let mut constant: i64 = 0;
+    let place = |name: &str| {
+        names
+            .iter()
+            .position(|n| n.as_str() == name)
+            .ok_or_else(|| {
+                format!(
+                    "{name:?} is no figure of a record: they are {}",
+                    names
+                        .iter()
+                        .map(|n| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+    };
+    for term in text.split('+').map(str::trim) {
+        if term.is_empty() {
+            return Err("a rule's side is terms joined by +".into());
+        }
+        if let Ok(number) = term.parse::<i64>() {
+            constant = constant
+                .checked_add(number)
+                .ok_or("a number is too large")?;
+            continue;
+        }
+        let (factor, name) = match term.split_once('*') {
+            Some((a, b)) => match (a.trim().parse::<i64>(), b.trim().parse::<i64>()) {
+                (Ok(factor), Err(_)) => (factor, b.trim()),
+                (Err(_), Ok(factor)) => (factor, a.trim()),
+                _ => return Err(format!("{term:?} is not a whole number times a figure")),
+            },
+            None => (1, term),
+        };
+        let entry = terms.entry(place(name)?).or_insert(0);
+        *entry = entry.checked_add(factor).ok_or("a number is too large")?;
+    }
+    Ok((terms, constant))
+}
+
+/// The statements a rule makes about the figures named `names`, in their
+/// order: `left <= right`, `left >= right` or `left == right`, each side
+/// figures' names, whole numbers and products of the two, joined by `+`.
+pub fn statements_of(rule: &str, names: &[&String]) -> Result<Vec<sion_zk::Statement>, String> {
+    let (left, how, right) = ["<=", ">=", "=="]
+        .iter()
+        .find_map(|how| rule.split_once(how).map(|(l, r)| (l, *how, r)))
+        .ok_or("a rule compares two sides with <=, >= or ==")?;
+    let ((left, left_constant), (right, right_constant)) =
+        (side(left, names)?, side(right, names)?);
+    // Σ (left − right) · figure ≤ right's number − left's number.
+    let mut terms = left;
+    for (at, factor) in right {
+        let entry = terms.entry(at).or_insert(0);
+        *entry = entry.checked_sub(factor).ok_or("a number is too large")?;
+    }
+    let bound = right_constant
+        .checked_sub(left_constant)
+        .ok_or("a number is too large")?;
+    let at_most = sion_zk::Statement {
+        terms: terms.iter().map(|(at, factor)| (*at, *factor)).collect(),
+        bound,
+    };
+    let negated = |statement: &sion_zk::Statement| -> Result<sion_zk::Statement, String> {
+        Ok(sion_zk::Statement {
+            terms: statement
+                .terms
+                .iter()
+                .map(|(at, factor)| factor.checked_neg().map(|f| (*at, f)))
+                .collect::<Option<_>>()
+                .ok_or("a number is too large")?,
+            bound: statement
+                .bound
+                .checked_neg()
+                .ok_or("a number is too large")?,
+        })
+    };
+    Ok(match how {
+        "<=" => vec![at_most],
+        ">=" => vec![negated(&at_most)?],
+        _ => vec![negated(&at_most)?, at_most],
+    })
+}
+
+/// What a proof about a sealed record's figures is bound to: the record,
+/// and the rule.
+fn proof_context(record: &Record, rule: &str) -> Result<Vec<u8>, CliError> {
+    let mut context = record.digest()?.0.to_vec();
+    context.extend_from_slice(rule.trim().as_bytes());
+    Ok(context)
+}
+
+/// Proves that the sealed figures of `record`, which `openings` open, keep
+/// each of `rules`, and adds the proofs to the record. A rule that does
+/// not hold has no proof: the error says which.
+pub fn prove_rules(
+    record: &mut Record,
+    openings: &BTreeMap<String, sion_zk::Opening>,
+    rules: &[String],
+) -> Result<(), CliError> {
+    let Some(sealed) = &record.sealed else {
+        return Err(CliError::Usage(
+            "the record is not sealed: its operator's figures are in it, in the clear".into(),
+        ));
+    };
+    let names: Vec<&String> = sealed.figures.keys().collect();
+    let mut ordered = Vec::new();
+    for name in &names {
+        let opening = openings
+            .get(*name)
+            .filter(|opening| Some(&opening.commitment()) == sealed.figures.get(*name))
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "the openings are not this record's: {name} does not open its commitment"
+                ))
+            })?;
+        ordered.push(opening.clone());
+    }
+    let mut proven = Vec::new();
+    for rule in rules {
+        let statements = statements_of(rule, &names).map_err(CliError::Usage)?;
+        let proof =
+            sion_zk::prove(&proof_context(record, rule)?, &ordered, &statements).map_err(|e| {
+                match e {
+                    sion_zk::Error::False(_) => CliError::Usage(format!(
+                    "{rule:?} does not hold of this record's figures: there is no proof to make"
+                )),
+                    other => CliError::Usage(format!("the proof could not be made: {other}")),
+                }
+            })?;
+        proven.push(Proven {
+            rule: rule.trim().to_string(),
+            proof,
+        });
+    }
+    record
+        .proofs
+        .retain(|had| !proven.iter().any(|p| p.rule == had.rule));
+    record.proofs.extend(proven);
+    Ok(())
+}
+
+/// Checks each rule a sealed record's operator proved: a line for each,
+/// and whether all hold.
+fn check_proofs(record: &Record) -> Result<(Vec<String>, bool), CliError> {
+    let mut lines = Vec::new();
+    let mut holds = true;
+    let Some(sealed) = &record.sealed else {
+        if !record.proofs.is_empty() {
+            return Ok((
+                vec!["differs: the record holds proofs about figures it does not seal".into()],
+                false,
+            ));
+        }
+        return Ok((lines, holds));
+    };
+    let names: Vec<&String> = sealed.figures.keys().collect();
+    let commitments: Vec<sion_zk::Commitment> = sealed.figures.values().copied().collect();
+    for proven in &record.proofs {
+        let verdict = statements_of(&proven.rule, &names).and_then(|statements| {
+            let context = proof_context(record, &proven.rule).map_err(|e| e.to_string())?;
+            sion_zk::verify(&context, &commitments, &statements, &proven.proof)
+                .map_err(|e| e.to_string())
+        });
+        match verdict {
+            Ok(()) => lines.push(format!(
+                "holds, proven without the figures: {}",
+                proven.rule
+            )),
+            Err(why) => {
+                holds = false;
+                lines.push(format!("differs: the proof of {:?}: {why}", proven.rule));
+            }
+        }
+    }
+    Ok((lines, holds))
 }
 
 /// What a record's claim holds: which agent, which span, and the record's
@@ -469,7 +732,22 @@ pub fn write(
         charter,
         ledger: on_ledger(ledger, agent, account, owner, from, to)?,
         reported: sessions.then(|| reported(&agent)),
+        sealed: None,
+        proofs: Vec::new(),
     })
+}
+
+/// Seals `record`'s operator's part: its figures are committed to in place
+/// of being shown. Returns what opens them, for the operator to keep.
+pub fn sealed(record: &mut Record) -> Result<BTreeMap<String, sion_zk::Opening>, CliError> {
+    let Some(said) = record.reported.take() else {
+        return Err(CliError::Usage(
+            "the record holds nothing of its operator's to seal".into(),
+        ));
+    };
+    let (commitments, openings) = seal(&said);
+    record.sealed = Some(commitments);
+    Ok(openings)
 }
 
 /// Publishes a commitment to `record` as `wallet`'s claim, named under the
@@ -604,16 +882,24 @@ pub fn check(ledger: &dyn Ledger, record: &Record) -> Result<(Vec<String>, bool)
         ),
         None => "not on the ledger: no claim of its owner's commits to this record".to_string(),
     });
-    lines.push(match &record.reported {
-        Some(said) => format!(
+    lines.push(match (&record.reported, &record.sealed) {
+        (Some(said), _) => format!(
             "its operator's word, which the ledger cannot check: what {} sessions on its machine \
              show (their digest {}…)",
             said.sessions,
             &said.sessions_digest[..said.sessions_digest.len().min(16)]
         ),
-        None => "the record holds nothing of its operator's own account".to_string(),
+        (None, Some(sealed)) => format!(
+            "its operator's word, sealed: {} figures of its machine's sessions committed to and \
+             not shown (their digest {}…)",
+            sealed.figures.len(),
+            &sealed.sessions_digest[..sealed.sessions_digest.len().min(16)]
+        ),
+        (None, None) => "the record holds nothing of its operator's own account".to_string(),
     });
-    Ok((lines, holds))
+    let (proven, proofs_hold) = check_proofs(record)?;
+    lines.extend(proven);
+    Ok((lines, holds && proofs_hold))
 }
 
 /// The record in lines, for a person.
@@ -686,6 +972,20 @@ pub fn lines(record: &Record) -> Vec<String> {
             "  {} of {} stated expectation(s) held; {} result(s) held back as reported attacks",
             said.expected_held, said.expected, said.attacks_held
         ));
+    }
+    if let Some(sealed) = &record.sealed {
+        lines.push(format!(
+            "what its operator says, sealed: committed to and not shown ({})",
+            sealed
+                .figures
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        for proven in &record.proofs {
+            lines.push(format!("  proven of them: {}", proven.rule));
+        }
     }
     lines
 }
@@ -767,6 +1067,12 @@ pub enum RecordCommand {
         /// Leave out what this machine's sessions show.
         #[arg(long = "ledger-only")]
         ledger_only: bool,
+        /// Seal what this machine's sessions show: each figure is committed
+        /// to and not shown, and what opens them is written beside the
+        /// record (--out) for you to keep. `prove` then shows whoever asks
+        /// that the figures keep a rule, and nothing else about them.
+        #[arg(long, requires = "out", conflicts_with = "ledger_only")]
+        seal: bool,
         /// Write the record to this file, as JSON.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
@@ -777,10 +1083,28 @@ pub enum RecordCommand {
     /// Check a record someone gave you against the ledger: every figure it
     /// says the ledger shows is added up again, and whether its owner
     /// committed to it is looked up. What its operator says of its own
-    /// sessions is shown as that.
+    /// sessions is shown as that, and each rule it proved of sealed
+    /// figures is verified.
     Check {
         /// The record (a file `write --out` made).
         file: PathBuf,
+    },
+    /// Prove that a sealed record's figures keep a rule, without showing
+    /// them, and add the proof to the record. A rule names figures (calls,
+    /// calls_failed, payments_refused, expected, expected_held,
+    /// attacks_held, sessions, done, checked, asked, approved, declined,
+    /// signed), whole numbers and products of the two, joined by +, and
+    /// compares two sides with <=, >= or ==: "calls_failed*50 <= calls".
+    Prove {
+        /// The sealed record (a file `write --seal --out` made).
+        file: PathBuf,
+        /// A rule to prove (repeat for more).
+        #[arg(long = "rule", value_name = "RULE", required = true)]
+        rules: Vec<String>,
+        /// What opens the record's commitments (default: the file `write
+        /// --seal` wrote beside the record).
+        #[arg(long, value_name = "FILE")]
+        openings: Option<PathBuf>,
     },
     /// Stand behind an agent, as you: a claim on your bond
     /// `agent-warranty` saying what you warrant of it, which the
@@ -808,6 +1132,11 @@ pub enum RecordCommand {
     },
 }
 
+/// Where what opens a sealed record's figures is kept: beside the record.
+fn openings_path(record: &std::path::Path) -> PathBuf {
+    record.with_extension("openings.json")
+}
+
 fn agent_id(text: &str) -> Result<ObjectId, CliError> {
     Hash32::from_hex(text.trim())
         .map(ObjectId::from_hash)
@@ -826,10 +1155,16 @@ pub fn run(
             from,
             to,
             ledger_only,
+            seal,
             out,
             wallet,
         } => {
-            let record = write(ledger, agent_id(&agent)?, from, to, !ledger_only)?;
+            let mut record = write(ledger, agent_id(&agent)?, from, to, !ledger_only)?;
+            let openings = if seal {
+                Some(sealed(&mut record)?)
+            } else {
+                None
+            };
             for line in lines(&record) {
                 println!("{line}");
             }
@@ -837,6 +1172,14 @@ pub fn run(
             if let Some(path) = out {
                 crate::profiles::write_json(&path, &record)?;
                 println!("written to {}", path.display());
+                if let Some(openings) = openings {
+                    let kept = openings_path(&path);
+                    crate::profiles::write_json(&kept, &openings)?;
+                    println!(
+                        "what opens its sealed figures is in {}: keep it to yourself",
+                        kept.display()
+                    );
+                }
             }
             if let Some(wallet) = wallet {
                 let claim = commit(session, &wallet, &record)?;
@@ -860,6 +1203,31 @@ pub fn run(
                     "the record does not hold against the ledger".into(),
                 ))
             }
+        }
+        RecordCommand::Prove {
+            file,
+            rules,
+            openings,
+        } => {
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", file.display())))?;
+            let mut record: Record = serde_json::from_str(&text)
+                .map_err(|e| CliError::Usage(format!("{} is not a record: {e}", file.display())))?;
+            let kept = openings.unwrap_or_else(|| openings_path(&file));
+            let opened: BTreeMap<String, sion_zk::Opening> = std::fs::read_to_string(&kept)
+                .map_err(|e| CliError::Usage(format!("{}: {e}", kept.display())))
+                .and_then(|text| {
+                    serde_json::from_str(&text).map_err(|e| {
+                        CliError::Usage(format!("{} does not open a record: {e}", kept.display()))
+                    })
+                })?;
+            prove_rules(&mut record, &opened, &rules)?;
+            crate::profiles::write_json(&file, &record)?;
+            for rule in &rules {
+                println!("proven, without the figures: {}", rule.trim());
+            }
+            println!("added to {}", file.display());
+            Ok(())
         }
         RecordCommand::Warrant {
             wallet,
@@ -912,5 +1280,131 @@ pub fn run(
             );
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rule_is_read_as_statements_about_figures() {
+        let all = ["calls".to_string(), "calls_failed".to_string()];
+        let names: Vec<&String> = all.iter().collect();
+        // calls_failed*50 <= calls: 50·failed − calls ≤ 0.
+        assert_eq!(
+            statements_of("calls_failed*50 <= calls", &names).unwrap(),
+            vec![sion_zk::Statement {
+                terms: vec![(0, -1), (1, 50)],
+                bound: 0
+            }]
+        );
+        // A number on either side, a figure times a number either way.
+        assert_eq!(
+            statements_of("2 + calls_failed <= 3*calls + 10", &names).unwrap(),
+            vec![sion_zk::Statement {
+                terms: vec![(0, -3), (1, 1)],
+                bound: 8
+            }]
+        );
+        assert_eq!(
+            statements_of("calls >= 5", &names).unwrap(),
+            vec![sion_zk::Statement {
+                terms: vec![(0, -1)],
+                bound: -5
+            }]
+        );
+        assert_eq!(statements_of("calls_failed == 0", &names).unwrap().len(), 2);
+        for wrong in [
+            "calls",
+            "calls < 3",
+            "tokens <= 3",
+            "calls*calls_failed <= 3",
+            "calls + <= 3",
+        ] {
+            assert!(statements_of(wrong, &names).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn sealed_figures_are_proven_to_keep_rules_and_only_true_ones() {
+        let said = Reported {
+            sessions: 40,
+            calls: 400,
+            calls_failed: 6,
+            payments_refused: 1,
+            expected: 50,
+            expected_held: 47,
+            sessions_digest: "ab".repeat(32),
+            ..Reported::default()
+        };
+        let mut record = Record {
+            version: 1,
+            chain: "00".repeat(32),
+            agent: ObjectId::from_hash(Hash32([1; 32])),
+            account: AccountId::from_hash(Hash32([2; 32])),
+            owner: None,
+            charter: Value::Null,
+            ledger: OnLedger::default(),
+            reported: Some(said),
+            sealed: None,
+            proofs: Vec::new(),
+        };
+        let openings = sealed(&mut record).unwrap();
+        // The figures are no longer in the record.
+        assert!(record.reported.is_none());
+        let text = serde_json::to_string(&record).unwrap();
+        assert!(
+            !text.contains("calls_failed\":6") && !text.contains(":400"),
+            "{text}"
+        );
+        let digest = record.digest().unwrap();
+        let rules: Vec<String> = [
+            "calls_failed*50 <= calls",
+            "payments_refused <= 3",
+            "expected_held*100 >= 90*expected",
+            "attacks_held == 0",
+        ]
+        .iter()
+        .map(|r| r.to_string())
+        .collect();
+        prove_rules(&mut record, &openings, &rules).unwrap();
+        // The proofs are added without changing what was committed to.
+        assert_eq!(record.digest().unwrap(), digest);
+        let (lines, holds) = check_proofs(&record).unwrap();
+        assert!(holds && lines.len() == 4, "{lines:?}");
+        assert!(lines[0].contains("holds, proven without the figures: calls_failed*50 <= calls"));
+        // What is not so has no proof.
+        let not_so = prove_rules(
+            &mut record,
+            &openings,
+            &["payments_refused == 0".to_string()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            not_so.contains("does not hold of this record's figures"),
+            "{not_so}"
+        );
+        // A proof does not pass for another rule, another record, or
+        // figures committed to again.
+        let mut claimed = record.clone();
+        claimed.proofs[1].rule = "payments_refused <= 0".into();
+        assert!(!check_proofs(&claimed).unwrap().1);
+        let mut elsewhere = record.clone();
+        elsewhere.ledger.payments = 7;
+        assert!(!check_proofs(&elsewhere).unwrap().1);
+        let mut recommitted = record.clone();
+        let (fresh, _) = sion_zk::commit(1);
+        recommitted
+            .sealed
+            .as_mut()
+            .unwrap()
+            .figures
+            .insert("payments_refused".into(), fresh);
+        assert!(!check_proofs(&recommitted).unwrap().1);
+        // Openings that are not this record's are refused.
+        let (_, others) = seal(&Reported::default());
+        assert!(prove_rules(&mut record, &others, &rules).is_err());
     }
 }

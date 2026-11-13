@@ -815,6 +815,7 @@ Commands:
   improve        Improve the agent itself, keeping only what measurably helps: words added to its instructions, the models it reaches for, a vote, each tried on a set of tasks against the agent as it is and kept only when better beyond chance and failing no held-out task it passes
   immune         Attacks reported between operators: report the text an agent was attacked with, on a bond; vouch for a report; say whose reports your agents trust, and they hold back content from outside that holds the same text
   record         An agent's record, for whoever is asked to stand behind it or rely on it: what the ledger shows of what it may do and has done, which anyone can check, what its operator says of its sessions, and a warranty on a bond
+  comply         Proof that payments kept your rules without showing the payments: commitments to each amount and payee, and zero-knowledge proofs that none was above a limit, that they came to no more than a total, and that each went to one of a list
   find           Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
   project        Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
   x-mentions     Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
@@ -3609,7 +3610,8 @@ Usage: sion agent record [OPTIONS] <COMMAND>
 
 Commands:
   write    Write an agent's record: what the ledger shows of it over a span of Pulses, which anyone can recompute, and, on the machine that holds its sessions, what its operator says of them. With --wallet, a claim commits to the record
-  check    Check a record someone gave you against the ledger: every figure it says the ledger shows is added up again, and whether its owner committed to it is looked up. What its operator says of its own sessions is shown as that
+  check    Check a record someone gave you against the ledger: every figure it says the ledger shows is added up again, and whether its owner committed to it is looked up. What its operator says of its own sessions is shown as that, and each rule it proved of sealed figures is verified
+  prove    Prove that a sealed record's figures keep a rule, without showing them, and add the proof to the record. A rule names figures (calls, calls_failed, payments_refused, expected, expected_held, attacks_held, sessions, done, checked, asked, approved, declined, signed), whole numbers and products of the two, joined by +, and compares two sides with <=, >= or ==: "calls_failed*50 <= calls"
   warrant  Stand behind an agent, as you: a claim on your bond `agent-warranty` saying what you warrant of it, which the adjudicator can rule against. A counterparty relies on it with `sion accept`, which reserves part of the bond, and is compensated from the bond if a challenge to it is upheld
   help     Print this message or the help of the given subcommand(s)
 
@@ -3633,6 +3635,7 @@ Options:
       --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
       --to <TO>          The last Pulse counted (default: the latest)
       --ledger-only      Leave out what this machine's sessions show
+      --seal             Seal what this machine's sessions show: each figure is committed to and not shown, and what opens them is written beside the record (--out) for you to keep. `prove` then shows whoever asks that the figures keep a rule, and nothing else about them
       --out <FILE>       Write the record to this file, as JSON
       --wallet <WALLET>  Commit to the record in a claim of this wallet's
   -h, --help             Print help
@@ -3641,7 +3644,7 @@ Options:
 ## `sion agent record check`
 
 ```text
-Check a record someone gave you against the ledger: every figure it says the ledger shows is added up again, and whether its owner committed to it is looked up. What its operator says of its own sessions is shown as that
+Check a record someone gave you against the ledger: every figure it says the ledger shows is added up again, and whether its owner committed to it is looked up. What its operator says of its own sessions is shown as that, and each rule it proved of sealed figures is verified
 
 Usage: sion agent record check [OPTIONS] <FILE>
 
@@ -3651,6 +3654,23 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent record prove`
+
+```text
+Prove that a sealed record's figures keep a rule, without showing them, and add the proof to the record. A rule names figures (calls, calls_failed, payments_refused, expected, expected_held, attacks_held, sessions, done, checked, asked, approved, declined, signed), whole numbers and products of the two, joined by +, and compares two sides with <=, >= or ==: "calls_failed*50 <= calls"
+
+Usage: sion agent record prove [OPTIONS] --rule <RULE> <FILE>
+
+Arguments:
+  <FILE>  The sealed record (a file `write --seal --out` made)
+
+Options:
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --rule <RULE>      A rule to prove (repeat for more)
+      --openings <FILE>  What opens the record's commitments (default: the file `write --seal` wrote beside the record)
+  -h, --help             Print help
 ```
 
 ## `sion agent record warrant`
@@ -3671,6 +3691,57 @@ Options:
       --bond <USD>                 Post your bond `agent-warranty` with this many USD first
       --valid-for <VALID_FOR>      How many Pulses the warranty stands for [default: 1000000]
   -h, --help                       Print help
+```
+
+## `sion agent comply`
+
+```text
+Proof that payments kept your rules without showing the payments: commitments to each amount and payee, and zero-knowledge proofs that none was above a limit, that they came to no more than a total, and that each went to one of a list
+
+Usage: sion agent comply [OPTIONS] <COMMAND>
+
+Commands:
+  prove  Prove that payments you will not show kept your rules: none above a limit, no more than a total in all, each to one of a list of payees if you give one. Writes a certificate anyone can check, and the openings, which you keep to yourself
+  check  Check a certificate someone gave you. Needs nothing but the file
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent comply prove`
+
+```text
+Prove that payments you will not show kept your rules: none above a limit, no more than a total in all, each to one of a list of payees if you give one. Writes a certificate anyone can check, and the openings, which you keep to yourself
+
+Usage: sion agent comply prove [OPTIONS] --payments <FILE> --max-payment <USD> --total <USD> --for <TEXT> --out <FILE>
+
+Options:
+      --node <NODE>        The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --payments <FILE>    The payments: a JSON file, a list of {"amount": "<USD>", "to": "<payee>"}
+      --max-payment <USD>  What no payment may be above, in USD
+      --total <USD>        What they may come to in all, in USD
+      --payee <NAME>       A payee payments may go to (repeat for more). With none, payees are neither committed to nor proven
+      --for <TEXT>         What the certificate is for: it holds for this and nothing else
+      --out <FILE>         Where to write the certificate
+      --wallet <WALLET>    Commit to the certificate in a claim of this wallet's, so that when the list was fixed is on the ledger
+  -h, --help               Print help
+```
+
+## `sion agent comply check`
+
+```text
+Check a certificate someone gave you. Needs nothing but the file
+
+Usage: sion agent comply check [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  The certificate
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
 ```
 
 ## `sion agent improve improver`

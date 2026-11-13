@@ -41,6 +41,7 @@ pub mod chatgpt;
 pub mod clouds;
 pub mod code_improve;
 pub mod cohorts;
+pub mod comply;
 pub mod consolidate;
 pub mod credentials;
 pub mod delegation;
