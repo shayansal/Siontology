@@ -187,6 +187,11 @@ What is enforced, and where:
   [What it expected](docs/book/src/agent/checks.md#what-it-expected)
 - A charter on the ledger for its money: payees, largest payment, rate of
   spending, expiry. [A run, within its limits](docs/book/src/agent/run.md)
+- A record of the agent for whoever is asked to stand behind it: what
+  the ledger shows of what it did, which anyone can recompute, apart
+  from what its operator says; and a warranty on a bond that a
+  counterparty is compensated from.
+  [Its record, and a warranty](docs/book/src/agent/record.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent
   that pays, confirming before paying and prompt injection, run with your
   models and stand-in tools; a run can be published on the ledger as a

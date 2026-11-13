@@ -99,6 +99,7 @@ pub mod projects;
 pub mod qq;
 pub mod realtime;
 pub mod recall;
+pub mod record;
 pub mod rent_cli;
 pub mod rentals;
 pub mod reputation;

@@ -10,6 +10,34 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### An agent's record, and a warranty
+
+- `sion agent record write <agent>` writes an agent's record in two
+  parts kept apart. What the ledger shows over a span of Pulses, added up
+  from its events: payments under the charter, suspensions, narrowings,
+  tasks delivered, given back or proven false, changes kept on sealed
+  tasks, challenges and slashes against the bonds of its account and
+  owner, with the charter's terms as they stood. And what its operator
+  says of its sessions on the operator's machine: how runs ended, what
+  people decided, how its expectations held, attacks held back, payments
+  the ledger refused. `--out` writes it as JSON; `--wallet` commits to its
+  digest in a claim; `--ledger-only` leaves the operator's part out.
+- `sion agent record check <file>` recomputes the ledger's part from any
+  node and names each figure that differs, looks up the owner's
+  commitment, and shows the operator's part as the operator's word. A
+  record that was altered fails.
+- `sion agent record warrant <wallet> <agent> --covers "<what>"` is a
+  claim on the operator's bond `agent-warranty` under an adjudicator. A
+  counterparty relies on it with `sion accept`, which reserves part of
+  the bond, and is compensated from the bond when a challenge is upheld,
+  as the ledger's reservations already work.
+- Tested on a devnet with a scripted model: a record recomputed and found
+  to hold, an altered one found out, a warranty relied on, challenged,
+  upheld and paid from the bond, and the record showing it afterwards
+  ([Its record, and a warranty](docs/book/src/agent/record.md),
+  `agent:record`). It is evidence for whoever prices a risk, not
+  insurance.
+
 ### Attacks reported between operators
 
 - `sion agent immune report <wallet> --pattern <text>` reports the text

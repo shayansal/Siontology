@@ -22,6 +22,7 @@
   - [Memory](agent/memory.md)
   - [Checked before it is done](agent/checks.md)
   - [Security](agent/security.md)
+  - [Its record, and a warranty](agent/record.md)
 - [Commands, scripts and MCP servers](agent/tools.md)
   - [A browser and a desktop](agent/browser.md)
   - [A canvas](agent/canvas.md)

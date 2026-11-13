@@ -732,6 +732,12 @@ pub enum AgentCommand {
     /// the same text.
     #[command(subcommand)]
     Immune(crate::immune::ImmuneCommand),
+    /// An agent's record, for whoever is asked to stand behind it or rely
+    /// on it: what the ledger shows of what it may do and has done, which
+    /// anyone can check, what its operator says of its sessions, and a
+    /// warranty on a bond.
+    #[command(subcommand)]
+    Record(crate::record::RecordCommand),
     /// Run one case as a candidate that an improvement scores: the case,
     /// its model's answers and its tools' come from the harness over
     /// standard input and output (`sion agent improve code`).
@@ -1617,6 +1623,7 @@ pub fn run(
         AgentCommand::Routes(command) => crate::model_routes::run(command),
         AgentCommand::Improve(command) => crate::self_improve::run_with(session, ledger, command),
         AgentCommand::Immune(command) => crate::immune::run(session, ledger, command),
+        AgentCommand::Record(command) => crate::record::run(session, ledger, command),
         AgentCommand::Case { .. } => Err(CliError::Usage(
             "a case is run on its own, without a node".into(),
         )),

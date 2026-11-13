@@ -28,6 +28,9 @@ does, and how.
   expected of its calls against what they did, budgets, and the nets
   under it.
 - [Security](security.md): confidential content, signed decisions, imitated notes, attacks tried.
+- [Its record, and a warranty](record.md): what the ledger shows of an
+  agent, checkable by whoever is asked to stand behind it, and a bond a
+  counterparty is compensated from.
 - [Commands, scripts and MCP servers](tools.md), [a browser and a
   desktop](browser.md) and [a canvas](canvas.md): its tools.
 - [Skills from others](skills.md), [what a skill may
