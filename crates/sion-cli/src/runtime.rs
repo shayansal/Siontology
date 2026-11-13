@@ -1841,6 +1841,18 @@ impl Saved {
                 self.shared_seen = shared;
             }
         }
+        // The attacks reported by those this machine's operator trusts:
+        // looked for in every result that comes from outside.
+        let (attacks, stale) = crate::immune::for_session(ledger.as_ref());
+        if let Some(e) = stale {
+            standing_notes.push(format!(
+                "(reported attacks could not be brought up to date: {e}; the {} signature(s) \
+                 kept from the last reading are looked for)",
+                attacks.len()
+            ));
+        }
+        let screened_before = self.state.screened.count;
+        let look_for_attacks = |content: &str| sion_agent::immune::find(&attacks, content);
         let acting = Acting {
             ledger,
             wallet: self.wallet.clone(),
@@ -2255,6 +2267,8 @@ impl Saved {
             extras: sion_agent::session::Extras {
                 prices: Some(&prices),
                 marks: Some(&marks),
+                screen: (!attacks.is_empty())
+                    .then_some(&look_for_attacks as sion_agent::session::Screen<'_>),
                 summarizer: summarizer.as_deref(),
                 asker: hooks
                     .asker
@@ -2365,6 +2379,17 @@ impl Saved {
         // How what it said its calls would do compared with what they did.
         if let Some(line) = self.state.expected.line() {
             lines.push(format!("what it expected: {line}"));
+        }
+        // What was held for matching a reported attack, in this run.
+        let held_now = (self.state.screened.count - screened_before) as usize;
+        if held_now > 0 {
+            let hits = &self.state.screened.hits;
+            let new = &hits[hits.len().saturating_sub(held_now)..];
+            lines.push(format!(
+                "held {held_now} result(s) from outside that matched reported attacks:"
+            ));
+            lines.extend(new.iter().map(|hit| format!("  {}", hit.line())));
+            crate::immune::note_hits(new)?;
         }
         if !self.state.plan.is_empty() {
             lines.push("its plan:".to_string());

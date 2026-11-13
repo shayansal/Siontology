@@ -13,8 +13,9 @@
 
 /// How the runtime writes its notes, or the part of each that only they
 /// have: what a tool's result is searched for.
-pub const NOTES: [&str; 15] = [
+pub const NOTES: [&str; 16] = [
     crate::expect::NOTE,
+    crate::immune::NOTE,
     crate::session::MASKED,
     crate::verify::FAILED,
     "[Held in quarantine as",

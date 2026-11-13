@@ -67,6 +67,7 @@ pub mod graphs;
 pub mod home_assistant;
 pub mod hooks;
 pub mod imessage;
+pub mod immune;
 pub mod improve_loop;
 pub mod irc;
 pub mod jwt;

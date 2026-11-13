@@ -85,6 +85,7 @@ pub mod harvest;
 pub mod holdout;
 pub mod hooks;
 pub mod imitation;
+pub mod immune;
 pub mod journal;
 pub mod judge;
 pub mod mcp;

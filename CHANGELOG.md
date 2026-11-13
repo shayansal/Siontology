@@ -10,6 +10,38 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Attacks reported between operators
+
+- `sion agent immune report <wallet> --pattern <text>` reports the text
+  an agent was attacked with: a signature of 16 to 300 characters and at
+  least 3 words, as a claim on the reporter's bond `attack-reporter`
+  under an adjudicator. `--sample` checks that a file holds the text and
+  publishes the file's digest, never the file.
+- `sion agent immune vouch` is another account's claim, on its bond
+  `attack-verifier`, that it checked a signature.
+- `sion agent immune trust <account>…` names whose report or vouching
+  makes a signature one your agents look for (`--need` how many of them).
+  With no one named, nothing is looked for.
+- A session reads new reports when it starts. Every result that comes
+  from outside is then compared with the signatures, in lower case,
+  without characters drawn as nothing and with runs of space as one. A
+  result that matches is held whole and the model given the runtime's
+  note in its place (`[Held: this result matches a reported attack …]`,
+  marked as the runtime's own where a tool's result imitates it). The
+  run's last lines say what was held, and the session keeps the count.
+- `sion agent immune list` shows each signature, who stands behind it,
+  whether your agents look for it and what it held here; `suspend` and
+  `resume` stop and start looking for one on this machine; `thank
+  <wallet> --tip <USD>` says in a claim that a signature held content for
+  you and pays its reporter.
+- A signature only holds a result back. It stops the same text again,
+  not the attack in other words.
+- Tested on a devnet with a scripted model and a saved page: held once
+  the operator trusts the voucher, a report nobody trusted stands behind
+  not looked for, suspended and resumed, thanks paid once
+  ([Attacks reported between operators](docs/book/src/agent/security.md#attacks-reported-between-operators),
+  `agent:reported-attacks`).
+
 ### Lessons shared between owners
 
 - `sion agent improve share <profile>` publishes a lesson the profile's

@@ -408,6 +408,10 @@ pub struct State {
     /// conversation carry them from then on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expecting: bool,
+    /// The results from outside that were held for matching a reported
+    /// attack ([`crate::immune`]).
+    #[serde(default, skip_serializing_if = "crate::immune::Screened::is_empty")]
+    pub screened: crate::immune::Screened,
 }
 
 /// What a run reminded the agent of when it said it was done
@@ -758,7 +762,16 @@ pub struct Extras<'a> {
     /// (an MCP server's, a skill's script, a browser), not only by the
     /// tools that read files.
     pub marks: Option<Marks<'a>>,
+    /// What looks for reported attacks in a result that comes from outside
+    /// before the model is shown it ([`crate::immune`]): given the result's
+    /// text, the signature it matches, if any. A result that matches is
+    /// held, and the model given the runtime's note in its place.
+    pub screen: Option<Screen<'a>>,
 }
+
+/// What looks for reported attacks in content from outside
+/// ([`Extras::screen`]).
+pub type Screen<'a> = &'a (dyn Fn(&str) -> Option<crate::immune::Found> + Sync);
 
 /// What looks at each outcome ([`Extras::marks`]): given the tool's name
 /// and the outcome, what the outcome holds besides what its tool said.
@@ -1603,6 +1616,7 @@ impl Runtime<'_> {
                 });
                 for ((at, ready), outcome) in group.iter().zip(outcomes) {
                     let outcome = self.marks(ready, marked(ready, outcome));
+                    let outcome = self.screened(state, &ready.tool, outcome);
                     let outcome = self.hold(state, &ready.tool, outcome);
                     self.finish(state, ready, &outcome);
                     let step = self.call_step(
@@ -1694,6 +1708,7 @@ impl Runtime<'_> {
                                     Outcome::uncertain("the tool gave no outcome for this call")
                                 });
                                 let outcome = self.marks(ready, marked(ready, outcome));
+                                let outcome = self.screened(state, &ready.tool, outcome);
                                 let outcome = self.hold(state, &ready.tool, outcome);
                                 self.finish(state, ready, &outcome);
                                 self.hook_after(state, ready, outcome)
@@ -2379,6 +2394,30 @@ impl Runtime<'_> {
         }
     }
 
+    /// What a tool returned from outside, looked at for reported attacks
+    /// ([`Extras::screen`]) before anything else is done with it: a result
+    /// that matches one is held whole, pictures and all, and the model is
+    /// given the runtime's note in its place. The session is not tainted by
+    /// content the model was never shown.
+    fn screened(&self, state: &mut State, tool: &str, mut outcome: Outcome) -> Outcome {
+        if !outcome.untrusted {
+            return outcome;
+        }
+        let Some(found) = self
+            .extras
+            .screen
+            .and_then(|screen| screen(&outcome.content))
+        else {
+            return outcome;
+        };
+        let chars = outcome.content.chars().count();
+        state.screened.note(tool, &found, chars);
+        outcome.content = crate::immune::note(&found, tool, chars);
+        outcome.pictures.clear();
+        outcome.untrusted = false;
+        outcome
+    }
+
     /// In quarantine, what a tool returned from outside is held out of the
     /// conversation, and the model is told how to read it; the session is
     /// not tainted by it. A tool whose results the model acts on, an error,
@@ -2985,6 +3024,7 @@ impl Runtime<'_> {
                     tool.call_noting(&ready.input, &ready.key, held.tainted, &mut note)
                 };
                 let outcome = self.marks(&ready, marked(&ready, outcome));
+                let outcome = self.screened(state, &ready.tool, outcome);
                 let outcome = self.hold(state, &ready.tool, outcome);
                 self.finish(state, &ready, &outcome);
                 let outcome = self.hook_after(state, &ready, outcome);

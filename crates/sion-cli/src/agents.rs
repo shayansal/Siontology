@@ -726,6 +726,12 @@ pub enum AgentCommand {
     /// when better beyond chance and failing no held-out task it passes.
     #[command(subcommand)]
     Improve(crate::self_improve::ImproveCommand),
+    /// Attacks reported between operators: report the text an agent was
+    /// attacked with, on a bond; vouch for a report; say whose reports your
+    /// agents trust, and they hold back content from outside that holds
+    /// the same text.
+    #[command(subcommand)]
+    Immune(crate::immune::ImmuneCommand),
     /// Run one case as a candidate that an improvement scores: the case,
     /// its model's answers and its tools' come from the harness over
     /// standard input and output (`sion agent improve code`).
@@ -1610,6 +1616,7 @@ pub fn run(
         AgentCommand::Schedule(command) => crate::schedules::run(command),
         AgentCommand::Routes(command) => crate::model_routes::run(command),
         AgentCommand::Improve(command) => crate::self_improve::run_with(session, ledger, command),
+        AgentCommand::Immune(command) => crate::immune::run(session, ledger, command),
         AgentCommand::Case { .. } => Err(CliError::Usage(
             "a case is run on its own, without a node".into(),
         )),

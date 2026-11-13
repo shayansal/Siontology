@@ -813,6 +813,7 @@ Commands:
   import         Bring an OpenClaw or Hermes Agent over to a profile: its persona and memories into the profile's instructions, its jobs as schedules, and with --models, --keys and --bridges its models, its model keys and its chats; its skills listed, to import through the audit. Shows the plan; --apply does it
   routes         Routes that choose a profile's models for each task: pictures, work items and long tasks by rule, other tasks sorted by a model among routes that say what they are for; what each route was given, and its models compared on a set of tasks
   improve        Improve the agent itself, keeping only what measurably helps: words added to its instructions, the models it reaches for, a vote, each tried on a set of tasks against the agent as it is and kept only when better beyond chance and failing no held-out task it passes
+  immune         Attacks reported between operators: report the text an agent was attacked with, on a bond; vouch for a report; say whose reports your agents trust, and they hold back content from outside that holds the same text
   find           Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
   project        Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
   x-mentions     Answer the posts on X that mention your account, in their threads: each answer from the posts it replies to or quotes and the web search's results for its words, citing them, with their addresses in its last post; an answer that rests on nothing it was given is not posted. Needs X_ACCESS_TOKEN with tweet.read, tweet.write and users.read
@@ -3456,6 +3457,146 @@ Options:
       --wallet <WALLET>                Publish each kept lesson as this wallet's claim, and a claim saying whose lesson it was (an adoption)
       --pay-up-to <USD>                Pay the author of a kept lesson what it asks, if that is at most this many USD (with --wallet)
   -h, --help                           Print help
+```
+
+## `sion agent immune`
+
+```text
+Attacks reported between operators: report the text an agent was attacked with, on a bond; vouch for a report; say whose reports your agents trust, and they hold back content from outside that holds the same text
+
+Usage: sion agent immune [OPTIONS] <COMMAND>
+
+Commands:
+  report   Report an attack's signature, as you: a piece of the text that attacked an agent, as a claim on your bond `attack-reporter`, which the adjudicator can rule against. Agents whose operators trust you, or someone who vouches for it, hold back content from outside that holds this text
+  vouch    Vouch for a reported signature, as you: a claim on your bond `attack-verifier` that you checked it marks an attack and not ordinary content
+  trust    Name the accounts whose report or vouching makes a signature one your agents look for. With none named, nothing is looked for
+  list     The signatures reported on this ledger: who reported and vouches for each, whether your agents look for it, and what it held here
+  suspend  Stop looking for a signature on this machine, whatever stands behind it: for one that holds what it should not
+  resume   Look for a suspended signature again
+  thank    Say, as you, that the signatures that held content here did, and pay each one's reporter a tip if you name one
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent immune report`
+
+```text
+Report an attack's signature, as you: a piece of the text that attacked an agent, as a claim on your bond `attack-reporter`, which the adjudicator can rule against. Agents whose operators trust you, or someone who vouches for it, hold back content from outside that holds this text
+
+Usage: sion agent immune report [OPTIONS] --pattern <PATTERN> --adjudicator <ADJUDICATOR> <WALLET>
+
+Arguments:
+  <WALLET>  Your wallet
+
+Options:
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --pattern <PATTERN>          The text that marks the attack: at least 16 characters and 3 words, at most 300. Case, spacing and invisible characters do not matter
+      --kind <KIND>                What kind of attack it is, in a word or two [default: "prompt injection"]
+      --note <NOTE>                What it does and how it was met, in a line [default: ""]
+      --sample <FILE>              The content it was found in: checked to hold the text, and its digest published (never the content)
+      --seen-at <HOST>             The host it was met at
+      --adjudicator <ADJUDICATOR>  The adjudicator who can rule against the report (its atom's id, 64 hex digits)
+      --bond <USD>                 Post your bond `attack-reporter` with this many USD first
+      --valid-for <VALID_FOR>      How many Pulses the report stands for [default: 1000000]
+  -h, --help                       Print help
+```
+
+## `sion agent immune vouch`
+
+```text
+Vouch for a reported signature, as you: a claim on your bond `attack-verifier` that you checked it marks an attack and not ordinary content
+
+Usage: sion agent immune vouch [OPTIONS] --adjudicator <ADJUDICATOR> <WALLET> <SIGNATURE>
+
+Arguments:
+  <WALLET>     Your wallet
+  <SIGNATURE>  The signature (its claim's id, or a unique prefix of it)
+
+Options:
+      --adjudicator <ADJUDICATOR>  The adjudicator who can rule against your vouching (its atom's id, 64 hex digits)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --bond <USD>                 Post your bond `attack-verifier` with this many USD first
+      --note <NOTE>                What you say of it, in a line [default: ""]
+      --valid-for <VALID_FOR>      How many Pulses the vouching stands for [default: 1000000]
+  -h, --help                       Print help
+```
+
+## `sion agent immune trust`
+
+```text
+Name the accounts whose report or vouching makes a signature one your agents look for. With none named, nothing is looked for
+
+Usage: sion agent immune trust [OPTIONS] [ACCOUNTS]...
+
+Arguments:
+  [ACCOUNTS]...  The accounts (a wallet's name or an account's id)
+
+Options:
+      --need <NEED>  How many of the accounts you trust a signature needs behind it
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --remove       Stop trusting these accounts instead
+  -h, --help         Print help
+```
+
+## `sion agent immune list`
+
+```text
+The signatures reported on this ledger: who reported and vouches for each, whether your agents look for it, and what it held here
+
+Usage: sion agent immune list [OPTIONS]
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent immune suspend`
+
+```text
+Stop looking for a signature on this machine, whatever stands behind it: for one that holds what it should not
+
+Usage: sion agent immune suspend [OPTIONS] <SIGNATURE>
+
+Arguments:
+  <SIGNATURE>  The signature (its claim's id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent immune resume`
+
+```text
+Look for a suspended signature again
+
+Usage: sion agent immune resume [OPTIONS] <SIGNATURE>
+
+Arguments:
+  <SIGNATURE>  The signature (its claim's id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent immune thank`
+
+```text
+Say, as you, that the signatures that held content here did, and pay each one's reporter a tip if you name one
+
+Usage: sion agent immune thank [OPTIONS] <WALLET>
+
+Arguments:
+  <WALLET>  Your wallet
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --tip <USD>    What to pay each such signature's reporter, in USD [default: 0]
+  -h, --help         Print help
 ```
 
 ## `sion agent improve improver`

@@ -173,7 +173,9 @@ What is enforced, and where:
 
 - Autonomy levels from L0 to L6, approvals, taint from what comes from
   outside, quarantine, confidential files that commands are not shown,
-  signed decisions, and a journal of everything it did.
+  signed decisions, a journal of everything it did, and attacks reported
+  between operators on a bond, whose text every agent that trusts the
+  report holds back.
   [What it does alone](docs/book/src/agent/autonomy.md),
   [Security](docs/book/src/agent/security.md)
 - Checks a run must pass before it is done, budgets for time and tokens,
