@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Subcommand;
-use sion_agent::model::Usage;
 use sion_core::ids::{AccountId, AssetId, ObjectId, Pulse};
 use sion_core::Amount;
 use sion_crypto::kem::SealedEnvelope;
@@ -100,6 +99,11 @@ pub enum RentCommand {
         /// Take a simulated enclave with this platform key (hex).
         #[arg(long, value_name = "HEX")]
         simulated_platform: Option<String>,
+        /// Write the receipts its enclave signed of which models answered
+        /// to this file, with its attestation (`sion agent receipts
+        /// check`).
+        #[arg(long, value_name = "FILE")]
+        receipts: Option<std::path::PathBuf>,
     },
     /// Show an owner's listing and check its attestation: what it costs,
     /// what it runs, and whether its enclave checks out.
@@ -170,6 +174,7 @@ pub fn run(ledger: SharedLedger, command: RentCommand) -> Result<(), CliError> {
             pulses,
             measurement,
             simulated_platform,
+            receipts,
         } => rent(
             ledger,
             Rent {
@@ -182,6 +187,7 @@ pub fn run(ledger: SharedLedger, command: RentCommand) -> Result<(), CliError> {
                 pulses,
                 measurement,
                 simulated_platform,
+                receipts,
             },
         ),
         RentCommand::Show {
@@ -380,18 +386,19 @@ fn serve_body(
         .map_err(|e| CliError::Protocol(format!("the sealed request: {e}")))?;
     let now = ledger.pulse()?;
     let running = ledger.clone();
-    let answer = server.serve(ledger.as_ref(), now, &sealed, |message| {
+    let answer = server.serve_turn(ledger.as_ref(), now, &sealed, |message| {
         run_rented(running, profile, message)
     })?;
     serde_json::to_vec(&answer).map_err(|e| CliError::Usage(format!("the sealed reply: {e}")))
 }
 
-/// Runs the rented agent once: what it said, and the tokens it used.
+/// Runs the rented agent once: what it said, the tokens it used, and the
+/// receipts its runtime kept of the models' answers.
 fn run_rented(
     ledger: SharedLedger,
     profile: &crate::profiles::Profile,
     message: &str,
-) -> Result<(String, Usage), CliError> {
+) -> Result<rentals::Turn, CliError> {
     // A renter's words come from outside, and the session gets none of the
     // owner's memory, files, skills or reach.
     let hooks = crate::runtime::Hooks {
@@ -412,7 +419,11 @@ fn run_rented(
                 .unwrap_or("running")
         ),
     };
-    Ok((said, saved.state.usage))
+    Ok(rentals::Turn {
+        text: said,
+        usage: saved.state.usage,
+        receipts: saved.state.receipts.kept.clone(),
+    })
 }
 
 /// Shows a listing and checks its attestation.
@@ -482,6 +493,7 @@ struct Rent {
     pulses: u64,
     measurement: Option<String>,
     simulated_platform: Option<String>,
+    receipts: Option<std::path::PathBuf>,
 }
 
 /// Rents an agent: checks the listing, escrows, asks, and pays for the
@@ -553,6 +565,37 @@ fn rent(ledger: SharedLedger, rent: Rent) -> Result<(), CliError> {
         "it used {} input and {} output tokens: {} USD",
         reply.usage.usage.input, reply.usage.usage.output, reply.usage.price
     );
+    // Which models answered, as the enclave's own runtime kept it.
+    match &reply.receipts {
+        Some(signed) => {
+            signed.verify(&listing.attestation.binding.signing_public_key)?;
+            if signed.of != stream.to_string() {
+                return Err(CliError::Verification(
+                    "its enclave's receipts are of another rental".into(),
+                ));
+            }
+            println!("which models answered, signed by its enclave:");
+            for tally in &signed.tallies {
+                println!("  {}", tally.line());
+            }
+            if signed.extra_roots {
+                println!(
+                    "  (its runtime trusted certificate roots beyond the public ones: an \
+                     address's name does not show who answered there)"
+                );
+            }
+            if let Some(path) = &rent.receipts {
+                let file = crate::receipts::ReceiptsFile::of_rental(
+                    signed,
+                    signed.new.clone(),
+                    &listing.attestation,
+                );
+                crate::profiles::write_json(path, &file)?;
+                println!("its receipts are in {}", path.display());
+            }
+        }
+        None => println!("(its enclave signed no receipts of which models answered)"),
+    }
 
     // Pay what it signed for, and close the tab.
     if reply.usage.price.micros() > 0 {

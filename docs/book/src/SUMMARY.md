@@ -25,6 +25,7 @@
   - [Its record, and a warranty](agent/record.md)
   - [Proving rules were kept, without showing what was done](agent/proofs.md)
   - [Sealed exams](agent/exams.md)
+  - [Receipts: which model answered](agent/receipts.md)
 - [Commands, scripts and MCP servers](agent/tools.md)
   - [A browser and a desktop](agent/browser.md)
   - [A canvas](agent/canvas.md)

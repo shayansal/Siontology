@@ -40,6 +40,8 @@ const REQUEST_DOMAIN: &str = "sion/rental/request/v1";
 const REPLY_DOMAIN: &str = "sion/rental/reply/v1";
 /// The domain the enclave signs its count of usage in.
 const USAGE_DOMAIN: &str = "sion/rental/usage/v1";
+/// The domain the enclave signs its receipts in.
+pub const RECEIPTS_DOMAIN: &str = "sion/rental/receipts/v1";
 
 /// What a renter sends the enclave, sealed to its ML-KEM key: a message,
 /// the key the reply is sealed back to, and the stream payment that is to
@@ -105,14 +107,82 @@ impl SignedUsage {
     }
 }
 
+/// The enclave's signed word on which models answered a rental's
+/// requests: the receipts its runtime kept of them
+/// ([`sion_agent::receipt`]), as a chain over the whole rental. Signed
+/// with the key the attestation binds, so it is the measured code that
+/// says which address it asked and which model it was told answered, not
+/// the owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedReceipts {
+    /// The rental it is for: its stream.
+    pub of: String,
+    /// How many answers models have given in it.
+    pub count: u64,
+    /// The head of their chain.
+    pub head: String,
+    /// Every answer, by the model asked, the address and the model that
+    /// answered.
+    pub tallies: Vec<sion_agent::receipt::Tally>,
+    /// The receipts of this request's answers: the end of the chain.
+    pub new: Vec<sion_agent::receipt::Receipt>,
+    /// Whether the runtime trusted certificate roots beyond the public
+    /// ones (`SSL_CERT_FILE`): an address's name then does not show who
+    /// answered there.
+    #[serde(default)]
+    pub extra_roots: bool,
+    /// The enclave's signature over the above, less the receipts
+    /// themselves, which the head stands for.
+    pub signature: Signature,
+}
+
+impl SignedReceipts {
+    /// Checks that the receipts given are the end of the chain the enclave
+    /// signed, counted by its tallies, and the enclave's signature under
+    /// the key `signing_key` the attestation bound.
+    pub fn verify(&self, signing_key: &[u8]) -> Result<(), CliError> {
+        sion_agent::receipt::check(self.count, &self.head, &self.tallies, &self.new)
+            .map_err(|why| CliError::Verification(format!("the enclave's receipts: {why}")))?;
+        let key = PublicKey {
+            scheme: self.signature.scheme,
+            bytes: signing_key.to_vec(),
+        };
+        let statement = crate::receipts::statement(
+            &self.of,
+            self.count,
+            &self.head,
+            &self.tallies,
+            self.extra_roots,
+        );
+        keys::verify(&key, RECEIPTS_DOMAIN, &statement.0, &self.signature)
+            .map_err(|e| CliError::Verification(format!("the enclave's receipts: {e}")))
+    }
+}
+
 /// The enclave's reply, sealed to the renter's reply key: what the agent
-/// said, and the signed count of usage.
+/// said, the signed count of usage, and the signed receipts of which
+/// models answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reply {
     /// What the agent said.
     pub text: String,
     /// What the session has used, signed by the enclave.
     pub usage: SignedUsage,
+    /// Which models answered, signed by the enclave. None from a server
+    /// that keeps no receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipts: Option<SignedReceipts>,
+}
+
+/// What running the rented agent on one request gave.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Turn {
+    /// What the agent said.
+    pub text: String,
+    /// The tokens it used.
+    pub usage: Usage,
+    /// The receipts its runtime kept of the models' answers.
+    pub receipts: Vec<sion_agent::receipt::Receipt>,
 }
 
 /// The keys an enclave session holds, made inside it and never leaving:
@@ -193,6 +263,32 @@ impl EnclaveKeys {
         })
     }
 
+    /// Signs the receipts of the rental `of`: the chain `all` as it now
+    /// stands, with the receipts from place `from` on given whole.
+    pub fn sign_receipts(
+        &self,
+        of: &str,
+        all: &sion_agent::receipt::Receipts,
+        from: u64,
+    ) -> Result<SignedReceipts, CliError> {
+        let extra_roots = std::env::var_os("SSL_CERT_FILE").is_some();
+        let statement =
+            crate::receipts::statement(of, all.count, &all.head(), &all.tallies, extra_roots);
+        let signature = self
+            .signing
+            .sign(RECEIPTS_DOMAIN, &statement.0)
+            .map_err(|e| CliError::Usage(format!("the receipts could not be signed: {e}")))?;
+        Ok(SignedReceipts {
+            of: of.to_string(),
+            count: all.count,
+            head: all.head(),
+            tallies: all.tallies.clone(),
+            new: all.since(from).map(<[_]>::to_vec).unwrap_or_default(),
+            extra_roots,
+            signature,
+        })
+    }
+
     /// Seals `reply` to the renter's `reply_key`.
     pub fn seal_reply(
         &self,
@@ -207,9 +303,11 @@ impl EnclaveKeys {
 }
 
 /// What a stream has run up so far on the server's side.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Running {
     usage: Usage,
+    /// The receipts of the models' answers over the whole rental.
+    receipts: sion_agent::receipt::Receipts,
     /// The total USD signed for so far.
     owed: Amount,
     /// The stream position `owed` comes to.
@@ -279,6 +377,27 @@ impl RentalServer {
         sealed: &SealedEnvelope,
         run: impl FnOnce(&str) -> Result<(String, Usage), CliError>,
     ) -> Result<SealedEnvelope, CliError> {
+        self.serve_turn(ledger, now, sealed, |message| {
+            let (text, usage) = run(message)?;
+            Ok(Turn {
+                text,
+                usage,
+                receipts: Vec::new(),
+            })
+        })
+    }
+
+    /// [`RentalServer::serve`], with a `run` that also returns the
+    /// receipts its runtime kept of the models' answers: they join the
+    /// rental's chain, and the reply carries the enclave's signature over
+    /// it.
+    pub fn serve_turn(
+        &self,
+        ledger: &dyn Ledger,
+        now: Pulse,
+        sealed: &SealedEnvelope,
+        run: impl FnOnce(&str) -> Result<Turn, CliError>,
+    ) -> Result<SealedEnvelope, CliError> {
         let request = self.keys.open(sealed)?;
         let stream = request.payment.stream;
         let mut running = self.running.lock().expect("running lock");
@@ -301,18 +420,31 @@ impl RentalServer {
         }
         // An empty message only settles; otherwise run and meter.
         if !request.message.trim().is_empty() {
-            let (text, turn) = run(&request.message)?;
-            state.usage.add(&turn);
+            let turn = run(&request.message)?;
+            state.usage.add(&turn.usage);
             state.owed = price_of(&self.listing, &state.usage);
             state.position = steps_of(state.owed, self.listing.unit);
+            let before = state.receipts.count;
+            for receipt in turn.receipts {
+                state.receipts.push(receipt);
+            }
+            let receipts = if state.receipts.is_empty() {
+                None
+            } else {
+                Some(
+                    self.keys
+                        .sign_receipts(&stream.to_string(), &state.receipts, before)?,
+                )
+            };
             let reply = Reply {
-                text,
+                text: turn.text,
                 usage: self.keys.sign_usage(
                     &stream.to_string(),
                     &state.usage,
                     state.owed,
                     state.position,
                 )?,
+                receipts,
             };
             return self.keys.seal_reply(&reply, &request.reply_key);
         }
@@ -325,6 +457,7 @@ impl RentalServer {
                 state.owed,
                 state.position,
             )?,
+            receipts: None,
         };
         self.keys.seal_reply(&reply, &request.reply_key)
     }
@@ -772,6 +905,7 @@ mod tests {
         let reply = Reply {
             text: "done".into(),
             usage: signed,
+            receipts: None,
         };
         let sealed = enclave.seal_reply(&reply, renter.public()).unwrap();
         let opened = renter.open_reply(&sealed).unwrap();

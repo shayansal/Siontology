@@ -565,6 +565,10 @@ impl Model for Bedrock {
         &self.model
     }
 
+    fn endpoint(&self) -> Option<String> {
+        crate::receipt::endpoint_of(&self.base)
+    }
+
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {
         kept_or_not(request, &self.source(), |request| {
             self.complete_once(request)
@@ -1051,6 +1055,10 @@ fn cache_breakpoints(body: &mut Value) {
 impl Model for Vertex {
     fn id(&self) -> &str {
         &self.model
+    }
+
+    fn endpoint(&self) -> Option<String> {
+        crate::receipt::endpoint_of(&self.base)
     }
 
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {

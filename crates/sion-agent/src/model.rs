@@ -774,4 +774,11 @@ pub trait Model: Send + Sync {
     fn most_tokens(&self, max_tokens: u32) -> u32 {
         max_tokens
     }
+
+    /// Where it is asked: the scheme and host of the address its requests
+    /// go to, for the receipt of an answer ([`crate::receipt`]). None for a
+    /// model that is not asked over a network.
+    fn endpoint(&self) -> Option<String> {
+        None
+    }
 }

@@ -198,6 +198,10 @@ What is enforced, and where:
 - Sealed exams: tasks encrypted and committed to on the ledger, agents
   entered before a threshold of trustees opens them, and results anyone
   can run again. [Sealed exams](docs/book/src/agent/exams.md)
+- Receipts for which model answered each call: the model asked for, the
+  address and the model the provider named, in a chain an operator
+  commits to in a claim or a rented agent's enclave signs.
+  [Receipts](docs/book/src/agent/receipts.md)
 - Benchmark suites built in, for paying over x402, attacks on an agent
   that pays, confirming before paying and prompt injection, run with your
   models and stand-in tools; a run can be published on the ledger as a

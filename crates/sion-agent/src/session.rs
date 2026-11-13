@@ -412,6 +412,11 @@ pub struct State {
     /// attack ([`crate::immune`]).
     #[serde(default, skip_serializing_if = "crate::immune::Screened::is_empty")]
     pub screened: crate::immune::Screened,
+    /// The receipts of the models' answers: which model was asked, where,
+    /// which one the provider said answered, and the tokens, in a chain
+    /// ([`crate::receipt`]).
+    #[serde(default, skip_serializing_if = "crate::receipt::Receipts::is_empty")]
+    pub receipts: crate::receipt::Receipts,
 }
 
 /// What a run reminded the agent of when it said it was done
@@ -1955,6 +1960,13 @@ impl Runtime<'_> {
                 if response.model.is_empty() {
                     response.model = rules.judge.id().to_string();
                 }
+                state.receipts.add(
+                    crate::receipt::Purpose::Rules,
+                    rules.judge.id(),
+                    rules.judge.endpoint(),
+                    &request,
+                    &response,
+                );
                 self.account(state, &response);
                 self.step(
                     state,
@@ -2535,7 +2547,16 @@ impl Runtime<'_> {
                 continue;
             }
             match model.complete(request) {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    state.receipts.add(
+                        crate::receipt::Purpose::Reader,
+                        model.id(),
+                        model.endpoint(),
+                        request,
+                        &response,
+                    );
+                    return Ok(response);
+                }
                 Err(error) if error.transient() || error.locked_out() => {
                     state
                         .cooling
@@ -2881,6 +2902,13 @@ impl Runtime<'_> {
                     if response.model.is_empty() {
                         response.model = model.id().to_string();
                     }
+                    state.receipts.add(
+                        crate::receipt::Purpose::Turn,
+                        model.id(),
+                        model.endpoint(),
+                        &request,
+                        &response,
+                    );
                     // Declined, for safety reasons, with another model
                     // configured after it: that one is asked, as the
                     // providers advise; what this one used is counted.
@@ -3506,6 +3534,13 @@ impl Runtime<'_> {
         if response.model.is_empty() {
             response.model = model.id().to_string();
         }
+        state.receipts.add(
+            crate::receipt::Purpose::Summary,
+            model.id(),
+            model.endpoint(),
+            &request,
+            &response,
+        );
         self.account(state, &response);
         self.step(
             state,

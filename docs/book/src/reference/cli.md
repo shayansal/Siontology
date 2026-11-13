@@ -816,6 +816,7 @@ Commands:
   immune         Attacks reported between operators: report the text an agent was attacked with, on a bond; vouch for a report; say whose reports your agents trust, and they hold back content from outside that holds the same text
   record         An agent's record, for whoever is asked to stand behind it or rely on it: what the ledger shows of what it may do and has done, which anyone can check, what its operator says of its sessions, and a warranty on a bond
   comply         Proof that payments kept your rules without showing the payments: commitments to each amount and payee, and zero-knowledge proofs that none was above a limit, that they came to no more than a total, and that each went to one of a list
+  receipts       Receipts for which model answered: the model a session's runtime asked for each answer, at which address, and the model the provider said answered, in a chain; written for someone else to check, committed to in a claim, or signed by an enclave
   exam           Sealed exams: tasks encrypted and committed to on the ledger, agents entered before a threshold of trustees opens them, and results that anyone can run again once they are open
   find           Find the best agent for a task among those you name: how well each one's offer fits the task (BM25), weighed against its record on the ledger, held to what you need (an enclave that checks out, a price)
   project        Projects a profile's agent owns, running for weeks: a goal, a budget its payments for the project are held to, milestones, and check-ins that report where it stands
@@ -3871,6 +3872,74 @@ Options:
   -h, --help         Print help
 ```
 
+## `sion agent receipts`
+
+```text
+Receipts for which model answered: the model a session's runtime asked for each answer, at which address, and the model the provider said answered, in a chain; written for someone else to check, committed to in a claim, or signed by an enclave
+
+Usage: sion agent receipts [OPTIONS] <COMMAND>
+
+Commands:
+  show   A session's receipts: which model was asked for each answer, at which address, which model the provider said answered, and the tokens
+  write  Write a session's receipts to a file for someone else to check; with --wallet, commit to them in a claim, which fixes them as of now
+  check  Check a file of receipts: that they are a chain, and who stands behind them. An operator's are checked against its claim; an enclave's against its attestation and the key it binds
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent receipts show`
+
+```text
+A session's receipts: which model was asked for each answer, at which address, which model the provider said answered, and the tokens
+
+Usage: sion agent receipts show [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  The session
+
+Options:
+      --last <LAST>  How many of the last receipts to list [default: 10]
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent receipts write`
+
+```text
+Write a session's receipts to a file for someone else to check; with --wallet, commit to them in a claim, which fixes them as of now
+
+Usage: sion agent receipts write [OPTIONS] --out <FILE> <SESSION>
+
+Arguments:
+  <SESSION>  The session
+
+Options:
+      --node <NODE>      The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --out <FILE>       The file to write
+      --wallet <WALLET>  Commit to them in a claim of this wallet's
+  -h, --help             Print help
+```
+
+## `sion agent receipts check`
+
+```text
+Check a file of receipts: that they are a chain, and who stands behind them. An operator's are checked against its claim; an enclave's against its attestation and the key it binds
+
+Usage: sion agent receipts check [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  The file
+
+Options:
+      --measurement <MEASUREMENT>  The measurement of the enclave's code you trust (hex)
+      --node <NODE>                The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --simulated-platform <KEY>   SIMULATED: a simulated platform's key to take (hex), for tests and devnets
+  -h, --help                       Print help
+```
+
 ## `sion agent improve improver`
 
 ```text
@@ -4099,6 +4168,7 @@ Options:
       --pulses <PULSES>           How long the stream stays open, in Pulses [default: 10000]
       --measurement <HEX>         The measurement of the enclave you trust (48 bytes in hex)
       --simulated-platform <HEX>  Take a simulated enclave with this platform key (hex)
+      --receipts <FILE>           Write the receipts its enclave signed of which models answered to this file, with its attestation (`sion agent receipts check`)
   -h, --help                      Print help
 ```
 

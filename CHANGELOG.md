@@ -10,6 +10,25 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### Receipts for which model answered
+
+- A session keeps a receipt of every answer a model gives it: the model
+  asked for, the scheme and host of the address asked, the model the
+  provider's answer named, digests of the request and the answer, and the
+  tokens, each holding the digest of the one before. `sion agent receipts
+  show` reads them; `write` puts them in a file and, with `--wallet`,
+  commits to them in a claim; `check` checks a file.
+- An agent rented from an enclave signs its receipts with the key its
+  attestation binds, as one chain over the rental. `sion agent rent use`
+  checks them on every reply and shows which models answered, and
+  `--receipts <file>` keeps them with the attestation for a third party
+  to check with `sion agent receipts check --measurement`.
+- What a receipt is not: it names an address and the provider's name for
+  a model, and nothing looks inside the model; an operator's receipts
+  are its word, fixed at a Pulse; an enclave's rest on its attestation;
+  the owner chooses the address, which the receipt names
+  ([Receipts](docs/book/src/agent/receipts.md), `agent:model-receipts`).
+
 ### Sealed exams
 
 - `sion agent exam` shows what an agent can do on tasks it could not

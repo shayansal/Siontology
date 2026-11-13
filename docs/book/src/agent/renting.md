@@ -85,9 +85,16 @@ escrowed 5 USD in stream 2f90ab3c… at 0.001 USD a step
 The terms run for twelve months and renew unless either side gives notice.
 
 it used 1000 input and 200 output tokens: 0.006 USD
+which models answered, signed by its enclave:
+  scripted (asked for script:…/helper.json): 1 answer(s), 1000 tokens in and 200 out
 paid 0.006 USD for it
 (the stream stays open for more; `sion stream close 2f90ab3c…` takes back the rest)
 ```
+
+The enclave also signs which models answered, with the same key: the
+receipts its runtime kept, as one chain over the rental. `--receipts
+<file>` keeps them with the attestation for someone else to check
+([Receipts](receipts.md)).
 
 Give `--measurement <hex>` to say which code you trust; without it
 everything else is checked and what the enclave runs is only its own word.

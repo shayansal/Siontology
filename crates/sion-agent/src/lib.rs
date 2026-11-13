@@ -103,6 +103,7 @@ pub mod provenance;
 pub mod providers;
 pub mod quarantine;
 pub mod reading;
+pub mod receipt;
 pub mod remote;
 pub mod sandbox;
 pub mod schedule;

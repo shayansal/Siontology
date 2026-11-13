@@ -1511,6 +1511,10 @@ impl Model for Anthropic {
         &self.model
     }
 
+    fn endpoint(&self) -> Option<String> {
+        crate::receipt::endpoint_of(&self.base)
+    }
+
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {
         kept_or_not(request, &self.source(), |request| {
             self.complete_once(request)
@@ -2101,6 +2105,10 @@ impl Model for OpenAiCompatible {
         &self.model
     }
 
+    fn endpoint(&self) -> Option<String> {
+        crate::receipt::endpoint_of(&self.base)
+    }
+
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {
         kept_or_not(request, &self.source(), |request| {
             self.complete_once(request)
@@ -2648,6 +2656,10 @@ impl Model for Gemini {
         &self.model
     }
 
+    fn endpoint(&self) -> Option<String> {
+        crate::receipt::endpoint_of(&self.base)
+    }
+
     fn complete(&self, request: &Request) -> Result<Response, ModelError> {
         signed_or_not(request, &self.source(), |request| {
             self.complete_once(request)
@@ -3150,6 +3162,10 @@ pub fn responses_stream<R: Read>(
 impl Model for OpenAiResponses {
     fn id(&self) -> &str {
         &self.model
+    }
+
+    fn endpoint(&self) -> Option<String> {
+        crate::receipt::endpoint_of(&self.base)
     }
 
     /// Streamed, whatever is asked: a sign-in's token is good for streamed

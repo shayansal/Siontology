@@ -37,6 +37,9 @@ does, and how.
 - [Sealed exams](exams.md): what an agent can do, shown on tasks sealed
   on the ledger before it was entered, opened by trustees and run by
   anyone.
+- [Receipts: which model answered](receipts.md): the model asked for
+  each answer, the address, and the model the provider named, in a chain
+  an operator commits to or an enclave signs.
 - [Commands, scripts and MCP servers](tools.md), [a browser and a
   desktop](browser.md) and [a canvas](canvas.md): its tools.
 - [Skills from others](skills.md), [what a skill may

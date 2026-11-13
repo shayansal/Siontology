@@ -744,6 +744,12 @@ pub enum AgentCommand {
     /// total, and that each went to one of a list.
     #[command(subcommand)]
     Comply(crate::comply::ComplyCommand),
+    /// Receipts for which model answered: the model a session's runtime
+    /// asked for each answer, at which address, and the model the provider
+    /// said answered, in a chain; written for someone else to check,
+    /// committed to in a claim, or signed by an enclave
+    #[command(subcommand)]
+    Receipts(crate::receipts::ReceiptsCommand),
     /// Sealed exams: tasks encrypted and committed to on the ledger, agents
     /// entered before a threshold of trustees opens them, and results that
     /// anyone can run again once they are open.
@@ -1172,6 +1178,9 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
             crate::projects::run_local(command)
         }
         AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Receipts(command) if !command.needs_ledger() => {
+            crate::receipts::run(None, command)
+        }
         AgentCommand::Comply(command) if !command.needs_ledger() => {
             crate::comply::run(None, command)
         }
@@ -1640,6 +1649,7 @@ pub fn run(
         AgentCommand::Record(command) => crate::record::run(session, ledger, command),
         AgentCommand::Comply(command) => crate::comply::run(Some((session, ledger)), command),
         AgentCommand::Exam(command) => crate::notary::command(session, ledger, command),
+        AgentCommand::Receipts(command) => crate::receipts::run(Some((session, ledger)), command),
         AgentCommand::Case { .. } => Err(CliError::Usage(
             "a case is run on its own, without a node".into(),
         )),
