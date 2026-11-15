@@ -21,6 +21,9 @@ does, and how.
 
 - [A run, within its limits](run.md): an agent at work, and what the ledger refuses.
 - [Models](models.md): providers, fallbacks, signing in with ChatGPT, and what a model is sent.
+- [A long conversation: kept short, and kept whole](context.md): what a
+  session lets go when its conversation gets long, kept as it was and
+  looked back at; notes checked; how it is kept measured and improved.
 - [What it does alone, and what it asks](autonomy.md): autonomy levels,
   taint and quarantine, approvals.
 - [Memory](memory.md): the memory log, searching past sessions, consolidation and dreaming.

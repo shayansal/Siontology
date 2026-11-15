@@ -781,4 +781,13 @@ pub trait Model: Send + Sync {
     fn endpoint(&self) -> Option<String> {
         None
     }
+
+    /// The model that writes the notes of a conversation this one works
+    /// in, when it is shortened, if it brings one
+    /// ([`crate::earlier::WithNotes`]): asked where a run was given no
+    /// writer of its own ([`crate::session::Extras::summarizer`]). A task
+    /// run as a trial is given its writer this way.
+    fn notes_writer(&self) -> Option<&dyn Model> {
+        None
+    }
 }

@@ -43,6 +43,7 @@ pub mod code_improve;
 pub mod cohorts;
 pub mod comply;
 pub mod consolidate;
+pub mod context;
 pub mod credentials;
 pub mod dataset;
 pub mod delegation;

@@ -13,7 +13,7 @@
 
 /// How the runtime writes its notes, or the part of each that only they
 /// have: what a tool's result is searched for.
-pub const NOTES: [&str; 16] = [
+pub const NOTES: [&str; 20] = [
     crate::expect::NOTE,
     crate::immune::NOTE,
     crate::session::MASKED,
@@ -25,6 +25,10 @@ pub const NOTES: [&str; 16] = [
     "[The budget for this task is nearly spent",
     "[What this session has done that lasts",
     "compacted to save context]",
+    crate::earlier::LET_GO,
+    crate::earlier::NOT_HELD,
+    crate::earlier::MADE_UP,
+    "[What was let go that best matches",
     "[run without asking:",
     "[made again: the first identical call's outcome was lost",
     "(Not done again: an identical call earlier in this session",

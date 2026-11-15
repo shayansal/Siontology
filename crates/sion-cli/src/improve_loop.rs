@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sion_agent::archive::{temperature, Archive, Draws};
 use sion_agent::compare::{newcombe, newcombe_with, Arm, ArmResult, TaskSet};
+use sion_agent::earlier::Keeping;
 use sion_agent::model::{Model, ToolSpec};
 use sion_agent::policy::{Autonomy, Policy};
 use sion_agent::session::{Limits, Runtime, State};
@@ -111,6 +112,84 @@ fn set_learned(profile: &str, learned: Option<&Learned>) -> Result<(), CliError>
     }
 }
 
+/// How an agent keeps a long conversation short, as a kept change left it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptContext {
+    /// How.
+    pub keeping: Keeping,
+    /// When it was made the agent's (seconds since the epoch).
+    pub at: u64,
+    /// The kept change it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+}
+
+/// Where how a profile keeps its conversations is kept.
+pub fn context_path(profile: &str) -> PathBuf {
+    dir().join(format!("{profile}-context.json"))
+}
+
+/// How `profile`'s agent keeps a long conversation short, if a kept change
+/// made it other than the runtime's own way: a file that cannot be read,
+/// or that holds what no session takes, counts as none.
+pub fn context(profile: &str) -> Option<KeptContext> {
+    let text = std::fs::read_to_string(context_path(profile)).ok()?;
+    let kept: KeptContext = serde_json::from_str(&text).ok()?;
+    kept.keeping.check().ok()?;
+    Some(kept)
+}
+
+fn set_context(profile: &str, kept: Option<&KeptContext>) -> Result<(), CliError> {
+    let path = context_path(profile);
+    match kept {
+        Some(kept) => crate::profiles::write_json(&path, kept),
+        None => match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io(&path)(e)),
+        },
+    }
+}
+
+/// A way of keeping a conversation that is the runtime's own is no change
+/// to it.
+fn other_than_default(keeping: Option<Keeping>) -> Option<Keeping> {
+    keeping.filter(|keeping| *keeping != Keeping::default())
+}
+
+/// A short context the tasks' runs are held to, so that tasks shorter than
+/// a session's own limits still have their conversations shortened, and
+/// how an agent keeps a conversation short can be measured on them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Short {
+    /// Messages past which a run's conversation is shortened.
+    pub messages: usize,
+    /// Characters past which it is.
+    pub chars: usize,
+    /// The model that writes a run's notes, as `--summary-model` names
+    /// one: without it, the agent's first model, unless that is a script,
+    /// which writes none; `none` keeps the notes mechanical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer: Option<String>,
+}
+
+impl Short {
+    /// A context of `messages` messages, and a thousand characters for
+    /// each.
+    pub fn of(messages: usize, writer: Option<String>) -> Result<Short, CliError> {
+        if !(6..=400).contains(&messages) {
+            return Err(CliError::Usage(
+                "a short context holds 6 to 400 messages".into(),
+            ));
+        }
+        Ok(Short {
+            messages,
+            chars: messages * 1_000,
+            writer,
+        })
+    }
+}
+
 /// What an operator tells the agent, then what it learned under its own
 /// heading: none if both are empty.
 pub fn with_learned(operator: Option<&str>, learned: &str) -> Option<String> {
@@ -166,14 +245,18 @@ pub fn changed_text(old: &str, new: &str) -> String {
     }
 }
 
-/// What the loop changes of an agent: what it learned, and the models it
-/// runs on, best first.
+/// What the loop changes of an agent: what it learned, the models it
+/// runs on, best first, and how it keeps a long conversation short.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Variant {
     /// What it learned.
     pub learned: String,
     /// Its models, best first.
     pub models: Vec<String>,
+    /// How it keeps a long conversation short, if not the runtime's own
+    /// way ([`Keeping`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Keeping>,
 }
 
 impl Variant {
@@ -182,17 +265,43 @@ impl Variant {
         Variant {
             learned: learned(&profile.name).map(|l| l.text).unwrap_or_default(),
             models: profile.models.clone(),
+            context: other_than_default(context(&profile.name).map(|kept| kept.keeping)),
         }
     }
 
-    /// Its digest: two variants with the same words and models have the
-    /// same one.
+    /// How it keeps a long conversation short.
+    pub fn keeping(&self) -> Keeping {
+        self.context.clone().unwrap_or_default()
+    }
+
+    /// The words a proposer may have written into it: what it learned, and
+    /// what its notes' writer is told and asked, if that is not the
+    /// runtime's own.
+    pub fn words(&self) -> String {
+        match &self.context {
+            None => self.learned.clone(),
+            Some(keeping) => format!("{}\n{}\n{}", self.learned, keeping.told, keeping.asked),
+        }
+    }
+
+    /// Its digest: two variants with the same words and models, that keep
+    /// a conversation the same way, have the same one.
     pub fn digest(&self) -> Hash32 {
         let models = self.models.join("\n");
-        sion_core::hash::hash_parts(
-            "sion-cli/improve/variant/v1",
-            &[self.learned.trim().as_bytes(), models.as_bytes()],
-        )
+        match &self.context {
+            None => sion_core::hash::hash_parts(
+                "sion-cli/improve/variant/v1",
+                &[self.learned.trim().as_bytes(), models.as_bytes()],
+            ),
+            Some(keeping) => sion_core::hash::hash_parts(
+                "sion-cli/improve/variant/v2",
+                &[
+                    self.learned.trim().as_bytes(),
+                    models.as_bytes(),
+                    &serde_json::to_vec(keeping).unwrap_or_default(),
+                ],
+            ),
+        }
     }
 
     /// What it changes of `from`, in a line.
@@ -212,6 +321,9 @@ impl Variant {
         }
         if self.models != from.models {
             parts.push(format!("runs on {}", self.models.join(", ")));
+        }
+        if self.context != from.context {
+            parts.push(self.keeping().change_from(&from.keeping()));
         }
         if parts.is_empty() {
             "changes nothing".into()
@@ -312,6 +424,9 @@ pub struct Proposal {
     pub learned: Option<String>,
     /// The models it would run on.
     pub models: Option<Vec<String>>,
+    /// How it would keep a long conversation short, in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Keeping>,
     /// Why it would help.
     pub why: String,
     /// The claim of the shared lesson it comes from, if it is one
@@ -348,6 +463,7 @@ impl Offered {
                 format!("{had}\n{text}")
             }),
             models: None,
+            context: None,
             why: self.why.clone(),
             lesson: Some(self.claim.clone()),
         })
@@ -364,6 +480,7 @@ impl Proposal {
                 .map(|t| t.trim().to_string())
                 .unwrap_or_else(|| parent.learned.clone()),
             models: self.models.clone().unwrap_or_else(|| parent.models.clone()),
+            context: other_than_default(self.context.clone().or_else(|| parent.context.clone())),
         }
     }
 }
@@ -372,22 +489,48 @@ impl Proposal {
 struct ProposeChange {
     found: Arc<Mutex<Vec<Proposal>>>,
     most: usize,
+    /// How the agent it changes keeps a conversation, if the tasks' runs
+    /// are held to a short context: only then may a proposal change it.
+    keeping: Option<Keeping>,
 }
+
+/// What a proposer is told of `context`, where it may change it.
+const CONTEXT_FIELDS: &str = "`context`, how it keeps a long conversation short: any of `told` \
+     (what the writer of its notes is told it is for), `asked` (what the writer is asked, after \
+     the messages its notes replace), `keep_last` (how many messages stay as they are), \
+     `cut_over` (old results longer than this many characters are cut first) and `names` (how \
+     many of the names its notes do not hold are listed after them)";
 
 impl Tool for ProposeChange {
     fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "propose_change".into(),
-            description: "Propose a change to the agent: `learned`, the full new text of what it \
-                          has learned; `models`, the models to run it on, best first; and `why`."
-                .into(),
-            input_schema: json!({
+        let mut properties = json!({
+            "learned": {"type": "string"},
+            "models": {"type": "array", "items": {"type": "string"}},
+            "why": {"type": "string"}
+        });
+        let mut description = "Propose a change to the agent: `learned`, the full new text of \
+                               what it has learned; `models`, the models to run it on, best first"
+            .to_string();
+        if self.keeping.is_some() {
+            properties["context"] = json!({
                 "type": "object",
                 "properties": {
-                    "learned": {"type": "string"},
-                    "models": {"type": "array", "items": {"type": "string"}},
-                    "why": {"type": "string"}
-                },
+                    "told": {"type": "string"},
+                    "asked": {"type": "string"},
+                    "keep_last": {"type": "integer"},
+                    "cut_over": {"type": "integer"},
+                    "names": {"type": "integer"}
+                }
+            });
+            description.push_str(&format!("; {CONTEXT_FIELDS}"));
+        }
+        description.push_str("; and `why`.");
+        ToolSpec {
+            name: "propose_change".into(),
+            description,
+            input_schema: json!({
+                "type": "object",
+                "properties": properties,
                 "required": ["why"]
             }),
         }
@@ -406,8 +549,49 @@ impl Tool for ProposeChange {
                 .filter(|m| !m.is_empty())
                 .collect()
         });
-        if learned.is_none() && models.is_none() {
-            return ToolOutcome::error("give `learned`, `models`, or both");
+        let context = match (
+            input.get("context").filter(|c| c.is_object()),
+            &self.keeping,
+        ) {
+            (None, _) => None,
+            (Some(_), None) => {
+                return ToolOutcome::error(
+                    "how it keeps its conversation is not tried in this run: give `learned`, \
+                     `models`, or both",
+                )
+            }
+            (Some(asked), Some(keeping)) => {
+                let mut keeping = keeping.clone();
+                let text = |field: &str| asked[field].as_str().map(|t| t.trim().to_string());
+                let number = |field: &str| {
+                    asked[field]
+                        .as_u64()
+                        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+                };
+                if let Some(told) = text("told") {
+                    keeping.told = told;
+                }
+                if let Some(asked) = text("asked") {
+                    keeping.asked = asked;
+                }
+                if let Some(keep_last) = number("keep_last") {
+                    keeping.keep_last = keep_last;
+                }
+                if let Some(cut_over) = number("cut_over") {
+                    keeping.cut_over = cut_over;
+                }
+                if let Some(names) = number("names") {
+                    keeping.names = names;
+                }
+                Some(keeping)
+            }
+        };
+        if learned.is_none() && models.is_none() && context.is_none() {
+            return ToolOutcome::error(if self.keeping.is_some() {
+                "give `learned`, `models`, `context`, or several"
+            } else {
+                "give `learned`, `models`, or both"
+            });
         }
         let mut found = self.found.lock().expect("the proposals' lock");
         if found.len() >= self.most {
@@ -419,6 +603,7 @@ impl Tool for ProposeChange {
         found.push(Proposal {
             learned,
             models,
+            context,
             why: input["why"].as_str().unwrap_or_default().to_string(),
             lesson: None,
         });
@@ -481,6 +666,35 @@ pub const SURPRISES_SHOWN: usize = 12;
 /// and how the call differed, which the runtime words itself: nothing of
 /// what a tool answered is in it.
 pub fn surprises_shown(set: &TaskSet, result: &ArmResult, most: usize) -> (String, usize) {
+    lines_shown(set, result, most, |trial| &trial.surprises)
+}
+
+/// What shortening its conversation cost the agent in its runs that the
+/// proposer is shown, at most.
+pub const SHORTENED_SHOWN: usize = 12;
+
+/// What the proposer is shown of what shortening its conversation cost the
+/// agent in its runs ([`sion_agent::earlier::Earlier::cost`]): how often
+/// it was shortened and how many names went with it, what its notes made
+/// up, and what it looked back for, once for a task, those of runs that
+/// failed first, at most `most`. With them, how many there were. There are
+/// none unless the runs were held to a short context ([`Short`]).
+///
+/// Nothing a tool answered is in a line: the agent's own words for what it
+/// looked for, and the names its notes' writer made up.
+pub fn shortened_shown(set: &TaskSet, result: &ArmResult, most: usize) -> (String, usize) {
+    lines_shown(set, result, most, |trial| &trial.shortened)
+}
+
+/// The lines `of` picks from each trial's run, each once for a task
+/// however many of its runs it came up in, with how those runs went, those
+/// of runs that failed first, at most `most`; and how many there were.
+fn lines_shown(
+    set: &TaskSet,
+    result: &ArmResult,
+    most: usize,
+    of: impl Fn(&sion_agent::compare::Trial) -> &Vec<String>,
+) -> (String, usize) {
     struct Seen<'a> {
         case: &'a str,
         line: &'a str,
@@ -491,7 +705,7 @@ pub fn surprises_shown(set: &TaskSet, result: &ArmResult, most: usize) -> (Strin
     for case in &set.cases {
         for trial in result.trials.iter().filter(|t| t.case == case.id) {
             let mut once = BTreeSet::new();
-            for line in &trial.surprises {
+            for line in of(trial) {
                 if !once.insert(line.as_str()) {
                     continue;
                 }
@@ -545,6 +759,7 @@ fn proposer_prompt(
     result: &ArmResult,
     improver: &Improver,
     history: &[String],
+    short: Option<&Short>,
 ) -> String {
     let (failures, failed) = failures_shown(set, result, improver.failures as usize);
     let shown = failed.min(improver.failures as usize);
@@ -567,6 +782,35 @@ fn proposer_prompt(
         result.passed(),
         result.total(),
     );
+    if let Some(short) = short {
+        let keeping = parent.keeping();
+        text.push_str(&format!(
+            "\nIts context. These runs are held to a short context: past {} messages or {} \
+             characters the agent's conversation is shortened. The results of old calls are cut \
+             first; then all but its last messages are replaced by notes a model writes from \
+             them. What is let go is kept, and the agent can look back at it, which costs it a \
+             turn. You may also change, with propose_change, {CONTEXT_FIELDS}. As it is now:\n\
+             - told: {}\n- asked: {}\n- keep_last: {}\n- cut_over: {}\n- names: {}\n",
+            short.messages,
+            short.chars,
+            keeping.told,
+            keeping.asked,
+            keeping.keep_last,
+            keeping.cut_over,
+            keeping.names,
+        ));
+        let (shortened, cost) = shortened_shown(set, result, SHORTENED_SHOWN);
+        if cost > 0 {
+            text.push_str(&format!(
+                "\nWhat shortening its conversation cost it ({} of {cost} shown): how often a \
+                 run's conversation was shortened and how many names of what it let go were \
+                 then out of view, what its notes named that was nowhere in what they replaced, \
+                 and what the agent looked back for, which its notes should have held.\n\
+                 {shortened}",
+                cost.min(SHORTENED_SHOWN),
+            ));
+        }
+    }
     let (surprises, surprised) = surprises_shown(set, result, SURPRISES_SHOWN);
     if surprised > 0 {
         text.push_str(&format!(
@@ -601,13 +845,17 @@ pub fn propose(
     result: &ArmResult,
     history: &[String],
     round: usize,
+    short: Option<&Short>,
 ) -> (Vec<Proposal>, u64) {
-    let prompt = proposer_prompt(operator, parent, allowed, set, result, improver, history);
+    let prompt = proposer_prompt(
+        operator, parent, allowed, set, result, improver, history, short,
+    );
     let found = Arc::new(Mutex::new(Vec::new()));
     let mut tools = Toolbox::new();
     tools.add(ProposeChange {
         found: found.clone(),
         most: improver.proposals as usize,
+        keeping: short.map(|_| parent.keeping()),
     });
     let limits = Limits {
         turns: improver.proposals + 2,
@@ -655,7 +903,7 @@ pub struct Scored {
 
 /// Runs every task of `set` (whose digest is `digest`) `runs` times with
 /// `profile`'s agent as `variant` makes it, each run within
-/// `budget_tokens`.
+/// `budget_tokens`, and held to `short` if a short context is given.
 pub fn score(
     profile: &Profile,
     variant: &Variant,
@@ -663,6 +911,7 @@ pub fn score(
     digest: Hash32,
     runs: u32,
     budget_tokens: u64,
+    short: Option<&Short>,
 ) -> Result<Scored, CliError> {
     if variant.models.is_empty() {
         return Err(CliError::Usage(format!(
@@ -678,12 +927,19 @@ pub fn score(
         digest,
         runs,
         budget_tokens,
+        short,
     )
 }
 
 /// [`score`], for an agent described by what its operator tells it and
 /// whether it says what it expects, rather than by a profile on this
 /// machine: how another machine runs an agent someone else described.
+///
+/// The agent keeps its conversation as `variant` says. Held to a short
+/// context, a run's notes are written as a session's are: by the model
+/// `short` names, or else by the agent's first model, unless that is a
+/// script.
+#[allow(clippy::too_many_arguments)]
 pub fn score_as(
     operator: Option<&str>,
     expect: bool,
@@ -692,6 +948,7 @@ pub fn score_as(
     digest: Hash32,
     runs: u32,
     budget_tokens: u64,
+    short: Option<&Short>,
 ) -> Result<Scored, CliError> {
     if variant.models.is_empty() {
         return Err(CliError::Usage(
@@ -704,7 +961,40 @@ pub fn score_as(
         set.system(),
         &instructions,
     ));
-    let make = crate::skill_improve::models_of(&variant.models);
+    // An agent that says what it expects does so on its tasks too.
+    let mut limits = Limits {
+        expect,
+        ..Limits::default()
+    };
+    if let Some(keeping) = &variant.context {
+        keeping.check().map_err(CliError::Usage)?;
+        keeping.apply(&mut limits);
+    }
+    let mut writer: Option<String> = None;
+    if let Some(short) = short {
+        limits.compact_in_trials = true;
+        limits.compact_messages = short.messages;
+        limits.compact_chars = short.chars;
+        writer = match short.writer.as_deref() {
+            Some("none") => None,
+            Some(spec) => Some(spec.to_string()),
+            None => variant
+                .models
+                .first()
+                .filter(|spec| !spec.starts_with("script:"))
+                .cloned(),
+        };
+    }
+    let plain = crate::skill_improve::models_of(&variant.models);
+    let make = || -> Result<Vec<Box<dyn Model>>, String> {
+        let mut models = plain()?;
+        if let (Some(spec), false) = (&writer, models.is_empty()) {
+            let notes = crate::runtime::model(spec, 0).map_err(|e| e.to_string())?;
+            let model = models.remove(0);
+            models.insert(0, Box::new(sion_agent::earlier::WithNotes { model, notes }));
+        }
+        Ok(models)
+    };
     let comparison = sion_agent::compare::compare(
         &tasks,
         digest,
@@ -713,11 +1003,7 @@ pub fn score_as(
         None,
         budget_tokens,
         runs,
-        // An agent that says what it expects does so on its tasks too.
-        &Limits {
-            expect,
-            ..Limits::default()
-        },
+        &limits,
     )
     .map_err(CliError::Usage)?;
     let result = comparison
@@ -865,6 +1151,10 @@ pub struct Before {
     pub learned: Option<String>,
     /// Its models.
     pub models: Vec<String>,
+    /// How it kept a long conversation short, if not the runtime's own
+    /// way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Keeping>,
 }
 
 /// A line of a profile's lineage.
@@ -974,8 +1264,9 @@ pub(crate) fn append(profile: &str, record: &Record) -> Result<(), CliError> {
         .map_err(io(&path))
 }
 
-/// Makes `step`'s agent `profile`'s: what it learned, and its models.
-/// Records what it replaced. Returns a line for each change made.
+/// Makes `step`'s agent `profile`'s: what it learned, its models, and how
+/// it keeps a long conversation short. Records what it replaced. Returns a
+/// line for each change made.
 pub fn apply(profile: &str, step: &Step, now: u64) -> Result<Vec<String>, CliError> {
     let mut all = crate::profiles::all()?;
     let found = all
@@ -984,8 +1275,21 @@ pub fn apply(profile: &str, step: &Step, now: u64) -> Result<Vec<String>, CliErr
     let before = Before {
         learned: learned(profile).map(|l| l.text),
         models: found.models.clone(),
+        context: other_than_default(context(profile).map(|kept| kept.keeping)),
     };
     let mut lines = Vec::new();
+    if step.to.context != before.context {
+        let kept = step.to.context.as_ref().map(|keeping| KeptContext {
+            keeping: keeping.clone(),
+            at: now,
+            step: Some(step.id.clone()),
+        });
+        set_context(profile, kept.as_ref())?;
+        lines.push(format!(
+            "profile {profile} now keeps its conversations as step {} kept",
+            step.id
+        ));
+    }
     if step.to.learned.trim() != before.learned.clone().unwrap_or_default().trim() {
         let kept = (!step.to.learned.trim().is_empty()).then(|| Learned {
             text: step.to.learned.trim().to_string(),
@@ -1068,9 +1372,22 @@ pub fn undo(profile: &str, now: u64) -> Result<Vec<String>, CliError> {
                     crate::profiles::save_all(&all)?;
                 }
             }
-            format!(
-                "took back step {step}: profile {profile} has what it learned and its models as they were before it"
-            )
+            let kept = other_than_default(context(profile).map(|kept| kept.keeping));
+            if kept != before.context {
+                let was = before.context.as_ref().map(|keeping| KeptContext {
+                    keeping: keeping.clone(),
+                    at: now,
+                    step: None,
+                });
+                set_context(profile, was.as_ref())?;
+                format!(
+                    "took back step {step}: profile {profile} has what it learned, its models and how it keeps its conversations as they were before it"
+                )
+            } else {
+                format!(
+                    "took back step {step}: profile {profile} has what it learned and its models as they were before it"
+                )
+            }
         }
         Record::ImproverApplied { step, before, .. } => {
             crate::profiles::write_json(&improver_path(profile), before)?;
@@ -1104,6 +1421,9 @@ pub struct Settings {
     pub offered: Vec<Offered>,
     /// Whether only those lessons are tried: no proposer is asked.
     pub lessons_only: bool,
+    /// A short context the tasks' runs are held to, if any: only then are
+    /// changes to how the agent keeps its conversation proposed and tried.
+    pub short: Option<Short>,
 }
 
 /// The tasks a loop chooses changes on and confirms them on.
@@ -1275,6 +1595,7 @@ fn challenge(
         digest,
         settings.runs,
         settings.budget_tokens,
+        settings.short.as_ref(),
     )?;
     let after = score(
         profile,
@@ -1283,6 +1604,7 @@ fn challenge(
         digest,
         settings.runs,
         settings.budget_tokens,
+        settings.short.as_ref(),
     )?;
     found.tokens += before.outcome.tokens + after.outcome.tokens;
     let interval = newcombe(
@@ -1383,7 +1705,7 @@ pub fn improve(
     }
     let sealed_cases: Vec<sion_agent::evals::Case> = problem.sealed.cases.clone();
     let start = Variant::of(profile);
-    if let Some((case, _)) = sion_agent::guard::leak(&start.learned, &sealed_cases) {
+    if let Some((case, _)) = sion_agent::guard::leak(&start.words(), &sealed_cases) {
         return Err(CliError::Usage(format!(
             "what the agent has already learned shares words with sealed task {case}: seal tasks it has not learned from"
         )));
@@ -1395,6 +1717,7 @@ pub fn improve(
         problem.train_digest,
         settings.runs,
         settings.budget_tokens,
+        settings.short.as_ref(),
     )?;
     report.tokens += first.outcome.tokens;
     let mut archive = match archive {
@@ -1502,6 +1825,7 @@ pub fn improve(
                     problem.train_digest,
                     settings.runs,
                     settings.budget_tokens,
+                    settings.short.as_ref(),
                 )?;
                 report.tokens += scored.outcome.tokens;
                 archive.nodes[parent].passed = scored.outcome.passed;
@@ -1517,6 +1841,14 @@ pub fn improve(
             archive.nodes[parent].passed,
             archive.nodes[parent].total
         ));
+        let (_, cost) = shortened_shown(problem.train, &parent_result, 0);
+        if cost > 0 && !settings.lessons_only {
+            report.lines.push(format!(
+                "  what shortening its conversation cost it: {cost} lines, each counted once a \
+                 task; the proposer is shown {}",
+                cost.min(SHORTENED_SHOWN)
+            ));
+        }
         let (_, surprised) = surprises_shown(problem.train, &parent_result, 0);
         if surprised > 0 && !settings.lessons_only {
             report.lines.push(format!(
@@ -1554,6 +1886,7 @@ pub fn improve(
                 &parent_result,
                 &history,
                 round,
+                settings.short.as_ref(),
             );
             report.tokens += used;
             proposals.extend(written);
@@ -1615,6 +1948,27 @@ pub fn improve(
                 );
                 continue;
             }
+            if child.context != parent_variant.context {
+                if settings.short.is_none() {
+                    refuse(
+                        &mut report,
+                        &mut history,
+                        "how it keeps its conversation is tried only where the tasks' runs are \
+                         held to a short context (--short-context)",
+                        "turned down: its context is not tried in this run",
+                    );
+                    continue;
+                }
+                if let Err(why) = child.keeping().check() {
+                    refuse(
+                        &mut report,
+                        &mut history,
+                        &why,
+                        "turned down: not a way a session keeps a conversation",
+                    );
+                    continue;
+                }
+            }
             if !tried.insert(child.digest()) {
                 refuse(
                     &mut report,
@@ -1624,7 +1978,7 @@ pub fn improve(
                 );
                 continue;
             }
-            if let Some((case, _)) = sion_agent::guard::leak(&child.learned, &sealed_cases) {
+            if let Some((case, _)) = sion_agent::guard::leak(&child.words(), &sealed_cases) {
                 if case.starts_with(sion_agent::guard::CANARY) {
                     report.stopped = Some(format!(
                         "a proposal holds the code word of {case}: the sealed tasks have reached the proposer; seal fresh tasks"
@@ -1648,6 +2002,7 @@ pub fn improve(
                     problem.train_digest,
                     1,
                     settings.budget_tokens,
+                    settings.short.as_ref(),
                 )?;
                 report.tokens += quick.outcome.tokens;
                 let parent_rate = archive.nodes[parent].rate();
@@ -1673,6 +2028,7 @@ pub fn improve(
                 problem.train_digest,
                 settings.runs,
                 settings.budget_tokens,
+                settings.short.as_ref(),
             )?;
             report.tokens += trained.outcome.tokens;
             let id = archive
@@ -1796,6 +2152,7 @@ pub fn improve(
                         problem.sealed_digest,
                         settings.runs,
                         settings.budget_tokens,
+                        settings.short.as_ref(),
                     )?;
                     report.tokens += scored.outcome.tokens;
                     if let Some(canary) = scored.canaries.first() {
@@ -1829,6 +2186,7 @@ pub fn improve(
                 problem.sealed_digest,
                 settings.runs,
                 settings.budget_tokens,
+                settings.short.as_ref(),
             )?;
             report.tokens += after.outcome.tokens;
             if let Some(canary) = after.canaries.first() {
@@ -2125,6 +2483,7 @@ pub fn grade(
                     problem.held_digest,
                     settings.inner.runs,
                     settings.inner.budget_tokens,
+                    settings.inner.short.as_ref(),
                 )?;
                 graded.tokens += scored.outcome.tokens;
                 before.insert(problem.name.clone(), scored.outcome);
@@ -2738,10 +3097,12 @@ mod tests {
         let a = Variant {
             learned: String::new(),
             models: vec!["m1".into()],
+            context: None,
         };
         let b = Variant {
             learned: "Check the payee.".into(),
             models: vec!["m2".into(), "m1".into()],
+            context: None,
         };
         assert_eq!(a.change_from(&a), "changes nothing");
         let said = b.change_from(&a);
@@ -2755,6 +3116,83 @@ mod tests {
             ..b.clone()
         };
         assert_eq!(spaced.digest(), b.digest());
+        // How it keeps a conversation is part of what it is: said when it
+        // changes, and digested. The runtime's own way is no change.
+        let kept = Variant {
+            context: Some(Keeping {
+                keep_last: 6,
+                ..Keeping::default()
+            }),
+            ..b.clone()
+        };
+        assert_ne!(kept.digest(), b.digest());
+        assert_eq!(
+            kept.change_from(&b),
+            "keeps its last 6 messages as they are (it kept 12)"
+        );
+        assert_eq!(kept.keeping().keep_last, 6);
+        assert!(kept.words().contains(sion_agent::session::SUMMARY_ASK));
+        assert_eq!(b.words(), "Check the payee.");
+        let same = Proposal {
+            learned: None,
+            models: None,
+            context: Some(Keeping::default()),
+            why: String::new(),
+            lesson: None,
+        };
+        assert_eq!(same.applied_to(&b), b);
+        // A variant kept before this was part of it reads as it was, and
+        // is written as it was.
+        let old: Variant = serde_json::from_str(r#"{"learned":"x","models":["m"]}"#).unwrap();
+        assert_eq!(old.context, None);
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"learned":"x","models":["m"]}"#
+        );
+    }
+
+    #[test]
+    fn a_proposal_changes_how_a_conversation_is_kept_only_under_a_short_context() {
+        let found = Arc::new(Mutex::new(Vec::new()));
+        let plain = ProposeChange {
+            found: found.clone(),
+            most: 4,
+            keeping: None,
+        };
+        assert!(!plain.spec().description.contains("context"));
+        assert!(
+            plain
+                .call(&json!({"context": {"keep_last": 6}, "why": "x"}), "k")
+                .is_error
+        );
+        let short = ProposeChange {
+            found: found.clone(),
+            most: 4,
+            keeping: Some(Keeping::default()),
+        };
+        assert!(short.spec().description.contains("`keep_last`"));
+        assert!(short.spec().input_schema["properties"]["context"].is_object());
+        assert!(short.call(&json!({"why": "x"}), "k").is_error);
+        assert!(
+            !short
+                .call(
+                    &json!({"context": {"asked": " Keep who is to be paid. ", "names": 8}, "why": "x"}),
+                    "k"
+                )
+                .is_error
+        );
+        let proposed = found.lock().unwrap()[0].clone();
+        // What it did not name stays as it was.
+        assert_eq!(
+            proposed.context,
+            Some(Keeping {
+                asked: "Keep who is to be paid.".into(),
+                names: 8,
+                ..Keeping::default()
+            })
+        );
+        assert!(Short::of(5, None).is_err());
+        assert_eq!(Short::of(10, None).unwrap().chars, 10_000);
     }
 
     #[test]
@@ -2763,6 +3201,7 @@ mod tests {
         let tool = ProposeChange {
             found: found.clone(),
             most: 1,
+            keeping: None,
         };
         assert!(tool.call(&json!({"why": "x"}), "k").is_error);
         assert!(

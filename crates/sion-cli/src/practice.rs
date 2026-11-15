@@ -141,7 +141,15 @@ pub fn write_practice(
     let train_digest = digest_of(train)?;
     // One run of each task to choose on, to show the writer what the agent
     // fails.
-    let examples = score(profile, &variant, train, train_digest, 1, budget_tokens)?;
+    let examples = score(
+        profile,
+        &variant,
+        train,
+        train_digest,
+        1,
+        budget_tokens,
+        None,
+    )?;
     let mut tokens = examples.outcome.tokens;
     let prompt = practice_prompt(
         profile.instructions.as_deref(),
@@ -223,6 +231,7 @@ pub fn write_practice(
         digest_of(&candidates)?,
         runs,
         budget_tokens,
+        None,
     )?;
     tokens += scored.outcome.tokens;
     let mut kept = Vec::new();

@@ -651,6 +651,7 @@ pub fn evaluate(
                 },
                 judged: None,
                 surprises: Vec::new(),
+                shortened: Vec::new(),
             });
         }
     }
@@ -1547,6 +1548,7 @@ mod tests {
         let variant = Variant {
             learned: String::new(),
             models: vec!["m".into()],
+            context: None,
         };
         let mut release = Release {
             id: String::new(),

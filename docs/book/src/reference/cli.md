@@ -819,6 +819,7 @@ Commands:
   immune         Attacks reported between operators: report the text an agent was attacked with, on a bond; vouch for a report; say whose reports your agents trust, and they hold back content from outside that holds the same text
   record         An agent's record, for whoever is asked to stand behind it or rely on it: what the ledger shows of what it may do and has done, which anyone can check, what its operator says of its sessions, and a warranty on a bond
   comply         Proof that payments kept your rules without showing the payments: commitments to each amount and payee, and zero-knowledge proofs that none was above a limit, that they came to no more than a total, and that each went to one of a list
+  context        A session's context: what its conversation let go when it got long, kept as it was, and what its agent looked back for; and recorded sessions played again under a way of keeping a conversation short, to count how much of what the agent went on to use it still held
   receipts       Receipts for which model answered: the model a session's runtime asked for each answer, at which address, and the model the provider said answered, in a chain; written for someone else to check, committed to in a claim, or signed by an enclave
   market         A market for agents' work, priced per accepted result: sealed bids in rounds, each cleared at one price anyone can recompute, and a Task Charter from each buyer to the worker it was paired with
   recorder       A flight recorder for an agent that acts in the world: a device's events in a log the ledger keeps append-only, recorded without a network and fixed by each commit, with extracts an investigator checks and bounds proven of readings that are not shown
@@ -1306,6 +1307,63 @@ Arguments:
 Options:
       --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
   -h, --help         Print help
+```
+
+## `sion agent context`
+
+```text
+A session's context: what its conversation let go when it got long, kept as it was, and what its agent looked back for; and recorded sessions played again under a way of keeping a conversation short, to count how much of what the agent went on to use it still held
+
+Usage: sion agent context [OPTIONS] <COMMAND>
+
+Commands:
+  show     How a session's conversation stands: what it holds, what it let go and keeps, each time it was shortened with who wrote its notes, and what the agent looked back for
+  measure  Play recorded sessions again under a way of keeping a conversation short, and count, at each point where it would have been shortened, the names the agent went on to use and how many of them the shortened conversation still held. No tool is called and the agent's model is not asked
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+See [A long conversation: kept short, and kept whole](../agent/context.md).
+
+## `sion agent context show`
+
+```text
+How a session's conversation stands: what it holds, what it let go and keeps, each time it was shortened with who wrote its notes, and what the agent looked back for
+
+Usage: sion agent context show [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  The session (its id, or a unique prefix of it)
+
+Options:
+      --node <NODE>  The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+  -h, --help         Print help
+```
+
+## `sion agent context measure`
+
+```text
+Play recorded sessions again under a way of keeping a conversation short, and count, at each point where it would have been shortened, the names the agent went on to use and how many of them the shortened conversation still held. No tool is called and the agent's model is not asked
+
+Usage: sion agent context measure [OPTIONS] <SESSIONS>...
+
+Arguments:
+  <SESSIONS>...  The sessions (ids, or unique prefixes)
+
+Options:
+      --at <MESSAGES>          Shorten past this many messages (and a thousand characters for each), rather than at each session's own limits
+      --node <NODE>            The node's API [env: SION_NODE=] [default: http://127.0.0.1:8730]
+      --profile <PROFILE>      A profile whose way of keeping conversations is measured: what its improvement loop kept (default: the runtime's own way)
+      --keep-last <MESSAGES>   Messages kept as they are at the end
+      --cut-over <CHARACTERS>  Old results longer than this many characters are cut first
+      --names <NAMES>          How many of the names the notes do not hold are listed after them
+      --told <TOLD>            What the writer of the notes is told it is for
+      --asked <ASKED>          What it is asked, after the messages its notes replace
+      --notes-model <MODEL>    The model that writes the notes (default: none: the mechanical notes, which cost nothing)
+  -h, --help                   Print help
 ```
 
 ## `sion agent continue`
@@ -3335,6 +3393,8 @@ Options:
       --seed <SEED>                    The seed of the archive's draws (default: drawn)
       --practice <FILE>                Practice tasks (as `sion agent improve practice` writes) to choose changes on beside the seal's; a change is still confirmed on the sealed tasks alone
       --challenger <MODEL>             A model that writes variants of the tasks each change newly passes, to catch a change that only fits them: it must be better on them too, beyond chance, before it is confirmed
+      --short-context [<MESSAGES>]     Hold the tasks' runs to a short context: past this many messages (and a thousand characters for each) a run's conversation is shortened, as a long session's is. The proposer may then also change how the agent keeps its conversation short: what the writer of its notes is told and asked, how many messages stay as they are, which results are cut first. Without a number, 10
+      --notes-model <MODEL>            The model that writes a run's notes under --short-context (default: the profile's summary model, or else the agent's first model unless it is a script; `none` keeps them mechanical)
       --apply                          Make each kept change the profile's
       --wallet <WALLET>                Publish each kept change as this wallet's claim
   -h, --help                           Print help
@@ -4436,6 +4496,8 @@ Options:
       --budget-tokens <BUDGET_TOKENS>  The tokens each run of a task may use [default: 20000]
       --confirmations <CONFIRMATIONS>  The confirmations of changes to the improver this allows [default: 4]
       --seed <SEED>                    The seed of the archives' draws (default: drawn)
+      --short-context [<MESSAGES>]     Hold the problems' runs to a short context, as `run --short-context` does: the improver is then graded on changes that may include how the agent keeps its conversation short. Without a number, 10
+      --notes-model <MODEL>            The model that writes a run's notes under --short-context
       --apply                          Make a kept change the profile's improver
   -h, --help                           Print help
 ```

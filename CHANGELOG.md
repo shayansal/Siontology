@@ -10,6 +10,67 @@ Commit messages before the rename use the working name, Fold.
 
 ## Unreleased
 
+### A long conversation, kept short and kept whole
+
+- **Nothing a conversation lets go is thrown away.** When a session
+  shortens its conversation, the results it cuts and the messages its
+  notes replace are kept in the session as they were, numbered through
+  the whole conversation, up to 3,000,000 characters. `/undo` and
+  `/retry` act on the whole conversation, a shortened session is
+  harvested as a task, a task's checks read every call, and an episode
+  recorded before a shortening is still checked.
+- **`look_back`.** Once something was let go the agent is offered a tool
+  to search it by words, read a message by its number, or read a cut
+  result by its call. A result that came from outside taints the session
+  again when it is read back.
+- **Notes say what they do not hold.** They end with what was let go and
+  the names of it (paths, addresses, identifiers, long numbers) that are
+  no longer in view.
+- **A model's notes are checked, and written from more.** The writer is
+  given the notes before these and the messages since, with cut results
+  as they were (it used to be given the stubs). A name in its notes that
+  is nowhere in what they replace has it asked once more; what it still
+  makes up is flagged beside the notes.
+- **Old results are cut further, and notes never lengthen a
+  conversation.** When cutting the results before the last 12 messages
+  leaves the conversation too long, only those of the last six are
+  spared; if notes do not bring it within its length either, the results
+  of all but the last exchange are cut. A cut result is one call away.
+  Notes are no longer written where they would be longer than what they
+  replace, which used to happen at every turn of a conversation whose
+  last messages alone were over its length.
+- **Mechanical notes carry the ones before them**, where a second
+  shortening used to keep 240 characters of the first, and keep the end
+  of a result as well as its start.
+- **Two calls under one id lose neither result.** What is kept of a cut
+  result is kept by its call's id. A model that names two calls alike has
+  the second result left as it is, and a scripted model no longer names
+  two calls of one conversation alike after the conversation was
+  shortened or rewound.
+- **Fixed:** a run that shortened its conversation and was then asked
+  whether to write down a skill crashed, and a run that shortened its
+  conversation printed only part of what it had done. A run's messages
+  are now found by their numbers in the whole conversation.
+- **`sion agent context show`** says what a session let go, who wrote
+  each set of notes and what the agent looked back for. **`sion agent
+  context measure`** plays recorded sessions again under a way of
+  keeping a conversation and counts the names the agent went on to use
+  that the shortened conversation still held. No model is asked.
+- **The agent's loop can improve how its conversation is kept.** `sion
+  agent improve run --short-context` holds the tasks' runs to a short
+  context. The proposer is shown what shortening cost each run and may
+  change what the notes' writer is told and asked, how many messages
+  stay as they are, which results are cut first and how many names are
+  listed. A change is kept under the loop's own bars, confirmed on sealed
+  tasks, and is then how the profile's sessions keep their
+  conversations, until `undo`. `improve improver --short-context` grades
+  the improver on it too.
+- What it is not: no notes are known to hold what will matter later; the
+  check of notes is of their names only; datasets and training exports
+  still pass over shortened sessions; none of it has been run with a
+  real model ([A long conversation](docs/book/src/agent/context.md),
+  `agent:context-kept`).
+
 ### A market for proofs
 
 - `sion proving` asks for the World Proof of a Pulse and pays for it,

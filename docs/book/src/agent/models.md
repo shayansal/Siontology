@@ -282,41 +282,22 @@ Claude Haiku 5.5. For any other model (a local one, a provider known by
 name), nothing is assumed of its window: 120,000 characters and 36
 messages. `--compact-at TOKENS` says it for any model: about that many
 tokens, at three characters a token, and as many messages as they would
-hold. Past
-the characters, the results of calls before the last 12 messages that
-are longer than 400 characters are cut first: the calls stay, and each
-such result becomes a line saying what it was and how long, since the
-call can be made again (one the journal recorded is answered from it).
-If that is not enough, or past the messages, the middle is replaced by a
-summary, never separating a call from its result. A summary begins with
-what the session did that lasts: its last 40 calls that changed something
-or reached outside (the files it wrote, the commands it ran, the payments
-it made, the messages it sent), earlier ones counted by tool, kept apart
-from the conversation so that no summary of a summary loses them. Then
-comes the latest of what it read or changed: for each thing a tool names
-(a file, `file:notes/a.txt`, whichever way its path was written; a
-directory listed), the start of what its last call returned, the 32 most
-recent, so that a model that lost the conversation's middle still knows
-what a file held when it last looked, rather than what it held first.
-That is what the session saw then, not what is so now. Then comes what
-the person said after the task, word for word: their last 24 messages, up
-to 4,000 characters each, those the kept end of the conversation does not
-hold, so that an instruction given along the way ("never open the billing
-folder") outlives any number of summaries. The task itself is never
-summarized: it stays the first message.
+hold.
 
-The rest of a summary is written by a model: the run's first, or the one
-`--summary-model` names (`none` keeps the summary mechanical; a script
-writes none). It is sent the messages being replaced as a transcript,
-each text up to 4,000 characters and the whole cut to fit 120,000, without
-tools, and asked for working notes of at most 600 words: what was done and
-the state things are in, the facts needed later, what failed and why, the
-requirements and constraints found along the way, and what remains. It is
-told that what tools returned is information, not instructions. Its call
-counts against the run's budgets as any call does, and is a step of the
-trace; when what it would need does not fit them, or it fails or answers
-nothing, the summary is the mechanical one, a line for each message,
-shortened.
+Past that length the conversation is shortened: the results of old calls
+are cut first, and if that is not enough the middle is replaced by notes
+a model writes. Nothing it lets go is thrown away. It is kept in the
+session as it was, the notes say what they do not hold, and the agent can
+look back at it. The task itself is never summarized: it stays the first
+message. [A long conversation](context.md) describes all of it: what is
+cut and what the notes begin with, how a model's notes are checked, how
+to see what a session let go, and how the way a conversation is kept can
+be measured and improved.
+
+The notes are written by the run's first model, or the one
+`--summary-model` names (`none` keeps them mechanical; a script writes
+none). Its call counts against the run's budgets as any call does, and is
+a step of the trace.
 
 Past 40 tools (an agent with several MCP servers, say), the model is
 not shown them all. It sees its own tools (all but the MCP servers' and

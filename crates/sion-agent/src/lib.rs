@@ -73,6 +73,7 @@ pub mod compare;
 pub mod consolidate;
 pub mod desktop;
 pub mod dream;
+pub mod earlier;
 pub mod egress;
 pub mod encoding;
 pub mod episode;

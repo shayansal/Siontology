@@ -69,13 +69,20 @@ pub enum Verdict {
 }
 
 /// The task a session was asked: its one message from a person. None for
-/// a conversation, a compacted session, or one with no such message.
+/// a conversation, a session with no such message, or one whose
+/// conversation was shortened without all it let go being kept
+/// ([`State::is_whole`]): what it called and was given is then not all
+/// known.
 pub fn task_of(state: &State) -> Result<String, String> {
-    if state.compactions > 0 {
-        return Err("it was compacted: its first message is no longer the task as asked".into());
+    if !state.is_whole() {
+        return Err(
+            "its conversation was shortened, and what it let go is not all kept: what it \
+             called and was given is not all known"
+                .into(),
+        );
     }
-    let asked: Vec<String> = state
-        .messages
+    let whole = state.whole();
+    let asked: Vec<String> = whole
         .iter()
         .filter(|m| m.role == Role::User)
         .map(|m| m.text())
@@ -88,12 +95,14 @@ pub fn task_of(state: &State) -> Result<String, String> {
     }
 }
 
-/// The calls `state` made, each with what came back, in order: a call
-/// through `tools_call` counted as the call it makes, `tools_search`
-/// left out.
+/// The calls `state` made, each with what came back, in order, through
+/// the whole conversation ([`State::whole`]): a call through `tools_call`
+/// counted as the call it makes, `tools_search` and a look back at the
+/// conversation left out.
 pub fn recorded(state: &State) -> Vec<Recorded> {
+    let whole = state.whole();
     let mut results: BTreeMap<&str, (&str, bool)> = BTreeMap::new();
-    for message in &state.messages {
+    for message in &whole {
         for block in &message.content {
             if let Block::ToolResult {
                 id,
@@ -107,9 +116,9 @@ pub fn recorded(state: &State) -> Vec<Recorded> {
         }
     }
     let mut calls = Vec::new();
-    for message in &state.messages {
+    for message in &whole {
         for (id, name, input) in message.tool_uses() {
-            if name == TOOLS_SEARCH {
+            if name == TOOLS_SEARCH || name == crate::earlier::LOOK_BACK {
                 continue;
             }
             let (tool, input) = if name == TOOLS_CALL {

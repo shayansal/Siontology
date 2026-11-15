@@ -276,6 +276,7 @@ fn what_an_agent_did_not_expect_reaches_its_session_and_what_improves_it() {
     let variant = Variant {
         learned: String::new(),
         models: vec![clerk.clone()],
+        context: None,
     };
     // The proposer writes the lesson only when it is shown what the agent
     // did not expect: nothing in the failed checks names the unit.
@@ -288,7 +289,7 @@ fn what_an_agent_did_not_expect_reaches_its_session_and_what_improves_it() {
     let improver = Improver::default();
     let propose = |profile: &Profile, name: &str| {
         let scored =
-            improve_loop::score(profile, &variant, &tasks, Hash32::ZERO, 2, 20_000).unwrap();
+            improve_loop::score(profile, &variant, &tasks, Hash32::ZERO, 2, 20_000, None).unwrap();
         let spec = script(&home, name, steps.clone());
         let specs = [spec];
         let models = sion_cli::skill_improve::models_of(&specs)().unwrap();
@@ -302,6 +303,7 @@ fn what_an_agent_did_not_expect_reaches_its_session_and_what_improves_it() {
             &scored.result,
             &[],
             0,
+            None,
         );
         (scored, proposals)
     };
@@ -341,7 +343,8 @@ fn what_an_agent_did_not_expect_reaches_its_session_and_what_improves_it() {
     // With the lesson the agent expects rightly and its tasks pass: nothing
     // is left that it did not expect.
     let learned = proposals[0].applied_to(&variant);
-    let after = improve_loop::score(&saying, &learned, &tasks, Hash32::ZERO, 2, 20_000).unwrap();
+    let after =
+        improve_loop::score(&saying, &learned, &tasks, Hash32::ZERO, 2, 20_000, None).unwrap();
     assert_eq!((after.outcome.passed, after.outcome.total), (6, 6));
     assert!(after.result.trials.iter().all(|t| t.surprises.is_empty()));
 }

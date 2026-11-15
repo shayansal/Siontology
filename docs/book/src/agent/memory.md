@@ -142,7 +142,7 @@ on the ledger.
 | `checked` | Its first messages hash to the digest, and the episode is committed to the ledger |
 | `uncommitted` | They hash to the digest, but the episode is not committed yet |
 | `changed` | They do not: the stored session was edited after its episode was recorded |
-| `compacted` | The session was compacted since: the messages the digest covers are not all kept |
+| `compacted` | The session was shortened since, and the messages the digest covers are not all kept as they were |
 | `unrecorded` | The log holds no episode of it: it has not finished, or ran without the log |
 
 `sion agent sessions search` does the same from the command line, by the
@@ -217,7 +217,11 @@ $ sion agent sessions search agent-9 acme-old
 
 An episode records how many messages its digest covers and how many
 times the session had been compacted, so a session that went on after its
-episode is checked on the messages the episode covered.
+episode is checked on the messages the episode covered. A session whose
+conversation was shortened only after its episode was recorded is checked
+on its whole conversation, which it keeps
+([A long conversation](context.md)). One that had been shortened before
+is not: the notes it held then are not kept, so it reads `compacted`.
 
 ### Consolidation
 

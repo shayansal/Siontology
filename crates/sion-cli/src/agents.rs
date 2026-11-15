@@ -744,6 +744,12 @@ pub enum AgentCommand {
     /// total, and that each went to one of a list.
     #[command(subcommand)]
     Comply(crate::comply::ComplyCommand),
+    /// A session's context: what its conversation let go when it got long,
+    /// kept as it was, and what its agent looked back for; and recorded
+    /// sessions played again under a way of keeping a conversation short,
+    /// to count how much of what the agent went on to use it still held
+    #[command(subcommand)]
+    Context(crate::context::ContextCommand),
     /// Receipts for which model answered: the model a session's runtime
     /// asked for each answer, at which address, and the model the provider
     /// said answered, in a chain; written for someone else to check,
@@ -1194,6 +1200,7 @@ pub fn local(command: Box<AgentCommand>) -> Result<Result<(), CliError>, Box<Age
             crate::projects::run_local(command)
         }
         AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Context(command) => crate::context::run(command),
         AgentCommand::Recorder(command) if !command.needs_ledger() => {
             crate::recorder::run(None, command)
         }
@@ -1678,6 +1685,7 @@ pub fn run(
         AgentCommand::Find(args) => crate::reputation::find_command(ledger, args),
         AgentCommand::Project(command) => crate::projects::run(shared, command),
         AgentCommand::Hooks(command) => crate::hooks::command(command),
+        AgentCommand::Context(command) => crate::context::run(command),
         AgentCommand::Browser(command) => crate::browser_profiles::command(command),
         AgentCommand::Import(args) => crate::agent_import::run(args),
         AgentCommand::XMentions(args) => crate::x_mentions::run(shared, args),

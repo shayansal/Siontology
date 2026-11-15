@@ -258,6 +258,17 @@ What is enforced, and where:
   agent kept can be shared on a bond, and another owner's agent keeps it
   only when its own sealed tasks confirm it. Tested with scripted
   models. [Improving itself](docs/book/src/agent/self-improvement.md)
+- **A long conversation, kept short and kept whole**: when a session
+  shortens its conversation, what it lets go is kept as it was, and the
+  agent can look back at it. Its notes say which names they no longer
+  hold, and a model's notes that name something found nowhere in what
+  they replace are written again or flagged. `sion agent context` shows
+  what a session let go and plays recorded sessions again under another
+  way of keeping them; `sion agent improve run --short-context` lets the
+  agent's own loop change how its conversation is kept, on what sealed
+  tasks confirm. No notes are known to hold what will matter later.
+  Tested with scripted models.
+  [A long conversation](docs/book/src/agent/context.md)
 - **On Ethereum and in what it makes**: the agent's ERC-8004 registration
   file, naming its DID, and the calls that register it and bind its wallet,
   written for a wallet to send; Content Credentials (C2PA) for the files it
@@ -488,6 +499,7 @@ implementation adds. In short:
 | Agents: improving the whole agent, projects, memory shared with vouching and revocation, a meeting guest that speaks, finding an agent for a task (beyond the paper) | Built (devnet scale; tested with scripted models; the meeting guest's voice wired and tested in units, its microphone and a meeting not run) |
 | Agents: what an agent shows a third party — lessons and attack reports shared between owners, a record and a warranty, zero-knowledge proofs of rules kept, sealed exams, receipts for which model answered, a market for their work, a flight recorder for one that drives a machine, datasets of checked work (beyond the paper) | Built (devnet scale; tested with scripted models and a simulated enclave, not with a real model or AMD hardware) |
 | Agents: improving itself from its own work — changes it writes, tasks from its sessions sealed on the ledger, the improver improving itself, changes to its own code released and attested (beyond the paper) | Built (devnet scale; tested with scripted models, and for code with a small harness in Python in bubblewrap; not run on this repository's own code, nor with a real model) |
+| Agents: a long conversation kept short and kept whole — what it lets go kept and looked back at, a model's notes checked, how it is kept measured and improved by the agent's own loop (beyond the paper) | Built (reference; tested with scripted models; not run with a real model) |
 | Data availability: 2D Reed–Solomon, sampling, reconstruction, fraud proofs | Built |
 | Data availability: retention and archival | Simplified |
 | Ordering: Linear Lanes (owned objects) | Built |

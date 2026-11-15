@@ -275,15 +275,35 @@ impl Scripted {
     /// Next, the model calls several tools in one turn.
     pub fn calls_all(self, calls: Vec<(String, Value)>) -> Scripted {
         self.then(move |request| {
+            // A call is named for its place in the conversation. A
+            // conversation that was shortened or rewound comes to the same
+            // place twice, and no two calls in it may share an id.
             let turn = request.messages.len();
+            let taken: std::collections::BTreeSet<&str> = request
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    Block::ToolUse { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect();
             let content = calls
                 .iter()
                 .enumerate()
-                .map(|(i, (name, input))| Block::ToolUse {
-                    id: format!("call-{turn}-{i}"),
-                    name: name.clone(),
-                    input: resolved(input, request),
-                    signature: None,
+                .map(|(i, (name, input))| {
+                    let mut id = format!("call-{turn}-{i}");
+                    let mut again = 1;
+                    while taken.contains(id.as_str()) {
+                        again += 1;
+                        id = format!("call-{turn}-{i}-{again}");
+                    }
+                    Block::ToolUse {
+                        id,
+                        name: name.clone(),
+                        input: resolved(input, request),
+                        signature: None,
+                    }
                 })
                 .collect();
             Ok(reply(content, Stop::ToolUse))

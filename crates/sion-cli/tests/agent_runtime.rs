@@ -618,6 +618,83 @@ fn an_agent_pays_within_its_charter_and_asks_when_told_to() {
         matches!(&asking.ended, Some(Ended::Done { text }) if text == "Then I will refund 4 USD.")
     );
 
+    // A long run under a small context: its conversation is shortened as
+    // it goes, with the profile's way of keeping it: old results are cut,
+    // and past the messages a session keeps its middle becomes notes. What
+    // the run says it did is every call, found again by number, and the
+    // question it is asked afterwards (whether to write a skill) does not
+    // lose its place.
+    std::fs::create_dir_all(workspace.join("sheets")).unwrap();
+    for n in 0..20 {
+        std::fs::write(
+            workspace.join(format!("sheets/sheet-{n}.txt")),
+            format!(
+                "Sheet {n}. {}Its code is K{n}-77140.\n",
+                "Nothing to note. ".repeat(90)
+            ),
+        )
+        .unwrap();
+    }
+    let mut steps: Vec<serde_json::Value> = (0..20)
+        .map(|n| json!({"call": "read_file", "input": {"path": format!("sheets/sheet-{n}.txt")}}))
+        .collect();
+    steps.push(json!({"say": "Read all twenty."}));
+    steps.push(json!({"say": "Nothing worth writing down."}));
+    let model = script(&home, "sheets.json", serde_json::Value::Array(steps));
+    let skills = home.join("skills-of-its-own");
+    std::fs::create_dir_all(&skills).unwrap();
+    let (long, lines) = runtime::start(
+        ledger.clone(),
+        "agent-7",
+        agent,
+        "Read the twenty sheets in sheets/.",
+        vec![model],
+        Policy {
+            autonomy: Autonomy::L3,
+            ..Policy::default()
+        },
+        runtime::Equipment {
+            workspace: Some(workspace.clone()),
+            skills: Some(skills),
+            reflect: true,
+            compact_at: Some(2_000),
+            keeping: Some(sion_agent::earlier::Keeping {
+                keep_last: 6,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(long.limits.keep_last, 6);
+    assert!(long.state.compactions > 0, "{}", long.state.compactions);
+    assert!(long.state.is_whole());
+    assert!(
+        long.state.messages.len() < long.state.count(),
+        "{} of {}",
+        long.state.messages.len(),
+        long.state.count()
+    );
+    let reads = lines.iter().filter(|l| l.contains("→ read_file")).count();
+    assert_eq!(reads, 20, "{lines:#?}");
+    assert!(
+        lines.iter().any(|l| l.contains("Read all twenty.")),
+        "{lines:#?}"
+    );
+    // What it let go is shown for what it is.
+    let shown = sion_cli::context::lines(&long);
+    assert!(
+        shown[0].contains("let go and kept as they were"),
+        "{shown:#?}"
+    );
+    assert!(
+        shown
+            .last()
+            .unwrap()
+            .starts_with("the whole conversation can still be read"),
+        "{shown:#?}"
+    );
+
     // The kill switch stops a run before its first call.
     std::fs::create_dir_all(runtime::kill_switch().parent().unwrap()).unwrap();
     std::fs::write(runtime::kill_switch(), "stop").unwrap();

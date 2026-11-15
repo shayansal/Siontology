@@ -15,8 +15,10 @@
 //!   reached the ledger yet;
 //! - `changed`: they do not: the stored session was edited after its
 //!   episode was recorded;
-//! - `compacted`: the session was compacted since, so the messages the
-//!   digest covers are not all kept and it cannot be checked;
+//! - `compacted`: the session was shortened since, and the messages the
+//!   digest covers are not all kept as they were, so it cannot be checked
+//!   (a session shortened only after its episode was recorded keeps what
+//!   it let go, and is checked on its whole conversation);
 //! - `unrecorded`: the log holds no episode of it (the session has not
 //!   finished, or ran without a memory log).
 //!
@@ -122,16 +124,25 @@ pub fn check(
                 .into(),
         );
     };
-    let messages = &saved.state.messages;
-    if recorded
+    // A session shortened since its episode was recorded is checked on its
+    // whole conversation, if it had not been shortened by then and
+    // everything it let go since is kept: the messages are then as they
+    // were. Otherwise what the digest covers is not all there.
+    let shortened_since = recorded
         .compactions
-        .is_some_and(|c| saved.state.compactions > c)
-    {
+        .is_some_and(|c| saved.state.compactions > c);
+    let whole;
+    let messages: &[sion_agent::model::Message] = if !shortened_since {
+        &saved.state.messages
+    } else if recorded.compactions == Some(0) && saved.state.is_whole() {
+        whole = saved.state.whole();
+        &whole
+    } else {
         return (
             "compacted",
-            "compacted since its episode was recorded: the messages its digest covers are not all kept, so it cannot be checked".into(),
+            "compacted since its episode was recorded, and the messages its digest covers are not all kept as they were, so it cannot be checked".into(),
         );
-    }
+    };
     let digest = |n: usize| sion_agent::trace::digest_of(&saved.state.id, &messages[..n]);
     // An episode that does not say how many messages it covers covered the
     // conversation as it was then: some prefix of what is stored.

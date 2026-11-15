@@ -235,6 +235,10 @@ impl Profile {
             max_tokens: self.max_tokens,
             compact_at: self.compact_at,
             summary_model: self.summary_model.clone(),
+            // How it keeps a long conversation short, if its improvement
+            // loop kept a change to that (`sion agent improve run
+            // --short-context`).
+            keeping: crate::improve_loop::context(&self.name).map(|kept| kept.keeping),
             no_plan: self.no_plan,
             no_change_check: self.no_change_check,
             expect: self.expect,

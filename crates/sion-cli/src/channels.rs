@@ -745,7 +745,7 @@ pub fn converse_with(
             };
             let before = saved.state.messages.len();
             return Ok(
-                if sion_agent::session::compact_now(&mut saved.state, saved.limits.keep_last) {
+                if sion_agent::session::compact_with(&mut saved.state, &saved.limits) {
                     saved.save()?;
                     reply(
                         current,

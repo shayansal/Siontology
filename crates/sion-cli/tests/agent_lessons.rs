@@ -291,6 +291,8 @@ fn a_lesson_one_agent_kept_is_kept_by_another_only_on_its_own_sealed_tasks() {
             seed: Some(3),
             practice: None,
             challenger: None,
+            short_context: None,
+            notes_model: None,
             apply: true,
             wallet: Some("alice".into()),
         },

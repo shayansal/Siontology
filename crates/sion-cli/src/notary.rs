@@ -563,6 +563,9 @@ pub fn run(
     let variant = Variant {
         learned: entry.learned.clone(),
         models: entry.models.clone(),
+        // An entry fixes its agent's words and models: its conversation is
+        // kept the runtime's own way.
+        context: None,
     };
     let digest = Hash32::from_hex(&exam.tasks)
         .map_err(|e| CliError::Usage(format!("the exam's digest: {e}")))?;
@@ -575,6 +578,7 @@ pub fn run(
         digest,
         exam.runs,
         exam.budget_tokens,
+        None,
     )?;
     Ok(Outcome {
         exam: exam_claim.as_hash().to_hex(),

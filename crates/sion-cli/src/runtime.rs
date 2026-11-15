@@ -2281,13 +2281,16 @@ impl Saved {
                 ..Default::default()
             },
         };
-        let from = self.state.messages.len();
+        // Its messages are found again by their numbers in the whole
+        // conversation, not by their places: a run that shortens the
+        // conversation moves every place.
+        let from = self.state.count();
         let waiting = self.decided.take().or_else(|| self.state.pending.clone());
         let ended = runtime.run(&mut self.state);
         operator.run_end(&self.state.id, &ended);
         self.ended = Some(ended.clone());
-        let task_end = self.state.messages.len();
-        self.said = words(&self.state.messages[from.min(task_end)..task_end]);
+        let ran = self.state.since(from);
+        self.said = words(&ran);
         self.shared = shared.lock().map(|s| s.clone()).unwrap_or_default();
         // A long task done without writing a skill: the agent is asked
         // whether to write down how it did it, with its skill tools only.
@@ -2307,7 +2310,7 @@ impl Saved {
                 sion_agent::skills::REFLECT_AFTER,
             )
         {
-            let start = self.state.messages.len();
+            let start = self.state.count();
             self.state
                 .messages
                 .push(sion_agent::Message::user(sion_agent::skills::REFLECT));
@@ -2328,7 +2331,7 @@ impl Saved {
                 ..runtime
             };
             reflecting.run(&mut self.state);
-            reflection = transcript(&self.state.messages[start + 1..]);
+            reflection = transcript(&self.state.since(start + 1));
         }
         if !self.screen.is_empty() {
             let waits = matches!(ended, Ended::NeedsApproval { .. });
@@ -2369,9 +2372,7 @@ impl Saved {
                 }
             }
         }
-        lines.extend(transcript(
-            &self.state.messages[from.min(task_end)..task_end],
-        ));
+        lines.extend(transcript(&ran));
         // What it shared: sent with the reply on a channel, named here.
         lines.extend(self.shared.iter().map(|path| format!("shared: {path}")));
         lines.push(ending(&ended, &self.state));
@@ -2520,10 +2521,13 @@ impl Saved {
     /// answer it again when it runs (`/retry`). False if they never spoke.
     /// What the dropped calls did is not undone, only forgotten.
     pub fn rewind(&mut self) -> bool {
+        // On the whole conversation, if it was shortened and what it let
+        // go is kept: the person may have last spoken in what was let go.
+        self.state.restore_whole();
         let Some(at) = self.last_said() else {
             return false;
         };
-        self.state.messages.truncate(at + 1);
+        self.state.cut_to(at + 1);
         self.forget_ending();
         true
     }
@@ -2532,8 +2536,9 @@ impl Saved {
     /// the messages left, or `None` if they never spoke. What the dropped
     /// calls did is not undone, only forgotten.
     pub fn undo(&mut self) -> Option<usize> {
+        self.state.restore_whole();
         let at = self.last_said()?;
-        self.state.messages.truncate(at);
+        self.state.cut_to(at);
         self.forget_ending();
         Some(self.state.messages.len())
     }
@@ -3458,6 +3463,10 @@ pub struct Equipment {
     /// The model that writes a compacted conversation's summary
     /// ([`Saved::summary_model`]).
     pub summary_model: Option<String>,
+    /// How its conversation is kept short when it gets long, if not the
+    /// runtime's own way ([`sion_agent::earlier::Keeping`]): what a
+    /// profile's improvement loop kept.
+    pub keeping: Option<sion_agent::earlier::Keeping>,
     /// Whether it goes without a plan to keep ([`Limits::plan`]).
     pub no_plan: bool,
     /// Whether it may finish after changing code without running anything
@@ -3563,6 +3572,7 @@ pub fn start_watched(
         max_tokens,
         compact_at,
         summary_model,
+        keeping,
         no_plan,
         no_change_check,
         expect,
@@ -3688,6 +3698,11 @@ pub fn start_watched(
                 compact_at_tokens(&mut limits, tokens)?;
             }
         }
+    }
+    // How it keeps what it shortens, if a change kept said otherwise.
+    if let Some(keeping) = &keeping {
+        keeping.check().map_err(CliError::Usage)?;
+        keeping.apply(&mut limits);
     }
     if let Some(spec) = &hear {
         crate::voice::Hearing::parse(spec).map_err(CliError::Usage)?;

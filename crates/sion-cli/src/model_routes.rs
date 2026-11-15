@@ -1233,6 +1233,7 @@ mod tests {
                     answer: String::new(),
                     judged: None,
                     surprises: Vec::new(),
+                    shortened: Vec::new(),
                 })
                 .collect(),
         }

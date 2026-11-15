@@ -18,6 +18,7 @@
 - [Your agent](agent/index.md)
   - [A run, within its limits](agent/run.md)
   - [Models](agent/models.md)
+  - [A long conversation: kept short, and kept whole](agent/context.md)
   - [What it does alone, and what it asks](agent/autonomy.md)
   - [Memory](agent/memory.md)
   - [Checked before it is done](agent/checks.md)

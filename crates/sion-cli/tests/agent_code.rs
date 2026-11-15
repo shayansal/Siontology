@@ -756,6 +756,7 @@ fn this_runtime_runs_a_case_for_the_harness_from_inside_the_sandbox() {
     let mut variant = improve_loop::Variant {
         learned: String::new(),
         models: vec![steady],
+        context: None,
     };
     let operator = Some("You pay Acme's invoices.");
     let before = code_improve::evaluate(&settings, &built, operator, &variant, &set, 1).unwrap();

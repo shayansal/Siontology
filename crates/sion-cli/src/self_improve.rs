@@ -857,6 +857,25 @@ pub enum ImproveCommand {
         /// on them too, beyond chance, before it is confirmed.
         #[arg(long, value_name = "MODEL")]
         challenger: Option<String>,
+        /// Hold the tasks' runs to a short context: past this many messages
+        /// (and a thousand characters for each) a run's conversation is
+        /// shortened, as a long session's is. The proposer may then also
+        /// change how the agent keeps its conversation short: what the
+        /// writer of its notes is told and asked, how many messages stay
+        /// as they are, which results are cut first. Without a number, 10.
+        #[arg(
+            long = "short-context",
+            value_name = "MESSAGES",
+            num_args = 0..=1,
+            default_missing_value = "10"
+        )]
+        short_context: Option<usize>,
+        /// The model that writes a run's notes under --short-context
+        /// (default: the profile's summary model, or else the agent's
+        /// first model unless it is a script; `none` keeps them
+        /// mechanical).
+        #[arg(long = "notes-model", value_name = "MODEL", requires = "short_context")]
+        notes_model: Option<String>,
         /// Make each kept change the profile's.
         #[arg(long)]
         apply: bool,
@@ -1187,6 +1206,20 @@ pub enum ImproveCommand {
         /// The seed of the archives' draws (default: drawn).
         #[arg(long)]
         seed: Option<u64>,
+        /// Hold the problems' runs to a short context, as `run
+        /// --short-context` does: the improver is then graded on changes
+        /// that may include how the agent keeps its conversation short.
+        /// Without a number, 10.
+        #[arg(
+            long = "short-context",
+            value_name = "MESSAGES",
+            num_args = 0..=1,
+            default_missing_value = "10"
+        )]
+        short_context: Option<usize>,
+        /// The model that writes a run's notes under --short-context.
+        #[arg(long = "notes-model", value_name = "MODEL", requires = "short_context")]
+        notes_model: Option<String>,
         /// Make a kept change the profile's improver.
         #[arg(long)]
         apply: bool,
@@ -1266,6 +1299,24 @@ fn drawn() -> u64 {
     rand_core::RngCore::next_u64(&mut rand_core::OsRng)
 }
 
+/// The short context `--short-context` asks for, if it was given: its
+/// notes written by the model `--notes-model` names, or else as
+/// `profile`'s sessions have theirs written.
+fn short_of(
+    messages: Option<usize>,
+    writer: Option<String>,
+    profile: &crate::profiles::Profile,
+) -> Result<Option<crate::improve_loop::Short>, CliError> {
+    messages
+        .map(|messages| {
+            crate::improve_loop::Short::of(
+                messages,
+                writer.or_else(|| profile.summary_model.clone()),
+            )
+        })
+        .transpose()
+}
+
 /// Runs `sion agent improve …` with a node: publishing a seal or kept
 /// changes, checking a lineage; anything else as [`run`] does.
 pub fn run_with(
@@ -1311,11 +1362,14 @@ pub fn run_with(
             seed,
             practice,
             challenger,
+            short_context,
+            notes_model,
             apply: make_it_so,
             wallet: Some(wallet),
         } => {
             let found = crate::profiles::get(&profile)?;
             let seal = crate::sealed::current(&profile)?;
+            let short = short_of(short_context, notes_model, &found)?;
             let mut publish =
                 |step: &mut crate::improve_loop::Step| -> Result<Vec<String>, CliError> {
                     step.seal_claim = seal.claim.clone();
@@ -1347,6 +1401,7 @@ pub fn run_with(
                     seed: seed.unwrap_or_else(drawn),
                     offered: Vec::new(),
                     lessons_only: false,
+                    short,
                 },
                 &RunWith {
                     practice,
@@ -1539,6 +1594,7 @@ pub fn run_with(
                     seed: seed.unwrap_or_else(drawn),
                     offered,
                     lessons_only: true,
+                    short: None,
                 },
                 &RunWith {
                     practice: None,
@@ -2231,11 +2287,14 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
             seed,
             practice,
             challenger,
+            short_context,
+            notes_model,
             apply: make_it_so,
             wallet: None,
         } => {
             let found = crate::profiles::get(&profile)?;
             let seal = crate::sealed::current(&profile)?;
+            let short = short_of(short_context, notes_model, &found)?;
             run_loop(
                 &found,
                 &seal,
@@ -2249,6 +2308,7 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
                     seed: seed.unwrap_or_else(drawn),
                     offered: Vec::new(),
                     lessons_only: false,
+                    short,
                 },
                 &RunWith {
                     practice,
@@ -2317,9 +2377,12 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
             budget_tokens,
             confirmations,
             seed,
+            short_context,
+            notes_model,
             apply: make_it_so,
         } => {
             let found = crate::profiles::get(&profile)?;
+            let short = short_of(short_context, notes_model, &found)?;
             let proposer = proposer.ok_or_else(|| CliError::Usage("give --proposer".into()))?;
             let meta_proposer = meta_proposer.unwrap_or_else(|| proposer.clone());
             let read =
@@ -2361,6 +2424,7 @@ pub fn run(command: ImproveCommand) -> Result<(), CliError> {
                     seed: seed.unwrap_or_else(drawn),
                     offered: Vec::new(),
                     lessons_only: false,
+                    short,
                 },
                 inner_confirmations: 2,
                 rounds,

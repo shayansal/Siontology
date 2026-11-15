@@ -613,13 +613,16 @@ impl CaseRun {
     }
 }
 
-/// The tool calls the model made, in order (a call through `tools_call`
-/// counts as the call it makes).
+/// The tool calls the model made, in order, through the whole
+/// conversation, what it let go included ([`State::whole`]). A call
+/// through `tools_call` counts as the call it makes; a search of the
+/// toolbox and a look back at the conversation are the runtime's, and are
+/// not counted.
 pub fn calls_of(state: &State) -> Vec<(String, Value)> {
     let mut calls = Vec::new();
-    for message in &state.messages {
+    for message in &state.whole() {
         for (_, name, input) in message.tool_uses() {
-            if name == TOOLS_SEARCH {
+            if name == TOOLS_SEARCH || name == crate::earlier::LOOK_BACK {
                 continue;
             }
             if name == TOOLS_CALL {
@@ -894,13 +897,13 @@ pub fn run_case_priced(
             autonomy: Autonomy::L6,
             ..Policy::default()
         },
-        // Never compacted: the checks are of every call the model asked
-        // for, and a compacted conversation keeps only the last of them.
+        // Not shortened, unless the limits ask for a trial under a short
+        // context ([`Limits::compact_in_trials`]): the checks are of every
+        // call the model asked for either way, read from the whole
+        // conversation ([`calls_of`]).
         limits: Limits {
             ask: limits.ask || played.is_some(),
-            compact_messages: usize::MAX,
-            compact_chars: usize::MAX,
-            ..limits.clone()
+            ..trial_limits(limits)
         },
         system: system.clone(),
         now: &|| 0,
@@ -950,6 +953,20 @@ pub fn run_case_priced(
         ended,
         state,
         system,
+    }
+}
+
+/// `limits` as a trial runs under them: its conversation never shortened,
+/// unless they ask for a short context ([`Limits::compact_in_trials`]).
+pub fn trial_limits(limits: &Limits) -> Limits {
+    if limits.compact_in_trials {
+        limits.clone()
+    } else {
+        Limits {
+            compact_messages: usize::MAX,
+            compact_chars: usize::MAX,
+            ..limits.clone()
+        }
     }
 }
 

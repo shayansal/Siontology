@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::code_mode::{self, CodeRunner, Said, MAX_CODE_CALLS, MAX_CODE_OUTPUT, RUN_CODE};
+use crate::earlier::{Earlier, LOOK_BACK};
 use crate::hooks::{self, ToolHooks};
 use crate::journal::{key, Entry, Journal, Prior};
 use crate::model::{
@@ -97,6 +98,51 @@ pub struct Limits {
     /// differ.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expect: bool,
+    /// What the writer of a long conversation's notes is told it is for,
+    /// if not [`SUMMARY_SYSTEM`] ([`crate::earlier::Keeping`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_told: Option<String>,
+    /// What it is asked, if not [`SUMMARY_ASK`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_asked: Option<String>,
+    /// The longest result of a call long past that is kept whole when a
+    /// conversation is cut down, in bytes ([`cut_old_results`]).
+    #[serde(default = "default_cut_over")]
+    pub cut_over: usize,
+    /// How many of the names a conversation's notes do not hold are listed
+    /// after them ([`crate::earlier::not_held`]).
+    #[serde(default = "default_names_listed")]
+    pub names_listed: usize,
+    /// Whether the agent may look back at what its conversation let go
+    /// ([`LOOK_BACK`]), once something was.
+    #[serde(default = "yes")]
+    pub look_back: bool,
+    /// The most characters a session keeps of what its conversation let go
+    /// ([`State::earlier`]): past it the oldest go for good, and 0 keeps
+    /// nothing.
+    #[serde(default = "default_earlier_chars")]
+    pub earlier_chars: usize,
+    /// Whether a task run as a trial ([`crate::evals`], [`crate::compare`])
+    /// keeps these limits on its conversation's length: without it a trial
+    /// never shortens its conversation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compact_in_trials: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_cut_over() -> usize {
+    MASK_OVER
+}
+
+fn default_names_listed() -> usize {
+    crate::earlier::NAMES_LISTED
+}
+
+fn default_earlier_chars() -> usize {
+    crate::earlier::EARLIER_CHARS
 }
 
 fn default_patience() -> u64 {
@@ -137,6 +183,13 @@ impl Default for Limits {
             check_changes: false,
             ask: false,
             expect: false,
+            notes_told: None,
+            notes_asked: None,
+            cut_over: default_cut_over(),
+            names_listed: default_names_listed(),
+            look_back: true,
+            earlier_chars: default_earlier_chars(),
+            compact_in_trials: false,
         }
     }
 }
@@ -417,6 +470,12 @@ pub struct State {
     /// ([`crate::receipt`]).
     #[serde(default, skip_serializing_if = "crate::receipt::Receipts::is_empty")]
     pub receipts: crate::receipt::Receipts,
+    /// What the conversation let go when it was shortened, kept as it was
+    /// ([`crate::earlier`]): the agent looks back at it ([`LOOK_BACK`]),
+    /// and with it the whole conversation can still be read
+    /// ([`State::whole`]).
+    #[serde(default, skip_serializing_if = "Earlier::is_empty")]
+    pub earlier: Earlier,
 }
 
 /// What a run reminded the agent of when it said it was done
@@ -534,6 +593,61 @@ impl State {
         };
         state.show(pictures);
         state
+    }
+
+    /// The whole conversation: the task, what was let go when it was
+    /// shortened, and what is still there, the results cut from it given
+    /// back. The runtime's notes are not part of it. It is the whole only
+    /// if everything let go was kept ([`State::is_whole`]).
+    pub fn whole(&self) -> Vec<Message> {
+        self.earlier.whole(&self.messages)
+    }
+
+    /// How many messages the whole conversation has, what it let go
+    /// included: the number the next message will have. A place in the
+    /// conversation as it now is does not survive a shortening; a number
+    /// does.
+    pub fn count(&self) -> usize {
+        self.earlier.total(&self.messages)
+    }
+
+    /// The messages of the whole conversation from the one numbered
+    /// `number` on, as they were ([`State::count`]).
+    pub fn since(&self, number: usize) -> Vec<Message> {
+        self.earlier.since(&self.messages, number)
+    }
+
+    /// Whether [`State::whole`] is the whole conversation: it was never
+    /// shortened, or everything it let go is still kept.
+    pub fn is_whole(&self) -> bool {
+        self.compactions == 0 || (!self.earlier.is_empty() && self.earlier.is_whole())
+    }
+
+    /// Puts back what the conversation let go: the whole conversation in
+    /// place of the shortened one, to be shortened again when it next
+    /// runs. That it was shortened stays recorded. False, and nothing
+    /// changes, if not all of what it let go is kept
+    /// ([`State::is_whole`]).
+    pub fn restore_whole(&mut self) -> bool {
+        if !self.is_whole() {
+            return false;
+        }
+        if self.earlier.holds() || self.earlier.notes > 0 {
+            self.messages = self.whole();
+            self.earlier.messages.clear();
+            self.earlier.cut.clear();
+            self.earlier.notes = 0;
+            self.earlier.body.clear();
+        }
+        true
+    }
+
+    /// Keeps the first `len` messages of the conversation as it now is,
+    /// and forgets the rest.
+    pub fn cut_to(&mut self, len: usize) {
+        self.messages.truncate(len);
+        // The runtime's notes may have gone with them.
+        self.earlier.notes = self.earlier.notes.min(len.saturating_sub(1));
     }
 
     /// Loads the tools `found` by a search: each goes last, and only the
@@ -1221,7 +1335,7 @@ impl Runtime<'_> {
                     }
                 }
             };
-            results.push(result_block(use_id, &outcome, &mut state.images));
+            results.push(result_block(use_id, &outcome, state));
         }
         state.messages.push(Message {
             role: Role::User,
@@ -1540,13 +1654,13 @@ impl Runtime<'_> {
                 results.push(result_block(
                     use_id,
                     &Outcome::ok("Noted: the run ends here, as not done."),
-                    &mut state.images,
+                    state,
                 ));
                 for (later, _, _) in &calls[index + 1..] {
                     results.push(result_block(
                         later,
                         &Outcome::error("not run: the task was given up in this turn"),
-                        &mut state.images,
+                        state,
                     ));
                 }
                 state.messages.push(Message {
@@ -1566,7 +1680,7 @@ impl Runtime<'_> {
                     results.push(result_block(
                         use_id,
                         &Outcome::ok("Asked: the person's answer comes next."),
-                        &mut state.images,
+                        state,
                     ));
                     for (later, _, _) in &calls[index + 1..] {
                         results.push(result_block(
@@ -1574,7 +1688,7 @@ impl Runtime<'_> {
                             &Outcome::error(
                                 "not run: the turn ended with a question to the person",
                             ),
-                            &mut state.images,
+                            state,
                         ));
                     }
                     state.messages.push(Message {
@@ -1641,7 +1755,7 @@ impl Runtime<'_> {
                     });
                     let outcome =
                         self.compared(state, expected.get(&calls[*at].0), &ready.tool, outcome);
-                    results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
+                    results.push(result_block(&calls[*at].0, &outcome, state));
                 }
                 self.save(state);
                 index = next;
@@ -1736,7 +1850,7 @@ impl Runtime<'_> {
                         });
                         let outcome =
                             self.compared(state, expected.get(&calls[*at].0), &ready.tool, outcome);
-                        results.push(result_block(&calls[*at].0, &outcome, &mut state.images));
+                        results.push(result_block(&calls[*at].0, &outcome, state));
                     }
                     self.save(state);
                     index = next;
@@ -1756,7 +1870,7 @@ impl Runtime<'_> {
                         gave: result_digest(&outcome),
                     });
                     let outcome = self.compared(state, expected.get(use_id), inner, outcome);
-                    results.push(result_block(use_id, &outcome, &mut state.images));
+                    results.push(result_block(use_id, &outcome, state));
                 }
                 Called::Wait {
                     key,
@@ -1766,16 +1880,12 @@ impl Runtime<'_> {
                     effect,
                 } => {
                     self.seen(&Seen::Waiting(tool.clone()));
-                    results.push(result_block(
-                        use_id,
-                        &Outcome::ok(WAITING),
-                        &mut state.images,
-                    ));
+                    results.push(result_block(use_id, &Outcome::ok(WAITING), state));
                     for (later, _, _) in &calls[index..] {
                         results.push(result_block(
                             later,
                             &Outcome::error("not run: an earlier call in this turn waited for approval; call it again if it is still needed"),
-                            &mut state.images,
+                            state,
                         ));
                     }
                     state.messages.push(Message {
@@ -2137,6 +2247,11 @@ impl Runtime<'_> {
         if self.limits.ask {
             shown.push(ask_spec());
         }
+        // Offered once there is something to look back at: a conversation
+        // that was never shortened is not shown it.
+        if self.limits.look_back && state.earlier.holds() {
+            shown.push(crate::earlier::spec());
+        }
         if self.verify.is_some() {
             shown.push(verify::spec());
         }
@@ -2162,7 +2277,7 @@ impl Runtime<'_> {
     /// the tools that only speak to the runtime or the person, of which
     /// there is nothing to predict.
     fn expects(name: &str) -> bool {
-        ![PLAN_UPDATE, ASK_PERSON, CANNOT_COMPLETE].contains(&name)
+        ![PLAN_UPDATE, ASK_PERSON, CANNOT_COMPLETE, LOOK_BACK].contains(&name)
     }
 
     /// The system prompt as the model is given it: with what it is told of
@@ -2371,6 +2486,7 @@ impl Runtime<'_> {
             QUARANTINE_READ,
             CANNOT_COMPLETE,
             PLAN_UPDATE,
+            LOOK_BACK,
         ]
         .contains(&tool)
         {
@@ -2961,6 +3077,9 @@ impl Runtime<'_> {
         if name == ASK_PERSON && self.limits.ask {
             return Called::Ran(self.ask_person(state, input));
         }
+        if name == LOOK_BACK && self.limits.look_back && state.earlier.holds() {
+            return Called::Ran(self.look_back(state, input));
+        }
         if let (RUN_CODE, Some(code)) = (name, self.code) {
             return Called::Ran(self.run_code(state, code, input, left));
         }
@@ -3429,55 +3548,105 @@ impl Runtime<'_> {
 
     /// Keeps a long conversation within the limits: past
     /// [`Limits::compact_chars`], the results of calls long past are cut
-    /// first ([`mask_old_results`]); still past it, or past
-    /// [`Limits::compact_messages`], the middle is replaced by a summary,
-    /// keeping the task and the latest messages.
+    /// first ([`cut_old_results`]): those before the last messages, then
+    /// those before the last [`RECENT`]. Still past it, or past
+    /// [`Limits::compact_messages`], the middle is replaced by notes,
+    /// keeping the task and the latest messages. If it is too long even
+    /// so, only the last exchange's results are spared. What is cut or
+    /// replaced is kept as it was ([`State::earlier`]).
     ///
-    /// With a summarizer ([`Extras::summarizer`]), the summary is the
-    /// model's, written from the messages it replaces, if the run's budget
-    /// allows the call; else, or if the call fails, the mechanical one.
-    /// Either way it begins with what lasts, what is now so, and what the
-    /// person said after the task, word for word ([`told`]).
+    /// With a summarizer ([`Extras::summarizer`]), the notes are the
+    /// model's, written from the messages they replace, if the run's budget
+    /// allows the call; else, or if the call fails, the mechanical ones.
+    /// Either way they begin with what lasts, what is now so, and what the
+    /// person said after the task, word for word ([`told`]), and end with
+    /// what was let go and the names they do not hold.
     fn compact(&self, state: &mut State, start: &RunStart) {
         let chars = |state: &State| -> usize { state.messages.iter().map(Message::chars).sum() };
-        if chars(state) > self.limits.compact_chars
-            && mask_old_results(state, self.limits.keep_last) > 0
-        {
+        let limit = self.limits.compact_chars;
+        let keep = self.keep();
+        // Old results go first: cut, each is kept and a call away. Those
+        // of the last messages are spared, and of the last three exchanges
+        // if that is not enough.
+        let mut spared = keep;
+        if chars(state) > limit {
+            let mut cut = cut_old_results(state, spared, &self.limits);
+            if chars(state) > limit && spared > RECENT {
+                spared = RECENT;
+                cut += cut_old_results(state, spared, &self.limits);
+            }
+            if cut > 0 {
+                state.compactions += 1;
+            }
+        }
+        let many = state.messages.len() > self.limits.compact_messages;
+        if !many && chars(state) <= limit {
+            return;
+        }
+        // Then notes in place of the middle. Too long, though not in
+        // messages: only where they would be shorter than what they
+        // replace.
+        if let Some(tail) = compact_tail(state, keep) {
+            if many || worth_noting(state, tail, &self.limits) {
+                self.note(state, tail, start);
+            }
+        }
+        // Still too long: the results of fewer of the last messages are
+        // spared, down to the last exchange.
+        let mut cut = 0;
+        while chars(state) > limit && spared > 2 {
+            spared = (spared / 2).max(2);
+            cut += cut_old_results(state, spared, &self.limits);
+        }
+        if cut > 0 {
             state.compactions += 1;
         }
-        if state.messages.len() <= self.limits.compact_messages
-            && chars(state) <= self.limits.compact_chars
-        {
-            return;
-        }
-        let Some(tail) = compact_tail(state, self.limits.keep_last) else {
-            return;
-        };
-        let written = self
+    }
+
+    /// Keeps `state`'s conversation within the limits now, as a run does
+    /// before it asks its model: for playing a recorded conversation again
+    /// under other limits ([`replay`]). Whether it was shortened.
+    pub fn keep_within(&self, state: &mut State) -> bool {
+        let before = state.compactions;
+        self.compact(state, &RunStart::of(state));
+        state.compactions > before
+    }
+
+    /// How many messages stay as they are when a conversation is shortened:
+    /// [`Limits::keep_last`], and no more than half of what
+    /// [`Limits::compact_messages`] allows, so that a short limit is kept.
+    fn keep(&self) -> usize {
+        self.limits
+            .keep_last
+            .min(self.limits.compact_messages / 2)
+            .max(1)
+    }
+
+    /// Replaces the messages between the task and `tail` with notes: the
+    /// summarizer's if there is one and it answers, else the mechanical
+    /// ones.
+    fn note(&self, state: &mut State, tail: usize, start: &RunStart) {
+        let writer = self
             .extras
             .summarizer
-            .and_then(|model| self.summary_by(model, state, tail, start));
-        let body = written.unwrap_or_else(|| summarize(&state.messages[1..tail]));
-        compact_at(state, tail, body);
+            .or_else(|| self.models.first().and_then(|model| model.notes_writer()));
+        let written = writer.and_then(|model| self.notes_by(model, state, tail, start));
+        let notes = written.unwrap_or_else(|| Notes::mechanical(state, tail));
+        compact_at(state, tail, notes, &self.limits);
     }
 
     /// Makes the conversation shorter than its limits ask, for a model it
-    /// no longer fits: old results are masked and all but the last messages
-    /// summarised, fewer kept each time it does not get a quarter shorter.
-    /// Whether it got shorter at all.
+    /// no longer fits: old results are cut and all but the last messages
+    /// replaced by notes, fewer kept each time it does not get a quarter
+    /// shorter. Whether it got shorter at all.
     fn shorten(&self, state: &mut State, start: &RunStart) -> bool {
         let chars = |state: &State| -> usize { state.messages.iter().map(Message::chars).sum() };
         let before = chars(state);
         let mut keep = self.limits.keep_last.max(2);
         loop {
-            mask_old_results(state, keep);
+            cut_old_results(state, keep, &self.limits);
             if let Some(tail) = compact_tail(state, keep) {
-                let written = self
-                    .extras
-                    .summarizer
-                    .and_then(|model| self.summary_by(model, state, tail, start));
-                let body = written.unwrap_or_else(|| summarize(&state.messages[1..tail]));
-                compact_at(state, tail, body);
+                self.note(state, tail, start);
             }
             if chars(state) <= before / 4 * 3 || keep <= 2 {
                 break;
@@ -3492,25 +3661,106 @@ impl Runtime<'_> {
         shorter
     }
 
-    /// The summary `model` writes of the messages before `tail`, if the
-    /// run's budgets allow the call and it answers.
-    fn summary_by(
+    /// The notes `model` writes of the messages before `tail`, if the
+    /// run's budgets allow the call and it answers. It is given the notes
+    /// before these and the messages since, the results cut from them as
+    /// they were, and told and asked as the limits say
+    /// ([`Limits::notes_told`], [`Limits::notes_asked`]).
+    ///
+    /// What it writes is checked against what it replaces: a name that is
+    /// nowhere in it ([`crate::earlier::unsupported`]) was made up. The
+    /// writer is then asked once more, and whichever notes made up less
+    /// stand, what they still made up flagged beside them.
+    fn notes_by(
         &self,
         model: &dyn Model,
         state: &mut State,
         tail: usize,
         start: &RunStart,
+    ) -> Option<Notes> {
+        let from = (1 + state.earlier.notes).min(tail);
+        let replaced: Vec<Message> = state.messages[from..tail]
+            .iter()
+            .map(|message| state.earlier.restored(message))
+            .collect();
+        let stand_for = state.earlier.last().unwrap_or(0) + replaced.len();
+        let previous = state.earlier.body.clone();
+        let told = self
+            .limits
+            .notes_told
+            .clone()
+            .unwrap_or_else(|| SUMMARY_SYSTEM.to_string());
+        let asked = self
+            .limits
+            .notes_asked
+            .clone()
+            .unwrap_or_else(|| SUMMARY_ASK.to_string());
+        let mut transcript = transcript_for_summary(&replaced, SUMMARY_INPUT_CHARS);
+        if !previous.is_empty() {
+            transcript = format!(
+                "NOTES SO FAR: {}\n{transcript}",
+                clipped(&previous, NOTES_SO_FAR_CHARS)
+            );
+        }
+        let first = Message::user(format!("{transcript}\n\n{asked}"));
+        // What its notes may name: what is in what they replace, in the
+        // notes before, in the task, and in what it was itself told.
+        let mut source = crate::earlier::lower_text(&replaced);
+        source.push_str(&crate::earlier::lower_text(&state.messages[..1]));
+        for text in [&previous, &self.system, &told, &asked] {
+            source.push_str(&text.to_lowercase());
+            source.push('\n');
+        }
+        let mut text = self.ask_notes(model, state, start, &told, vec![first.clone()])?;
+        let mut made_up = crate::earlier::unsupported(&text, &source);
+        let mut asked_again = false;
+        if !made_up.is_empty() {
+            let again = vec![
+                first,
+                Message {
+                    role: Role::Assistant,
+                    content: vec![Block::text(text.clone())],
+                },
+                Message::user(crate::earlier::ask_again(&made_up)),
+            ];
+            if let Some(second) = self.ask_notes(model, state, start, &told, again) {
+                asked_again = true;
+                let still = crate::earlier::unsupported(&second, &source);
+                if still.len() < made_up.len() {
+                    text = second;
+                    made_up = still;
+                }
+            }
+        }
+        Some(Notes {
+            body: format!(
+                "[Summary of {stand_for} earlier messages, written to save context:]\n{text}"
+            ),
+            by: model.id().to_string(),
+            made_up,
+            asked_again,
+        })
+    }
+
+    /// One call of the notes' writer: what it wrote, if the run's budgets
+    /// allow the call and it answers with something.
+    fn ask_notes(
+        &self,
+        model: &dyn Model,
+        state: &mut State,
+        start: &RunStart,
+        told: &str,
+        messages: Vec<Message>,
     ) -> Option<String> {
-        let replaced = tail.saturating_sub(1);
-        let transcript = transcript_for_summary(&state.messages[1..tail], SUMMARY_INPUT_CHARS);
         let request = Request {
-            system: SUMMARY_SYSTEM.to_string(),
-            messages: vec![Message::user(format!("{transcript}\n\n{SUMMARY_ASK}"))],
+            system: told.to_string(),
+            messages,
             tools: Vec::new(),
             max_tokens: SUMMARY_TOKENS,
             images: BTreeMap::new(),
         };
-        let chars = request.system.len() + transcript.len() + SUMMARY_ASK.len();
+        let chars =
+            request.system.len() + request.messages.iter().map(Message::chars).sum::<usize>();
         let input = (chars as u64).div_ceil(3);
         let answer = u64::from(model.most_tokens(SUMMARY_TOKENS));
         let need = input + answer;
@@ -3563,12 +3813,40 @@ impl Runtime<'_> {
         }
         .text();
         let text = text.trim();
-        if text.is_empty() {
-            return None;
+        (!text.is_empty()).then(|| text.to_string())
+    }
+
+    /// Answers [`LOOK_BACK`]: what the conversation let go, searched or
+    /// read as it was ([`crate::earlier`]). A result that came from outside
+    /// is content from outside again, and taints the session as reading it
+    /// did.
+    fn look_back(&self, state: &mut State, input: &Value) -> Outcome {
+        let start_ms = wall_ms();
+        let looked = {
+            let State {
+                earlier, messages, ..
+            } = &mut *state;
+            earlier.look(messages, input)
+        };
+        if looked.outside {
+            state.standing.taint(&self.policy, (self.now)());
         }
-        Some(format!(
-            "[Summary of {replaced} earlier messages, written to save context:]\n{text}"
-        ))
+        let mut outcome = if looked.is_error {
+            Outcome::error(looked.content)
+        } else {
+            Outcome::ok(looked.content)
+        };
+        outcome.untrusted = looked.outside;
+        let step = self.call_step(
+            state,
+            LOOK_BACK,
+            None,
+            Some(Effect::Read),
+            ended_as(&outcome),
+            start_ms,
+        );
+        self.step(state, step);
+        outcome
     }
 }
 
@@ -3589,6 +3867,47 @@ pub const SUMMARY_TOKENS: u32 = 3_000;
 
 /// The most characters of transcript a summarizer is given.
 pub const SUMMARY_INPUT_CHARS: usize = 120_000;
+
+/// The last messages whose results are cut only after notes were tried:
+/// three exchanges, which the model is most likely still working from.
+pub const RECENT: usize = 6;
+
+/// The most characters of the notes before them that a summarizer is given
+/// with the messages since.
+pub const NOTES_SO_FAR_CHARS: usize = 12_000;
+
+/// The notes that replace the middle of a conversation, before the runtime
+/// puts around them what it keeps itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Notes {
+    /// The notes.
+    body: String,
+    /// The model that wrote them, or nothing for the mechanical ones.
+    by: String,
+    /// The names they hold that are nowhere in what they replace.
+    made_up: Vec<String>,
+    /// Whether their writer was asked a second time.
+    asked_again: bool,
+}
+
+impl Notes {
+    /// The mechanical notes of `state`'s messages before `tail`: the
+    /// notes before them, and a line for each message since.
+    fn mechanical(state: &State, tail: usize) -> Notes {
+        let from = (1 + state.earlier.notes).min(tail);
+        let replaced: Vec<Message> = state.messages[from..tail]
+            .iter()
+            .map(|message| state.earlier.restored(message))
+            .collect();
+        let stand_for = state.earlier.last().unwrap_or(0) + replaced.len();
+        Notes {
+            body: crate::earlier::mechanical(&state.earlier.body, &replaced, stand_for),
+            by: String::new(),
+            made_up: Vec::new(),
+            asked_again: false,
+        }
+    }
+}
 
 /// The messages a summary replaces, as a transcript a summarizer reads:
 /// each text whole up to a point, each call with its input, each result
@@ -3647,30 +3966,59 @@ pub const MASK_OVER: usize = 400;
 pub const MASKED: &str = "[Cut to save context:";
 
 /// Cuts the results of the calls before the last `keep_last` messages that
-/// are longer than [`MASK_OVER`]: the calls stay, and each result becomes a
-/// line saying what it was and how long. The call can be made again: one
-/// the journal recorded is answered from it, as it was. How many results
-/// were cut.
+/// are longer than [`MASK_OVER`], keeping each as it was
+/// ([`cut_old_results`] with the default limits). How many were cut.
 pub fn mask_old_results(state: &mut State, keep_last: usize) -> usize {
+    cut_old_results(state, keep_last, &Limits::default())
+}
+
+/// Cuts the results of the calls before the last `keep_last` messages that
+/// are longer than [`Limits::cut_over`]: the calls stay, and each result
+/// becomes a line saying what it was and how long. The result is kept as it
+/// was ([`State::earlier`]), unless the session keeps nothing
+/// ([`Limits::earlier_chars`]), and the agent can look back at it; it can
+/// also make the call again, for how things are now (a call the journal
+/// recorded is answered from it, as it was). How many results were cut.
+pub fn cut_old_results(state: &mut State, keep_last: usize, limits: &Limits) -> usize {
+    shortened_before_kept(state);
     let until = state.messages.len().saturating_sub(keep_last);
+    let keeps = limits.earlier_chars > 0;
     // Which tool each call was, to name what a result was of.
     let mut tools: BTreeMap<String, String> = BTreeMap::new();
     let mut cut = 0;
-    for message in &mut state.messages[..until] {
+    let State {
+        messages, earlier, ..
+    } = state;
+    for message in &mut messages[..until] {
         for block in &mut message.content {
             match block {
                 Block::ToolUse { id, name, .. } => {
                     tools.insert(id.clone(), name.clone());
                 }
                 Block::ToolResult { id, content, .. }
-                    if content.len() > MASK_OVER && !content.starts_with(MASKED) =>
+                    if content.len() > limits.cut_over && !content.starts_with(MASKED) =>
                 {
                     let tool = tools.get(id.as_str()).map_or("a call", String::as_str);
-                    *content = format!(
-                        "{MASKED} the result of {tool}, {} characters. Make the call again if \
-                         you need it.]",
-                        content.chars().count()
-                    );
+                    let count = content.chars().count();
+                    let after = if !keeps {
+                        "Make the call again if you need it.".to_string()
+                    } else {
+                        if !earlier.keep_cut(id, content) {
+                            // Another result is kept under this id: this
+                            // one stays, so that neither is lost.
+                            continue;
+                        }
+                        if limits.look_back {
+                            format!(
+                                "{LOOK_BACK} gives it as it was ({{\"result\": \"{id}\"}}); make \
+                                 the call again for how it is now."
+                            )
+                        } else {
+                            "It is kept as it was; make the call again if you need it.".to_string()
+                        }
+                    };
+                    *content =
+                        format!("{MASKED} the result of {tool}, {count} characters. {after}]");
                     cut += 1;
                 }
                 _ => {}
@@ -3678,6 +4026,38 @@ pub fn mask_old_results(state: &mut State, keep_last: usize) -> usize {
         }
     }
     cut
+}
+
+/// Whether replacing the messages before `tail` with notes would make the
+/// conversation shorter: their mechanical notes, with what the runtime
+/// keeps beside any notes and says after them, are shorter than what they
+/// would replace (the notes before them included). Where they are not, a
+/// model's would hardly be: what the runtime keeps is most of it.
+fn worth_noting(state: &State, tail: usize, limits: &Limits) -> bool {
+    let replaced: usize = state.messages[1..tail].iter().map(Message::chars).sum();
+    let beside: usize = [
+        lasting(state),
+        latest(state),
+        planned(state),
+        told(state, tail),
+    ]
+    .iter()
+    .map(|part| part.chars().count())
+    .sum();
+    let notes = Notes::mechanical(state, tail).body.chars().count();
+    // What the runtime says after them: what was let go, and the names.
+    let after = 300 + limits.names_listed * 24;
+    beside + notes + after < replaced
+}
+
+/// Notes, before `state`'s conversation is cut or replaced, whether it was
+/// shortened before anything it let go was kept (a session from before
+/// that was kept, or one that keeps nothing): its whole is then not known
+/// ([`State::is_whole`]).
+fn shortened_before_kept(state: &mut State) {
+    if state.compactions > 0 && state.earlier.is_empty() {
+        state.earlier.unkept = true;
+    }
 }
 
 /// The most calls a session keeps of what it did that lasts
@@ -3766,15 +4146,102 @@ pub fn lasting(state: &State) -> String {
     lines.join("\n")
 }
 
+/// Plays the recorded conversation `whole` again under `runtime`'s limits,
+/// shortening it wherever a run would have (before each of the agent's
+/// turns, as [`Runtime::keep_within`] does), its notes written by the
+/// runtime's summarizer if it has one. No tool is called and the agent's
+/// model is not asked: the messages are the recorded ones.
+///
+/// At each shortening, the names the agent went on to use that it could
+/// know only from before are counted, and of those the ones the shortened
+/// conversation still held ([`crate::earlier::Replayed`]).
+pub fn replay(runtime: &Runtime<'_>, whole: &[Message]) -> crate::earlier::Replayed {
+    use crate::earlier::{lower_text, names_used, without_listed, Lost, Replayed, LOST_KEPT};
+    let mut out = Replayed {
+        messages: whole.len(),
+        ..Replayed::default()
+    };
+    let Some(task) = whole.first() else {
+        return out;
+    };
+    let chars = |state: &State| -> usize { state.messages.iter().map(Message::chars).sum() };
+    let mut state = State {
+        id: "replay".into(),
+        messages: vec![task.clone()],
+        ..State::default()
+    };
+    for (at, message) in whole.iter().enumerate().skip(1) {
+        if message.role == Role::Assistant {
+            let before = chars(&state);
+            if runtime.keep_within(&mut state) {
+                out.shortenings += 1;
+                out.before += before;
+                out.after += chars(&state);
+                // What it holds, apart from the names its notes only list.
+                let (held, listed) = without_listed(&lower_text(&state.messages));
+                let past = lower_text(&whole[..at]);
+                // What comes back after this point from outside the agent:
+                // a name in it did not have to be kept.
+                let mut again = String::new();
+                let mut counted = BTreeSet::new();
+                for (later, message) in whole.iter().enumerate().skip(at) {
+                    for name in names_used(message) {
+                        let lower = name.to_lowercase();
+                        if !counted.insert(lower.clone())
+                            || !past.contains(&lower)
+                            || again.contains(&lower)
+                        {
+                            continue;
+                        }
+                        out.needed += 1;
+                        if held.contains(&lower) {
+                            out.held += 1;
+                            continue;
+                        }
+                        if listed.contains(&lower) {
+                            out.listed += 1;
+                        }
+                        let lost = Lost {
+                            name,
+                            used_at: later,
+                        };
+                        if out.lost.len() < LOST_KEPT && !out.lost.contains(&lost) {
+                            out.lost.push(lost);
+                        }
+                    }
+                    if message.role != Role::Assistant {
+                        again.push_str(&lower_text(std::slice::from_ref(message)));
+                    }
+                }
+            }
+        }
+        state.messages.push(message.clone());
+    }
+    out.tokens = state.usage.total();
+    out
+}
+
 /// Compacts `state`'s conversation now, whatever its size: everything but
 /// the task and the last `keep_last` messages becomes a summary. Whether
 /// anything was compacted.
 pub fn compact_now(state: &mut State, keep_last: usize) -> bool {
-    let Some(tail) = compact_tail(state, keep_last) else {
+    compact_with(
+        state,
+        &Limits {
+            keep_last,
+            ..Limits::default()
+        },
+    )
+}
+
+/// [`compact_now`], as `limits` have a conversation kept: how many messages
+/// stay, how much of what is let go is kept, how many names are listed.
+pub fn compact_with(state: &mut State, limits: &Limits) -> bool {
+    let Some(tail) = compact_tail(state, limits.keep_last) else {
         return false;
     };
-    let body = summarize(&state.messages[1..tail]);
-    compact_at(state, tail, body);
+    let notes = Notes::mechanical(state, tail);
+    compact_at(state, tail, notes, limits);
     true
 }
 
@@ -3789,8 +4256,9 @@ pub fn compact_tail(state: &State, keep_last: usize) -> Option<usize> {
     while tail > 1 && tail < len && is_results(&state.messages[tail]) {
         tail -= 1;
     }
-    // Nothing to compact: at most the task before the tail, or no tail.
-    (tail > 1 && tail < len).then_some(tail)
+    // Nothing to compact: at most the task and the notes of an earlier
+    // shortening before the tail, or no tail.
+    (tail > 1 + state.earlier.notes.min(len.saturating_sub(1)) && tail < len).then_some(tail)
 }
 
 /// What the person said after the task, word for word, as a summary
@@ -3900,35 +4368,75 @@ pub fn unchecked_reminder(paths: &[String]) -> String {
     )
 }
 
-/// Replaces the messages between the task and `tail` with a summary: what
+/// Replaces the messages between the task and `tail` with notes: what
 /// lasts, what is now so and what the person said, kept apart from the
-/// conversation so that no summary of a summary loses them, then `body`.
-fn compact_at(state: &mut State, tail: usize, body: String) {
-    let kept: Vec<String> = [
+/// conversation so that no notes written from notes lose them; then
+/// `notes`; then what the runtime says of them: the names a model made up,
+/// what was let go, and the names of all that was let go so far that the
+/// shortened conversation no longer holds. The messages replaced are kept
+/// as they were ([`State::earlier`]), and the shortening recorded.
+fn compact_at(state: &mut State, tail: usize, notes: Notes, limits: &Limits) {
+    shortened_before_kept(state);
+    let before: usize = state.messages.iter().map(Message::chars).sum();
+    let from = (1 + state.earlier.notes).min(tail);
+    let first = state.earlier.last().unwrap_or(0) + 1;
+    let let_go = state.messages[from..tail].to_vec();
+    state.earlier.let_go(&let_go, limits.earlier_chars);
+    let mut parts: Vec<String> = [
         lasting(state),
         latest(state),
         planned(state),
         told(state, tail),
+        notes.body.clone(),
+        crate::earlier::made_up_line(&notes.made_up),
     ]
     .into_iter()
     .filter(|part| !part.is_empty())
     .collect();
-    let summary = match kept.join("\n") {
-        kept if kept.is_empty() => body,
-        kept => format!("{kept}\n{body}"),
-    };
+    // What the shortened conversation still holds: these parts, the task
+    // and the messages kept as they are.
+    let mut held = parts.join("\n").to_lowercase();
+    held.push('\n');
+    held.push_str(&crate::earlier::lower_text(&state.messages[..1]));
+    held.push_str(&crate::earlier::lower_text(&state.messages[tail..]));
+    // Of everything let go so far, not only now: a name the notes before
+    // these listed is still out of view.
+    let (listed, not_held) =
+        crate::earlier::not_held(&state.earlier.messages, &held, limits.names_listed);
+    let finds = limits.look_back && !state.earlier.messages.is_empty();
+    for line in [
+        state.earlier.let_go_line(limits.look_back),
+        crate::earlier::not_held_line(&listed, not_held, finds),
+    ] {
+        if !line.is_empty() {
+            parts.push(line);
+        }
+    }
     let mut messages = vec![state.messages[0].clone()];
     messages.push(Message {
         role: Role::Assistant,
-        content: vec![Block::text(summary)],
+        content: vec![Block::text(parts.join("\n"))],
     });
+    state.earlier.notes = 1;
     if state.messages[tail].role == Role::Assistant {
         messages.push(Message::user("Continue."));
+        state.earlier.notes = 2;
     }
     messages.extend_from_slice(&state.messages[tail..]);
     state.messages = messages;
     state.compactions += 1;
     keep_last_images(state);
+    state.earlier.body = notes.body;
+    state.earlier.record(crate::earlier::Span {
+        from: first,
+        to: state.earlier.last().unwrap_or(0),
+        by: notes.by,
+        made_up: notes.made_up,
+        asked_again: notes.asked_again,
+        not_held,
+        before,
+        after: state.messages.iter().map(Message::chars).sum(),
+    });
 }
 
 /// Lets go of the reasoning kept in `state`'s conversation: what a
@@ -3967,7 +4475,11 @@ fn ended_as(outcome: &Outcome) -> &'static str {
 
 /// The block that gives the model `outcome`: its pictures by their
 /// digests, their bytes kept in `images`.
-fn result_block(use_id: &str, outcome: &Outcome, images: &mut BTreeMap<String, String>) -> Block {
+fn result_block(use_id: &str, outcome: &Outcome, state: &mut State) -> Block {
+    if outcome.untrusted {
+        state.earlier.from_outside(use_id);
+    }
+    let images = &mut state.images;
     let refs = outcome
         .pictures
         .iter()
@@ -4019,46 +4531,16 @@ fn replace_result(state: &mut State, use_id: &str, outcome: &Outcome) {
         }
     }
     if let Some((m, b)) = found {
-        let block = result_block(use_id, outcome, &mut state.images);
+        let block = result_block(use_id, outcome, state);
         state.messages[m].content[b] = block;
         keep_last_images(state);
     }
 }
 
 /// An extractive summary of messages: what the model said and called, and
-/// what came back, one shortened line each.
+/// what came back, one shortened line each ([`crate::earlier::mechanical`]).
 pub fn summarize(messages: &[Message]) -> String {
-    let mut lines = vec![format!(
-        "[Summary of {} earlier messages, compacted to save context]",
-        messages.len()
-    )];
-    for message in messages {
-        for block in &message.content {
-            lines.push(match block {
-                Block::Text { text } if message.role == Role::Assistant => {
-                    format!("- I said: {}", shorten(text, 240))
-                }
-                Block::Text { text } => format!("- I was told: {}", shorten(text, 240)),
-                Block::ToolUse { name, input, .. } => {
-                    format!(
-                        "- I called {name} with {}",
-                        shorten(&input.to_string(), 160)
-                    )
-                }
-                Block::ToolResult {
-                    content, is_error, ..
-                } => format!(
-                    "  → {}{}",
-                    if *is_error { "error: " } else { "" },
-                    shorten(content, 200)
-                ),
-                Block::Image { image } => format!("- I was shown a picture ({})", image.media_type),
-                // Kept reasoning is the model's own, and opaque: not summed up.
-                Block::Reasoning { .. } => continue,
-            });
-        }
-    }
-    lines.join("\n")
+    crate::earlier::mechanical("", messages, messages.len())
 }
 
 fn shorten(text: &str, max: usize) -> String {

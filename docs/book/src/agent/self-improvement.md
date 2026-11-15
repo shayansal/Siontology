@@ -32,8 +32,11 @@ session <its full id> marked as having gone well
 profile's sessions with a known outcome into a set of tasks:
 
 - **The task** is what the session was asked. A conversation, with more
-  than one message from a person, is passed over. So is a compacted
-  session, whose first message is no longer the task as asked.
+  than one message from a person, is passed over. A session whose
+  conversation was shortened is harvested from its whole conversation,
+  which it keeps ([A long conversation](context.md)); it is passed over
+  only if what it let go is not all kept, since what it called and was
+  given is then not all known.
 - **The stand-ins** answer what the real tools answered, each call by its
   exact input. A tool that only reads answers any other input with an
   error saying no answer was recorded. A version of the agent that asks
@@ -143,8 +146,10 @@ improve itself on its seal. Each round goes like this:
    - what was tried before and how it went.
 
    It proposes, with `propose_change`, the full new text of what the
-   agent has learned, the models it runs on, or both. It is never shown a
-   sealed task, nor anything a sealed task's run said.
+   agent has learned, the models it runs on, or both. Where the tasks'
+   runs are held to a short context, it may also change how the agent
+   keeps a long conversation short ([Its context](#its-context)). It is
+   never shown a sealed task, nor anything a sealed task's run said.
 3. **Gates hold whatever it writes.** A change is turned down if:
    - what it learned is too long;
    - it uses a model not allowed (the profile's own, and those `--model`
@@ -264,6 +269,56 @@ What this changes and what it does not:
   it, so the tokens it costs fall on both.
 - **Changing the agent's code** (`sion agent improve code`) scores a
   candidate that runs as its own process, and records none of this.
+
+### Its context
+
+A long session shortens its conversation as it goes, and what its notes
+leave out is out of the model's view
+([A long conversation](context.md)). How it does that is something the
+loop can change too: what the writer of its notes is told and asked, how
+many messages stay as they are, which results are cut first, and how many
+of the names its notes no longer hold are listed.
+
+The tasks a loop runs are short, and a short task's conversation is never
+shortened. `--short-context` holds the tasks' runs to a short context (10
+messages unless it says another number). Each run then records what the
+shortening cost it, and the proposer is shown that beside the failures:
+how often the conversation was shortened and how many names were then out
+of view, what the notes named that was nowhere in what they replaced, and
+what the agent looked back for. It may then propose `context` with
+`propose_change`. A change to it passes the same gates, is kept on the
+same bars, and is confirmed on the sealed tasks like any other. Without
+`--short-context` such a proposal is refused.
+
+```text
+$ sion agent improve run clerk --proposer … --short-context 8 --notes-model … --rounds 1 --runs 2 --apply
+the agent as it is: 0/12 runs of the tasks to choose on passed
+round 1: building on variant 0 (the agent as it was), 0/12 runs passed
+  what shortening its conversation cost it: 6 lines, each counted once a task; the proposer is shown 6
+  turned down: keeps its last 100 messages as they are (it kept 12): it keeps between 2 and 64 messages as they are
+  kept asks it "Write the notes. Say who is to be paid and how much.": 12/12 against 0/12 on the tasks to choose on, and 12/12 against 0/12 on the sealed tasks (interval at the seal's level +58% to +100%; confirmation 1 of 2), as step a3e41d7ca10bd779
+  profile clerk now keeps its conversations as step a3e41d7ca10bd779 kept
+0 tokens used
+recorded in ~/.sion/agents/routes/clerk-lineage.jsonl
+```
+
+The agent, the writer of its notes and the proposer are scripted here
+(`tests/agent_context.rs`). The run shows that what shortening cost
+reaches the proposer and that a change written from it is tried and
+confirmed like any other. It does not show that a real proposer finds a
+better way to keep a real session's conversation: that has not been run.
+
+What to keep in mind:
+
+- **A short context stands in for a long session.** A change kept under
+  eight messages has not been shown to help at 200,000 tokens. `sion
+  agent context measure` plays your recorded sessions again under the
+  way a profile keeps them, as a second look.
+- **Both sides of a comparison are held to the same context**, and their
+  notes written by the same model.
+- **The notes' writer's instructions are words a proposer wrote.** They
+  pass the leak check with what the agent has learned, and the same
+  limits of length.
 
 ### Tasks a model writes
 
@@ -708,6 +763,9 @@ leave open is named in the trust model (`agent:self-improvement`,
   default to it, but the build in the sandbox, with its toolchain mounted
   read-only, is untried, and rounds share no build cache.
 - It has not been run with a real model; the tests use scripted ones.
+- A change to how the agent keeps its conversation is measured on tasks
+  held to a short context, which stands in for a long session and is not
+  one.
 - A bonded attestation is ruled on by its adjudicator, not proven: the
   evidence of a challenge is what its challenger says it found, and
   nothing here reruns it for the adjudicator.

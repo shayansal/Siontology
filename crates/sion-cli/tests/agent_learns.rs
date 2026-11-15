@@ -288,6 +288,8 @@ fn the_agent_learns_from_its_own_work_only_what_sealed_tasks_confirm() {
             seed: Some(3),
             practice: None,
             challenger: None,
+            short_context: None,
+            notes_model: None,
             apply: true,
             wallet: Some("alice".into()),
         },
@@ -378,6 +380,8 @@ fn the_agent_learns_from_its_own_work_only_what_sealed_tasks_confirm() {
         seed: Some(4),
         practice: None,
         challenger: None,
+        short_context: None,
+        notes_model: None,
         apply: true,
         wallet: None,
     })
@@ -611,6 +615,8 @@ fn the_improver_improves_itself_by_how_much_the_agent_improves() {
         budget_tokens: 20_000,
         confirmations: 4,
         seed: Some(5),
+        short_context: None,
+        notes_model: None,
         apply: true,
     })
     .unwrap();
@@ -751,6 +757,8 @@ fn a_reusable_holdout_answers_from_the_tasks_to_choose_on_while_they_agree() {
             seed: Some(3),
             practice: None,
             challenger: None,
+            short_context: None,
+            notes_model: None,
             apply: false,
             wallet: None,
         })
@@ -906,6 +914,8 @@ fn a_challenger_catches_a_change_that_only_fits_the_tasks_it_was_chosen_on() {
         seed: Some(3),
         practice: None,
         challenger: Some(challenger),
+        short_context: None,
+        notes_model: None,
         apply: false,
         wallet: None,
     })
@@ -1023,6 +1033,8 @@ fn the_agent_writes_practice_tasks_and_chooses_changes_on_them_too() {
         seed: Some(3),
         practice: Some(out),
         challenger: None,
+        short_context: None,
+        notes_model: None,
         apply: false,
         wallet: None,
     })

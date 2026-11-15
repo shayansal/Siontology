@@ -153,6 +153,12 @@ pub struct Trial {
     /// there are none unless it was asked to say ([`Limits::expect`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub surprises: Vec<String>,
+    /// What shortening its conversation cost the run, in words
+    /// ([`crate::earlier::Earlier::cost`]): there is nothing unless the
+    /// trial was held to a short context
+    /// ([`Limits::compact_in_trials`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shortened: Vec<String>,
 }
 
 /// A way of working and its runs.
@@ -536,6 +542,7 @@ pub fn compare(
                     answer: run.answer,
                     judged,
                     surprises: run.surprises,
+                    shortened: run.shortened,
                 });
             }
         }
@@ -557,6 +564,7 @@ struct Run {
     answer: String,
     steps: Vec<String>,
     surprises: Vec<String>,
+    shortened: Vec<String>,
 }
 
 /// What a session's calls did that its agent did not expect, in words.
@@ -592,6 +600,7 @@ fn run_arm(
                 answer: done_text(&session.ended),
                 steps: judge::steps_of(&session.state, Some(&session.ended)),
                 surprises: surprises_of(&session.state),
+                shortened: session.state.earlier.cost(),
             })
         }
         Arm::Vote { samples } => {
@@ -601,6 +610,7 @@ fn run_arm(
             let mut tokens = 0;
             let mut answers = Vec::new();
             let mut surprises = Vec::new();
+            let mut shortened = Vec::new();
             let mut first_ended = None;
             for sample in 1..=*samples {
                 let ran = session(
@@ -626,6 +636,13 @@ fn run_arm(
                         .into_iter()
                         .map(|s| format!("(sample {sample}) {s}")),
                 );
+                shortened.extend(
+                    ran.state
+                        .earlier
+                        .cost()
+                        .into_iter()
+                        .map(|s| format!("(sample {sample}) {s}")),
+                );
                 if let Ended::Done { text } = &ran.ended {
                     answers.push(text.clone());
                 }
@@ -643,6 +660,7 @@ fn run_arm(
                 answer: done_text(&ended),
                 steps,
                 surprises,
+                shortened,
             })
         }
         Arm::Graph { graph } => {
@@ -681,6 +699,7 @@ fn run_arm(
                 answer: done_text(&ended),
                 steps,
                 surprises: executor.surprises.into_inner().unwrap_or_default(),
+                shortened: Vec::new(),
             })
         }
     }
@@ -769,12 +788,11 @@ fn session(
         autonomy: Autonomy::L6,
         ..Policy::default()
     };
-    // Never compacted: the checks are of every call the model asked for.
+    // Not shortened, unless the limits ask for a trial under a short
+    // context: the checks are of every call the model asked for either way.
     let limits = Limits {
         budget_tokens: Some(budget),
-        compact_messages: usize::MAX,
-        compact_chars: usize::MAX,
-        ..limits.clone()
+        ..crate::evals::trial_limits(limits)
     };
     let runtime = Runtime {
         models: fresh.iter().map(|m| m.as_ref()).collect(),
@@ -912,6 +930,7 @@ mod tests {
             answer: String::new(),
             judged: None,
             surprises: Vec::new(),
+            shortened: Vec::new(),
         };
         let arm = ArmResult {
             arm: Arm::Single,
